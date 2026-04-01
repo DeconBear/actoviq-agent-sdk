@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
@@ -66,21 +66,17 @@ jobs:
         if: steps.npm_version.outputs.exists != 'true'
         run: npm run build
 
-      - name: Validate npm authentication
+      - name: Check trusted publishing prerequisites
         if: steps.npm_version.outputs.exists != 'true'
         shell: bash
         run: |
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "NPM_TOKEN secret is not configured."
-            exit 1
-          fi
-
-          npm whoami
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          echo "Publishing with npm trusted publishing (OIDC)."
+          echo "Expected npm trusted publisher configuration:"
+          echo "  Owner/Org: DeconBear"
+          echo "  Repository: actoviq-agent-sdk"
+          echo "  Workflow: publish-npm.yml"
+          echo "  Environment: leave empty unless you explicitly use one"
 
       - name: Publish to npm
         if: steps.npm_version.outputs.exists != 'true'
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

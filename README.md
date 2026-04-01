@@ -58,6 +58,13 @@ npm run example:actoviq-interactive-agent
 
 This launches a streaming REPL with tool access and an infinite session loop until you exit.
 
+### npm Publishing
+
+This repository is configured for npm trusted publishing from GitHub Actions.
+Configure the trusted publisher on npmjs.com for `DeconBear/actoviq-agent-sdk`
+with the workflow file `publish-npm.yml`. You do not need an `NPM_TOKEN`
+secret for publishing once trusted publishing is set up correctly.
+
 ## At a Glance
 
 This repository gives you two main paths:
