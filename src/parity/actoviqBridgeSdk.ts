@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { ActoviqBridgeProcessError, RunAbortedError } from '../errors.js';
+import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
 import { AsyncQueue } from '../runtime/asyncQueue.js';
 import { asError, isRecord } from '../runtime/helpers.js';
 import type {
@@ -31,6 +32,8 @@ import type {
   CreateActoviqBridgeSdkOptions,
 } from '../types.js';
 import {
+  getActoviqBridgeCompactBoundaries,
+  getActoviqBridgeLatestCompactBoundary,
   getActoviqBridgeSessionInfo,
   getActoviqBridgeSessionMessages,
   listActoviqBridgeSessions,
@@ -784,6 +787,25 @@ export class ActoviqBridgeSession {
     return getActoviqBridgeSessionMessages(this.id, options);
   }
 
+  compactBoundaries(options?: Parameters<typeof getActoviqBridgeCompactBoundaries>[1]) {
+    return getActoviqBridgeCompactBoundaries(this.id, options);
+  }
+
+    latestCompactBoundary(
+      options?: Parameters<typeof getActoviqBridgeLatestCompactBoundary>[1],
+    ) {
+      return getActoviqBridgeLatestCompactBoundary(this.id, options);
+    }
+
+    compactState(
+      options: Omit<import('../types.js').ActoviqCompactStateOptions, 'sessionId' | 'projectPath'> = {},
+    ) {
+      return this.client.memory.compactState({
+        ...options,
+        sessionId: this.id,
+      });
+    }
+
   fork(
     prompt: string,
     options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
@@ -1049,6 +1071,30 @@ export class ActoviqBridgeContextApi {
   ): ActoviqBridgeRunStream {
     return this.client.streamSlashCommand('compact', args, options);
   }
+
+  compactBoundaries(
+    sessionId: string,
+    options?: Parameters<typeof getActoviqBridgeCompactBoundaries>[1],
+  ) {
+    return getActoviqBridgeCompactBoundaries(sessionId, options);
+  }
+
+  latestCompactBoundary(
+    sessionId: string,
+    options?: Parameters<typeof getActoviqBridgeLatestCompactBoundary>[1],
+  ) {
+    return getActoviqBridgeLatestCompactBoundary(sessionId, options);
+  }
+
+  compactState(
+    sessionId: string,
+    options: Omit<import('../types.js').ActoviqCompactStateOptions, 'sessionId' | 'projectPath'> = {},
+  ) {
+    return this.client.memory.compactState({
+      ...options,
+      sessionId,
+    });
+  }
 }
 
 export class ActoviqBridgeSessionsApi {
@@ -1064,6 +1110,30 @@ export class ActoviqBridgeSessionsApi {
 
   getMessages(sessionId: string, options?: Parameters<typeof getActoviqBridgeSessionMessages>[1]) {
     return getActoviqBridgeSessionMessages(sessionId, options);
+  }
+
+  getCompactBoundaries(
+    sessionId: string,
+    options?: Parameters<typeof getActoviqBridgeCompactBoundaries>[1],
+  ) {
+    return getActoviqBridgeCompactBoundaries(sessionId, options);
+  }
+
+  getLatestCompactBoundary(
+    sessionId: string,
+    options?: Parameters<typeof getActoviqBridgeLatestCompactBoundary>[1],
+  ) {
+    return getActoviqBridgeLatestCompactBoundary(sessionId, options);
+  }
+
+  getCompactState(
+    sessionId: string,
+    options: Omit<import('../types.js').ActoviqCompactStateOptions, 'sessionId' | 'projectPath'> = {},
+  ) {
+    return this.client.memory.compactState({
+      ...options,
+      sessionId,
+    });
   }
 
   async resume(sessionId: string, options: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'> = {}) {
@@ -1149,6 +1219,7 @@ export class ActoviqBridgeSdkClient {
   readonly slashCommands: ActoviqBridgeSlashCommandsApi;
   readonly context: ActoviqBridgeContextApi;
   readonly buddy: ActoviqBuddyApi;
+  readonly memory: ActoviqMemoryApi;
 
   private constructor(
     private readonly executable: string,
@@ -1163,6 +1234,10 @@ export class ActoviqBridgeSdkClient {
     this.context = new ActoviqBridgeContextApi(this);
     this.buddy = createActoviqBuddyApi({
       homeDir: this.defaults.homeDir,
+    });
+    this.memory = createActoviqMemoryApi({
+      homeDir: this.defaults.homeDir,
+      projectPath: this.defaults.workDir ?? process.cwd(),
     });
   }
 

@@ -1,4 +1,4 @@
-﻿import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -12,9 +12,15 @@ import {
 
 const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
+const originalConfigDir = process.env.ACTOVIQ_CONFIG_DIR;
 
 afterEach(async () => {
   clearLoadedJsonConfig();
+  if (originalConfigDir == null) {
+    delete process.env.ACTOVIQ_CONFIG_DIR;
+  } else {
+    process.env.ACTOVIQ_CONFIG_DIR = originalConfigDir;
+  }
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
@@ -381,6 +387,91 @@ describe('Actoviq Runtime SDK bridge', () => {
 
       expect(await session.info()).toBeUndefined();
       expect(await session.messages()).toEqual([]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('surfaces compact state through bridge session and context helpers', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-compact-state-');
+    process.env.ACTOVIQ_CONFIG_DIR = path.join(tempDir, '.actoviq');
+    const workDir = path.join(tempDir, 'workspace');
+    const sessionId = 'compact-state-session';
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir,
+    });
+
+    try {
+      const paths = await sdk.memory.paths({ sessionId });
+      await mkdir(paths.sessionMemoryDir!, { recursive: true });
+      await mkdir(paths.projectStateDir, { recursive: true });
+      await writeFile(
+        paths.sessionMemoryPath!,
+        [
+          '# Session Title',
+          '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
+          '',
+          'Bridge compact state test',
+          '',
+          '# Current State',
+          '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
+          '',
+          'Verifying bridge compact state helpers.',
+        ].join('\n'),
+        'utf8',
+      );
+      await writeFile(
+        path.join(paths.projectStateDir, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'compact_boundary',
+          uuid: 'compact-boundary-1',
+          logicalParentUuid: 'assistant-3',
+          parentUuid: 'assistant-3',
+          timestamp: '2026-04-01T00:01:00.000Z',
+          sessionId,
+          cwd: workDir,
+          compactMetadata: {
+            trigger: 'manual',
+            preTokens: 14000,
+            messagesSummarized: 9,
+          },
+        }),
+        'utf8',
+      );
+
+      const fromSessions = await sdk.sessions.getCompactState(sessionId, {
+        includeBoundaries: true,
+        includeSessionMemory: true,
+        includeSummaryMessage: true,
+      });
+      const session = await sdk.sessions.resume(sessionId);
+      const fromSession = await session.compactState({
+        includeBoundaries: true,
+        includeSessionMemory: true,
+      });
+      const fromContext = await sdk.context.compactState(sessionId, {
+        includeBoundaries: true,
+      });
+
+      expect(fromSessions).toMatchObject({
+        compactCount: 1,
+        microcompactCount: 0,
+        hasCompacted: true,
+        lastSummarizedMessageUuid: 'assistant-3',
+        canUseSessionMemoryCompaction: true,
+      });
+      expect(fromSessions.summaryMessage).toContain('Bridge compact state test');
+      expect(fromSession.latestBoundary).toMatchObject({
+        kind: 'compact',
+        uuid: 'compact-boundary-1',
+      });
+      expect(fromContext.latestBoundary).toMatchObject({
+        kind: 'compact',
+        uuid: 'compact-boundary-1',
+      });
     } finally {
       await sdk.close();
     }

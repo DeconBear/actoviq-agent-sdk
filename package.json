@@ -46,6 +46,7 @@
     "example:actoviq-file-tools": "npm run build && tsx examples/actoviq-file-tools.ts",
     "example:actoviq-agent-helpers": "npm run build && tsx examples/actoviq-agent-helpers.ts",
     "example:actoviq-buddy": "npm run build && tsx examples/actoviq-buddy.ts",
+    "example:actoviq-memory": "npm run build && tsx examples/actoviq-memory.ts",
     "example:actoviq-introspection": "npm run build && tsx examples/actoviq-introspection.ts",
     "example:actoviq-bridge-sdk": "npm run build && tsx examples/actoviq-bridge-sdk.ts",
     "example:actoviq-interactive-agent": "npm run build && tsx examples/actoviq-interactive-agent.ts",

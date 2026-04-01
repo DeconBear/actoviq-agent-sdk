@@ -19,6 +19,7 @@ Licensed under the [MIT License](./LICENSE).
 - Node.js / TypeScript agent SDK with `run()`, `stream()`, sessions, tools, and MCP support
 - Actoviq Runtime bridge with built-in tools, skills, subagents, and native session/context behavior
 - Structured runtime metadata APIs for tools, skills, slash commands, and agents
+- Memory and compact-state helpers aligned to the upstream session-memory and compact boundary flow
 - Buddy APIs for hatching, muting, petting, and companion prompt-context generation
 - Clean public SDK surface on top of a vendored non-TUI runtime
 - Interactive streaming demo for local development and agent debugging
@@ -60,6 +61,12 @@ npm run example:actoviq-interactive-agent
 
 This launches a streaming REPL with tool access and an infinite session loop until you exit.
 
+### 5. Inspect memory and compact state helpers
+
+```bash
+npm run example:actoviq-memory
+```
+
 ### npm Publishing
 
 This repository is configured for npm trusted publishing from GitHub Actions.
@@ -87,6 +94,7 @@ What you can use today:
 - workspace helpers for standard directories, temp workspaces, and git worktrees
 - bridge runtime introspection
 - bridge capability metadata and event analysis helpers
+- memory settings, session-memory prompts, and compact-state inspection helpers
 - buddy helpers for companion state, reactions, and prompt-context injection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents
@@ -317,6 +325,72 @@ These helpers are also available as:
 
 The metadata APIs return structured entries that combine runtime discovery with
 available `/context` usage information when present.
+
+## Memory and Compact State
+
+The SDK now exposes reusable helpers aligned to the upstream `claude-code`
+session-memory and compact flow. This gives us a stable way to inspect
+`.actoviq` memory paths, session-memory templates/prompts, compact boundaries,
+and the state needed to decide whether session-memory compaction is ready.
+
+```ts
+import {
+  createActoviqMemoryApi,
+  loadDefaultActoviqSettings,
+} from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+
+const memory = createActoviqMemoryApi({
+  projectPath: process.cwd(),
+  sessionId: 'your-session-id',
+});
+
+const state = await memory.compactState({
+  includeSessionMemory: true,
+  includeBoundaries: true,
+  includeSummaryMessage: true,
+  currentTokenCount: 18000,
+  tokensAtLastExtraction: 11000,
+  initialized: true,
+  toolCallsSinceLastUpdate: 4,
+});
+
+console.log(state.paths);
+console.log(state.progress);
+console.log(state.latestBoundary);
+console.log(state.summaryMessage);
+```
+
+Available helpers:
+
+- `createActoviqMemoryApi(...)`
+- `sdk.memory`
+- `bridgeSdk.memory`
+- `memory.paths()`
+- `memory.getSettings()`
+- `memory.updateSettings(...)`
+- `memory.loadSessionTemplate()`
+- `memory.loadSessionPrompt()`
+- `memory.buildPromptWithEntrypoints()`
+- `memory.buildSessionUpdatePrompt(...)`
+- `memory.readSessionMemory(...)`
+- `memory.getSessionMemoryConfig()`
+- `memory.getSessionMemoryCompactConfig()`
+- `memory.evaluateSessionMemoryProgress(...)`
+- `memory.compactState(...)`
+- `memory.buildSessionMemoryCompactSummary(...)`
+- `getActoviqBridgeCompactBoundaries(...)`
+- `getActoviqBridgeLatestCompactBoundary(...)`
+- `session.compactState(...)`
+- `sdk.context.compactState(...)`
+- `sdk.sessions.getCompactState(...)`
+
+Run the repository example with:
+
+```bash
+npm run example:actoviq-memory
+```
 
 ## Buddy Helpers
 

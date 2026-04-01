@@ -41,6 +41,14 @@ try {
 
   const compactResult = await sdk.context.compact('summarize current progress in one short paragraph');
   console.log('Compact result:', compactResult.text);
+  console.log(
+    'Compact state:',
+    await sdk.memory.compactState({
+      sessionId: compactResult.sessionId,
+      includeBoundaries: true,
+      includeSessionMemory: true,
+    }),
+  );
 } finally {
   await sdk.close();
 }

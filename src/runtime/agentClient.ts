@@ -2,6 +2,7 @@
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
+import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { SessionStore } from '../storage/sessionStore.js';
 import type {
@@ -43,6 +44,7 @@ export class AgentSessionsApi {
 export class ActoviqAgentClient {
   readonly sessions: AgentSessionsApi;
   readonly buddy: ActoviqBuddyApi;
+  readonly memory: ActoviqMemoryApi;
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
@@ -56,6 +58,10 @@ export class ActoviqAgentClient {
     this.buddy = createActoviqBuddyApi({
       homeDir: this.config.homeDir,
       userId: this.config.userId,
+    });
+    this.memory = createActoviqMemoryApi({
+      homeDir: this.config.homeDir,
+      projectPath: this.config.workDir,
     });
   }
 
@@ -241,15 +247,22 @@ export class ActoviqAgentClient {
     session?: StoredSession,
   ): Promise<string | undefined> {
     const basePrompt = options.systemPrompt ?? session?.systemPrompt ?? this.config.systemPrompt;
+    const memoryState = await this.memory.state();
+    const memoryPrompt = memoryState.enabled.autoMemory
+      ? await this.memory.buildPromptWithEntrypoints()
+      : undefined;
     const buddyPrompt = await this.buddy.getIntroText({
       userId: options.userId ?? this.config.userId,
     });
+    const promptParts = [basePrompt, memoryPrompt, buddyPrompt].filter(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
 
-    if (!buddyPrompt) {
-      return basePrompt;
+    if (promptParts.length === 0) {
+      return undefined;
     }
 
-    return basePrompt ? `${basePrompt}\n\n${buddyPrompt}` : buddyPrompt;
+    return promptParts.join('\n\n');
   }
 
   private async persistSessionAfterRun(

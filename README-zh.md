@@ -18,6 +18,7 @@ Actoviq Agent SDK 是一个独立的实验性 agent SDK 项目，聚焦多工具
 
 - 提供 Node.js / TypeScript agent SDK，包含 `run()`、`stream()`、session、tools 和 MCP 支持
 - 提供 Actoviq Runtime bridge，可复用 built-in tools、skills、subagents 和原生 session/context 行为
+- 提供与上游 session-memory / compact 边界语义对齐的 memory 与 compact state helper
 - 提供 buddy / companion API，可用于孵化、静音、抚摸，以及生成 companion prompt context
 - 在 vendored 非 TUI runtime 之上提供更干净的对外 SDK 表面
 - 提供交互式流式示例，便于本地调试 agent
@@ -59,6 +60,12 @@ npm run example:actoviq-interactive-agent
 
 它会启动一个带流式输出、工具调用能力和无限循环会话的交互式 REPL，直到你主动退出。
 
+### 5. 查看 memory / compact state 示例
+
+```bash
+npm run example:actoviq-memory
+```
+
 ## 一眼看懂这个仓库
 
 这个仓库现在主要提供两条使用路径：
@@ -72,6 +79,7 @@ npm run example:actoviq-interactive-agent
 - 本地、stdio、streamable HTTP 三类 MCP 接入
 - 持久化 session
 - bridge runtime introspection
+- memory 设置、session-memory prompt、compact state 检查 helper
 - vendored runtime 文件工具：`Read`、`Write`、`Edit`、`Glob`、`Grep`
 - bridge runtime 的 built-in tools、skills 和 subagents
 
@@ -297,6 +305,72 @@ const runtimeCatalog = await sdk.getRuntimeCatalog();
 - `session.info()`
 - `session.messages()`
 - `session.fork(...)`
+
+## Memory / Compact Helper
+
+SDK 现在也提供了可复用的 memory / compact state helper，设计上对齐上游
+`claude-code` 的 session-memory 与 compact boundary 语义。这样我们可以直接检查
+`.actoviq` 下的 memory 路径、session-memory 模板与 prompt、compact 边界历史，
+以及当前是否满足 session-memory 提取或 compaction 的阈值条件。
+
+```ts
+import {
+  createActoviqMemoryApi,
+  loadDefaultActoviqSettings,
+} from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+
+const memory = createActoviqMemoryApi({
+  projectPath: process.cwd(),
+  sessionId: 'your-session-id',
+});
+
+const state = await memory.compactState({
+  includeSessionMemory: true,
+  includeBoundaries: true,
+  includeSummaryMessage: true,
+  currentTokenCount: 18000,
+  tokensAtLastExtraction: 11000,
+  initialized: true,
+  toolCallsSinceLastUpdate: 4,
+});
+
+console.log(state.paths);
+console.log(state.progress);
+console.log(state.latestBoundary);
+console.log(state.summaryMessage);
+```
+
+当前可直接使用：
+
+- `createActoviqMemoryApi(...)`
+- `sdk.memory`
+- `bridgeSdk.memory`
+- `memory.paths()`
+- `memory.getSettings()`
+- `memory.updateSettings(...)`
+- `memory.loadSessionTemplate()`
+- `memory.loadSessionPrompt()`
+- `memory.buildPromptWithEntrypoints()`
+- `memory.buildSessionUpdatePrompt(...)`
+- `memory.readSessionMemory(...)`
+- `memory.getSessionMemoryConfig()`
+- `memory.getSessionMemoryCompactConfig()`
+- `memory.evaluateSessionMemoryProgress(...)`
+- `memory.compactState(...)`
+- `memory.buildSessionMemoryCompactSummary(...)`
+- `getActoviqBridgeCompactBoundaries(...)`
+- `getActoviqBridgeLatestCompactBoundary(...)`
+- `session.compactState(...)`
+- `sdk.context.compactState(...)`
+- `sdk.sessions.getCompactState(...)`
+
+仓库内示例命令：
+
+```bash
+npm run example:actoviq-memory
+```
 
 ## Buddy Helper
 

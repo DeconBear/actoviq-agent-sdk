@@ -10,6 +10,15 @@ export {
   rollActoviqBuddy,
   rollActoviqBuddyWithSeed,
 } from './buddy/actoviqBuddy.js';
+export {
+  ActoviqMemoryApi,
+  createActoviqMemoryApi,
+  getActoviqCompactBoundarySummary,
+  getActoviqDefaultSessionMemoryCompactConfig,
+  getActoviqDefaultSessionMemoryConfig,
+  getActoviqDefaultSessionMemoryTemplate,
+  getActoviqDefaultSettingsPath,
+} from './memory/actoviqMemory.js';
 export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
@@ -44,6 +53,8 @@ export {
   getActoviqBridgeTextDelta,
 } from './parity/actoviqBridgeEvents.js';
 export {
+  getActoviqBridgeCompactBoundaries,
+  getActoviqBridgeLatestCompactBoundary,
   getActoviqBridgeSessionInfo,
   getActoviqBridgeSessionMessages,
   listActoviqBridgeSessions,
