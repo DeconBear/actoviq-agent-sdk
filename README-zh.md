@@ -1,5 +1,9 @@
 # Actoviq Agent SDK
 
+[![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
+[![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
+[![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
+
 [English](./README.md) | [中文](./README-zh.md)
 
 Actoviq Agent SDK 是一个独立的实验性 agent SDK 项目，聚焦多工具、多会话以及 bridge 辅助的 agent 工作流。
