@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -95,7 +95,11 @@ describe('workspace helpers', () => {
       cwd: workspace.path,
       windowsHide: true,
     });
-    expect(path.normalize(topLevel.stdout.trim())).toBe(path.normalize(worktreePath));
+    const [gitTopLevel, expectedTopLevel] = await Promise.all([
+      realpath(topLevel.stdout.trim()),
+      realpath(worktreePath),
+    ]);
+    expect(path.normalize(gitTopLevel)).toBe(path.normalize(expectedTopLevel));
 
     await workspace.dispose();
 
