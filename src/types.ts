@@ -403,6 +403,7 @@ export interface ActoviqBridgeJsonEvent extends Record<string, unknown> {
 export interface CreateActoviqBridgeSdkOptions {
   executable?: string;
   cliPath?: string;
+  homeDir?: string;
   workDir?: string;
   model?: string;
   fallbackModel?: string;
@@ -511,6 +512,40 @@ export interface ActoviqAgentSummary {
   shadowedBy?: string;
 }
 
+export interface ActoviqAgentMetadata extends ActoviqAgentSummary {
+  contextSource?: string;
+  tokens?: string;
+}
+
+export interface ActoviqToolMetadata {
+  name: string;
+  kind: 'builtin' | 'mcp';
+  server?: string;
+  tokens?: string;
+}
+
+export interface ActoviqSkillMetadata {
+  name: string;
+  slashCommand: string;
+  source?: string;
+  tokens?: string;
+}
+
+export interface ActoviqSlashCommandMetadata {
+  name: string;
+  kind: 'builtin' | 'skill';
+  skillName?: string;
+}
+
+export interface ActoviqRuntimeCatalog {
+  runtime: ActoviqRuntimeInfo;
+  agents: ActoviqAgentMetadata[];
+  tools: ActoviqToolMetadata[];
+  skills: ActoviqSkillMetadata[];
+  slashCommands: ActoviqSlashCommandMetadata[];
+  context?: ActoviqContextUsage;
+}
+
 export interface ActoviqContextCategory {
   name: string;
   tokens: string;
@@ -546,6 +581,167 @@ export interface ActoviqContextUsage {
   agents: ActoviqContextAgentUsage[];
   mcpTools: ActoviqContextMcpToolUsage[];
   rawResult: ActoviqBridgeRunResult;
+}
+
+export interface ActoviqBridgeCapabilityLookupOptions
+  extends Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> {
+  includeContext?: boolean;
+}
+
+export type ActoviqBridgeToolProvider = 'runtime' | 'server' | 'mcp' | 'unknown';
+
+export interface ActoviqBridgeToolRequest {
+  id?: string;
+  name: string;
+  provider: ActoviqBridgeToolProvider;
+  blockType: string;
+  input?: unknown;
+}
+
+export interface ActoviqBridgeToolResultSummary {
+  toolUseId: string;
+  isError: boolean;
+  blockType: string;
+  content?: unknown;
+}
+
+export interface ActoviqBridgeTaskInvocation {
+  id?: string;
+  name: string;
+  provider: ActoviqBridgeToolProvider;
+  description?: string;
+  prompt?: string;
+  subagentType?: string;
+  input: Record<string, unknown>;
+}
+
+export interface ActoviqBridgeEventAnalysis {
+  textDeltas: string[];
+  toolRequests: ActoviqBridgeToolRequest[];
+  toolResults: ActoviqBridgeToolResultSummary[];
+  taskInvocations: ActoviqBridgeTaskInvocation[];
+}
+
+export const ACTOVIQ_BUDDY_RARITIES = [
+  'common',
+  'uncommon',
+  'rare',
+  'epic',
+  'legendary',
+] as const;
+export type ActoviqBuddyRarity = (typeof ACTOVIQ_BUDDY_RARITIES)[number];
+
+export const ACTOVIQ_BUDDY_SPECIES = [
+  'duck',
+  'goose',
+  'blob',
+  'cat',
+  'dragon',
+  'octopus',
+  'owl',
+  'penguin',
+  'turtle',
+  'snail',
+  'ghost',
+  'axolotl',
+  'capybara',
+  'cactus',
+  'robot',
+  'rabbit',
+  'mushroom',
+  'chonk',
+] as const;
+export type ActoviqBuddySpecies = (typeof ACTOVIQ_BUDDY_SPECIES)[number];
+
+export const ACTOVIQ_BUDDY_EYES = ['o_o', '^_^', '-_-', '@_@', '>_<', 'x_x'] as const;
+export type ActoviqBuddyEye = (typeof ACTOVIQ_BUDDY_EYES)[number];
+
+export const ACTOVIQ_BUDDY_HATS = [
+  'none',
+  'crown',
+  'tophat',
+  'propeller',
+  'halo',
+  'wizard',
+  'beanie',
+  'tinyduck',
+] as const;
+export type ActoviqBuddyHat = (typeof ACTOVIQ_BUDDY_HATS)[number];
+
+export const ACTOVIQ_BUDDY_STAT_NAMES = [
+  'DEBUGGING',
+  'PATIENCE',
+  'CHAOS',
+  'WISDOM',
+  'SNARK',
+] as const;
+export type ActoviqBuddyStatName = (typeof ACTOVIQ_BUDDY_STAT_NAMES)[number];
+
+export interface ActoviqBuddyBones {
+  rarity: ActoviqBuddyRarity;
+  species: ActoviqBuddySpecies;
+  eye: ActoviqBuddyEye;
+  hat: ActoviqBuddyHat;
+  shiny: boolean;
+  stats: Record<ActoviqBuddyStatName, number>;
+}
+
+export interface ActoviqBuddySoul {
+  name: string;
+  personality: string;
+}
+
+export interface StoredActoviqBuddy extends ActoviqBuddySoul {
+  hatchedAt: number;
+}
+
+export interface ActoviqBuddyCompanion extends ActoviqBuddyBones, ActoviqBuddySoul {
+  hatchedAt: number;
+}
+
+export interface ActoviqBuddyRoll {
+  bones: ActoviqBuddyBones;
+  inspirationSeed: number;
+}
+
+export interface ActoviqBuddyState {
+  configPath: string;
+  userId: string;
+  muted: boolean;
+  buddy?: ActoviqBuddyCompanion;
+}
+
+export interface ActoviqBuddyReaction {
+  buddy: ActoviqBuddyCompanion;
+  reaction: string;
+  petAt: number;
+}
+
+export interface ActoviqBuddyIntroAttachment {
+  type: 'companion_intro';
+  name: string;
+  species: ActoviqBuddySpecies;
+}
+
+export interface ActoviqBuddyPromptContext {
+  buddy: ActoviqBuddyCompanion;
+  attachment: ActoviqBuddyIntroAttachment;
+  text: string;
+}
+
+export interface ActoviqBuddyOptions {
+  configPath?: string;
+  homeDir?: string;
+  userId?: string;
+}
+
+export interface HatchActoviqBuddyOptions extends ActoviqBuddyOptions {
+  name: string;
+  personality: string;
+}
+
+export interface ActoviqBuddyPromptContextOptions extends ActoviqBuddyOptions {
+  announcedNames?: string[];
 }
 
 

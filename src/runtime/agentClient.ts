@@ -1,5 +1,6 @@
 ﻿import type { MessageParam } from '../provider/types.js';
 
+import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { SessionStore } from '../storage/sessionStore.js';
@@ -41,6 +42,7 @@ export class AgentSessionsApi {
 
 export class ActoviqAgentClient {
   readonly sessions: AgentSessionsApi;
+  readonly buddy: ActoviqBuddyApi;
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
@@ -51,6 +53,10 @@ export class ActoviqAgentClient {
     private readonly defaultMcpServers: AgentMcpServerDefinition[],
   ) {
     this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
+    this.buddy = createActoviqBuddyApi({
+      homeDir: this.config.homeDir,
+      userId: this.config.userId,
+    });
   }
 
   static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
@@ -205,13 +211,14 @@ export class ActoviqAgentClient {
       ...(session?.metadata ?? {}),
       ...(options.metadata ?? {}),
     };
+    const systemPrompt = await this.resolveSystemPrompt(options, session);
 
     return executeConversation({
       runId,
       input,
       messages: session?.messages,
       sessionId: session?.id,
-      systemPrompt: options.systemPrompt ?? session?.systemPrompt ?? this.config.systemPrompt,
+      systemPrompt,
       tools: [...this.defaultTools, ...(options.tools ?? [])],
       mcpServers: [...this.defaultMcpServers, ...(options.mcpServers ?? [])],
       model: options.model ?? session?.model ?? this.config.model,
@@ -227,6 +234,22 @@ export class ActoviqAgentClient {
       config: this.config,
       mcpManager: this.mcpManager,
     });
+  }
+
+  private async resolveSystemPrompt(
+    options: AgentRunOptions,
+    session?: StoredSession,
+  ): Promise<string | undefined> {
+    const basePrompt = options.systemPrompt ?? session?.systemPrompt ?? this.config.systemPrompt;
+    const buddyPrompt = await this.buddy.getIntroText({
+      userId: options.userId ?? this.config.userId,
+    });
+
+    if (!buddyPrompt) {
+      return basePrompt;
+    }
+
+    return basePrompt ? `${basePrompt}\n\n${buddyPrompt}` : buddyPrompt;
   }
 
   private async persistSessionAfterRun(

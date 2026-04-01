@@ -6,21 +6,28 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
+import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { ActoviqBridgeProcessError, RunAbortedError } from '../errors.js';
 import { AsyncQueue } from '../runtime/asyncQueue.js';
 import { asError, isRecord } from '../runtime/helpers.js';
 import type {
+  ActoviqAgentMetadata,
   ActoviqAgentSummary,
   ActoviqBridgeAgentRunOptions,
   ActoviqBridgeAgentSessionOptions,
+  ActoviqBridgeCapabilityLookupOptions,
   ActoviqContextUsage,
   ActoviqBridgeJsonEvent,
   ActoviqBridgeRunOptions,
   ActoviqBridgeRunResult,
   ActoviqBridgeSkillRunOptions,
+  ActoviqRuntimeCatalog,
   ActoviqRuntimeInfo,
+  ActoviqSkillMetadata,
+  ActoviqSlashCommandMetadata,
   ActoviqBridgeSessionCreateOptions,
+  ActoviqToolMetadata,
   CreateActoviqBridgeSdkOptions,
 } from '../types.js';
 import {
@@ -435,6 +442,62 @@ function formatSlashCommand(commandName: string, args = ''): string {
   return normalizedArgs ? `/${normalizedName} ${normalizedArgs}` : `/${normalizedName}`;
 }
 
+function buildRuntimeCatalog(params: {
+  runtime: ActoviqRuntimeInfo;
+  agents: ActoviqAgentSummary[];
+  context?: ActoviqContextUsage;
+}): ActoviqRuntimeCatalog {
+  const { runtime, agents, context } = params;
+  const contextSkillMap = new Map(context?.skills.map(skill => [skill.name, skill]) ?? []);
+  const contextAgentMap = new Map(context?.agents.map(agent => [agent.agentType, agent]) ?? []);
+  const contextMcpToolMap = new Map(context?.mcpTools.map(tool => [tool.tool, tool]) ?? []);
+  const skillNames = new Set(runtime.skills);
+
+  const tools: ActoviqToolMetadata[] = runtime.tools.map(name => {
+    const contextTool = contextMcpToolMap.get(name);
+    return {
+      name,
+      kind: contextTool ? 'mcp' : 'builtin',
+      server: contextTool?.server,
+      tokens: contextTool?.tokens,
+    };
+  });
+
+  const skills: ActoviqSkillMetadata[] = runtime.skills.map(name => {
+    const contextSkill = contextSkillMap.get(name);
+    return {
+      name,
+      slashCommand: `/${name}`,
+      source: contextSkill?.source,
+      tokens: contextSkill?.tokens,
+    };
+  });
+
+  const slashCommands: ActoviqSlashCommandMetadata[] = runtime.slashCommands.map(name => ({
+    name,
+    kind: skillNames.has(name) ? 'skill' : 'builtin',
+    skillName: skillNames.has(name) ? name : undefined,
+  }));
+
+  const enrichedAgents: ActoviqAgentMetadata[] = agents.map(agent => {
+    const contextAgent = contextAgentMap.get(agent.name);
+    return {
+      ...agent,
+      contextSource: contextAgent?.source,
+      tokens: contextAgent?.tokens,
+    };
+  });
+
+  return {
+    runtime,
+    agents: enrichedAgents,
+    tools,
+    skills,
+    slashCommands,
+    context,
+  };
+}
+
 function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
   const args = [
     '-p',
@@ -713,6 +776,38 @@ export class ActoviqBridgeSession {
     return this.runSlashCommand('compact', args, options);
   }
 
+  info(options?: Parameters<typeof getActoviqBridgeSessionInfo>[1]) {
+    return getActoviqBridgeSessionInfo(this.id, options);
+  }
+
+  messages(options?: Parameters<typeof getActoviqBridgeSessionMessages>[1]) {
+    return getActoviqBridgeSessionMessages(this.id, options);
+  }
+
+  fork(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.client.run(prompt, {
+      ...this.defaults,
+      ...options,
+      resume: this.id,
+      forkSession: true,
+    });
+  }
+
+  forkStream(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): ActoviqBridgeRunStream {
+    return this.client.stream(prompt, {
+      ...this.defaults,
+      ...options,
+      resume: this.id,
+      forkSession: true,
+    });
+  }
+
   private buildRunOptions(options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>): ActoviqBridgeRunOptions {
     const merged: ActoviqBridgeRunOptions = {
       ...this.defaults,
@@ -800,6 +895,10 @@ export class ActoviqBridgeSkillHandle {
   ): ActoviqBridgeRunStream {
     return session.streamSlashCommand(this.skill, args, options);
   }
+
+  metadata(options?: ActoviqBridgeCapabilityLookupOptions): Promise<ActoviqSkillMetadata | undefined> {
+    return this.client.getSkillMetadata(this.skill, options);
+  }
 }
 
 export class ActoviqBridgeAgentsApi {
@@ -872,6 +971,62 @@ export class ActoviqBridgeSkillsApi {
   ): ActoviqBridgeRunStream {
     return this.client.streamSlashCommand(skill, args, options);
   }
+
+  listMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listSkillMetadata(options);
+  }
+
+  getMetadata(skill: string, options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.getSkillMetadata(skill, options);
+  }
+}
+
+export class ActoviqBridgeToolsApi {
+  constructor(private readonly client: ActoviqBridgeSdkClient) {}
+
+  list(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
+    return this.client.listTools(options);
+  }
+
+  listMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listToolMetadata(options);
+  }
+
+  getMetadata(toolName: string, options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.getToolMetadata(toolName, options);
+  }
+}
+
+export class ActoviqBridgeSlashCommandsApi {
+  constructor(private readonly client: ActoviqBridgeSdkClient) {}
+
+  list(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
+    return this.client.listSlashCommands(options);
+  }
+
+  listMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listSlashCommandMetadata(options);
+  }
+
+  getMetadata(commandName: string, options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.getSlashCommandMetadata(commandName, options);
+  }
+
+  run(
+    commandName: string,
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ) {
+    return this.client.runSlashCommand(commandName, args, options);
+  }
+
+  stream(
+    commandName: string,
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ) {
+    return this.client.streamSlashCommand(commandName, args, options);
+  }
 }
 
 export class ActoviqBridgeContextApi {
@@ -915,6 +1070,36 @@ export class ActoviqBridgeSessionsApi {
     return this.client.resumeSession(sessionId, options);
   }
 
+  continueMostRecent(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'continueMostRecent'> = {},
+  ) {
+    return this.client.continueMostRecent(prompt, options);
+  }
+
+  streamContinueMostRecent(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'continueMostRecent'> = {},
+  ) {
+    return this.client.streamContinueMostRecent(prompt, options);
+  }
+
+  fork(
+    sessionId: string,
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'forkSession'> = {},
+  ) {
+    return this.client.forkSession(sessionId, prompt, options);
+  }
+
+  streamFork(
+    sessionId: string,
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'forkSession'> = {},
+  ) {
+    return this.client.streamForkSession(sessionId, prompt, options);
+  }
+
   getRuntimeInfo(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
     return this.client.getRuntimeInfo(options);
   }
@@ -931,6 +1116,26 @@ export class ActoviqBridgeSessionsApi {
     return this.client.listSlashCommands(options);
   }
 
+  listTools(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
+    return this.client.listTools(options);
+  }
+
+  getRuntimeCatalog(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.getRuntimeCatalog(options);
+  }
+
+  listSkillMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listSkillMetadata(options);
+  }
+
+  listSlashCommandMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listSlashCommandMetadata(options);
+  }
+
+  listToolMetadata(options?: ActoviqBridgeCapabilityLookupOptions) {
+    return this.client.listToolMetadata(options);
+  }
+
   getContextUsage(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
     return this.client.getContextUsage(options);
   }
@@ -940,7 +1145,10 @@ export class ActoviqBridgeSdkClient {
   readonly sessions: ActoviqBridgeSessionsApi;
   readonly agents: ActoviqBridgeAgentsApi;
   readonly skills: ActoviqBridgeSkillsApi;
+  readonly tools: ActoviqBridgeToolsApi;
+  readonly slashCommands: ActoviqBridgeSlashCommandsApi;
   readonly context: ActoviqBridgeContextApi;
+  readonly buddy: ActoviqBuddyApi;
 
   private constructor(
     private readonly executable: string,
@@ -950,7 +1158,12 @@ export class ActoviqBridgeSdkClient {
     this.sessions = new ActoviqBridgeSessionsApi(this);
     this.agents = new ActoviqBridgeAgentsApi(this);
     this.skills = new ActoviqBridgeSkillsApi(this);
+    this.tools = new ActoviqBridgeToolsApi(this);
+    this.slashCommands = new ActoviqBridgeSlashCommandsApi(this);
     this.context = new ActoviqBridgeContextApi(this);
+    this.buddy = createActoviqBuddyApi({
+      homeDir: this.defaults.homeDir,
+    });
   }
 
   static async create(options: CreateActoviqBridgeSdkOptions = {}): Promise<ActoviqBridgeSdkClient> {
@@ -993,6 +1206,50 @@ export class ActoviqBridgeSdkClient {
     options: ActoviqBridgeSkillRunOptions = {},
   ): Promise<ActoviqBridgeRunResult> {
     return this.runSlashCommand(skill, args, options);
+  }
+
+  continueMostRecent(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'continueMostRecent'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.run(prompt, {
+      ...options,
+      continueMostRecent: true,
+    });
+  }
+
+  streamContinueMostRecent(
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'continueMostRecent'> = {},
+  ): ActoviqBridgeRunStream {
+    return this.stream(prompt, {
+      ...options,
+      continueMostRecent: true,
+    });
+  }
+
+  forkSession(
+    sessionId: string,
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'forkSession'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.run(prompt, {
+      ...options,
+      resume: sessionId,
+      forkSession: true,
+    });
+  }
+
+  streamForkSession(
+    sessionId: string,
+    prompt: string,
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'forkSession'> = {},
+  ): ActoviqBridgeRunStream {
+    return this.stream(prompt, {
+      ...options,
+      resume: sessionId,
+      forkSession: true,
+    });
   }
 
   stream(prompt: string, options: ActoviqBridgeRunOptions = {}): ActoviqBridgeRunStream {
@@ -1086,6 +1343,13 @@ export class ActoviqBridgeSdkClient {
     return [...info.skills];
   }
 
+  async listTools(
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<string[]> {
+    const info = await this.getRuntimeInfo(options);
+    return [...info.tools];
+  }
+
   async listSlashCommands(
     options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): Promise<string[]> {
@@ -1109,6 +1373,75 @@ export class ActoviqBridgeSdkClient {
       maxTurns: options.maxTurns ?? 2,
     });
     return parseActoviqContextUsageResult(result);
+  }
+
+  async getRuntimeCatalog(
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqRuntimeCatalog> {
+    const runtimeOptions: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {
+      ...options,
+    };
+    delete (runtimeOptions as { includeContext?: boolean }).includeContext;
+
+    const [runtime, agents, context] = await Promise.all([
+      this.getRuntimeInfo(runtimeOptions),
+      this.listAgents(runtimeOptions),
+      options.includeContext === false
+        ? Promise.resolve(undefined)
+        : this.getContextUsage(runtimeOptions).catch(() => undefined),
+    ]);
+
+    return buildRuntimeCatalog({
+      runtime,
+      agents,
+      context,
+    });
+  }
+
+  async listSkillMetadata(
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqSkillMetadata[]> {
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.skills;
+  }
+
+  async getSkillMetadata(
+    skillName: string,
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqSkillMetadata | undefined> {
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.skills.find(skill => skill.name === skillName);
+  }
+
+  async listToolMetadata(
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqToolMetadata[]> {
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.tools;
+  }
+
+  async getToolMetadata(
+    toolName: string,
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqToolMetadata | undefined> {
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.tools.find(tool => tool.name === toolName);
+  }
+
+  async listSlashCommandMetadata(
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqSlashCommandMetadata[]> {
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.slashCommands;
+  }
+
+  async getSlashCommandMetadata(
+    commandName: string,
+    options: ActoviqBridgeCapabilityLookupOptions = {},
+  ): Promise<ActoviqSlashCommandMetadata | undefined> {
+    const normalized = commandName.trim().replace(/^\/+/u, '');
+    const catalog = await this.getRuntimeCatalog(options);
+    return catalog.slashCommands.find(command => command.name === normalized);
   }
 
   compactContext(

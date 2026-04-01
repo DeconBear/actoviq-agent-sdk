@@ -18,6 +18,8 @@ Licensed under the [MIT License](./LICENSE).
 
 - Node.js / TypeScript agent SDK with `run()`, `stream()`, sessions, tools, and MCP support
 - Actoviq Runtime bridge with built-in tools, skills, subagents, and native session/context behavior
+- Structured runtime metadata APIs for tools, skills, slash commands, and agents
+- Buddy APIs for hatching, muting, petting, and companion prompt-context generation
 - Clean public SDK surface on top of a vendored non-TUI runtime
 - Interactive streaming demo for local development and agent debugging
 - Ongoing parity work for workspace management, deeper subagent APIs, and private dependency replacement
@@ -84,6 +86,8 @@ What you can use today:
 - persistent sessions
 - workspace helpers for standard directories, temp workspaces, and git worktrees
 - bridge runtime introspection
+- bridge capability metadata and event analysis helpers
+- buddy helpers for companion state, reactions, and prompt-context injection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents
 
@@ -121,6 +125,32 @@ const result = await sdk.run('Please use the add_numbers tool to calculate 19 + 
 
 console.log(result.text);
 await sdk.close();
+```
+
+### Buddy Example
+
+```ts
+import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
+
+const buddy = createActoviqBuddyApi({
+  configPath: './buddy-settings.json',
+  userId: 'demo-user',
+});
+
+const companion = await buddy.hatch({
+  name: 'Orbit',
+  personality: 'curious, calm, and observant',
+});
+
+console.log(companion);
+console.log(await buddy.pet());
+console.log(await buddy.getPromptContext());
+```
+
+Run the repository example with:
+
+```bash
+npm run example:actoviq-buddy
 ```
 
 ## Core Examples
@@ -255,9 +285,12 @@ const reviewer = sdk.useAgent('general-purpose');
 const reviewResult = await reviewer.run('Explain what this repository is for.');
 
 const debugSkill = sdk.useSkill('debug');
-const debugResult = await debugSkill.run('summarize the current runtime configuration');
+const debugResult = await debugSkill.run(
+  'briefly explain what kinds of debugging help this runtime can provide without printing secrets, tokens, or full config values',
+);
 
 const compactResult = await sdk.context.compact('summarize current progress');
+const runtimeCatalog = await sdk.getRuntimeCatalog();
 ```
 
 These helpers are also available as:
@@ -265,11 +298,100 @@ These helpers are also available as:
 - `sdk.agents.list()`
 - `sdk.agents.run(...)`
 - `sdk.skills.list()`
+- `sdk.skills.listMetadata()`
 - `sdk.skills.run(...)`
+- `sdk.tools.list()`
+- `sdk.tools.listMetadata()`
+- `sdk.slashCommands.list()`
+- `sdk.slashCommands.listMetadata()`
+- `sdk.getRuntimeCatalog()`
 - `sdk.runWithAgent(...)`
 - `sdk.runSkill(...)`
+- `sdk.sessions.continueMostRecent(...)`
+- `sdk.sessions.fork(...)`
 - `session.runSkill(...)`
 - `session.compact(...)`
+- `session.info()`
+- `session.messages()`
+- `session.fork(...)`
+
+The metadata APIs return structured entries that combine runtime discovery with
+available `/context` usage information when present.
+
+## Buddy Helpers
+
+The SDK also exposes the non-TUI buddy/companion functionality as a reusable API.
+
+```ts
+import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
+
+const buddy = createActoviqBuddyApi({ configPath: './settings.json' });
+const state = await buddy.state();
+
+if (!state.buddy) {
+  await buddy.hatch({
+    name: 'Orbit',
+    personality: 'curious, steady, and supportive',
+  });
+}
+
+console.log(await buddy.getPromptContext());
+```
+
+Available helpers:
+
+- `createActoviqBuddyApi(...)`
+- `sdk.buddy`
+- `bridgeSdk.buddy`
+- `buddy.state()`
+- `buddy.get()`
+- `buddy.hatch(...)`
+- `buddy.mute()`
+- `buddy.unmute()`
+- `buddy.pet()`
+- `buddy.getPromptContext(...)`
+- `buddy.getIntroAttachment(...)`
+- `buddy.getIntroText(...)`
+
+On the standard SDK path, buddy intro text is also appended to the system
+prompt automatically when a buddy is hatched and not muted.
+
+## Event Helpers
+
+The bridge also exports reusable event helpers so examples and applications do
+not need to hand-parse raw JSON events:
+
+```ts
+import {
+  analyzeActoviqBridgeEvents,
+  getActoviqBridgeTextDelta,
+} from 'actoviq-agent-sdk';
+
+const stream = sdk.stream('inspect the current repository');
+const bufferedEvents = [];
+
+for await (const event of stream) {
+  bufferedEvents.push(event);
+
+  const delta = getActoviqBridgeTextDelta(event);
+  if (delta) {
+    process.stdout.write(delta);
+  }
+}
+
+const analysis = analyzeActoviqBridgeEvents(bufferedEvents);
+console.log(analysis.toolRequests);
+console.log(analysis.taskInvocations);
+console.log(analysis.toolResults);
+```
+
+Available helpers:
+
+- `getActoviqBridgeTextDelta(...)`
+- `extractActoviqBridgeToolRequests(...)`
+- `extractActoviqBridgeToolResults(...)`
+- `extractActoviqBridgeTaskInvocations(...)`
+- `analyzeActoviqBridgeEvents(...)`
 
 ## Workspace Helpers
 
@@ -470,6 +592,8 @@ Current status:
 - core SDK flows are working: `run()`, `stream()`, sessions, tools, and MCP
 - bridge runtime flows are working: built-in tools, runtime introspection, and interactive demo
 - higher-level agent, skill, and context helpers are available on the bridge SDK
+- structured runtime metadata and bridge event helper APIs are available
+- buddy APIs are available on both the standard SDK and the bridge SDK
 - file tools are available: `Read`, `Write`, `Edit`, `Glob`, and `Grep`
 - workspace lifecycle helpers are available for directory, temp, and git-worktree setups
 - examples, tests, build, smoke checks, and package validation are in place
@@ -477,7 +601,7 @@ Current status:
 Roadmap:
 
 - deepen context, memory, and compaction controls
-- add richer agent and skill metadata APIs beyond name-based helpers
+- extend metadata coverage beyond runtime discovery into richer skill/subagent details
 - add richer workspace templates and sandbox orchestration helpers
 - add CI workflows, release notes, and more polished contributor docs
 
@@ -491,6 +615,7 @@ npm run smoke
 npm run example:quickstart
 npm run example:session
 npm run example:stream-loop
+npm run example:actoviq-buddy
 npm run example:actoviq-bridge-sdk
 npm run example:actoviq-interactive-agent
 npm run example:actoviq-introspection
