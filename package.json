@@ -2,6 +2,14 @@
   "name": "actoviq-agent-sdk",
   "version": "0.1.1",
   "description": "A clean, public agent SDK with Actoviq and MCP integrations.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DeconBear/actoviq-agent-sdk.git"
+  },
+  "homepage": "https://github.com/DeconBear/actoviq-agent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/DeconBear/actoviq-agent-sdk/issues"
+  },
   "type": "module",
   "license": "MIT",
   "publishConfig": {

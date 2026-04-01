@@ -65,6 +65,11 @@ Configure the trusted publisher on npmjs.com for `DeconBear/actoviq-agent-sdk`
 with the workflow file `publish-npm.yml`. You do not need an `NPM_TOKEN`
 secret for publishing once trusted publishing is set up correctly.
 
+Trigger publishing from a version tag or GitHub Release publish event. Avoid
+manual `workflow_dispatch` runs for trusted publishing, because npm documents
+that manual dispatch workflows can cause trusted publisher validation
+mismatches.
+
 ## At a Glance
 
 This repository gives you two main paths:
