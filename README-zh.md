@@ -393,9 +393,21 @@ const sdk = await createAgentSdk({
 
 ## 当前状态与路线图
 
-当前项目仍在快速迭代。对外公开的 parity 和后续补齐清单见：
+当前状态：
 
-- [ACTOVIQ_AGENT_WORKLIST.md](./ACTOVIQ_AGENT_WORKLIST.md)
+- npm 包已经发布，可直接安装使用
+- 核心 SDK 主链已可用：`run()`、`stream()`、session、tools、MCP
+- bridge runtime 主链已可用：内置工具、runtime introspection、交互式示例
+- 文件工具已经可用：`Read`、`Write`、`Edit`、`Glob`、`Grep`
+- examples、tests、build、smoke 和打包校验都已经具备
+
+路线图：
+
+- 补更直接的 subagent 高层 API，而不仅仅是 bridge 复用
+- 完善 skill 管理和程序化 skill 调用接口
+- 补 workspace 生命周期能力，例如临时工作区和 git worktree 支持
+- 继续补 context、memory、compact 等更深层控制能力
+- 补 CI、release notes，以及更完整的贡献文档
 
 ## 本地开发命令
 

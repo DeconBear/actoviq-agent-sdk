@@ -386,9 +386,21 @@ const sdk = await createAgentSdk({
 
 ## Status and Roadmap
 
-This project is still moving quickly. For the current GitHub-facing parity and follow-up worklist, see:
+Current status:
 
-- [ACTOVIQ_AGENT_WORKLIST.md](./ACTOVIQ_AGENT_WORKLIST.md)
+- npm package is published and installable
+- core SDK flows are working: `run()`, `stream()`, sessions, tools, and MCP
+- bridge runtime flows are working: built-in tools, runtime introspection, and interactive demo
+- file tools are available: `Read`, `Write`, `Edit`, `Glob`, and `Grep`
+- examples, tests, build, smoke checks, and package validation are in place
+
+Roadmap:
+
+- add higher-level subagent APIs instead of only bridge-level reuse
+- improve skill management and programmatic skill invocation APIs
+- add workspace lifecycle helpers such as temp workspaces and git worktree support
+- deepen context, memory, and compaction controls
+- add CI workflows, release notes, and more polished contributor docs
 
 ## Local Development
 
