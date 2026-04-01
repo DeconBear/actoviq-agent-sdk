@@ -12,10 +12,13 @@ import { AsyncQueue } from '../runtime/asyncQueue.js';
 import { asError, isRecord } from '../runtime/helpers.js';
 import type {
   ActoviqAgentSummary,
+  ActoviqBridgeAgentRunOptions,
+  ActoviqBridgeAgentSessionOptions,
   ActoviqContextUsage,
   ActoviqBridgeJsonEvent,
   ActoviqBridgeRunOptions,
   ActoviqBridgeRunResult,
+  ActoviqBridgeSkillRunOptions,
   ActoviqRuntimeInfo,
   ActoviqBridgeSessionCreateOptions,
   CreateActoviqBridgeSdkOptions,
@@ -679,12 +682,35 @@ export class ActoviqBridgeSession {
     return this.send(formatSlashCommand(commandName, args), options);
   }
 
+  runSkill(
+    skill: string,
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.runSlashCommand(skill, args, options);
+  }
+
   streamSlashCommand(
     commandName: string,
     args = '',
     options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): ActoviqBridgeRunStream {
     return this.stream(formatSlashCommand(commandName, args), options);
+  }
+
+  streamSkill(
+    skill: string,
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): ActoviqBridgeRunStream {
+    return this.streamSlashCommand(skill, args, options);
+  }
+
+  compact(
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.runSlashCommand('compact', args, options);
   }
 
   private buildRunOptions(options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>): ActoviqBridgeRunOptions {
@@ -701,6 +727,172 @@ export class ActoviqBridgeSession {
     }
 
     return merged;
+  }
+}
+
+export class ActoviqBridgeAgentHandle {
+  constructor(
+    private readonly client: ActoviqBridgeSdkClient,
+    readonly agent: string,
+    private readonly defaults: ActoviqBridgeAgentRunOptions = {},
+  ) {}
+
+  run(prompt: string, options: ActoviqBridgeAgentRunOptions = {}): Promise<ActoviqBridgeRunResult> {
+    return this.client.run(prompt, {
+      ...this.defaults,
+      ...options,
+      agent: this.agent,
+    });
+  }
+
+  stream(prompt: string, options: ActoviqBridgeAgentRunOptions = {}): ActoviqBridgeRunStream {
+    return this.client.stream(prompt, {
+      ...this.defaults,
+      ...options,
+      agent: this.agent,
+    });
+  }
+
+  createSession(
+    options: ActoviqBridgeAgentSessionOptions = {},
+  ): Promise<ActoviqBridgeSession> {
+    return this.client.createSession({
+      ...this.defaults,
+      ...options,
+      agent: this.agent,
+    });
+  }
+}
+
+export class ActoviqBridgeSkillHandle {
+  constructor(
+    private readonly client: ActoviqBridgeSdkClient,
+    readonly skill: string,
+    private readonly defaults: ActoviqBridgeSkillRunOptions = {},
+  ) {}
+
+  run(args = '', options: ActoviqBridgeSkillRunOptions = {}): Promise<ActoviqBridgeRunResult> {
+    return this.client.runSlashCommand(this.skill, args, {
+      ...this.defaults,
+      ...options,
+    });
+  }
+
+  stream(args = '', options: ActoviqBridgeSkillRunOptions = {}): ActoviqBridgeRunStream {
+    return this.client.streamSlashCommand(this.skill, args, {
+      ...this.defaults,
+      ...options,
+    });
+  }
+
+  async runInSession(
+    session: ActoviqBridgeSession,
+    args = '',
+    options: Omit<ActoviqBridgeSkillRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return session.runSlashCommand(this.skill, args, options);
+  }
+
+  streamInSession(
+    session: ActoviqBridgeSession,
+    args = '',
+    options: Omit<ActoviqBridgeSkillRunOptions, 'resume' | 'sessionId'> = {},
+  ): ActoviqBridgeRunStream {
+    return session.streamSlashCommand(this.skill, args, options);
+  }
+}
+
+export class ActoviqBridgeAgentsApi {
+  constructor(private readonly client: ActoviqBridgeSdkClient) {}
+
+  list(options?: Omit<CreateActoviqBridgeSdkOptions, 'cliArgs' | 'cliPath' | 'executable'>) {
+    return this.client.listAgents(options);
+  }
+
+  use(agent: string, defaults: ActoviqBridgeAgentRunOptions = {}): ActoviqBridgeAgentHandle {
+    return new ActoviqBridgeAgentHandle(this.client, agent, defaults);
+  }
+
+  run(
+    agent: string,
+    prompt: string,
+    options: ActoviqBridgeAgentRunOptions = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.client.run(prompt, {
+      ...options,
+      agent,
+    });
+  }
+
+  stream(
+    agent: string,
+    prompt: string,
+    options: ActoviqBridgeAgentRunOptions = {},
+  ): ActoviqBridgeRunStream {
+    return this.client.stream(prompt, {
+      ...options,
+      agent,
+    });
+  }
+
+  createSession(
+    agent: string,
+    options: ActoviqBridgeAgentSessionOptions = {},
+  ): Promise<ActoviqBridgeSession> {
+    return this.client.createSession({
+      ...options,
+      agent,
+    });
+  }
+}
+
+export class ActoviqBridgeSkillsApi {
+  constructor(private readonly client: ActoviqBridgeSdkClient) {}
+
+  list(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
+    return this.client.listSkills(options);
+  }
+
+  use(skill: string, defaults: ActoviqBridgeSkillRunOptions = {}): ActoviqBridgeSkillHandle {
+    return new ActoviqBridgeSkillHandle(this.client, skill, defaults);
+  }
+
+  run(
+    skill: string,
+    args = '',
+    options: ActoviqBridgeSkillRunOptions = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.client.runSlashCommand(skill, args, options);
+  }
+
+  stream(
+    skill: string,
+    args = '',
+    options: ActoviqBridgeSkillRunOptions = {},
+  ): ActoviqBridgeRunStream {
+    return this.client.streamSlashCommand(skill, args, options);
+  }
+}
+
+export class ActoviqBridgeContextApi {
+  constructor(private readonly client: ActoviqBridgeSdkClient) {}
+
+  usage(options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>) {
+    return this.client.getContextUsage(options);
+  }
+
+  compact(
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.client.runSlashCommand('compact', args, options);
+  }
+
+  streamCompact(
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): ActoviqBridgeRunStream {
+    return this.client.streamSlashCommand('compact', args, options);
   }
 }
 
@@ -746,6 +938,9 @@ export class ActoviqBridgeSessionsApi {
 
 export class ActoviqBridgeSdkClient {
   readonly sessions: ActoviqBridgeSessionsApi;
+  readonly agents: ActoviqBridgeAgentsApi;
+  readonly skills: ActoviqBridgeSkillsApi;
+  readonly context: ActoviqBridgeContextApi;
 
   private constructor(
     private readonly executable: string,
@@ -753,6 +948,9 @@ export class ActoviqBridgeSdkClient {
     private readonly defaults: CreateActoviqBridgeSdkOptions,
   ) {
     this.sessions = new ActoviqBridgeSessionsApi(this);
+    this.agents = new ActoviqBridgeAgentsApi(this);
+    this.skills = new ActoviqBridgeSkillsApi(this);
+    this.context = new ActoviqBridgeContextApi(this);
   }
 
   static async create(options: CreateActoviqBridgeSdkOptions = {}): Promise<ActoviqBridgeSdkClient> {
@@ -778,6 +976,25 @@ export class ActoviqBridgeSdkClient {
     return this.run(formatSlashCommand(commandName, args), options);
   }
 
+  runWithAgent(
+    agent: string,
+    prompt: string,
+    options: ActoviqBridgeAgentRunOptions = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.run(prompt, {
+      ...options,
+      agent,
+    });
+  }
+
+  runSkill(
+    skill: string,
+    args = '',
+    options: ActoviqBridgeSkillRunOptions = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.runSlashCommand(skill, args, options);
+  }
+
   stream(prompt: string, options: ActoviqBridgeRunOptions = {}): ActoviqBridgeRunStream {
     const mergedOptions = this.mergeOptions(options);
     return new ActoviqBridgeRunStream(async controller => {
@@ -793,6 +1010,25 @@ export class ActoviqBridgeSdkClient {
     return this.stream(formatSlashCommand(commandName, args), options);
   }
 
+  streamWithAgent(
+    agent: string,
+    prompt: string,
+    options: ActoviqBridgeAgentRunOptions = {},
+  ): ActoviqBridgeRunStream {
+    return this.stream(prompt, {
+      ...options,
+      agent,
+    });
+  }
+
+  streamSkill(
+    skill: string,
+    args = '',
+    options: ActoviqBridgeSkillRunOptions = {},
+  ): ActoviqBridgeRunStream {
+    return this.streamSlashCommand(skill, args, options);
+  }
+
   async createSession(options: ActoviqBridgeSessionCreateOptions = {}): Promise<ActoviqBridgeSession> {
     const sessionId = options.sessionId ?? randomUUID();
     return new ActoviqBridgeSession(this, sessionId, options.title, this.mergeOptions(options), false);
@@ -806,6 +1042,14 @@ export class ActoviqBridgeSdkClient {
       ...options,
       agent,
     });
+  }
+
+  useAgent(agent: string, defaults: ActoviqBridgeAgentRunOptions = {}): ActoviqBridgeAgentHandle {
+    return this.agents.use(agent, defaults);
+  }
+
+  useSkill(skill: string, defaults: ActoviqBridgeSkillRunOptions = {}): ActoviqBridgeSkillHandle {
+    return this.skills.use(skill, defaults);
   }
 
   async resumeSession(
@@ -865,6 +1109,13 @@ export class ActoviqBridgeSdkClient {
       maxTurns: options.maxTurns ?? 2,
     });
     return parseActoviqContextUsageResult(result);
+  }
+
+  compactContext(
+    args = '',
+    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+  ): Promise<ActoviqBridgeRunResult> {
+    return this.runSlashCommand('compact', args, options);
   }
 
   private mergeOptions<T extends CreateActoviqBridgeSdkOptions>(options: T): T {

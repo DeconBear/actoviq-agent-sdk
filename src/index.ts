@@ -16,9 +16,14 @@ export {
 } from './errors.js';
 export { McpConnectionManager } from './mcp/connectionManager.js';
 export {
+  ActoviqBridgeAgentHandle,
+  ActoviqBridgeAgentsApi,
+  ActoviqBridgeContextApi,
   ActoviqBridgeRunStream,
   ActoviqBridgeSession,
   ActoviqBridgeSessionsApi,
+  ActoviqBridgeSkillHandle,
+  ActoviqBridgeSkillsApi,
   ActoviqBridgeSdkClient,
   createActoviqBridgeSdk,
 } from './parity/actoviqBridgeSdk.js';
@@ -34,6 +39,12 @@ export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
 export { tool } from './runtime/tools.js';
 export { SessionStore } from './storage/sessionStore.js';
+export {
+  ActoviqWorkspace,
+  createGitWorktreeWorkspace,
+  createTempWorkspace,
+  createWorkspace,
+} from './workspace/actoviqWorkspace.js';
 export type * from './types.js';
 
 export function localMcpServer(
