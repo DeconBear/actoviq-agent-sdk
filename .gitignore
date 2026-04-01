@@ -1,0 +1,7 @@
+dist
+node_modules
+coverage
+*.tsbuildinfo
+.DS_Store
+*.tgz
+examples/*.local.json
