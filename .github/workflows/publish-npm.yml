@@ -66,8 +66,21 @@ jobs:
         if: steps.npm_version.outputs.exists != 'true'
         run: npm run build
 
+      - name: Validate npm authentication
+        if: steps.npm_version.outputs.exists != 'true'
+        shell: bash
+        run: |
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is not configured."
+            exit 1
+          fi
+
+          npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish to npm
         if: steps.npm_version.outputs.exists != 'true'
-        run: npm publish --access public --provenance
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
