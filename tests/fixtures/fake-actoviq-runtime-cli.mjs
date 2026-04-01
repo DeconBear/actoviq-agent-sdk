@@ -15,8 +15,19 @@ function hasFlag(flag) {
 
 const command = process.argv[2];
 const prompt = getFlagValue('-p') ?? '';
-const sessionId = getFlagValue('--session-id') ?? getFlagValue('--resume') ?? 'fixture-session';
-const mode = getFlagValue('--resume') ? 'resume' : getFlagValue('--session-id') ? 'session-id' : 'standalone';
+const sessionId =
+  getFlagValue('--session-id') ??
+  getFlagValue('--resume') ??
+  (hasFlag('--continue') ? 'fixture-continued-session' : 'fixture-session');
+const mode = hasFlag('--fork-session')
+  ? 'fork'
+  : hasFlag('--continue')
+    ? 'continue'
+    : getFlagValue('--resume')
+      ? 'resume'
+      : getFlagValue('--session-id')
+        ? 'session-id'
+        : 'standalone';
 const agent = getFlagValue('--agent') ?? 'inherit';
 const includePartial = hasFlag('--include-partial-messages');
 const envToken = process.env.ACTOVIQ_AUTH_TOKEN ?? 'missing';

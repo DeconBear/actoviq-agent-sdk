@@ -18,6 +18,7 @@ Actoviq Agent SDK 是一个独立的实验性 agent SDK 项目，聚焦多工具
 
 - 提供 Node.js / TypeScript agent SDK，包含 `run()`、`stream()`、session、tools 和 MCP 支持
 - 提供 Actoviq Runtime bridge，可复用 built-in tools、skills、subagents 和原生 session/context 行为
+- 提供 buddy / companion API，可用于孵化、静音、抚摸，以及生成 companion prompt context
 - 在 vendored 非 TUI runtime 之上提供更干净的对外 SDK 表面
 - 提供交互式流式示例，便于本地调试 agent
 - 持续补齐 workspace 管理、更深层 subagent API，以及私有依赖替代
@@ -159,6 +160,32 @@ for (const prompt of prompts) {
 await sdk.close();
 ```
 
+### Buddy 示例
+
+```ts
+import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
+
+const buddy = createActoviqBuddyApi({
+  configPath: './buddy-settings.json',
+  userId: 'demo-user',
+});
+
+const companion = await buddy.hatch({
+  name: 'Orbit',
+  personality: 'curious, calm, and observant',
+});
+
+console.log(companion);
+console.log(await buddy.pet());
+console.log(await buddy.getPromptContext());
+```
+
+仓库内可直接运行：
+
+```bash
+npm run example:actoviq-buddy
+```
+
 ## 交互式 Agent 示例
 
 仓库中包含一个基于 bridge 的交互式示例，具备：
@@ -241,9 +268,12 @@ const reviewer = sdk.useAgent('general-purpose');
 const reviewResult = await reviewer.run('Explain what this repository is for.');
 
 const debugSkill = sdk.useSkill('debug');
-const debugResult = await debugSkill.run('summarize the current runtime configuration');
+const debugResult = await debugSkill.run(
+  'briefly explain what kinds of debugging help this runtime can provide without printing secrets, tokens, or full config values',
+);
 
 const compactResult = await sdk.context.compact('summarize current progress');
+const runtimeCatalog = await sdk.getRuntimeCatalog();
 ```
 
 当前可以直接使用：
@@ -251,11 +281,93 @@ const compactResult = await sdk.context.compact('summarize current progress');
 - `sdk.agents.list()`
 - `sdk.agents.run(...)`
 - `sdk.skills.list()`
+- `sdk.skills.listMetadata()`
 - `sdk.skills.run(...)`
+- `sdk.tools.list()`
+- `sdk.tools.listMetadata()`
+- `sdk.slashCommands.list()`
+- `sdk.slashCommands.listMetadata()`
+- `sdk.getRuntimeCatalog()`
 - `sdk.runWithAgent(...)`
 - `sdk.runSkill(...)`
+- `sdk.sessions.continueMostRecent(...)`
+- `sdk.sessions.fork(...)`
 - `session.runSkill(...)`
 - `session.compact(...)`
+- `session.info()`
+- `session.messages()`
+- `session.fork(...)`
+
+## Buddy Helper
+
+SDK 现在也把非 TUI 的 buddy / companion 能力封装成了可复用 API。
+
+```ts
+import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
+
+const buddy = createActoviqBuddyApi({ configPath: './settings.json' });
+const state = await buddy.state();
+
+if (!state.buddy) {
+  await buddy.hatch({
+    name: 'Orbit',
+    personality: 'curious, steady, and supportive',
+  });
+}
+
+console.log(await buddy.getPromptContext());
+```
+
+当前可直接使用：
+
+- `createActoviqBuddyApi(...)`
+- `sdk.buddy`
+- `bridgeSdk.buddy`
+- `buddy.state()`
+- `buddy.get()`
+- `buddy.hatch(...)`
+- `buddy.mute()`
+- `buddy.unmute()`
+- `buddy.pet()`
+- `buddy.getPromptContext(...)`
+- `buddy.getIntroAttachment(...)`
+- `buddy.getIntroText(...)`
+
+在标准 SDK 路径下，如果 buddy 已孵化且未静音，companion intro text 也会自动附加到 system prompt 中。
+
+## Event Helper
+
+bridge 现在也提供了可复用的事件解析 helper，方便统一处理 `Task` / subagent / tool 相关事件。
+
+```ts
+import {
+  analyzeActoviqBridgeEvents,
+  getActoviqBridgeTextDelta,
+} from 'actoviq-agent-sdk';
+
+const stream = sdk.stream('inspect the current repository');
+const bufferedEvents = [];
+
+for await (const event of stream) {
+  bufferedEvents.push(event);
+
+  const delta = getActoviqBridgeTextDelta(event);
+  if (delta) {
+    process.stdout.write(delta);
+  }
+}
+
+const analysis = analyzeActoviqBridgeEvents(bufferedEvents);
+console.log(analysis.toolRequests);
+console.log(analysis.taskInvocations);
+console.log(analysis.toolResults);
+```
+
+- `getActoviqBridgeTextDelta(...)`
+- `extractActoviqBridgeToolRequests(...)`
+- `extractActoviqBridgeToolResults(...)`
+- `extractActoviqBridgeTaskInvocations(...)`
+- `analyzeActoviqBridgeEvents(...)`
 
 ## Workspace Helper
 
@@ -288,173 +400,6 @@ await workspace.dispose();
 - `createTempWorkspace(...)`
 - `createGitWorktreeWorkspace(...)`
 
-## Runtime Introspection
-
-如果你想检查当前 bridge runtime 实际加载了哪些能力，而不是直接让 agent 执行任务，可以使用 introspection 示例。
-
-启动命令：
-
-```bash
-npm run example:actoviq-introspection
-```
-
-它会输出：
-
-- 当前运行模型
-- 当前内置工具列表
-- 当前已加载 skills
-- 当前 slash commands
-- 当前可用 agents
-- 当前上下文使用情况
-
-## 文件工具
-
-你可以把第一阶段的 Actoviq Runtime parity 文件工具直接挂到 SDK 上：
-
-```ts
-import {
-  createAgentSdk,
-  createActoviqFileTools,
-  loadDefaultActoviqSettings,
-} from 'actoviq-agent-sdk';
-
-await loadDefaultActoviqSettings();
-
-const sdk = await createAgentSdk({
-  tools: createActoviqFileTools({
-    cwd: process.cwd(),
-  }),
-});
-
-const result = await sdk.run(
-  'Use Glob to inspect the examples directory, then use Read on examples/quickstart.ts.',
-);
-
-console.log(result.text);
-console.log(result.toolCalls);
-```
-
-当前文件工具包括：
-
-- `Read`
-- `Write`
-- `Edit`
-- `Glob`
-- `Grep`
-
-## 原生 Runtime Sessions
-
-你也可以通过 vendored 的 portable session discovery 逻辑读取 Actoviq Runtime 原生 `.actoviq/projects` session 存储。
-
-```ts
-import { listActoviqBridgeSessions } from 'actoviq-agent-sdk';
-
-const sessions = await listActoviqBridgeSessions({ limit: 10 });
-console.log(sessions);
-```
-
-如果你想恢复某个 session 的最近主链对话：
-
-```ts
-import {
-  getActoviqBridgeSessionInfo,
-  getActoviqBridgeSessionMessages,
-} from 'actoviq-agent-sdk';
-
-const sessionId = 'your-session-id';
-
-const info = await getActoviqBridgeSessionInfo(sessionId);
-const messages = await getActoviqBridgeSessionMessages(sessionId);
-
-console.log(info);
-console.log(messages);
-```
-
-## 配置说明
-
-SDK 会按以下顺序解析配置：
-
-1. `createAgentSdk()` 显式传入的参数
-2. `process.env`
-3. 通过 `loadJsonConfigFile(...)` 预加载的 JSON 文件
-
-示例：
-
-```ts
-import { loadJsonConfigFile } from 'actoviq-agent-sdk';
-
-await loadJsonConfigFile('E:/configs/my-llm-config.json');
-```
-
-JSON 文件可以写成这两种结构：
-
-```json
-{
-  "env": {
-    "ACTOVIQ_AUTH_TOKEN": "token",
-    "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-    "ACTOVIQ_DEFAULT_SONNET_MODEL": "my-model"
-  }
-}
-```
-
-或者：
-
-```json
-{
-  "ACTOVIQ_AUTH_TOKEN": "token",
-  "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-  "ACTOVIQ_DEFAULT_SONNET_MODEL": "my-model"
-}
-```
-
-支持的键包括：
-
-- `ACTOVIQ_API_KEY`
-- `ACTOVIQ_AUTH_TOKEN`
-- `ACTOVIQ_BASE_URL`
-- `ACTOVIQ_MODEL`
-- `ACTOVIQ_DEFAULT_SONNET_MODEL`
-- `ACTOVIQ_DEFAULT_OPUS_MODEL`
-- `ACTOVIQ_DEFAULT_HAIKU_MODEL`
-
-为了兼容现有上游 settings 文件，JSON loader 也接受以下上游兼容键名：
-
-- `ACTOVIQ_AUTH_TOKEN`
-- `ACTOVIQ_BASE_URL`
-- `ACTOVIQ_DEFAULT_SONNET_MODEL`
-- `ACTOVIQ_DEFAULT_OPUS_MODEL`
-- `ACTOVIQ_DEFAULT_HAIKU_MODEL`
-
-本地示例和 smoke 测试也可以直接使用：
-
-```ts
-import { loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
-
-await loadDefaultActoviqSettings();
-```
-
-这个 helper 读取：
-
-1. `~/.actoviq/settings.json`
-
-## MCP Helper
-
-```ts
-import { createAgentSdk, loadDefaultActoviqSettings, stdioMcpServer } from 'actoviq-agent-sdk';
-
-await loadDefaultActoviqSettings();
-
-const sdk = await createAgentSdk({
-  mcpServers: [
-    stdioMcpServer({
-      name: 'filesystem',
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
-    }),
-  ],
-});
-```
 
 ## 当前状态与路线图
 
@@ -464,6 +409,8 @@ const sdk = await createAgentSdk({
 - 核心 SDK 主链已可用：`run()`、`stream()`、session、tools、MCP
 - bridge runtime 主链已可用：内置工具、runtime introspection、交互式示例
 - bridge SDK 已补更高层的 agent / skill / context helper
+- bridge SDK 已补结构化 metadata API 和 event helper
+- buddy API 已在标准 SDK 和 bridge SDK 两侧可用
 - 文件工具已经可用：`Read`、`Write`、`Edit`、`Glob`、`Grep`
 - workspace 生命周期 helper 已可用：目录、临时工作区、git worktree
 - examples、tests、build、smoke 和打包校验都已经具备
@@ -471,7 +418,7 @@ const sdk = await createAgentSdk({
 路线图：
 
 - 继续补 context、memory、compact 等更深层控制能力
-- 继续补更丰富的 agent / skill metadata API
+- 继续补更丰富的 agent / skill / subagent metadata 细节
 - 继续补更完整的 workspace 模板和 sandbox orchestration
 - 补 CI、release notes，以及更完整的贡献文档
 
@@ -493,6 +440,7 @@ npm run example:actoviq-agent-helpers
 npm run example:actoviq-workspaces
 npm run example:actoviq-sessions
 npm run example:actoviq-session-messages
+npm run example:actoviq-buddy
 ```
 
 `npm run smoke` 会读取 `~/.actoviq/settings.json` 并执行一次真实联调验证。
