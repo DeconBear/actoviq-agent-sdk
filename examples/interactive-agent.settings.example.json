@@ -1,0 +1,24 @@
+{
+  "bypassPermissions": true,
+  "env": {
+    "ACTOVIQ_BASE_URL": "https://your-actoviq-compatible-endpoint.example.com",
+    "ACTOVIQ_AUTH_TOKEN": "replace-with-your-token",
+    "ACTOVIQ_DEFAULT_max_MODEL": "replace-with-your-max-model",
+    "ACTOVIQ_DEFAULT_medium_MODEL": "replace-with-your-medium-model",
+    "ACTOVIQ_DEFAULT_min_MODEL": "replace-with-your-min-model"
+  },
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Write",
+      "Read",
+      "WebSearch",
+      "WebFetch",
+      "Edit",
+      "Glop",
+      "Grep",
+      "LSP",
+      "PowerShell"
+    ]
+  }
+}
