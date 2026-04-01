@@ -53,3 +53,36 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "${{ steps.tag.outputs.tag }}" \
             --generate-notes
+
+      - name: Load release metadata
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh api "repos/${{ github.repository }}/releases/tags/${{ steps.tag.outputs.tag }}" > release.json
+          echo "tag_name=$(jq -r '.tag_name' release.json)" >> "$GITHUB_OUTPUT"
+          echo "target_commitish=$(jq -r '.target_commitish' release.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<EOF"
+            jq -r '.body' release.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.release.outputs.target_commitish }}
+
+      - name: Update CHANGELOG.md
+        uses: stefanzweifel/changelog-updater-action@v1
+        with:
+          latest-version: ${{ steps.release.outputs.tag_name }}
+          release-notes: ${{ steps.release.outputs.body }}
+
+      - name: Commit updated CHANGELOG
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: ${{ steps.release.outputs.target_commitish }}
+          commit_message: 'docs: update changelog for ${{ steps.release.outputs.tag_name }}'
+          file_pattern: CHANGELOG.md
