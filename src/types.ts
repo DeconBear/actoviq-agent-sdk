@@ -622,6 +622,152 @@ export interface ActoviqBridgeEventAnalysis {
   taskInvocations: ActoviqBridgeTaskInvocation[];
 }
 
+export interface ActoviqMemorySettings {
+  autoCompactEnabled?: boolean;
+  autoMemoryEnabled?: boolean;
+  autoDreamEnabled?: boolean;
+  autoMemoryDirectory?: string;
+}
+
+export interface UpdateActoviqMemorySettingsInput {
+  autoCompactEnabled?: boolean;
+  autoMemoryEnabled?: boolean;
+  autoDreamEnabled?: boolean;
+  autoMemoryDirectory?: string | null;
+}
+
+export interface ActoviqMemoryPaths {
+  configPath: string;
+  homeDir: string;
+  projectPath: string;
+  memoryBaseDir: string;
+  projectStateDir: string;
+  autoMemoryDir: string;
+  autoMemoryEntrypoint: string;
+  teamMemoryDir: string;
+  teamMemoryEntrypoint: string;
+  sessionId?: string;
+  sessionMemoryDir?: string;
+  sessionMemoryPath?: string;
+}
+
+export interface ActoviqSessionMemoryState {
+  exists: boolean;
+  path?: string;
+  content?: string;
+  isEmpty?: boolean;
+  tokenEstimate?: number;
+  truncatedContent?: string;
+  wasTruncated?: boolean;
+}
+
+export interface ActoviqSessionMemoryConfig {
+  minimumMessageTokensToInit: number;
+  minimumTokensBetweenUpdate: number;
+  toolCallsBetweenUpdates: number;
+}
+
+export interface ActoviqSessionMemoryCompactConfig {
+  minTokens: number;
+  minTextBlockMessages: number;
+  maxTokens: number;
+}
+
+export interface ActoviqSessionMemoryProgress {
+  currentTokenCount?: number;
+  tokensAtLastExtraction?: number;
+  tokensSinceLastExtraction?: number;
+  toolCallsSinceLastUpdate?: number;
+  initialized: boolean;
+  meetsInitializationThreshold?: boolean;
+  meetsUpdateThreshold?: boolean;
+  meetsToolCallThreshold?: boolean;
+  shouldExtract?: boolean;
+}
+
+export interface ActoviqMemoryOptions {
+  configPath?: string;
+  homeDir?: string;
+  projectPath?: string;
+  sessionId?: string;
+}
+
+export interface ActoviqMemoryPromptOptions extends ActoviqMemoryOptions {
+  extraGuidelines?: string[];
+  skipIndex?: boolean;
+}
+
+export interface ActoviqMemoryStateOptions extends ActoviqMemoryPromptOptions {
+  includeCombinedPrompt?: boolean;
+  includeSessionMemory?: boolean;
+  includeSessionTemplate?: boolean;
+  includeSessionPrompt?: boolean;
+}
+
+export interface ActoviqCompactStateOptions extends ActoviqMemoryStateOptions {
+  includeBoundaries?: boolean;
+  includeSummaryMessage?: boolean;
+  currentTokenCount?: number;
+  tokensAtLastExtraction?: number;
+  initialized?: boolean;
+  toolCallsSinceLastUpdate?: number;
+}
+
+export interface ActoviqMemoryState {
+  settings: ActoviqMemorySettings;
+  enabled: {
+    autoCompact: boolean;
+    autoMemory: boolean;
+    autoDream: boolean;
+  };
+  paths: ActoviqMemoryPaths;
+  combinedPrompt?: string;
+  sessionMemory?: ActoviqSessionMemoryState;
+  sessionTemplate?: string;
+  sessionPrompt?: string;
+}
+
+export interface ActoviqCompactState extends ActoviqMemoryState {
+  sessionMemoryConfig: ActoviqSessionMemoryConfig;
+  sessionMemoryCompactConfig: ActoviqSessionMemoryCompactConfig;
+  progress?: ActoviqSessionMemoryProgress;
+  transcriptPath?: string;
+  boundaries?: ActoviqTranscriptBoundary[];
+  latestBoundary?: ActoviqTranscriptBoundary;
+  compactCount: number;
+  microcompactCount: number;
+  hasCompacted: boolean;
+  lastSummarizedMessageUuid?: string;
+  latestBoundarySummary?: string;
+  canUseSessionMemoryCompaction: boolean;
+  summaryMessage?: string;
+}
+
+export interface ActoviqCompactBoundaryMetadata {
+  trigger?: string;
+  preTokens?: number;
+  userContext?: string;
+  messagesSummarized?: number;
+}
+
+export interface ActoviqMicrocompactBoundaryMetadata {
+  trigger?: string;
+  preTokens?: number;
+  tokensSaved?: number;
+  compactedToolIds?: string[];
+  clearedAttachmentUUIDs?: string[];
+}
+
+export interface ActoviqTranscriptBoundary {
+  kind: 'compact' | 'microcompact';
+  uuid: string;
+  timestamp: string;
+  sessionId: string;
+  logicalParentUuid?: string | null;
+  metadata?: ActoviqCompactBoundaryMetadata | ActoviqMicrocompactBoundaryMetadata;
+  raw: Record<string, unknown>;
+}
+
 export const ACTOVIQ_BUDDY_RARITIES = [
   'common',
   'uncommon',
