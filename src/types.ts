@@ -169,6 +169,41 @@ export interface CreateAgentSdkOptions {
   modelApi?: ModelApi;
 }
 
+export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
+
+export interface ActoviqWorkspaceInfo {
+  id: string;
+  kind: ActoviqWorkspaceKind;
+  path: string;
+  metadata: Record<string, string>;
+}
+
+export interface CreateWorkspaceOptions {
+  path: string;
+  ensureExists?: boolean;
+  copyFrom?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface CreateTempWorkspaceOptions {
+  prefix?: string;
+  parentDir?: string;
+  copyFrom?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface CreateGitWorktreeWorkspaceOptions {
+  repositoryPath: string;
+  path?: string;
+  parentDir?: string;
+  name?: string;
+  ref?: string;
+  branch?: string;
+  detach?: boolean;
+  force?: boolean;
+  metadata?: Record<string, string>;
+}
+
 export interface AgentRunOptions {
   systemPrompt?: string;
   tools?: AgentToolDefinition[];
@@ -417,6 +452,12 @@ export interface ActoviqBridgeSessionCreateOptions
   sessionId?: string;
   title?: string;
 }
+
+export type ActoviqBridgeAgentRunOptions = Omit<ActoviqBridgeRunOptions, 'agent'>;
+
+export type ActoviqBridgeAgentSessionOptions = Omit<ActoviqBridgeSessionCreateOptions, 'agent'>;
+
+export type ActoviqBridgeSkillRunOptions = Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>;
 
 export interface ActoviqBridgeRunResult {
   text: string;

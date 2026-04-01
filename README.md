@@ -70,6 +70,7 @@ What you can use today:
 - local tools with Zod schemas
 - MCP servers over local, stdio, or streamable HTTP
 - persistent sessions
+- workspace helpers for standard directories, temp workspaces, and git worktrees
 - bridge runtime introspection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents
@@ -227,6 +228,67 @@ Bridge notes:
 - It uses Bun to execute the vendored Actoviq Runtime CLI bundle.
 - It automatically injects env values loaded by `loadJsonConfigFile(...)` or `loadDefaultActoviqSettings()`.
 - When a system `rg` is available, the bridge prefers it automatically so `Glob` and `Grep` work even if the upstream checkout does not contain the bundled ripgrep binary.
+
+## Agent and Skill Helpers
+
+The bridge SDK now also exposes higher-level helpers so you do not have to keep threading `agent` and slash-command details manually.
+
+```ts
+import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+const sdk = await createActoviqBridgeSdk({ workDir: process.cwd() });
+
+const reviewer = sdk.useAgent('general-purpose');
+const reviewResult = await reviewer.run('Explain what this repository is for.');
+
+const debugSkill = sdk.useSkill('debug');
+const debugResult = await debugSkill.run('summarize the current runtime configuration');
+
+const compactResult = await sdk.context.compact('summarize current progress');
+```
+
+These helpers are also available as:
+
+- `sdk.agents.list()`
+- `sdk.agents.run(...)`
+- `sdk.skills.list()`
+- `sdk.skills.run(...)`
+- `sdk.runWithAgent(...)`
+- `sdk.runSkill(...)`
+- `session.runSkill(...)`
+- `session.compact(...)`
+
+## Workspace Helpers
+
+The SDK now includes explicit workspace lifecycle helpers so you can create isolated directories before starting an agent session.
+
+```ts
+import {
+  createAgentSdk,
+  createTempWorkspace,
+  createActoviqFileTools,
+} from 'actoviq-agent-sdk';
+
+const workspace = await createTempWorkspace({
+  prefix: 'actoviq-demo-',
+  copyFrom: './examples',
+});
+
+const sdk = await createAgentSdk({
+  workDir: workspace.path,
+  tools: createActoviqFileTools({ cwd: workspace.path }),
+});
+
+await sdk.close();
+await workspace.dispose();
+```
+
+Available helpers:
+
+- `createWorkspace(...)`
+- `createTempWorkspace(...)`
+- `createGitWorktreeWorkspace(...)`
 
 ## Runtime Introspection
 
@@ -395,15 +457,16 @@ Current status:
 - npm package is published and installable
 - core SDK flows are working: `run()`, `stream()`, sessions, tools, and MCP
 - bridge runtime flows are working: built-in tools, runtime introspection, and interactive demo
+- higher-level agent, skill, and context helpers are available on the bridge SDK
 - file tools are available: `Read`, `Write`, `Edit`, `Glob`, and `Grep`
+- workspace lifecycle helpers are available for directory, temp, and git-worktree setups
 - examples, tests, build, smoke checks, and package validation are in place
 
 Roadmap:
 
-- add higher-level subagent APIs instead of only bridge-level reuse
-- improve skill management and programmatic skill invocation APIs
-- add workspace lifecycle helpers such as temp workspaces and git worktree support
 - deepen context, memory, and compaction controls
+- add richer agent and skill metadata APIs beyond name-based helpers
+- add richer workspace templates and sandbox orchestration helpers
 - add CI workflows, release notes, and more polished contributor docs
 
 ## Local Development
@@ -420,6 +483,8 @@ npm run example:actoviq-bridge-sdk
 npm run example:actoviq-interactive-agent
 npm run example:actoviq-introspection
 npm run example:actoviq-file-tools
+npm run example:actoviq-agent-helpers
+npm run example:actoviq-workspaces
 npm run example:actoviq-sessions
 npm run example:actoviq-session-messages
 ```
