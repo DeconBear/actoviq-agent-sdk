@@ -1,0 +1,85 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Contributors
+
+  $CONTRIBUTORS
+
+categories:
+  - title: 'Features'
+    labels:
+      - 'feat'
+      - 'feature'
+      - 'enhancement'
+  - title: 'Fixes'
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'bugfix'
+  - title: 'Documentation'
+    labels:
+      - 'docs'
+      - 'documentation'
+  - title: 'Tests'
+    labels:
+      - 'test'
+      - 'tests'
+  - title: 'CI'
+    labels:
+      - 'ci'
+      - 'github_actions'
+  - title: 'Maintenance'
+    labels:
+      - 'chore'
+      - 'refactor'
+      - 'dependencies'
+
+change-title-escapes: '\<*_&'
+no-changes-template: '- No user-facing changes in this release.'
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+      - 'breaking'
+  minor:
+    labels:
+      - 'feat'
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'fix'
+      - 'bug'
+      - 'bugfix'
+      - 'docs'
+      - 'documentation'
+      - 'test'
+      - 'tests'
+      - 'ci'
+      - 'chore'
+      - 'refactor'
+      - 'dependencies'
+  default: patch
+
+autolabeler:
+  - label: 'docs'
+    files:
+      - '*.md'
+      - 'docs/**'
+  - label: 'ci'
+    files:
+      - '.github/**'
+  - label: 'test'
+    files:
+      - 'tests/**'
+  - label: 'feature'
+    files:
+      - 'src/**'
+      - 'examples/**'
+

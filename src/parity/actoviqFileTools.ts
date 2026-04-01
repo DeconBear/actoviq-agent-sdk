@@ -1,6 +1,7 @@
-import { glob as nodeGlob, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { glob } from 'glob';
 import { z } from 'zod';
 
 import { ToolExecutionError } from '../errors.js';
@@ -188,17 +189,7 @@ export function createActoviqFileTools(
     async (input, context) => {
       const searchRoot = resolveSearchRoot(input.path, context, baseCwd);
       const limit = input.limit ?? defaultGlobLimit;
-      const matches: string[] = [];
-
-      for await (const match of nodeGlob(input.pattern, {
-        cwd: searchRoot,
-        exclude: defaultGlobExcludes,
-      })) {
-        matches.push(path.resolve(searchRoot, match));
-        if (matches.length >= limit) {
-          break;
-        }
-      }
+      const matches = await listGlobMatches(input.pattern, searchRoot, limit);
 
       return {
         root: searchRoot,
@@ -507,12 +498,26 @@ async function* iterateSearchFiles(
   globPattern?: string,
 ): AsyncIterable<string> {
   const pattern = globPattern || '**/*';
-  for await (const match of nodeGlob(pattern, {
-    cwd: searchRoot,
-    exclude: defaultGlobExcludes,
-  })) {
-    yield path.resolve(searchRoot, match);
+  const matches = await listGlobMatches(pattern, searchRoot);
+  for (const match of matches) {
+    yield match;
   }
+}
+
+async function listGlobMatches(
+  pattern: string,
+  searchRoot: string,
+  limit?: number,
+): Promise<string[]> {
+  const matches = await glob(pattern, {
+    cwd: searchRoot,
+    absolute: true,
+    nodir: true,
+    ignore: defaultGlobExcludes,
+    windowsPathsNoEscape: true,
+  });
+
+  return typeof limit === 'number' ? matches.slice(0, limit) : matches;
 }
 
 function buildSearchRegex(
