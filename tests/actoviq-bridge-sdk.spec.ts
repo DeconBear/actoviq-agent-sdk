@@ -195,6 +195,88 @@ describe('Actoviq Runtime SDK bridge', () => {
     }
   });
 
+  it('builds structured capability metadata from runtime info and context usage', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-catalog-');
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const catalog = await sdk.getRuntimeCatalog();
+      const skillMetadata = await sdk.skills.listMetadata();
+      const verifyMetadata = await sdk.skills.getMetadata('verify');
+      const toolMetadata = await sdk.tools.listMetadata();
+      const taskMetadata = await sdk.tools.getMetadata('Task');
+      const slashMetadata = await sdk.slashCommands.listMetadata();
+      const debugCommand = await sdk.slashCommands.getMetadata('/debug');
+
+      expect(catalog.skills).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'debug',
+            slashCommand: '/debug',
+            source: 'bundled',
+          }),
+          expect.objectContaining({
+            name: 'verify',
+            slashCommand: '/verify',
+            source: 'project',
+            tokens: '120',
+          }),
+        ]),
+      );
+      expect(skillMetadata).toEqual(catalog.skills);
+      expect(verifyMetadata).toMatchObject({
+        name: 'verify',
+        slashCommand: '/verify',
+        source: 'project',
+      });
+      expect(toolMetadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Task',
+            kind: 'builtin',
+          }),
+        ]),
+      );
+      expect(taskMetadata).toMatchObject({
+        name: 'Task',
+        kind: 'builtin',
+      });
+      expect(slashMetadata).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'debug',
+            kind: 'skill',
+            skillName: 'debug',
+          }),
+          expect.objectContaining({
+            name: 'context',
+            kind: 'builtin',
+          }),
+        ]),
+      );
+      expect(debugCommand).toMatchObject({
+        name: 'debug',
+        kind: 'skill',
+        skillName: 'debug',
+      });
+      expect(catalog.agents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'reviewer',
+            contextSource: 'project',
+            tokens: '240',
+          }),
+        ]),
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('invokes slash commands directly through helper methods', async () => {
     const tempDir = await createTempDir('actoviq-runtime-slash-');
     const sdk = await createActoviqBridgeSdk({
@@ -272,6 +354,33 @@ describe('Actoviq Runtime SDK bridge', () => {
       expect(streamed.text).toBe('echo:/verify check tools;agent:inherit');
       expect(sessionResult.text).toBe('echo:/verify session pass;agent:inherit');
       expect(compact.text).toBe('compact:/compact summarize progress');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('exposes continue-most-recent, fork, and transcript helpers on sessions', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-session-helpers-');
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const continued = await sdk.sessions.continueMostRecent('who-am-i');
+      expect(continued.text).toBe('mode:continue;agent:inherit');
+      expect(continued.sessionId).toBe('fixture-continued-session');
+
+      const session = await sdk.createSession({ sessionId: 'fixture-session-id', title: 'Fixture Session' });
+      const forked = await session.fork('who-am-i');
+      expect(forked.text).toBe('mode:fork;agent:inherit');
+
+      const directFork = await sdk.sessions.fork('fixture-session-id', 'who-am-i');
+      expect(directFork.text).toBe('mode:fork;agent:inherit');
+
+      expect(await session.info()).toBeUndefined();
+      expect(await session.messages()).toEqual([]);
     } finally {
       await sdk.close();
     }

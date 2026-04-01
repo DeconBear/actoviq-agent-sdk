@@ -3,6 +3,13 @@
   getLoadedJsonConfig,
   loadJsonConfigFile,
 } from './config/loadJsonConfigFile.js';
+export {
+  ActoviqBuddyApi,
+  createActoviqBuddyApi,
+  getActoviqBuddyIntroText,
+  rollActoviqBuddy,
+  rollActoviqBuddyWithSeed,
+} from './buddy/actoviqBuddy.js';
 export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
@@ -22,11 +29,20 @@ export {
   ActoviqBridgeRunStream,
   ActoviqBridgeSession,
   ActoviqBridgeSessionsApi,
+  ActoviqBridgeSlashCommandsApi,
   ActoviqBridgeSkillHandle,
   ActoviqBridgeSkillsApi,
   ActoviqBridgeSdkClient,
+  ActoviqBridgeToolsApi,
   createActoviqBridgeSdk,
 } from './parity/actoviqBridgeSdk.js';
+export {
+  analyzeActoviqBridgeEvents,
+  extractActoviqBridgeTaskInvocations,
+  extractActoviqBridgeToolRequests,
+  extractActoviqBridgeToolResults,
+  getActoviqBridgeTextDelta,
+} from './parity/actoviqBridgeEvents.js';
 export {
   getActoviqBridgeSessionInfo,
   getActoviqBridgeSessionMessages,

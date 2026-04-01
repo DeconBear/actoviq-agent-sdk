@@ -5,18 +5,15 @@ import { createInterface } from 'node:readline/promises';
 import process from 'node:process';
 
 import {
+  analyzeActoviqBridgeEvents,
   createActoviqBridgeSdk,
+  getActoviqBridgeTextDelta,
   loadJsonConfigFile,
-  type ActoviqBridgeJsonEvent,
 } from 'actoviq-agent-sdk';
 
 const WORKSPACE_PATH = process.cwd();
 const JSON_CONFIG_PATH = path.resolve(process.cwd(), 'examples', 'interactive-agent.settings.local.json');
 const EXIT_COMMANDS = new Set(['exit', 'quit', '/exit', ':q']);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 async function ensureFileExists(filePath: string): Promise<void> {
   try {
@@ -32,20 +29,6 @@ async function ensureFileExists(filePath: string): Promise<void> {
   }
 }
 
-function getTextDelta(event: ActoviqBridgeJsonEvent): string | undefined {
-  if (event.type !== 'stream_event' || !isRecord(event.event)) {
-    return undefined;
-  }
-
-  const nestedEvent = event.event;
-  if (nestedEvent.type !== 'content_block_delta' || !isRecord(nestedEvent.delta)) {
-    return undefined;
-  }
-
-  const delta = nestedEvent.delta;
-  return delta.type === 'text_delta' && typeof delta.text === 'string' ? delta.text : undefined;
-}
-
 function summarizeJson(value: unknown): string {
   if (value == null) {
     return '';
@@ -57,61 +40,6 @@ function summarizeJson(value: unknown): string {
   }
 
   return serialized.length > 160 ? `${serialized.slice(0, 157)}...` : serialized;
-}
-
-function printAssistantToolRequests(event: ActoviqBridgeJsonEvent): void {
-  if (event.type !== 'assistant' || !isRecord(event.message) || !Array.isArray(event.message.content)) {
-    return;
-  }
-
-  for (const block of event.message.content) {
-    if (!isRecord(block) || typeof block.type !== 'string') {
-      continue;
-    }
-
-    if (
-      block.type === 'tool_use' ||
-      block.type === 'server_tool_use' ||
-      block.type === 'mcp_tool_use'
-    ) {
-      const toolName = typeof block.name === 'string' ? block.name : 'unknown-tool';
-      const inputSummary = summarizeJson(block.input);
-      console.log(`\n[tool request] ${toolName}${inputSummary ? ` ${inputSummary}` : ''}`);
-    }
-  }
-}
-
-function printUserToolResults(event: ActoviqBridgeJsonEvent): void {
-  if (event.type !== 'user' || !isRecord(event.message) || !Array.isArray(event.message.content)) {
-    return;
-  }
-
-  for (const block of event.message.content) {
-    if (!isRecord(block) || typeof block.type !== 'string') {
-      continue;
-    }
-
-    if (block.type === 'tool_result' || block.type.endsWith('tool_result')) {
-      const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : 'unknown-tool-call';
-      const status = block.is_error === true ? 'error' : 'ok';
-      console.log(`\n[tool result] ${toolUseId} (${status})`);
-    }
-  }
-}
-
-function printSessionInit(event: ActoviqBridgeJsonEvent): void {
-  if (event.type !== 'system' || event.subtype !== 'init') {
-    return;
-  }
-
-  const tools = Array.isArray(event.tools) ? event.tools.length : 0;
-  const skills = Array.isArray(event.skills) ? event.skills.length : 0;
-  const agents = Array.isArray(event.agents) ? event.agents.length : 0;
-  const model = typeof event.model === 'string' ? event.model : 'unknown-model';
-  const sessionId = typeof event.session_id === 'string' ? event.session_id : 'unknown-session';
-
-  console.log(`\n[session ready] ${sessionId}`);
-  console.log(`[runtime] model=${model} tools=${tools} skills=${skills} agents=${agents}`);
 }
 
 function shouldExit(input: string): boolean {
@@ -182,29 +110,53 @@ async function main(): Promise<void> {
 
       const stream = session.stream(prompt);
       let printedText = false;
+      const bufferedEvents = [];
 
       for await (const event of stream) {
-        const delta = getTextDelta(event);
+        bufferedEvents.push(event);
+        const delta = getActoviqBridgeTextDelta(event);
         if (delta) {
           if (!printedText) {
             process.stdout.write('\nAgent> ');
             printedText = true;
           }
           process.stdout.write(delta);
-          continue;
         }
-
-        printSessionInit(event);
-        printAssistantToolRequests(event);
-        printUserToolResults(event);
       }
 
       const result = await stream.result;
+      const analysis = analyzeActoviqBridgeEvents(bufferedEvents);
 
       if (printedText) {
         process.stdout.write('\n');
       } else if (result.text.trim()) {
         console.log(`\nAgent> ${result.text}`);
+      }
+
+      if (result.initEvent) {
+        const tools = Array.isArray(result.initEvent.tools) ? result.initEvent.tools.length : 0;
+        const skills = Array.isArray(result.initEvent.skills) ? result.initEvent.skills.length : 0;
+        const agents = Array.isArray(result.initEvent.agents) ? result.initEvent.agents.length : 0;
+        const model =
+          typeof result.initEvent.model === 'string' ? result.initEvent.model : 'unknown-model';
+        console.log(`\n[session ready] ${result.sessionId}`);
+        console.log(`[runtime] model=${model} tools=${tools} skills=${skills} agents=${agents}`);
+      }
+
+      for (const request of analysis.toolRequests) {
+        const inputSummary = summarizeJson(request.input);
+        console.log(`\n[tool request] ${request.name}${inputSummary ? ` ${inputSummary}` : ''}`);
+      }
+
+      for (const task of analysis.taskInvocations) {
+        const subject = task.subagentType ?? 'inherit';
+        const label = task.description ?? task.prompt ?? 'no-task-prompt';
+        console.log(`[task] subagent=${subject} prompt=${label}`);
+      }
+
+      for (const toolResult of analysis.toolResults) {
+        const status = toolResult.isError ? 'error' : 'ok';
+        console.log(`\n[tool result] ${toolResult.toolUseId} (${status})`);
       }
 
       console.log(
