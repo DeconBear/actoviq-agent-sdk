@@ -46,6 +46,9 @@ export interface ActoviqBridgeSessionMessagesOptions extends ActoviqBridgeSessio
   includeSidechains?: boolean;
 }
 
+export interface ActoviqBridgeCompactBoundaryLookupOptions
+  extends ActoviqBridgeSessionMessagesOptions {}
+
 const TRANSCRIPT_MESSAGE_TYPES = new Set<ActoviqTranscriptMessageType>([
   'user',
   'assistant',
@@ -126,6 +129,110 @@ export async function getActoviqBridgeSessionMessages(
   return chain.filter(entry => entry.type !== 'system');
 }
 
+export async function getActoviqBridgeCompactBoundaries(
+  sessionId: string,
+  options: ActoviqBridgeCompactBoundaryLookupOptions = {},
+): Promise<import('../types.js').ActoviqTranscriptBoundary[]> {
+  const messages = await getActoviqBridgeSessionMessages(sessionId, {
+    ...options,
+    includeSystemMessages: true,
+  });
+
+  const boundaries: import('../types.js').ActoviqTranscriptBoundary[] = [];
+
+  for (const message of messages) {
+    if (message.type !== 'system') {
+      continue;
+    }
+
+    const subtype = typeof message.raw.subtype === 'string' ? message.raw.subtype : undefined;
+    if (subtype === 'compact_boundary') {
+      const metadata = isRecord(message.raw.compactMetadata)
+        ? {
+            trigger:
+              typeof message.raw.compactMetadata.trigger === 'string'
+                ? message.raw.compactMetadata.trigger
+                : undefined,
+            preTokens:
+              typeof message.raw.compactMetadata.preTokens === 'number'
+                ? message.raw.compactMetadata.preTokens
+                : undefined,
+            userContext:
+              typeof message.raw.compactMetadata.userContext === 'string'
+                ? message.raw.compactMetadata.userContext
+                : undefined,
+            messagesSummarized:
+              typeof message.raw.compactMetadata.messagesSummarized === 'number'
+                ? message.raw.compactMetadata.messagesSummarized
+                : undefined,
+          }
+        : undefined;
+
+      boundaries.push({
+        kind: 'compact',
+        uuid: message.uuid,
+        timestamp: message.timestamp,
+        sessionId: message.sessionId,
+        logicalParentUuid: message.logicalParentUuid,
+        metadata,
+        raw: message.raw,
+      });
+      continue;
+    }
+
+    if (subtype === 'microcompact_boundary') {
+      const metadata = isRecord(message.raw.microcompactMetadata)
+        ? {
+            trigger:
+              typeof message.raw.microcompactMetadata.trigger === 'string'
+                ? message.raw.microcompactMetadata.trigger
+                : undefined,
+            preTokens:
+              typeof message.raw.microcompactMetadata.preTokens === 'number'
+                ? message.raw.microcompactMetadata.preTokens
+                : undefined,
+            tokensSaved:
+              typeof message.raw.microcompactMetadata.tokensSaved === 'number'
+                ? message.raw.microcompactMetadata.tokensSaved
+                : undefined,
+            compactedToolIds: Array.isArray(message.raw.microcompactMetadata.compactedToolIds)
+              ? message.raw.microcompactMetadata.compactedToolIds.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                )
+              : undefined,
+            clearedAttachmentUUIDs: Array.isArray(
+              message.raw.microcompactMetadata.clearedAttachmentUUIDs,
+            )
+              ? message.raw.microcompactMetadata.clearedAttachmentUUIDs.filter(
+                  (entry): entry is string => typeof entry === 'string',
+                )
+              : undefined,
+          }
+        : undefined;
+
+      boundaries.push({
+        kind: 'microcompact',
+        uuid: message.uuid,
+        timestamp: message.timestamp,
+        sessionId: message.sessionId,
+        logicalParentUuid: message.logicalParentUuid,
+        metadata,
+        raw: message.raw,
+      });
+    }
+  }
+
+  return boundaries;
+}
+
+export async function getActoviqBridgeLatestCompactBoundary(
+  sessionId: string,
+  options: ActoviqBridgeCompactBoundaryLookupOptions = {},
+): Promise<import('../types.js').ActoviqTranscriptBoundary | undefined> {
+  const boundaries = await getActoviqBridgeCompactBoundaries(sessionId, options);
+  return boundaries.at(-1);
+}
+
 async function loadPortableTranscriptText(
   filePath: string,
   fileSize: number,
@@ -185,6 +292,10 @@ function parseTranscriptMessages(transcriptText: string): ActoviqTranscriptMessa
   }
 
   return parsed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function findLatestLeaf(
