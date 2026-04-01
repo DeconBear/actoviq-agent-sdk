@@ -46,7 +46,7 @@ describe('Actoviq Runtime SDK bridge', () => {
     try {
       const result = await sdk.run('hello-bridge');
 
-      expect(result.text).toBe('echo:hello-bridge');
+      expect(result.text).toBe('echo:hello-bridge;agent:inherit');
       expect(result.sessionId).toBeTruthy();
       expect(result.initEvent?.env_token).toBe('fixture-token');
       expect(result.assistantMessages).toHaveLength(1);
@@ -82,8 +82,8 @@ describe('Actoviq Runtime SDK bridge', () => {
 
       const result = await stream.result;
 
-      expect(deltas.join('')).toBe('echo:stream-check');
-      expect(result.text).toBe('echo:stream-check');
+      expect(deltas.join('')).toBe('echo:stream-check;agent:inherit');
+      expect(result.text).toBe('echo:stream-check;agent:inherit');
     } finally {
       await sdk.close();
     }
@@ -103,8 +103,8 @@ describe('Actoviq Runtime SDK bridge', () => {
       const second = await session.send('who-am-i');
 
       expect(first.sessionId).toBe(session.id);
-      expect(first.text).toBe('mode:session-id');
-      expect(second.text).toBe('mode:resume');
+      expect(first.text).toBe('mode:session-id;agent:inherit');
+      expect(second.text).toBe('mode:resume;agent:inherit');
     } finally {
       await sdk.close();
     }
@@ -128,7 +128,7 @@ describe('Actoviq Runtime SDK bridge', () => {
       expect(runtime.tools).toContain('Read');
       expect(runtime.mcpServers[0]?.name).toBe('filesystem');
       expect(skills).toEqual(['debug', 'verify']);
-      expect(slashCommands).toEqual(['context', 'cost', 'review']);
+      expect(slashCommands).toEqual(['context', 'cost', 'review', 'compact', 'debug', 'verify']);
       expect(agents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -208,8 +208,70 @@ describe('Actoviq Runtime SDK bridge', () => {
       const session = await sdk.createSession();
       const sessionResult = await session.runSlashCommand('verify', 'check tools');
 
-      expect(direct.text).toBe('echo:/debug trace settings');
-      expect(sessionResult.text).toBe('echo:/verify check tools');
+      expect(direct.text).toBe('echo:/debug trace settings;agent:inherit');
+      expect(sessionResult.text).toBe('echo:/verify check tools;agent:inherit');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('exposes high-level agent helpers for direct runs and agent sessions', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-agent-helper-');
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const direct = await sdk.runWithAgent('reviewer', 'who-am-i');
+      const agentHandle = sdk.useAgent('reviewer');
+      const session = await agentHandle.createSession({ title: 'Reviewer Session' });
+      const sessionResult = await session.send('who-am-i');
+
+      expect(direct.text).toBe('mode:standalone;agent:reviewer');
+      expect(sessionResult.text).toBe('mode:session-id;agent:reviewer');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('exposes high-level skill helpers and context compaction helpers', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-skill-helper-');
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const direct = await sdk.runSkill('debug', 'trace everything');
+      const skillHandle = sdk.useSkill('verify');
+      const stream = skillHandle.stream('check tools');
+      const deltas: string[] = [];
+
+      for await (const event of stream) {
+        if (
+          event.type === 'stream_event' &&
+          typeof event.event === 'object' &&
+          event.event !== null &&
+          'delta' in event.event &&
+          typeof (event.event as { delta?: { text?: unknown } }).delta?.text === 'string'
+        ) {
+          deltas.push((event.event as { delta: { text: string } }).delta.text);
+        }
+      }
+
+      const streamed = await stream.result;
+      const session = await sdk.createSession();
+      const sessionResult = await skillHandle.runInSession(session, 'session pass');
+      const compact = await sdk.context.compact('summarize progress');
+
+      expect(direct.text).toBe('echo:/debug trace everything;agent:inherit');
+      expect(deltas.join('')).toBe('echo:/verify check tools;agent:inherit');
+      expect(streamed.text).toBe('echo:/verify check tools;agent:inherit');
+      expect(sessionResult.text).toBe('echo:/verify session pass;agent:inherit');
+      expect(compact.text).toBe('compact:/compact summarize progress');
     } finally {
       await sdk.close();
     }

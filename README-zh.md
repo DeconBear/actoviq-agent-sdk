@@ -227,6 +227,67 @@ Bridge 说明：
 - 会自动注入由 `loadJsonConfigFile(...)` 或 `loadDefaultActoviqSettings()` 加载的环境变量
 - 如果系统里可用 `rg`，bridge 会优先使用系统 `rg`，保证 `Glob` 和 `Grep` 在缺少 bundled ripgrep 二进制时依旧可工作
 
+## Agent / Skill Helper
+
+bridge SDK 现在补上了更直接的高层 helper，不需要你每次手动拼 `agent` 参数或 slash command。
+
+```ts
+import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+const sdk = await createActoviqBridgeSdk({ workDir: process.cwd() });
+
+const reviewer = sdk.useAgent('general-purpose');
+const reviewResult = await reviewer.run('Explain what this repository is for.');
+
+const debugSkill = sdk.useSkill('debug');
+const debugResult = await debugSkill.run('summarize the current runtime configuration');
+
+const compactResult = await sdk.context.compact('summarize current progress');
+```
+
+当前可以直接使用：
+
+- `sdk.agents.list()`
+- `sdk.agents.run(...)`
+- `sdk.skills.list()`
+- `sdk.skills.run(...)`
+- `sdk.runWithAgent(...)`
+- `sdk.runSkill(...)`
+- `session.runSkill(...)`
+- `session.compact(...)`
+
+## Workspace Helper
+
+现在 SDK 也补上了显式的 workspace 生命周期 helper，便于先创建隔离目录，再启动 agent 会话。
+
+```ts
+import {
+  createAgentSdk,
+  createTempWorkspace,
+  createActoviqFileTools,
+} from 'actoviq-agent-sdk';
+
+const workspace = await createTempWorkspace({
+  prefix: 'actoviq-demo-',
+  copyFrom: './examples',
+});
+
+const sdk = await createAgentSdk({
+  workDir: workspace.path,
+  tools: createActoviqFileTools({ cwd: workspace.path }),
+});
+
+await sdk.close();
+await workspace.dispose();
+```
+
+当前提供：
+
+- `createWorkspace(...)`
+- `createTempWorkspace(...)`
+- `createGitWorktreeWorkspace(...)`
+
 ## Runtime Introspection
 
 如果你想检查当前 bridge runtime 实际加载了哪些能力，而不是直接让 agent 执行任务，可以使用 introspection 示例。
@@ -402,15 +463,16 @@ const sdk = await createAgentSdk({
 - npm 包已经发布，可直接安装使用
 - 核心 SDK 主链已可用：`run()`、`stream()`、session、tools、MCP
 - bridge runtime 主链已可用：内置工具、runtime introspection、交互式示例
+- bridge SDK 已补更高层的 agent / skill / context helper
 - 文件工具已经可用：`Read`、`Write`、`Edit`、`Glob`、`Grep`
+- workspace 生命周期 helper 已可用：目录、临时工作区、git worktree
 - examples、tests、build、smoke 和打包校验都已经具备
 
 路线图：
 
-- 补更直接的 subagent 高层 API，而不仅仅是 bridge 复用
-- 完善 skill 管理和程序化 skill 调用接口
-- 补 workspace 生命周期能力，例如临时工作区和 git worktree 支持
 - 继续补 context、memory、compact 等更深层控制能力
+- 继续补更丰富的 agent / skill metadata API
+- 继续补更完整的 workspace 模板和 sandbox orchestration
 - 补 CI、release notes，以及更完整的贡献文档
 
 ## 本地开发命令
@@ -427,6 +489,8 @@ npm run example:actoviq-bridge-sdk
 npm run example:actoviq-interactive-agent
 npm run example:actoviq-introspection
 npm run example:actoviq-file-tools
+npm run example:actoviq-agent-helpers
+npm run example:actoviq-workspaces
 npm run example:actoviq-sessions
 npm run example:actoviq-session-messages
 ```

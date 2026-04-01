@@ -17,6 +17,7 @@ const command = process.argv[2];
 const prompt = getFlagValue('-p') ?? '';
 const sessionId = getFlagValue('--session-id') ?? getFlagValue('--resume') ?? 'fixture-session';
 const mode = getFlagValue('--resume') ? 'resume' : getFlagValue('--session-id') ? 'session-id' : 'standalone';
+const agent = getFlagValue('--agent') ?? 'inherit';
 const includePartial = hasFlag('--include-partial-messages');
 const envToken = process.env.ACTOVIQ_AUTH_TOKEN ?? 'missing';
 
@@ -49,7 +50,7 @@ emit({
   mcp_servers: [{ name: 'filesystem', status: 'connected' }],
   model: 'fixture-model',
   permissionMode: 'bypassPermissions',
-  slash_commands: ['context', 'cost', 'review'],
+  slash_commands: ['context', 'cost', 'review', 'compact', 'debug', 'verify'],
   agents: ['general-purpose', 'reviewer'],
   skills: ['debug', 'verify'],
   plugins: [{ name: 'fixture-plugin', source: 'builtin', path: '/plugins/fixture' }],
@@ -58,7 +59,7 @@ emit({
 
 const text =
   prompt === 'who-am-i'
-    ? `mode:${mode}`
+    ? `mode:${mode};agent:${agent}`
     : prompt === '/cost'
       ? 'Total cost:            $0.0000\nUsage:                 0 input, 0 output, 0 cache read, 0 cache write'
       : prompt === '/context'
@@ -95,7 +96,9 @@ const text =
             '|------|--------|--------|',
             '| read_file | filesystem | 80 |',
           ].join('\n')
-        : `echo:${prompt}`;
+        : prompt.startsWith('/compact')
+          ? `compact:${prompt}`
+          : `echo:${prompt};agent:${agent}`;
 
 if (includePartial) {
   emit({
