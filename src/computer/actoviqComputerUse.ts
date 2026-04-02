@@ -71,6 +71,69 @@ function withPrefix(prefix: string | undefined, suffix: string): string {
   return prefix?.trim() ? `${prefix}_${suffix}` : `computer_${suffix}`;
 }
 
+const workflowStepSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('open_url'),
+    url: z.string().url(),
+  }),
+  z.object({
+    action: z.literal('type_text'),
+    text: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal('keypress'),
+    keys: z.array(z.string().min(1)).min(1),
+  }),
+  z.object({
+    action: z.literal('read_clipboard'),
+  }),
+  z.object({
+    action: z.literal('write_clipboard'),
+    text: z.string(),
+  }),
+  z.object({
+    action: z.literal('take_screenshot'),
+    outputPath: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal('wait'),
+    durationMs: z.number().int().min(1).max(60_000),
+  }),
+]);
+
+type ActoviqComputerWorkflowStep = z.infer<typeof workflowStepSchema>;
+
+async function executeWorkflowStep(
+  executor: ActoviqComputerUseExecutor,
+  step: ActoviqComputerWorkflowStep,
+): Promise<Record<string, unknown>> {
+  switch (step.action) {
+    case 'open_url':
+      await executor.openUrl(step.url);
+      return { action: step.action, url: step.url, ok: true };
+    case 'type_text':
+      await executor.typeText(step.text);
+      return { action: step.action, text: step.text, ok: true };
+    case 'keypress':
+      await executor.keyPress(step.keys);
+      return { action: step.action, keys: step.keys, ok: true };
+    case 'read_clipboard': {
+      const text = await executor.readClipboard();
+      return { action: step.action, text };
+    }
+    case 'write_clipboard':
+      await executor.writeClipboard(step.text);
+      return { action: step.action, ok: true };
+    case 'take_screenshot': {
+      const savedTo = await executor.takeScreenshot(step.outputPath);
+      return { action: step.action, savedTo };
+    }
+    case 'wait':
+      await new Promise(resolve => setTimeout(resolve, step.durationMs));
+      return { action: step.action, durationMs: step.durationMs, ok: true };
+  }
+}
+
 export function createActoviqComputerUseTools(
   options: CreateActoviqComputerUseOptions = {},
 ): AgentToolDefinition[] {
@@ -141,6 +204,27 @@ export function createActoviqComputerUseTools(
       async ({ outputPath }) => {
         const savedTo = await executor.takeScreenshot(outputPath);
         return { savedTo };
+      },
+    ),
+    tool(
+      {
+        name: withPrefix(options.prefix, 'run_workflow'),
+        description:
+          'Run a small multi-step computer-use workflow sequentially, combining browser, keyboard, clipboard, screenshot, and wait actions.',
+        inputSchema: z.object({
+          steps: z.array(workflowStepSchema).min(1),
+        }),
+      },
+      async ({ steps }) => {
+        const results: Array<Record<string, unknown>> = [];
+        for (const step of steps) {
+          results.push(await executeWorkflowStep(executor, step));
+        }
+        return {
+          ok: true,
+          stepCount: steps.length,
+          results,
+        };
       },
     ),
   ];

@@ -128,6 +128,13 @@ interface SessionRunExecutionOutcome {
   augmentations: PreparedRunAugmentations;
 }
 
+interface SessionRuntimeOverrides {
+  hooks?: ActoviqHooks;
+  permissionMode?: AgentRunOptions['permissionMode'];
+  permissions?: AgentRunOptions['permissions'];
+  classifier?: ActoviqToolClassifier;
+}
+
 function cloneHooks(hooks?: ActoviqHooks): ActoviqHooks | undefined {
   if (!hooks) {
     return undefined;
@@ -137,6 +144,21 @@ function cloneHooks(hooks?: ActoviqHooks): ActoviqHooks | undefined {
     postSampling: hooks.postSampling ? [...hooks.postSampling] : undefined,
     postRun: hooks.postRun ? [...hooks.postRun] : undefined,
   };
+}
+
+function clonePermissionRules(
+  permissions?: AgentRunOptions['permissions'],
+): AgentRunOptions['permissions'] | undefined {
+  return permissions ? permissions.map(rule => ({ ...rule })) : undefined;
+}
+
+function isHooksEmpty(hooks?: ActoviqHooks): boolean {
+  return (
+    !hooks ||
+    ((hooks.sessionStart?.length ?? 0) === 0 &&
+      (hooks.postSampling?.length ?? 0) === 0 &&
+      (hooks.postRun?.length ?? 0) === 0)
+  );
 }
 
 function cloneAgentDefinition(definition: ActoviqAgentDefinition): ActoviqAgentDefinition {
@@ -272,6 +294,7 @@ export class ActoviqAgentClient {
   readonly swarm: ActoviqSwarmApi;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
+  private readonly sessionRuntimeOverrides = new Map<string, SessionRuntimeOverrides>();
   private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
   private readonly defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'];
   private readonly defaultPermissions?: CreateAgentSdkOptions['permissions'];
@@ -530,6 +553,112 @@ export class ActoviqAgentClient {
     });
   }
 
+  private getSessionRuntimeOverrides(sessionId: string): SessionRuntimeOverrides | undefined {
+    const overrides = this.sessionRuntimeOverrides.get(sessionId);
+    if (!overrides) {
+      return undefined;
+    }
+    return {
+      hooks: cloneHooks(overrides.hooks),
+      permissionMode: overrides.permissionMode,
+      permissions: clonePermissionRules(overrides.permissions),
+      classifier: overrides.classifier,
+    };
+  }
+
+  private setSessionRuntimeHooks(sessionId: string, hooks?: ActoviqHooks): void {
+    const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
+    const next: SessionRuntimeOverrides = {
+      ...current,
+      hooks: isHooksEmpty(hooks) ? undefined : cloneHooks(hooks),
+    };
+
+    if (isHooksEmpty(next.hooks) && !next.permissionMode && !next.permissions && !next.classifier) {
+      this.sessionRuntimeOverrides.delete(sessionId);
+      return;
+    }
+
+    this.sessionRuntimeOverrides.set(sessionId, next);
+  }
+
+  private clearSessionRuntimeHooks(sessionId: string): void {
+    const current = this.sessionRuntimeOverrides.get(sessionId);
+    if (!current) {
+      return;
+    }
+
+    const next: SessionRuntimeOverrides = {
+      ...current,
+      hooks: undefined,
+    };
+    if (!next.permissionMode && !next.permissions && !next.classifier) {
+      this.sessionRuntimeOverrides.delete(sessionId);
+      return;
+    }
+    this.sessionRuntimeOverrides.set(sessionId, next);
+  }
+
+  private setSessionRuntimePermissionContext(
+    sessionId: string,
+    context: {
+      mode?: AgentRunOptions['permissionMode'];
+      permissions?: AgentRunOptions['permissions'];
+      classifier?: ActoviqToolClassifier;
+    },
+  ): void {
+    const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
+    const next: SessionRuntimeOverrides = {
+      ...current,
+      permissionMode: context.mode,
+      permissions: clonePermissionRules(context.permissions),
+      classifier: context.classifier,
+    };
+
+    if (isHooksEmpty(next.hooks) && !next.permissionMode && !next.permissions && !next.classifier) {
+      this.sessionRuntimeOverrides.delete(sessionId);
+      return;
+    }
+
+    this.sessionRuntimeOverrides.set(sessionId, next);
+  }
+
+  private clearSessionRuntimePermissionContext(sessionId: string): void {
+    const current = this.sessionRuntimeOverrides.get(sessionId);
+    if (!current) {
+      return;
+    }
+
+    const next: SessionRuntimeOverrides = {
+      ...current,
+      permissionMode: undefined,
+      permissions: undefined,
+      classifier: undefined,
+    };
+    if (isHooksEmpty(next.hooks)) {
+      this.sessionRuntimeOverrides.delete(sessionId);
+      return;
+    }
+    this.sessionRuntimeOverrides.set(sessionId, next);
+  }
+
+  private applySessionRuntimeOverrides(
+    sessionId: string,
+    options: InternalAgentRunOptions,
+  ): InternalAgentRunOptions {
+    const overrides = this.getSessionRuntimeOverrides(sessionId);
+    if (!overrides) {
+      return options;
+    }
+
+    return {
+      ...options,
+      hooks: mergeActoviqHooks(overrides.hooks, options.hooks),
+      permissionMode: options.permissionMode ?? overrides.permissionMode,
+      permissions: options.permissions ?? overrides.permissions,
+      classifier: options.classifier ?? overrides.classifier,
+    };
+  }
+
   private hydrateSession(stored: StoredSession): AgentSession {
     return new AgentSession(
       {
@@ -539,6 +668,12 @@ export class ActoviqAgentClient {
         compactSession: (session, options) => this.compactSessionForSession(session, options),
         getCompactState: (session, options) => this.getCompactStateForSession(session, options),
         getAgentContinuity: (session) => this.getAgentContinuityForSession(session),
+        setRuntimeHooks: (session, hooks) => this.setSessionRuntimeHooks(session.id, hooks),
+        clearRuntimeHooks: (session) => this.clearSessionRuntimeHooks(session.id),
+        setRuntimePermissionContext: (session, context) =>
+          this.setSessionRuntimePermissionContext(session.id, context),
+        clearRuntimePermissionContext: (session) =>
+          this.clearSessionRuntimePermissionContext(session.id),
         hydrate: (next) => this.hydrateSession(next),
       },
       this.store,
@@ -553,7 +688,10 @@ export class ActoviqAgentClient {
   ): Promise<AgentRunResult> {
     const runId = createId();
     const initialSnapshot = session.snapshot();
-    const resolvedOptions = this.resolveSessionAgentOptions(initialSnapshot, options);
+    const resolvedOptions = this.applySessionRuntimeOverrides(
+      session.id,
+      this.resolveSessionAgentOptions(initialSnapshot, options),
+    );
     const execution = await this.executeSessionRunWithReactiveCompact({
       runId,
       session,
@@ -593,7 +731,10 @@ export class ActoviqAgentClient {
 
     return new AgentRunStream(async (controller) => {
       try {
-        const resolvedOptions = this.resolveSessionAgentOptions(initialSnapshot, options);
+        const resolvedOptions = this.applySessionRuntimeOverrides(
+          session.id,
+          this.resolveSessionAgentOptions(initialSnapshot, options),
+        );
         const execution = await this.executeSessionRunWithReactiveCompact({
           runId,
           session,

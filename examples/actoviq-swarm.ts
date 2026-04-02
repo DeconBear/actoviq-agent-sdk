@@ -16,6 +16,7 @@ try {
   const team = sdk.swarm.createTeam({
     name: 'release-team',
     leader: 'lead',
+    continuous: true,
   });
 
   const spawned = await team.spawn({
@@ -31,6 +32,9 @@ try {
     'Leader note: focus on release blockers and anything that could break publish.',
   );
 
+  const mailboxTurn = await team.teammate('reviewer-1').continueFromMailbox();
+  console.log('mailbox turn:', mailboxTurn?.result?.text);
+
   const task = await team.runBackground(
     'reviewer-1',
     'Now suggest one follow-up check we should automate in CI.',
@@ -45,6 +49,9 @@ try {
   for (const message of inbox) {
     console.log(`- [${message.kind}] ${message.from}: ${message.text}`);
   }
+
+  const teammateState = await team.teammate('reviewer-1').state();
+  console.log('teammate state:', teammateState);
 } finally {
   await sdk.close();
 }

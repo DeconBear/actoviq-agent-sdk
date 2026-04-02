@@ -50,6 +50,7 @@ const PROMPT_TOO_LONG_PATTERNS = [
   'input is too long',
   'request is too large',
 ];
+const MAX_COMPACT_PROMPT_TOO_LONG_RETRIES = 3;
 
 export interface ActoviqCompactExecutionContext {
   workDir: string;
@@ -173,17 +174,22 @@ function appendPersistedCompactHistory(
 function compactToolResultContent(
   messages: readonly MessageParam[],
   config: ActoviqCompactConfig,
-): { messages: MessageParam[]; clearedCount: number } {
+): { messages: MessageParam[]; clearedCount: number; clearedToolIds: string[] } {
   const cloneMessages = (): MessageParam[] => messages.map(message => structuredClone(message));
 
   if (!config.microcompactEnabled) {
     return {
       messages: cloneMessages(),
       clearedCount: 0,
+      clearedToolIds: [],
     };
   }
 
-  const toolResultPositions: Array<{ messageIndex: number; blockIndex: number }> = [];
+  const toolResultPositions: Array<{
+    messageIndex: number;
+    blockIndex: number;
+    toolUseId?: string;
+  }> = [];
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const message = messages[messageIndex]!;
     if (message.role !== 'user' || !Array.isArray(message.content)) {
@@ -199,7 +205,11 @@ function compactToolResultContent(
       if (text.length < config.microcompactMinContentChars) {
         continue;
       }
-      toolResultPositions.push({ messageIndex, blockIndex });
+      toolResultPositions.push({
+        messageIndex,
+        blockIndex,
+        toolUseId: typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined,
+      });
     }
   }
 
@@ -207,6 +217,7 @@ function compactToolResultContent(
     return {
       messages: cloneMessages(),
       clearedCount: 0,
+      clearedToolIds: [],
     };
   }
 
@@ -216,6 +227,9 @@ function compactToolResultContent(
   );
   const clearPositions = toolResultPositions.slice(0, keepStart);
   const nextMessages = cloneMessages();
+  const clearedToolIds = clearPositions
+    .map(position => position.toolUseId)
+    .filter((toolUseId): toolUseId is string => typeof toolUseId === 'string');
 
   for (const position of clearPositions) {
     const message = nextMessages[position.messageIndex];
@@ -232,7 +246,19 @@ function compactToolResultContent(
   return {
     messages: nextMessages,
     clearedCount: clearPositions.length,
+    clearedToolIds,
   };
+}
+
+function truncateMessagesForCompactRetry(
+  messages: readonly MessageParam[],
+): MessageParam[] | undefined {
+  if (messages.length <= 1) {
+    return undefined;
+  }
+
+  const dropCount = Math.min(Math.max(1, Math.floor(messages.length * 0.2)), messages.length - 1);
+  return messages.slice(dropCount);
 }
 
 function extractTextFromToolResultContent(content: unknown): string {
@@ -360,6 +386,7 @@ export async function compactActoviqSession(
           preTokens: tokenEstimateBefore,
           tokensSaved:
             tokenEstimateBefore - estimateActoviqConversationTokens(cloned.messages),
+          compactedToolIds: microcompacted.clearedToolIds,
         },
       });
       return {
@@ -414,29 +441,56 @@ export async function compactActoviqSession(
     };
   }
 
-  const rewritePrompt = buildCompactSummaryPrompt(
-    serializeMessagesForSummary(messagesToSummarize),
-    messagesToKeep.length,
-    options.summaryInstructions,
-  );
+  let retryCount = 0;
+  let droppedMessages = 0;
+  let retryMessagesToSummarize = messagesToSummarize;
+  let response: Awaited<ReturnType<ModelApi['createMessage']>>;
 
-  const request: ModelRequest = {
-    model: options.model ?? context.model,
-    max_tokens: options.maxTokens ?? context.compactConfig.maxSummaryTokens,
-    system:
-      'You are compacting a long-running engineering session. Produce a dense but concise continuation summary.',
-    metadata: {
-      actoviq_internal_task: 'compact',
-    },
-    messages: [
-      {
-        role: 'user',
-        content: rewritePrompt,
-      },
-    ],
-    signal: options.signal,
-  };
-  const response = await context.modelApi.createMessage(request);
+  while (true) {
+    try {
+      const rewritePrompt = buildCompactSummaryPrompt(
+        serializeMessagesForSummary(retryMessagesToSummarize),
+        messagesToKeep.length,
+        options.summaryInstructions,
+      );
+
+      const request: ModelRequest = {
+        model: options.model ?? context.model,
+        max_tokens: options.maxTokens ?? context.compactConfig.maxSummaryTokens,
+        system:
+          'You are compacting a long-running engineering session. Produce a dense but concise continuation summary.',
+        metadata: {
+          actoviq_internal_task: 'compact',
+          actoviq_compact_retry_count: retryCount,
+        },
+        messages: [
+          {
+            role: 'user',
+            content: rewritePrompt,
+          },
+        ],
+        signal: options.signal,
+      };
+      response = await context.modelApi.createMessage(request);
+      break;
+    } catch (error) {
+      if (
+        retryCount >= MAX_COMPACT_PROMPT_TOO_LONG_RETRIES ||
+        !isActoviqPromptTooLongError(error)
+      ) {
+        throw error;
+      }
+
+      const truncated = truncateMessagesForCompactRetry(retryMessagesToSummarize);
+      if (!truncated) {
+        throw error;
+      }
+
+      droppedMessages += retryMessagesToSummarize.length - truncated.length;
+      retryMessagesToSummarize = truncated;
+      retryCount += 1;
+    }
+  }
   const summary = extractTextFromContent(response.content).trim();
   const compactedAt = nowIso();
   const nextRuntimeState: ActoviqSessionMemoryRuntimeState = {
@@ -467,7 +521,10 @@ export async function compactActoviqSession(
     metadata: {
       trigger: options.trigger,
       preTokens: tokenEstimateBefore,
-      messagesSummarized: messagesToSummarize.length,
+      messagesSummarized: retryMessagesToSummarize.length,
+      preservedMessages: messagesToKeep.length,
+      droppedMessages,
+      retryCount,
       userContext: summary,
     },
   });
@@ -481,7 +538,7 @@ export async function compactActoviqSession(
       tokenEstimateBefore,
       tokenEstimateAfter: estimateActoviqConversationTokens(nextMessages),
       summaryMessage: summary,
-      messagesRemoved: messagesToSummarize.length,
+      messagesRemoved: retryMessagesToSummarize.length + droppedMessages,
       compactCount: persistedState.compactCount + 1,
       microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
       state: nextRuntimeState,

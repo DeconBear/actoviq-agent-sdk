@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
+  ActoviqProviderApiError,
   createAgentSdk,
   tool,
   type ModelApi,
@@ -538,6 +539,67 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('retries compaction when the compaction prompt itself is too long', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const longPrompt = 'release-checklist '.repeat(120);
+    let compactAttempts = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          compactAttempts += 1;
+          if (compactAttempts === 1) {
+            throw new ActoviqProviderApiError('Provider request failed with HTTP 413: Prompt is too long', {
+              status: 413,
+            });
+          }
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Retry compact summary: the earlier release planning was trimmed before summarization.',
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Working through a very long release checklist response.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send(longPrompt);
+      await session.send('Follow up on the same release plan with extra detail.');
+      await session.compact({
+        preserveRecentMessages: 1,
+      });
+      const compactState = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(compactAttempts).toBe(2);
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.latestBoundarySummary).toContain('retryCount=1');
+      expect(compactState.latestBoundarySummary).toContain('droppedMessages=');
+      expect(compactState.latestBoundarySummary).toContain('preservedMessages=1');
+      expect(session.messages[0]).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('Retry compact summary'),
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('reactively compacts and retries when the provider rejects an oversized prompt', async () => {
     const sessionDirectory = await createSessionDirectory();
     let nonCompactCalls = 0;
@@ -733,6 +795,129 @@ describe('ActoviqAgentClient', () => {
       expect(seenTexts).toHaveLength(1);
       expect(seenTexts[0]).toContain('iteration=1');
       expect(seenTexts[0]).toContain('Post-sampling hook target response.');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('supports session-scoped hooks and permission overrides', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let executedWrites = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        const lastMessage = request.messages.at(-1);
+        if (typeof lastMessage?.content === 'string') {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Attempting a session-scoped write.' },
+              {
+                type: 'tool_use',
+                id: `toolu_write_${request.messages.length}`,
+                name: 'write_note',
+                input: { text: 'session-scoped' },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        const toolResults = Array.isArray(lastMessage?.content) ? JSON.stringify(lastMessage.content) : '';
+        return makeMessage([
+          {
+            type: 'text',
+            text: toolResults.includes('Denied by permission')
+              ? 'Write blocked by the session permission context.'
+              : 'Write approved by the session permission context.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      permissionMode: 'plan',
+    });
+
+    const writeNote = tool(
+      {
+        name: 'write_note',
+        description: 'Writes a session note.',
+        inputSchema: z.object({ text: z.string() }),
+      },
+      async ({ text }) => {
+        executedWrites += 1;
+        return { ok: true, text };
+      },
+    );
+
+    try {
+      const session = await sdk.createSession();
+      session.setHooks({
+        sessionStart: [
+          () => ({
+            messages: [
+              {
+                role: 'user',
+                content:
+                  '<system-reminder>Session runtime hook context: prefer safe release writes.</system-reminder>',
+              },
+            ],
+            systemPromptParts: ['Session runtime system prompt: release-safe writes only.'],
+          }),
+        ],
+        postRun: [
+          () => ({
+            sessionMetadata: {
+              sessionRuntimeHook: 'enabled',
+            },
+          }),
+        ],
+      });
+      session.setPermissionContext({
+        classifier: ({ publicName }) =>
+          publicName === 'write_note'
+            ? { behavior: 'allow', reason: 'Session runtime classifier approved the write.' }
+            : undefined,
+      });
+
+      const firstResult = await session.send('First write attempt.', { tools: [writeNote] });
+      const firstRequestMessages = modelApi.createCalls[0]?.messages ?? [];
+
+      expect(executedWrites).toBe(1);
+      expect(firstResult.permissionDecisions?.[0]).toMatchObject({
+        behavior: 'allow',
+        source: 'classifier',
+      });
+      expect(firstResult.sessionHookMetadata).toMatchObject({
+        sessionRuntimeHook: 'enabled',
+      });
+      expect(firstRequestMessages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Session runtime hook context'),
+          }),
+        ]),
+      );
+      expect(modelApi.createCalls[0]?.system).toContain('Session runtime system prompt');
+
+      session.clearHooks();
+      session.clearPermissionContext();
+
+      const callCountBeforeSecondRun = modelApi.createCalls.length;
+      const secondResult = await session.send('Second write attempt.', { tools: [writeNote] });
+      const secondRunRequests = modelApi.createCalls.slice(callCountBeforeSecondRun);
+
+      expect(executedWrites).toBe(1);
+      expect(secondResult.toolCalls[0]?.isError).toBe(true);
+      expect(secondResult.permissionDecisions?.[0]).toMatchObject({
+        behavior: 'deny',
+        source: 'mode',
+      });
+      expect(secondResult.sessionHookMetadata).toBeUndefined();
+      expect(secondRunRequests[0]?.system).not.toContain('Session runtime system prompt');
     } finally {
       await sdk.close();
     }

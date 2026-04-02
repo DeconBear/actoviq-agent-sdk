@@ -303,11 +303,98 @@ describe('Actoviq advanced parity features', () => {
       const backgroundRecord = await sdk.tasks.get(backgroundTask.id);
 
       expect(spawned.result?.text).toContain('Initial review');
-      expect(teammates[0]?.status).toBe('completed');
+      expect(teammates[0]?.status).toBe('idle');
+      expect(teammates[0]?.lastTaskStatus).toBe('completed');
+      expect(teammates[0]?.backgroundRunCount).toBe(1);
       expect(backgroundRecord?.status).toBe('completed');
       expect(inbox.some(message => message.text.includes('Background follow-up'))).toBe(true);
       expect(seenPrompts.some(prompt => prompt.includes('<teammate-message teammate_id="lead">'))).toBe(true);
       expect(teammateSession.messages.length).toBeGreaterThan(0);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('supports mailbox-driven teammate continuation and teammate recovery', async () => {
+    const sessionDirectory = await createTempDir('actoviq-swarm-continuity-');
+    const seenPrompts: string[] = [];
+    let hasFailedOnce = false;
+    const modelApi = new MockModelApi({
+      create: async (request) => {
+        const lastUserMessage = request.messages.at(-1);
+        const prompt =
+          typeof lastUserMessage?.content === 'string'
+            ? lastUserMessage.content
+            : JSON.stringify(lastUserMessage?.content ?? '');
+        seenPrompts.push(prompt);
+        if (prompt.includes('Force a failure') && !hasFailedOnce) {
+          hasFailedOnce = true;
+          throw new Error('Simulated teammate failure');
+        }
+        return makeMessage([{ type: 'text', text: `Handled: ${prompt}` }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Reviews release work.',
+          systemPrompt: 'Be concise and review-oriented.',
+        },
+      ],
+    });
+
+    try {
+      const team = sdk.swarm.createTeam({ name: 'continuity-team', leader: 'lead' });
+      await team.spawn({
+        name: 'reviewer-1',
+        agent: 'reviewer',
+        prompt: 'Initial continuity review',
+      });
+
+      await team.message('reviewer-1', 'Leader note: continue from the mailbox.');
+      const mailboxResult = await team.continueFromMailbox('reviewer-1');
+      const afterMailbox = await team.teammate('reviewer-1').state();
+
+      expect(mailboxResult?.source).toBe('mailbox');
+      expect(mailboxResult?.mailboxMessagesProcessed).toBe(1);
+      expect(afterMailbox?.status).toBe('idle');
+      expect(afterMailbox?.runCount).toBe(2);
+      expect(afterMailbox?.mailboxTurns).toBe(1);
+      expect(afterMailbox?.mailboxMessageCount).toBe(1);
+      expect(
+        seenPrompts.some(
+          prompt =>
+            prompt.includes('<teammate-message teammate_id="lead">') &&
+            prompt.includes('Leader note: continue from the mailbox.'),
+        ),
+      ).toBe(true);
+
+      await expect(team.run('reviewer-1', 'Force a failure')).rejects.toThrow(
+        'Simulated teammate failure',
+      );
+      const failed = await team.teammate('reviewer-1').state();
+      expect(failed?.status).toBe('failed');
+      expect(failed?.lastTaskStatus).toBe('failed');
+
+      const recovered = await team.teammate('reviewer-1').recover();
+      expect(recovered.status).toBe('idle');
+      expect(recovered.recoveryCount).toBe(1);
+
+      await team.message('reviewer-1', 'Leader note: resume after recovery.');
+      const continued = await team.continueAllFromMailbox();
+      const finalState = await team.teammate('reviewer-1').state();
+
+      expect(continued).toHaveLength(1);
+      expect(finalState?.status).toBe('idle');
+      expect(finalState?.mailboxTurns).toBe(2);
+      expect(finalState?.lineage).toEqual(
+        expect.arrayContaining([expect.stringContaining('recovered')]),
+      );
     } finally {
       await sdk.close();
     }
@@ -364,6 +451,83 @@ describe('Actoviq advanced parity features', () => {
       const result = await sdk.run('Open the browser.');
       expect(result.toolCalls[0]?.publicName).toBe('computer_open_url');
       expect(calls).toContain('open:https://example.com');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('supports multi-step public computer-use workflows', async () => {
+    const sessionDirectory = await createTempDir('actoviq-computer-workflow-');
+    const calls: string[] = [];
+    const modelApi = new MockModelApi({
+      create: async (_request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Running a workflow.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_workflow',
+                name: 'computer_run_workflow',
+                input: {
+                  steps: [
+                    { action: 'open_url', url: 'https://example.com' },
+                    { action: 'type_text', text: 'release-ready' },
+                    { action: 'keypress', keys: ['ENTER'] },
+                    { action: 'wait', durationMs: 1 },
+                    { action: 'take_screenshot', outputPath: 'artifacts/release.png' },
+                  ],
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'Workflow completed.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      computerUse: {
+        executor: {
+          openUrl: async (url) => {
+            calls.push(`open:${url}`);
+          },
+          typeText: async (text) => {
+            calls.push(`type:${text}`);
+          },
+          keyPress: async (keys) => {
+            calls.push(`keys:${keys.join('+')}`);
+          },
+          readClipboard: async () => 'clipboard',
+          writeClipboard: async (text) => {
+            calls.push(`clipboard:${text}`);
+          },
+          takeScreenshot: async (outputPath) => {
+            calls.push(`screenshot:${outputPath}`);
+            return outputPath;
+          },
+        },
+      },
+    });
+
+    try {
+      const result = await sdk.run('Run the release UI workflow.');
+      const workflowOutput = result.toolCalls[0]?.output as
+        | { stepCount?: number; results?: Array<Record<string, unknown>> }
+        | undefined;
+
+      expect(result.toolCalls[0]?.publicName).toBe('computer_run_workflow');
+      expect(workflowOutput?.stepCount).toBe(5);
+      expect(calls).toEqual([
+        'open:https://example.com',
+        'type:release-ready',
+        'keys:ENTER',
+        'screenshot:artifacts/release.png',
+      ]);
     } finally {
       await sdk.close();
     }

@@ -563,11 +563,24 @@ export interface ActoviqTeammateRecord {
   agentName: string;
   sessionId: string;
   status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+  leaderName?: string;
+  parentSessionId?: string;
+  originPrompt?: string;
+  lineage?: string[];
   taskId?: string;
   lastTaskDescription?: string;
+  lastTaskStatus?: ActoviqBackgroundTaskStatus;
   lastRunId?: string;
   lastCompletedAt?: string;
+  lastActiveAt?: string;
+  lastResumedAt?: string;
   mailboxDepth?: number;
+  mailboxMessageCount?: number;
+  mailboxTurns?: number;
+  lastMailboxMessageId?: string;
+  runCount?: number;
+  backgroundRunCount?: number;
+  recoveryCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -581,12 +594,15 @@ export interface CreateActoviqTeammateOptions {
 export interface CreateActoviqSwarmOptions {
   name: string;
   leader?: string;
+  continuous?: boolean;
 }
 
 export interface ActoviqSwarmRunResult {
   teammate: ActoviqTeammateRecord;
   task?: ActoviqBackgroundTaskRecord;
   result?: AgentRunResult;
+  source?: 'prompt' | 'mailbox' | 'background';
+  mailboxMessagesProcessed?: number;
 }
 
 export interface ActoviqComputerUseExecutor {
@@ -1181,6 +1197,9 @@ export interface ActoviqCompactBoundaryMetadata {
   preTokens?: number;
   userContext?: string;
   messagesSummarized?: number;
+  preservedMessages?: number;
+  droppedMessages?: number;
+  retryCount?: number;
   preservedSegment?: ActoviqPreservedSegment;
 }
 

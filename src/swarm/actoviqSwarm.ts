@@ -25,6 +25,14 @@ interface ActoviqSwarmBindings {
   getBackgroundTask(taskId: string): Promise<ActoviqBackgroundTaskRecord | undefined>;
 }
 
+interface ContinueActoviqTeammateOptions {
+  prompt?: string;
+  maxPasses?: number;
+}
+
+const DEFAULT_MAILBOX_CONTINUATION_PROMPT =
+  'Continue with the latest teammate messages, preserve continuity, and only report back when you have meaningful progress.';
+
 export class ActoviqSwarmTeammateHandle {
   constructor(
     private readonly team: ActoviqSwarmTeam,
@@ -57,15 +65,31 @@ export class ActoviqSwarmTeammateHandle {
   session(): Promise<AgentSession> {
     return this.team.session(this.name);
   }
+
+  continueFromMailbox(
+    options: ContinueActoviqTeammateOptions = {},
+  ): Promise<ActoviqSwarmRunResult | undefined> {
+    return this.team.continueFromMailbox(this.name, options);
+  }
+
+  recover(): Promise<ActoviqTeammateRecord> {
+    return this.team.recover(this.name);
+  }
 }
 
 export class ActoviqSwarmTeam {
+  private readonly mailboxContinuations = new Map<
+    string,
+    Promise<ActoviqSwarmRunResult | undefined>
+  >();
+
   constructor(
     private readonly bindings: ActoviqSwarmBindings,
     private readonly teammateStore: TeammateStore,
     private readonly mailboxStore: MailboxStore,
     readonly name: string,
     readonly leader: string,
+    private readonly continuous = false,
   ) {}
 
   async spawn(options: CreateActoviqTeammateOptions): Promise<ActoviqSwarmRunResult> {
@@ -82,7 +106,15 @@ export class ActoviqSwarmTeam {
       agentName: options.agent,
       sessionId: session.id,
       status: 'idle',
+      leaderName: this.leader,
+      originPrompt: options.prompt,
+      lineage: [`spawn:${options.agent}`],
       mailboxDepth: 0,
+      mailboxMessageCount: 0,
+      mailboxTurns: 0,
+      runCount: 0,
+      backgroundRunCount: 0,
+      recoveryCount: 0,
       createdAt,
       updatedAt: createdAt,
     });
@@ -114,57 +146,108 @@ export class ActoviqSwarmTeam {
 
   async session(name: string): Promise<AgentSession> {
     const teammate = await this.requireTeammate(name);
-    return this.bindings.resumeSession(teammate.sessionId);
+    const session = await this.bindings.resumeSession(teammate.sessionId);
+    await this.teammateStore.save({
+      ...teammate,
+      lastResumedAt: nowIso(),
+      updatedAt: nowIso(),
+    });
+    return session;
   }
 
   async run(name: string, prompt: string): Promise<ActoviqSwarmRunResult> {
-    const teammate = await this.requireTeammate(name);
-    const session = await this.bindings.resumeSession(teammate.sessionId);
-    const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
-    const running = {
-      ...teammate,
-      status: 'running' as const,
-      lastTaskDescription: prompt,
-      mailboxDepth: 0,
-      updatedAt: nowIso(),
-    };
-    await this.teammateStore.save(running);
-    try {
-      const result = await session.send(composeTeammateInput(injectedMessages, prompt));
-      const updated = {
-        ...running,
-        status: 'idle' as const,
-        lastRunId: result.runId,
-        lastCompletedAt: nowIso(),
-        updatedAt: nowIso(),
-      };
-      await this.teammateStore.save(updated);
-      await this.mailboxStore.post(this.name, this.leader, {
-        from: name,
-        kind: 'task',
-        text: result.text,
-        createdAt: nowIso(),
-        metadata: { sessionId: session.id, runId: result.runId },
-      });
-      return {
-        teammate: updated,
-        result,
-      };
-    } catch (error) {
-      const updated = {
-        ...running,
-        status: 'failed' as const,
-        updatedAt: nowIso(),
-      };
-      await this.teammateStore.save(updated);
-      await this.mailboxStore.post(this.name, this.leader, {
-        from: name,
-        kind: 'status',
-        text: error instanceof Error ? error.message : 'Teammate run failed.',
-        createdAt: nowIso(),
-      });
-      throw error;
+    return this.runInternal(name, prompt, 'prompt');
+  }
+
+  async continueFromMailbox(
+    name: string,
+    options: ContinueActoviqTeammateOptions = {},
+  ): Promise<ActoviqSwarmRunResult | undefined> {
+    const existing = this.mailboxContinuations.get(name);
+    if (existing) {
+      return existing;
     }
+
+    const continuation = (async () => {
+      const maxPasses = Math.max(1, options.maxPasses ?? 8);
+      let lastResult: ActoviqSwarmRunResult | undefined;
+
+      for (let index = 0; index < maxPasses; index += 1) {
+        const teammate = await this.requireTeammate(name);
+        if (teammate.status === 'running') {
+          return lastResult;
+        }
+
+        const pending = await this.mailboxStore.list(this.name, name);
+        if (pending.length === 0) {
+          return lastResult;
+        }
+
+        lastResult = await this.runInternal(
+          name,
+          options.prompt ?? DEFAULT_MAILBOX_CONTINUATION_PROMPT,
+          'mailbox',
+        );
+      }
+
+      return lastResult;
+    })().finally(() => {
+      this.mailboxContinuations.delete(name);
+    });
+
+    this.mailboxContinuations.set(name, continuation);
+    return continuation;
+  }
+
+  async continueAllFromMailbox(
+    options: ContinueActoviqTeammateOptions = {},
+  ): Promise<ActoviqSwarmRunResult[]> {
+    const results: ActoviqSwarmRunResult[] = [];
+    const maxPasses = Math.max(1, options.maxPasses ?? 8);
+
+    for (let index = 0; index < maxPasses; index += 1) {
+      let progressed = false;
+      const teammates = await this.listTeammates();
+
+      for (const teammate of teammates) {
+        if (teammate.status === 'running') {
+          continue;
+        }
+        const pending = await this.mailboxStore.list(this.name, teammate.name);
+        if (pending.length === 0) {
+          continue;
+        }
+        const result = await this.continueFromMailbox(teammate.name, {
+          prompt: options.prompt,
+          maxPasses: 1,
+        });
+        if (result) {
+          progressed = true;
+          results.push(result);
+        }
+      }
+
+      if (!progressed) {
+        break;
+      }
+    }
+
+    return results;
+  }
+
+  async recover(name: string): Promise<ActoviqTeammateRecord> {
+    const teammate = await this.requireTeammate(name);
+    const recovered: ActoviqTeammateRecord = {
+      ...teammate,
+      status: 'idle',
+      taskId: undefined,
+      recoveryCount: (teammate.recoveryCount ?? 0) + 1,
+      lastActiveAt: nowIso(),
+      updatedAt: nowIso(),
+      lineage: appendLineageMarker(teammate.lineage, 'recovered'),
+    };
+    await this.teammateStore.save(recovered);
+    return recovered;
   }
 
   async runBackground(
@@ -190,7 +273,12 @@ export class ActoviqSwarmTeam {
       taskId: task.id,
       lastTaskDescription: prompt,
       mailboxDepth: 0,
+      backgroundRunCount: (teammate.backgroundRunCount ?? 0) + 1,
+      mailboxMessageCount: (teammate.mailboxMessageCount ?? 0) + injectedMessages.length,
+      lastMailboxMessageId: injectedMessages.at(-1)?.id,
+      lastResumedAt: nowIso(),
       updatedAt: nowIso(),
+      lineage: appendLineageMarker(teammate.lineage, `background:${task.id}`),
     });
     await this.mailboxStore.post(this.name, this.leader, {
       from: name,
@@ -200,6 +288,77 @@ export class ActoviqSwarmTeam {
       metadata: { taskId: task.id, sessionId: session.id },
     });
     return task;
+  }
+
+  private async runInternal(
+    name: string,
+    prompt: string,
+    source: 'prompt' | 'mailbox',
+  ): Promise<ActoviqSwarmRunResult> {
+    const teammate = await this.requireTeammate(name);
+    const session = await this.bindings.resumeSession(teammate.sessionId);
+    const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
+    const processedMailboxMessages = injectedMessages.length;
+    const running = {
+      ...teammate,
+      status: 'running' as const,
+      lastTaskDescription: prompt,
+      mailboxDepth: 0,
+      lastResumedAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    await this.teammateStore.save(running);
+    try {
+      const result = await session.send(composeTeammateInput(injectedMessages, prompt));
+      const updated = {
+        ...running,
+        status: 'idle' as const,
+        lastTaskStatus: 'completed' as const,
+        lastRunId: result.runId,
+        lastCompletedAt: nowIso(),
+        lastActiveAt: nowIso(),
+        runCount: (running.runCount ?? 0) + 1,
+        mailboxTurns:
+          source === 'mailbox'
+            ? (running.mailboxTurns ?? 0) + 1
+            : running.mailboxTurns ?? 0,
+        mailboxMessageCount: (running.mailboxMessageCount ?? 0) + processedMailboxMessages,
+        lastMailboxMessageId: injectedMessages.at(-1)?.id ?? running.lastMailboxMessageId,
+        updatedAt: nowIso(),
+        lineage: appendLineageMarker(running.lineage, `${source}:${result.runId}`),
+      };
+      await this.teammateStore.save(updated);
+      await this.mailboxStore.post(this.name, this.leader, {
+        from: name,
+        kind: 'task',
+        text: result.text,
+        createdAt: nowIso(),
+        metadata: { sessionId: session.id, runId: result.runId },
+      });
+      return {
+        teammate: updated,
+        result,
+        source,
+        mailboxMessagesProcessed: processedMailboxMessages,
+      };
+    } catch (error) {
+      const updated = {
+        ...running,
+        status: 'failed' as const,
+        lastTaskStatus: 'failed' as const,
+        lastActiveAt: nowIso(),
+        updatedAt: nowIso(),
+        lineage: appendLineageMarker(running.lineage, `${source}:failed`),
+      };
+      await this.teammateStore.save(updated);
+      await this.mailboxStore.post(this.name, this.leader, {
+        from: name,
+        kind: 'status',
+        text: error instanceof Error ? error.message : 'Teammate run failed.',
+        createdAt: nowIso(),
+      });
+      throw error;
+    }
   }
 
   async broadcast(text: string): Promise<ActoviqMailboxMessage[]> {
@@ -228,6 +387,9 @@ export class ActoviqSwarmTeam {
         mailboxDepth: depth,
         updatedAt: nowIso(),
       });
+      if (this.continuous && teammate.status !== 'running') {
+        void this.continueFromMailbox(recipient).catch(() => undefined);
+      }
     }
     return message;
   }
@@ -242,6 +404,9 @@ export class ActoviqSwarmTeam {
 
   async waitForIdle(): Promise<ActoviqTeammateRecord[]> {
     while (true) {
+      if (this.continuous) {
+        await this.continueAllFromMailbox({ maxPasses: 1 });
+      }
       const teammates = await this.listTeammates();
       if (teammates.every(teammate => teammate.status !== 'running')) {
         return teammates;
@@ -292,13 +457,17 @@ export class ActoviqSwarmTeam {
         ...teammate,
         status:
           task.status === 'completed'
-            ? 'completed'
+            ? 'idle'
             : task.status === 'cancelled'
               ? 'cancelled'
               : 'failed',
+        taskId: undefined,
+        lastTaskStatus: task.status,
         lastRunId: task.runId ?? teammate.lastRunId,
         lastCompletedAt: task.completedAt ?? teammate.lastCompletedAt,
+        lastActiveAt: task.completedAt ?? nowIso(),
         updatedAt: nowIso(),
+        lineage: appendLineageMarker(teammate.lineage, `background:${task.status}`),
       };
       await this.teammateStore.save(updated);
       await this.mailboxStore.post(this.name, this.leader, {
@@ -352,6 +521,7 @@ export class ActoviqSwarmApi {
       this.mailboxStore,
       options.name,
       options.leader ?? 'leader',
+      options.continuous ?? false,
     );
   }
 }
@@ -382,4 +552,11 @@ function formatTeammateMailboxMessages(messages: ActoviqMailboxMessage[]): strin
       return `<teammate-message teammate_id="${message.from}"${summary}>\n${message.text}\n</teammate-message>`;
     })
     .join('\n\n');
+}
+
+function appendLineageMarker(
+  lineage: string[] | undefined,
+  marker: string,
+): string[] {
+  return [...(lineage ?? []), marker].slice(-16);
 }
