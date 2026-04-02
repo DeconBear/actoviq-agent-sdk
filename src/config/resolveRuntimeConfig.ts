@@ -24,6 +24,11 @@ const DEFAULT_COMPACT_CONFIG = {
   microcompactEnabled: true,
   microcompactKeepRecentToolResults: 3,
   microcompactMinContentChars: 1_000,
+  apiMicrocompactEnabled: true,
+  apiMicrocompactMaxInputTokens: 180_000,
+  apiMicrocompactTargetInputTokens: 40_000,
+  apiMicrocompactClearToolResults: true,
+  apiMicrocompactClearToolUses: false,
 } as const;
 
 function getConfigValue(
@@ -99,7 +104,7 @@ export async function resolveRuntimeConfig(
     sessionDirectory:
       options.sessionDirectory ?? path.join(homeDir, '.actoviq', 'actoviq-agent-sdk'),
     clientName: options.clientName ?? 'actoviq-agent-sdk',
-    clientVersion: options.clientVersion ?? '0.1.5',
+    clientVersion: options.clientVersion ?? '0.1.6',
     systemPrompt: options.systemPrompt,
     maxToolIterations: options.maxToolIterations ?? 12,
     userId: options.userId,

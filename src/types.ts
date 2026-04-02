@@ -32,6 +32,53 @@ export interface ToolExecutionContext {
   iteration: number;
 }
 
+export type ActoviqPermissionMode =
+  | 'default'
+  | 'acceptEdits'
+  | 'bypassPermissions'
+  | 'plan'
+  | 'auto';
+
+export type ActoviqPermissionBehavior = 'allow' | 'deny' | 'ask';
+
+export interface ActoviqPermissionRule {
+  toolName: string;
+  behavior: ActoviqPermissionBehavior;
+  matcher?: string;
+  source?: string;
+}
+
+export interface ActoviqPermissionDecision {
+  toolName: string;
+  publicName: string;
+  behavior: 'allow' | 'deny';
+  reason: string;
+  source: 'mode' | 'rule' | 'classifier';
+  matchedRule?: string;
+  timestamp: string;
+}
+
+export type ActoviqClassifierOutcome =
+  | {
+      behavior: 'allow' | 'deny' | 'ask';
+      reason: string;
+    };
+
+export interface ActoviqToolClassifierContext {
+  runId: string;
+  sessionId?: string;
+  workDir: string;
+  toolName: string;
+  publicName: string;
+  input: unknown;
+  prompt: string;
+  iteration: number;
+}
+
+export type ActoviqToolClassifier = (
+  context: ActoviqToolClassifierContext,
+) => Promise<ActoviqClassifierOutcome | void> | ActoviqClassifierOutcome | void;
+
 export interface CreateToolOptions<Input = any, Output = any> {
   name: string;
   description: string;
@@ -96,6 +143,7 @@ export interface ModelRequest {
   tools?: ProviderTool[];
   tool_choice?: ToolChoice;
   metadata?: Metadata;
+  context_management?: Record<string, unknown>;
   stop_sequences?: string[];
   signal?: AbortSignal;
 }
@@ -262,6 +310,10 @@ export interface CreateAgentSdkOptions {
   agents?: ActoviqAgentDefinition[];
   hooks?: ActoviqHooks;
   compact?: Partial<ActoviqCompactConfig>;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
+  classifier?: ActoviqToolClassifier;
+  computerUse?: boolean | CreateActoviqComputerUseOptions;
   modelApi?: ModelApi;
 }
 
@@ -273,6 +325,11 @@ export interface ActoviqCompactConfig {
   microcompactEnabled: boolean;
   microcompactKeepRecentToolResults: number;
   microcompactMinContentChars: number;
+  apiMicrocompactEnabled?: boolean;
+  apiMicrocompactMaxInputTokens?: number;
+  apiMicrocompactTargetInputTokens?: number;
+  apiMicrocompactClearToolResults?: boolean;
+  apiMicrocompactClearToolUses?: boolean;
 }
 
 export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
@@ -321,6 +378,9 @@ export interface AgentRunOptions {
   userId?: string;
   metadata?: Record<string, unknown>;
   hooks?: ActoviqHooks;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
+  classifier?: ActoviqToolClassifier;
   signal?: AbortSignal;
 }
 
@@ -384,6 +444,7 @@ export interface AgentRunResult {
   sessionHookMetadata?: Record<string, unknown>;
   delegatedAgents?: ActoviqDelegatedAgentRecord[];
   reactiveCompact?: ActoviqSessionCompactResult;
+  permissionDecisions?: ActoviqPermissionDecision[];
 }
 
 export type ActoviqCompactTrigger = 'auto' | 'manual' | 'reactive';
@@ -484,6 +545,63 @@ export interface ActoviqBackgroundTaskRecord {
   error?: string;
 }
 
+export interface ActoviqMailboxMessage {
+  id: string;
+  teamName: string;
+  to: string;
+  from: string;
+  kind: 'status' | 'task' | 'user';
+  text: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ActoviqTeammateRecord {
+  id: string;
+  teamName: string;
+  name: string;
+  agentName: string;
+  sessionId: string;
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+  taskId?: string;
+  lastTaskDescription?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateActoviqTeammateOptions {
+  name: string;
+  agent: string;
+  prompt: string;
+}
+
+export interface CreateActoviqSwarmOptions {
+  name: string;
+  leader?: string;
+}
+
+export interface ActoviqSwarmRunResult {
+  teammate: ActoviqTeammateRecord;
+  task?: ActoviqBackgroundTaskRecord;
+  result?: AgentRunResult;
+}
+
+export interface ActoviqComputerUseExecutor {
+  openUrl(url: string): Promise<void> | void;
+  typeText(text: string): Promise<void> | void;
+  keyPress(keys: string[]): Promise<void> | void;
+  readClipboard(): Promise<string> | string;
+  writeClipboard(text: string): Promise<void> | void;
+  takeScreenshot(outputPath: string): Promise<string> | string;
+}
+
+export interface CreateActoviqComputerUseOptions {
+  prefix?: string;
+  executor?: ActoviqComputerUseExecutor;
+  asMcpServer?: boolean;
+  serverName?: string;
+}
+
 export interface WaitForActoviqBackgroundTaskOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;
@@ -532,6 +650,13 @@ export type AgentEvent =
       runId: string;
       iteration: number;
       call: AgentToolCallEventPayload;
+      timestamp: string;
+    }
+  | {
+      type: 'tool.permission';
+      runId: string;
+      iteration: number;
+      decision: ActoviqPermissionDecision;
       timestamp: string;
     }
   | {
