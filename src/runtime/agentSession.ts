@@ -3,6 +3,10 @@
 import type {
   AgentRunOptions,
   AgentRunResult,
+  AgentSessionMemoryExtractionOptions,
+  ActoviqCompactStateOptions,
+  ActoviqCompactState,
+  ActoviqSessionMemoryExtractionResult,
   SessionForkOptions,
   StoredSession,
 } from '../types.js';
@@ -21,6 +25,14 @@ interface AgentSessionBindings {
     input: string | MessageParam['content'],
     options?: AgentRunOptions,
   ) => AgentRunStream;
+  extractSessionMemory: (
+    session: AgentSession,
+    options?: AgentSessionMemoryExtractionOptions,
+  ) => Promise<ActoviqSessionMemoryExtractionResult>;
+  getCompactState: (
+    session: AgentSession,
+    options?: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'>,
+  ) => Promise<ActoviqCompactState>;
   hydrate: (stored: StoredSession) => AgentSession;
 }
 
@@ -71,6 +83,18 @@ export class AgentSession {
     options: AgentRunOptions = {},
   ): AgentRunStream {
     return this.bindings.streamSession(this, input, options);
+  }
+
+  async extractMemory(
+    options: AgentSessionMemoryExtractionOptions = {},
+  ): Promise<ActoviqSessionMemoryExtractionResult> {
+    return this.bindings.extractSessionMemory(this, options);
+  }
+
+  async compactState(
+    options: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
+  ): Promise<ActoviqCompactState> {
+    return this.bindings.getCompactState(this, options);
   }
 
   async rename(title: string): Promise<void> {

@@ -678,12 +678,46 @@ export interface ActoviqSessionMemoryProgress {
   currentTokenCount?: number;
   tokensAtLastExtraction?: number;
   tokensSinceLastExtraction?: number;
+  messageCountSinceLastExtraction?: number;
   toolCallsSinceLastUpdate?: number;
   initialized: boolean;
   meetsInitializationThreshold?: boolean;
   meetsUpdateThreshold?: boolean;
   meetsToolCallThreshold?: boolean;
+  hasToolCallsInLastTurn?: boolean;
   shouldExtract?: boolean;
+}
+
+export interface ActoviqSessionMemoryRuntimeState {
+  initialized: boolean;
+  tokensAtLastExtraction: number;
+  lastMessageCountAtExtraction: number;
+  lastSummarizedMessageCount?: number;
+  extractionCount: number;
+  lastExtractionAt?: string;
+  lastAttemptAt?: string;
+  lastError?: string;
+  pendingPostCompaction: boolean;
+}
+
+export interface AgentSessionMemoryExtractionOptions {
+  force?: boolean;
+  model?: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
+export interface ActoviqSessionMemoryExtractionResult {
+  success: boolean;
+  skipped: boolean;
+  updated: boolean;
+  trigger: 'auto' | 'manual';
+  reason?: string;
+  sessionId?: string;
+  memoryPath?: string;
+  summary?: string;
+  usage?: Usage;
+  state: ActoviqSessionMemoryRuntimeState;
 }
 
 export interface ActoviqMemoryOptions {
@@ -711,7 +745,10 @@ export interface ActoviqCompactStateOptions extends ActoviqMemoryStateOptions {
   currentTokenCount?: number;
   tokensAtLastExtraction?: number;
   initialized?: boolean;
+  hasToolCallsInLastTurn?: boolean;
+  messageCountSinceLastExtraction?: number;
   toolCallsSinceLastUpdate?: number;
+  runtimeState?: ActoviqSessionMemoryRuntimeState;
 }
 
 export interface ActoviqMemoryState {
@@ -732,13 +769,16 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   sessionMemoryConfig: ActoviqSessionMemoryConfig;
   sessionMemoryCompactConfig: ActoviqSessionMemoryCompactConfig;
   progress?: ActoviqSessionMemoryProgress;
+  runtimeState?: ActoviqSessionMemoryRuntimeState;
   transcriptPath?: string;
   boundaries?: ActoviqTranscriptBoundary[];
   latestBoundary?: ActoviqTranscriptBoundary;
   compactCount: number;
   microcompactCount: number;
   hasCompacted: boolean;
+  pendingPostCompaction?: boolean;
   lastSummarizedMessageUuid?: string;
+  latestPreservedSegment?: ActoviqPreservedSegment;
   latestBoundarySummary?: string;
   canUseSessionMemoryCompaction: boolean;
   summaryMessage?: string;
@@ -779,11 +819,18 @@ export interface ActoviqRelevantMemoryLookupOptions extends ActoviqMemoryOptions
   limit?: number;
 }
 
+export interface ActoviqPreservedSegment {
+  headUuid: string;
+  anchorUuid: string;
+  tailUuid: string;
+}
+
 export interface ActoviqCompactBoundaryMetadata {
   trigger?: string;
   preTokens?: number;
   userContext?: string;
   messagesSummarized?: number;
+  preservedSegment?: ActoviqPreservedSegment;
 }
 
 export interface ActoviqMicrocompactBoundaryMetadata {

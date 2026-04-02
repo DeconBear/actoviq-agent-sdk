@@ -65,6 +65,7 @@ This launches a streaming REPL with tool access and an infinite session loop unt
 
 ```bash
 npm run example:actoviq-memory
+npm run example:actoviq-session-memory
 ```
 
 ### npm Publishing
@@ -210,6 +211,29 @@ for (const prompt of prompts) {
 await sdk.close();
 ```
 
+### Session Memory Example
+
+```ts
+import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+const sdk = await createAgentSdk();
+
+const session = await sdk.createSession({ title: 'Session Memory Demo' });
+await session.send('We should bump package.json before tagging the next release.');
+await session.send('We also want CI green and concise release notes before publish.');
+
+const extraction = await session.extractMemory();
+const compactState = await session.compactState({
+  includeSessionMemory: true,
+  includeSummaryMessage: true,
+});
+
+console.log(extraction);
+console.log(compactState.runtimeState);
+console.log(compactState.sessionMemory?.content);
+```
+
 ## Interactive Agent Demo
 
 The repository includes a bridge-based interactive example with:
@@ -339,6 +363,15 @@ meta user reminders at the start of a turn when auto memory is enabled. The
 SDK keeps a per-session surfaced-memory budget and de-duplicates already
 surfaced files across turns.
 
+Session-based SDK conversations now also align more closely with the upstream
+`claude-code` session-memory loop:
+
+- session memory is initialized automatically once the conversation is large enough
+- extraction thresholds follow token growth, tool-call activity, and natural turn breaks
+- the summary file is updated automatically after qualifying session turns
+- you can still force a manual refresh with `session.extractMemory()`
+- `session.compactState()` merges filesystem compact state with runtime extraction metadata
+
 ```ts
 import {
   createActoviqMemoryApi,
@@ -390,8 +423,13 @@ Available helpers:
 - `memory.getSessionMemoryConfig()`
 - `memory.getSessionMemoryCompactConfig()`
 - `memory.evaluateSessionMemoryProgress(...)`
+- `session.extractMemory(...)`
 - `memory.compactState(...)`
 - `memory.buildSessionMemoryCompactSummary(...)`
+- `parseActoviqSessionMemoryRuntimeState(...)`
+- `filterActoviqMessagesForSessionMemory(...)`
+- `estimateActoviqConversationTokens(...)`
+- `evaluateActoviqSessionMemoryProgress(...)`
 - `getActoviqBridgeCompactBoundaries(...)`
 - `getActoviqBridgeLatestCompactBoundary(...)`
 - `session.compactState(...)`
@@ -402,6 +440,7 @@ Run the repository example with:
 
 ```bash
 npm run example:actoviq-memory
+npm run example:actoviq-session-memory
 ```
 
 ## Buddy Helpers
