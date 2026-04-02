@@ -43,6 +43,11 @@ export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
+  createActoviqComputerUseMcpServer,
+  createActoviqComputerUseTools,
+  createDefaultActoviqComputerUseExecutor,
+} from './computer/actoviqComputerUse.js';
+export {
   ActoviqSdkError,
   ActoviqProviderApiError,
   ActoviqBridgeProcessError,
@@ -96,6 +101,12 @@ export {
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
 export {
+  decideActoviqToolPermission,
+  isMutatingActoviqTool,
+  isReadOnlyActoviqTool,
+} from './runtime/actoviqPermissions.js';
+export { getActoviqApiContextManagement } from './runtime/actoviqApiMicrocompact.js';
+export {
   ActoviqBackgroundTaskHandle,
   ActoviqBackgroundTaskManager,
   ActoviqBackgroundTasksApi,
@@ -103,8 +114,15 @@ export {
 export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
+export {
+  ActoviqSwarmApi,
+  ActoviqSwarmTeam,
+  ActoviqSwarmTeammateHandle,
+} from './swarm/actoviqSwarm.js';
 export { tool } from './runtime/tools.js';
+export { MailboxStore } from './storage/mailboxStore.js';
 export { SessionStore } from './storage/sessionStore.js';
+export { TeammateStore } from './storage/teammateStore.js';
 export {
   ActoviqWorkspace,
   createGitWorktreeWorkspace,

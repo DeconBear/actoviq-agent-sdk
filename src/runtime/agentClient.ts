@@ -1,6 +1,10 @@
 ﻿import type { MessageParam } from '../provider/types.js';
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
+import {
+  createActoviqComputerUseMcpServer,
+  createActoviqComputerUseTools,
+} from '../computer/actoviqComputerUse.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
 import {
   mergeActoviqHooks,
@@ -19,7 +23,9 @@ import {
 } from '../memory/actoviqSessionMemoryState.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
+import { MailboxStore } from '../storage/mailboxStore.js';
 import { SessionStore } from '../storage/sessionStore.js';
+import { TeammateStore } from '../storage/teammateStore.js';
 import type {
   ActoviqAgentDefinition,
   ActoviqAgentDefinitionSummary,
@@ -39,11 +45,14 @@ import type {
   ActoviqSessionMemoryExtractionResult,
   ActoviqSessionMemoryRuntimeState,
   ActoviqSurfacedMemory,
+  ActoviqToolClassifier,
   CreateAgentSdkOptions,
+  CreateActoviqComputerUseOptions,
   SessionCreateOptions,
   SessionSummary,
   StoredSession,
 } from '../types.js';
+import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
 import {
   ActoviqAgentsApi,
   createActoviqTaskTool,
@@ -258,20 +267,29 @@ export class ActoviqAgentClient {
   readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
+  readonly swarm: ActoviqSwarmApi;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
   private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
+  private readonly defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'];
+  private readonly defaultPermissions?: CreateAgentSdkOptions['permissions'];
+  private readonly defaultClassifier?: ActoviqToolClassifier;
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
     private readonly store: SessionStore,
     private readonly backgroundTaskStore: BackgroundTaskStore,
+    private readonly mailboxStore: MailboxStore,
+    private readonly teammateStore: TeammateStore,
     private readonly modelApi: NonNullable<CreateAgentSdkOptions['modelApi']>,
     private readonly mcpManager: McpConnectionManager,
     private readonly defaultTools: AgentToolDefinition[],
     private readonly defaultMcpServers: AgentMcpServerDefinition[],
     private readonly hooks?: ActoviqHooks,
     agentDefinitions: ActoviqAgentDefinition[] = [],
+    defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'],
+    defaultPermissions?: CreateAgentSdkOptions['permissions'],
+    defaultClassifier?: ActoviqToolClassifier,
   ) {
     this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
     this.agentDefinitions = new Map(
@@ -287,6 +305,9 @@ export class ActoviqAgentClient {
         this.launchBackgroundAgentTask(agent, prompt, options),
       createDefinitionSession: (agent, options) => this.createAgentSession(agent, options),
     });
+    this.defaultPermissionMode = defaultPermissionMode;
+    this.defaultPermissions = defaultPermissions ? [...defaultPermissions] : undefined;
+    this.defaultClassifier = defaultClassifier;
     this.buddy = createActoviqBuddyApi({
       homeDir: this.config.homeDir,
       userId: this.config.userId,
@@ -295,27 +316,62 @@ export class ActoviqAgentClient {
       homeDir: this.config.homeDir,
       projectPath: this.config.workDir,
     });
+    this.swarm = new ActoviqSwarmApi(
+      {
+        createAgentSession: (agent, options) => this.createAgentSession(agent, options),
+        launchBackgroundOnSession: (session, agent, prompt, options) =>
+          this.launchBackgroundOnSession(session, agent, prompt, options),
+        resumeSession: (sessionId) => this.resumeSession(sessionId),
+        getBackgroundTask: (taskId) => this.backgroundTaskManager.get(taskId),
+      },
+      this.teammateStore,
+      this.mailboxStore,
+    );
+    if (
+      this.agentDefinitions.size > 0 &&
+      !this.defaultTools.some(tool => tool.name === 'Task')
+    ) {
+      this.defaultTools.unshift(this.createTaskTool());
+    }
   }
 
   static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
     const config = await resolveRuntimeConfig(options);
     const store = new SessionStore(config.sessionDirectory);
     const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
+    const mailboxStore = new MailboxStore(config.sessionDirectory);
+    const teammateStore = new TeammateStore(config.sessionDirectory);
     const modelApi = options.modelApi ?? createActoviqModelApi(config);
     const mcpManager = new McpConnectionManager({
       name: config.clientName,
       version: config.clientVersion,
     });
+    const defaultTools = [...(options.tools ?? [])];
+    const defaultMcpServers = [...(options.mcpServers ?? [])];
+    if (options.computerUse) {
+      const computerUseOptions: CreateActoviqComputerUseOptions =
+        typeof options.computerUse === 'object' ? options.computerUse : {};
+      if (computerUseOptions.asMcpServer) {
+        defaultMcpServers.push(createActoviqComputerUseMcpServer(computerUseOptions));
+      } else {
+        defaultTools.push(...createActoviqComputerUseTools(computerUseOptions));
+      }
+    }
     return new ActoviqAgentClient(
       config,
       store,
       backgroundTaskStore,
+      mailboxStore,
+      teammateStore,
       modelApi,
       mcpManager,
-      [...(options.tools ?? [])],
-      [...(options.mcpServers ?? [])],
+      defaultTools,
+      defaultMcpServers,
       options.hooks,
       options.agents ?? [],
+      options.permissionMode,
+      options.permissions,
+      options.classifier,
     );
   }
 
@@ -617,14 +673,14 @@ export class ActoviqAgentClient {
       prefixedMessages: augmentations?.prefixedMessages,
       sessionId: session?.id,
       systemPrompt,
-      tools: [
-        ...(options.__actoviqUseDefaultTools === false ? [] : this.defaultTools),
-        ...(options.tools ?? []),
-      ],
-      mcpServers: [
-        ...(options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers),
-        ...(options.mcpServers ?? []),
-      ],
+      tools: mergeUniqueByName(
+        options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
+        options.tools ?? [],
+      ),
+      mcpServers: mergeUniqueByName(
+        options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
+        options.mcpServers ?? [],
+      ),
       model: options.model ?? session?.model ?? this.config.model,
       maxTokens: options.maxTokens,
       temperature: options.temperature,
@@ -632,6 +688,9 @@ export class ActoviqAgentClient {
       userId: options.userId ?? this.config.userId,
       metadata,
       signal: options.signal,
+      permissionMode: options.permissionMode ?? this.defaultPermissionMode,
+      permissions: options.permissions ?? this.defaultPermissions,
+      classifier: options.classifier ?? this.defaultClassifier,
       hooks: augmentations?.hooks,
       streaming,
       emit,
@@ -1008,6 +1067,35 @@ export class ActoviqAgentClient {
       workDir: this.config.workDir,
       parentRunId: options.parentRunId,
       parentSessionId: options.parentSessionId,
+      onRun: async (signal) => {
+        const result = await session.send(prompt, { signal });
+        return {
+          runId: result.runId,
+          sessionId: session.id,
+          model: result.model,
+          text: result.text,
+          toolCallCount: result.toolCalls.length,
+        };
+      },
+    });
+  }
+
+  private async launchBackgroundOnSession(
+    session: AgentSession,
+    agent: string,
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ): Promise<ActoviqBackgroundTaskRecord> {
+    const definition = this.requireAgentDefinition(agent);
+    return this.backgroundTaskManager.launch({
+      subagentType: definition.name,
+      description: prompt,
+      workDir: this.config.workDir,
+      parentRunId: options.parentRunId,
+      parentSessionId: options.parentSessionId ?? session.id,
       onRun: async (signal) => {
         const result = await session.send(prompt, { signal });
         return {
@@ -1415,6 +1503,17 @@ function joinPromptParts(...parts: Array<string | undefined>): string | undefine
     return undefined;
   }
   return normalized.join('\n\n');
+}
+
+function mergeUniqueByName<T extends { name: string }>(defaults: T[], overrides: T[]): T[] {
+  const merged = new Map<string, T>();
+  for (const item of defaults) {
+    merged.set(item.name, item);
+  }
+  for (const item of overrides) {
+    merged.set(item.name, item);
+  }
+  return [...merged.values()];
 }
 
 

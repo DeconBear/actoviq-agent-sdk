@@ -12,6 +12,7 @@ import type {
   AgentRequestSummary,
   AgentRunOptions,
   AgentRunResult,
+  ActoviqPermissionDecision,
   ActoviqHooks,
   AgentToolCallEventPayload,
   AgentToolCallRecord,
@@ -23,6 +24,8 @@ import type {
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { resolveActoviqPostSamplingHooks } from '../hooks/actoviqHooks.js';
+import { getActoviqApiContextManagement } from './actoviqApiMicrocompact.js';
+import { decideActoviqToolPermission } from './actoviqPermissions.js';
 import {
   assistantMessageToParam,
   buildUserMessage,
@@ -45,6 +48,9 @@ export interface ExecuteConversationOptions {
   userId?: string;
   metadata?: Record<string, unknown>;
   signal?: AbortSignal;
+  permissionMode?: AgentRunOptions['permissionMode'];
+  permissions?: AgentRunOptions['permissions'];
+  classifier?: AgentRunOptions['classifier'];
   hooks?: ActoviqHooks;
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
@@ -84,6 +90,7 @@ export async function executeConversation(
   const toolMap = new Map(resolvedTools.map((tool) => [tool.publicName, tool]));
   const requestSummaries: AgentRequestSummary[] = [];
   const toolCalls: AgentToolCallRecord[] = [];
+  const permissionDecisions: ActoviqPermissionDecision[] = [];
 
   let iteration = 0;
   let finalMessage: AgentRunResult['message'] | undefined;
@@ -110,6 +117,7 @@ export async function executeConversation(
         options.userId ?? options.config.userId
           ? { user_id: options.userId ?? options.config.userId ?? null }
           : undefined,
+      context_management: getActoviqApiContextManagement(conversation, options.config.compact),
       messages: deepClone(conversation),
       signal: options.signal,
     };
@@ -206,6 +214,7 @@ export async function executeConversation(
         usage: finalMessage.usage,
         requests: requestSummaries,
         toolCalls,
+        permissionDecisions,
         startedAt,
         completedAt,
       };
@@ -254,6 +263,30 @@ export async function executeConversation(
             toolUse.name,
             `No tool named "${toolUse.name}" is currently registered.`,
           );
+        }
+        const permissionDecision = await decideActoviqToolPermission({
+          mode: options.permissionMode ?? 'default',
+          rules: options.permissions ?? [],
+          classifier: options.classifier,
+          runId: options.runId,
+          sessionId: options.sessionId,
+          workDir: options.config.workDir,
+          toolName: adapter.sourceName,
+          publicName: toolUse.name,
+          prompt: promptText,
+          toolInput: toolUse.input,
+          iteration,
+        });
+        permissionDecisions.push(permissionDecision);
+        options.emit?.({
+          type: 'tool.permission',
+          runId: options.runId,
+          iteration,
+          decision: permissionDecision,
+          timestamp: permissionDecision.timestamp,
+        });
+        if (permissionDecision.behavior === 'deny') {
+          throw new ToolExecutionError(toolUse.name, permissionDecision.reason);
         }
         const execution = await adapter.execute(toolUse.input, {
           signal: options.signal,
