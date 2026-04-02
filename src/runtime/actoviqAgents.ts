@@ -4,6 +4,7 @@ import type { MessageParam } from '../provider/types.js';
 import type {
   ActoviqAgentDefinition,
   ActoviqAgentDefinitionSummary,
+  ActoviqBackgroundTaskRecord,
   ActoviqTaskToolInput,
   ActoviqTaskToolResult,
   AgentRunOptions,
@@ -27,6 +28,14 @@ interface ActoviqAgentBindings {
     prompt: string | MessageParam['content'],
     options?: AgentRunOptions,
   ) => Promise<AgentRunResult>;
+  launchBackgroundDefinition: (
+    agent: string,
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ) => Promise<ActoviqBackgroundTaskRecord>;
   createDefinitionSession: (
     agent: string,
     options?: SessionCreateOptions,
@@ -63,6 +72,16 @@ export class ActoviqAgentHandle {
 
   summary(): ActoviqAgentDefinitionSummary | undefined {
     return this.bindings.listDefinitions().find(definition => definition.name === this.name);
+  }
+
+  launchBackground(
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ): Promise<ActoviqBackgroundTaskRecord> {
+    return this.bindings.launchBackgroundDefinition(this.name, prompt, options);
   }
 
   run(
@@ -103,6 +122,17 @@ export class ActoviqAgentsApi {
     return this.bindings.runDefinition(name, prompt, options);
   }
 
+  launchBackground(
+    name: string,
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ): Promise<ActoviqBackgroundTaskRecord> {
+    return this.bindings.launchBackgroundDefinition(name, prompt, options);
+  }
+
   createSession(
     name: string,
     options: SessionCreateOptions = {},
@@ -118,6 +148,14 @@ export function createActoviqTaskTool(options: {
     prompt: string,
     options?: AgentRunOptions,
   ) => Promise<AgentRunResult>;
+  launchBackgroundAgent: (
+    agent: string,
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ) => Promise<ActoviqBackgroundTaskRecord>;
   onDelegated?: (event: {
     subagentType: string;
     description: string;
@@ -141,15 +179,50 @@ export function createActoviqTaskTool(options: {
       inputSchema: z.object({
         description: z.string().min(1),
         subagent_type: z.string().min(1).optional(),
+        run_in_background: z.boolean().optional(),
       }),
-      outputSchema: z.object({
-        subagentType: z.string(),
-        runId: z.string(),
-        sessionId: z.string().optional(),
-        model: z.string(),
-        text: z.string(),
-        toolCallCount: z.number().int().nonnegative(),
-      }),
+      outputSchema: z.union([
+        z.object({
+          status: z.literal('completed'),
+          subagentType: z.string(),
+          runId: z.string(),
+          sessionId: z.string().optional(),
+          model: z.string(),
+          text: z.string(),
+          toolCallCount: z.number().int().nonnegative(),
+        }),
+        z.object({
+          status: z.literal('async_launched'),
+          taskId: z.string(),
+          subagentType: z.string(),
+          sessionId: z.string().optional(),
+          outputFile: z.string(),
+          canReadOutputFile: z.boolean(),
+          description: z.string(),
+        }),
+      ]),
+      serialize: (output) =>
+        output.status === 'completed'
+          ? [
+              `Delegated to ${output.subagentType}.`,
+              `Run id: ${output.runId}`,
+              output.sessionId ? `Session id: ${output.sessionId}` : undefined,
+              `Model: ${output.model}`,
+              `Tool calls: ${output.toolCallCount}`,
+              '',
+              output.text,
+            ]
+              .filter(Boolean)
+              .join('\n')
+          : [
+              `Background task launched for ${output.subagentType}.`,
+              `Task id: ${output.taskId}`,
+              output.sessionId ? `Session id: ${output.sessionId}` : undefined,
+              `Output file: ${output.outputFile}`,
+              `Description: ${output.description}`,
+            ]
+              .filter(Boolean)
+              .join('\n'),
       examples: [
         {
           description: 'Review the current release workflow and call out missing steps.',
@@ -157,7 +230,7 @@ export function createActoviqTaskTool(options: {
         },
       ],
     },
-    async ({ description: taskDescription, subagent_type }, context) => {
+    async ({ description: taskDescription, subagent_type, run_in_background }, context) => {
       const resolvedSubagent = subagent_type?.trim();
       if (!resolvedSubagent) {
         throw new ConfigurationError(
@@ -172,6 +245,30 @@ export function createActoviqTaskTool(options: {
         );
       }
 
+      if (run_in_background) {
+        const backgroundTask = await options.launchBackgroundAgent(resolvedSubagent, taskDescription, {
+          parentRunId: context.runId,
+          parentSessionId: context.sessionId,
+        });
+        options.onDelegated?.({
+          subagentType: resolvedSubagent,
+          description: taskDescription,
+          parentRunId: context.runId,
+          parentSessionId: context.sessionId,
+          runId: backgroundTask.runId ?? backgroundTask.id,
+          sessionId: backgroundTask.sessionId,
+        });
+        return {
+          status: 'async_launched',
+          taskId: backgroundTask.id,
+          subagentType: resolvedSubagent,
+          sessionId: backgroundTask.sessionId,
+          outputFile: backgroundTask.outputFile,
+          canReadOutputFile: true,
+          description: taskDescription,
+        };
+      }
+
       const result = await options.runAgent(resolvedSubagent, taskDescription);
       options.onDelegated?.({
         subagentType: resolvedSubagent,
@@ -182,6 +279,7 @@ export function createActoviqTaskTool(options: {
         sessionId: result.sessionId,
       });
       return {
+        status: 'completed',
         subagentType: resolvedSubagent,
         runId: result.runId,
         sessionId: result.sessionId,
