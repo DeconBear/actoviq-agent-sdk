@@ -12,6 +12,7 @@ import type {
   ToolChoice,
   Usage,
 } from './types.js';
+import { ActoviqProviderApiError } from '../errors.js';
 
 export interface ActoviqProviderClientOptions {
   apiKey?: string | null;
@@ -487,7 +488,15 @@ export default class ActoviqProviderClient {
 
         const payload = await safeReadJson(response.clone());
         const fallbackText = payload ? undefined : await safeReadText(response.clone());
-        const error = new Error(createErrorMessage(response.status, payload, fallbackText));
+        const error = new ActoviqProviderApiError(
+          createErrorMessage(response.status, payload, fallbackText),
+          {
+            status: response.status,
+            errorType:
+              payload?.error?.type ??
+              (typeof payload?.error === 'object' ? undefined : undefined),
+          },
+        );
         if (!shouldRetryStatus(response.status) || attempt === this.maxRetries) {
           throw error;
         }

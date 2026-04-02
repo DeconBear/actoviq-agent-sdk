@@ -56,6 +56,7 @@ import {
 import {
   compactActoviqSession,
   getPersistedActoviqCompactState,
+  isActoviqPromptTooLongError,
 } from './actoviqCompact.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
@@ -108,6 +109,33 @@ interface PreparedRunAugmentations {
 interface InternalAgentRunOptions extends AgentRunOptions {
   __actoviqUseDefaultTools?: boolean;
   __actoviqUseDefaultMcpServers?: boolean;
+}
+
+interface SessionRunExecutionOutcome {
+  result: AgentRunResult;
+  snapshot: StoredSession;
+  augmentations: PreparedRunAugmentations;
+}
+
+function cloneHooks(hooks?: ActoviqHooks): ActoviqHooks | undefined {
+  if (!hooks) {
+    return undefined;
+  }
+  return {
+    sessionStart: hooks.sessionStart ? [...hooks.sessionStart] : undefined,
+    postSampling: hooks.postSampling ? [...hooks.postSampling] : undefined,
+    postRun: hooks.postRun ? [...hooks.postRun] : undefined,
+  };
+}
+
+function cloneAgentDefinition(definition: ActoviqAgentDefinition): ActoviqAgentDefinition {
+  return {
+    ...definition,
+    metadata: definition.metadata ? deepClone(definition.metadata) : undefined,
+    hooks: cloneHooks(definition.hooks),
+    tools: definition.tools ? [...definition.tools] : undefined,
+    mcpServers: definition.mcpServers ? deepClone(definition.mcpServers) : undefined,
+  };
 }
 
 export class AgentSessionsApi {
@@ -247,7 +275,7 @@ export class ActoviqAgentClient {
   ) {
     this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
     this.agentDefinitions = new Map(
-      agentDefinitions.map(definition => [definition.name, deepClone(definition)]),
+      agentDefinitions.map(definition => [definition.name, cloneAgentDefinition(definition)]),
     );
     this.backgroundTaskManager = new ActoviqBackgroundTaskManager(this.backgroundTaskStore);
     this.tasks = new ActoviqBackgroundTasksApi(this.backgroundTaskManager);
@@ -393,7 +421,7 @@ export class ActoviqAgentClient {
 
   getAgentDefinition(agent: string): ActoviqAgentDefinition | undefined {
     const definition = this.agentDefinitions.get(agent);
-    return definition ? deepClone(definition) : undefined;
+    return definition ? cloneAgentDefinition(definition) : undefined;
   }
 
   async runWithAgent(
@@ -466,32 +494,35 @@ export class ActoviqAgentClient {
     options: AgentRunOptions = {},
   ): Promise<AgentRunResult> {
     const runId = createId();
-    const snapshot = session.snapshot();
-    const resolvedOptions = this.resolveSessionAgentOptions(snapshot, options);
-    const augmentations = await this.prepareRunAugmentations(runId, input, resolvedOptions, snapshot);
-    const result = await this.executeRun(
+    const initialSnapshot = session.snapshot();
+    const resolvedOptions = this.resolveSessionAgentOptions(initialSnapshot, options);
+    const execution = await this.executeSessionRunWithReactiveCompact({
+      runId,
+      session,
+      input,
+      options: resolvedOptions,
+      snapshot: initialSnapshot,
+    });
+    const hookOutcome = await this.applyPostRunHooks(
       runId,
       input,
       resolvedOptions,
-      snapshot,
-      false,
-      undefined,
-      augmentations,
+      execution.result,
+      execution.snapshot,
     );
-    const hookOutcome = await this.applyPostRunHooks(runId, input, resolvedOptions, result, snapshot);
     if (hookOutcome.sessionMetadata) {
-      result.sessionHookMetadata = hookOutcome.sessionMetadata;
+      execution.result.sessionHookMetadata = hookOutcome.sessionMetadata;
     }
     await this.persistSessionAfterRun(
       session,
-      snapshot,
+      execution.snapshot,
       input,
-      result,
+      execution.result,
       resolvedOptions,
-      augmentations.surfacedMemories,
+      execution.augmentations.surfacedMemories,
       hookOutcome,
     );
-    return result;
+    return execution.result;
   }
 
   private streamOnSession(
@@ -500,41 +531,46 @@ export class ActoviqAgentClient {
     options: AgentRunOptions = {},
   ): AgentRunStream {
     const runId = createId();
-    const snapshot = session.snapshot();
+    const initialSnapshot = session.snapshot();
 
     return new AgentRunStream(async (controller) => {
       try {
-        const resolvedOptions = this.resolveSessionAgentOptions(snapshot, options);
-        const augmentations = await this.prepareRunAugmentations(runId, input, resolvedOptions, snapshot);
-        const result = await this.executeRun(
+        const resolvedOptions = this.resolveSessionAgentOptions(initialSnapshot, options);
+        const execution = await this.executeSessionRunWithReactiveCompact({
+          runId,
+          session,
+          input,
+          options: resolvedOptions,
+          snapshot: initialSnapshot,
+          streaming: true,
+          emit: controller.emit,
+        });
+        const hookOutcome = await this.applyPostRunHooks(
           runId,
           input,
           resolvedOptions,
-          snapshot,
-          true,
-          controller.emit,
-          augmentations,
+          execution.result,
+          execution.snapshot,
         );
-        const hookOutcome = await this.applyPostRunHooks(runId, input, resolvedOptions, result, snapshot);
         if (hookOutcome.sessionMetadata) {
-          result.sessionHookMetadata = hookOutcome.sessionMetadata;
+          execution.result.sessionHookMetadata = hookOutcome.sessionMetadata;
         }
         await this.persistSessionAfterRun(
           session,
-          snapshot,
+          execution.snapshot,
           input,
-          result,
+          execution.result,
           resolvedOptions,
-          augmentations.surfacedMemories,
+          execution.augmentations.surfacedMemories,
           hookOutcome,
         );
         controller.emit({
           type: 'response.completed',
           runId,
-          result,
-          timestamp: result.completedAt,
+          result: execution.result,
+          timestamp: execution.result.completedAt,
         });
-        return result;
+        return execution.result;
       } catch (error) {
         const normalized = asError(error);
         controller.emit({
@@ -560,6 +596,7 @@ export class ActoviqAgentClient {
     streaming = false,
     emit?: (event: import('../types.js').AgentEvent) => void,
     augmentations?: PreparedRunAugmentations,
+    skipRunStartedEvent = false,
   ): Promise<AgentRunResult> {
     const metadata = {
       ...this.config.metadata,
@@ -598,6 +635,7 @@ export class ActoviqAgentClient {
       hooks: augmentations?.hooks,
       streaming,
       emit,
+      skipRunStartedEvent,
       modelApi: this.modelApi,
       config: this.config,
       mcpManager: this.mcpManager,
@@ -607,6 +645,78 @@ export class ActoviqAgentClient {
         ? deepClone(augmentations.surfacedMemories)
         : undefined,
     }));
+  }
+
+  private async executeSessionRunWithReactiveCompact(args: {
+    runId: string;
+    session: AgentSession;
+    input: string | MessageParam['content'];
+    options: InternalAgentRunOptions;
+    snapshot: StoredSession;
+    streaming?: boolean;
+    emit?: (event: import('../types.js').AgentEvent) => void;
+  }): Promise<SessionRunExecutionOutcome> {
+    const initialAugmentations = await this.prepareRunAugmentations(
+      args.runId,
+      args.input,
+      args.options,
+      args.snapshot,
+    );
+
+    try {
+      const result = await this.executeRun(
+        args.runId,
+        args.input,
+        args.options,
+        args.snapshot,
+        args.streaming ?? false,
+        args.emit,
+        initialAugmentations,
+      );
+      return {
+        result,
+        snapshot: args.snapshot,
+        augmentations: initialAugmentations,
+      };
+    } catch (error) {
+      if (!isActoviqPromptTooLongError(error)) {
+        throw error;
+      }
+
+      const reactiveCompact = await this.tryReactiveCompactSession(
+        args.session,
+        args.snapshot,
+        args.options,
+        args.runId,
+        args.emit,
+      );
+      if (!reactiveCompact) {
+        throw error;
+      }
+
+      const retryAugmentations = await this.prepareRunAugmentations(
+        args.runId,
+        args.input,
+        args.options,
+        reactiveCompact.snapshot,
+      );
+      const retriedResult = await this.executeRun(
+        args.runId,
+        args.input,
+        args.options,
+        reactiveCompact.snapshot,
+        args.streaming ?? false,
+        args.emit,
+        retryAugmentations,
+        true,
+      );
+      retriedResult.reactiveCompact = reactiveCompact.result;
+      return {
+        result: retriedResult,
+        snapshot: reactiveCompact.snapshot,
+        augmentations: retryAugmentations,
+      };
+    }
   }
 
   private async resolveSystemPrompt(
@@ -831,6 +941,49 @@ export class ActoviqAgentClient {
 
   private async getAgentContinuityForSession(session: AgentSession): Promise<ActoviqAgentContinuityState> {
     return getAgentContinuityState(session.snapshot().metadata);
+  }
+
+  private async tryReactiveCompactSession(
+    session: AgentSession,
+    snapshot: StoredSession,
+    options: InternalAgentRunOptions,
+    runId: string,
+    emit?: (event: import('../types.js').AgentEvent) => void,
+  ): Promise<{ snapshot: StoredSession; result: ActoviqSessionCompactResult } | undefined> {
+    const reactive = await compactActoviqSession(
+      snapshot,
+      {
+        force: true,
+        trigger: 'reactive',
+      },
+      {
+        workDir: this.config.workDir,
+        systemPrompt: snapshot.systemPrompt ?? this.config.systemPrompt,
+        model: options.model ?? snapshot.model ?? this.config.model,
+        modelApi: this.modelApi,
+        compactConfig: this.config.compact,
+        runtimeState: this.getSessionMemoryRuntimeState(snapshot),
+      },
+    );
+
+    if (reactive.session === snapshot) {
+      return undefined;
+    }
+
+    await this.store.save(reactive.session);
+    session.replace(reactive.session);
+    emit?.({
+      type: 'session.compacted',
+      runId,
+      sessionId: reactive.session.id,
+      trigger: reactive.result.trigger,
+      result: reactive.result,
+      timestamp: nowIso(),
+    });
+    return {
+      snapshot: reactive.session,
+      result: reactive.result,
+    };
   }
 
   private async launchBackgroundAgentTask(
@@ -1209,7 +1362,7 @@ export class ActoviqAgentClient {
     if (!definition) {
       throw new Error(`No agent definition named "${agent}" is registered.`);
     }
-    return deepClone(definition);
+    return cloneAgentDefinition(definition);
   }
 
   private resolveSessionAgentOptions(
@@ -1239,6 +1392,7 @@ export class ActoviqAgentClient {
         ...(options.metadata ?? {}),
         __actoviqAgentDefinition: definition.name,
       },
+      hooks: mergeActoviqHooks(definition.hooks, options.hooks),
       tools: [...(definition.tools ?? []), ...(options.tools ?? [])],
       mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
       __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
