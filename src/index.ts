@@ -18,6 +18,15 @@ export {
   getActoviqDefaultSessionMemoryConfig,
   getActoviqDefaultSessionMemoryTemplate,
   getActoviqDefaultSettingsPath,
+  formatActoviqMemoryManifest,
+  getActoviqMemoryAge,
+  getActoviqMemoryAgeDays,
+  getActoviqMemoryFreshnessNote,
+  getActoviqMemoryFreshnessText,
+  getActoviqMemoryHeader,
+  readActoviqMemoriesForSurfacing,
+  scanActoviqMemoryFiles,
+  selectActoviqRelevantMemories,
 } from './memory/actoviqMemory.js';
 export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';

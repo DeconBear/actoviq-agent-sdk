@@ -331,7 +331,8 @@ available `/context` usage information when present.
 The SDK now exposes reusable helpers aligned to the upstream `claude-code`
 session-memory and compact flow. This gives us a stable way to inspect
 `.actoviq` memory paths, session-memory templates/prompts, compact boundaries,
-and the state needed to decide whether session-memory compaction is ready.
+the state needed to decide whether session-memory compaction is ready, and
+the scan/select/surface pipeline for relevant memory files.
 
 ```ts
 import {
@@ -360,6 +361,8 @@ console.log(state.paths);
 console.log(state.progress);
 console.log(state.latestBoundary);
 console.log(state.summaryMessage);
+console.log(await memory.findRelevantMemories('how should I release this package?'));
+console.log(await memory.surfaceRelevantMemories('how should I release this package?'));
 ```
 
 Available helpers:
@@ -375,6 +378,10 @@ Available helpers:
 - `memory.buildPromptWithEntrypoints()`
 - `memory.buildSessionUpdatePrompt(...)`
 - `memory.readSessionMemory(...)`
+- `memory.scanMemoryFiles(...)`
+- `memory.formatMemoryManifest(...)`
+- `memory.findRelevantMemories(...)`
+- `memory.surfaceRelevantMemories(...)`
 - `memory.getSessionMemoryConfig()`
 - `memory.getSessionMemoryCompactConfig()`
 - `memory.evaluateSessionMemoryProgress(...)`
