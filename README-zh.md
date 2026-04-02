@@ -1,95 +1,96 @@
-# Actoviq Agent SDK
+﻿# Actoviq Agent SDK
 
 [![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
 [![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
 
-[English](./README.md) | [中文](./README-zh.md)
+[English](./README.md) | [涓枃](./README-zh.md)
 
-Actoviq Agent SDK 是一个独立的实验性 agent SDK 项目，聚焦多工具、多会话以及 bridge 辅助的 agent 工作流。
+Actoviq Agent SDK 鏄竴涓嫭绔嬬殑瀹為獙鎬?agent SDK 椤圭洰锛岃仛鐒﹀宸ュ叿銆佸浼氳瘽浠ュ強 bridge 杈呭姪鐨?agent 宸ヤ綔娴併€?
 
-当前仓库仍处于测试预览版阶段，并且还在持续开发中。API、运行时行为、命名、打包方式以及 parity 覆盖范围后续都可能继续调整。欢迎大家提交 Issue 和 PR。
+褰撳墠浠撳簱浠嶅浜庢祴璇曢瑙堢増闃舵锛屽苟涓旇繕鍦ㄦ寔缁紑鍙戜腑銆侫PI銆佽繍琛屾椂琛屼负銆佸懡鍚嶃€佹墦鍖呮柟寮忎互鍙?parity 瑕嗙洊鑼冨洿鍚庣画閮藉彲鑳界户缁皟鏁淬€傛杩庡ぇ瀹舵彁浜?Issue 鍜?PR銆?
 
-本项目当前以公开预览形式持续迭代开发，接口和运行时能力仍会继续完善。
+鏈」鐩綋鍓嶄互鍏紑棰勮褰㈠紡鎸佺画杩唬寮€鍙戯紝鎺ュ彛鍜岃繍琛屾椂鑳藉姏浠嶄細缁х画瀹屽杽銆?
 
-本项目采用 [MIT License](./LICENSE) 开源协议。
+鏈」鐩噰鐢?[MIT License](./LICENSE) 寮€婧愬崗璁€?
 
-## 项目亮点
+## 椤圭洰浜偣
 
-- 提供 Node.js / TypeScript agent SDK，包含 `run()`、`stream()`、session、tools 和 MCP 支持
-- 提供 Actoviq Runtime bridge，可复用 built-in tools、skills、subagents 和原生 session/context 行为
-- 提供与上游 session-memory / compact 边界语义对齐的 memory 与 compact state helper
-- 提供 buddy / companion API，可用于孵化、静音、抚摸，以及生成 companion prompt context
-- 在 vendored 非 TUI runtime 之上提供更干净的对外 SDK 表面
-- 提供交互式流式示例，便于本地调试 agent
-- 持续补齐 workspace 管理、更深层 subagent API，以及私有依赖替代
+- 鎻愪緵 Node.js / TypeScript agent SDK锛屽寘鍚?`run()`銆乣stream()`銆乻ession銆乼ools 鍜?MCP 鏀寔
+- 鎻愪緵 Actoviq Runtime bridge锛屽彲澶嶇敤 built-in tools銆乻kills銆乻ubagents 鍜屽師鐢?session/context 琛屼负
+- 鎻愪緵涓庝笂娓?session-memory / compact 杈圭晫璇箟瀵归綈鐨?memory 涓?compact state helper
+- 鎻愪緵 buddy / companion API锛屽彲鐢ㄤ簬瀛靛寲銆侀潤闊炽€佹姎鎽革紝浠ュ強鐢熸垚 companion prompt context
+- 鍦?vendored 闈?TUI runtime 涔嬩笂鎻愪緵鏇村共鍑€鐨勫澶?SDK 琛ㄩ潰
+- 鎻愪緵浜や簰寮忔祦寮忕ず渚嬶紝渚夸簬鏈湴璋冭瘯 agent
+- 鎸佺画琛ラ綈 workspace 绠＄悊銆佹洿娣卞眰 subagent API锛屼互鍙婄鏈変緷璧栨浛浠?
 
-## 快速开始
+## 蹇€熷紑濮?
 
-### 1. 安装依赖
+### 1. 瀹夎渚濊禆
 
 ```bash
 npm install
 ```
 
-### 2. 准备 `~/.actoviq/settings.json`
+### 2. 鍑嗗 `~/.actoviq/settings.json`
 
-本地示例默认读取这个文件：
+鏈湴绀轰緥榛樿璇诲彇杩欎釜鏂囦欢锛?
 
 ```text
 ~/.actoviq/settings.json
 ```
 
-如果目录还不存在，可以先创建：
+濡傛灉鐩綍杩樹笉瀛樺湪锛屽彲浠ュ厛鍒涘缓锛?
 
 ```powershell
 New-Item -ItemType Directory -Force $HOME\.actoviq | Out-Null
 ```
 
-### 3. 运行基础示例
+### 3. 杩愯鍩虹绀轰緥
 
 ```bash
 npm run example:quickstart
 ```
 
-### 4. 启动交互式 agent 示例
+### 4. 鍚姩浜や簰寮?agent 绀轰緥
 
 ```bash
 npm run example:actoviq-interactive-agent
 ```
 
-它会启动一个带流式输出、工具调用能力和无限循环会话的交互式 REPL，直到你主动退出。
+瀹冧細鍚姩涓€涓甫娴佸紡杈撳嚭銆佸伐鍏疯皟鐢ㄨ兘鍔涘拰鏃犻檺寰幆浼氳瘽鐨勪氦浜掑紡 REPL锛岀洿鍒颁綘涓诲姩閫€鍑恒€?
 
-### 5. 查看 memory / compact state 示例
+### 5. 鏌ョ湅 memory / compact state 绀轰緥
 
 ```bash
 npm run example:actoviq-memory
+npm run example:actoviq-session-memory
 ```
 
-## 一眼看懂这个仓库
+## 涓€鐪肩湅鎳傝繖涓粨搴?
 
-这个仓库现在主要提供两条使用路径：
+杩欎釜浠撳簱鐜板湪涓昏鎻愪緵涓ゆ潯浣跨敤璺緞锛?
 
-1. 用于业务集成的干净 SDK 层
-2. 用于复用 Actoviq 原生非 TUI agent 行为的 runtime bridge 层
+1. 鐢ㄤ簬涓氬姟闆嗘垚鐨勫共鍑€ SDK 灞?
+2. 鐢ㄤ簬澶嶇敤 Actoviq 鍘熺敓闈?TUI agent 琛屼负鐨?runtime bridge 灞?
 
-当前已经可用的能力包括：
+褰撳墠宸茬粡鍙敤鐨勮兘鍔涘寘鎷細
 
-- 基于 Zod 的本地工具定义
-- 本地、stdio、streamable HTTP 三类 MCP 接入
-- 持久化 session
+- 鍩轰簬 Zod 鐨勬湰鍦板伐鍏峰畾涔?
+- 鏈湴銆乻tdio銆乻treamable HTTP 涓夌被 MCP 鎺ュ叆
+- 鎸佷箙鍖?session
 - bridge runtime introspection
-- memory 设置、session-memory prompt、compact state 检查 helper
-- vendored runtime 文件工具：`Read`、`Write`、`Edit`、`Glob`、`Grep`
-- bridge runtime 的 built-in tools、skills 和 subagents
+- memory 璁剧疆銆乻ession-memory prompt銆乧ompact state 妫€鏌?helper
+- vendored runtime 鏂囦欢宸ュ叿锛歚Read`銆乣Write`銆乣Edit`銆乣Glob`銆乣Grep`
+- bridge runtime 鐨?built-in tools銆乻kills 鍜?subagents
 
-## 作为库安装
+## 浣滀负搴撳畨瑁?
 
 ```bash
 npm install actoviq-agent-sdk zod
 ```
 
-## 基础 SDK 示例
+## 鍩虹 SDK 绀轰緥
 
 ```ts
 import { z } from 'zod';
@@ -119,9 +120,9 @@ console.log(result.text);
 await sdk.close();
 ```
 
-## 核心示例
+## 鏍稿績绀轰緥
 
-### 多轮会话示例
+### 澶氳疆浼氳瘽绀轰緥
 
 ```ts
 import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
@@ -136,7 +137,7 @@ const reply = await session.send('What is my project codename?');
 console.log(reply.text);
 ```
 
-### 循环流式示例
+### 寰幆娴佸紡绀轰緥
 
 ```ts
 import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
@@ -168,7 +169,29 @@ for (const prompt of prompts) {
 await sdk.close();
 ```
 
-### Buddy 示例
+### Session Memory 示例
+
+```ts
+import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+const sdk = await createAgentSdk();
+
+const session = await sdk.createSession({ title: 'Session Memory Demo' });
+await session.send('We should bump package.json before tagging the next release.');
+await session.send('We also want CI green and concise release notes before publish.');
+
+const extraction = await session.extractMemory();
+const compactState = await session.compactState({
+  includeSessionMemory: true,
+  includeSummaryMessage: true,
+});
+
+console.log(extraction);
+console.log(compactState.runtimeState);
+console.log(compactState.sessionMemory?.content);
+```
+### Buddy 绀轰緥
 
 ```ts
 import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
@@ -188,30 +211,30 @@ console.log(await buddy.pet());
 console.log(await buddy.getPromptContext());
 ```
 
-仓库内可直接运行：
+浠撳簱鍐呭彲鐩存帴杩愯锛?
 
 ```bash
 npm run example:actoviq-buddy
 ```
 
-## 交互式 Agent 示例
+## 浜や簰寮?Agent 绀轰緥
 
-仓库中包含一个基于 bridge 的交互式示例，具备：
+浠撳簱涓寘鍚竴涓熀浜?bridge 鐨勪氦浜掑紡绀轰緥锛屽叿澶囷細
 
-- 流式回答
-- 内置工具访问能力
-- vendored runtime 提供的 skills 和 subagents
-- 可在代码中直接设置工作空间路径
-- 可在代码中直接设置 JSON 配置路径
-- 无限循环，直到用户主动退出
+- 娴佸紡鍥炵瓟
+- 鍐呯疆宸ュ叿璁块棶鑳藉姏
+- vendored runtime 鎻愪緵鐨?skills 鍜?subagents
+- 鍙湪浠ｇ爜涓洿鎺ヨ缃伐浣滅┖闂磋矾寰?
+- 鍙湪浠ｇ爜涓洿鎺ヨ缃?JSON 閰嶇疆璺緞
+- 鏃犻檺寰幆锛岀洿鍒扮敤鎴蜂富鍔ㄩ€€鍑?
 
-启动命令：
+鍚姩鍛戒护锛?
 
 ```bash
 npm run example:actoviq-interactive-agent
 ```
 
-主要可调项位于：
+涓昏鍙皟椤逛綅浜庯細
 [`examples/actoviq-interactive-agent.ts`](./examples/actoviq-interactive-agent.ts)
 
 ```ts
@@ -223,17 +246,17 @@ const JSON_CONFIG_PATH = path.resolve(
 );
 ```
 
-仓库中包含：
+浠撳簱涓寘鍚細
 
-- [`examples/interactive-agent.settings.example.json`](./examples/interactive-agent.settings.example.json)：安全模板
-- `examples/interactive-agent.settings.local.json`：仅供本机调试使用的本地配置文件
+- [`examples/interactive-agent.settings.example.json`](./examples/interactive-agent.settings.example.json)锛氬畨鍏ㄦā鏉?
+- `examples/interactive-agent.settings.local.json`锛氫粎渚涙湰鏈鸿皟璇曚娇鐢ㄧ殑鏈湴閰嶇疆鏂囦欢
 
-其中本地调试文件已被 git 忽略。
+鍏朵腑鏈湴璋冭瘯鏂囦欢宸茶 git 蹇界暐銆?
 
 ## Runtime Bridge
 
-你也可以直接通过本 SDK 调起 vendored 的非 TUI Actoviq Runtime。
-这层 bridge 复用了上游 headless CLI，因此会带上内置工具池、skills、subagents，以及原生 session/context 行为。
+浣犱篃鍙互鐩存帴閫氳繃鏈?SDK 璋冭捣 vendored 鐨勯潪 TUI Actoviq Runtime銆?
+杩欏眰 bridge 澶嶇敤浜嗕笂娓?headless CLI锛屽洜姝や細甯︿笂鍐呯疆宸ュ叿姹犮€乻kills銆乻ubagents锛屼互鍙婂師鐢?session/context 琛屼负銆?
 
 ```ts
 import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
@@ -256,15 +279,15 @@ console.log(result.text);
 console.log(result.events.length);
 ```
 
-Bridge 说明：
+Bridge 璇存槑锛?
 
-- 它通过 Bun 执行 vendored 的 Actoviq Runtime CLI bundle
-- 会自动注入由 `loadJsonConfigFile(...)` 或 `loadDefaultActoviqSettings()` 加载的环境变量
-- 如果系统里可用 `rg`，bridge 会优先使用系统 `rg`，保证 `Glob` 和 `Grep` 在缺少 bundled ripgrep 二进制时依旧可工作
+- 瀹冮€氳繃 Bun 鎵ц vendored 鐨?Actoviq Runtime CLI bundle
+- 浼氳嚜鍔ㄦ敞鍏ョ敱 `loadJsonConfigFile(...)` 鎴?`loadDefaultActoviqSettings()` 鍔犺浇鐨勭幆澧冨彉閲?
+- 濡傛灉绯荤粺閲屽彲鐢?`rg`锛宐ridge 浼氫紭鍏堜娇鐢ㄧ郴缁?`rg`锛屼繚璇?`Glob` 鍜?`Grep` 鍦ㄧ己灏?bundled ripgrep 浜岃繘鍒舵椂渚濇棫鍙伐浣?
 
 ## Agent / Skill Helper
 
-bridge SDK 现在补上了更直接的高层 helper，不需要你每次手动拼 `agent` 参数或 slash command。
+bridge SDK 鐜板湪琛ヤ笂浜嗘洿鐩存帴鐨勯珮灞?helper锛屼笉闇€瑕佷綘姣忔鎵嬪姩鎷?`agent` 鍙傛暟鎴?slash command銆?
 
 ```ts
 import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
@@ -284,7 +307,7 @@ const compactResult = await sdk.context.compact('summarize current progress');
 const runtimeCatalog = await sdk.getRuntimeCatalog();
 ```
 
-当前可以直接使用：
+褰撳墠鍙互鐩存帴浣跨敤锛?
 
 - `sdk.agents.list()`
 - `sdk.agents.run(...)`
@@ -308,15 +331,18 @@ const runtimeCatalog = await sdk.getRuntimeCatalog();
 
 ## Memory / Compact Helper
 
-SDK 现在也提供了可复用的 memory / compact state helper，设计上对齐上游
-`claude-code` 的 session-memory 与 compact boundary 语义。这样我们可以直接检查
-`.actoviq` 下的 memory 路径、session-memory 模板与 prompt、compact 边界历史，
-以及当前是否满足 session-memory 提取或 compaction 的阈值条件，同时也补上
-relevant memory 的 scan / select / surface helper。
+SDK 鐜板湪涔熸彁渚涗簡鍙鐢ㄧ殑 memory / compact state helper锛岃璁′笂瀵归綈涓婃父
+`claude-code` 鐨?session-memory 涓?compact boundary 璇箟銆傝繖鏍锋垜浠彲浠ョ洿鎺ユ鏌?`.actoviq` 涓嬬殑 memory 璺緞銆乻ession-memory 妯℃澘涓?prompt銆乧ompact 杈圭晫鍘嗗彶锛?浠ュ強褰撳墠鏄惁婊¤冻 session-memory 鎻愬彇鎴?compaction 鐨勯槇鍊兼潯浠讹紝鍚屾椂涔熻ˉ涓?relevant memory 鐨?scan / select / surface helper銆?
+鍦ㄦ爣鍑?SDK 璺緞涓嬶紝褰?auto memory 鎵撳紑鏃讹紝SDK 鐜板湪涔熶細鍦ㄦ瘡涓敤鎴?turn 寮€濮嬫椂
+鑷姩鎶?relevant memories 浣滀负 meta reminder 娉ㄥ叆锛屽苟鍦?session 鍐呭宸茬粡 surfacing
+杩囩殑 memory 鍋氬幓閲嶅拰瀛楄妭棰勭畻鎺у埗銆?
+Session-based 标准 SDK 现在也补上了更完整的 session-memory 自动提取链路：
 
-在标准 SDK 路径下，当 auto memory 打开时，SDK 现在也会在每个用户 turn 开始时
-自动把 relevant memories 作为 meta reminder 注入，并在 session 内对已经 surfacing
-过的 memory 做去重和字节预算控制。
+- 对话达到阈值后会自动初始化 session memory
+- 提取判断会综合 token 增长、tool call 活动以及自然 turn break
+- 满足条件的 session turn 结束后会自动刷新 summary.md
+- 也可以通过 `session.extractMemory()` 手动强制刷新
+- `session.compactState()` 会把文件系统 compact state 和 runtime 提取状态一起返回
 
 ```ts
 import {
@@ -349,7 +375,7 @@ console.log(await memory.findRelevantMemories('how should I release this package
 console.log(await memory.surfaceRelevantMemories('how should I release this package?'));
 ```
 
-当前可直接使用：
+褰撳墠鍙洿鎺ヤ娇鐢細
 
 - `createActoviqMemoryApi(...)`
 - `sdk.memory`
@@ -369,6 +395,11 @@ console.log(await memory.surfaceRelevantMemories('how should I release this pack
 - `memory.getSessionMemoryConfig()`
 - `memory.getSessionMemoryCompactConfig()`
 - `memory.evaluateSessionMemoryProgress(...)`
+- `session.extractMemory(...)`
+- `parseActoviqSessionMemoryRuntimeState(...)`
+- `filterActoviqMessagesForSessionMemory(...)`
+- `estimateActoviqConversationTokens(...)`
+- `evaluateActoviqSessionMemoryProgress(...)`
 - `memory.compactState(...)`
 - `memory.buildSessionMemoryCompactSummary(...)`
 - `getActoviqBridgeCompactBoundaries(...)`
@@ -377,15 +408,16 @@ console.log(await memory.surfaceRelevantMemories('how should I release this pack
 - `sdk.context.compactState(...)`
 - `sdk.sessions.getCompactState(...)`
 
-仓库内示例命令：
+浠撳簱鍐呯ず渚嬪懡浠わ細
 
 ```bash
 npm run example:actoviq-memory
+npm run example:actoviq-session-memory
 ```
 
 ## Buddy Helper
 
-SDK 现在也把非 TUI 的 buddy / companion 能力封装成了可复用 API。
+SDK 鐜板湪涔熸妸闈?TUI 鐨?buddy / companion 鑳藉姏灏佽鎴愪簡鍙鐢?API銆?
 
 ```ts
 import { createActoviqBuddyApi } from 'actoviq-agent-sdk';
@@ -403,7 +435,7 @@ if (!state.buddy) {
 console.log(await buddy.getPromptContext());
 ```
 
-当前可直接使用：
+褰撳墠鍙洿鎺ヤ娇鐢細
 
 - `createActoviqBuddyApi(...)`
 - `sdk.buddy`
@@ -418,11 +450,11 @@ console.log(await buddy.getPromptContext());
 - `buddy.getIntroAttachment(...)`
 - `buddy.getIntroText(...)`
 
-在标准 SDK 路径下，如果 buddy 已孵化且未静音，companion intro text 也会自动附加到 system prompt 中。
+鍦ㄦ爣鍑?SDK 璺緞涓嬶紝濡傛灉 buddy 宸插鍖栦笖鏈潤闊筹紝companion intro text 涔熶細鑷姩闄勫姞鍒?system prompt 涓€?
 
 ## Event Helper
 
-bridge 现在也提供了可复用的事件解析 helper，方便统一处理 `Task` / subagent / tool 相关事件。
+bridge 鐜板湪涔熸彁渚涗簡鍙鐢ㄧ殑浜嬩欢瑙ｆ瀽 helper锛屾柟渚跨粺涓€澶勭悊 `Task` / subagent / tool 鐩稿叧浜嬩欢銆?
 
 ```ts
 import {
@@ -456,7 +488,7 @@ console.log(analysis.toolResults);
 
 ## Workspace Helper
 
-现在 SDK 也补上了显式的 workspace 生命周期 helper，便于先创建隔离目录，再启动 agent 会话。
+鐜板湪 SDK 涔熻ˉ涓婁簡鏄惧紡鐨?workspace 鐢熷懡鍛ㄦ湡 helper锛屼究浜庡厛鍒涘缓闅旂鐩綍锛屽啀鍚姩 agent 浼氳瘽銆?
 
 ```ts
 import {
@@ -479,35 +511,35 @@ await sdk.close();
 await workspace.dispose();
 ```
 
-当前提供：
+褰撳墠鎻愪緵锛?
 
 - `createWorkspace(...)`
 - `createTempWorkspace(...)`
 - `createGitWorktreeWorkspace(...)`
 
 
-## 当前状态与路线图
+## 褰撳墠鐘舵€佷笌璺嚎鍥?
 
-当前状态：
+褰撳墠鐘舵€侊細
 
-- npm 包已经发布，可直接安装使用
-- 核心 SDK 主链已可用：`run()`、`stream()`、session、tools、MCP
-- bridge runtime 主链已可用：内置工具、runtime introspection、交互式示例
-- bridge SDK 已补更高层的 agent / skill / context helper
-- bridge SDK 已补结构化 metadata API 和 event helper
-- buddy API 已在标准 SDK 和 bridge SDK 两侧可用
-- 文件工具已经可用：`Read`、`Write`、`Edit`、`Glob`、`Grep`
-- workspace 生命周期 helper 已可用：目录、临时工作区、git worktree
-- examples、tests、build、smoke 和打包校验都已经具备
+- npm 鍖呭凡缁忓彂甯冿紝鍙洿鎺ュ畨瑁呬娇鐢?
+- 鏍稿績 SDK 涓婚摼宸插彲鐢細`run()`銆乣stream()`銆乻ession銆乼ools銆丮CP
+- bridge runtime 涓婚摼宸插彲鐢細鍐呯疆宸ュ叿銆乺untime introspection銆佷氦浜掑紡绀轰緥
+- bridge SDK 宸茶ˉ鏇撮珮灞傜殑 agent / skill / context helper
+- bridge SDK 宸茶ˉ缁撴瀯鍖?metadata API 鍜?event helper
+- buddy API 宸插湪鏍囧噯 SDK 鍜?bridge SDK 涓や晶鍙敤
+- 鏂囦欢宸ュ叿宸茬粡鍙敤锛歚Read`銆乣Write`銆乣Edit`銆乣Glob`銆乣Grep`
+- workspace 鐢熷懡鍛ㄦ湡 helper 宸插彲鐢細鐩綍銆佷复鏃跺伐浣滃尯銆乬it worktree
+- examples銆乼ests銆乥uild銆乻moke 鍜屾墦鍖呮牎楠岄兘宸茬粡鍏峰
 
-路线图：
+璺嚎鍥撅細
 
-- 继续补 context、memory、compact 等更深层控制能力
-- 继续补更丰富的 agent / skill / subagent metadata 细节
-- 继续补更完整的 workspace 模板和 sandbox orchestration
-- 补 CI、release notes，以及更完整的贡献文档
+- 缁х画琛?context銆乵emory銆乧ompact 绛夋洿娣卞眰鎺у埗鑳藉姏
+- 缁х画琛ユ洿涓板瘜鐨?agent / skill / subagent metadata 缁嗚妭
+- 缁х画琛ユ洿瀹屾暣鐨?workspace 妯℃澘鍜?sandbox orchestration
+- 琛?CI銆乺elease notes锛屼互鍙婃洿瀹屾暣鐨勮础鐚枃妗?
 
-## 本地开发命令
+## 鏈湴寮€鍙戝懡浠?
 
 ```bash
 npm run typecheck
@@ -528,8 +560,10 @@ npm run example:actoviq-session-messages
 npm run example:actoviq-buddy
 ```
 
-`npm run smoke` 会读取 `~/.actoviq/settings.json` 并执行一次真实联调验证。
+`npm run smoke` 浼氳鍙?`~/.actoviq/settings.json` 骞舵墽琛屼竴娆＄湡瀹炶仈璋冮獙璇併€?
 
-## 参与贡献
+## 鍙備笌璐＄尞
 
-当前项目仍在快速迭代中。如果你发现问题、看到缺失的 parity 能力，或者想提出更好的 API 设计，欢迎直接提 Issue 或发 PR。
+褰撳墠椤圭洰浠嶅湪蹇€熻凯浠ｄ腑銆傚鏋滀綘鍙戠幇闂銆佺湅鍒扮己澶辩殑 parity 鑳藉姏锛屾垨鑰呮兂鎻愬嚭鏇村ソ鐨?API 璁捐锛屾杩庣洿鎺ユ彁 Issue 鎴栧彂 PR銆?
+
+

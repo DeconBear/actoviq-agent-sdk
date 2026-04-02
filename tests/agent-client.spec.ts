@@ -292,5 +292,128 @@ describe('ActoviqAgentClient', () => {
       await sdk.close();
     }
   });
+
+  it('automatically extracts session memory after a large session turn', async () => {
+    const tempDir = await createSessionDirectory();
+    const homeDir = path.join(tempDir, 'home');
+    const workDir = path.join(tempDir, 'workspace');
+    const longPrompt = 'release-checklist '.repeat(4000);
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: [
+                '# Session Title',
+                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
+                '',
+                'Release memory snapshot',
+                '',
+                '# Current State',
+                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
+                '',
+                'Preparing the next public release and checking version/tag order.',
+              ].join('\n'),
+            },
+          ]);
+        }
+
+        return makeMessage([{ type: 'text', text: 'Working through the release checklist.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: path.join(tempDir, 'sessions'),
+      homeDir,
+      workDir,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send(longPrompt);
+
+      const memoryState = await sdk.memory.readSessionMemory({
+        projectPath: workDir,
+        sessionId: session.id,
+      });
+      const compactState = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(modelApi.createCalls).toHaveLength(2);
+      expect(
+        (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task,
+      ).toBe('session_memory');
+      expect(memoryState.exists).toBe(true);
+      expect(memoryState.content).toContain('Release memory snapshot');
+      expect(compactState.runtimeState).toMatchObject({
+        initialized: true,
+        extractionCount: 1,
+      });
+      expect(compactState.canUseSessionMemoryCompaction).toBe(true);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('can manually extract session memory on demand', async () => {
+    const tempDir = await createSessionDirectory();
+    const homeDir = path.join(tempDir, 'home');
+    const workDir = path.join(tempDir, 'workspace');
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: [
+                '# Session Title',
+                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
+                '',
+                'Manual summary',
+                '',
+                '# Current State',
+                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
+                '',
+                'Manual extraction captured the latest task details.',
+              ].join('\n'),
+            },
+          ]);
+        }
+
+        return makeMessage([{ type: 'text', text: 'Small response.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: path.join(tempDir, 'sessions'),
+      homeDir,
+      workDir,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('Keep this short.');
+      const extraction = await session.extractMemory();
+      const memoryState = await sdk.memory.readSessionMemory({
+        projectPath: workDir,
+        sessionId: session.id,
+      });
+
+      expect(extraction.success).toBe(true);
+      expect(extraction.trigger).toBe('manual');
+      expect(extraction.memoryPath).toBeTruthy();
+      expect(memoryState.content).toContain('Manual summary');
+      expect(modelApi.createCalls).toHaveLength(2);
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 

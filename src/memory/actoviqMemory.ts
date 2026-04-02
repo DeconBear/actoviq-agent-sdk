@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 import {
   getDefaultActoviqSettingsPath,
@@ -20,6 +20,7 @@ import {
   selectRelevantMemories,
 } from './actoviqRelevantMemories.js';
 import type {
+  ActoviqPreservedSegment,
   ActoviqCompactState,
   ActoviqCompactBoundaryMetadata,
   ActoviqCompactStateOptions,
@@ -635,6 +636,62 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
     );
   }
 
+  async buildSessionRewritePrompt(
+    currentNotes: string,
+    notesPath: string,
+    options: ActoviqMemoryOptions = {},
+  ): Promise<string> {
+    return `${await this.buildSessionUpdatePrompt(currentNotes, notesPath, options)}
+
+You are running in direct-output mode, not tool-edit mode.
+
+Return the FULL updated notes file as markdown only.
+- Do not wrap the response in code fences
+- Do not explain what you changed
+- Preserve every existing section header and italic guide line exactly
+- Only update the section bodies beneath those guides
+- If a section has no meaningful updates, keep its existing content unchanged`;
+  }
+
+  async ensureSessionMemory(
+    options: ActoviqMemoryOptions = {},
+  ): Promise<{ path: string; content: string; created: boolean }> {
+    const paths = await this.paths(options);
+    if (!paths.sessionMemoryPath || !paths.sessionMemoryDir) {
+      throw new Error('A sessionId is required to create or update session memory.');
+    }
+
+    await mkdir(paths.sessionMemoryDir, { recursive: true });
+    const existing = await readTextIfExists(paths.sessionMemoryPath);
+    if (existing != null) {
+      return {
+        path: paths.sessionMemoryPath,
+        content: existing,
+        created: false,
+      };
+    }
+
+    const template = await this.loadSessionTemplate(options);
+    await writeFile(paths.sessionMemoryPath, `${template.trim()}\n`, 'utf8');
+    return {
+      path: paths.sessionMemoryPath,
+      content: template,
+      created: true,
+    };
+  }
+
+  async writeSessionMemory(
+    content: string,
+    options: ActoviqMemoryOptions = {},
+  ): Promise<{ path: string; content: string }> {
+    const ensured = await this.ensureSessionMemory(options);
+    await writeFile(ensured.path, `${content.trim()}\n`, 'utf8');
+    return {
+      path: ensured.path,
+      content: content.trim(),
+    };
+  }
+
   async isSessionMemoryEmpty(
     content: string,
     options: ActoviqMemoryOptions = {},
@@ -726,7 +783,9 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
   evaluateSessionMemoryProgress(options: {
     currentTokenCount?: number;
     tokensAtLastExtraction?: number;
+    messageCountSinceLastExtraction?: number;
     initialized?: boolean;
+    hasToolCallsInLastTurn?: boolean;
     toolCallsSinceLastUpdate?: number;
   }): ActoviqSessionMemoryProgress {
     const config = this.getSessionMemoryConfig();
@@ -736,7 +795,6 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
       typeof currentTokenCount === 'number'
         ? Math.max(currentTokenCount - tokensAtLastExtraction, 0)
         : undefined;
-    const initialized = options.initialized === true;
     const meetsInitializationThreshold =
       typeof currentTokenCount === 'number'
         ? currentTokenCount >= config.minimumMessageTokensToInit
@@ -749,20 +807,25 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
       typeof options.toolCallsSinceLastUpdate === 'number'
         ? options.toolCallsSinceLastUpdate >= config.toolCallsBetweenUpdates
         : undefined;
+    const hasToolCallsInLastTurn = options.hasToolCallsInLastTurn;
+    const initialized =
+      options.initialized === true || meetsInitializationThreshold === true;
     const shouldExtract =
-      initialized === false
-        ? meetsInitializationThreshold
-        : Boolean(meetsUpdateThreshold && meetsToolCallThreshold);
+      initialized &&
+      meetsUpdateThreshold === true &&
+      (meetsToolCallThreshold === true || hasToolCallsInLastTurn === false);
 
     return {
       currentTokenCount,
       tokensAtLastExtraction,
       tokensSinceLastExtraction,
+      messageCountSinceLastExtraction: options.messageCountSinceLastExtraction,
       toolCallsSinceLastUpdate: options.toolCallsSinceLastUpdate,
       initialized,
       meetsInitializationThreshold,
       meetsUpdateThreshold,
       meetsToolCallThreshold,
+      hasToolCallsInLastTurn,
       shouldExtract,
     };
   }
@@ -829,6 +892,7 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
     let compactCount = 0;
     let microcompactCount = 0;
     let lastSummarizedMessageUuid: string | undefined;
+    let latestPreservedSegment: ActoviqPreservedSegment | undefined;
     let latestBoundarySummary: string | undefined;
 
     if (options.includeBoundaries !== false && sessionId) {
@@ -841,6 +905,11 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
       latestBoundary = boundaries.at(-1);
       const latestCompactBoundary = [...boundaries].reverse().find(boundary => boundary.kind === 'compact');
       lastSummarizedMessageUuid = latestCompactBoundary?.logicalParentUuid ?? undefined;
+      latestPreservedSegment =
+        latestCompactBoundary?.kind === 'compact'
+          ? (latestCompactBoundary.metadata as ActoviqCompactBoundaryMetadata | undefined)
+              ?.preservedSegment
+          : undefined;
       latestBoundarySummary =
         latestBoundary?.kind === 'compact'
           ? getActoviqCompactBoundarySummary(
@@ -854,13 +923,16 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
       sessionMemoryConfig,
       sessionMemoryCompactConfig,
       progress,
+      runtimeState: options.runtimeState,
       transcriptPath,
       boundaries,
       latestBoundary,
       compactCount,
       microcompactCount,
       hasCompacted: compactCount + microcompactCount > 0,
+      pendingPostCompaction: options.runtimeState?.pendingPostCompaction,
       lastSummarizedMessageUuid,
+      latestPreservedSegment,
       latestBoundarySummary,
       canUseSessionMemoryCompaction:
         baseState.enabled.autoCompact &&
@@ -936,6 +1008,9 @@ export function getActoviqCompactBoundarySummary(
     typeof metadata.preTokens === 'number' ? `preTokens=${metadata.preTokens}` : undefined,
     typeof metadata.messagesSummarized === 'number'
       ? `messagesSummarized=${metadata.messagesSummarized}`
+      : undefined,
+    metadata.preservedSegment
+      ? `preservedSegment=${metadata.preservedSegment.headUuid}->${metadata.preservedSegment.anchorUuid}->${metadata.preservedSegment.tailUuid}`
       : undefined,
     metadata.userContext ? `userContext=${metadata.userContext}` : undefined,
   ].filter(Boolean);
