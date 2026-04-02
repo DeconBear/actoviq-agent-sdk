@@ -29,3 +29,7 @@ Follow the existing commit style: `feat: ...`, `fix: ...`, `docs: ...`, `chore: 
 ## Security & Configuration Tips
 
 Never commit real credentials. Local config should live outside Git, for example in `~/.actoviq/settings.json` or ignored local JSON files. The `plan/` directory is intentionally local-only and excluded from Git and npm packaging.
+
+## Local Planning Workflow
+
+For any multi-step or long-running implementation, create or update a dated Markdown plan in `plan/` first, for example `plan/CLEAN_SDK_PARITY_TIMELINE_02Apr2026.md`. Keep the plan local-only; do not remove the Git/npm exclusions for `plan/`. Each plan should include step status markers, and every completed step must be marked in the same file immediately after the work lands.

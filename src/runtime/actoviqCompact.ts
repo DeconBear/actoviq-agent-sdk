@@ -1,9 +1,12 @@
 import type { MessageParam } from '../provider/types.js';
 import type {
+  ActoviqCompactBoundaryMetadata,
   ActoviqCompactTrigger,
   ActoviqCompactConfig,
+  ActoviqMicrocompactBoundaryMetadata,
   ActoviqSessionCompactResult,
   ActoviqSessionMemoryRuntimeState,
+  ActoviqTranscriptBoundary,
   AgentSessionCompactOptions,
   ModelApi,
   ModelRequest,
@@ -19,6 +22,7 @@ import {
 } from '../memory/actoviqSessionMemoryState.js';
 
 export const ACTOVIQ_COMPACT_STATE_KEY = '__actoviqCompactState';
+export const ACTOVIQ_COMPACT_HISTORY_KEY = '__actoviqCompactHistory';
 export const ACTOVIQ_MICROCOMPACT_CLEARED_MESSAGE = '[Old tool result content cleared]';
 
 interface PersistedCompactState {
@@ -27,6 +31,14 @@ interface PersistedCompactState {
   lastCompactedAt?: string;
   lastSummaryMessage?: string;
   lastTrigger?: ActoviqCompactTrigger;
+}
+
+interface PersistedCompactHistoryEntry {
+  kind: 'compact' | 'microcompact';
+  timestamp: string;
+  trigger: ActoviqCompactTrigger;
+  metadata?: ActoviqCompactBoundaryMetadata | ActoviqMicrocompactBoundaryMetadata;
+  logicalParentUuid?: string | null;
 }
 
 const PROMPT_TOO_LONG_PATTERNS = [
@@ -88,6 +100,74 @@ export function serializeActoviqCompactState(state: PersistedCompactState): Reco
     lastSummaryMessage: state.lastSummaryMessage,
     lastTrigger: state.lastTrigger,
   };
+}
+
+export function getPersistedActoviqCompactHistory(
+  metadata: Record<string, unknown> | undefined,
+): ActoviqTranscriptBoundary[] {
+  const raw = metadata?.[ACTOVIQ_COMPACT_HISTORY_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((entry): ActoviqTranscriptBoundary[] => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+
+    const kind = entry.kind === 'compact' || entry.kind === 'microcompact' ? entry.kind : undefined;
+    const uuid = typeof entry.uuid === 'string' ? entry.uuid : undefined;
+    const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+    const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : undefined;
+    if (!kind || !uuid || !timestamp || !sessionId) {
+      return [];
+    }
+
+    return [
+      {
+        kind,
+        uuid,
+        timestamp,
+        sessionId,
+        logicalParentUuid:
+          typeof entry.logicalParentUuid === 'string' ? entry.logicalParentUuid : null,
+        metadata: isRecord(entry.metadata)
+          ? (entry.metadata as ActoviqCompactBoundaryMetadata | ActoviqMicrocompactBoundaryMetadata)
+          : undefined,
+        raw: entry,
+      },
+    ];
+  });
+}
+
+function appendPersistedCompactHistory(
+  session: StoredSession,
+  entry: PersistedCompactHistoryEntry,
+): void {
+  const existing = getPersistedActoviqCompactHistory(session.metadata);
+  const nextBoundary: ActoviqTranscriptBoundary = {
+    kind: entry.kind,
+    uuid: `${session.id}:${existing.length + 1}:${entry.kind}`,
+    timestamp: entry.timestamp,
+    sessionId: session.id,
+    logicalParentUuid: entry.logicalParentUuid ?? null,
+    metadata: entry.metadata,
+    raw: {
+      kind: entry.kind,
+      timestamp: entry.timestamp,
+      trigger: entry.trigger,
+      metadata: entry.metadata,
+    },
+  };
+  const history = [...existing, nextBoundary].slice(-25);
+  session.metadata[ACTOVIQ_COMPACT_HISTORY_KEY] = history.map(boundary => ({
+    kind: boundary.kind,
+    uuid: boundary.uuid,
+    timestamp: boundary.timestamp,
+    sessionId: boundary.sessionId,
+    logicalParentUuid: boundary.logicalParentUuid,
+    metadata: boundary.metadata,
+  }));
 }
 
 function compactToolResultContent(
@@ -271,6 +351,17 @@ export async function compactActoviqSession(
         ...persistedState,
         microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
       });
+      appendPersistedCompactHistory(cloned, {
+        kind: 'microcompact',
+        timestamp: nowIso(),
+        trigger: options.trigger,
+        metadata: {
+          trigger: options.trigger,
+          preTokens: tokenEstimateBefore,
+          tokensSaved:
+            tokenEstimateBefore - estimateActoviqConversationTokens(cloned.messages),
+        },
+      });
       return {
         session: cloned,
         result: {
@@ -369,6 +460,17 @@ export async function compactActoviqSession(
   nextSession.metadata.__actoviqCompactPreservedMessages = messagesToKeep.length;
   nextSession.metadata.__actoviqSessionMemoryState =
     serializeActoviqSessionMemoryRuntimeState(nextRuntimeState);
+  appendPersistedCompactHistory(nextSession, {
+    kind: 'compact',
+    timestamp: compactedAt,
+    trigger: options.trigger,
+    metadata: {
+      trigger: options.trigger,
+      preTokens: tokenEstimateBefore,
+      messagesSummarized: messagesToSummarize.length,
+      userContext: summary,
+    },
+  });
 
   return {
     session: nextSession,

@@ -23,6 +23,7 @@ Licensed under the [MIT License](./LICENSE).
 - Clean SDK agent definitions, agent-level hooks, Task-style delegation, background subagent tasks, and session/post-sampling/post-run hooks
 - Permission rules, classifier approvals, api-microcompact context management, and reactive compact recovery in the clean SDK path
 - Swarm/team orchestration with teammate sessions, side-session continuity, background task polling, and leader mailboxes
+- Leader-to-teammate mailbox messages now flow into the teammate's next turn, improving side-session continuity without the bridge runtime
 - Public computer-use replacement helpers that avoid private runtime dependencies
 - Reactive compact recovery for oversized prompts, plus persisted compact/session-memory state
 - Buddy APIs for hatching, muting, petting, and companion prompt-context generation
@@ -103,6 +104,7 @@ What you can use today:
 - memory settings, session-memory prompts, and compact-state inspection helpers
 - clean SDK named agents, agent-level hooks, Task delegation, background task polling, and reactive compact recovery
 - clean SDK permission/classifier gates, api microcompact request shaping, swarm teammates, and public computer-use helpers
+- clean SDK compact history persists locally, so `compactState()` can reconstruct compact/microcompact boundaries without bridge transcripts
 - buddy helpers for companion state, reactions, and prompt-context injection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents
@@ -262,6 +264,11 @@ await team.spawn({
   agent: 'reviewer',
   prompt: 'Review the release checklist and report the top two risks.',
 });
+
+await team.message(
+  'reviewer-1',
+  'Leader note: focus on release blockers and anything that could break publish.',
+);
 
 const task = await team.runBackground('reviewer-1', 'Suggest one CI automation follow-up.');
 await team.waitForIdle();

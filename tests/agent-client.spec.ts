@@ -471,6 +471,9 @@ describe('ActoviqAgentClient', () => {
       expect(compactState.hasCompacted).toBe(true);
       expect(compactState.summaryMessage).toContain('Compact summary');
       expect(compactState.pendingPostCompaction).toBe(true);
+      expect(compactState.boundaries).toHaveLength(1);
+      expect(compactState.latestBoundary?.kind).toBe('compact');
+      expect(compactState.latestBoundarySummary).toContain('trigger=manual');
     } finally {
       await sdk.close();
     }
@@ -524,6 +527,8 @@ describe('ActoviqAgentClient', () => {
       expect(compactState.compactCount).toBe(1);
       expect(compactState.summaryMessage).toContain('Auto compact summary');
       expect(compactState.pendingPostCompaction).toBe(true);
+      expect(compactState.latestBoundary?.kind).toBe('compact');
+      expect(compactState.latestBoundarySummary).toContain('trigger=auto');
       expect(session.messages[0]).toMatchObject({
         role: 'user',
         content: expect.stringContaining('Auto compact summary'),

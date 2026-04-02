@@ -565,6 +565,9 @@ export interface ActoviqTeammateRecord {
   status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
   taskId?: string;
   lastTaskDescription?: string;
+  lastRunId?: string;
+  lastCompletedAt?: string;
+  mailboxDepth?: number;
   createdAt: string;
   updatedAt: string;
 }

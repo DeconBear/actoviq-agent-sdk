@@ -26,6 +26,11 @@ try {
 
   console.log('spawned result:', spawned.result?.text);
 
+  await team.message(
+    'reviewer-1',
+    'Leader note: focus on release blockers and anything that could break publish.',
+  );
+
   const task = await team.runBackground(
     'reviewer-1',
     'Now suggest one follow-up check we should automate in CI.',

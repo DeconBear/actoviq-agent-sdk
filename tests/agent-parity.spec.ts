@@ -259,6 +259,7 @@ describe('Actoviq advanced parity features', () => {
 
   it('supports swarm teammates, side sessions, and background completion mail', async () => {
     const sessionDirectory = await createTempDir('actoviq-swarm-');
+    const seenPrompts: string[] = [];
     const modelApi = new MockModelApi({
       create: async (request) => {
         const lastUserMessage = request.messages.at(-1);
@@ -266,6 +267,7 @@ describe('Actoviq advanced parity features', () => {
           typeof lastUserMessage?.content === 'string'
             ? lastUserMessage.content
             : JSON.stringify(lastUserMessage?.content ?? '');
+        seenPrompts.push(prompt);
         if (prompt.includes('Background follow-up')) {
           await delay(150);
         }
@@ -293,6 +295,7 @@ describe('Actoviq advanced parity features', () => {
         agent: 'reviewer',
         prompt: 'Initial review',
       });
+      await team.message('reviewer-1', 'Leader note: focus on release blockers.');
       const backgroundTask = await team.runBackground('reviewer-1', 'Background follow-up');
       const teammates = await team.waitForIdle();
       const inbox = await team.inbox();
@@ -303,6 +306,7 @@ describe('Actoviq advanced parity features', () => {
       expect(teammates[0]?.status).toBe('completed');
       expect(backgroundRecord?.status).toBe('completed');
       expect(inbox.some(message => message.text.includes('Background follow-up'))).toBe(true);
+      expect(seenPrompts.some(prompt => prompt.includes('<teammate-message teammate_id="lead">'))).toBe(true);
       expect(teammateSession.messages.length).toBeGreaterThan(0);
     } finally {
       await sdk.close();
