@@ -41,8 +41,32 @@ try {
     'utf8',
   );
   await writeFile(
+    path.join(paths.autoMemoryDir, 'coding-style.md'),
+    [
+      '---',
+      'type: reference',
+      'description: Preferred coding and review workflow for this repository',
+      '---',
+      '',
+      'Keep changes small, add focused tests, and explain tradeoffs clearly.',
+    ].join('\n'),
+    'utf8',
+  );
+  await writeFile(
     paths.teamMemoryEntrypoint,
     '- [Release Flow](release-flow.md) - Bump package version before tagging releases.\n',
+    'utf8',
+  );
+  await writeFile(
+    path.join(paths.teamMemoryDir, 'release-flow.md'),
+    [
+      '---',
+      'type: project',
+      'description: Release checklist for npm and GitHub tags',
+      '---',
+      '',
+      'Always bump package.json before pushing a release tag.',
+    ].join('\n'),
     'utf8',
   );
   await mkdir(paths.sessionMemoryDir!, { recursive: true });
@@ -69,6 +93,16 @@ try {
     initialized: true,
     toolCallsSinceLastUpdate: 4,
   });
+  const manifest = await memory.formatMemoryManifest();
+  const relevantMemories = await memory.findRelevantMemories('how should I release this package?', {
+    recentTools: ['npm publish'],
+  });
+  const surfacedMemories = await memory.surfaceRelevantMemories(
+    'how should I release this package?',
+    {
+      recentTools: ['npm publish'],
+    },
+  );
 
   console.log('Paths:', paths);
   console.log('Settings:', settings);
@@ -84,6 +118,9 @@ try {
     'Prompt with entrypoints preview:',
     (await memory.buildPromptWithEntrypoints()).slice(0, 300),
   );
+  console.log('Memory manifest:', manifest);
+  console.log('Relevant memories:', relevantMemories);
+  console.log('Surfaced memories:', surfacedMemories);
   console.log('Compact summary preview:', compactState.summaryMessage?.slice(0, 300));
 } finally {
   await rm(tempDir, { recursive: true, force: true });

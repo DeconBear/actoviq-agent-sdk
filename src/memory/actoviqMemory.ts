@@ -8,13 +8,27 @@ import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
+import {
+  formatMemoryManifest,
+  memoryAge,
+  memoryAgeDays,
+  memoryFreshnessNote,
+  memoryFreshnessText,
+  memoryHeader,
+  readMemoriesForSurfacing,
+  scanMemoryFiles,
+  selectRelevantMemories,
+} from './actoviqRelevantMemories.js';
 import type {
   ActoviqCompactState,
   ActoviqCompactBoundaryMetadata,
   ActoviqCompactStateOptions,
+  ActoviqMemoryFileHeader,
   ActoviqMemoryOptions,
   ActoviqMemoryPaths,
   ActoviqMemoryPromptOptions,
+  ActoviqRelevantMemory,
+  ActoviqRelevantMemoryLookupOptions,
   ActoviqSessionMemoryCompactConfig,
   ActoviqSessionMemoryConfig,
   ActoviqSessionMemoryProgress,
@@ -22,6 +36,7 @@ import type {
   ActoviqMemoryState,
   ActoviqMemoryStateOptions,
   ActoviqSessionMemoryState,
+  ActoviqSurfacedMemory,
   ActoviqTranscriptBoundary,
   UpdateActoviqMemorySettingsInput,
 } from '../types.js';
@@ -525,6 +540,45 @@ export class ActoviqMemoryApi {
     return lines.join('\n');
   }
 
+  async scanMemoryFiles(options: ActoviqMemoryOptions = {}): Promise<ActoviqMemoryFileHeader[]> {
+    const paths = await this.paths(options);
+    const [privateMemories, teamMemories] = await Promise.all([
+      scanMemoryFiles(paths.autoMemoryDir, 'private'),
+      scanMemoryFiles(paths.teamMemoryDir, 'team'),
+    ]);
+    const teamPrefix = `${paths.teamMemoryDir}${path.sep}`;
+    const filteredPrivate = privateMemories.filter(
+      memory => memory.filePath !== paths.teamMemoryEntrypoint && !memory.filePath.startsWith(teamPrefix),
+    );
+    return [...filteredPrivate, ...teamMemories].sort((left, right) => right.mtimeMs - left.mtimeMs);
+  }
+
+  async formatMemoryManifest(options: ActoviqMemoryOptions = {}): Promise<string> {
+    return formatMemoryManifest(await this.scanMemoryFiles(options));
+  }
+
+  async findRelevantMemories(
+    query: string,
+    options: ActoviqRelevantMemoryLookupOptions = {},
+  ): Promise<ActoviqRelevantMemory[]> {
+    const memories = await this.scanMemoryFiles(options);
+    return selectRelevantMemories(query, memories, {
+      recentTools: options.recentTools,
+      alreadySurfacedPaths: options.alreadySurfacedPaths
+        ? new Set(options.alreadySurfacedPaths)
+        : undefined,
+      limit: options.limit,
+    });
+  }
+
+  async surfaceRelevantMemories(
+    query: string,
+    options: ActoviqRelevantMemoryLookupOptions = {},
+  ): Promise<ActoviqSurfacedMemory[]> {
+    const relevant = await this.findRelevantMemories(query, options);
+    return readMemoriesForSurfacing(relevant);
+  }
+
   async loadSessionTemplate(options: ActoviqMemoryOptions = {}): Promise<string> {
     const homeDir = options.homeDir ?? this.defaults.homeDir ?? os.homedir();
     const templatePath = path.join(homeDir, '.actoviq', 'session-memory', 'config', 'template.md');
@@ -900,6 +954,18 @@ export function getActoviqDefaultSessionMemoryCompactConfig(): ActoviqSessionMem
     ...DEFAULT_SESSION_MEMORY_COMPACT_CONFIG,
   };
 }
+
+export {
+  formatMemoryManifest as formatActoviqMemoryManifest,
+  memoryAge as getActoviqMemoryAge,
+  memoryAgeDays as getActoviqMemoryAgeDays,
+  memoryFreshnessNote as getActoviqMemoryFreshnessNote,
+  memoryFreshnessText as getActoviqMemoryFreshnessText,
+  memoryHeader as getActoviqMemoryHeader,
+  readMemoriesForSurfacing as readActoviqMemoriesForSurfacing,
+  scanMemoryFiles as scanActoviqMemoryFiles,
+  selectRelevantMemories as selectActoviqRelevantMemories,
+};
 
 export function getActoviqDefaultSettingsPath(options: { homeDir?: string } = {}): string {
   return getDefaultActoviqSettingsPath(options.homeDir);

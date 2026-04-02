@@ -311,7 +311,8 @@ const runtimeCatalog = await sdk.getRuntimeCatalog();
 SDK 现在也提供了可复用的 memory / compact state helper，设计上对齐上游
 `claude-code` 的 session-memory 与 compact boundary 语义。这样我们可以直接检查
 `.actoviq` 下的 memory 路径、session-memory 模板与 prompt、compact 边界历史，
-以及当前是否满足 session-memory 提取或 compaction 的阈值条件。
+以及当前是否满足 session-memory 提取或 compaction 的阈值条件，同时也补上
+relevant memory 的 scan / select / surface helper。
 
 ```ts
 import {
@@ -340,6 +341,8 @@ console.log(state.paths);
 console.log(state.progress);
 console.log(state.latestBoundary);
 console.log(state.summaryMessage);
+console.log(await memory.findRelevantMemories('how should I release this package?'));
+console.log(await memory.surfaceRelevantMemories('how should I release this package?'));
 ```
 
 当前可直接使用：
@@ -355,6 +358,10 @@ console.log(state.summaryMessage);
 - `memory.buildPromptWithEntrypoints()`
 - `memory.buildSessionUpdatePrompt(...)`
 - `memory.readSessionMemory(...)`
+- `memory.scanMemoryFiles(...)`
+- `memory.formatMemoryManifest(...)`
+- `memory.findRelevantMemories(...)`
+- `memory.surfaceRelevantMemories(...)`
 - `memory.getSessionMemoryConfig()`
 - `memory.getSessionMemoryCompactConfig()`
 - `memory.evaluateSessionMemoryProgress(...)`
