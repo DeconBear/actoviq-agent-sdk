@@ -258,7 +258,11 @@ const sdk = await createAgentSdk({
   ],
 });
 
-const team = sdk.swarm.createTeam({ name: 'release-team', leader: 'lead' });
+const team = sdk.swarm.createTeam({
+  name: 'release-team',
+  leader: 'lead',
+  continuous: true,
+});
 await team.spawn({
   name: 'reviewer-1',
   agent: 'reviewer',
@@ -269,6 +273,7 @@ await team.message(
   'reviewer-1',
   'Leader note: focus on release blockers and anything that could break publish.',
 );
+await team.teammate('reviewer-1').continueFromMailbox();
 
 const task = await team.runBackground('reviewer-1', 'Suggest one CI automation follow-up.');
 await team.waitForIdle();
@@ -282,6 +287,8 @@ Run the repository example with:
 ```bash
 npm run example:actoviq-swarm
 ```
+
+Swarm teammates now keep richer clean-SDK continuity metadata such as run lineage, mailbox-driven turns, recovery count, and the last completed task status. Use `team.continueFromMailbox(...)`, `team.continueAllFromMailbox()`, and `team.teammate(name).recover()` when you want a closer in-process teammate loop without switching to the bridge runtime.
 
 ### Permissions and Computer Use
 

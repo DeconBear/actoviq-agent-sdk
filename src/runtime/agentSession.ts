@@ -9,7 +9,11 @@ import type {
   ActoviqSessionCompactResult,
   ActoviqCompactStateOptions,
   ActoviqCompactState,
+  ActoviqHooks,
+  ActoviqPermissionMode,
+  ActoviqPermissionRule,
   ActoviqSessionMemoryExtractionResult,
+  ActoviqToolClassifier,
   SessionForkOptions,
   StoredSession,
 } from '../types.js';
@@ -41,6 +45,17 @@ interface AgentSessionBindings {
     options?: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'>,
   ) => Promise<ActoviqCompactState>;
   getAgentContinuity: (session: AgentSession) => Promise<ActoviqAgentContinuityState>;
+  setRuntimeHooks: (session: AgentSession, hooks?: ActoviqHooks) => void;
+  clearRuntimeHooks: (session: AgentSession) => void;
+  setRuntimePermissionContext: (
+    session: AgentSession,
+    context: {
+      mode?: ActoviqPermissionMode;
+      permissions?: ActoviqPermissionRule[];
+      classifier?: ActoviqToolClassifier;
+    },
+  ) => void;
+  clearRuntimePermissionContext: (session: AgentSession) => void;
   hydrate: (stored: StoredSession) => AgentSession;
 }
 
@@ -113,6 +128,26 @@ export class AgentSession {
 
   async agentContinuity(): Promise<ActoviqAgentContinuityState> {
     return this.bindings.getAgentContinuity(this);
+  }
+
+  setHooks(hooks?: ActoviqHooks): void {
+    this.bindings.setRuntimeHooks(this, hooks);
+  }
+
+  clearHooks(): void {
+    this.bindings.clearRuntimeHooks(this);
+  }
+
+  setPermissionContext(context: {
+    mode?: ActoviqPermissionMode;
+    permissions?: ActoviqPermissionRule[];
+    classifier?: ActoviqToolClassifier;
+  }): void {
+    this.bindings.setRuntimePermissionContext(this, context);
+  }
+
+  clearPermissionContext(): void {
+    this.bindings.clearRuntimePermissionContext(this);
   }
 
   async rename(title: string): Promise<void> {
