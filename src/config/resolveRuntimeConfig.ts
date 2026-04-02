@@ -16,6 +16,15 @@ const LEGACY_ENV_KEYS = {
 } as const;
 
 const FALLBACK_MODEL = ['cl', 'aude-sonnet-4-5-20250929'].join('');
+const DEFAULT_COMPACT_CONFIG = {
+  enabled: true,
+  autoCompactThresholdTokens: 20_000,
+  preserveRecentMessages: 8,
+  maxSummaryTokens: 1_024,
+  microcompactEnabled: true,
+  microcompactKeepRecentToolResults: 3,
+  microcompactMinContentChars: 1_000,
+} as const;
 
 function getConfigValue(
   source: NodeJS.ProcessEnv | Record<string, string>,
@@ -95,5 +104,9 @@ export async function resolveRuntimeConfig(
     maxToolIterations: options.maxToolIterations ?? 12,
     userId: options.userId,
     metadata: { ...(options.metadata ?? {}) },
+    compact: {
+      ...DEFAULT_COMPACT_CONFIG,
+      ...(options.compact ?? {}),
+    },
   };
 }
