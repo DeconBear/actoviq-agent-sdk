@@ -743,6 +743,41 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   summaryMessage?: string;
 }
 
+export interface ActoviqMemoryFileHeader {
+  filename: string;
+  filePath: string;
+  mtimeMs: number;
+  description?: string | null;
+  type?: string;
+  scope: 'private' | 'team';
+}
+
+export interface ActoviqRelevantMemory {
+  filename: string;
+  path: string;
+  mtimeMs: number;
+  description?: string | null;
+  type?: string;
+  scope: 'private' | 'team';
+  score?: number;
+}
+
+export interface ActoviqSurfacedMemory {
+  path: string;
+  content: string;
+  mtimeMs: number;
+  header: string;
+  limit?: number;
+  scope: 'private' | 'team';
+  freshnessText?: string;
+}
+
+export interface ActoviqRelevantMemoryLookupOptions extends ActoviqMemoryOptions {
+  recentTools?: string[];
+  alreadySurfacedPaths?: Iterable<string>;
+  limit?: number;
+}
+
 export interface ActoviqCompactBoundaryMetadata {
   trigger?: string;
   preTokens?: number;
