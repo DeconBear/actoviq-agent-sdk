@@ -533,6 +533,86 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('reactively compacts and retries when the provider rejects an oversized prompt', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let nonCompactCalls = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Reactive compact summary: prior release planning was condensed.',
+            },
+          ]);
+        }
+
+        nonCompactCalls += 1;
+        if (nonCompactCalls === 1) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Initial release context recorded.',
+            },
+          ]);
+        }
+        if (nonCompactCalls === 2) {
+          throw new Error('Provider request failed with HTTP 413: Prompt is too long');
+        }
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Recovered after reactive compact.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      compact: {
+        preserveRecentMessages: 1,
+      },
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('Remember the release checklist and deployment order.');
+      const result = await session.send('Continue with the release notes.');
+      const compactState = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(result.text).toContain('Recovered after reactive compact.');
+      expect(result.reactiveCompact).toMatchObject({
+        compacted: true,
+        trigger: 'reactive',
+      });
+      expect(
+        modelApi.createCalls.filter(
+          request =>
+            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            'compact',
+        ),
+      ).toHaveLength(1);
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.summaryMessage).toContain('Reactive compact summary');
+      expect(compactState.pendingPostCompaction).toBe(false);
+      expect(session.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Reactive compact summary'),
+          }),
+        ]),
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('runs session hooks that inject context and persist metadata updates', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -751,6 +831,88 @@ describe('ActoviqAgentClient', () => {
       expect(directContinuity).toMatchObject({
         currentAgent: 'reviewer',
       });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('applies agent definition hooks in the clean SDK path', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        const hookMessage = request.messages.find(
+          message =>
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.includes('Agent hook context'),
+        );
+        return makeMessage([
+          {
+            type: 'text',
+            text: hookMessage ? 'Agent hook path confirmed.' : 'Agent hooks missing.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+          hooks: {
+            sessionStart: [
+              () => ({
+                messages: [
+                  {
+                    role: 'user',
+                    content:
+                      '<system-reminder>Agent hook context: prefer safe release changes.</system-reminder>',
+                  },
+                ],
+                systemPromptParts: ['Agent hook system prompt active.'],
+              }),
+            ],
+            postRun: [
+              () => ({
+                sessionMetadata: {
+                  reviewerMode: 'agent-hooked',
+                },
+              }),
+            ],
+          },
+        },
+      ],
+    });
+
+    try {
+      const result = await sdk.runWithAgent('reviewer', 'Review this release plan.');
+
+      expect(result.text).toContain('Agent hook path confirmed.');
+      expect(result.sessionHookMetadata).toMatchObject({
+        reviewerMode: 'agent-hooked',
+      });
+      expect(modelApi.createCalls[0]?.system).toContain('Agent hook system prompt active.');
+      expect(modelApi.createCalls[0]?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Agent hook context'),
+          }),
+        ]),
+      );
+      expect(sdk.agents.list()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'reviewer',
+            hasHooks: true,
+          }),
+        ]),
+      );
     } finally {
       await sdk.close();
     }

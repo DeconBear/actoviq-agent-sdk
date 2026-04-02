@@ -99,7 +99,7 @@ export async function resolveRuntimeConfig(
     sessionDirectory:
       options.sessionDirectory ?? path.join(homeDir, '.actoviq', 'actoviq-agent-sdk'),
     clientName: options.clientName ?? 'actoviq-agent-sdk',
-    clientVersion: options.clientVersion ?? '0.1.4',
+    clientVersion: options.clientVersion ?? '0.1.5',
     systemPrompt: options.systemPrompt,
     maxToolIterations: options.maxToolIterations ?? 12,
     userId: options.userId,

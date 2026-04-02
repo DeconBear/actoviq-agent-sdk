@@ -35,6 +35,24 @@ export class RunAbortedError extends ActoviqSdkError {
   }
 }
 
+export class ActoviqProviderApiError extends ActoviqSdkError {
+  readonly status: number;
+  readonly errorType?: string;
+
+  constructor(
+    message: string,
+    options: {
+      status: number;
+      errorType?: string;
+      cause?: unknown;
+    },
+  ) {
+    super(message, 'ACTOVIQ_PROVIDER_API_ERROR', options);
+    this.status = options.status;
+    this.errorType = options.errorType;
+  }
+}
+
 export class ActoviqBridgeProcessError extends ActoviqSdkError {
   readonly stderr?: string;
   readonly exitCode?: number | null;

@@ -56,6 +56,11 @@ export function summarizeActoviqAgentDefinition(
     metadataKeys: Object.keys(definition.metadata ?? {}),
     hasSystemPrompt:
       typeof definition.systemPrompt === 'string' && definition.systemPrompt.trim().length > 0,
+    hasHooks:
+      (definition.hooks?.sessionStart?.length ?? 0) +
+        (definition.hooks?.postSampling?.length ?? 0) +
+        (definition.hooks?.postRun?.length ?? 0) >
+      0,
   };
 }
 

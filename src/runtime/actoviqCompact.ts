@@ -1,5 +1,6 @@
 import type { MessageParam } from '../provider/types.js';
 import type {
+  ActoviqCompactTrigger,
   ActoviqCompactConfig,
   ActoviqSessionCompactResult,
   ActoviqSessionMemoryRuntimeState,
@@ -8,6 +9,7 @@ import type {
   ModelRequest,
   StoredSession,
 } from '../types.js';
+import { ActoviqProviderApiError } from '../errors.js';
 import { extractTextFromContent } from './messageUtils.js';
 import { nowIso } from './helpers.js';
 import {
@@ -24,8 +26,18 @@ interface PersistedCompactState {
   microcompactCount: number;
   lastCompactedAt?: string;
   lastSummaryMessage?: string;
-  lastTrigger?: 'auto' | 'manual';
+  lastTrigger?: ActoviqCompactTrigger;
 }
+
+const PROMPT_TOO_LONG_PATTERNS = [
+  'prompt is too long',
+  'prompt too long',
+  'conversation too long',
+  'context length',
+  'too many input tokens',
+  'input is too long',
+  'request is too large',
+];
 
 export interface ActoviqCompactExecutionContext {
   workDir: string;
@@ -60,7 +72,9 @@ export function getPersistedActoviqCompactState(
     lastSummaryMessage:
       typeof state.lastSummaryMessage === 'string' ? state.lastSummaryMessage : undefined,
     lastTrigger:
-      state.lastTrigger === 'auto' || state.lastTrigger === 'manual'
+      state.lastTrigger === 'auto' ||
+      state.lastTrigger === 'manual' ||
+      state.lastTrigger === 'reactive'
         ? state.lastTrigger
         : undefined,
   };
@@ -189,10 +203,10 @@ function buildCompactSummaryPrompt(
     .join('\n');
 }
 
-function buildPostCompactSummaryMessage(summary: string, trigger: 'auto' | 'manual'): MessageParam {
+function buildPostCompactSummaryMessage(summary: string, trigger: ActoviqCompactTrigger): MessageParam {
   return {
     role: 'user',
-    content: `<system-reminder>\nThis session was ${trigger === 'auto' ? 'automatically' : 'manually'} compacted to save context. Earlier conversation summary:\n\n${summary}\n\nContinue directly from the preserved recent messages without asking the user to repeat prior context.\n</system-reminder>`,
+    content: `<system-reminder>\nThis session was ${trigger === 'auto' ? 'automatically' : trigger === 'manual' ? 'manually' : 'reactively'} compacted to save context. Earlier conversation summary:\n\n${summary}\n\nContinue directly from the preserved recent messages without asking the user to repeat prior context.\n</system-reminder>`,
   };
 }
 
@@ -208,7 +222,7 @@ function serializeMessagesForSummary(messages: readonly MessageParam[]): string 
 
 export async function compactActoviqSession(
   session: StoredSession,
-  options: AgentSessionCompactOptions & { trigger: 'auto' | 'manual' },
+  options: AgentSessionCompactOptions & { trigger: ActoviqCompactTrigger },
   context: ActoviqCompactExecutionContext,
 ): Promise<{
   session: StoredSession;
@@ -371,4 +385,20 @@ export async function compactActoviqSession(
       state: nextRuntimeState,
     },
   };
+}
+
+export function isActoviqPromptTooLongError(error: unknown): boolean {
+  if (error instanceof ActoviqProviderApiError) {
+    if (error.status === 400 || error.status === 413) {
+      const normalized = error.message.toLowerCase();
+      return PROMPT_TOO_LONG_PATTERNS.some(pattern => normalized.includes(pattern));
+    }
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalized = error.message.toLowerCase();
+  return PROMPT_TOO_LONG_PATTERNS.some(pattern => normalized.includes(pattern));
 }

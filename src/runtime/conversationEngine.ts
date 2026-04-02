@@ -48,6 +48,7 @@ export interface ExecuteConversationOptions {
   hooks?: ActoviqHooks;
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
+  skipRunStartedEvent?: boolean;
   modelApi: ModelApi;
   config: ResolvedRuntimeConfig;
   mcpManager: McpConnectionManager;
@@ -65,14 +66,16 @@ export async function executeConversation(
   conversation.push(...deepClone(options.prefixedMessages ?? []));
   conversation.push(buildUserMessage(options.input));
 
-  options.emit?.({
-    type: 'run.started',
-    runId: options.runId,
-    sessionId: options.sessionId,
-    model,
-    input: promptText,
-    timestamp: startedAt,
-  });
+  if (!options.skipRunStartedEvent) {
+    options.emit?.({
+      type: 'run.started',
+      runId: options.runId,
+      sessionId: options.sessionId,
+      model,
+      input: promptText,
+      timestamp: startedAt,
+    });
+  }
 
   const resolvedTools = await options.mcpManager.resolveToolAdapters(
     options.tools ?? [],
