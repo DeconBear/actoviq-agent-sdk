@@ -219,6 +219,7 @@ export interface ActoviqAgentDefinition {
   systemPrompt?: string;
   model?: string;
   metadata?: Record<string, unknown>;
+  hooks?: ActoviqHooks;
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   inheritDefaultTools?: boolean;
@@ -235,6 +236,7 @@ export interface ActoviqAgentDefinitionSummary {
   inheritDefaultMcpServers: boolean;
   metadataKeys: string[];
   hasSystemPrompt: boolean;
+  hasHooks: boolean;
 }
 
 export interface CreateAgentSdkOptions {
@@ -381,7 +383,10 @@ export interface AgentRunResult {
   completedAt: string;
   sessionHookMetadata?: Record<string, unknown>;
   delegatedAgents?: ActoviqDelegatedAgentRecord[];
+  reactiveCompact?: ActoviqSessionCompactResult;
 }
+
+export type ActoviqCompactTrigger = 'auto' | 'manual' | 'reactive';
 
 export interface AgentSessionCompactOptions {
   force?: boolean;
@@ -394,7 +399,7 @@ export interface AgentSessionCompactOptions {
 
 export interface ActoviqSessionCompactResult {
   compacted: boolean;
-  trigger: 'auto' | 'manual';
+  trigger: ActoviqCompactTrigger;
   reason:
     | 'disabled'
     | 'threshold_not_met'
@@ -534,6 +539,14 @@ export type AgentEvent =
       runId: string;
       iteration: number;
       result: AgentToolCallRecord;
+      timestamp: string;
+    }
+  | {
+      type: 'session.compacted';
+      runId: string;
+      sessionId: string;
+      trigger: ActoviqCompactTrigger;
+      result: ActoviqSessionCompactResult;
       timestamp: string;
     }
   | {
