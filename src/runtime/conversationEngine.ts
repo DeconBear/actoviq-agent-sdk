@@ -12,6 +12,7 @@ import type {
   AgentRequestSummary,
   AgentRunOptions,
   AgentRunResult,
+  ActoviqHooks,
   AgentToolCallEventPayload,
   AgentToolCallRecord,
   AgentToolDefinition,
@@ -21,6 +22,7 @@ import type {
 } from '../types.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
+import { resolveActoviqPostSamplingHooks } from '../hooks/actoviqHooks.js';
 import {
   assistantMessageToParam,
   buildUserMessage,
@@ -43,6 +45,7 @@ export interface ExecuteConversationOptions {
   userId?: string;
   metadata?: Record<string, unknown>;
   signal?: AbortSignal;
+  hooks?: ActoviqHooks;
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
   modelApi: ModelApi;
@@ -57,6 +60,7 @@ export async function executeConversation(
   const model = options.model ?? options.config.model;
   const promptText =
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
+  const postSamplingHooks = resolveActoviqPostSamplingHooks(options.hooks);
   const conversation = deepClone(options.messages ?? []);
   conversation.push(...deepClone(options.prefixedMessages ?? []));
   conversation.push(buildUserMessage(options.input));
@@ -127,6 +131,32 @@ export async function executeConversation(
 
     finalMessage = message;
     conversation.push(assistantMessageToParam(message));
+
+    for (const hook of postSamplingHooks) {
+      await hook({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        workDir: options.config.workDir,
+        iteration,
+        input: options.input,
+        promptText,
+        options: {
+          systemPrompt: options.systemPrompt,
+          tools: options.tools,
+          mcpServers: options.mcpServers,
+          model: options.model,
+          maxTokens: options.maxTokens,
+          temperature: options.temperature,
+          toolChoice: options.toolChoice,
+          userId: options.userId,
+          metadata: options.metadata,
+          signal: options.signal,
+        },
+        systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
+        assistantMessage: deepClone(message),
+        messages: deepClone(conversation),
+      });
+    }
 
     for (const block of message.content) {
       options.emit?.({

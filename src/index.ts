@@ -54,6 +54,7 @@ export { McpConnectionManager } from './mcp/connectionManager.js';
 export {
   mergeActoviqHooks,
   normalizeActoviqHookMessages,
+  resolveActoviqPostSamplingHooks,
   resolveActoviqPostRunHooks,
   resolveActoviqSessionStartHooks,
 } from './hooks/actoviqHooks.js';
@@ -93,6 +94,11 @@ export {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
+export {
+  ActoviqBackgroundTaskHandle,
+  ActoviqBackgroundTaskManager,
+  ActoviqBackgroundTasksApi,
+} from './runtime/actoviqBackgroundTasks.js';
 export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';

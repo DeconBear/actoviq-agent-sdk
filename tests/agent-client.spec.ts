@@ -13,6 +13,7 @@ import {
   type ModelStreamHandle,
 } from '../src/index.js';
 import type { Message, MessageStreamEvent } from '../src/provider/types.js';
+import { extractTextFromContent } from '../src/runtime/messageUtils.js';
 
 const tempDirs: string[] = [];
 let messageCounter = 0;
@@ -608,6 +609,50 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('runs post-sampling hooks after assistant sampling completes', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const seenTexts: string[] = [];
+    const modelApi = new MockModelApi({
+      create: () =>
+        makeMessage([
+          {
+            type: 'text',
+            text: 'Post-sampling hook target response.',
+          },
+        ]),
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      hooks: {
+        postSampling: [
+          ({ assistantMessage, iteration, messages }) => {
+            seenTexts.push(
+              [
+                `iteration=${iteration}`,
+                extractTextFromContent(assistantMessage.content),
+                `messages=${messages.length}`,
+              ].join('|'),
+            );
+          },
+        ],
+      },
+    });
+
+    try {
+      const result = await sdk.run('Trigger post-sampling.');
+
+      expect(result.text).toContain('Post-sampling hook target response');
+      expect(seenTexts).toHaveLength(1);
+      expect(seenTexts[0]).toContain('iteration=1');
+      expect(seenTexts[0]).toContain('Post-sampling hook target response.');
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('supports clean agent definitions and the Task delegation tool', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -706,6 +751,97 @@ describe('ActoviqAgentClient', () => {
       expect(directContinuity).toMatchObject({
         currentAgent: 'reviewer',
       });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('supports background subagent tasks and task polling', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let mainCallCount = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        const isReviewer = request.system?.includes('Review code carefully and focus on risks.');
+        if (isReviewer) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Background reviewer summary: verify release ordering before tagging.',
+            },
+          ]);
+        }
+
+        mainCallCount += 1;
+        if (mainCallCount === 1) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Launching a background reviewer.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_bg_1',
+                name: 'Task',
+                input: {
+                  description: 'Review the release flow in the background.',
+                  subagent_type: 'reviewer',
+                  run_in_background: true,
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'The reviewer is running in the background.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+        },
+      ],
+    });
+
+    const taskTool = sdk.createTaskTool();
+
+    try {
+      const result = await sdk.run('Start a background review.', {
+        tools: [taskTool],
+      });
+      const taskOutput = result.toolCalls[0]?.output as Record<string, unknown> | undefined;
+      const taskId =
+        typeof taskOutput?.taskId === 'string' ? taskOutput.taskId : undefined;
+
+      expect(taskOutput?.status).toBe('async_launched');
+      expect(taskId).toBeTruthy();
+      expect(result.text).toContain('background');
+
+      const completedTask = await sdk.tasks.wait(taskId!);
+      const listedTasks = await sdk.tasks.list();
+
+      expect(completedTask.status).toBe('completed');
+      expect(completedTask.text).toContain('Background reviewer summary');
+      expect(completedTask.outputFile).toContain(taskId!);
+      expect(listedTasks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: taskId,
+            status: 'completed',
+            subagentType: 'reviewer',
+          }),
+        ]),
+      );
     } finally {
       await sdk.close();
     }
