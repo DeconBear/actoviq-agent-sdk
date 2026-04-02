@@ -32,10 +32,11 @@ const sdk = await createAgentSdk({
 
 try {
   const result = await sdk.run(
-    'Open https://example.com in the browser and then explain what you did.',
+    'Use the workflow computer tool to open https://example.com, type "release-ready", press Enter, wait briefly, and explain what you did.',
   );
 
   console.log(result.text);
+  console.log('tool calls:', result.toolCalls.map(call => call.publicName));
   console.log('executor calls:', executorCalls);
 } finally {
   await sdk.close();

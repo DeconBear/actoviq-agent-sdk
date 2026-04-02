@@ -1009,6 +1009,15 @@ export function getActoviqCompactBoundarySummary(
     typeof metadata.messagesSummarized === 'number'
       ? `messagesSummarized=${metadata.messagesSummarized}`
       : undefined,
+    typeof metadata.preservedMessages === 'number'
+      ? `preservedMessages=${metadata.preservedMessages}`
+      : undefined,
+    typeof metadata.droppedMessages === 'number'
+      ? `droppedMessages=${metadata.droppedMessages}`
+      : undefined,
+    typeof metadata.retryCount === 'number'
+      ? `retryCount=${metadata.retryCount}`
+      : undefined,
     metadata.preservedSegment
       ? `preservedSegment=${metadata.preservedSegment.headUuid}->${metadata.preservedSegment.anchorUuid}->${metadata.preservedSegment.tailUuid}`
       : undefined,
