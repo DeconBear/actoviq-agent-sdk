@@ -3,7 +3,10 @@
 import type {
   AgentRunOptions,
   AgentRunResult,
+  AgentSessionCompactOptions,
   AgentSessionMemoryExtractionOptions,
+  ActoviqAgentContinuityState,
+  ActoviqSessionCompactResult,
   ActoviqCompactStateOptions,
   ActoviqCompactState,
   ActoviqSessionMemoryExtractionResult,
@@ -29,10 +32,15 @@ interface AgentSessionBindings {
     session: AgentSession,
     options?: AgentSessionMemoryExtractionOptions,
   ) => Promise<ActoviqSessionMemoryExtractionResult>;
+  compactSession: (
+    session: AgentSession,
+    options?: AgentSessionCompactOptions,
+  ) => Promise<ActoviqSessionCompactResult>;
   getCompactState: (
     session: AgentSession,
     options?: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'>,
   ) => Promise<ActoviqCompactState>;
+  getAgentContinuity: (session: AgentSession) => Promise<ActoviqAgentContinuityState>;
   hydrate: (stored: StoredSession) => AgentSession;
 }
 
@@ -91,10 +99,20 @@ export class AgentSession {
     return this.bindings.extractSessionMemory(this, options);
   }
 
+  async compact(
+    options: AgentSessionCompactOptions = {},
+  ): Promise<ActoviqSessionCompactResult> {
+    return this.bindings.compactSession(this, options);
+  }
+
   async compactState(
     options: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
   ): Promise<ActoviqCompactState> {
     return this.bindings.getCompactState(this, options);
+  }
+
+  async agentContinuity(): Promise<ActoviqAgentContinuityState> {
+    return this.bindings.getAgentContinuity(this);
   }
 
   async rename(title: string): Promise<void> {

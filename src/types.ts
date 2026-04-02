@@ -144,6 +144,78 @@ export interface ResolvedRuntimeConfig {
   maxToolIterations: number;
   userId?: string;
   metadata: Record<string, unknown>;
+  compact: ActoviqCompactConfig;
+}
+
+export interface ActoviqSessionStartHookContext {
+  runId: string;
+  input: string | MessageParam['content'];
+  promptText: string;
+  sessionId?: string;
+  session?: StoredSession;
+  workDir: string;
+  options: AgentRunOptions;
+}
+
+export interface ActoviqSessionStartHookResult {
+  messages?: MessageParam[];
+  systemPromptParts?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export type ActoviqSessionStartHook =
+  | ((
+      context: ActoviqSessionStartHookContext,
+    ) => Promise<ActoviqSessionStartHookResult | void> | ActoviqSessionStartHookResult | void);
+
+export interface ActoviqPostRunHookContext {
+  runId: string;
+  input: string | MessageParam['content'];
+  promptText: string;
+  sessionId?: string;
+  session?: StoredSession;
+  workDir: string;
+  options: AgentRunOptions;
+  result: AgentRunResult;
+}
+
+export interface ActoviqPostRunHookResult {
+  sessionMetadata?: Record<string, unknown>;
+  tags?: string[];
+}
+
+export type ActoviqPostRunHook =
+  | ((
+      context: ActoviqPostRunHookContext,
+    ) => Promise<ActoviqPostRunHookResult | void> | ActoviqPostRunHookResult | void);
+
+export interface ActoviqHooks {
+  sessionStart?: ActoviqSessionStartHook[];
+  postRun?: ActoviqPostRunHook[];
+}
+
+export interface ActoviqAgentDefinition {
+  name: string;
+  description: string;
+  systemPrompt?: string;
+  model?: string;
+  metadata?: Record<string, unknown>;
+  tools?: AgentToolDefinition[];
+  mcpServers?: AgentMcpServerDefinition[];
+  inheritDefaultTools?: boolean;
+  inheritDefaultMcpServers?: boolean;
+}
+
+export interface ActoviqAgentDefinitionSummary {
+  name: string;
+  description: string;
+  model?: string;
+  toolNames: string[];
+  mcpServerNames: string[];
+  inheritDefaultTools: boolean;
+  inheritDefaultMcpServers: boolean;
+  metadataKeys: string[];
+  hasSystemPrompt: boolean;
 }
 
 export interface CreateAgentSdkOptions {
@@ -166,7 +238,20 @@ export interface CreateAgentSdkOptions {
   metadata?: Record<string, unknown>;
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
+  agents?: ActoviqAgentDefinition[];
+  hooks?: ActoviqHooks;
+  compact?: Partial<ActoviqCompactConfig>;
   modelApi?: ModelApi;
+}
+
+export interface ActoviqCompactConfig {
+  enabled: boolean;
+  autoCompactThresholdTokens: number;
+  preserveRecentMessages: number;
+  maxSummaryTokens: number;
+  microcompactEnabled: boolean;
+  microcompactKeepRecentToolResults: number;
+  microcompactMinContentChars: number;
 }
 
 export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
@@ -214,6 +299,7 @@ export interface AgentRunOptions {
   toolChoice?: ToolChoice;
   userId?: string;
   metadata?: Record<string, unknown>;
+  hooks?: ActoviqHooks;
   signal?: AbortSignal;
 }
 
@@ -274,6 +360,60 @@ export interface AgentRunResult {
   toolCalls: AgentToolCallRecord[];
   startedAt: string;
   completedAt: string;
+  sessionHookMetadata?: Record<string, unknown>;
+  delegatedAgents?: ActoviqDelegatedAgentRecord[];
+}
+
+export interface AgentSessionCompactOptions {
+  force?: boolean;
+  model?: string;
+  maxTokens?: number;
+  preserveRecentMessages?: number;
+  summaryInstructions?: string;
+  signal?: AbortSignal;
+}
+
+export interface ActoviqSessionCompactResult {
+  compacted: boolean;
+  trigger: 'auto' | 'manual';
+  reason:
+    | 'disabled'
+    | 'threshold_not_met'
+    | 'no_messages'
+    | 'compacted';
+  tokenEstimateBefore: number;
+  tokenEstimateAfter?: number;
+  summaryMessage?: string;
+  messagesRemoved?: number;
+  compactCount: number;
+  microcompactCount: number;
+  state: ActoviqSessionMemoryRuntimeState;
+}
+
+export interface ActoviqTaskToolInput {
+  description: string;
+  subagent_type?: string;
+}
+
+export interface ActoviqTaskToolResult {
+  subagentType: string;
+  runId: string;
+  sessionId?: string;
+  model: string;
+  text: string;
+  toolCallCount: number;
+}
+
+export interface ActoviqDelegatedAgentRecord {
+  name: string;
+  count: number;
+  lastInvokedAt: string;
+  lastDescription?: string;
+}
+
+export interface ActoviqAgentContinuityState {
+  currentAgent?: string;
+  delegatedAgents: ActoviqDelegatedAgentRecord[];
 }
 
 export type AgentEvent =
@@ -770,6 +910,7 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   sessionMemoryCompactConfig: ActoviqSessionMemoryCompactConfig;
   progress?: ActoviqSessionMemoryProgress;
   runtimeState?: ActoviqSessionMemoryRuntimeState;
+  agentContinuity?: ActoviqAgentContinuityState;
   transcriptPath?: string;
   boundaries?: ActoviqTranscriptBoundary[];
   latestBoundary?: ActoviqTranscriptBoundary;

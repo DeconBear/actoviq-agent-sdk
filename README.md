@@ -20,6 +20,7 @@ Licensed under the [MIT License](./LICENSE).
 - Actoviq Runtime bridge with built-in tools, skills, subagents, and native session/context behavior
 - Structured runtime metadata APIs for tools, skills, slash commands, and agents
 - Memory and compact-state helpers aligned to the upstream session-memory and compact boundary flow
+- Clean SDK agent definitions, Task-style delegation, and session/post-run hooks
 - Buddy APIs for hatching, muting, petting, and companion prompt-context generation
 - Clean public SDK surface on top of a vendored non-TUI runtime
 - Interactive streaming demo for local development and agent debugging
@@ -96,6 +97,7 @@ What you can use today:
 - bridge runtime introspection
 - bridge capability metadata and event analysis helpers
 - memory settings, session-memory prompts, and compact-state inspection helpers
+- clean SDK named agents, Task delegation, and hook injection
 - buddy helpers for companion state, reactions, and prompt-context injection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents

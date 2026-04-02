@@ -52,6 +52,12 @@ export {
 } from './errors.js';
 export { McpConnectionManager } from './mcp/connectionManager.js';
 export {
+  mergeActoviqHooks,
+  normalizeActoviqHookMessages,
+  resolveActoviqPostRunHooks,
+  resolveActoviqSessionStartHooks,
+} from './hooks/actoviqHooks.js';
+export {
   ActoviqBridgeAgentHandle,
   ActoviqBridgeAgentsApi,
   ActoviqBridgeContextApi,
@@ -81,6 +87,12 @@ export {
 } from './parity/actoviqTranscripts.js';
 export { createActoviqFileTools } from './parity/actoviqFileTools.js';
 export { createAgentSdk, ActoviqAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
+export {
+  ActoviqAgentHandle,
+  ActoviqAgentsApi,
+  createActoviqTaskTool,
+  summarizeActoviqAgentDefinition,
+} from './runtime/actoviqAgents.js';
 export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';

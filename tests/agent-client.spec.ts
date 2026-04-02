@@ -415,5 +415,364 @@ describe('ActoviqAgentClient', () => {
       await sdk.close();
     }
   });
+
+  it('can manually compact a session and persist compact state', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Compact summary: keep the release ordering constraints and preserve the latest response.',
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Detailed release checklist response with enough context to compact later.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('Walk through the release checklist in detail.');
+      const compacted = await session.compact({
+        preserveRecentMessages: 1,
+      });
+      const compactState = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(compacted.compacted).toBe(true);
+      expect(compacted.trigger).toBe('manual');
+      expect(compacted.summaryMessage).toContain('Compact summary');
+      expect(modelApi.createCalls).toHaveLength(2);
+      expect(
+        (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task,
+      ).toBe('compact');
+      expect(session.messages[0]).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('Compact summary'),
+      });
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.hasCompacted).toBe(true);
+      expect(compactState.summaryMessage).toContain('Compact summary');
+      expect(compactState.pendingPostCompaction).toBe(true);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('automatically compacts sessions when the compact threshold is exceeded', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const longPrompt = 'release-checklist '.repeat(40);
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Auto compact summary: the earlier release planning details were condensed.',
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Working through the long release checklist response.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      compact: {
+        autoCompactThresholdTokens: 10,
+        preserveRecentMessages: 1,
+      },
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send(longPrompt);
+      const compactState = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(modelApi.createCalls).toHaveLength(2);
+      expect(
+        (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task,
+      ).toBe('compact');
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.summaryMessage).toContain('Auto compact summary');
+      expect(compactState.pendingPostCompaction).toBe(true);
+      expect(session.messages[0]).toMatchObject({
+        role: 'user',
+        content: expect.stringContaining('Auto compact summary'),
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('runs session hooks that inject context and persist metadata updates', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        const hookMessage = request.messages.find(
+          message =>
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.includes('Hooked context'),
+        );
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: hookMessage ? 'Hooked response.' : 'Missing hook context.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      hooks: {
+        sessionStart: [
+          () => ({
+            messages: [
+              {
+                role: 'user',
+                content:
+                  '<system-reminder>Hooked context: prefer release-safe changes.</system-reminder>',
+              },
+            ],
+            systemPromptParts: ['You are running in release-review mode.'],
+            metadata: {
+              hookInjected: true,
+            },
+          }),
+        ],
+        postRun: [
+          () => ({
+            sessionMetadata: {
+              reviewMode: 'release-safe',
+            },
+            tags: ['hooked'],
+          }),
+        ],
+      },
+    });
+
+    try {
+      const session = await sdk.createSession();
+      const result = await session.send('Review the release steps.');
+      const resumed = await sdk.resumeSession(session.id);
+
+      expect(result.text).toContain('Hooked response');
+      expect(modelApi.createCalls[0]?.system).toContain('release-review mode');
+      expect(modelApi.createCalls[0]?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Hooked context'),
+          }),
+        ]),
+      );
+      expect(resumed.metadata.reviewMode).toBe('release-safe');
+      expect(resumed.tags).toContain('hooked');
+      expect(result.sessionHookMetadata).toMatchObject({
+        reviewMode: 'release-safe',
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('supports clean agent definitions and the Task delegation tool', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        const isReviewer = request.system?.includes('Review code carefully and focus on risks.');
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Delegating to a reviewer.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_1',
+                name: 'Task',
+                input: {
+                  description: 'Review the current change set and summarize the risks.',
+                  subagent_type: 'reviewer',
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        if (isReviewer) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Reviewer summary: watch the release order.',
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Main agent wrapped the delegated result.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+          metadata: {
+            lane: 'review',
+          },
+        },
+      ],
+    });
+
+    const taskTool = sdk.createTaskTool();
+
+    try {
+      const result = await sdk.run('Please delegate this review.', {
+        tools: [taskTool],
+      });
+
+      expect(sdk.agents.list()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'reviewer',
+            hasSystemPrompt: true,
+          }),
+        ]),
+      );
+      expect(modelApi.createCalls).toHaveLength(3);
+      expect(result.toolCalls[0]?.publicName).toBe('Task');
+      expect(result.toolCalls[0]?.outputText).toContain('Reviewer summary');
+      expect(result.text).toContain('wrapped the delegated result');
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'reviewer',
+            count: 1,
+          }),
+        ]),
+      );
+
+      const direct = await sdk.runWithAgent('reviewer', 'Review directly.');
+      const agentSession = await sdk.createAgentSession('reviewer');
+      const sessionResult = await agentSession.send('Review inside a session.');
+      const continuity = await agentSession.compactState({ includeSessionMemory: true });
+      const directContinuity = await agentSession.agentContinuity();
+      expect(direct.text).toContain('Reviewer summary');
+      expect(sessionResult.text).toContain('Reviewer summary');
+      expect(continuity.agentContinuity).toMatchObject({
+        currentAgent: 'reviewer',
+      });
+      expect(directContinuity).toMatchObject({
+        currentAgent: 'reviewer',
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('marks pending post-compaction state after extraction and clears it on the next normal run', async () => {
+    const tempDir = await createSessionDirectory();
+    const homeDir = path.join(tempDir, 'home');
+    const workDir = path.join(tempDir, 'workspace');
+    const longPrompt = 'release-checklist '.repeat(4000);
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: [
+                '# Session Title',
+                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
+                '',
+                'Release memory snapshot',
+                '',
+                '# Current State',
+                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
+                '',
+                'Preparing the next public release and checking version/tag order.',
+              ].join('\n'),
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: index > 1 ? 'Small follow-up.' : 'Working through the release checklist.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: path.join(tempDir, 'sessions'),
+      homeDir,
+      workDir,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send(longPrompt);
+      const afterExtraction = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      await session.send('Quick follow-up.');
+      const afterFollowUp = await session.compactState({
+        includeSessionMemory: true,
+      });
+
+      expect(afterExtraction.pendingPostCompaction).toBe(true);
+      expect(afterExtraction.runtimeState?.pendingPostCompaction).toBe(true);
+      expect(afterFollowUp.pendingPostCompaction).toBe(false);
+      expect(afterFollowUp.runtimeState?.pendingPostCompaction).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 

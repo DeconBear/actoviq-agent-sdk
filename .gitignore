@@ -5,3 +5,4 @@ coverage
 .DS_Store
 *.tgz
 examples/*.local.json
+plan/
