@@ -31,6 +31,7 @@ export interface ExecuteConversationOptions {
   runId: string;
   input: string | MessageParam['content'];
   messages?: MessageParam[];
+  prefixedMessages?: MessageParam[];
   sessionId?: string;
   systemPrompt?: string;
   tools?: AgentToolDefinition[];
@@ -57,6 +58,7 @@ export async function executeConversation(
   const promptText =
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
   const conversation = deepClone(options.messages ?? []);
+  conversation.push(...deepClone(options.prefixedMessages ?? []));
   conversation.push(buildUserMessage(options.input));
 
   options.emit?.({

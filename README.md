@@ -334,6 +334,11 @@ session-memory and compact flow. This gives us a stable way to inspect
 the state needed to decide whether session-memory compaction is ready, and
 the scan/select/surface pipeline for relevant memory files.
 
+On the standard SDK path, relevant memories are now also auto-injected as
+meta user reminders at the start of a turn when auto memory is enabled. The
+SDK keeps a per-session surfaced-memory budget and de-duplicates already
+surfaced files across turns.
+
 ```ts
 import {
   createActoviqMemoryApi,
