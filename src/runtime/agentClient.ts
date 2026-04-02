@@ -18,10 +18,12 @@ import {
   serializeActoviqSessionMemoryRuntimeState,
 } from '../memory/actoviqSessionMemoryState.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
+import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
 import { SessionStore } from '../storage/sessionStore.js';
 import type {
   ActoviqAgentDefinition,
   ActoviqAgentDefinitionSummary,
+  ActoviqBackgroundTaskRecord,
   ActoviqAgentContinuityState,
   ActoviqCompactStateOptions,
   ActoviqDelegatedAgentRecord,
@@ -47,6 +49,10 @@ import {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './actoviqAgents.js';
+import {
+  ActoviqBackgroundTaskManager,
+  ActoviqBackgroundTasksApi,
+} from './actoviqBackgroundTasks.js';
 import {
   compactActoviqSession,
   getPersistedActoviqCompactState,
@@ -221,14 +227,17 @@ function mergeDelegatedAgents(
 export class ActoviqAgentClient {
   readonly sessions: AgentSessionsApi;
   readonly agents: ActoviqAgentsApi;
+  readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
+  private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
     private readonly store: SessionStore,
+    private readonly backgroundTaskStore: BackgroundTaskStore,
     private readonly modelApi: NonNullable<CreateAgentSdkOptions['modelApi']>,
     private readonly mcpManager: McpConnectionManager,
     private readonly defaultTools: AgentToolDefinition[],
@@ -240,10 +249,14 @@ export class ActoviqAgentClient {
     this.agentDefinitions = new Map(
       agentDefinitions.map(definition => [definition.name, deepClone(definition)]),
     );
+    this.backgroundTaskManager = new ActoviqBackgroundTaskManager(this.backgroundTaskStore);
+    this.tasks = new ActoviqBackgroundTasksApi(this.backgroundTaskManager);
     this.agents = new ActoviqAgentsApi({
       listDefinitions: () => this.listAgentDefinitions(),
       getDefinition: (agent) => this.getAgentDefinition(agent),
       runDefinition: (agent, prompt, options) => this.runWithAgent(agent, prompt, options),
+      launchBackgroundDefinition: (agent, prompt, options) =>
+        this.launchBackgroundAgentTask(agent, prompt, options),
       createDefinitionSession: (agent, options) => this.createAgentSession(agent, options),
     });
     this.buddy = createActoviqBuddyApi({
@@ -259,6 +272,7 @@ export class ActoviqAgentClient {
   static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
     const config = await resolveRuntimeConfig(options);
     const store = new SessionStore(config.sessionDirectory);
+    const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
     const modelApi = options.modelApi ?? createActoviqModelApi(config);
     const mcpManager = new McpConnectionManager({
       name: config.clientName,
@@ -267,6 +281,7 @@ export class ActoviqAgentClient {
     return new ActoviqAgentClient(
       config,
       store,
+      backgroundTaskStore,
       modelApi,
       mcpManager,
       [...(options.tools ?? [])],
@@ -424,6 +439,8 @@ export class ActoviqAgentClient {
           invokedAt: nowIso(),
         });
       },
+      launchBackgroundAgent: (agent, prompt, backgroundOptions) =>
+        this.launchBackgroundAgentTask(agent, prompt, backgroundOptions),
     });
   }
 
@@ -578,6 +595,7 @@ export class ActoviqAgentClient {
       userId: options.userId ?? this.config.userId,
       metadata,
       signal: options.signal,
+      hooks: augmentations?.hooks,
       streaming,
       emit,
       modelApi: this.modelApi,
@@ -813,6 +831,41 @@ export class ActoviqAgentClient {
 
   private async getAgentContinuityForSession(session: AgentSession): Promise<ActoviqAgentContinuityState> {
     return getAgentContinuityState(session.snapshot().metadata);
+  }
+
+  private async launchBackgroundAgentTask(
+    agent: string,
+    prompt: string,
+    options: {
+      parentRunId: string;
+      parentSessionId?: string;
+    },
+  ): Promise<ActoviqBackgroundTaskRecord> {
+    const definition = this.requireAgentDefinition(agent);
+    const session = await this.createAgentSession(agent, {
+      title: `${definition.name}: ${truncateText(prompt, 80)}`,
+      metadata: {
+        __actoviqBackgroundParentRunId: options.parentRunId,
+        __actoviqBackgroundParentSessionId: options.parentSessionId,
+      },
+    });
+    return this.backgroundTaskManager.launch({
+      subagentType: definition.name,
+      description: prompt,
+      workDir: this.config.workDir,
+      parentRunId: options.parentRunId,
+      parentSessionId: options.parentSessionId,
+      onRun: async (signal) => {
+        const result = await session.send(prompt, { signal });
+        return {
+          runId: result.runId,
+          sessionId: session.id,
+          model: result.model,
+          text: result.text,
+          toolCallCount: result.toolCalls.length,
+        };
+      },
+    });
   }
 
   private async compactSessionForSession(

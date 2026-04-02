@@ -189,8 +189,27 @@ export type ActoviqPostRunHook =
       context: ActoviqPostRunHookContext,
     ) => Promise<ActoviqPostRunHookResult | void> | ActoviqPostRunHookResult | void);
 
+export interface ActoviqPostSamplingHookContext {
+  runId: string;
+  sessionId?: string;
+  workDir: string;
+  iteration: number;
+  input: string | MessageParam['content'];
+  promptText: string;
+  options: AgentRunOptions;
+  systemPrompt?: string;
+  assistantMessage: Message;
+  messages: MessageParam[];
+}
+
+export type ActoviqPostSamplingHook =
+  | ((
+      context: ActoviqPostSamplingHookContext,
+    ) => Promise<void> | void);
+
 export interface ActoviqHooks {
   sessionStart?: ActoviqSessionStartHook[];
+  postSampling?: ActoviqPostSamplingHook[];
   postRun?: ActoviqPostRunHook[];
 }
 
@@ -393,9 +412,11 @@ export interface ActoviqSessionCompactResult {
 export interface ActoviqTaskToolInput {
   description: string;
   subagent_type?: string;
+  run_in_background?: boolean;
 }
 
-export interface ActoviqTaskToolResult {
+export interface ActoviqTaskToolSyncResult {
+  status: 'completed';
   subagentType: string;
   runId: string;
   sessionId?: string;
@@ -403,6 +424,20 @@ export interface ActoviqTaskToolResult {
   text: string;
   toolCallCount: number;
 }
+
+export interface ActoviqTaskToolAsyncResult {
+  status: 'async_launched';
+  taskId: string;
+  subagentType: string;
+  sessionId?: string;
+  outputFile: string;
+  canReadOutputFile: boolean;
+  description: string;
+}
+
+export type ActoviqTaskToolResult =
+  | ActoviqTaskToolSyncResult
+  | ActoviqTaskToolAsyncResult;
 
 export interface ActoviqDelegatedAgentRecord {
   name: string;
@@ -414,6 +449,40 @@ export interface ActoviqDelegatedAgentRecord {
 export interface ActoviqAgentContinuityState {
   currentAgent?: string;
   delegatedAgents: ActoviqDelegatedAgentRecord[];
+}
+
+export type ActoviqBackgroundTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface ActoviqBackgroundTaskRecord {
+  id: string;
+  status: ActoviqBackgroundTaskStatus;
+  description: string;
+  subagentType: string;
+  outputFile: string;
+  workDir: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  parentRunId?: string;
+  parentSessionId?: string;
+  sessionId?: string;
+  runId?: string;
+  model?: string;
+  text?: string;
+  toolCallCount?: number;
+  error?: string;
+}
+
+export interface WaitForActoviqBackgroundTaskOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  signal?: AbortSignal;
 }
 
 export type AgentEvent =
