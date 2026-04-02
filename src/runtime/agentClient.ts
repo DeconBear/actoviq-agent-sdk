@@ -10,6 +10,7 @@ import type {
   AgentRunOptions,
   AgentRunResult,
   AgentToolDefinition,
+  ActoviqSurfacedMemory,
   CreateAgentSdkOptions,
   SessionCreateOptions,
   SessionSummary,
@@ -19,8 +20,17 @@ import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
 import { asError, createId, deepClone, nowIso, truncateText } from './helpers.js';
-import { extractTextFromContent } from './messageUtils.js';
+import { buildRelevantMemoryMessages, extractTextFromContent } from './messageUtils.js';
 import { AgentSession } from './agentSession.js';
+
+const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
+const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
+
+interface PersistedRelevantMemorySessionState {
+  surfacedPaths: string[];
+  totalBytes: number;
+  recentTools: string[];
+}
 
 export class AgentSessionsApi {
   constructor(
@@ -39,6 +49,28 @@ export class AgentSessionsApi {
   delete(sessionId: string): Promise<void> {
     return this.store.delete(sessionId);
   }
+}
+
+function getRelevantMemorySessionState(metadata: Record<string, unknown> | undefined): PersistedRelevantMemorySessionState {
+  const raw = metadata?.[RELEVANT_MEMORY_SESSION_STATE_KEY];
+  if (!raw || typeof raw !== 'object') {
+    return {
+      surfacedPaths: [],
+      totalBytes: 0,
+      recentTools: [],
+    };
+  }
+
+  const state = raw as Record<string, unknown>;
+  return {
+    surfacedPaths: Array.isArray(state.surfacedPaths)
+      ? state.surfacedPaths.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    totalBytes: typeof state.totalBytes === 'number' ? state.totalBytes : 0,
+    recentTools: Array.isArray(state.recentTools)
+      ? state.recentTools.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+  };
 }
 
 export class ActoviqAgentClient {
@@ -88,7 +120,8 @@ export class ActoviqAgentClient {
     options: AgentRunOptions = {},
   ): Promise<AgentRunResult> {
     const runId = createId();
-    return this.executeRun(runId, input, options);
+    const memoryContext = await this.prepareRelevantMemoryContext(input);
+    return this.executeRun(runId, input, options, undefined, false, undefined, memoryContext);
   }
 
   stream(
@@ -98,7 +131,16 @@ export class ActoviqAgentClient {
     const runId = createId();
     return new AgentRunStream(async (controller) => {
       try {
-        const result = await this.executeRun(runId, input, options, undefined, true, controller.emit);
+        const memoryContext = await this.prepareRelevantMemoryContext(input);
+        const result = await this.executeRun(
+          runId,
+          input,
+          options,
+          undefined,
+          true,
+          controller.emit,
+          memoryContext,
+        );
         controller.emit({
           type: 'response.completed',
           runId,
@@ -159,12 +201,13 @@ export class ActoviqAgentClient {
   private async runOnSession(
     session: AgentSession,
     input: string | MessageParam['content'],
-    options: AgentRunOptions = {},
+  options: AgentRunOptions = {},
   ): Promise<AgentRunResult> {
     const runId = createId();
     const snapshot = session.snapshot();
-    const result = await this.executeRun(runId, input, options, snapshot);
-    await this.persistSessionAfterRun(session, snapshot, input, result, options);
+    const memoryContext = await this.prepareRelevantMemoryContext(input, snapshot);
+    const result = await this.executeRun(runId, input, options, snapshot, false, undefined, memoryContext);
+    await this.persistSessionAfterRun(session, snapshot, input, result, options, memoryContext.surfacedMemories);
     return result;
   }
 
@@ -178,8 +221,24 @@ export class ActoviqAgentClient {
 
     return new AgentRunStream(async (controller) => {
       try {
-        const result = await this.executeRun(runId, input, options, snapshot, true, controller.emit);
-        await this.persistSessionAfterRun(session, snapshot, input, result, options);
+        const memoryContext = await this.prepareRelevantMemoryContext(input, snapshot);
+        const result = await this.executeRun(
+          runId,
+          input,
+          options,
+          snapshot,
+          true,
+          controller.emit,
+          memoryContext,
+        );
+        await this.persistSessionAfterRun(
+          session,
+          snapshot,
+          input,
+          result,
+          options,
+          memoryContext.surfacedMemories,
+        );
         controller.emit({
           type: 'response.completed',
           runId,
@@ -211,6 +270,10 @@ export class ActoviqAgentClient {
     session?: StoredSession,
     streaming = false,
     emit?: (event: import('../types.js').AgentEvent) => void,
+    memoryContext?: {
+      prefixedMessages: MessageParam[];
+      surfacedMemories: ActoviqSurfacedMemory[];
+    },
   ): Promise<AgentRunResult> {
     const metadata = {
       ...this.config.metadata,
@@ -223,6 +286,7 @@ export class ActoviqAgentClient {
       runId,
       input,
       messages: session?.messages,
+      prefixedMessages: memoryContext?.prefixedMessages,
       sessionId: session?.id,
       systemPrompt,
       tools: [...this.defaultTools, ...(options.tools ?? [])],
@@ -239,7 +303,12 @@ export class ActoviqAgentClient {
       modelApi: this.modelApi,
       config: this.config,
       mcpManager: this.mcpManager,
-    });
+    }).then(result => ({
+      ...result,
+      surfacedMemories: memoryContext?.surfacedMemories.length
+        ? deepClone(memoryContext.surfacedMemories)
+        : undefined,
+    }));
   }
 
   private async resolveSystemPrompt(
@@ -265,12 +334,57 @@ export class ActoviqAgentClient {
     return promptParts.join('\n\n');
   }
 
+  private async prepareRelevantMemoryContext(
+    input: string | MessageParam['content'],
+    session?: StoredSession,
+  ): Promise<{
+    prefixedMessages: MessageParam[];
+    surfacedMemories: ActoviqSurfacedMemory[];
+  }> {
+    const promptText = typeof input === 'string' ? input : extractTextFromContent(input);
+    if (!promptText.trim()) {
+      return {
+        prefixedMessages: [],
+        surfacedMemories: [],
+      };
+    }
+
+    const memoryState = await this.memory.state();
+    if (!memoryState.enabled.autoMemory) {
+      return {
+        prefixedMessages: [],
+        surfacedMemories: [],
+      };
+    }
+
+    const persistedState = getRelevantMemorySessionState(session?.metadata);
+    if (persistedState.totalBytes >= RELEVANT_MEMORY_MAX_SESSION_BYTES) {
+      return {
+        prefixedMessages: [],
+        surfacedMemories: [],
+      };
+    }
+
+    const surfacedMemories = await this.memory.surfaceRelevantMemories(promptText, {
+      projectPath: this.config.workDir,
+      sessionId: session?.id,
+      alreadySurfacedPaths: persistedState.surfacedPaths,
+      recentTools: persistedState.recentTools,
+    });
+
+    return {
+      prefixedMessages: buildRelevantMemoryMessages(surfacedMemories),
+      surfacedMemories,
+    };
+  }
+
   private async persistSessionAfterRun(
     session: AgentSession,
     snapshot: StoredSession,
     input: string | MessageParam['content'],
     result: AgentRunResult,
     options: AgentRunOptions,
+    surfacedMemories: readonly ActoviqSurfacedMemory[] = [],
   ): Promise<void> {
     const next = deepClone(snapshot);
     next.model = result.model;
@@ -282,6 +396,26 @@ export class ActoviqAgentClient {
       ...next.metadata,
       ...(options.metadata ?? {}),
     };
+    const previousRelevantMemoryState = getRelevantMemorySessionState(next.metadata);
+    const surfacedPaths = new Set(previousRelevantMemoryState.surfacedPaths);
+    let totalBytes = previousRelevantMemoryState.totalBytes;
+    for (const memory of surfacedMemories) {
+      if (!surfacedPaths.has(memory.path)) {
+        surfacedPaths.add(memory.path);
+        totalBytes += memory.content.length;
+      }
+    }
+    next.metadata[RELEVANT_MEMORY_SESSION_STATE_KEY] = {
+      surfacedPaths: [...surfacedPaths],
+      totalBytes,
+      recentTools: [
+        ...new Set(
+          result.toolCalls
+            .filter(call => !call.isError)
+            .map(call => call.publicName),
+        ),
+      ],
+    } satisfies PersistedRelevantMemorySessionState;
     next.runs.push({
       runId: result.runId,
       input: typeof input === 'string' ? input : extractTextFromContent(input),
