@@ -64,9 +64,11 @@ import {
 } from './actoviqBackgroundTasks.js';
 import {
   compactActoviqSession,
+  getPersistedActoviqCompactHistory,
   getPersistedActoviqCompactState,
   isActoviqPromptTooLongError,
 } from './actoviqCompact.js';
+import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
@@ -959,6 +961,7 @@ export class ActoviqAgentClient {
     const runtimeState = this.getSessionMemoryRuntimeState(snapshot);
     const agentContinuity = getAgentContinuityState(snapshot.metadata);
     const persistedCompactState = getPersistedActoviqCompactState(snapshot.metadata);
+    const persistedCompactHistory = getPersistedActoviqCompactHistory(snapshot.metadata);
     const filteredMessages = filterActoviqMessagesForSessionMemory(snapshot.messages);
     const progress = evaluateActoviqSessionMemoryProgress(
       filteredMessages,
@@ -983,8 +986,21 @@ export class ActoviqAgentClient {
         options.toolCallsSinceLastUpdate ?? progress.toolCallsSinceLastUpdate,
       runtimeState,
     });
+    const mergedBoundaries =
+      compactState.boundaries && compactState.boundaries.length > 0
+        ? compactState.boundaries
+        : persistedCompactHistory.length > 0
+          ? persistedCompactHistory
+          : compactState.boundaries;
+    const latestBoundary =
+      compactState.latestBoundary ??
+      (mergedBoundaries && mergedBoundaries.length > 0 ? mergedBoundaries.at(-1) : undefined);
+    const latestCompactBoundary =
+      [...(mergedBoundaries ?? [])].reverse().find(boundary => boundary.kind === 'compact');
     return {
       ...compactState,
+      boundaries: mergedBoundaries,
+      latestBoundary,
       compactCount: Math.max(compactState.compactCount, persistedCompactState.compactCount),
       microcompactCount: Math.max(
         compactState.microcompactCount,
@@ -994,6 +1010,20 @@ export class ActoviqAgentClient {
         compactState.hasCompacted ||
         persistedCompactState.compactCount + persistedCompactState.microcompactCount > 0,
       summaryMessage: compactState.summaryMessage ?? persistedCompactState.lastSummaryMessage,
+      lastSummarizedMessageUuid:
+        compactState.lastSummarizedMessageUuid ?? latestCompactBoundary?.logicalParentUuid ?? undefined,
+      latestPreservedSegment:
+        compactState.latestPreservedSegment ??
+        (latestCompactBoundary?.kind === 'compact' &&
+        latestCompactBoundary.metadata &&
+        'preservedSegment' in latestCompactBoundary.metadata
+          ? latestCompactBoundary.metadata.preservedSegment
+          : undefined),
+      latestBoundarySummary:
+        compactState.latestBoundarySummary ??
+        (latestBoundary?.kind === 'compact'
+          ? getActoviqCompactBoundarySummary(latestBoundary.metadata)
+          : undefined),
       agentContinuity,
     };
   }

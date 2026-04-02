@@ -11,6 +11,7 @@ import type { AgentSession } from '../runtime/agentSession.js';
 import type { MailboxStore } from '../storage/mailboxStore.js';
 import type { TeammateStore } from '../storage/teammateStore.js';
 import { createId, nowIso } from '../runtime/helpers.js';
+import type { MessageParam } from '../provider/types.js';
 
 interface ActoviqSwarmBindings {
   createAgentSession(agent: string, options: { title: string; metadata: Record<string, unknown> }): Promise<AgentSession>;
@@ -49,6 +50,10 @@ export class ActoviqSwarmTeammateHandle {
     return this.team.inbox(this.name);
   }
 
+  message(text: string, from?: string): Promise<ActoviqMailboxMessage> {
+    return this.team.message(this.name, text, from);
+  }
+
   session(): Promise<AgentSession> {
     return this.team.session(this.name);
   }
@@ -77,6 +82,7 @@ export class ActoviqSwarmTeam {
       agentName: options.agent,
       sessionId: session.id,
       status: 'idle',
+      mailboxDepth: 0,
       createdAt,
       updatedAt: createdAt,
     });
@@ -114,18 +120,22 @@ export class ActoviqSwarmTeam {
   async run(name: string, prompt: string): Promise<ActoviqSwarmRunResult> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
+    const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
     const running = {
       ...teammate,
       status: 'running' as const,
       lastTaskDescription: prompt,
+      mailboxDepth: 0,
       updatedAt: nowIso(),
     };
     await this.teammateStore.save(running);
     try {
-      const result = await session.send(prompt);
+      const result = await session.send(composeTeammateInput(injectedMessages, prompt));
       const updated = {
         ...running,
         status: 'idle' as const,
+        lastRunId: result.runId,
+        lastCompletedAt: nowIso(),
         updatedAt: nowIso(),
       };
       await this.teammateStore.save(updated);
@@ -164,15 +174,22 @@ export class ActoviqSwarmTeam {
   ): Promise<ActoviqBackgroundTaskRecord> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
-    const task = await this.bindings.launchBackgroundOnSession(session, teammate.agentName, prompt, {
-      parentRunId: createId(),
-      parentSessionId: session.id,
-    });
+    const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
+    const task = await this.bindings.launchBackgroundOnSession(
+      session,
+      teammate.agentName,
+      composeTeammatePrompt(injectedMessages, prompt),
+      {
+        parentRunId: createId(),
+        parentSessionId: session.id,
+      },
+    );
     await this.teammateStore.save({
       ...teammate,
       status: 'running',
       taskId: task.id,
       lastTaskDescription: prompt,
+      mailboxDepth: 0,
       updatedAt: nowIso(),
     });
     await this.mailboxStore.post(this.name, this.leader, {
@@ -188,15 +205,31 @@ export class ActoviqSwarmTeam {
   async broadcast(text: string): Promise<ActoviqMailboxMessage[]> {
     const teammates = await this.listTeammates();
     return Promise.all(
-      teammates.map(teammate =>
-        this.mailboxStore.post(this.name, teammate.name, {
-          from: this.leader,
-          kind: 'user',
-          text,
-          createdAt: nowIso(),
-        }),
-      ),
+      teammates.map(teammate => this.message(teammate.name, text, this.leader)),
     );
+  }
+
+  async message(
+    recipient: string,
+    text: string,
+    from = this.leader,
+  ): Promise<ActoviqMailboxMessage> {
+    const message = await this.mailboxStore.post(this.name, recipient, {
+      from,
+      kind: from === this.leader ? 'user' : 'task',
+      text,
+      createdAt: nowIso(),
+    });
+    const teammate = await this.teammateStore.load(this.name, recipient);
+    if (teammate) {
+      const depth = (await this.mailboxStore.list(this.name, recipient)).length;
+      await this.teammateStore.save({
+        ...teammate,
+        mailboxDepth: depth,
+        updatedAt: nowIso(),
+      });
+    }
+    return message;
   }
 
   inbox(recipient = this.leader): Promise<ActoviqMailboxMessage[]> {
@@ -263,6 +296,8 @@ export class ActoviqSwarmTeam {
             : task.status === 'cancelled'
               ? 'cancelled'
               : 'failed',
+        lastRunId: task.runId ?? teammate.lastRunId,
+        lastCompletedAt: task.completedAt ?? teammate.lastCompletedAt,
         updatedAt: nowIso(),
       };
       await this.teammateStore.save(updated);
@@ -286,6 +321,21 @@ export class ActoviqSwarmTeam {
 
     return synced;
   }
+
+  private async drainMailboxMessagesForTeammate(
+    teammateName: string,
+  ): Promise<ActoviqMailboxMessage[]> {
+    const drained = await this.mailboxStore.drain(this.name, teammateName);
+    const teammate = await this.teammateStore.load(this.name, teammateName);
+    if (teammate) {
+      await this.teammateStore.save({
+        ...teammate,
+        mailboxDepth: 0,
+        updatedAt: nowIso(),
+      });
+    }
+    return drained;
+  }
 }
 
 export class ActoviqSwarmApi {
@@ -304,4 +354,32 @@ export class ActoviqSwarmApi {
       options.leader ?? 'leader',
     );
   }
+}
+
+function composeTeammateInput(
+  mailboxMessages: ActoviqMailboxMessage[],
+  prompt: string,
+): string | MessageParam['content'] {
+  const preface = formatTeammateMailboxMessages(mailboxMessages);
+  return preface ? `${preface}\n\n${prompt}` : prompt;
+}
+
+function composeTeammatePrompt(
+  mailboxMessages: ActoviqMailboxMessage[],
+  prompt: string,
+): string {
+  const input = composeTeammateInput(mailboxMessages, prompt);
+  return typeof input === 'string' ? input : JSON.stringify(input);
+}
+
+function formatTeammateMailboxMessages(messages: ActoviqMailboxMessage[]): string | undefined {
+  if (messages.length === 0) {
+    return undefined;
+  }
+  return messages
+    .map(message => {
+      const summary = message.kind === 'status' ? ' type="status"' : '';
+      return `<teammate-message teammate_id="${message.from}"${summary}>\n${message.text}\n</teammate-message>`;
+    })
+    .join('\n\n');
 }
