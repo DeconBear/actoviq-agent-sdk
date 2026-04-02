@@ -218,6 +218,11 @@ describe('Actoviq memory helpers', () => {
             preTokens: 12000,
             messagesSummarized: 14,
             userContext: 'keep current architecture choices',
+            preservedSegment: {
+              headUuid: 'assistant-keep-1',
+              anchorUuid: 'compact-1',
+              tailUuid: 'assistant-keep-3',
+            },
           },
         }),
         JSON.stringify({
@@ -262,6 +267,11 @@ describe('Actoviq memory helpers', () => {
         trigger: 'manual',
         preTokens: 12000,
         messagesSummarized: 14,
+        preservedSegment: {
+          headUuid: 'assistant-keep-1',
+          anchorUuid: 'compact-1',
+          tailUuid: 'assistant-keep-3',
+        },
       },
     });
     expect(boundaries[1]).toMatchObject({
@@ -282,6 +292,11 @@ describe('Actoviq memory helpers', () => {
       microcompactCount: 1,
       hasCompacted: true,
       lastSummarizedMessageUuid: 'user-1',
+      latestPreservedSegment: {
+        headUuid: 'assistant-keep-1',
+        anchorUuid: 'compact-1',
+        tailUuid: 'assistant-keep-3',
+      },
       canUseSessionMemoryCompaction: false,
     });
     expect(compactState.boundaries).toHaveLength(2);

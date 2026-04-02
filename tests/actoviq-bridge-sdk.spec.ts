@@ -437,6 +437,11 @@ describe('Actoviq Runtime SDK bridge', () => {
             trigger: 'manual',
             preTokens: 14000,
             messagesSummarized: 9,
+            preservedSegment: {
+              headUuid: 'assistant-keep-1',
+              anchorUuid: 'compact-boundary-1',
+              tailUuid: 'assistant-keep-4',
+            },
           },
         }),
         'utf8',
@@ -461,6 +466,11 @@ describe('Actoviq Runtime SDK bridge', () => {
         microcompactCount: 0,
         hasCompacted: true,
         lastSummarizedMessageUuid: 'assistant-3',
+        latestPreservedSegment: {
+          headUuid: 'assistant-keep-1',
+          anchorUuid: 'compact-boundary-1',
+          tailUuid: 'assistant-keep-4',
+        },
         canUseSessionMemoryCompaction: true,
       });
       expect(fromSessions.summaryMessage).toContain('Bridge compact state test');

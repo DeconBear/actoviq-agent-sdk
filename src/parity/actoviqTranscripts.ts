@@ -147,24 +147,36 @@ export async function getActoviqBridgeCompactBoundaries(
 
     const subtype = typeof message.raw.subtype === 'string' ? message.raw.subtype : undefined;
     if (subtype === 'compact_boundary') {
-      const metadata = isRecord(message.raw.compactMetadata)
+      const compactMetadata = isRecord(message.raw.compactMetadata)
+        ? message.raw.compactMetadata
+        : isRecord(message.raw.compact_metadata)
+          ? message.raw.compact_metadata
+          : undefined;
+      const metadata = isRecord(compactMetadata)
         ? {
             trigger:
-              typeof message.raw.compactMetadata.trigger === 'string'
-                ? message.raw.compactMetadata.trigger
+              typeof compactMetadata?.trigger === 'string'
+                ? compactMetadata.trigger
                 : undefined,
             preTokens:
-              typeof message.raw.compactMetadata.preTokens === 'number'
-                ? message.raw.compactMetadata.preTokens
-                : undefined,
+              typeof compactMetadata?.preTokens === 'number'
+                ? compactMetadata.preTokens
+                : typeof compactMetadata?.pre_tokens === 'number'
+                  ? compactMetadata.pre_tokens
+                  : undefined,
             userContext:
-              typeof message.raw.compactMetadata.userContext === 'string'
-                ? message.raw.compactMetadata.userContext
-                : undefined,
+              typeof compactMetadata?.userContext === 'string'
+                ? compactMetadata.userContext
+                : typeof compactMetadata?.user_context === 'string'
+                  ? compactMetadata.user_context
+                  : undefined,
             messagesSummarized:
-              typeof message.raw.compactMetadata.messagesSummarized === 'number'
-                ? message.raw.compactMetadata.messagesSummarized
-                : undefined,
+              typeof compactMetadata?.messagesSummarized === 'number'
+                ? compactMetadata.messagesSummarized
+                : typeof compactMetadata?.messages_summarized === 'number'
+                  ? compactMetadata.messages_summarized
+                  : undefined,
+            preservedSegment: readPreservedSegment(compactMetadata),
           }
         : undefined;
 
@@ -296,6 +308,52 @@ function parseTranscriptMessages(transcriptText: string): ActoviqTranscriptMessa
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function readPreservedSegment(
+  metadata: Record<string, unknown> | undefined,
+): import('../types.js').ActoviqPreservedSegment | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const segment = isRecord(metadata.preservedSegment)
+    ? metadata.preservedSegment
+    : isRecord(metadata.preserved_segment)
+      ? metadata.preserved_segment
+      : undefined;
+  if (!segment) {
+    return undefined;
+  }
+
+  const headUuid =
+    typeof segment.headUuid === 'string'
+      ? segment.headUuid
+      : typeof segment.head_uuid === 'string'
+        ? segment.head_uuid
+        : undefined;
+  const anchorUuid =
+    typeof segment.anchorUuid === 'string'
+      ? segment.anchorUuid
+      : typeof segment.anchor_uuid === 'string'
+        ? segment.anchor_uuid
+        : undefined;
+  const tailUuid =
+    typeof segment.tailUuid === 'string'
+      ? segment.tailUuid
+      : typeof segment.tail_uuid === 'string'
+        ? segment.tail_uuid
+        : undefined;
+
+  if (!headUuid || !anchorUuid || !tailUuid) {
+    return undefined;
+  }
+
+  return {
+    headUuid,
+    anchorUuid,
+    tailUuid,
+  };
 }
 
 function findLatestLeaf(

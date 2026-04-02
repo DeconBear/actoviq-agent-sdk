@@ -3,13 +3,25 @@
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
+import {
+  ACTOVIQ_SESSION_MEMORY_STATE_KEY,
+  evaluateActoviqSessionMemoryProgress,
+  filterActoviqMessagesForSessionMemory,
+  parseActoviqSessionMemoryRuntimeState,
+  sanitizeActoviqSessionMemoryOutput,
+  serializeActoviqSessionMemoryRuntimeState,
+} from '../memory/actoviqSessionMemoryState.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { SessionStore } from '../storage/sessionStore.js';
 import type {
   AgentMcpServerDefinition,
   AgentRunOptions,
   AgentRunResult,
+  AgentSessionMemoryExtractionOptions,
   AgentToolDefinition,
+  ActoviqCompactState,
+  ActoviqSessionMemoryExtractionResult,
+  ActoviqSessionMemoryRuntimeState,
   ActoviqSurfacedMemory,
   CreateAgentSdkOptions,
   SessionCreateOptions,
@@ -25,11 +37,28 @@ import { AgentSession } from './agentSession.js';
 
 const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
 const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
+const DEFAULT_SESSION_MEMORY_MAX_TOKENS = 4_096;
+const SESSION_MEMORY_SYSTEM_PROMPT = `You maintain the persistent session-memory markdown file for an ongoing engineering conversation.
+
+Return only the full updated markdown document.
+- Do not use code fences
+- Do not add commentary before or after the markdown
+- Preserve all existing section headers and italic guide lines exactly
+- Update only the bodies under those sections
+- Keep the notes dense, concrete, and faithful to the conversation`;
 
 interface PersistedRelevantMemorySessionState {
   surfacedPaths: string[];
   totalBytes: number;
   recentTools: string[];
+}
+
+interface SessionMemoryExtractionContext {
+  model: string;
+  systemPrompt?: string;
+  trigger: 'auto' | 'manual';
+  maxTokens?: number;
+  signal?: AbortSignal;
 }
 
 export class AgentSessionsApi {
@@ -191,6 +220,8 @@ export class ActoviqAgentClient {
       {
         runSession: (session, input, options) => this.runOnSession(session, input, options),
         streamSession: (session, input, options) => this.streamOnSession(session, input, options),
+        extractSessionMemory: (session, options) => this.extractSessionMemoryForSession(session, options),
+        getCompactState: (session, options) => this.getCompactStateForSession(session, options),
         hydrate: (next) => this.hydrateSession(next),
       },
       this.store,
@@ -378,6 +409,238 @@ export class ActoviqAgentClient {
     };
   }
 
+  private getSessionMemoryRuntimeState(session?: StoredSession): ActoviqSessionMemoryRuntimeState {
+    return parseActoviqSessionMemoryRuntimeState(session?.metadata);
+  }
+
+  private async getCompactStateForSession(
+    session: AgentSession,
+    options: Omit<
+      import('../types.js').ActoviqCompactStateOptions,
+      'projectPath' | 'runtimeState' | 'sessionId'
+    > = {},
+  ): Promise<ActoviqCompactState> {
+    const snapshot = session.snapshot();
+    const runtimeState = this.getSessionMemoryRuntimeState(snapshot);
+    const filteredMessages = filterActoviqMessagesForSessionMemory(snapshot.messages);
+    const progress = evaluateActoviqSessionMemoryProgress(
+      filteredMessages,
+      runtimeState,
+      this.memory.getSessionMemoryConfig(),
+    );
+
+    return this.memory.compactState({
+      ...options,
+      sessionId: snapshot.id,
+      projectPath: this.config.workDir,
+      currentTokenCount: options.currentTokenCount ?? progress.currentTokenCount,
+      tokensAtLastExtraction:
+        options.tokensAtLastExtraction ?? progress.tokensAtLastExtraction,
+      initialized: options.initialized ?? progress.initialized,
+      hasToolCallsInLastTurn:
+        options.hasToolCallsInLastTurn ?? progress.hasToolCallsInLastTurn,
+      messageCountSinceLastExtraction:
+        options.messageCountSinceLastExtraction ??
+        progress.messageCountSinceLastExtraction,
+      toolCallsSinceLastUpdate:
+        options.toolCallsSinceLastUpdate ?? progress.toolCallsSinceLastUpdate,
+      runtimeState,
+    });
+  }
+
+  private buildSessionMemorySystemPrompt(systemPrompt?: string): string {
+    return [SESSION_MEMORY_SYSTEM_PROMPT, systemPrompt]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join('\n\n');
+  }
+
+  private async applySessionMemoryState(
+    session: AgentSession,
+    stored: StoredSession,
+    state: ActoviqSessionMemoryRuntimeState,
+  ): Promise<void> {
+    const previous = JSON.stringify(stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY] ?? null);
+    stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY] =
+      serializeActoviqSessionMemoryRuntimeState(state);
+    const nextValue = JSON.stringify(stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY]);
+    if (previous === nextValue) {
+      return;
+    }
+    stored.updatedAt = state.lastExtractionAt ?? state.lastAttemptAt ?? stored.updatedAt;
+    await this.store.save(stored);
+    session.replace(stored);
+  }
+
+  private async performSessionMemoryExtraction(
+    stored: StoredSession,
+    context: SessionMemoryExtractionContext & { force?: boolean },
+  ): Promise<ActoviqSessionMemoryExtractionResult> {
+    if (!stored.id) {
+      return {
+        success: false,
+        skipped: true,
+        updated: false,
+        trigger: context.trigger,
+        reason: 'missing_session_id',
+        state: this.getSessionMemoryRuntimeState(stored),
+      };
+    }
+
+    const memoryState = await this.memory.state({
+      projectPath: this.config.workDir,
+      sessionId: stored.id,
+    });
+    const currentState = this.getSessionMemoryRuntimeState(stored);
+    const filteredMessages = filterActoviqMessagesForSessionMemory(stored.messages);
+
+    if (!memoryState.enabled.autoCompact) {
+      return {
+        success: true,
+        skipped: true,
+        updated: false,
+        trigger: context.trigger,
+        reason: 'auto_compact_disabled',
+        sessionId: stored.id,
+        state: currentState,
+      };
+    }
+
+    if (filteredMessages.length === 0) {
+      return {
+        success: true,
+        skipped: true,
+        updated: false,
+        trigger: context.trigger,
+        reason: 'no_messages',
+        sessionId: stored.id,
+        state: currentState,
+      };
+    }
+
+    const progress = evaluateActoviqSessionMemoryProgress(
+      filteredMessages,
+      currentState,
+      this.memory.getSessionMemoryConfig(),
+    );
+    const nextState: ActoviqSessionMemoryRuntimeState = {
+      ...currentState,
+      initialized: progress.initialized,
+    };
+
+    if (!context.force && !progress.shouldExtract) {
+      return {
+        success: true,
+        skipped: true,
+        updated: false,
+        trigger: context.trigger,
+        reason: 'threshold_not_met',
+        sessionId: stored.id,
+        state: nextState,
+      };
+    }
+
+    const attemptTimestamp = nowIso();
+
+    try {
+      const ensured = await this.memory.ensureSessionMemory({
+        projectPath: this.config.workDir,
+        sessionId: stored.id,
+      });
+      const rewritePrompt = await this.memory.buildSessionRewritePrompt(
+        ensured.content,
+        ensured.path,
+        {
+          projectPath: this.config.workDir,
+          sessionId: stored.id,
+        },
+      );
+      const response = await this.modelApi.createMessage({
+        model: context.model,
+        max_tokens: context.maxTokens ?? DEFAULT_SESSION_MEMORY_MAX_TOKENS,
+        system: this.buildSessionMemorySystemPrompt(context.systemPrompt),
+        metadata: {
+          user_id: this.config.userId ?? null,
+          actoviq_internal_task: 'session_memory',
+        },
+        messages: [
+          ...filteredMessages,
+          {
+            role: 'user',
+            content: rewritePrompt,
+          },
+        ],
+        signal: context.signal,
+      });
+      const extractedSummary = sanitizeActoviqSessionMemoryOutput(
+        extractTextFromContent(response.content),
+        ensured.content,
+      );
+      const written = await this.memory.writeSessionMemory(extractedSummary, {
+        projectPath: this.config.workDir,
+        sessionId: stored.id,
+      });
+      const extractedAt = nowIso();
+      const updatedState: ActoviqSessionMemoryRuntimeState = {
+        ...nextState,
+        initialized: true,
+        tokensAtLastExtraction: progress.currentTokenCount ?? 0,
+        lastMessageCountAtExtraction: filteredMessages.length,
+        lastSummarizedMessageCount:
+          progress.hasToolCallsInLastTurn === true
+            ? nextState.lastSummarizedMessageCount
+            : filteredMessages.length,
+        extractionCount: nextState.extractionCount + 1,
+        lastExtractionAt: extractedAt,
+        lastAttemptAt: attemptTimestamp,
+        lastError: undefined,
+      };
+
+      return {
+        success: true,
+        skipped: false,
+        updated: extractedSummary.trim() !== ensured.content.trim(),
+        trigger: context.trigger,
+        sessionId: stored.id,
+        memoryPath: written.path,
+        summary: written.content,
+        usage: response.usage,
+        state: updatedState,
+      };
+    } catch (error) {
+      const normalized = asError(error);
+      return {
+        success: false,
+        skipped: false,
+        updated: false,
+        trigger: context.trigger,
+        reason: normalized.message,
+        sessionId: stored.id,
+        state: {
+          ...nextState,
+          lastAttemptAt: attemptTimestamp,
+          lastError: normalized.message,
+        },
+      };
+    }
+  }
+
+  private async extractSessionMemoryForSession(
+    session: AgentSession,
+    options: AgentSessionMemoryExtractionOptions = {},
+  ): Promise<ActoviqSessionMemoryExtractionResult> {
+    const stored = session.snapshot();
+    const extraction = await this.performSessionMemoryExtraction(stored, {
+      force: options.force ?? true,
+      model: options.model ?? stored.model ?? this.config.model,
+      systemPrompt: stored.systemPrompt ?? this.config.systemPrompt,
+      trigger: 'manual',
+      maxTokens: options.maxTokens,
+      signal: options.signal,
+    });
+    await this.applySessionMemoryState(session, stored, extraction.state);
+    return extraction;
+  }
+
   private async persistSessionAfterRun(
     session: AgentSession,
     snapshot: StoredSession,
@@ -439,6 +702,15 @@ export class ActoviqAgentClient {
 
     await this.store.save(next);
     session.replace(next);
+
+    const extraction = await this.performSessionMemoryExtraction(next, {
+      model: options.model ?? next.model ?? this.config.model,
+      systemPrompt: next.systemPrompt ?? this.config.systemPrompt,
+      trigger: 'auto',
+      maxTokens: Math.min(options.maxTokens ?? this.config.maxTokens, DEFAULT_SESSION_MEMORY_MAX_TOKENS),
+      signal: options.signal,
+    });
+    await this.applySessionMemoryState(session, next, extraction.state);
   }
 }
 

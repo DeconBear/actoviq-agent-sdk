@@ -28,6 +28,17 @@ export {
   scanActoviqMemoryFiles,
   selectActoviqRelevantMemories,
 } from './memory/actoviqMemory.js';
+export {
+  ACTOVIQ_SESSION_MEMORY_STATE_KEY,
+  createDefaultActoviqSessionMemoryRuntimeState,
+  estimateActoviqConversationTokens,
+  evaluateActoviqSessionMemoryProgress,
+  filterActoviqMessagesForSessionMemory,
+  hasActoviqToolCallsInLastAssistantTurn,
+  parseActoviqSessionMemoryRuntimeState,
+  sanitizeActoviqSessionMemoryOutput,
+  serializeActoviqSessionMemoryRuntimeState,
+} from './memory/actoviqSessionMemoryState.js';
 export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
