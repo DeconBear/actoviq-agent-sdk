@@ -21,6 +21,9 @@ Licensed under the [MIT License](./LICENSE).
 - Structured runtime metadata APIs for tools, skills, slash commands, and agents
 - Memory and compact-state helpers aligned to the upstream session-memory and compact boundary flow
 - Clean SDK agent definitions, agent-level hooks, Task-style delegation, background subagent tasks, and session/post-sampling/post-run hooks
+- Permission rules, classifier approvals, api-microcompact context management, and reactive compact recovery in the clean SDK path
+- Swarm/team orchestration with teammate sessions, side-session continuity, background task polling, and leader mailboxes
+- Public computer-use replacement helpers that avoid private runtime dependencies
 - Reactive compact recovery for oversized prompts, plus persisted compact/session-memory state
 - Buddy APIs for hatching, muting, petting, and companion prompt-context generation
 - Clean public SDK surface on top of a vendored non-TUI runtime
@@ -99,6 +102,7 @@ What you can use today:
 - bridge capability metadata and event analysis helpers
 - memory settings, session-memory prompts, and compact-state inspection helpers
 - clean SDK named agents, agent-level hooks, Task delegation, background task polling, and reactive compact recovery
+- clean SDK permission/classifier gates, api microcompact request shaping, swarm teammates, and public computer-use helpers
 - buddy helpers for companion state, reactions, and prompt-context injection
 - vendored runtime file tools: `Read`, `Write`, `Edit`, `Glob`, `Grep`
 - built-in bridge runtime tools, skills, and subagents
@@ -235,6 +239,71 @@ const compactState = await session.compactState({
 console.log(extraction);
 console.log(compactState.runtimeState);
 console.log(compactState.sessionMemory?.content);
+```
+
+### Swarm / Teammate Example
+
+```ts
+import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+
+await loadDefaultActoviqSettings();
+const sdk = await createAgentSdk({
+  agents: [
+    {
+      name: 'reviewer',
+      description: 'Review release work and report the sharpest findings.',
+    },
+  ],
+});
+
+const team = sdk.swarm.createTeam({ name: 'release-team', leader: 'lead' });
+await team.spawn({
+  name: 'reviewer-1',
+  agent: 'reviewer',
+  prompt: 'Review the release checklist and report the top two risks.',
+});
+
+const task = await team.runBackground('reviewer-1', 'Suggest one CI automation follow-up.');
+await team.waitForIdle();
+
+console.log(task.id);
+console.log(await team.inbox());
+```
+
+Run the repository example with:
+
+```bash
+npm run example:actoviq-swarm
+```
+
+### Permissions and Computer Use
+
+```ts
+import { createAgentSdk } from 'actoviq-agent-sdk';
+
+const sdk = await createAgentSdk({
+  permissionMode: 'plan',
+  classifier: ({ publicName }) =>
+    publicName === 'computer_open_url'
+      ? { behavior: 'allow', reason: 'Browser automation is approved for this run.' }
+      : undefined,
+  computerUse: {
+    executor: {
+      openUrl: async (url) => console.log('open', url),
+      typeText: async (text) => console.log('type', text),
+      keyPress: async (keys) => console.log('keys', keys.join('+')),
+      readClipboard: async () => 'clipboard text',
+      writeClipboard: async (text) => console.log('clipboard', text),
+      takeScreenshot: async (outputPath) => outputPath,
+    },
+  },
+});
+```
+
+Safe repository demo:
+
+```bash
+npm run example:actoviq-computer-use
 ```
 
 ## Interactive Agent Demo
