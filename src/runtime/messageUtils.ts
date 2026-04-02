@@ -1,4 +1,5 @@
-﻿import type { Message, MessageParam, ToolResultBlockParam } from '../provider/types.js';
+import type { Message, MessageParam, ToolResultBlockParam } from '../provider/types.js';
+import type { ActoviqSurfacedMemory } from '../types.js';
 
 import { deepClone, isRecord } from './helpers.js';
 
@@ -15,6 +16,15 @@ export function buildUserMessage(input: string | MessageParam['content']): Messa
     content: normalizeUserContent(input),
   };
 }
+
+export function buildRelevantMemoryMessages(memories: readonly ActoviqSurfacedMemory[]): MessageParam[] {
+  return memories.map(memory =>
+    buildUserMessage(
+      `<system-reminder>\n${memory.header}\n\n${memory.content}\n</system-reminder>`,
+    ),
+  );
+}
+
 
 export function assistantMessageToParam(message: Message): MessageParam {
   return {

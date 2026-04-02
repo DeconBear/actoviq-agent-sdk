@@ -1,4 +1,4 @@
-﻿import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -219,6 +219,75 @@ describe('ActoviqAgentClient', () => {
 
       expect(deltas.join('')).toBe('Hello world');
       expect(result.text).toBe('Hello world');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('auto-injects relevant memories and de-duplicates them across session turns', async () => {
+    const tempDir = await createSessionDirectory();
+    const homeDir = path.join(tempDir, 'home');
+    const workDir = path.join(tempDir, 'workspace');
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Memory-aware response.' }]),
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: path.join(tempDir, 'sessions'),
+      homeDir,
+      workDir,
+      modelApi,
+    });
+
+    try {
+      await mkdir(workDir, { recursive: true });
+      const paths = await sdk.memory.paths();
+      await mkdir(paths.autoMemoryDir, { recursive: true });
+      await writeFile(
+        paths.autoMemoryEntrypoint,
+        '- [Release Flow](release-flow.md) - Bump package version before tagging releases.\n',
+        'utf8',
+      );
+      await writeFile(
+        path.join(paths.autoMemoryDir, 'release-flow.md'),
+        [
+          '---',
+          'type: project',
+          'description: Release checklist for versions and tags',
+          '---',
+          '',
+          'Always bump package.json before creating a release tag.',
+        ].join('\n'),
+        'utf8',
+      );
+
+      const session = await sdk.createSession();
+      await session.send('How should I prepare a release tag?');
+      await session.send('Remind me again how I should prepare a release tag?');
+
+      const countRelevantMemoryMessages = (messages: ModelRequest['messages']) =>
+        messages.filter(
+          message =>
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.includes('<system-reminder>') &&
+            message.content.includes('release-flow.md'),
+        ).length;
+
+      const firstMessages = modelApi.createCalls[0]?.messages ?? [];
+      const secondMessages = modelApi.createCalls[1]?.messages ?? [];
+
+      expect(countRelevantMemoryMessages(firstMessages)).toBe(1);
+      expect(countRelevantMemoryMessages(secondMessages)).toBe(1);
+      expect(
+        firstMessages.some(
+          message =>
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            message.content.includes('Always bump package.json before creating a release tag.'),
+        ),
+      ).toBe(true);
     } finally {
       await sdk.close();
     }

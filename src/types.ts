@@ -267,6 +267,7 @@ export interface AgentRunResult {
   text: string;
   message: Message;
   messages: MessageParam[];
+  surfacedMemories?: ActoviqSurfacedMemory[];
   stopReason: StopReason | null;
   usage?: Usage;
   requests: AgentRequestSummary[];
