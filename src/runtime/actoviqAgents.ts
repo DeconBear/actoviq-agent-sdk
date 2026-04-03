@@ -35,6 +35,7 @@ interface ActoviqAgentBindings {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions?: AgentRunOptions,
   ) => Promise<ActoviqBackgroundTaskRecord>;
   createDefinitionSession: (
     agent: string,
@@ -85,8 +86,9 @@ export class ActoviqAgentHandle {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions?: AgentRunOptions,
   ): Promise<ActoviqBackgroundTaskRecord> {
-    return this.bindings.launchBackgroundDefinition(this.name, prompt, options);
+    return this.bindings.launchBackgroundDefinition(this.name, prompt, options, runOptions);
   }
 
   run(
@@ -134,8 +136,9 @@ export class ActoviqAgentsApi {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions?: AgentRunOptions,
   ): Promise<ActoviqBackgroundTaskRecord> {
-    return this.bindings.launchBackgroundDefinition(name, prompt, options);
+    return this.bindings.launchBackgroundDefinition(name, prompt, options, runOptions);
   }
 
   createSession(
@@ -160,6 +163,7 @@ export function createActoviqTaskTool(options: {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions?: AgentRunOptions,
   ) => Promise<ActoviqBackgroundTaskRecord>;
   onDelegated?: (event: {
     subagentType: string;
@@ -250,11 +254,18 @@ export function createActoviqTaskTool(options: {
         );
       }
 
+      const inheritedOptions = extractInheritedDelegationOptions(context);
+
       if (run_in_background) {
-        const backgroundTask = await options.launchBackgroundAgent(resolvedSubagent, taskDescription, {
-          parentRunId: context.runId,
-          parentSessionId: context.sessionId,
-        });
+        const backgroundTask = await options.launchBackgroundAgent(
+          resolvedSubagent,
+          taskDescription,
+          {
+            parentRunId: context.runId,
+            parentSessionId: context.sessionId,
+          },
+          inheritedOptions,
+        );
         options.onDelegated?.({
           subagentType: resolvedSubagent,
           description: taskDescription,
@@ -274,7 +285,7 @@ export function createActoviqTaskTool(options: {
         };
       }
 
-      const result = await options.runAgent(resolvedSubagent, taskDescription);
+      const result = await options.runAgent(resolvedSubagent, taskDescription, inheritedOptions);
       options.onDelegated?.({
         subagentType: resolvedSubagent,
         description: taskDescription,
@@ -294,4 +305,32 @@ export function createActoviqTaskTool(options: {
       };
     },
   );
+}
+
+function extractInheritedDelegationOptions(
+  context: {
+    permissionMode?: AgentRunOptions['permissionMode'];
+    permissions?: AgentRunOptions['permissions'];
+    classifier?: AgentRunOptions['classifier'];
+    approver?: AgentRunOptions['approver'];
+    hooks?: AgentRunOptions['hooks'];
+  },
+): AgentRunOptions | undefined {
+  if (
+    !context.permissionMode &&
+    !context.permissions &&
+    !context.classifier &&
+    !context.approver &&
+    !context.hooks
+  ) {
+    return undefined;
+  }
+
+  return {
+    permissionMode: context.permissionMode,
+    permissions: context.permissions,
+    classifier: context.classifier,
+    approver: context.approver,
+    hooks: context.hooks,
+  };
 }

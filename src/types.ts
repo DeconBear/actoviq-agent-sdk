@@ -30,6 +30,11 @@ export interface ToolExecutionContext {
   metadata: Record<string, unknown>;
   prompt: string;
   iteration: number;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
+  classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
+  hooks?: ActoviqHooks;
 }
 
 export type ActoviqPermissionMode =
@@ -53,7 +58,7 @@ export interface ActoviqPermissionDecision {
   publicName: string;
   behavior: 'allow' | 'deny';
   reason: string;
-  source: 'mode' | 'rule' | 'classifier';
+  source: 'mode' | 'rule' | 'classifier' | 'approver';
   matchedRule?: string;
   timestamp: string;
 }
@@ -78,6 +83,27 @@ export interface ActoviqToolClassifierContext {
 export type ActoviqToolClassifier = (
   context: ActoviqToolClassifierContext,
 ) => Promise<ActoviqClassifierOutcome | void> | ActoviqClassifierOutcome | void;
+
+export interface ActoviqToolApprovalContext extends ActoviqToolClassifierContext {
+  mode: ActoviqPermissionMode;
+  proposedBehavior: 'ask';
+  reason: string;
+  source: 'rule' | 'classifier';
+  matchedRule?: string;
+}
+
+export type ActoviqToolApprovalOutcome =
+  | {
+      behavior: 'allow' | 'deny';
+      reason?: string;
+    };
+
+export type ActoviqToolApprover = (
+  context: ActoviqToolApprovalContext,
+) =>
+  | Promise<ActoviqToolApprovalOutcome | void>
+  | ActoviqToolApprovalOutcome
+  | void;
 
 export interface CreateToolOptions<Input = any, Output = any> {
   name: string;
@@ -313,6 +339,7 @@ export interface CreateAgentSdkOptions {
   permissionMode?: ActoviqPermissionMode;
   permissions?: ActoviqPermissionRule[];
   classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
   modelApi?: ModelApi;
 }
@@ -381,6 +408,7 @@ export interface AgentRunOptions {
   permissionMode?: ActoviqPermissionMode;
   permissions?: ActoviqPermissionRule[];
   classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
   signal?: AbortSignal;
 }
 
@@ -607,6 +635,7 @@ export interface ActoviqSwarmRunResult {
 
 export interface ActoviqComputerUseExecutor {
   openUrl(url: string): Promise<void> | void;
+  focusWindow?(title: string): Promise<void> | void;
   typeText(text: string): Promise<void> | void;
   keyPress(keys: string[]): Promise<void> | void;
   readClipboard(): Promise<string> | string;
@@ -1200,6 +1229,7 @@ export interface ActoviqCompactBoundaryMetadata {
   preservedMessages?: number;
   droppedMessages?: number;
   retryCount?: number;
+  continuationDepth?: number;
   preservedSegment?: ActoviqPreservedSegment;
 }
 

@@ -680,6 +680,85 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('retries reactive compaction across repeated prompt-too-long failures', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let nonCompactCalls = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Reactive chain summary',
+            },
+          ]);
+        }
+
+        nonCompactCalls += 1;
+        if (nonCompactCalls === 1) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Initial release context recorded.',
+            },
+          ]);
+        }
+        if (nonCompactCalls <= 3) {
+          throw new ActoviqProviderApiError(
+            'Provider request failed with HTTP 413: Prompt is too long',
+            { status: 413 },
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Recovered after repeated reactive compact.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      compact: {
+        preserveRecentMessages: 1,
+      },
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('Seed the session before repeated reactive compact.');
+      const result = await session.send('Keep going until the provider accepts the prompt.');
+      const compactState = await session.compactState({
+        includeBoundaries: true,
+        includeSummaryMessage: true,
+      });
+
+      expect(result.text).toContain('Recovered after repeated reactive compact.');
+      expect(result.reactiveCompact).toMatchObject({
+        compacted: true,
+        trigger: 'reactive',
+      });
+      expect(
+        modelApi.createCalls.filter(
+          request =>
+            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            'compact',
+        ),
+      ).toHaveLength(2);
+      expect(compactState.compactCount).toBe(2);
+      expect(compactState.latestBoundary?.logicalParentUuid).toBe(
+        compactState.boundaries?.[0]?.uuid,
+      );
+      expect(compactState.latestBoundarySummary).toContain('continuationDepth=2');
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('runs session hooks that inject context and persist metadata updates', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -918,6 +997,138 @@ describe('ActoviqAgentClient', () => {
       });
       expect(secondResult.sessionHookMetadata).toBeUndefined();
       expect(secondRunRequests[0]?.system).not.toContain('Session runtime system prompt');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('inherits approver-based permission context through delegated task runs', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let executedWrites = 0;
+
+    const writeNote = tool(
+      {
+        name: 'write_note',
+        description: 'Writes a delegated session note.',
+        inputSchema: z.object({ text: z.string() }),
+      },
+      async ({ text }) => {
+        executedWrites += 1;
+        return { ok: true, text };
+      },
+    );
+
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        const isReviewer = request.system?.includes('Review code carefully and focus on risks.');
+        if (isReviewer) {
+          if (index === 1) {
+            return makeMessage(
+              [
+                {
+                  type: 'text',
+                  text: 'Reviewer needs to write a note.',
+                },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_delegate_write',
+                  name: 'write_note',
+                  input: { text: 'delegated approval path' },
+                },
+              ],
+              'tool_use',
+            );
+          }
+
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Reviewer wrote the delegated note.',
+            },
+          ]);
+        }
+
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Delegating to the reviewer.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_delegate',
+                name: 'Task',
+                input: {
+                  description: 'Write a delegated note after approval.',
+                  subagent_type: 'reviewer',
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Delegated note finished.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+          tools: [writeNote],
+        },
+      ],
+    });
+
+    try {
+      const session = await sdk.createSession();
+      session.setHooks({
+        sessionStart: [
+          () => ({
+            messages: [
+              {
+                role: 'user',
+                content:
+                  '<system-reminder>Delegation hook context: keep reviewer work release-safe.</system-reminder>',
+              },
+            ],
+          }),
+        ],
+      });
+      session.setPermissionContext({
+        permissions: [{ toolName: 'write_note', behavior: 'ask' }],
+        approver: ({ publicName }) =>
+          publicName === 'write_note'
+            ? { behavior: 'allow', reason: 'Delegated reviewer note approved.' }
+            : undefined,
+      });
+
+      const result = await session.send('Please delegate this note.', {
+        tools: [sdk.createTaskTool()],
+      });
+
+      expect(executedWrites).toBe(1);
+      expect(result.text).toContain('Delegated note finished');
+      expect(modelApi.createCalls[0]?.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'user',
+            content: expect.stringContaining('Delegation hook context'),
+          }),
+        ]),
+      );
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'reviewer' })]),
+      );
     } finally {
       await sdk.close();
     }
@@ -1258,6 +1469,61 @@ describe('ActoviqAgentClient', () => {
       expect(afterExtraction.runtimeState?.pendingPostCompaction).toBe(true);
       expect(afterFollowUp.pendingPostCompaction).toBe(false);
       expect(afterFollowUp.runtimeState?.pendingPostCompaction).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('preserves multi-compaction continuity across repeated compact boundaries', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let compactCount = 0;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          compactCount += 1;
+          return makeMessage([
+            {
+              type: 'text',
+              text: `Compact summary ${compactCount}`,
+            },
+          ]);
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Continuing the release session.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('First pass through the release plan.');
+      await session.compact({ force: true, preserveRecentMessages: 1 });
+      await session.send('Second pass with more release detail.');
+      await session.compact({ force: true, preserveRecentMessages: 1 });
+
+      const state = await session.compactState({
+        includeBoundaries: true,
+        includeSummaryMessage: true,
+      });
+
+      expect(state.compactCount).toBe(2);
+      expect(state.boundaries).toHaveLength(2);
+      expect(state.boundaries?.[1]?.logicalParentUuid).toBe(state.boundaries?.[0]?.uuid);
+      expect(state.latestBoundary?.metadata).toMatchObject({
+        continuationDepth: 2,
+      });
+      expect(state.latestBoundarySummary).toContain('continuationDepth=2');
+      expect(state.summaryMessage).toContain('Compact summary 2');
     } finally {
       await sdk.close();
     }
