@@ -44,6 +44,9 @@ import type {
   ActoviqCompactState,
   ActoviqSessionMemoryExtractionResult,
   ActoviqSessionMemoryRuntimeState,
+  ActoviqSkillDefinition,
+  ActoviqSkillDefinitionSummary,
+  ActoviqInvokedSkillRecord,
   ActoviqSurfacedMemory,
   ActoviqToolApprover,
   ActoviqToolClassifier,
@@ -60,6 +63,12 @@ import {
   summarizeActoviqAgentDefinition,
 } from './actoviqAgents.js';
 import {
+  ActoviqSkillsApi,
+  loadActoviqSkillDefinitions,
+  resolveActoviqSkillPrompt,
+  summarizeActoviqSkillDefinition,
+} from './actoviqSkills.js';
+import {
   ActoviqBackgroundTaskManager,
   ActoviqBackgroundTasksApi,
 } from './actoviqBackgroundTasks.js';
@@ -74,11 +83,16 @@ import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
 import { asError, createId, deepClone, nowIso, truncateText } from './helpers.js';
-import { buildRelevantMemoryMessages, extractTextFromContent } from './messageUtils.js';
+import {
+  buildInvokedSkillMessages,
+  buildRelevantMemoryMessages,
+  extractTextFromContent,
+} from './messageUtils.js';
 import { AgentSession } from './agentSession.js';
 
 const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
 const AGENT_CONTINUITY_STATE_KEY = '__actoviqAgentContinuityState';
+const INVOKED_SKILLS_STATE_KEY = '__actoviqInvokedSkills';
 const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
 const DEFAULT_SESSION_MEMORY_MAX_TOKENS = 4_096;
 const MAX_REACTIVE_COMPACT_ATTEMPTS = 3;
@@ -115,6 +129,7 @@ interface PreparedRunAugmentations {
   hooks?: ActoviqHooks;
   prefixedMessages: MessageParam[];
   surfacedMemories: ActoviqSurfacedMemory[];
+  invokedSkills: ActoviqInvokedSkillRecord[];
   systemPromptParts: string[];
   metadata: Record<string, unknown>;
 }
@@ -122,6 +137,13 @@ interface PreparedRunAugmentations {
 interface InternalAgentRunOptions extends AgentRunOptions {
   __actoviqUseDefaultTools?: boolean;
   __actoviqUseDefaultMcpServers?: boolean;
+  __actoviqSkillContext?: 'inline' | 'fork';
+}
+
+interface PreparedSkillExecution {
+  options: InternalAgentRunOptions;
+  prompt: MessageParam['content'];
+  record: ActoviqInvokedSkillRecord;
 }
 
 interface SessionRunExecutionOutcome {
@@ -171,6 +193,19 @@ function cloneAgentDefinition(definition: ActoviqAgentDefinition): ActoviqAgentD
     hooks: cloneHooks(definition.hooks),
     tools: definition.tools ? [...definition.tools] : undefined,
     mcpServers: definition.mcpServers ? deepClone(definition.mcpServers) : undefined,
+  };
+}
+
+function cloneSkillDefinition(definition: ActoviqSkillDefinition): ActoviqSkillDefinition {
+  return {
+    ...definition,
+    argNames: definition.argNames ? [...definition.argNames] : undefined,
+    metadata: definition.metadata ? deepClone(definition.metadata) : undefined,
+    hooks: cloneHooks(definition.hooks),
+    tools: definition.tools ? [...definition.tools] : undefined,
+    mcpServers: definition.mcpServers ? deepClone(definition.mcpServers) : undefined,
+    allowedTools: definition.allowedTools ? [...definition.allowedTools] : undefined,
+    paths: definition.paths ? [...definition.paths] : undefined,
   };
 }
 
@@ -288,14 +323,79 @@ function mergeDelegatedAgents(
   );
 }
 
+function getInvokedSkillState(
+  metadata: Record<string, unknown> | undefined,
+): ActoviqInvokedSkillRecord[] {
+  const raw = metadata?.[INVOKED_SKILLS_STATE_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((entry): ActoviqInvokedSkillRecord[] => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.name !== 'string' || typeof record.content !== 'string') {
+      return [];
+    }
+
+    return [
+      {
+        name: record.name,
+        content: record.content,
+        args: typeof record.args === 'string' ? record.args : undefined,
+        invokedAt: typeof record.invokedAt === 'string' ? record.invokedAt : nowIso(),
+        source:
+          record.source === 'bundled' ||
+          record.source === 'user' ||
+          record.source === 'project' ||
+          record.source === 'custom'
+            ? record.source
+            : 'custom',
+        loadedFrom:
+          record.loadedFrom === 'bundled' ||
+          record.loadedFrom === 'skills' ||
+          record.loadedFrom === 'commands' ||
+          record.loadedFrom === 'custom'
+            ? record.loadedFrom
+            : 'custom',
+        context: record.context === 'fork' ? 'fork' : 'inline',
+        model: typeof record.model === 'string' ? record.model : undefined,
+        agent: typeof record.agent === 'string' ? record.agent : undefined,
+        skillRoot: typeof record.skillRoot === 'string' ? record.skillRoot : undefined,
+      },
+    ];
+  });
+}
+
+function mergeInvokedSkills(
+  existing: readonly ActoviqInvokedSkillRecord[],
+  pending: readonly ActoviqInvokedSkillRecord[],
+): ActoviqInvokedSkillRecord[] {
+  const merged = new Map<string, ActoviqInvokedSkillRecord>();
+  for (const record of existing) {
+    merged.set(record.name, { ...record });
+  }
+  for (const record of pending) {
+    merged.set(record.name, { ...record });
+  }
+
+  return [...merged.values()].sort((left, right) =>
+    right.invokedAt.localeCompare(left.invokedAt),
+  );
+}
+
 export class ActoviqAgentClient {
   readonly sessions: AgentSessionsApi;
   readonly agents: ActoviqAgentsApi;
+  readonly skills: ActoviqSkillsApi<AgentSession>;
   readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
   readonly swarm: ActoviqSwarmApi;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
+  private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
   private readonly sessionRuntimeOverrides = new Map<string, SessionRuntimeOverrides>();
   private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
@@ -316,6 +416,7 @@ export class ActoviqAgentClient {
     private readonly defaultMcpServers: AgentMcpServerDefinition[],
     private readonly hooks?: ActoviqHooks,
     agentDefinitions: ActoviqAgentDefinition[] = [],
+    skillDefinitions: ActoviqSkillDefinition[] = [],
     defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'],
     defaultPermissions?: CreateAgentSdkOptions['permissions'],
     defaultClassifier?: ActoviqToolClassifier,
@@ -324,6 +425,9 @@ export class ActoviqAgentClient {
     this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
     this.agentDefinitions = new Map(
       agentDefinitions.map(definition => [definition.name, cloneAgentDefinition(definition)]),
+    );
+    this.skillDefinitions = new Map(
+      skillDefinitions.map(definition => [definition.name, cloneSkillDefinition(definition)]),
     );
     this.backgroundTaskManager = new ActoviqBackgroundTaskManager(this.backgroundTaskStore);
     this.tasks = new ActoviqBackgroundTasksApi(this.backgroundTaskManager);
@@ -334,6 +438,16 @@ export class ActoviqAgentClient {
       launchBackgroundDefinition: (agent, prompt, options, runOptions) =>
         this.launchBackgroundAgentTask(agent, prompt, options, runOptions),
       createDefinitionSession: (agent, options) => this.createAgentSession(agent, options),
+    });
+    this.skills = new ActoviqSkillsApi({
+      listDefinitions: () => this.listSkillDefinitions(),
+      getDefinition: (skillName) => this.getSkillDefinition(skillName),
+      runDefinition: (skillName, args, options) => this.runSkill(skillName, args, options),
+      streamDefinition: (skillName, args, options) => this.streamSkill(skillName, args, options),
+      runDefinitionOnSession: (session, skillName, args, options) =>
+        this.runSkillOnSession(session, skillName, args, options),
+      streamDefinitionOnSession: (session, skillName, args, options) =>
+        this.streamSkillOnSession(session, skillName, args, options),
     });
     this.defaultPermissionMode = defaultPermissionMode;
     this.defaultPermissions = defaultPermissions ? [...defaultPermissions] : undefined;
@@ -377,6 +491,13 @@ export class ActoviqAgentClient {
       name: config.clientName,
       version: config.clientVersion,
     });
+    const loadedSkills = await loadActoviqSkillDefinitions({
+      homeDir: config.homeDir,
+      workDir: config.workDir,
+      skillDirectories: options.skillDirectories,
+      disableDefaultSkills: options.disableDefaultSkills,
+      loadDefaultSkillDirectories: options.loadDefaultSkillDirectories,
+    });
     const defaultTools = [...(options.tools ?? [])];
     const defaultMcpServers = [...(options.mcpServers ?? [])];
     if (options.computerUse) {
@@ -400,6 +521,7 @@ export class ActoviqAgentClient {
       defaultMcpServers,
       options.hooks,
       options.agents ?? [],
+      [...loadedSkills, ...(options.skills ?? [])],
       options.permissionMode,
       options.permissions,
       options.classifier,
@@ -543,6 +665,49 @@ export class ActoviqAgentClient {
     });
   }
 
+  listSkillDefinitions(): ActoviqSkillDefinitionSummary[] {
+    return [...this.skillDefinitions.values()].map(summarizeActoviqSkillDefinition);
+  }
+
+  getSkillDefinition(skillName: string): ActoviqSkillDefinition | undefined {
+    const definition = this.skillDefinitions.get(skillName);
+    return definition ? cloneSkillDefinition(definition) : undefined;
+  }
+
+  async runSkill(
+    skillName: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): Promise<AgentRunResult> {
+    const execution = await this.prepareSkillExecution(skillName, args, options);
+    const result =
+      execution.options.__actoviqSkillContext === 'fork'
+        ? await this.runForkedSkillExecution(skillName, execution, options)
+        : await this.run(execution.prompt, execution.options);
+
+    result.invokedSkills = mergeInvokedSkills(result.invokedSkills ?? [], [execution.record]);
+    return result;
+  }
+
+  streamSkill(
+    skillName: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): AgentRunStream {
+    return new AgentRunStream(async controller => {
+      const execution = await this.prepareSkillExecution(skillName, args, options);
+      const result =
+        execution.options.__actoviqSkillContext === 'fork'
+          ? await this.runForkedSkillExecution(skillName, execution, options)
+          : await this.forwardStreamResult(
+              this.stream(execution.prompt, execution.options),
+              controller.emit,
+            );
+      result.invokedSkills = mergeInvokedSkills(result.invokedSkills ?? [], [execution.record]);
+      return result;
+    });
+  }
+
   createTaskTool(options: { name?: string; description?: string } = {}): AgentToolDefinition {
     return createActoviqTaskTool({
       ...options,
@@ -558,6 +723,87 @@ export class ActoviqAgentClient {
       launchBackgroundAgent: (agent, prompt, backgroundOptions, runOptions) =>
         this.launchBackgroundAgentTask(agent, prompt, backgroundOptions, runOptions),
     });
+  }
+
+  private async prepareSkillExecution(
+    skillName: string,
+    args: string,
+    options: AgentRunOptions,
+    sessionId?: string,
+  ): Promise<PreparedSkillExecution> {
+    const definition = this.requireSkillDefinition(skillName);
+    const resolved = await resolveActoviqSkillPrompt(definition, args, {
+      args,
+      workDir: this.config.workDir,
+      homeDir: this.config.homeDir,
+      sessionId,
+      userId: options.userId ?? this.config.userId,
+    });
+
+    const mergedOptions = this.mergeSkillRunOptions(definition, {
+      ...options,
+      systemPrompt: joinPromptParts(
+        options.systemPrompt,
+        ...(resolved.systemPromptParts ?? []),
+      ),
+      metadata: {
+        ...(resolved.metadata ?? {}),
+        ...(options.metadata ?? {}),
+      },
+    });
+
+    return {
+      options: mergedOptions,
+      prompt: resolved.content,
+      record: {
+        name: definition.name,
+        args: args.trim() || undefined,
+        content: extractTextFromContent(resolved.content),
+        invokedAt: nowIso(),
+        source: definition.source ?? 'custom',
+        loadedFrom: definition.loadedFrom ?? 'custom',
+        context: definition.context ?? 'inline',
+        model: definition.model,
+        agent: definition.agent,
+        skillRoot: definition.skillRoot,
+      },
+    };
+  }
+
+  private async runForkedSkillExecution(
+    skillName: string,
+    execution: PreparedSkillExecution,
+    options: AgentRunOptions,
+  ): Promise<AgentRunResult> {
+    const definition = this.requireSkillDefinition(skillName);
+    if (definition.agent) {
+      return this.runWithAgent(definition.agent, execution.prompt, execution.options);
+    }
+
+    const session = await this.createSession({
+      title: `${definition.name}: ${truncateText(extractTextFromContent(execution.prompt), 80)}`,
+      model: execution.options.model ?? this.config.model,
+      systemPrompt: execution.options.systemPrompt ?? this.config.systemPrompt,
+      metadata: {
+        __actoviqSkillFork: definition.name,
+        ...(options.metadata ?? {}),
+      },
+    });
+    return session.send(execution.prompt, execution.options);
+  }
+
+  private async forwardStreamResult(
+    stream: AgentRunStream,
+    emit: (event: import('../types.js').AgentEvent) => void,
+  ): Promise<AgentRunResult> {
+    const pump = (async () => {
+      for await (const event of stream) {
+        emit(event);
+      }
+    })();
+
+    const [result] = await Promise.all([stream.result, pump]);
+    return result;
   }
 
   private getSessionRuntimeOverrides(sessionId: string): SessionRuntimeOverrides | undefined {
@@ -688,6 +934,10 @@ export class ActoviqAgentClient {
       {
         runSession: (session, input, options) => this.runOnSession(session, input, options),
         streamSession: (session, input, options) => this.streamOnSession(session, input, options),
+        runSkillOnSession: (session, skillName, args, options) =>
+          this.runSkillOnSession(session, skillName, args, options),
+        streamSkillOnSession: (session, skillName, args, options) =>
+          this.streamSkillOnSession(session, skillName, args, options),
         extractSessionMemory: (session, options) => this.extractSessionMemoryForSession(session, options),
         compactSession: (session, options) => this.compactSessionForSession(session, options),
         getCompactState: (session, options) => this.getCompactStateForSession(session, options),
@@ -703,6 +953,49 @@ export class ActoviqAgentClient {
       this.store,
       stored,
     );
+  }
+
+  private async runSkillOnSession(
+    session: AgentSession,
+    skillName: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): Promise<AgentRunResult> {
+    const execution = await this.prepareSkillExecution(skillName, args, options, session.id);
+    const forked = execution.options.__actoviqSkillContext === 'fork';
+    const result = forked
+      ? await this.runForkedSkillExecution(skillName, execution, options)
+      : await this.runOnSession(session, execution.prompt, execution.options);
+    result.invokedSkills = mergeInvokedSkills(result.invokedSkills ?? [], [execution.record]);
+    const merged = mergeInvokedSkills(getInvokedSkillState(session.metadata), result.invokedSkills);
+    await session.mergeMetadata({
+      [INVOKED_SKILLS_STATE_KEY]: merged,
+    });
+    return result;
+  }
+
+  private streamSkillOnSession(
+    session: AgentSession,
+    skillName: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): AgentRunStream {
+    return new AgentRunStream(async controller => {
+      const execution = await this.prepareSkillExecution(skillName, args, options, session.id);
+      const forked = execution.options.__actoviqSkillContext === 'fork';
+      const result = forked
+        ? await this.runForkedSkillExecution(skillName, execution, options)
+        : await this.forwardStreamResult(
+            this.streamOnSession(session, execution.prompt, execution.options),
+            controller.emit,
+          );
+      result.invokedSkills = mergeInvokedSkills(result.invokedSkills ?? [], [execution.record]);
+      const merged = mergeInvokedSkills(getInvokedSkillState(session.metadata), result.invokedSkills);
+      await session.mergeMetadata({
+        [INVOKED_SKILLS_STATE_KEY]: merged,
+      });
+      return result;
+    });
   }
 
   private async runOnSession(
@@ -871,6 +1164,9 @@ export class ActoviqAgentClient {
       surfacedMemories: augmentations?.surfacedMemories.length
         ? deepClone(augmentations.surfacedMemories)
         : undefined,
+      invokedSkills: augmentations?.invokedSkills.length
+        ? deepClone(augmentations.invokedSkills)
+        : undefined,
     }));
   }
 
@@ -974,8 +1270,12 @@ export class ActoviqAgentClient {
   ): Promise<PreparedRunAugmentations> {
     const promptText = typeof input === 'string' ? input : extractTextFromContent(input);
     const memoryContext = await this.prepareRelevantMemoryContext(input, session);
+    const invokedSkillContext = this.prepareInvokedSkillContext(session);
     const hooks = mergeActoviqHooks(this.hooks, options.hooks);
-    const prefixedMessages = [...memoryContext.prefixedMessages];
+    const prefixedMessages = [
+      ...invokedSkillContext.prefixedMessages,
+      ...memoryContext.prefixedMessages,
+    ];
     const systemPromptParts: string[] = [];
     const metadata: Record<string, unknown> = {};
 
@@ -1005,6 +1305,7 @@ export class ActoviqAgentClient {
       hooks,
       prefixedMessages,
       surfacedMemories: memoryContext.surfacedMemories,
+      invokedSkills: invokedSkillContext.invokedSkills,
       systemPromptParts,
       metadata,
     };
@@ -1111,6 +1412,32 @@ export class ActoviqAgentClient {
     };
   }
 
+  private prepareInvokedSkillContext(session?: StoredSession): {
+    prefixedMessages: MessageParam[];
+    invokedSkills: ActoviqInvokedSkillRecord[];
+  } {
+    const invokedSkills = getInvokedSkillState(session?.metadata);
+    if (!session || invokedSkills.length === 0) {
+      return {
+        prefixedMessages: [],
+        invokedSkills,
+      };
+    }
+
+    const compactState = getPersistedActoviqCompactState(session.metadata);
+    if (compactState.compactCount + compactState.microcompactCount === 0) {
+      return {
+        prefixedMessages: [],
+        invokedSkills,
+      };
+    }
+
+    return {
+      prefixedMessages: buildInvokedSkillMessages(invokedSkills),
+      invokedSkills,
+    };
+  }
+
   private getSessionMemoryRuntimeState(session?: StoredSession): ActoviqSessionMemoryRuntimeState {
     return parseActoviqSessionMemoryRuntimeState(session?.metadata);
   }
@@ -1122,6 +1449,7 @@ export class ActoviqAgentClient {
     const snapshot = session.snapshot();
     const runtimeState = this.getSessionMemoryRuntimeState(snapshot);
     const agentContinuity = getAgentContinuityState(snapshot.metadata);
+    const invokedSkills = getInvokedSkillState(snapshot.metadata);
     const persistedCompactState = getPersistedActoviqCompactState(snapshot.metadata);
     const persistedCompactHistory = getPersistedActoviqCompactHistory(snapshot.metadata);
     const filteredMessages = filterActoviqMessagesForSessionMemory(snapshot.messages);
@@ -1187,6 +1515,7 @@ export class ActoviqAgentClient {
           ? getActoviqCompactBoundarySummary(latestBoundary.metadata)
           : undefined),
       agentContinuity,
+      invokedSkills,
     };
   }
 
@@ -1603,6 +1932,14 @@ export class ActoviqAgentClient {
         result.delegatedAgents = delegatedAgents;
       }
     }
+    const invokedSkills = mergeInvokedSkills(
+      getInvokedSkillState(next.metadata),
+      result.invokedSkills ?? [],
+    );
+    if (invokedSkills.length > 0) {
+      next.metadata[INVOKED_SKILLS_STATE_KEY] = invokedSkills;
+      result.invokedSkills = invokedSkills;
+    }
     const previousRelevantMemoryState = getRelevantMemorySessionState(next.metadata);
     const surfacedPaths = new Set(previousRelevantMemoryState.surfacedPaths);
     let totalBytes = previousRelevantMemoryState.totalBytes;
@@ -1679,6 +2016,14 @@ export class ActoviqAgentClient {
     return cloneAgentDefinition(definition);
   }
 
+  private requireSkillDefinition(skillName: string): ActoviqSkillDefinition {
+    const definition = this.skillDefinitions.get(skillName);
+    if (!definition) {
+      throw new Error(`No skill definition named "${skillName}" is registered.`);
+    }
+    return cloneSkillDefinition(definition);
+  }
+
   private resolveSessionAgentOptions(
     session: StoredSession,
     options: AgentRunOptions,
@@ -1711,6 +2056,38 @@ export class ActoviqAgentClient {
       mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
       __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
       __actoviqUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+    };
+  }
+
+  private mergeSkillRunOptions(
+    definition: ActoviqSkillDefinition,
+    options: AgentRunOptions,
+  ): InternalAgentRunOptions {
+    const allowedToolPermissions =
+      definition.allowedTools?.map(toolName => ({
+        toolName,
+        behavior: 'allow' as const,
+        source: `skill:${definition.name}`,
+      })) ?? [];
+
+    return {
+      ...options,
+      model: options.model ?? definition.model,
+      metadata: {
+        ...(definition.metadata ?? {}),
+        ...(options.metadata ?? {}),
+        __actoviqSkillDefinition: definition.name,
+      },
+      hooks: mergeActoviqHooks(definition.hooks, options.hooks),
+      tools: [...(definition.tools ?? []), ...(options.tools ?? [])],
+      mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
+      permissions:
+        allowedToolPermissions.length > 0
+          ? [...(options.permissions ?? []), ...allowedToolPermissions]
+          : options.permissions,
+      __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
+      __actoviqUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+      __actoviqSkillContext: definition.context ?? 'inline',
     };
   }
 }

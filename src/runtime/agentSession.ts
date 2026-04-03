@@ -33,6 +33,18 @@ interface AgentSessionBindings {
     input: string | MessageParam['content'],
     options?: AgentRunOptions,
   ) => AgentRunStream;
+  runSkillOnSession: (
+    session: AgentSession,
+    skill: string,
+    args?: string,
+    options?: AgentRunOptions,
+  ) => Promise<AgentRunResult>;
+  streamSkillOnSession: (
+    session: AgentSession,
+    skill: string,
+    args?: string,
+    options?: AgentRunOptions,
+  ) => AgentRunStream;
   extractSessionMemory: (
     session: AgentSession,
     options?: AgentSessionMemoryExtractionOptions,
@@ -108,6 +120,22 @@ export class AgentSession {
     options: AgentRunOptions = {},
   ): AgentRunStream {
     return this.bindings.streamSession(this, input, options);
+  }
+
+  runSkill(
+    skill: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): Promise<AgentRunResult> {
+    return this.bindings.runSkillOnSession(this, skill, args, options);
+  }
+
+  streamSkill(
+    skill: string,
+    args = '',
+    options: AgentRunOptions = {},
+  ): AgentRunStream {
+    return this.bindings.streamSkillOnSession(this, skill, args, options);
   }
 
   async extractMemory(
