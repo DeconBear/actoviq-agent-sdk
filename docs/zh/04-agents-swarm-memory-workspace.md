@@ -1,6 +1,6 @@
 # 04. Agents、Swarm、Memory 与 Workspace
 
-这一章讲 clean SDK 里更高层的工作流能力。
+这一章介绍 clean SDK 里更高层的工作流能力。
 
 ## 1. named agents
 
@@ -11,7 +11,7 @@ const sdk = await createAgentSdk({
   agents: [
     {
       name: 'reviewer',
-      description: 'Review work and report the sharpest findings first.',
+      description: '优先报告最尖锐问题的 reviewer。',
       systemPrompt:
         'You are a careful reviewer. Prioritize bugs, regressions, and missing verification.',
     },
@@ -19,27 +19,28 @@ const sdk = await createAgentSdk({
 });
 ```
 
-然后通过这个角色运行：
+然后通过这个角色直接运行：
 
 ```ts
 const result = await sdk.runWithAgent(
   'reviewer',
-  '请用 reviewer 的视角检查这个仓库是否适合发布。',
+  '请从发布前检查的角度审查这个仓库。',
 );
 ```
 
 ## 2. Task 委派
 
-当注册了 named agents 之后，clean SDK 可以通过 `Task` 或相关 helper 把任务交给另一个 agent 去处理。
+注册 named agents 之后，clean SDK 就可以通过 `Task` 和相关 helper 把任务交给另一个 agent。
 
-这适合：
+常用入口：
 
-1. 主 agent 负责总体推进
-2. reviewer、planner、coder 之类的角色负责专项处理
+1. `sdk.createTaskTool()`
+2. `sdk.runWithAgent(...)`
+3. `sdk.createAgentSession(...)`
 
-## 3. background tasks 与 swarm teammate
+## 3. swarm teammate 与 side session
 
-如果你想做 leader + teammate 的模式，可以用 swarm：
+如果你想做 leader + teammate 模式，可以用 swarm：
 
 ```ts
 const team = sdk.swarm.createTeam({
@@ -49,13 +50,27 @@ const team = sdk.swarm.createTeam({
 });
 ```
 
-然后你可以继续：
+常用操作：
 
 1. `spawn(...)`
 2. `message(...)`
 3. `continueFromMailbox(...)`
-4. `runBackground(...)`
-5. `waitForIdle()`
+4. `reenter(...)`
+5. `runBackground(...)`
+6. `transcript(...)`
+7. `waitForIdle()`
+
+现在还支持 team 级 runtime context：
+
+```ts
+team.setRuntimeContext({
+  permissions: [{ toolName: 'write_note', behavior: 'ask' }],
+  approver: ({ publicName }) =>
+    publicName === 'write_note'
+      ? { behavior: 'allow', reason: '允许 teammate 写这次说明。' }
+      : { behavior: 'deny', reason: '未预期的工具。' },
+});
+```
 
 仓库示例：
 
@@ -63,15 +78,13 @@ const team = sdk.swarm.createTeam({
 
 ## 4. workspace 管理
 
-SDK 提供了显式的 workspace helper，便于先准备隔离目录，再启动 agent。
+SDK 提供了显式的 workspace helper，方便先准备隔离目录，再启动 agent。
 
 可用 helper：
 
 1. `createWorkspace(...)`
 2. `createTempWorkspace(...)`
 3. `createGitWorktreeWorkspace(...)`
-
-示例：
 
 ```ts
 const workspace = await createTempWorkspace({
@@ -97,7 +110,7 @@ SDK 当前提供：
 
 ```ts
 const memory = sdk.memory;
-console.log(await memory.findRelevantMemories('发布这个包应该注意什么？'));
+console.log(await memory.findRelevantMemories('发布这个包之前应该注意什么？'));
 ```
 
 在 session 级别：

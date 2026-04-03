@@ -2,7 +2,9 @@ import type {
   ActoviqBackgroundTaskRecord,
   ActoviqMailboxMessage,
   ActoviqSwarmRunResult,
+  ActoviqSwarmRuntimeContext,
   ActoviqTeammateRecord,
+  ActoviqTeammateTranscript,
   CreateActoviqSwarmOptions,
   CreateActoviqTeammateOptions,
   WaitForActoviqBackgroundTaskOptions,
@@ -75,6 +77,14 @@ export class ActoviqSwarmTeammateHandle {
   recover(): Promise<ActoviqTeammateRecord> {
     return this.team.recover(this.name);
   }
+
+  transcript(): Promise<ActoviqTeammateTranscript> {
+    return this.team.transcript(this.name);
+  }
+
+  reenter(options: ContinueActoviqTeammateOptions = {}): Promise<ActoviqSwarmRunResult | undefined> {
+    return this.team.reenter(this.name, options);
+  }
 }
 
 export class ActoviqSwarmTeam {
@@ -82,6 +92,7 @@ export class ActoviqSwarmTeam {
     string,
     Promise<ActoviqSwarmRunResult | undefined>
   >();
+  private runtimeContext: ActoviqSwarmRuntimeContext = {};
 
   constructor(
     private readonly bindings: ActoviqSwarmBindings,
@@ -132,6 +143,20 @@ export class ActoviqSwarmTeam {
     };
   }
 
+  setRuntimeContext(context: ActoviqSwarmRuntimeContext = {}): void {
+    this.runtimeContext = {
+      hooks: context.hooks,
+      permissionMode: context.permissionMode,
+      permissions: context.permissions ? [...context.permissions] : undefined,
+      classifier: context.classifier,
+      approver: context.approver,
+    };
+  }
+
+  clearRuntimeContext(): void {
+    this.runtimeContext = {};
+  }
+
   async listTeammates(): Promise<ActoviqTeammateRecord[]> {
     return this.syncTeammateStatuses(await this.teammateStore.list(this.name));
   }
@@ -147,6 +172,7 @@ export class ActoviqSwarmTeam {
   async session(name: string): Promise<AgentSession> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
+    this.applyRuntimeContext(session);
     await this.teammateStore.save({
       ...teammate,
       lastResumedAt: nowIso(),
@@ -250,6 +276,40 @@ export class ActoviqSwarmTeam {
     return recovered;
   }
 
+  async transcript(name: string): Promise<ActoviqTeammateTranscript> {
+    const teammate = await this.requireTeammate(name);
+    const session = await this.bindings.resumeSession(teammate.sessionId);
+    const [leaderInbox, teammateInbox] = await Promise.all([
+      this.mailboxStore.list(this.name, this.leader),
+      this.mailboxStore.list(this.name, name),
+    ]);
+    return {
+      teammate,
+      sessionId: session.id,
+      messages: session.messages,
+      leaderInbox,
+      teammateInbox,
+    };
+  }
+
+  async reenter(
+    name: string,
+    options: ContinueActoviqTeammateOptions = {},
+  ): Promise<ActoviqSwarmRunResult | undefined> {
+    const teammate = await this.requireTeammate(name);
+    const pending = await this.mailboxStore.list(this.name, name);
+    if (pending.length > 0) {
+      return this.continueFromMailbox(name, options);
+    }
+    if (options.prompt?.trim()) {
+      return this.runInternal(name, options.prompt, 'prompt');
+    }
+    if (teammate.lastTaskDescription?.trim()) {
+      return this.runInternal(name, teammate.lastTaskDescription, 'prompt');
+    }
+    return undefined;
+  }
+
   async runBackground(
     name: string,
     prompt: string,
@@ -257,6 +317,7 @@ export class ActoviqSwarmTeam {
   ): Promise<ActoviqBackgroundTaskRecord> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
+    this.applyRuntimeContext(session);
     const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
     const task = await this.bindings.launchBackgroundOnSession(
       session,
@@ -297,6 +358,7 @@ export class ActoviqSwarmTeam {
   ): Promise<ActoviqSwarmRunResult> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
+    this.applyRuntimeContext(session);
     const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
     const processedMailboxMessages = injectedMessages.length;
     const running = {
@@ -504,6 +566,29 @@ export class ActoviqSwarmTeam {
       });
     }
     return drained;
+  }
+
+  private applyRuntimeContext(session: AgentSession): void {
+    session.clearHooks();
+    session.clearPermissionContext();
+
+    if (this.runtimeContext.hooks) {
+      session.setHooks(this.runtimeContext.hooks);
+    }
+
+    if (
+      this.runtimeContext.permissionMode ||
+      this.runtimeContext.permissions ||
+      this.runtimeContext.classifier ||
+      this.runtimeContext.approver
+    ) {
+      session.setPermissionContext({
+        mode: this.runtimeContext.permissionMode,
+        permissions: this.runtimeContext.permissions,
+        classifier: this.runtimeContext.classifier,
+        approver: this.runtimeContext.approver,
+      });
+    }
   }
 }
 
