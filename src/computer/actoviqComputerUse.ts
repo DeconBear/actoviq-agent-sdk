@@ -8,6 +8,11 @@ import type {
   LocalMcpServerDefinition,
 } from '../types.js';
 
+export interface ActoviqComputerUseToolkit {
+  tools: AgentToolDefinition[];
+  mcpServer: LocalMcpServerDefinition;
+}
+
 function ensureWindows(): void {
   if (process.platform !== 'win32') {
     throw new Error('The default computer-use executor currently supports Windows only.');
@@ -37,6 +42,10 @@ export function createDefaultActoviqComputerUseExecutor(): ActoviqComputerUseExe
   return {
     openUrl: (url) =>
       runPowerShell(`Start-Process '${url.replace(/'/g, "''")}'`).then(() => undefined),
+    focusWindow: (title) =>
+      runPowerShell(
+        `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate('${title.replace(/'/g, "''")}')`,
+      ).then(() => undefined),
     typeText: (text) =>
       runPowerShell(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${text.replace(/[{}+^%~()]/g, '{$&}').replace(/'/g, "''")}')`,
@@ -81,6 +90,10 @@ const workflowStepSchema = z.discriminatedUnion('action', [
     text: z.string().min(1),
   }),
   z.object({
+    action: z.literal('focus_window'),
+    title: z.string().min(1),
+  }),
+  z.object({
     action: z.literal('keypress'),
     keys: z.array(z.string().min(1)).min(1),
   }),
@@ -114,6 +127,12 @@ async function executeWorkflowStep(
     case 'type_text':
       await executor.typeText(step.text);
       return { action: step.action, text: step.text, ok: true };
+    case 'focus_window':
+      if (!executor.focusWindow) {
+        throw new Error('The current computer-use executor does not support focus_window.');
+      }
+      await executor.focusWindow(step.title);
+      return { action: step.action, title: step.title, ok: true };
     case 'keypress':
       await executor.keyPress(step.keys);
       return { action: step.action, keys: step.keys, ok: true };
@@ -238,5 +257,14 @@ export function createActoviqComputerUseMcpServer(
     name: options.serverName ?? 'actoviq-computer-use',
     prefix: options.prefix ?? 'computer',
     tools: createActoviqComputerUseTools(options),
+  };
+}
+
+export function createActoviqComputerUseToolkit(
+  options: CreateActoviqComputerUseOptions = {},
+): ActoviqComputerUseToolkit {
+  return {
+    tools: createActoviqComputerUseTools(options),
+    mcpServer: createActoviqComputerUseMcpServer(options),
   };
 }

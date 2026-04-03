@@ -44,6 +44,7 @@ export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
   createActoviqComputerUseMcpServer,
+  createActoviqComputerUseToolkit,
   createActoviqComputerUseTools,
   createDefaultActoviqComputerUseExecutor,
 } from './computer/actoviqComputerUse.js';
