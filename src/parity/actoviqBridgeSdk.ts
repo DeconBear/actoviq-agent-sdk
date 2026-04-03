@@ -154,8 +154,6 @@ async function resolveBunExecutable(explicitPath?: string): Promise<string> {
   );
 }
 
-const LEGACY_UPSTREAM_DIR_NAME = ['cl', 'aude-code-main'].join('');
-
 async function resolveActoviqRuntimeCliPath(explicitPath?: string): Promise<string> {
   if (explicitPath) {
     if (!(await pathExists(explicitPath))) {
@@ -168,7 +166,6 @@ async function resolveActoviqRuntimeCliPath(explicitPath?: string): Promise<stri
     path.resolve(MODULE_DIR, '..', '..', 'vendor', 'actoviq-runtime', 'cli.js'),
     path.resolve(MODULE_DIR, '..', '..', '..', 'vendor', 'actoviq-runtime', 'cli.js'),
     path.resolve(process.cwd(), 'vendor', 'actoviq-runtime', 'cli.js'),
-    path.resolve(process.cwd(), '..', LEGACY_UPSTREAM_DIR_NAME, 'cli.js'),
   ]);
 
   if (!resolved) {

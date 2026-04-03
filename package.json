@@ -48,6 +48,7 @@
     "example:actoviq-buddy": "npm run build && tsx examples/actoviq-buddy.ts",
     "example:actoviq-computer-use": "npm run build && tsx examples/actoviq-computer-use.ts",
     "example:actoviq-memory": "npm run build && tsx examples/actoviq-memory.ts",
+    "example:actoviq-skills": "npm run build && tsx examples/actoviq-skills.ts",
     "example:actoviq-session-memory": "npm run build && tsx examples/actoviq-session-memory.ts",
     "example:actoviq-swarm": "npm run build && tsx examples/actoviq-swarm.ts",
     "example:actoviq-introspection": "npm run build && tsx examples/actoviq-introspection.ts",

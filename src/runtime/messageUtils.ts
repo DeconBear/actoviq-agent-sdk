@@ -1,5 +1,5 @@
 import type { Message, MessageParam, ToolResultBlockParam } from '../provider/types.js';
-import type { ActoviqSurfacedMemory } from '../types.js';
+import type { ActoviqInvokedSkillRecord, ActoviqSurfacedMemory } from '../types.js';
 
 import { deepClone, isRecord } from './helpers.js';
 
@@ -21,6 +21,25 @@ export function buildRelevantMemoryMessages(memories: readonly ActoviqSurfacedMe
   return memories.map(memory =>
     buildUserMessage(
       `<system-reminder>\n${memory.header}\n\n${memory.content}\n</system-reminder>`,
+    ),
+  );
+}
+
+export function buildInvokedSkillMessages(
+  skills: readonly ActoviqInvokedSkillRecord[],
+): MessageParam[] {
+  return skills.map(skill =>
+    buildUserMessage(
+      [
+        '<system-reminder>',
+        `The ${skill.context === 'fork' ? 'forked' : 'inline'} skill "/${skill.name}" remains active for this session.`,
+        skill.args ? `Original skill arguments: ${skill.args}` : undefined,
+        '',
+        skill.content,
+        '</system-reminder>',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     ),
   );
 }

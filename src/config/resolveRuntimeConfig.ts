@@ -5,16 +5,6 @@ import { ConfigurationError } from '../errors.js';
 import type { CreateAgentSdkOptions, ResolvedRuntimeConfig } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
 
-const LEGACY_ENV_KEYS = {
-  apiKey: ['ANTH', 'ROPIC_API_KEY'].join(''),
-  authToken: ['ANTH', 'ROPIC_AUTH_TOKEN'].join(''),
-  model: ['ANTH', 'ROPIC_MODEL'].join(''),
-  baseUrl: ['ANTH', 'ROPIC_BASE_URL'].join(''),
-  defaultSonnetModel: ['ANTH', 'ROPIC_DEFAULT_SONNET_MODEL'].join(''),
-  defaultOpusModel: ['ANTH', 'ROPIC_DEFAULT_OPUS_MODEL'].join(''),
-  defaultHaikuModel: ['ANTH', 'ROPIC_DEFAULT_HAIKU_MODEL'].join(''),
-} as const;
-
 const FALLBACK_MODEL = ['cl', 'aude-sonnet-4-5-20250929'].join('');
 const DEFAULT_COMPACT_CONFIG = {
   enabled: true,
@@ -34,9 +24,8 @@ const DEFAULT_COMPACT_CONFIG = {
 function getConfigValue(
   source: NodeJS.ProcessEnv | Record<string, string>,
   primaryKey: string,
-  legacyKey?: string,
 ): string | undefined {
-  return source[primaryKey] ?? (legacyKey ? source[legacyKey] : undefined);
+  return source[primaryKey];
 }
 
 export async function resolveRuntimeConfig(
@@ -50,12 +39,12 @@ export async function resolveRuntimeConfig(
 
   const apiKey =
     options.apiKey ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_API_KEY', LEGACY_ENV_KEYS.apiKey) ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_API_KEY', LEGACY_ENV_KEYS.apiKey);
+    getConfigValue(envFromProcess, 'ACTOVIQ_API_KEY') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_API_KEY');
   const authToken =
     options.authToken ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_AUTH_TOKEN', LEGACY_ENV_KEYS.authToken) ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_AUTH_TOKEN', LEGACY_ENV_KEYS.authToken);
+    getConfigValue(envFromProcess, 'ACTOVIQ_AUTH_TOKEN') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_AUTH_TOKEN');
 
   if (!options.modelApi && !apiKey && !authToken) {
     throw new ConfigurationError(
@@ -67,23 +56,11 @@ export async function resolveRuntimeConfig(
 
   const model =
     options.model ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_MODEL', LEGACY_ENV_KEYS.model) ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL', LEGACY_ENV_KEYS.model) ??
-    getConfigValue(
-      envFromLoadedConfig,
-      'ACTOVIQ_DEFAULT_SONNET_MODEL',
-      LEGACY_ENV_KEYS.defaultSonnetModel,
-    ) ??
-    getConfigValue(
-      envFromLoadedConfig,
-      'ACTOVIQ_DEFAULT_OPUS_MODEL',
-      LEGACY_ENV_KEYS.defaultOpusModel,
-    ) ??
-    getConfigValue(
-      envFromLoadedConfig,
-      'ACTOVIQ_DEFAULT_HAIKU_MODEL',
-      LEGACY_ENV_KEYS.defaultHaikuModel,
-    ) ??
+    getConfigValue(envFromProcess, 'ACTOVIQ_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_SONNET_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_OPUS_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_HAIKU_MODEL') ??
     FALLBACK_MODEL;
 
   return {
@@ -93,8 +70,8 @@ export async function resolveRuntimeConfig(
     authToken,
     baseURL:
       options.baseURL ??
-      getConfigValue(envFromProcess, 'ACTOVIQ_BASE_URL', LEGACY_ENV_KEYS.baseUrl) ??
-      getConfigValue(envFromLoadedConfig, 'ACTOVIQ_BASE_URL', LEGACY_ENV_KEYS.baseUrl),
+      getConfigValue(envFromProcess, 'ACTOVIQ_BASE_URL') ??
+      getConfigValue(envFromLoadedConfig, 'ACTOVIQ_BASE_URL'),
     model,
     maxTokens: options.maxTokens ?? 2048,
     temperature: options.temperature,

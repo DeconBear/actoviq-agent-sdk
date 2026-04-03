@@ -313,6 +313,99 @@ export interface ActoviqAgentDefinitionSummary {
   hasHooks: boolean;
 }
 
+export type ActoviqSkillSource = 'bundled' | 'user' | 'project' | 'custom';
+
+export type ActoviqSkillLoadedFrom =
+  | 'bundled'
+  | 'skills'
+  | 'commands'
+  | 'custom';
+
+export type ActoviqSkillContextMode = 'inline' | 'fork';
+
+export interface ActoviqSkillPromptContext {
+  args: string;
+  workDir: string;
+  homeDir: string;
+  sessionId?: string;
+  userId?: string;
+}
+
+export interface ActoviqSkillPromptBuildResult {
+  content: string | MessageParam['content'];
+  systemPromptParts?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export type ActoviqSkillPromptBuilder = (
+  args: string,
+  context: ActoviqSkillPromptContext,
+) =>
+  | Promise<string | MessageParam['content'] | ActoviqSkillPromptBuildResult>
+  | string
+  | MessageParam['content']
+  | ActoviqSkillPromptBuildResult;
+
+export interface ActoviqSkillDefinition {
+  name: string;
+  description: string;
+  whenToUse?: string;
+  argumentHint?: string;
+  argNames?: string[];
+  prompt?: string;
+  buildPrompt?: ActoviqSkillPromptBuilder;
+  model?: string;
+  disableModelInvocation?: boolean;
+  userInvocable?: boolean;
+  source?: ActoviqSkillSource;
+  loadedFrom?: ActoviqSkillLoadedFrom;
+  context?: ActoviqSkillContextMode;
+  agent?: string;
+  hooks?: ActoviqHooks;
+  metadata?: Record<string, unknown>;
+  tools?: AgentToolDefinition[];
+  mcpServers?: AgentMcpServerDefinition[];
+  inheritDefaultTools?: boolean;
+  inheritDefaultMcpServers?: boolean;
+  allowedTools?: string[];
+  paths?: string[];
+  skillRoot?: string;
+}
+
+export interface ActoviqSkillDefinitionSummary {
+  name: string;
+  description: string;
+  whenToUse?: string;
+  argumentHint?: string;
+  argNames: string[];
+  model?: string;
+  source: ActoviqSkillSource;
+  loadedFrom: ActoviqSkillLoadedFrom;
+  context: ActoviqSkillContextMode;
+  agent?: string;
+  allowedTools: string[];
+  metadataKeys: string[];
+  hasPrompt: boolean;
+  hasHooks: boolean;
+  userInvocable: boolean;
+  disableModelInvocation: boolean;
+  skillRoot?: string;
+  paths?: string[];
+}
+
+export interface ActoviqInvokedSkillRecord {
+  name: string;
+  args?: string;
+  content: string;
+  invokedAt: string;
+  source: ActoviqSkillSource;
+  loadedFrom: ActoviqSkillLoadedFrom;
+  context: ActoviqSkillContextMode;
+  model?: string;
+  agent?: string;
+  skillRoot?: string;
+}
+
 export interface CreateAgentSdkOptions {
   homeDir?: string;
   apiKey?: string;
@@ -334,6 +427,10 @@ export interface CreateAgentSdkOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   agents?: ActoviqAgentDefinition[];
+  skills?: ActoviqSkillDefinition[];
+  skillDirectories?: string[];
+  disableDefaultSkills?: boolean;
+  loadDefaultSkillDirectories?: boolean;
   hooks?: ActoviqHooks;
   compact?: Partial<ActoviqCompactConfig>;
   permissionMode?: ActoviqPermissionMode;
@@ -471,6 +568,7 @@ export interface AgentRunResult {
   completedAt: string;
   sessionHookMetadata?: Record<string, unknown>;
   delegatedAgents?: ActoviqDelegatedAgentRecord[];
+  invokedSkills?: ActoviqInvokedSkillRecord[];
   reactiveCompact?: ActoviqSessionCompactResult;
   permissionDecisions?: ActoviqPermissionDecision[];
 }
@@ -1166,6 +1264,7 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   progress?: ActoviqSessionMemoryProgress;
   runtimeState?: ActoviqSessionMemoryRuntimeState;
   agentContinuity?: ActoviqAgentContinuityState;
+  invokedSkills?: ActoviqInvokedSkillRecord[];
   transcriptPath?: string;
   boundaries?: ActoviqTranscriptBoundary[];
   latestBoundary?: ActoviqTranscriptBoundary;

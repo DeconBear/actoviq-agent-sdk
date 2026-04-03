@@ -1,0 +1,9 @@
+{
+  "env": {
+    "ACTOVIQ_AUTH_TOKEN": "your-token",
+    "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
+    "ACTOVIQ_DEFAULT_SONNET_MODEL": "your-model",
+    "ACTOVIQ_DEFAULT_OPUS_MODEL": "your-model",
+    "ACTOVIQ_DEFAULT_HAIKU_MODEL": "your-model"
+  }
+}

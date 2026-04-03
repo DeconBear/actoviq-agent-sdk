@@ -8,6 +8,7 @@ import {
   analyzeActoviqBridgeEvents,
   createActoviqBridgeSdk,
   getActoviqBridgeTextDelta,
+  loadDefaultActoviqSettings,
   loadJsonConfigFile,
 } from 'actoviq-agent-sdk';
 
@@ -19,13 +20,7 @@ async function ensureFileExists(filePath: string): Promise<void> {
   try {
     await access(filePath, fsConstants.F_OK);
   } catch {
-    throw new Error(
-      [
-        `The config file was not found: ${filePath}`,
-        'Create examples/interactive-agent.settings.local.json first, or change JSON_CONFIG_PATH in this example.',
-        'A safe template is available at examples/interactive-agent.settings.example.json.',
-      ].join(' '),
-    );
+    throw new Error(`The config file was not found: ${filePath}`);
   }
 }
 
@@ -47,8 +42,15 @@ function shouldExit(input: string): boolean {
 }
 
 async function main(): Promise<void> {
-  await ensureFileExists(JSON_CONFIG_PATH);
-  await loadJsonConfigFile(JSON_CONFIG_PATH);
+  let configSource = JSON_CONFIG_PATH;
+
+  try {
+    await ensureFileExists(JSON_CONFIG_PATH);
+    await loadJsonConfigFile(JSON_CONFIG_PATH);
+  } catch {
+    await loadDefaultActoviqSettings();
+    configSource = '~/.actoviq/settings.json';
+  }
 
   const sdk = await createActoviqBridgeSdk({
     workDir: WORKSPACE_PATH,
@@ -82,7 +84,7 @@ async function main(): Promise<void> {
 
   console.log('Actoviq interactive agent example');
   console.log(`Workspace: ${WORKSPACE_PATH}`);
-  console.log(`Config JSON: ${JSON_CONFIG_PATH}`);
+  console.log(`Config source: ${configSource}`);
   console.log(`Runtime model: ${runtime.model ?? 'unknown-model'}`);
   console.log(`Built-in tools: ${runtime.tools.join(', ')}`);
   console.log(`Skills: ${runtime.skills.join(', ')}`);
