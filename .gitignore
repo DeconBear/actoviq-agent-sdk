@@ -6,3 +6,4 @@ coverage
 *.tgz
 examples/*.local.json
 plan/
+AGENTS.md
