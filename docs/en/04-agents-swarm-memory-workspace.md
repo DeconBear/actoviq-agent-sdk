@@ -1,0 +1,126 @@
+# 04. Agents, Swarm, Memory, and Workspace
+
+This chapter covers the higher-level workflow features in the clean SDK.
+
+## 1. Named agents
+
+Register reusable agent roles:
+
+```ts
+const sdk = await createAgentSdk({
+  agents: [
+    {
+      name: 'reviewer',
+      description: 'Review work and report the sharpest findings first.',
+      systemPrompt:
+        'You are a careful reviewer. Prioritize bugs, regressions, and missing verification.',
+    },
+  ],
+});
+```
+
+Then run through that role:
+
+```ts
+const result = await sdk.runWithAgent(
+  'reviewer',
+  'Review this repository as if you were preparing a release.',
+);
+```
+
+## 2. Task delegation
+
+If named agents are registered, the clean SDK can delegate work through `Task` and related helpers. This is useful when a main agent should hand a specialized pass to another role.
+
+## 3. Background tasks and swarm teammates
+
+Use swarm helpers when you want a leader plus teammate pattern:
+
+```ts
+const team = sdk.swarm.createTeam({
+  name: 'release-team',
+  leader: 'lead',
+  continuous: true,
+});
+```
+
+Then:
+
+1. `spawn(...)`
+2. `message(...)`
+3. `continueFromMailbox(...)`
+4. `runBackground(...)`
+5. `waitForIdle()`
+
+Repository example:
+
+- [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+
+## 4. Workspace helpers
+
+You can create isolated directories before starting an agent session.
+
+Available helpers:
+
+1. `createWorkspace(...)`
+2. `createTempWorkspace(...)`
+3. `createGitWorktreeWorkspace(...)`
+
+Example:
+
+```ts
+const workspace = await createTempWorkspace({
+  prefix: 'actoviq-demo-',
+  copyFrom: './examples',
+});
+
+const sdk = await createAgentSdk({
+  workDir: workspace.path,
+});
+```
+
+## 5. Memory and session memory
+
+The SDK provides:
+
+1. relevant memory selection
+2. session-memory prompt and summary helpers
+3. compact-state inspection
+4. automatic session-memory extraction once a session is large enough
+
+Main APIs:
+
+```ts
+const memory = sdk.memory;
+console.log(await memory.findRelevantMemories('how should I release this package?'));
+```
+
+At session level:
+
+```ts
+const extraction = await session.extractMemory();
+const state = await session.compactState({
+  includeSessionMemory: true,
+  includeSummaryMessage: true,
+});
+```
+
+Repository examples:
+
+- [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
+- [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
+
+## 6. Compact
+
+The clean SDK supports:
+
+1. automatic compact
+2. reactive compact
+3. API-oriented microcompact shaping
+4. persisted compact history and continuity metadata
+
+This matters most in long-running sessions and multi-turn task flows.
+
+Next chapter:
+
+- [05-bridge-runtime.md](./05-bridge-runtime.md)

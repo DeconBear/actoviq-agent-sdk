@@ -102,6 +102,15 @@ export {
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
 export {
+  ActoviqSkillHandle,
+  ActoviqSkillsApi,
+  getDefaultActoviqBundledSkills,
+  loadActoviqSkillDefinitions,
+  resolveActoviqSkillPrompt,
+  skill,
+  summarizeActoviqSkillDefinition,
+} from './runtime/actoviqSkills.js';
+export {
   decideActoviqToolPermission,
   isMutatingActoviqTool,
   isReadOnlyActoviqTool,
