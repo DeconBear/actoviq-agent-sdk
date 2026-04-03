@@ -43,6 +43,7 @@ export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
+  ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS,
   createActoviqComputerUseMcpServer,
   createActoviqComputerUseToolkit,
   createActoviqComputerUseTools,
@@ -102,6 +103,17 @@ export {
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
 export {
+  ActoviqContextApi,
+  ActoviqSlashCommandHandle,
+  ActoviqSlashCommandsApi,
+  formatActoviqAgents,
+  formatActoviqCompactResult,
+  formatActoviqContextOverview,
+  formatActoviqMemoryState,
+  formatActoviqSkills,
+  formatActoviqTools,
+} from './runtime/actoviqSlashCommands.js';
+export {
   ActoviqSkillHandle,
   ActoviqSkillsApi,
   getDefaultActoviqBundledSkills,
@@ -115,6 +127,12 @@ export {
   isMutatingActoviqTool,
   isReadOnlyActoviqTool,
 } from './runtime/actoviqPermissions.js';
+export {
+  ActoviqToolsApi,
+  buildActoviqCleanToolCatalog,
+  resolveActoviqCleanToolMetadata,
+  summarizeActoviqResolvedTool,
+} from './runtime/actoviqToolCatalog.js';
 export { getActoviqApiContextManagement } from './runtime/actoviqApiMicrocompact.js';
 export {
   ActoviqBackgroundTaskHandle,

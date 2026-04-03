@@ -1,110 +1,57 @@
 # 03. Tools, Permissions, Skills, and MCP
 
-This chapter is where the SDK starts to feel like a real agent system.
+This chapter is where the clean SDK starts to feel like a full agent system.
 
 ## 1. Tools vs. skills
 
-These two ideas are related, but they are not the same.
-
-- **Tools** do work directly: read files, edit files, search code, open URLs, take screenshots, or delegate tasks.
-- **Skills** package a work style: debug systematically, simplify a solution, review release readiness, or fork a reviewer-style pass.
+- **Tools** perform direct actions: read files, edit files, search, take screenshots, or delegate tasks.
+- **Skills** package a working style: debug methodically, verify a result, or run a reviewer-style pass.
 
 ## 2. Tool categories in the clean SDK
 
-The clean SDK can compose several tool sources together.
+The clean SDK can combine several tool sources in one run:
 
-### Custom local tools
+1. custom local tools created with `tool(...)`
+2. file tools from `createActoviqFileTools(...)`
+3. computer-use tools from `createActoviqComputerUseToolkit(...)`
+4. the clean `Task` delegation tool when named agents are registered
+5. MCP tools from local, `stdio`, or `streamable_http` servers
+
+## 3. Inspect the clean tool surface
+
+The clean SDK now has a dedicated tool catalog API:
 
 ```ts
-import { z } from 'zod';
-import { tool } from 'actoviq-agent-sdk';
+const tools = await sdk.tools.listMetadata();
+const catalog = await sdk.tools.getCatalog();
 
-const addNumbers = tool(
-  {
-    name: 'add_numbers',
-    description: 'Add two numbers.',
-    inputSchema: z.object({
-      a: z.number(),
-      b: z.number(),
-    }),
-  },
-  async ({ a, b }) => ({ sum: a + b }),
-);
+console.log(tools);
+console.log(catalog.byCategory.file);
+console.log(catalog.byCategory.computer);
 ```
 
-### File tools
+Each tool record includes:
+
+1. `name`
+2. `description`
+3. `provider`
+4. `category`
+5. `server`
+6. `readOnly`
+7. `mutating`
+
+Repository example:
+
+- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
+
+## 4. Clean skills
+
+Clean skills work directly through `createAgentSdk(...)`.
+
+### List skills
 
 ```ts
-import { createActoviqFileTools } from 'actoviq-agent-sdk';
-
-const tools = createActoviqFileTools({ cwd: process.cwd() });
-```
-
-Current file tools:
-
-1. `Read`
-2. `Write`
-3. `Edit`
-4. `Glob`
-5. `Grep`
-
-### Computer-use tools
-
-Use `createActoviqComputerUseToolkit(...)` when you want browser or desktop-style actions.
-
-Current clean computer-use tools include:
-
-1. `computer_open_url`
-2. `computer_type_text`
-3. `computer_keypress`
-4. `computer_read_clipboard`
-5. `computer_write_clipboard`
-6. `computer_take_screenshot`
-7. `computer_run_workflow`
-
-### Task delegation tool
-
-If you register named agents, the clean SDK can expose a `Task` delegation tool that hands work to another agent.
-
-### MCP tools
-
-MCP servers can add even more tools to the current agent surface.
-
-## 3. How to inspect the clean tool surface
-
-The clean SDK tool catalog is still being expanded, but today the best way to inspect the active tool surface is:
-
-1. look at the tools you passed into `createAgentSdk(...)`
-2. look at generated tool groups such as file tools or computer-use tools
-3. inspect tool calls on results:
-
-```ts
-const result = await sdk.run('Use the provided tools to inspect the workspace.');
-console.log(result.toolCalls);
-```
-
-## 4. Clean SDK skills
-
-Clean SDK skills now work without bridge mode.
-
-### Bundled skills
-
-Current bundled skills:
-
-1. `debug`
-2. `simplify`
-3. `batch`
-4. `verify`
-5. `remember`
-6. `stuck`
-7. `loop`
-8. `update-config`
-
-### Listing skills
-
-```ts
-const skills = sdk.skills.listMetadata();
-console.log(skills);
+console.log(sdk.skills.listMetadata());
 ```
 
 ### Run a skill directly
@@ -112,35 +59,25 @@ console.log(skills);
 ```ts
 const result = await sdk.runSkill(
   'debug',
-  'Explain how this project should validate a release safely.',
+  'Explain what should be validated before the next release.',
 );
 console.log(result.text);
-```
-
-### Use a skill handle
-
-```ts
-const debugSkill = sdk.skills.use('debug');
-console.log(await debugSkill.metadata());
-console.log((await debugSkill.run('Investigate why CI might fail.')).text);
 ```
 
 ### Run a skill inside a session
 
 ```ts
-const session = await sdk.createSession({ title: 'Skill Demo' });
+const session = await sdk.createSession({ title: 'Skill demo' });
 const result = await session.runSkill(
   'remember',
-  'Remember that releases should wait for CI and npm pack --dry-run.',
+  'Remember that releases must wait for CI and npm pack --dry-run.',
 );
 console.log(result.text);
 ```
 
-### Register your own skill
+### Add a custom skill
 
 ```ts
-import { skill } from 'actoviq-agent-sdk';
-
 const sdk = await createAgentSdk({
   skills: [
     skill({
@@ -152,55 +89,35 @@ const sdk = await createAgentSdk({
 });
 ```
 
-### Forked skill execution
+## 5. Clean slash-command replacements
 
-If a skill should run through another named agent:
-
-```ts
-const sdk = await createAgentSdk({
-  agents: [
-    {
-      name: 'reviewer',
-      description: 'Review work and report the sharpest findings first.',
-    },
-  ],
-  skills: [
-    skill({
-      name: 'review-with-reviewer',
-      description: 'Fork work to the reviewer agent.',
-      context: 'fork',
-      agent: 'reviewer',
-      prompt: 'You are executing the /review-with-reviewer skill.\\n\\nTask:\\n$ARGUMENTS',
-    }),
-  ],
-});
-```
-
-### Skill loading from disk
-
-The clean SDK can load skills from:
-
-1. `~/.actoviq/skills`
-2. `<workDir>/.actoviq/skills`
-3. `<workDir>/.actoviq/commands`
-
-You can also add:
+The clean SDK now exposes command-style helpers without bridge mode:
 
 ```ts
-const sdk = await createAgentSdk({
-  skillDirectories: ['E:/my-skills'],
-});
+console.log(sdk.slashCommands.listMetadata());
+
+const contextResult = await sdk.slashCommands.run('context');
+const toolsResult = await sdk.slashCommands.run('tools');
 ```
 
-## 5. Bridge skills
+Available clean replacements:
 
-The bridge SDK still matters when you specifically want runtime-native skills.
+1. `context`
+2. `compact`
+3. `memory`
+4. `tools`
+5. `skills`
+6. `agents`
 
-Use bridge skills when you want:
+These are backed by typed APIs:
 
-1. runtime-native skill discovery
-2. runtime-native skill behavior
-3. runtime introspection and built-in runtime tools in the same flow
+1. `sdk.context.overview(...)`
+2. `sdk.context.describe(...)`
+3. `sdk.context.compact(sessionId, ...)`
+4. `sdk.context.memoryState(...)`
+5. `sdk.context.tools(...)`
+6. `sdk.context.skills()`
+7. `sdk.context.agents()`
 
 ## 6. Permissions, classifier, and approver
 
@@ -254,8 +171,6 @@ The SDK supports:
 2. `stdio` MCP servers
 3. `streamable_http` MCP servers
 
-Example:
-
 ```ts
 import { createAgentSdk, stdioMcpServer } from 'actoviq-agent-sdk';
 
@@ -275,7 +190,7 @@ Repository examples:
 - [examples/actoviq-file-tools.ts](../../examples/actoviq-file-tools.ts)
 - [examples/actoviq-computer-use.ts](../../examples/actoviq-computer-use.ts)
 - [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-- [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
+- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 
 Next chapter:
 

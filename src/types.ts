@@ -393,6 +393,95 @@ export interface ActoviqSkillDefinitionSummary {
   paths?: string[];
 }
 
+export type ActoviqCleanToolCategory =
+  | 'file'
+  | 'task'
+  | 'computer'
+  | 'mcp'
+  | 'custom';
+
+export interface ActoviqCleanToolMetadata {
+  name: string;
+  description: string;
+  provider: 'local' | 'mcp';
+  category: ActoviqCleanToolCategory;
+  server?: string;
+  strict: boolean;
+  readOnly: boolean;
+  mutating: boolean;
+  examples?: Array<Record<string, unknown>>;
+}
+
+export interface ActoviqCleanToolCatalog {
+  tools: ActoviqCleanToolMetadata[];
+  byCategory: Record<ActoviqCleanToolCategory, ActoviqCleanToolMetadata[]>;
+}
+
+export interface ActoviqCleanToolLookupOptions {
+  tools?: AgentToolDefinition[];
+  mcpServers?: AgentMcpServerDefinition[];
+}
+
+export type ActoviqCleanSlashCommandName =
+  | 'context'
+  | 'compact'
+  | 'memory'
+  | 'tools'
+  | 'skills'
+  | 'agents';
+
+export interface ActoviqCleanSlashCommandMetadata {
+  name: ActoviqCleanSlashCommandName;
+  helper:
+    | 'context.overview'
+    | 'context.compact'
+    | 'context.memoryState'
+    | 'context.tools'
+    | 'context.skills'
+    | 'context.agents';
+  description: string;
+}
+
+export interface ActoviqCleanContextOverviewOptions {
+  sessionId?: string;
+  includeMemory?: boolean;
+  includeCompactState?: boolean;
+  includeTools?: boolean;
+  includeSkills?: boolean;
+  includeAgents?: boolean;
+  toolLookup?: ActoviqCleanToolLookupOptions;
+}
+
+export interface ActoviqCleanContextOverview {
+  sessionId?: string;
+  tools: ActoviqCleanToolMetadata[];
+  skills: ActoviqSkillDefinitionSummary[];
+  agents: ActoviqAgentDefinitionSummary[];
+  memoryState?: ActoviqMemoryState;
+  compactState?: ActoviqCompactState;
+}
+
+export interface ActoviqRunSlashCommandOptions {
+  sessionId?: string;
+  args?: string;
+  compact?: AgentSessionCompactOptions;
+  memory?: Omit<ActoviqMemoryStateOptions, 'projectPath' | 'sessionId'>;
+  overview?: ActoviqCleanContextOverviewOptions;
+  toolLookup?: ActoviqCleanToolLookupOptions;
+}
+
+export interface ActoviqRunSlashCommandResult {
+  name: ActoviqCleanSlashCommandName;
+  text: string;
+  data:
+    | ActoviqCleanContextOverview
+    | ActoviqSessionCompactResult
+    | ActoviqMemoryState
+    | ActoviqCleanToolMetadata[]
+    | ActoviqSkillDefinitionSummary[]
+    | ActoviqAgentDefinitionSummary[];
+}
+
 export interface ActoviqInvokedSkillRecord {
   name: string;
   args?: string;
@@ -729,6 +818,22 @@ export interface ActoviqSwarmRunResult {
   result?: AgentRunResult;
   source?: 'prompt' | 'mailbox' | 'background';
   mailboxMessagesProcessed?: number;
+}
+
+export interface ActoviqSwarmRuntimeContext {
+  hooks?: ActoviqHooks;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
+  classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
+}
+
+export interface ActoviqTeammateTranscript {
+  teammate: ActoviqTeammateRecord;
+  sessionId: string;
+  messages: MessageParam[];
+  leaderInbox: ActoviqMailboxMessage[];
+  teammateInbox: ActoviqMailboxMessage[];
 }
 
 export interface ActoviqComputerUseExecutor {
