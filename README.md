@@ -293,24 +293,32 @@ Swarm teammates now keep richer clean-SDK continuity metadata such as run lineag
 ### Permissions and Computer Use
 
 ```ts
-import { createAgentSdk } from 'actoviq-agent-sdk';
+import {
+  createActoviqComputerUseToolkit,
+  createAgentSdk,
+} from 'actoviq-agent-sdk';
+
+const toolkit = createActoviqComputerUseToolkit({
+  executor: {
+    openUrl: async (url) => console.log('open', url),
+    focusWindow: async (title) => console.log('focus', title),
+    typeText: async (text) => console.log('type', text),
+    keyPress: async (keys) => console.log('keys', keys.join('+')),
+    readClipboard: async () => 'clipboard text',
+    writeClipboard: async (text) => console.log('clipboard', text),
+    takeScreenshot: async (outputPath) => outputPath,
+  },
+});
 
 const sdk = await createAgentSdk({
   permissionMode: 'plan',
-  classifier: ({ publicName }) =>
-    publicName === 'computer_open_url'
-      ? { behavior: 'allow', reason: 'Browser automation is approved for this run.' }
+  permissions: [{ toolName: 'computer_*', behavior: 'ask' }],
+  approver: ({ publicName }) =>
+    publicName.startsWith('computer_')
+      ? { behavior: 'allow', reason: 'Computer-use workflow approved for this run.' }
       : undefined,
-  computerUse: {
-    executor: {
-      openUrl: async (url) => console.log('open', url),
-      typeText: async (text) => console.log('type', text),
-      keyPress: async (keys) => console.log('keys', keys.join('+')),
-      readClipboard: async () => 'clipboard text',
-      writeClipboard: async (text) => console.log('clipboard', text),
-      takeScreenshot: async (outputPath) => outputPath,
-    },
-  },
+  tools: toolkit.tools,
+  mcpServers: [toolkit.mcpServer],
 });
 ```
 

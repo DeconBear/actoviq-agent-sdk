@@ -13,6 +13,7 @@ import type {
   ActoviqPermissionMode,
   ActoviqPermissionRule,
   ActoviqSessionMemoryExtractionResult,
+  ActoviqToolApprover,
   ActoviqToolClassifier,
   SessionForkOptions,
   StoredSession,
@@ -53,6 +54,7 @@ interface AgentSessionBindings {
       mode?: ActoviqPermissionMode;
       permissions?: ActoviqPermissionRule[];
       classifier?: ActoviqToolClassifier;
+      approver?: ActoviqToolApprover;
     },
   ) => void;
   clearRuntimePermissionContext: (session: AgentSession) => void;
@@ -140,8 +142,9 @@ export class AgentSession {
 
   setPermissionContext(context: {
     mode?: ActoviqPermissionMode;
-    permissions?: ActoviqPermissionRule[];
-    classifier?: ActoviqToolClassifier;
+      permissions?: ActoviqPermissionRule[];
+      classifier?: ActoviqToolClassifier;
+      approver?: ActoviqToolApprover;
   }): void {
     this.bindings.setRuntimePermissionContext(this, context);
   }

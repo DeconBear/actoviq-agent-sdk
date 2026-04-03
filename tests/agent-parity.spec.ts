@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
+  createActoviqComputerUseToolkit,
   createAgentSdk,
   tool,
   type ModelApi,
@@ -527,6 +528,89 @@ describe('Actoviq advanced parity features', () => {
         'type:release-ready',
         'keys:ENTER',
         'screenshot:artifacts/release.png',
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('provides a composable computer-use toolkit with focus-aware workflow steps', async () => {
+    const sessionDirectory = await createTempDir('actoviq-computer-toolkit-');
+    const calls: string[] = [];
+    const toolkit = createActoviqComputerUseToolkit({
+      executor: {
+        openUrl: async (url) => {
+          calls.push(`open:${url}`);
+        },
+        focusWindow: async (title) => {
+          calls.push(`focus:${title}`);
+        },
+        typeText: async (text) => {
+          calls.push(`type:${text}`);
+        },
+        keyPress: async (keys) => {
+          calls.push(`keys:${keys.join('+')}`);
+        },
+        readClipboard: async () => 'release clipboard text',
+        writeClipboard: async (text) => {
+          calls.push(`clipboard:${text}`);
+        },
+        takeScreenshot: async (outputPath) => {
+          calls.push(`screenshot:${outputPath}`);
+          return outputPath;
+        },
+      },
+    });
+    const modelApi = new MockModelApi({
+      create: async (_request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Running a richer browser workflow.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_workflow_focus',
+                name: 'computer_run_workflow',
+                input: {
+                  steps: [
+                    { action: 'open_url', url: 'https://example.com/releases' },
+                    { action: 'focus_window', title: 'Example Domain' },
+                    { action: 'write_clipboard', text: 'release checklist' },
+                    { action: 'read_clipboard' },
+                    { action: 'take_screenshot', outputPath: 'artifacts/focus.png' },
+                  ],
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'Toolkit workflow completed.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      tools: toolkit.tools,
+      mcpServers: [toolkit.mcpServer],
+    });
+
+    try {
+      const result = await sdk.run('Run the focus-aware release workflow.');
+      const workflowOutput = result.toolCalls[0]?.output as
+        | { stepCount?: number; results?: Array<Record<string, unknown>> }
+        | undefined;
+
+      expect(toolkit.mcpServer.name).toBe('actoviq-computer-use');
+      expect(result.toolCalls[0]?.publicName).toBe('computer_run_workflow');
+      expect(workflowOutput?.stepCount).toBe(5);
+      expect(calls).toEqual([
+        'open:https://example.com/releases',
+        'focus:Example Domain',
+        'clipboard:release checklist',
+        'screenshot:artifacts/focus.png',
       ]);
     } finally {
       await sdk.close();

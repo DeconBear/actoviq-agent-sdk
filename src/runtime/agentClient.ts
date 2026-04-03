@@ -45,6 +45,7 @@ import type {
   ActoviqSessionMemoryExtractionResult,
   ActoviqSessionMemoryRuntimeState,
   ActoviqSurfacedMemory,
+  ActoviqToolApprover,
   ActoviqToolClassifier,
   CreateAgentSdkOptions,
   CreateActoviqComputerUseOptions,
@@ -80,6 +81,7 @@ const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
 const AGENT_CONTINUITY_STATE_KEY = '__actoviqAgentContinuityState';
 const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
 const DEFAULT_SESSION_MEMORY_MAX_TOKENS = 4_096;
+const MAX_REACTIVE_COMPACT_ATTEMPTS = 3;
 const SESSION_MEMORY_SYSTEM_PROMPT = `You maintain the persistent session-memory markdown file for an ongoing engineering conversation.
 
 Return only the full updated markdown document.
@@ -133,6 +135,7 @@ interface SessionRuntimeOverrides {
   permissionMode?: AgentRunOptions['permissionMode'];
   permissions?: AgentRunOptions['permissions'];
   classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
 }
 
 function cloneHooks(hooks?: ActoviqHooks): ActoviqHooks | undefined {
@@ -299,6 +302,7 @@ export class ActoviqAgentClient {
   private readonly defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'];
   private readonly defaultPermissions?: CreateAgentSdkOptions['permissions'];
   private readonly defaultClassifier?: ActoviqToolClassifier;
+  private readonly defaultApprover?: ActoviqToolApprover;
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
@@ -315,6 +319,7 @@ export class ActoviqAgentClient {
     defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'],
     defaultPermissions?: CreateAgentSdkOptions['permissions'],
     defaultClassifier?: ActoviqToolClassifier,
+    defaultApprover?: ActoviqToolApprover,
   ) {
     this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
     this.agentDefinitions = new Map(
@@ -326,13 +331,14 @@ export class ActoviqAgentClient {
       listDefinitions: () => this.listAgentDefinitions(),
       getDefinition: (agent) => this.getAgentDefinition(agent),
       runDefinition: (agent, prompt, options) => this.runWithAgent(agent, prompt, options),
-      launchBackgroundDefinition: (agent, prompt, options) =>
-        this.launchBackgroundAgentTask(agent, prompt, options),
+      launchBackgroundDefinition: (agent, prompt, options, runOptions) =>
+        this.launchBackgroundAgentTask(agent, prompt, options, runOptions),
       createDefinitionSession: (agent, options) => this.createAgentSession(agent, options),
     });
     this.defaultPermissionMode = defaultPermissionMode;
     this.defaultPermissions = defaultPermissions ? [...defaultPermissions] : undefined;
     this.defaultClassifier = defaultClassifier;
+    this.defaultApprover = defaultApprover;
     this.buddy = createActoviqBuddyApi({
       homeDir: this.config.homeDir,
       userId: this.config.userId,
@@ -397,6 +403,7 @@ export class ActoviqAgentClient {
       options.permissionMode,
       options.permissions,
       options.classifier,
+      options.approver,
     );
   }
 
@@ -548,8 +555,8 @@ export class ActoviqAgentClient {
           invokedAt: nowIso(),
         });
       },
-      launchBackgroundAgent: (agent, prompt, backgroundOptions) =>
-        this.launchBackgroundAgentTask(agent, prompt, backgroundOptions),
+      launchBackgroundAgent: (agent, prompt, backgroundOptions, runOptions) =>
+        this.launchBackgroundAgentTask(agent, prompt, backgroundOptions, runOptions),
     });
   }
 
@@ -563,6 +570,7 @@ export class ActoviqAgentClient {
       permissionMode: overrides.permissionMode,
       permissions: clonePermissionRules(overrides.permissions),
       classifier: overrides.classifier,
+      approver: overrides.approver,
     };
   }
 
@@ -573,7 +581,13 @@ export class ActoviqAgentClient {
       hooks: isHooksEmpty(hooks) ? undefined : cloneHooks(hooks),
     };
 
-    if (isHooksEmpty(next.hooks) && !next.permissionMode && !next.permissions && !next.classifier) {
+    if (
+      isHooksEmpty(next.hooks) &&
+      !next.permissionMode &&
+      !next.permissions &&
+      !next.classifier &&
+      !next.approver
+    ) {
       this.sessionRuntimeOverrides.delete(sessionId);
       return;
     }
@@ -591,7 +605,7 @@ export class ActoviqAgentClient {
       ...current,
       hooks: undefined,
     };
-    if (!next.permissionMode && !next.permissions && !next.classifier) {
+    if (!next.permissionMode && !next.permissions && !next.classifier && !next.approver) {
       this.sessionRuntimeOverrides.delete(sessionId);
       return;
     }
@@ -604,6 +618,7 @@ export class ActoviqAgentClient {
       mode?: AgentRunOptions['permissionMode'];
       permissions?: AgentRunOptions['permissions'];
       classifier?: ActoviqToolClassifier;
+      approver?: ActoviqToolApprover;
     },
   ): void {
     const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
@@ -612,9 +627,16 @@ export class ActoviqAgentClient {
       permissionMode: context.mode,
       permissions: clonePermissionRules(context.permissions),
       classifier: context.classifier,
+      approver: context.approver,
     };
 
-    if (isHooksEmpty(next.hooks) && !next.permissionMode && !next.permissions && !next.classifier) {
+    if (
+      isHooksEmpty(next.hooks) &&
+      !next.permissionMode &&
+      !next.permissions &&
+      !next.classifier &&
+      !next.approver
+    ) {
       this.sessionRuntimeOverrides.delete(sessionId);
       return;
     }
@@ -633,6 +655,7 @@ export class ActoviqAgentClient {
       permissionMode: undefined,
       permissions: undefined,
       classifier: undefined,
+      approver: undefined,
     };
     if (isHooksEmpty(next.hooks)) {
       this.sessionRuntimeOverrides.delete(sessionId);
@@ -656,6 +679,7 @@ export class ActoviqAgentClient {
       permissionMode: options.permissionMode ?? overrides.permissionMode,
       permissions: options.permissions ?? overrides.permissions,
       classifier: options.classifier ?? overrides.classifier,
+      approver: options.approver ?? overrides.approver,
     };
   }
 
@@ -834,6 +858,7 @@ export class ActoviqAgentClient {
       permissionMode: options.permissionMode ?? this.defaultPermissionMode,
       permissions: options.permissions ?? this.defaultPermissions,
       classifier: options.classifier ?? this.defaultClassifier,
+      approver: options.approver ?? this.defaultApprover,
       hooks: augmentations?.hooks,
       streaming,
       emit,
@@ -858,66 +883,62 @@ export class ActoviqAgentClient {
     streaming?: boolean;
     emit?: (event: import('../types.js').AgentEvent) => void;
   }): Promise<SessionRunExecutionOutcome> {
-    const initialAugmentations = await this.prepareRunAugmentations(
+    let currentSnapshot = args.snapshot;
+    let currentAugmentations = await this.prepareRunAugmentations(
       args.runId,
       args.input,
       args.options,
-      args.snapshot,
+      currentSnapshot,
     );
+    let lastReactiveCompact: ActoviqSessionCompactResult | undefined;
+    let attempts = 0;
 
-    try {
-      const result = await this.executeRun(
-        args.runId,
-        args.input,
-        args.options,
-        args.snapshot,
-        args.streaming ?? false,
-        args.emit,
-        initialAugmentations,
-      );
-      return {
-        result,
-        snapshot: args.snapshot,
-        augmentations: initialAugmentations,
-      };
-    } catch (error) {
-      if (!isActoviqPromptTooLongError(error)) {
-        throw error;
+    while (true) {
+      try {
+        const result = await this.executeRun(
+          args.runId,
+          args.input,
+          args.options,
+          currentSnapshot,
+          args.streaming ?? false,
+          args.emit,
+          currentAugmentations,
+          attempts > 0,
+        );
+        if (lastReactiveCompact) {
+          result.reactiveCompact = lastReactiveCompact;
+        }
+        return {
+          result,
+          snapshot: currentSnapshot,
+          augmentations: currentAugmentations,
+        };
+      } catch (error) {
+        if (!isActoviqPromptTooLongError(error) || attempts >= MAX_REACTIVE_COMPACT_ATTEMPTS) {
+          throw error;
+        }
+
+        const reactiveCompact = await this.tryReactiveCompactSession(
+          args.session,
+          currentSnapshot,
+          args.options,
+          args.runId,
+          args.emit,
+        );
+        if (!reactiveCompact) {
+          throw error;
+        }
+
+        attempts += 1;
+        currentSnapshot = reactiveCompact.snapshot;
+        currentAugmentations = await this.prepareRunAugmentations(
+          args.runId,
+          args.input,
+          args.options,
+          currentSnapshot,
+        );
+        lastReactiveCompact = reactiveCompact.result;
       }
-
-      const reactiveCompact = await this.tryReactiveCompactSession(
-        args.session,
-        args.snapshot,
-        args.options,
-        args.runId,
-        args.emit,
-      );
-      if (!reactiveCompact) {
-        throw error;
-      }
-
-      const retryAugmentations = await this.prepareRunAugmentations(
-        args.runId,
-        args.input,
-        args.options,
-        reactiveCompact.snapshot,
-      );
-      const retriedResult = await this.executeRun(
-        args.runId,
-        args.input,
-        args.options,
-        reactiveCompact.snapshot,
-        args.streaming ?? false,
-        args.emit,
-        retryAugmentations,
-        true,
-      );
-      retriedResult.reactiveCompact = reactiveCompact.result;
-      return {
-        result: retriedResult,
-        snapshot: reactiveCompact.snapshot,
-        augmentations: retryAugmentations,
-      };
     }
   }
 
@@ -1223,6 +1244,7 @@ export class ActoviqAgentClient {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions: AgentRunOptions = {},
   ): Promise<ActoviqBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
     const session = await this.createAgentSession(agent, {
@@ -1232,6 +1254,22 @@ export class ActoviqAgentClient {
         __actoviqBackgroundParentSessionId: options.parentSessionId,
       },
     });
+    if (runOptions.hooks) {
+      session.setHooks(runOptions.hooks);
+    }
+    if (
+      runOptions.permissionMode ||
+      runOptions.permissions ||
+      runOptions.classifier ||
+      runOptions.approver
+    ) {
+      session.setPermissionContext({
+        mode: runOptions.permissionMode,
+        permissions: runOptions.permissions,
+        classifier: runOptions.classifier,
+        approver: runOptions.approver,
+      });
+    }
     return this.backgroundTaskManager.launch({
       subagentType: definition.name,
       description: prompt,
@@ -1259,8 +1297,25 @@ export class ActoviqAgentClient {
       parentRunId: string;
       parentSessionId?: string;
     },
+    runOptions: AgentRunOptions = {},
   ): Promise<ActoviqBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
+    if (runOptions.hooks) {
+      session.setHooks(runOptions.hooks);
+    }
+    if (
+      runOptions.permissionMode ||
+      runOptions.permissions ||
+      runOptions.classifier ||
+      runOptions.approver
+    ) {
+      session.setPermissionContext({
+        mode: runOptions.permissionMode,
+        permissions: runOptions.permissions,
+        classifier: runOptions.classifier,
+        approver: runOptions.approver,
+      });
+    }
     return this.backgroundTaskManager.launch({
       subagentType: definition.name,
       description: prompt,

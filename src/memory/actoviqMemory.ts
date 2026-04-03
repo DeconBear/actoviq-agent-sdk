@@ -1018,6 +1018,9 @@ export function getActoviqCompactBoundarySummary(
     typeof metadata.retryCount === 'number'
       ? `retryCount=${metadata.retryCount}`
       : undefined,
+    typeof metadata.continuationDepth === 'number'
+      ? `continuationDepth=${metadata.continuationDepth}`
+      : undefined,
     metadata.preservedSegment
       ? `preservedSegment=${metadata.preservedSegment.headUuid}->${metadata.preservedSegment.anchorUuid}->${metadata.preservedSegment.tailUuid}`
       : undefined,

@@ -51,6 +51,7 @@ export interface ExecuteConversationOptions {
   permissionMode?: AgentRunOptions['permissionMode'];
   permissions?: AgentRunOptions['permissions'];
   classifier?: AgentRunOptions['classifier'];
+  approver?: AgentRunOptions['approver'];
   hooks?: ActoviqHooks;
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
@@ -268,6 +269,7 @@ export async function executeConversation(
           mode: options.permissionMode ?? 'default',
           rules: options.permissions ?? [],
           classifier: options.classifier,
+          approver: options.approver,
           runId: options.runId,
           sessionId: options.sessionId,
           workDir: options.config.workDir,
@@ -296,6 +298,11 @@ export async function executeConversation(
           metadata: { ...(options.metadata ?? {}) },
           prompt: promptText,
           iteration,
+          permissionMode: options.permissionMode,
+          permissions: options.permissions,
+          classifier: options.classifier,
+          approver: options.approver,
+          hooks: options.hooks,
         });
         outputText = execution.text;
         output = execution.rawOutput;

@@ -171,6 +171,21 @@ function appendPersistedCompactHistory(
   }));
 }
 
+function getLatestPersistedCompactBoundary(
+  session: StoredSession,
+): ActoviqTranscriptBoundary | undefined {
+  const history = getPersistedActoviqCompactHistory(session.metadata);
+  return history.length > 0 ? history.at(-1) : undefined;
+}
+
+function getPersistedCompactContinuationDepth(
+  session: StoredSession,
+): number {
+  return getPersistedActoviqCompactHistory(session.metadata).filter(
+    boundary => boundary.kind === 'compact',
+  ).length;
+}
+
 function compactToolResultContent(
   messages: readonly MessageParam[],
   config: ActoviqCompactConfig,
@@ -336,7 +351,13 @@ export async function compactActoviqSession(
 }> {
   const persistedState = getPersistedActoviqCompactState(session.metadata);
   const filteredMessages = filterActoviqMessagesForSessionMemory(session.messages);
-  const microcompacted = compactToolResultContent(filteredMessages, context.compactConfig);
+  const compactableMessages =
+    options.trigger === 'reactive' &&
+    filteredMessages.length < 2 &&
+    session.messages.length > filteredMessages.length
+      ? session.messages.map(message => structuredClone(message))
+      : filteredMessages;
+  const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig);
   const tokenEstimateBefore = estimateActoviqConversationTokens(microcompacted.messages);
 
   if (!context.compactConfig.enabled) {
@@ -377,10 +398,12 @@ export async function compactActoviqSession(
         ...persistedState,
         microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
       });
+      const latestBoundary = getLatestPersistedCompactBoundary(cloned);
       appendPersistedCompactHistory(cloned, {
         kind: 'microcompact',
         timestamp: nowIso(),
         trigger: options.trigger,
+        logicalParentUuid: latestBoundary?.uuid,
         metadata: {
           trigger: options.trigger,
           preTokens: tokenEstimateBefore,
@@ -500,6 +523,8 @@ export async function compactActoviqSession(
 
   const nextMessages = [buildPostCompactSummaryMessage(summary, options.trigger), ...messagesToKeep];
   const nextSession = structuredClone(session);
+  const latestBoundary = getLatestPersistedCompactBoundary(nextSession);
+  const continuationDepth = getPersistedCompactContinuationDepth(nextSession) + 1;
   nextSession.messages = nextMessages;
   nextSession.updatedAt = compactedAt;
   nextSession.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
@@ -518,6 +543,7 @@ export async function compactActoviqSession(
     kind: 'compact',
     timestamp: compactedAt,
     trigger: options.trigger,
+    logicalParentUuid: latestBoundary?.uuid,
     metadata: {
       trigger: options.trigger,
       preTokens: tokenEstimateBefore,
@@ -525,6 +551,7 @@ export async function compactActoviqSession(
       preservedMessages: messagesToKeep.length,
       droppedMessages,
       retryCount,
+      continuationDepth,
       userContext: summary,
     },
   });
