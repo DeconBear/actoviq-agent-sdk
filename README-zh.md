@@ -6,9 +6,9 @@
 
 [English](./README.md) | [中文](./README-zh.md)
 
-Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，支持 clean SDK 路线、MCP 集成、memory / compact helper，以及可选的 runtime bridge 路线。
+Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 clean SDK 作为公开主路径，同时保留可选的兼容 bridge 路线。
 
-当前仓库仍在持续开发中，API 和运行时行为后续可能继续调整。欢迎提交 Issue 和 PR。
+项目仍在持续开发中，API 和运行行为后续还会继续打磨。非常欢迎提交 Issue 和 PR。
 
 ## 安装
 
@@ -22,7 +22,7 @@ npm install actoviq-agent-sdk zod
 ~/.actoviq/settings.json
 ```
 
-如果你想用自己的 JSON 配置文件，也可以先调用 `loadJsonConfigFile(...)`。
+如果你希望使用自定义 JSON 配置文件，也可以先调用 `loadJsonConfigFile(...)`。
 
 ## 快速启动
 
@@ -46,6 +46,7 @@ try {
 ```bash
 npm run example:quickstart
 npm run example:actoviq-interactive-agent
+npm run example:actoviq-agent-helpers
 ```
 
 ## 教程入口
@@ -53,17 +54,20 @@ npm run example:actoviq-interactive-agent
 - English tutorial: [docs/en/README.md](./docs/en/README.md)
 - 中文教程: [docs/zh/README.md](./docs/zh/README.md)
 
-如果你想直接运行一个带流式输出和工具调用的终端聊天程序，先看：
+如果你想直接运行一个带流式输出和工具调用的终端聊天程序，优先看：
 
 - [examples/actoviq-interactive-agent.ts](./examples/actoviq-interactive-agent.ts)
 
-如果你想先走 clean SDK 路线，推荐从这里开始：
+如果你想先按 clean SDK 主路径上手，推荐从这里开始：
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
 - [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
+- [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+
+bridge 相关文档现在主要作为兼容和运行时接入说明。新的业务接入建议优先使用 clean SDK。
 
 ## 欢迎贡献
 
-欢迎贡献代码、文档和示例。如果你发现问题、教程缺口或能力对齐问题，都欢迎开 Issue 或直接发 PR。
+欢迎贡献代码、文档和示例。如果你发现问题、教程缺口或者能力对齐问题，都欢迎提 Issue 或直接发 PR。
 
 项目采用 [MIT License](./LICENSE)。

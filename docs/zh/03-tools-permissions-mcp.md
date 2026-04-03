@@ -1,123 +1,57 @@
 # 03. 工具、权限、Skills 与 MCP
 
-这一章是 SDK 真正开始“像一个 agent 一样工作”的关键。
+这一章开始，clean SDK 会真正像一个可组合的 agent 系统一样工作。
 
-## 1. 先理解：工具和 skills 不是一回事
+## 1. 先理解：工具和 skill 不是一回事
 
-- **工具**负责直接做事，比如读文件、写文件、搜索、打开网页、截图、委派任务。
-- **Skill** 更像预设工作方式，比如系统化调试、做 release 检查、把任务交给 reviewer agent。
+- **工具**负责直接做事，比如读文件、写文件、搜索、截图、委派任务。
+- **Skill** 更像一套预设工作方式，比如系统化调试、验证结果、做 release 检查。
 
-## 2. clean SDK 当前有哪些工具可以用？
+## 2. clean SDK 当前有哪些工具来源
 
-clean SDK 现在可以组合多种工具来源。
+clean SDK 可以把多种工具面组合到一起：
 
-### 自定义本地工具
+1. 通过 `tool(...)` 定义的本地自定义工具
+2. `createActoviqFileTools(...)` 生成的文件工具
+3. `createActoviqComputerUseToolkit(...)` 生成的 computer-use 工具
+4. 注册 named agents 后自动可用的 `Task` 委派工具
+5. 通过 MCP 挂进来的工具
 
-```ts
-import { z } from 'zod';
-import { tool } from 'actoviq-agent-sdk';
+## 3. 如何查看 clean SDK 当前工具面
 
-const addNumbers = tool(
-  {
-    name: 'add_numbers',
-    description: 'Add two numbers.',
-    inputSchema: z.object({
-      a: z.number(),
-      b: z.number(),
-    }),
-  },
-  async ({ a, b }) => ({ sum: a + b }),
-);
-```
-
-### 文件工具
+现在 clean SDK 已经提供了工具目录 API：
 
 ```ts
-import { createActoviqFileTools } from 'actoviq-agent-sdk';
+const tools = await sdk.tools.listMetadata();
+const catalog = await sdk.tools.getCatalog();
 
-const tools = createActoviqFileTools({ cwd: process.cwd() });
+console.log(tools);
+console.log(catalog.byCategory.file);
+console.log(catalog.byCategory.computer);
 ```
 
-当前文件工具：
+每个工具元数据会包含：
 
-1. `Read`
-2. `Write`
-3. `Edit`
-4. `Glob`
-5. `Grep`
+1. `name`
+2. `description`
+3. `provider`
+4. `category`
+5. `server`
+6. `readOnly`
+7. `mutating`
 
-### Computer Use 工具
+仓库示例：
 
-如果你要桌面 / 浏览器风格操作，可以用：
+- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 
-```ts
-import { createActoviqComputerUseToolkit } from 'actoviq-agent-sdk';
-```
+## 4. clean SDK 里的 skills
 
-当前 clean SDK 公开的 Computer Use 工具包括：
-
-1. `computer_open_url`
-2. `computer_type_text`
-3. `computer_keypress`
-4. `computer_read_clipboard`
-5. `computer_write_clipboard`
-6. `computer_take_screenshot`
-7. `computer_run_workflow`
-
-### Task 委派工具
-
-如果你注册了 named agents，clean SDK 可以通过 `Task` 把任务交给另一个 agent。
-
-### MCP 工具
-
-MCP server 可以继续往当前 agent 表面挂更多工具。
-
-## 3. 为什么你会看到“五个工具”和“二十几个工具”两种说法？
-
-因为当前仓库有两条使用路径：
-
-### 路径 A：clean SDK
-
-```ts
-createAgentSdk(...)
-```
-
-这里看到的是 clean SDK 自己组合出来的工具面：
-
-1. 你显式传入的工具
-2. 文件工具
-3. computer-use 工具
-4. Task 工具
-5. MCP 工具
-
-### 路径 B：bridge runtime
-
-```ts
-createActoviqBridgeSdk(...)
-```
-
-这里看到的是 runtime 风格的 built-in tool pool，加上 runtime skills、agents、subagents、MCP 能力，所以数量通常会明显更多。
-
-## 4. clean SDK 里的 skills 现在怎么用？
-
-现在 clean SDK 已经可以直接使用 skills，不需要 bridge。
-
-### 当前 bundled skills
-
-1. `debug`
-2. `simplify`
-3. `batch`
-4. `verify`
-5. `remember`
-6. `stuck`
-7. `loop`
-8. `update-config`
+现在 clean SDK 已经可以直接用 skills，不需要 bridge。
 
 ### 查看当前 skills
 
 ```ts
-const skills = sdk.skills.listMetadata();
-console.log(skills);
+console.log(sdk.skills.listMetadata());
 ```
 
 ### 直接运行一个 skill
@@ -125,26 +59,18 @@ console.log(skills);
 ```ts
 const result = await sdk.runSkill(
   'debug',
-  'Explain how this project should validate a release safely.',
+  '说明下一次发布前应该重点验证哪些内容。',
 );
 console.log(result.text);
-```
-
-### 用 handle 方式反复调用
-
-```ts
-const debugSkill = sdk.skills.use('debug');
-console.log(await debugSkill.metadata());
-console.log((await debugSkill.run('Investigate why CI might fail.')).text);
 ```
 
 ### 在 session 中运行 skill
 
 ```ts
-const session = await sdk.createSession({ title: 'Skill Demo' });
+const session = await sdk.createSession({ title: 'Skill demo' });
 const result = await session.runSkill(
   'remember',
-  'Remember that releases should wait for CI and npm pack --dry-run.',
+  '记住：发布前必须等待 CI 和 npm pack --dry-run 通过。',
 );
 console.log(result.text);
 ```
@@ -152,86 +78,48 @@ console.log(result.text);
 ### 注册自定义 skill
 
 ```ts
-import { skill } from 'actoviq-agent-sdk';
-
 const sdk = await createAgentSdk({
   skills: [
     skill({
       name: 'release-check',
-      description: 'Review release readiness and summarize blockers.',
+      description: '检查发布准备情况并总结阻塞项。',
       prompt: 'You are executing the /release-check skill.\\n\\nTask:\\n$ARGUMENTS',
     }),
   ],
 });
 ```
 
-### fork skill：把 skill 委派给另一个 named agent
+## 5. clean SDK 的“命令式 helper”替代
+
+现在 clean SDK 也有不依赖 bridge 的命令式 helper：
 
 ```ts
-const sdk = await createAgentSdk({
-  agents: [
-    {
-      name: 'reviewer',
-      description: 'Review work and report the sharpest findings first.',
-    },
-  ],
-  skills: [
-    skill({
-      name: 'review-with-reviewer',
-      description: 'Fork work to the reviewer agent.',
-      context: 'fork',
-      agent: 'reviewer',
-      prompt: 'You are executing the /review-with-reviewer skill.\\n\\nTask:\\n$ARGUMENTS',
-    }),
-  ],
-});
+console.log(sdk.slashCommands.listMetadata());
+
+const contextResult = await sdk.slashCommands.run('context');
+const toolsResult = await sdk.slashCommands.run('tools');
 ```
 
-### skills 可以从哪些目录自动加载？
+当前可用的 clean 替代命令：
 
-clean SDK 当前会自动扫描：
+1. `context`
+2. `compact`
+3. `memory`
+4. `tools`
+5. `skills`
+6. `agents`
 
-1. `~/.actoviq/skills`
-2. `<workDir>/.actoviq/skills`
-3. `<workDir>/.actoviq/commands`
+这些命令背后对应的是 typed API：
 
-你也可以补充：
+1. `sdk.context.overview(...)`
+2. `sdk.context.describe(...)`
+3. `sdk.context.compact(sessionId, ...)`
+4. `sdk.context.memoryState(...)`
+5. `sdk.context.tools(...)`
+6. `sdk.context.skills()`
+7. `sdk.context.agents()`
 
-```ts
-const sdk = await createAgentSdk({
-  skillDirectories: ['E:/my-skills'],
-});
-```
-
-## 5. bridge runtime 中的 skills 有什么意义？
-
-bridge 仍然重要，但它的重点变成：
-
-1. 查看 runtime 原生 skills
-2. 复用 runtime 原生 skill 行为
-3. 做 runtime parity 或 introspection
-
-也就是说：
-
-- 业务代码优先 clean skills
-- runtime 对照和兼容优先 bridge skills
-
-## 6. 如何查看 bridge runtime 当前有哪些 tools / skills？
-
-```ts
-const runtime = await sdk.getRuntimeInfo();
-console.log(runtime.tools);
-console.log(runtime.skills);
-```
-
-或者看更结构化的信息：
-
-```ts
-console.log(await sdk.tools.listMetadata());
-console.log(await sdk.skills.listMetadata());
-```
-
-## 7. 权限控制：permissionMode、permissions、classifier、approver
+## 6. 权限、classifier 与 approver
 
 ### `permissionMode`
 
@@ -258,7 +146,7 @@ const sdk = await createAgentSdk({
 const sdk = await createAgentSdk({
   classifier: ({ publicName }) =>
     publicName === 'Write'
-      ? { behavior: 'allow', reason: 'Safe write in the current flow.' }
+      ? { behavior: 'allow', reason: '当前流程下允许这次写入。' }
       : undefined,
 });
 ```
@@ -270,20 +158,18 @@ const sdk = await createAgentSdk({
   permissions: [{ toolName: 'computer_*', behavior: 'ask' }],
   approver: ({ publicName }) =>
     publicName.startsWith('computer_')
-      ? { behavior: 'allow', reason: 'Approved for this run.' }
-      : { behavior: 'deny', reason: 'Not approved.' },
+      ? { behavior: 'allow', reason: '这次运行允许执行。' }
+      : { behavior: 'deny', reason: '未批准。' },
 });
 ```
 
-## 8. MCP 怎么接入？
+## 7. MCP 接入
 
 当前支持：
 
 1. 本地 MCP server
 2. `stdio` MCP server
 3. `streamable_http` MCP server
-
-示例：
 
 ```ts
 import { createAgentSdk, stdioMcpServer } from 'actoviq-agent-sdk';
@@ -299,35 +185,12 @@ const sdk = await createAgentSdk({
 });
 ```
 
-## 9. 仓库示例
-
-```bash
-npm run example:actoviq-file-tools
-npm run example:actoviq-computer-use
-npm run example:actoviq-skills
-npm run example:actoviq-introspection
-```
-
-对应文件：
+仓库示例：
 
 - [examples/actoviq-file-tools.ts](../../examples/actoviq-file-tools.ts)
 - [examples/actoviq-computer-use.ts](../../examples/actoviq-computer-use.ts)
 - [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-- [examples/actoviq-skills.settings.example.json](../../examples/actoviq-skills.settings.example.json)
-- [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
-
-`example:actoviq-skills` 会优先读取：
-
-1. `examples/actoviq-skills.settings.local.json`
-2. `~/.actoviq/settings.json`
-
-如果你想直接跑仓库示例，可以先把：
-
-- `examples/actoviq-skills.settings.example.json`
-
-复制一份为本地忽略文件：
-
-- `examples/actoviq-skills.settings.local.json`
+- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 
 下一章：
 
