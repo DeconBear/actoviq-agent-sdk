@@ -1,6 +1,6 @@
-# 05. Bridge Runtime
+# 05. Bridge Runtime Compatibility
 
-This chapter explains the bridge path and when it is useful.
+This chapter explains the compatibility bridge path and when it is still useful.
 
 ## 1. What bridge means
 
@@ -22,7 +22,7 @@ Bridge is most useful when you want:
 4. runtime introspection
 5. native runtime sessions and event streams
 
-If you just want to build an application with the clean SDK, you do not need bridge first.
+If you are building a new application, prefer the clean SDK first. Treat bridge as compatibility and runtime-integration guidance.
 
 ## 3. Basic bridge example
 
@@ -56,16 +56,12 @@ console.log(runtime.skills);
 console.log(runtime.agents);
 ```
 
-Repository example:
+Repository examples:
 
 - [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
+- [examples/actoviq-bridge-sdk.ts](../../examples/actoviq-bridge-sdk.ts)
 
-## 5. Bridge skill helpers
-
-```ts
-const debugSkill = sdk.useSkill('debug');
-const result = await debugSkill.run('Show a concise debugging checklist.');
-```
+## 5. Bridge helpers
 
 Bridge also supports:
 
@@ -85,18 +81,6 @@ Bridge exports helpers for parsing runtime events:
 3. `extractActoviqBridgeToolResults(...)`
 4. `extractActoviqBridgeTaskInvocations(...)`
 5. `analyzeActoviqBridgeEvents(...)`
-
-## 7. Interactive bridge demo
-
-Repository example:
-
-- [examples/actoviq-interactive-agent.ts](../../examples/actoviq-interactive-agent.ts)
-
-Run it with:
-
-```bash
-npm run example:actoviq-interactive-agent
-```
 
 Next chapter:
 
