@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## v0.1.10 - 2026-04-03
+
+**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.9...v0.1.10
+
 ## v0.1.9 - 2026-04-03
 
 **Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.8...v0.1.9
