@@ -13,6 +13,17 @@ export interface ActoviqComputerUseToolkit {
   mcpServer: LocalMcpServerDefinition;
 }
 
+export const ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS = [
+  'open_url',
+  'focus_window',
+  'type_text',
+  'keypress',
+  'read_clipboard',
+  'write_clipboard',
+  'take_screenshot',
+  'wait',
+] as const;
+
 function ensureWindows(): void {
   if (process.platform !== 'win32') {
     throw new Error('The default computer-use executor currently supports Windows only.');
@@ -157,8 +168,7 @@ export function createActoviqComputerUseTools(
   options: CreateActoviqComputerUseOptions = {},
 ): AgentToolDefinition[] {
   const executor = options.executor ?? createDefaultActoviqComputerUseExecutor();
-
-  return [
+  const tools: AgentToolDefinition[] = [
     tool(
       {
         name: withPrefix(options.prefix, 'open_url'),
@@ -170,6 +180,25 @@ export function createActoviqComputerUseTools(
         return { ok: true, url };
       },
     ),
+  ];
+
+  if (executor.focusWindow) {
+    tools.push(
+      tool(
+        {
+          name: withPrefix(options.prefix, 'focus_window'),
+          description: 'Focus a window by title before continuing the workflow.',
+          inputSchema: z.object({ title: z.string().min(1) }),
+        },
+        async ({ title }) => {
+          await executor.focusWindow?.(title);
+          return { ok: true, title };
+        },
+      ),
+    );
+  }
+
+  tools.push(
     tool(
       {
         name: withPrefix(options.prefix, 'type_text'),
@@ -227,6 +256,19 @@ export function createActoviqComputerUseTools(
     ),
     tool(
       {
+        name: withPrefix(options.prefix, 'wait'),
+        description: 'Wait for a short duration before continuing the workflow.',
+        inputSchema: z.object({
+          durationMs: z.number().int().min(1).max(60_000),
+        }),
+      },
+      async ({ durationMs }) => {
+        await new Promise(resolve => setTimeout(resolve, durationMs));
+        return { ok: true, durationMs };
+      },
+    ),
+    tool(
+      {
         name: withPrefix(options.prefix, 'run_workflow'),
         description:
           'Run a small multi-step computer-use workflow sequentially, combining browser, keyboard, clipboard, screenshot, and wait actions.',
@@ -246,7 +288,9 @@ export function createActoviqComputerUseTools(
         };
       },
     ),
-  ];
+  );
+
+  return tools;
 }
 
 export function createActoviqComputerUseMcpServer(

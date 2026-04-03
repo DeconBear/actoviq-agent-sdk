@@ -73,11 +73,20 @@ import {
   ActoviqBackgroundTasksApi,
 } from './actoviqBackgroundTasks.js';
 import {
+  ActoviqContextApi,
+  ActoviqSlashCommandsApi,
+} from './actoviqSlashCommands.js';
+import {
   compactActoviqSession,
   getPersistedActoviqCompactHistory,
   getPersistedActoviqCompactState,
   isActoviqPromptTooLongError,
 } from './actoviqCompact.js';
+import {
+  ActoviqToolsApi,
+  buildActoviqCleanToolCatalog,
+  resolveActoviqCleanToolMetadata,
+} from './actoviqToolCatalog.js';
 import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
@@ -390,10 +399,13 @@ export class ActoviqAgentClient {
   readonly sessions: AgentSessionsApi;
   readonly agents: ActoviqAgentsApi;
   readonly skills: ActoviqSkillsApi<AgentSession>;
+  readonly tools: ActoviqToolsApi;
   readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
   readonly swarm: ActoviqSwarmApi;
+  readonly context: ActoviqContextApi;
+  readonly slashCommands: ActoviqSlashCommandsApi;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
@@ -449,6 +461,7 @@ export class ActoviqAgentClient {
       streamDefinitionOnSession: (session, skillName, args, options) =>
         this.streamSkillOnSession(session, skillName, args, options),
     });
+    this.tools = new ActoviqToolsApi((options) => this.listToolMetadata(options));
     this.defaultPermissionMode = defaultPermissionMode;
     this.defaultPermissions = defaultPermissions ? [...defaultPermissions] : undefined;
     this.defaultClassifier = defaultClassifier;
@@ -461,6 +474,15 @@ export class ActoviqAgentClient {
       homeDir: this.config.homeDir,
       projectPath: this.config.workDir,
     });
+    this.context = new ActoviqContextApi({
+      getOverview: (options) => this.getContextOverview(options),
+      compactSession: (sessionId, options) => this.compactSessionById(sessionId, options),
+      getMemoryState: (sessionId, options) => this.getMemoryStateForSession(sessionId, options),
+      getToolMetadata: (options) => this.listToolMetadata(options),
+      getSkillMetadata: () => this.listSkillDefinitions(),
+      getAgentMetadata: () => this.listAgentDefinitions(),
+    });
+    this.slashCommands = new ActoviqSlashCommandsApi(this.context);
     this.swarm = new ActoviqSwarmApi(
       {
         createAgentSession: (agent, options) => this.createAgentSession(agent, options),
@@ -478,6 +500,55 @@ export class ActoviqAgentClient {
     ) {
       this.defaultTools.unshift(this.createTaskTool());
     }
+  }
+
+  async listToolMetadata(
+    options?: import('../types.js').ActoviqCleanToolLookupOptions,
+  ): Promise<import('../types.js').ActoviqCleanToolMetadata[]> {
+    return resolveActoviqCleanToolMetadata({
+      mcpManager: this.mcpManager,
+      defaultTools: this.defaultTools,
+      defaultMcpServers: this.defaultMcpServers,
+      lookup: options,
+    });
+  }
+
+  async getToolMetadata(
+    name: string,
+    options?: import('../types.js').ActoviqCleanToolLookupOptions,
+  ): Promise<import('../types.js').ActoviqCleanToolMetadata | undefined> {
+    return (await this.listToolMetadata(options)).find(tool => tool.name === name);
+  }
+
+  async getToolCatalog(
+    options?: import('../types.js').ActoviqCleanToolLookupOptions,
+  ): Promise<import('../types.js').ActoviqCleanToolCatalog> {
+    return buildActoviqCleanToolCatalog(await this.listToolMetadata(options));
+  }
+
+  async getContextOverview(
+    options: import('../types.js').ActoviqCleanContextOverviewOptions = {},
+  ): Promise<import('../types.js').ActoviqCleanContextOverview> {
+    const sessionId = options.sessionId;
+    return {
+      sessionId,
+      tools: options.includeTools === false ? [] : await this.listToolMetadata(options.toolLookup),
+      skills: options.includeSkills === false ? [] : this.listSkillDefinitions(),
+      agents: options.includeAgents === false ? [] : this.listAgentDefinitions(),
+      memoryState:
+        options.includeMemory === false
+          ? undefined
+          : await this.getMemoryStateForSession(sessionId),
+      compactState:
+        options.includeCompactState === true && sessionId
+          ? await this.memory.compactState({
+              sessionId,
+              projectPath: this.config.workDir,
+              includeSessionMemory: true,
+              includeBoundaries: true,
+            })
+          : undefined,
+    };
   }
 
   static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
@@ -619,6 +690,25 @@ export class ActoviqAgentClient {
   async resumeSession(sessionId: string): Promise<AgentSession> {
     const stored = await this.store.load(sessionId);
     return this.hydrateSession(stored);
+  }
+
+  async compactSessionById(
+    sessionId: string,
+    options: AgentSessionCompactOptions = {},
+  ): Promise<ActoviqSessionCompactResult> {
+    const session = await this.resumeSession(sessionId);
+    return this.compactSessionForSession(session, options);
+  }
+
+  async getMemoryStateForSession(
+    sessionId?: string,
+    options: Omit<import('../types.js').ActoviqMemoryStateOptions, 'projectPath' | 'sessionId'> = {},
+  ): Promise<import('../types.js').ActoviqMemoryState> {
+    return this.memory.state({
+      ...options,
+      projectPath: this.config.workDir,
+      sessionId,
+    });
   }
 
   async close(): Promise<void> {

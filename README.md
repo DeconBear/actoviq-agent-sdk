@@ -6,7 +6,7 @@
 
 [English](./README.md) | [中文](./README-zh.md)
 
-Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with clean SDK APIs, MCP integration, memory helpers, and an optional runtime bridge path.
+Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, memory helpers, and an optional compatibility bridge path.
 
 This repository is still under active development. APIs and runtime behavior may continue to evolve. Issues and pull requests are very welcome.
 
@@ -46,6 +46,7 @@ Run the repository examples with:
 ```bash
 npm run example:quickstart
 npm run example:actoviq-interactive-agent
+npm run example:actoviq-agent-helpers
 ```
 
 ## Tutorials
@@ -61,6 +62,9 @@ If you want the clean SDK path first, start with:
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
 - [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
+- [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+
+Bridge documentation is kept as compatibility guidance. New application work should prefer the clean SDK path first.
 
 ## Contributing
 

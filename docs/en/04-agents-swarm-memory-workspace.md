@@ -19,7 +19,7 @@ const sdk = await createAgentSdk({
 });
 ```
 
-Then run through that role:
+Run directly through that role:
 
 ```ts
 const result = await sdk.runWithAgent(
@@ -30,9 +30,15 @@ const result = await sdk.runWithAgent(
 
 ## 2. Task delegation
 
-If named agents are registered, the clean SDK can delegate work through `Task` and related helpers. This is useful when a main agent should hand a specialized pass to another role.
+If named agents are registered, the clean SDK can delegate work through `Task` and the agent helpers.
 
-## 3. Background tasks and swarm teammates
+Useful entry points:
+
+1. `sdk.createTaskTool()`
+2. `sdk.runWithAgent(...)`
+3. `sdk.createAgentSession(...)`
+
+## 3. Swarm teammates and side sessions
 
 Use swarm helpers when you want a leader plus teammate pattern:
 
@@ -44,13 +50,27 @@ const team = sdk.swarm.createTeam({
 });
 ```
 
-Then:
+Useful operations:
 
 1. `spawn(...)`
 2. `message(...)`
 3. `continueFromMailbox(...)`
-4. `runBackground(...)`
-5. `waitForIdle()`
+4. `reenter(...)`
+5. `runBackground(...)`
+6. `transcript(...)`
+7. `waitForIdle()`
+
+You can now also apply team-level runtime context:
+
+```ts
+team.setRuntimeContext({
+  permissions: [{ toolName: 'write_note', behavior: 'ask' }],
+  approver: ({ publicName }) =>
+    publicName === 'write_note'
+      ? { behavior: 'allow', reason: 'Approved for teammate work.' }
+      : { behavior: 'deny', reason: 'Unexpected tool.' },
+});
+```
 
 Repository example:
 
@@ -65,8 +85,6 @@ Available helpers:
 1. `createWorkspace(...)`
 2. `createTempWorkspace(...)`
 3. `createGitWorktreeWorkspace(...)`
-
-Example:
 
 ```ts
 const workspace = await createTempWorkspace({
