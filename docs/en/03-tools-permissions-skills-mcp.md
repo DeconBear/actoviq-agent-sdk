@@ -89,7 +89,37 @@ const sdk = await createAgentSdk({
 });
 ```
 
-## 5. Clean slash-command replacements
+## 5. Clean dream support
+
+The clean SDK now has a first-class dream API for durable memory consolidation:
+
+```ts
+const state = await sdk.dreamState();
+console.log(state);
+
+const session = await sdk.createSession({ title: 'Dream demo' });
+const dreamResult = await session.dream({
+  extraContext: 'Consolidate stable release notes and workflow constraints.',
+});
+
+console.log(dreamResult.result?.text);
+```
+
+Auto-dream:
+
+```ts
+await sdk.memory.updateSettings({ autoDreamEnabled: true });
+await sdk.maybeAutoDream({
+  currentSessionId: session.id,
+  background: true,
+});
+```
+
+Repository example:
+
+- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+
+## 6. Clean slash-command replacements
 
 The clean SDK now exposes command-style helpers without bridge mode:
 
@@ -105,9 +135,10 @@ Available clean replacements:
 1. `context`
 2. `compact`
 3. `memory`
-4. `tools`
-5. `skills`
-6. `agents`
+4. `dream`
+5. `tools`
+6. `skills`
+7. `agents`
 
 These are backed by typed APIs:
 
@@ -115,11 +146,12 @@ These are backed by typed APIs:
 2. `sdk.context.describe(...)`
 3. `sdk.context.compact(sessionId, ...)`
 4. `sdk.context.memoryState(...)`
-5. `sdk.context.tools(...)`
-6. `sdk.context.skills()`
-7. `sdk.context.agents()`
+5. `sdk.dream.run(...)`
+6. `sdk.context.tools(...)`
+7. `sdk.context.skills()`
+8. `sdk.context.agents()`
 
-## 6. Permissions, classifier, and approver
+## 7. Permissions, classifier, and approver
 
 ### Permission mode
 
@@ -163,7 +195,7 @@ const sdk = await createAgentSdk({
 });
 ```
 
-## 7. MCP
+## 8. MCP
 
 The SDK supports:
 
@@ -189,6 +221,7 @@ Repository examples:
 
 - [examples/actoviq-file-tools.ts](../../examples/actoviq-file-tools.ts)
 - [examples/actoviq-computer-use.ts](../../examples/actoviq-computer-use.ts)
+- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
 - [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
 - [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 

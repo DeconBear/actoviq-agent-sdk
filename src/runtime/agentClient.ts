@@ -1,4 +1,6 @@
-﻿import type { MessageParam } from '../provider/types.js';
+﻿import path from 'node:path';
+
+import type { MessageParam } from '../provider/types.js';
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
 import {
@@ -13,6 +15,14 @@ import {
   resolveActoviqSessionStartHooks,
 } from '../hooks/actoviqHooks.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
+import {
+  createActoviqDreamApi,
+  ensureActoviqDreamLayout,
+  isActoviqDreamEligibleSession,
+  rollbackActoviqConsolidationLock,
+  type ActoviqDreamApi,
+  type PreparedActoviqDreamExecution,
+} from '../memory/actoviqDream.js';
 import {
   ACTOVIQ_SESSION_MEMORY_STATE_KEY,
   evaluateActoviqSessionMemoryProgress,
@@ -32,6 +42,8 @@ import type {
   ActoviqBackgroundTaskRecord,
   ActoviqAgentContinuityState,
   ActoviqCompactStateOptions,
+  ActoviqDreamRunResult,
+  ActoviqDreamState,
   ActoviqDelegatedAgentRecord,
   ActoviqHooks,
   ActoviqSessionCompactResult,
@@ -57,6 +69,7 @@ import type {
   StoredSession,
 } from '../types.js';
 import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
+import { createActoviqFileTools } from '../parity/actoviqFileTools.js';
 import {
   ActoviqAgentsApi,
   createActoviqTaskTool,
@@ -91,7 +104,7 @@ import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
-import { asError, createId, deepClone, nowIso, truncateText } from './helpers.js';
+import { asError, createId, deepClone, isRecord, nowIso, truncateText } from './helpers.js';
 import {
   buildInvokedSkillMessages,
   buildRelevantMemoryMessages,
@@ -104,6 +117,7 @@ const AGENT_CONTINUITY_STATE_KEY = '__actoviqAgentContinuityState';
 const INVOKED_SKILLS_STATE_KEY = '__actoviqInvokedSkills';
 const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
 const DEFAULT_SESSION_MEMORY_MAX_TOKENS = 4_096;
+const DEFAULT_DREAM_MAX_TOKENS = 4_096;
 const MAX_REACTIVE_COMPACT_ATTEMPTS = 3;
 const SESSION_MEMORY_SYSTEM_PROMPT = `You maintain the persistent session-memory markdown file for an ongoing engineering conversation.
 
@@ -403,6 +417,7 @@ export class ActoviqAgentClient {
   readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
+  readonly dream: ActoviqDreamApi;
   readonly swarm: ActoviqSwarmApi;
   readonly context: ActoviqContextApi;
   readonly slashCommands: ActoviqSlashCommandsApi;
@@ -474,10 +489,34 @@ export class ActoviqAgentClient {
       homeDir: this.config.homeDir,
       projectPath: this.config.workDir,
     });
+    this.dream = createActoviqDreamApi(
+      this.memory,
+      {
+        listSessions: async () => {
+          const summaries = await this.store.list();
+          const sessions = await Promise.all(
+            summaries.map(summary =>
+              this.store.load(summary.id).catch(() => undefined),
+            ),
+          );
+          return sessions.filter((session): session is StoredSession => Boolean(session));
+        },
+        runExecution: (request) => this.runDreamExecution(request),
+        launchBackgroundExecution: (request) => this.launchBackgroundDreamTask(request),
+      },
+      {
+        projectPath: this.config.workDir,
+        sessionDirectory: this.config.sessionDirectory,
+      },
+    );
     this.context = new ActoviqContextApi({
       getOverview: (options) => this.getContextOverview(options),
       compactSession: (sessionId, options) => this.compactSessionById(sessionId, options),
       getMemoryState: (sessionId, options) => this.getMemoryStateForSession(sessionId, options),
+      runDream: (sessionId, options) => this.runDream({
+        ...options,
+        currentSessionId: sessionId ?? options?.currentSessionId,
+      }),
       getToolMetadata: (options) => this.listToolMetadata(options),
       getSkillMetadata: () => this.listSkillDefinitions(),
       getAgentMetadata: () => this.listAgentDefinitions(),
@@ -681,7 +720,10 @@ export class ActoviqAgentClient {
       systemPrompt: options.systemPrompt ?? this.config.systemPrompt,
       model: options.model ?? this.config.model,
       tags: options.tags,
-      metadata: options.metadata,
+      metadata: {
+        __actoviqWorkDir: this.config.workDir,
+        ...(options.metadata ?? {}),
+      },
       initialMessages: options.initialMessages,
     });
     return this.hydrateSession(stored);
@@ -709,6 +751,20 @@ export class ActoviqAgentClient {
       projectPath: this.config.workDir,
       sessionId,
     });
+  }
+
+  async dreamState(currentSessionId?: string): Promise<ActoviqDreamState> {
+    return this.dream.state({ currentSessionId });
+  }
+
+  async runDream(options: import('../types.js').ActoviqDreamRunOptions = {}): Promise<ActoviqDreamRunResult> {
+    return this.dream.run(options);
+  }
+
+  async maybeAutoDream(
+    options: import('../types.js').ActoviqDreamRunOptions = {},
+  ): Promise<ActoviqDreamRunResult> {
+    return this.dream.maybeAutoDream(options);
   }
 
   async close(): Promise<void> {
@@ -1029,6 +1085,15 @@ export class ActoviqAgentClient {
         streamSkillOnSession: (session, skillName, args, options) =>
           this.streamSkillOnSession(session, skillName, args, options),
         extractSessionMemory: (session, options) => this.extractSessionMemoryForSession(session, options),
+        runDream: (session, options) => this.runDream({
+          ...options,
+          currentSessionId: session.id,
+        }),
+        maybeAutoDream: (session, options) => this.maybeAutoDream({
+          ...options,
+          currentSessionId: session.id,
+        }),
+        getDreamState: (session) => this.dream.state({ currentSessionId: session.id }),
         compactSession: (session, options) => this.compactSessionForSession(session, options),
         getCompactState: (session, options) => this.getCompactStateForSession(session, options),
         getAgentContinuity: (session) => this.getAgentContinuityForSession(session),
@@ -1784,6 +1849,88 @@ export class ActoviqAgentClient {
     return result;
   }
 
+  private async runDreamExecution(
+    request: PreparedActoviqDreamExecution,
+  ): Promise<ActoviqDreamRunResult> {
+    await ensureActoviqDreamLayout(request.paths);
+
+    try {
+      const result = await executeConversation({
+        runId: createId(),
+        input: request.prompt,
+        sessionId: request.currentSessionId,
+        systemPrompt: await this.buildDreamSystemPrompt(),
+        tools: createActoviqFileTools({ cwd: this.config.workDir }),
+        mcpServers: [],
+        model: request.model ?? this.config.model,
+        maxTokens: request.maxTokens ?? DEFAULT_DREAM_MAX_TOKENS,
+        userId: this.config.userId,
+        metadata: {
+          ...this.config.metadata,
+          actoviq_internal_task: 'dream',
+          actoviq_internal_trigger: request.trigger,
+        },
+        signal: request.signal,
+        permissionMode: 'acceptEdits',
+        classifier: createActoviqDreamClassifier(request.paths),
+        streaming: false,
+        modelApi: this.modelApi,
+        config: this.config,
+        mcpManager: this.mcpManager,
+      });
+
+      return {
+        success: true,
+        skipped: false,
+        trigger: request.trigger,
+        state: request.state,
+        touchedSessions: [...request.touchedSessions],
+        touchedFiles: extractActoviqDreamTouchedFiles(result),
+        result,
+      };
+    } catch (error) {
+      await rollbackActoviqConsolidationLock(request.paths, request.priorMtime);
+      throw error;
+    }
+  }
+
+  private async launchBackgroundDreamTask(
+    request: PreparedActoviqDreamExecution,
+  ): Promise<ActoviqBackgroundTaskRecord> {
+    return this.backgroundTaskManager.launch({
+      subagentType: 'dream',
+      description: 'Dream: Memory Consolidation',
+      workDir: this.config.workDir,
+      parentSessionId: request.currentSessionId,
+      onRun: async (signal) => {
+        const result = await this.runDreamExecution({
+          ...request,
+          signal,
+        });
+        if (!result.result) {
+          throw new Error(result.reason ?? 'Dream execution did not produce a run result.');
+        }
+        return {
+          runId: result.result.runId,
+          sessionId: result.result.sessionId,
+          model: result.result.model,
+          text: result.result.text,
+          toolCallCount: result.result.toolCalls.length,
+        };
+      },
+    });
+  }
+
+  private async buildDreamSystemPrompt(): Promise<string | undefined> {
+    const memoryPrompt = await this.memory.buildPromptWithEntrypoints({
+      projectPath: this.config.workDir,
+    });
+    const parts = [this.config.systemPrompt, memoryPrompt].filter(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
+    return parts.length > 0 ? parts.join('\n\n') : undefined;
+  }
+
   private buildSessionMemorySystemPrompt(systemPrompt?: string): string {
     return [SESSION_MEMORY_SYSTEM_PROMPT, systemPrompt]
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -1995,6 +2142,7 @@ export class ActoviqAgentClient {
     next.lastRunAt = result.completedAt;
     next.metadata = {
       ...next.metadata,
+      __actoviqWorkDir: this.config.workDir,
       ...(options.metadata ?? {}),
       ...(hookOutcome.sessionMetadata ?? {}),
     };
@@ -2095,6 +2243,18 @@ export class ActoviqAgentClient {
     if (compacted.session !== next) {
       await this.store.save(compacted.session);
       session.replace(compacted.session);
+    }
+
+    if (isActoviqDreamEligibleSession(next)) {
+      try {
+        await this.dream.maybeAutoDream({
+          currentSessionId: session.id,
+          background: true,
+          signal: options.signal,
+        });
+      } catch {
+        // Keep auto-dream best-effort so the foreground run still completes.
+      }
     }
   }
 
@@ -2208,5 +2368,103 @@ function mergeUniqueByName<T extends { name: string }>(defaults: T[], overrides:
   }
   return [...merged.values()];
 }
+
+function createActoviqDreamClassifier(paths: {
+  memoryDir: string;
+  teamMemoryDir: string;
+  transcriptDir: string;
+}): ActoviqToolClassifier {
+  const readRoots = [paths.memoryDir, paths.teamMemoryDir, paths.transcriptDir].map(normalizePathForCompare);
+  const writeRoots = [paths.memoryDir, paths.teamMemoryDir].map(normalizePathForCompare);
+
+  return ({ publicName, input }) => {
+    const targetPath = extractActoviqDreamTargetPath(publicName, input);
+    if (!targetPath) {
+      return {
+        behavior: 'deny',
+        reason: `Dream requires an explicit absolute path for ${publicName}.`,
+      };
+    }
+
+    const normalizedTarget = normalizePathForCompare(targetPath);
+    switch (publicName) {
+      case 'Read':
+      case 'Glob':
+      case 'Grep':
+        return isWithinAllowedRoots(normalizedTarget, readRoots)
+          ? {
+              behavior: 'allow',
+              reason: `Dream may inspect files under approved memory and session roots.`,
+            }
+          : {
+              behavior: 'deny',
+              reason: `Dream only reads from approved memory or session roots: ${targetPath}`,
+            };
+      case 'Write':
+      case 'Edit':
+        return isWithinAllowedRoots(normalizedTarget, writeRoots)
+          ? {
+              behavior: 'allow',
+              reason: `Dream may update durable memory files under approved memory roots.`,
+            }
+          : {
+              behavior: 'deny',
+              reason: `Dream only writes inside approved memory roots: ${targetPath}`,
+            };
+      default:
+        return {
+          behavior: 'deny',
+          reason: `Dream only allows Read, Write, Edit, Glob, and Grep.`,
+        };
+    }
+  };
+}
+
+function extractActoviqDreamTargetPath(publicName: string, input: unknown): string | undefined {
+  if (!isRecord(input)) {
+    return undefined;
+  }
+
+  switch (publicName) {
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+      return typeof input.file_path === 'string' ? input.file_path : undefined;
+    case 'Glob':
+    case 'Grep':
+      return typeof input.path === 'string' ? input.path : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function extractActoviqDreamTouchedFiles(result: AgentRunResult): string[] {
+  const touched = new Set<string>();
+  for (const call of result.toolCalls) {
+    if (call.publicName !== 'Write' && call.publicName !== 'Edit') {
+      continue;
+    }
+
+    if (isRecord(call.input) && typeof call.input.file_path === 'string') {
+      touched.add(call.input.file_path);
+      continue;
+    }
+
+    if (isRecord(call.output) && typeof call.output.filePath === 'string') {
+      touched.add(call.output.filePath);
+    }
+  }
+  return [...touched];
+}
+
+function normalizePathForCompare(value: string): string {
+  const normalized = path.resolve(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isWithinAllowedRoots(target: string, roots: readonly string[]): boolean {
+  return roots.some((root) => target === root || target.startsWith(`${root}${path.sep}`));
+}
+
 
 
