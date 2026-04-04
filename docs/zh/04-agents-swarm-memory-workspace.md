@@ -1,17 +1,17 @@
 # 04. Agents、Swarm、Memory 与 Workspace
 
-这一章介绍 clean SDK 里更高层的工作流能力，也就是“让 agent 更像一个长期协作系统”的那部分。
+这一章讲的是 clean SDK 里更高层的能力：不只是单轮对话，而是把 agent 组织成可以长期协作、持续运行、保留记忆的系统。
 
-## 1. named agents
+## 1. Named agents
 
-你可以先注册可复用的角色：
+如果你希望某些能力可以反复复用，先把它定义成命名 agent：
 
 ```ts
 const sdk = await createAgentSdk({
   agents: [
     {
       name: 'reviewer',
-      description: '优先报告最尖锐问题的 reviewer',
+      description: '优先报告 bug、回归和验证缺口。',
       systemPrompt:
         'You are a careful reviewer. Prioritize bugs, regressions, and missing verification.',
     },
@@ -19,7 +19,7 @@ const sdk = await createAgentSdk({
 });
 ```
 
-然后直接通过这个角色运行：
+之后就可以直接按角色运行：
 
 ```ts
 const result = await sdk.runWithAgent(
@@ -30,7 +30,7 @@ const result = await sdk.runWithAgent(
 
 ## 2. Task 委派
 
-如果你注册了 named agents，clean SDK 就能通过 `Task` 把子任务委派给另一个 agent。
+定义了 named agents 之后，就可以把子任务委派给特定 agent。
 
 常用入口：
 
@@ -38,15 +38,15 @@ const result = await sdk.runWithAgent(
 2. `sdk.runWithAgent(...)`
 3. `sdk.createAgentSession(...)`
 
-这适合做：
+这很适合做：
 
 1. reviewer 子流程
 2. release-check 子流程
-3. 某个专门 agent 的后台调查任务
+3. 某个专门 agent 的后台分析任务
 
-## 3. Swarm、teammate 和 side session
+## 3. Swarm、Teammate 与 Side Session
 
-如果你想做 leader + teammate 模式，可以用 swarm：
+如果你想做 leader + teammate 的协作模式，可以使用 swarm：
 
 ```ts
 const team = sdk.swarm.createTeam({
@@ -56,7 +56,7 @@ const team = sdk.swarm.createTeam({
 });
 ```
 
-常用操作：
+常见操作：
 
 1. `spawn(...)`
 2. `message(...)`
@@ -66,14 +66,14 @@ const team = sdk.swarm.createTeam({
 6. `transcript(...)`
 7. `waitForIdle()`
 
-你还可以给整个 team 设置运行时权限：
+你还可以给整个 team 设置统一的权限和审批语义：
 
 ```ts
 team.setRuntimeContext({
   permissions: [{ toolName: 'write_note', behavior: 'ask' }],
   approver: ({ publicName }) =>
     publicName === 'write_note'
-      ? { behavior: 'allow', reason: '允许 teammate 写说明。' }
+      ? { behavior: 'allow', reason: '允许 teammate 写说明文档。' }
       : { behavior: 'deny', reason: '未预期的工具。' },
 });
 ```
@@ -84,7 +84,7 @@ team.setRuntimeContext({
 
 ## 4. Workspace 管理
 
-如果你想让 agent 在独立目录里工作，可以先准备 workspace，再启动 SDK：
+如果你不希望 agent 直接在当前目录工作，可以先创建独立 workspace，再把它传给 SDK。
 
 可用 helper：
 
@@ -103,13 +103,38 @@ const sdk = await createAgentSdk({
 });
 ```
 
-## 5. Memory、session-memory 和 relevant memories
+## 5. Buddy
+
+Buddy 不是单独的导航页，而是 clean SDK 里的一种“陪伴式上下文能力”。它适合给 agent 注入固定风格、提示语气和持续性的 companion context。
+
+常用入口：
+
+1. `sdk.buddy.get()`
+2. `sdk.buddy.hatch(...)`
+3. `sdk.buddy.mute() / unmute()`
+4. `sdk.buddy.pet()`
+5. `sdk.buddy.getPromptContext()`
+
+一个最小例子：
+
+```ts
+await sdk.buddy.hatch({
+  name: 'Luna',
+  persona: 'A calm engineering companion.',
+});
+
+console.log(await sdk.buddy.state());
+```
+
+Buddy 的内容会通过 prompt context 进入 clean SDK 主链，所以它更像“长期陪伴配置”，而不是一次性工具。
+
+## 6. Memory、Session-Memory 与 Relevant Memories
 
 clean SDK 当前已经提供：
 
 1. relevant memories 选择
 2. session-memory prompt / summary helper
-3. compact-state 检查
+3. compact state 检查
 4. 会话足够长时自动提取 session-memory
 
 主入口：
@@ -134,9 +159,9 @@ const state = await session.compactState({
 - [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
 - [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
 
-## 6. Dream：长期记忆整合
+## 7. Dream：长期记忆整理
 
-Dream 可以理解成一次“对最近若干会话的记忆整理”。
+Dream 可以理解成一次“对最近若干会话做记忆整理和巩固”的 clean SDK 过程。它不会单独占据教程导航，而是作为 memory 系统的一部分来理解。
 
 ### 查看当前 dream 状态
 
@@ -174,20 +199,20 @@ console.log(autoResult.task?.id);
 
 - [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
 
-## 7. Compact
+## 8. Compact
 
 clean SDK 当前支持：
 
 1. 自动 compact
 2. reactive compact
 3. API-oriented microcompact
-4. compact history 与 continuity metadata 持久化
+4. compact history 和 continuity metadata 持久化
 
-它的核心价值是：
+它最重要的作用是：
 
 1. 长对话时控制上下文长度
-2. 在压缩后尽量保留连续性
-3. 让 session-memory 和 compact 共同工作
+2. 压缩后尽量保持推理连续性
+3. 让 session-memory 和 compact 一起工作
 
 下一章：
 
