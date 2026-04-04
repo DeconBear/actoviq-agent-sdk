@@ -128,7 +128,38 @@ Repository examples:
 - [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
 - [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
 
-## 6. Compact
+## 6. Dream
+
+Dream is the clean SDK's reflective memory-consolidation pass over recent sessions.
+
+```ts
+const state = await sdk.dreamState();
+console.log(state);
+
+const session = await sdk.createSession({ title: 'Dream demo' });
+const result = await session.dream({
+  extraContext: 'Consolidate stable release workflow notes and recurring project facts.',
+});
+
+console.log(result.result?.text);
+console.log(result.touchedFiles);
+```
+
+Auto-dream:
+
+```ts
+await sdk.memory.updateSettings({ autoDreamEnabled: true });
+await sdk.maybeAutoDream({
+  currentSessionId: session.id,
+  background: true,
+});
+```
+
+Repository example:
+
+- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+
+## 7. Compact
 
 The clean SDK supports:
 

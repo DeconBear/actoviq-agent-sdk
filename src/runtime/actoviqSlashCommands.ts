@@ -6,6 +6,7 @@ import type {
   ActoviqCleanSlashCommandName,
   ActoviqCleanToolLookupOptions,
   ActoviqCleanToolMetadata,
+  ActoviqDreamRunResult,
   ActoviqMemoryState,
   ActoviqRunSlashCommandOptions,
   ActoviqRunSlashCommandResult,
@@ -29,6 +30,11 @@ const CLEAN_SLASH_COMMANDS: ActoviqCleanSlashCommandMetadata[] = [
     name: 'memory',
     helper: 'context.memoryState',
     description: 'Inspect project and session memory state through clean SDK helpers.',
+  },
+  {
+    name: 'dream',
+    helper: 'context.dream',
+    description: 'Run the clean dream-memory consolidation flow without bridge mode.',
   },
   {
     name: 'tools',
@@ -57,6 +63,10 @@ interface ActoviqContextBindings {
     sessionId?: string,
     options?: ActoviqRunSlashCommandOptions['memory'],
   ) => Promise<ActoviqMemoryState>;
+  runDream: (
+    sessionId?: string,
+    options?: ActoviqRunSlashCommandOptions['dream'],
+  ) => Promise<ActoviqDreamRunResult>;
   getToolMetadata: (options?: ActoviqCleanToolLookupOptions) => Promise<ActoviqCleanToolMetadata[]>;
   getSkillMetadata: () => ActoviqSkillDefinitionSummary[];
   getAgentMetadata: () => ActoviqAgentDefinitionSummary[];
@@ -85,6 +95,13 @@ export class ActoviqContextApi {
     options: ActoviqRunSlashCommandOptions['memory'] = {},
   ): Promise<ActoviqMemoryState> {
     return this.bindings.getMemoryState(sessionId, options);
+  }
+
+  dream(
+    sessionId?: string,
+    options: ActoviqRunSlashCommandOptions['dream'] = {},
+  ): Promise<ActoviqDreamRunResult> {
+    return this.bindings.runDream(sessionId, options);
   }
 
   tools(options?: ActoviqCleanToolLookupOptions): Promise<ActoviqCleanToolMetadata[]> {
@@ -169,6 +186,18 @@ export class ActoviqSlashCommandsApi {
           text: formatActoviqMemoryState(data),
         };
       }
+      case 'dream': {
+        const data = await this.context.dream(options.sessionId, {
+          ...options.dream,
+          currentSessionId: options.sessionId ?? options.dream?.currentSessionId,
+          extraContext: options.args || options.dream?.extraContext,
+        });
+        return {
+          name: normalized,
+          data,
+          text: formatActoviqDreamResult(data),
+        };
+      }
       case 'tools': {
         const data = await this.context.tools(options.toolLookup);
         return {
@@ -213,7 +242,7 @@ export function formatActoviqContextOverview(
 
   if (overview.memoryState) {
     lines.push(
-      `Memory: autoCompact=${overview.memoryState.enabled.autoCompact ? 'on' : 'off'}, autoMemory=${overview.memoryState.enabled.autoMemory ? 'on' : 'off'}`,
+      `Memory: autoCompact=${overview.memoryState.enabled.autoCompact ? 'on' : 'off'}, autoMemory=${overview.memoryState.enabled.autoMemory ? 'on' : 'off'}, autoDream=${overview.memoryState.enabled.autoDream ? 'on' : 'off'}`,
     );
   }
 
@@ -250,11 +279,28 @@ export function formatActoviqMemoryState(state: ActoviqMemoryState): string {
     `Session memory path: ${state.paths.sessionMemoryPath ?? 'none'}`,
     `Auto compact: ${state.enabled.autoCompact ? 'on' : 'off'}`,
     `Auto memory: ${state.enabled.autoMemory ? 'on' : 'off'}`,
+    `Auto dream: ${state.enabled.autoDream ? 'on' : 'off'}`,
     state.sessionMemory
       ? `Session memory exists: ${state.sessionMemory.exists ? 'yes' : 'no'}`
       : undefined,
   ]
     .filter((value): value is string => typeof value === 'string')
+    .join('\n');
+}
+
+export function formatActoviqDreamResult(result: ActoviqDreamRunResult): string {
+  return [
+    '# Dream Result',
+    '',
+    `Trigger: ${result.trigger}`,
+    `Skipped: ${result.skipped ? 'yes' : 'no'}`,
+    result.reason ? `Reason: ${result.reason}` : undefined,
+    `Touched sessions: ${result.touchedSessions.length}`,
+    `Touched files: ${result.touchedFiles.length}`,
+    result.task ? `Background task: ${result.task.id}` : undefined,
+    result.result?.text ? `Summary: ${result.result.text}` : undefined,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .join('\n');
 }
 
