@@ -3,8 +3,11 @@
 [![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
 [![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
+[![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/actoviq-agent-sdk/)
 
 [English](./README.md) | [Chinese](./README-zh.md)
+
+Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
 Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, memory helpers, and an optional compatibility bridge path.
 
