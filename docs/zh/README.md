@@ -19,6 +19,13 @@
 如果你想完整做一个真正可用的 clean SDK 项目，推荐直接阅读：
 - [07-build-a-complete-clean-agent.md](./07-build-a-complete-clean-agent.md)
 
+如果你特别关心 advanced 能力：
+
+1. `buddy` 和 `dream` 不会单独做成导航页
+2. 它们被放进了更合适的章节中：
+   - `buddy`：见 [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)
+   - `dream`：见 [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md) 和 [03-tools-permissions-mcp.md](./03-tools-permissions-mcp.md)
+
 整个教程里有两条主线：
 - `createAgentSdk()`：clean SDK 主路径，适合绝大多数业务开发和二次封装
 - `createActoviqBridgeSdk()`：兼容路径，适合需要研究或接入现有 runtime 行为的场景

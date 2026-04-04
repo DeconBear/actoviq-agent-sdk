@@ -10,6 +10,7 @@ Recommended reading order:
 4. [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)
 5. [05-bridge-runtime.md](./05-bridge-runtime.md)
 6. [06-testing-troubleshooting-cheatsheet.md](./06-testing-troubleshooting-cheatsheet.md)
+7. [07-build-a-complete-clean-agent.md](./07-build-a-complete-clean-agent.md)
 
 Two execution paths matter throughout this guide:
 
@@ -21,3 +22,12 @@ If you only want to get moving quickly:
 1. Read [01-setup-and-quickstart.md](./01-setup-and-quickstart.md).
 2. Run `npm run example:quickstart`.
 3. Then run `npm run example:actoviq-interactive-agent` for a ready-to-use interactive demo with streaming output and tool calls.
+
+If you want a full clean-SDK project walkthrough, jump to:
+
+- [07-build-a-complete-clean-agent.md](./07-build-a-complete-clean-agent.md)
+
+Advanced notes:
+
+- `buddy` and `dream` are documented inside the existing advanced chapters instead of being split into separate nav pages.
+- See [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md) for both.

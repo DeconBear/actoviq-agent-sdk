@@ -1,6 +1,6 @@
 # 05. Bridge Runtime 兼容说明
 
-这一章解释什么是 bridge，以及什么时候才需要用它。
+这一章解释什么是 bridge，以及什么时候才需要使用它。
 
 ## 1. bridge 是什么
 
@@ -14,14 +14,14 @@ import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
 
 ## 2. 什么情况下才需要 bridge
 
-更适合用 bridge 的场景：
+更适合使用 bridge 的场景：
 
 1. 你要研究现有 runtime 的行为
 2. 你要查看 runtime 当前有哪些 tools / skills / agents
 3. 你要分析 runtime 事件流
-4. 你要做兼容层、迁移层、对照测试
+4. 你要做兼容层、迁移层或对照测试
 
-如果你是在开发一个新业务项目，通常优先使用 clean SDK：
+如果你是在开发一个新的业务项目，通常优先使用 clean SDK：
 
 ```ts
 createAgentSdk()
@@ -50,7 +50,7 @@ console.log(result.text);
 console.log(result.events.length);
 ```
 
-## 4. runtime introspection
+## 4. Runtime Introspection
 
 bridge 可以查看当前 runtime 暴露出来的能力：
 
@@ -67,7 +67,7 @@ console.log(runtime.agents);
 - [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
 - [examples/actoviq-bridge-sdk.ts](../../examples/actoviq-bridge-sdk.ts)
 
-## 5. bridge helper
+## 5. Bridge Helper
 
 bridge 侧还支持：
 
@@ -78,9 +78,9 @@ bridge 侧还支持：
 5. `session.runSkill(...)`
 6. `session.compact(...)`
 
-## 6. bridge 事件 helper
+## 6. Bridge 事件 Helper
 
-如果你要分析 runtime 输出的事件流，可以用：
+如果你要分析 runtime 输出的事件流，可以使用：
 
 1. `getActoviqBridgeTextDelta(...)`
 2. `extractActoviqBridgeToolRequests(...)`

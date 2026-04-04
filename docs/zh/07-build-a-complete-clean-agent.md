@@ -12,7 +12,7 @@
 4. 支持本地工具调用
 5. 支持 clean skills
 6. 支持在代码里指定工作目录
-7. 支持后续继续扩展 MCP、memory、swarm 和 computer-use
+7. 支持后续继续扩展 MCP、memory、buddy、dream、swarm 和 computer-use
 
 ## 一、准备工作
 
@@ -358,7 +358,16 @@ const sdk = await createAgentSdk({
 
 如果你希望复用外部工具生态，可以接 MCP server。
 
-### 方向 4：做成更完整的终端程序
+### 方向 4：接入 buddy 与 dream
+
+如果你希望 agent 更有持续性和“陪伴感”，可以继续补：
+
+1. `sdk.buddy.hatch(...)`
+2. `sdk.buddy.getPromptContext()`
+3. `sdk.dreamState()`
+4. `session.dream(...)`
+
+### 方向 5：做成更完整的终端程序
 
 你可以在当前这个基础上继续加：
 
@@ -368,6 +377,14 @@ const sdk = await createAgentSdk({
 4. `/session`
 5. `/resume`
 6. `/memory`
+
+### 方向 6：接入 swarm 与 workspace
+
+如果你后面要做多代理协作或隔离工作目录，可以再继续接：
+
+1. `sdk.swarm.createTeam(...)`
+2. `createTempWorkspace(...)`
+3. `createGitWorktreeWorkspace(...)`
 
 ## 十一、什么时候才需要 bridge
 

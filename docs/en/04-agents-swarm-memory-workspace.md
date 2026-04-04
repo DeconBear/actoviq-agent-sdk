@@ -128,7 +128,30 @@ Repository examples:
 - [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
 - [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
 
-## 6. Dream
+## 6. Buddy
+
+Buddy is a persistent companion-style context layer. It is not a separate tutorial section in the nav because it works best as part of the wider clean-SDK workflow story.
+
+Useful entry points:
+
+1. `sdk.buddy.get()`
+2. `sdk.buddy.hatch(...)`
+3. `sdk.buddy.mute() / unmute()`
+4. `sdk.buddy.pet()`
+5. `sdk.buddy.getPromptContext()`
+
+Example:
+
+```ts
+await sdk.buddy.hatch({
+  name: 'Luna',
+  persona: 'A calm engineering companion.',
+});
+
+console.log(await sdk.buddy.state());
+```
+
+## 7. Dream
 
 Dream is the clean SDK's reflective memory-consolidation pass over recent sessions.
 
@@ -159,7 +182,7 @@ Repository example:
 
 - [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
 
-## 7. Compact
+## 8. Compact
 
 The clean SDK supports:
 

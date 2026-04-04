@@ -4,7 +4,7 @@
 
 ## 1. 核心验证命令
 
-在发版或提交 PR 之前，建议至少跑：
+在发版或提交 PR 之前，建议至少执行：
 
 ```bash
 npm run typecheck
@@ -13,7 +13,7 @@ npm run build
 npm pack --dry-run
 ```
 
-本地联调时还可以跑：
+本地联调时还可以运行：
 
 ```bash
 npm run smoke
@@ -38,7 +38,7 @@ npm run example:actoviq-interactive-agent
 
 1. `session.id` 是否正确
 2. `sessionDirectory` 是否被改过
-3. 你是不是在另外一个目录或另外一个 homeDir 下创建了 session
+3. 你是不是在另一个目录或另一个 `homeDir` 下创建了 session
 
 ### 找不到工具
 
@@ -54,16 +54,24 @@ npm run example:actoviq-interactive-agent
 
 1. 它是 bundled、custom，还是从磁盘加载的 skill
 2. skill 目录是否在搜索路径中
-3. 你现在跑的是 clean SDK 还是 bridge SDK
+3. 你现在运行的是 clean SDK 还是 bridge SDK
 
 ### dream 没有触发
 
 检查：
 
 1. 是否开启了 `autoDreamEnabled`
-2. 是否已经累计了足够多的近期 session
+2. 是否已经累积了足够多的最近 session
 3. 是否刚刚才做过一次 consolidation
 4. lock 是否还在生效
+
+### buddy 没有生效
+
+检查：
+
+1. 是否已经执行 `sdk.buddy.hatch(...)`
+2. 是否被 `mute()` 掉了
+3. 是否是在新的 SDK 实例里重新运行，导致状态还没初始化
 
 ## 3. 常用示例命令
 
@@ -93,7 +101,8 @@ clean SDK：
 9. `session.compactState(...)`
 10. `sdk.dreamState()`
 11. `session.dream(...)`
-12. `sdk.swarm.createTeam(...)`
+12. `sdk.buddy.hatch(...)`
+13. `sdk.swarm.createTeam(...)`
 
 bridge SDK：
 
