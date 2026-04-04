@@ -4,11 +4,14 @@ import type {
   AgentRunOptions,
   AgentRunResult,
   AgentSessionCompactOptions,
+  AgentSessionDreamOptions,
   AgentSessionMemoryExtractionOptions,
   ActoviqAgentContinuityState,
   ActoviqSessionCompactResult,
   ActoviqCompactStateOptions,
   ActoviqCompactState,
+  ActoviqDreamRunResult,
+  ActoviqDreamState,
   ActoviqHooks,
   ActoviqPermissionMode,
   ActoviqPermissionRule,
@@ -49,6 +52,15 @@ interface AgentSessionBindings {
     session: AgentSession,
     options?: AgentSessionMemoryExtractionOptions,
   ) => Promise<ActoviqSessionMemoryExtractionResult>;
+  runDream: (
+    session: AgentSession,
+    options?: AgentSessionDreamOptions,
+  ) => Promise<ActoviqDreamRunResult>;
+  maybeAutoDream: (
+    session: AgentSession,
+    options?: AgentSessionDreamOptions,
+  ) => Promise<ActoviqDreamRunResult>;
+  getDreamState: (session: AgentSession) => Promise<ActoviqDreamState>;
   compactSession: (
     session: AgentSession,
     options?: AgentSessionCompactOptions,
@@ -142,6 +154,18 @@ export class AgentSession {
     options: AgentSessionMemoryExtractionOptions = {},
   ): Promise<ActoviqSessionMemoryExtractionResult> {
     return this.bindings.extractSessionMemory(this, options);
+  }
+
+  async dream(options: AgentSessionDreamOptions = {}): Promise<ActoviqDreamRunResult> {
+    return this.bindings.runDream(this, options);
+  }
+
+  async maybeAutoDream(options: AgentSessionDreamOptions = {}): Promise<ActoviqDreamRunResult> {
+    return this.bindings.maybeAutoDream(this, options);
+  }
+
+  async dreamState(): Promise<ActoviqDreamState> {
+    return this.bindings.getDreamState(this);
   }
 
   async compact(

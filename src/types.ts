@@ -426,6 +426,7 @@ export type ActoviqCleanSlashCommandName =
   | 'context'
   | 'compact'
   | 'memory'
+  | 'dream'
   | 'tools'
   | 'skills'
   | 'agents';
@@ -436,6 +437,7 @@ export interface ActoviqCleanSlashCommandMetadata {
     | 'context.overview'
     | 'context.compact'
     | 'context.memoryState'
+    | 'context.dream'
     | 'context.tools'
     | 'context.skills'
     | 'context.agents';
@@ -465,6 +467,7 @@ export interface ActoviqRunSlashCommandOptions {
   sessionId?: string;
   args?: string;
   compact?: AgentSessionCompactOptions;
+  dream?: ActoviqDreamRunOptions;
   memory?: Omit<ActoviqMemoryStateOptions, 'projectPath' | 'sessionId'>;
   overview?: ActoviqCleanContextOverviewOptions;
   toolLookup?: ActoviqCleanToolLookupOptions;
@@ -477,6 +480,7 @@ export interface ActoviqRunSlashCommandResult {
     | ActoviqCleanContextOverview
     | ActoviqSessionCompactResult
     | ActoviqMemoryState
+    | ActoviqDreamRunResult
     | ActoviqCleanToolMetadata[]
     | ActoviqSkillDefinitionSummary[]
     | ActoviqAgentDefinitionSummary[];
@@ -660,6 +664,58 @@ export interface AgentRunResult {
   invokedSkills?: ActoviqInvokedSkillRecord[];
   reactiveCompact?: ActoviqSessionCompactResult;
   permissionDecisions?: ActoviqPermissionDecision[];
+}
+
+export interface ActoviqDreamConfig {
+  minHours: number;
+  minSessions: number;
+  scanIntervalMs: number;
+}
+
+export interface ActoviqDreamPaths {
+  memoryDir: string;
+  teamMemoryDir: string;
+  memoryEntrypoint: string;
+  teamMemoryEntrypoint: string;
+  transcriptDir: string;
+  lockPath: string;
+}
+
+export interface ActoviqDreamState {
+  enabled: boolean;
+  autoMemoryEnabled: boolean;
+  config: ActoviqDreamConfig;
+  paths: ActoviqDreamPaths;
+  currentSessionId?: string;
+  lastConsolidatedAtMs: number;
+  lastConsolidatedAt?: string;
+  hoursSinceLastConsolidated: number;
+  sessionsSinceLastConsolidated: string[];
+  lockHeld: boolean;
+  canRun: boolean;
+  blockedReason?: 'disabled' | 'time_gate' | 'session_gate' | 'locked' | 'scan_throttled';
+}
+
+export interface ActoviqDreamRunOptions {
+  force?: boolean;
+  background?: boolean;
+  currentSessionId?: string;
+  extraContext?: string;
+  model?: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
+export interface ActoviqDreamRunResult {
+  success: boolean;
+  skipped: boolean;
+  trigger: 'manual' | 'auto';
+  reason?: string;
+  state: ActoviqDreamState;
+  touchedSessions: string[];
+  touchedFiles: string[];
+  result?: AgentRunResult;
+  task?: ActoviqBackgroundTaskRecord;
 }
 
 export type ActoviqCompactTrigger = 'auto' | 'manual' | 'reactive';
@@ -1304,6 +1360,8 @@ export interface AgentSessionMemoryExtractionOptions {
   maxTokens?: number;
   signal?: AbortSignal;
 }
+
+export interface AgentSessionDreamOptions extends ActoviqDreamRunOptions {}
 
 export interface ActoviqSessionMemoryExtractionResult {
   success: boolean;

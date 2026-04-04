@@ -222,6 +222,7 @@ describe('clean SDK replacement parity', () => {
         'context',
         'compact',
         'memory',
+        'dream',
         'tools',
         'skills',
         'agents',

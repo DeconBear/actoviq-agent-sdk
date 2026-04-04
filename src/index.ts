@@ -29,6 +29,18 @@ export {
   selectActoviqRelevantMemories,
 } from './memory/actoviqMemory.js';
 export {
+  ActoviqDreamApi,
+  buildActoviqDreamPrompt,
+  createActoviqDreamApi,
+  ensureActoviqDreamLayout,
+  isActoviqDreamEligibleSession,
+  listActoviqSessionsTouchedSince,
+  readActoviqLastConsolidatedAt,
+  recordActoviqConsolidation,
+  rollbackActoviqConsolidationLock,
+  tryAcquireActoviqConsolidationLock,
+} from './memory/actoviqDream.js';
+export {
   ACTOVIQ_SESSION_MEMORY_STATE_KEY,
   createDefaultActoviqSessionMemoryRuntimeState,
   estimateActoviqConversationTokens,
@@ -109,6 +121,7 @@ export {
   formatActoviqAgents,
   formatActoviqCompactResult,
   formatActoviqContextOverview,
+  formatActoviqDreamResult,
   formatActoviqMemoryState,
   formatActoviqSkills,
   formatActoviqTools,
