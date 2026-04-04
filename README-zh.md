@@ -53,6 +53,8 @@ npm run example:actoviq-agent-helpers
 
 - English tutorial: [docs/en/README.md](./docs/en/README.md)
 - 中文教程: [docs/zh/README.md](./docs/zh/README.md)
+- GitHub Pages 文档站：
+  - https://deconbear.github.io/actoviq-agent-sdk/
 - 从 0 到 1 搭建完整 clean SDK 项目：
   - [docs/zh/07-build-a-complete-clean-agent.md](./docs/zh/07-build-a-complete-clean-agent.md)
 

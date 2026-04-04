@@ -1,10 +1,10 @@
-# Actoviq Agent SDK
+﻿# Actoviq Agent SDK
 
 [![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
 [![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
 
-[English](./README.md) | [中文](./README-zh.md)
+[English](./README.md) | [Chinese](./README-zh.md)
 
 Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, memory helpers, and an optional compatibility bridge path.
 
@@ -52,7 +52,9 @@ npm run example:actoviq-agent-helpers
 ## Tutorials
 
 - English tutorial: [docs/en/README.md](./docs/en/README.md)
-- 中文教程: [docs/zh/README.md](./docs/zh/README.md)
+- Chinese tutorial: [docs/zh/README.md](./docs/zh/README.md)
+- GitHub Pages docs site:
+  - https://deconbear.github.io/actoviq-agent-sdk/
 
 If you want a ready-to-run terminal chat program with streaming output and tool calls, start with:
 

@@ -36,6 +36,9 @@
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -80,6 +83,7 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3",
+    "vitepress": "^1.6.3",
     "vitest": "^4.0.8"
   }
 }
