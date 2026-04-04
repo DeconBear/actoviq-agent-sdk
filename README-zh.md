@@ -1,4 +1,4 @@
-# Actoviq Agent SDK
+﻿# Actoviq Agent SDK
 
 [![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
 [![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
@@ -6,9 +6,9 @@
 
 [English](./README.md) | [中文](./README-zh.md)
 
-Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 clean SDK 作为公开主路径，同时保留可选的兼容 bridge 路线。
+Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 clean SDK 作为公开主路径，同时保留可选的兼容 bridge 路径。
 
-项目仍在持续开发中，API 和运行行为后续还会继续打磨。非常欢迎提交 Issue 和 PR。
+项目仍在持续开发中，API 和运行行为后续还会继续打磨。欢迎提交 Issue 和 PR。
 
 ## 安装
 
@@ -53,6 +53,8 @@ npm run example:actoviq-agent-helpers
 
 - English tutorial: [docs/en/README.md](./docs/en/README.md)
 - 中文教程: [docs/zh/README.md](./docs/zh/README.md)
+- 从 0 到 1 搭建完整 clean SDK 项目：
+  - [docs/zh/07-build-a-complete-clean-agent.md](./docs/zh/07-build-a-complete-clean-agent.md)
 
 如果你想直接运行一个带流式输出和工具调用的终端聊天程序，优先看：
 
