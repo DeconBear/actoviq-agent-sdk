@@ -1,10 +1,10 @@
-import { defineConfig } from 'vitepress';
+﻿import { defineConfig } from 'vitepress';
 
 const zhSidebar = [
   {
     text: '中文教程',
     items: [
-      { text: '教程首页', link: '/zh/' },
+      { text: '教程首页', link: '/zh/README' },
       { text: '01 安装与快速开始', link: '/zh/01-setup-and-quickstart' },
       { text: '02 基础运行、流式输出与会话', link: '/zh/02-basic-run-stream-session' },
       { text: '03 工具、权限、Skills 与 MCP', link: '/zh/03-tools-permissions-mcp' },
@@ -20,7 +20,7 @@ const enSidebar = [
   {
     text: 'English Guide',
     items: [
-      { text: 'Guide Home', link: '/en/' },
+      { text: 'Guide Home', link: '/en/README' },
       { text: '01 Setup and Quickstart', link: '/en/01-setup-and-quickstart' },
       { text: '02 Run, Stream, and Session Basics', link: '/en/02-basic-run-stream-session' },
       { text: '03 Tools, Permissions, Skills, and MCP', link: '/en/03-tools-permissions-skills-mcp' },
@@ -41,8 +41,8 @@ export default defineConfig({
     logo: '/favicon.svg',
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'English', link: '/en/' },
-      { text: '中文', link: '/zh/' },
+      { text: 'English', link: '/en/README' },
+      { text: '中文', link: '/zh/README' },
       { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
       { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
     ],
@@ -63,8 +63,8 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: 'Home', link: '/' },
-          { text: 'English Guide', link: '/en/' },
-          { text: '中文教程', link: '/zh/' },
+          { text: 'English Guide', link: '/en/README' },
+          { text: '中文教程', link: '/zh/README' },
           { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
           { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
         ],
@@ -76,12 +76,12 @@ export default defineConfig({
     zh: {
       label: '中文',
       lang: 'zh-CN',
-      link: '/zh/',
+      link: '/zh/README',
       themeConfig: {
         nav: [
           { text: '首页', link: '/' },
-          { text: 'English', link: '/en/' },
-          { text: '中文教程', link: '/zh/' },
+          { text: 'English', link: '/en/README' },
+          { text: '中文教程', link: '/zh/README' },
           { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
           { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
         ],
