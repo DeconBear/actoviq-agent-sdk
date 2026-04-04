@@ -11,6 +11,8 @@ Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
 Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, memory helpers, and an optional compatibility bridge path.
 
+This project is inspired by excellent agent projects and runtimes including Claude Code, Codex, Deepagents, and similar work in the ecosystem. Actoviq remains an independent project with its own public SDK surface and documentation.
+
 This repository is still under active development. APIs and runtime behavior may continue to evolve. Issues and pull requests are very welcome.
 
 ## Install

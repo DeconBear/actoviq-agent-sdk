@@ -1,4 +1,4 @@
-﻿import { defineConfig } from 'vitepress';
+import { defineConfig } from 'vitepress';
 
 const zhSidebar = [
   {
@@ -27,6 +27,7 @@ const enSidebar = [
       { text: '04 Agents, Swarm, Memory, and Workspace', link: '/en/04-agents-swarm-memory-workspace' },
       { text: '05 Bridge Runtime', link: '/en/05-bridge-runtime' },
       { text: '06 Testing, Troubleshooting, and Cheatsheet', link: '/en/06-testing-troubleshooting-cheatsheet' },
+      { text: '07 Build a Complete Clean Agent', link: '/en/07-build-a-complete-clean-agent' },
     ],
   },
 ];
