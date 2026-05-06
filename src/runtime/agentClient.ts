@@ -15,6 +15,7 @@ import {
   resolveActoviqSessionStartHooks,
 } from '../hooks/actoviqHooks.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
+import { appendMessagesToTranscript } from '../memory/actoviqTranscriptLogger.js';
 import {
   createActoviqDreamApi,
   ensureActoviqDreamLayout,
@@ -69,7 +70,7 @@ import type {
   StoredSession,
 } from '../types.js';
 import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
-import { createActoviqFileTools } from '../parity/actoviqFileTools.js';
+import { createActoviqFileTools } from '../tools/actoviqFileTools.js';
 import {
   ActoviqAgentsApi,
   createActoviqTaskTool,
@@ -2221,6 +2222,18 @@ export class ActoviqAgentClient {
 
     await this.store.save(next);
     session.replace(next);
+
+    const prevMessageCount = snapshot.messages.length;
+    const newMessages = next.messages.slice(prevMessageCount);
+    if (newMessages.length > 0) {
+      const paths = await this.memory.paths();
+      await appendMessagesToTranscript(
+        paths.projectStateDir,
+        session.id,
+        this.config.workDir,
+        newMessages,
+      );
+    }
 
     const extraction = await this.performSessionMemoryExtraction(next, {
       model: options.model ?? next.model ?? this.config.model,

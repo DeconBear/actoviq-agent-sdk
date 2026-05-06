@@ -6,8 +6,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createActoviqMemoryApi,
-  getActoviqBridgeCompactBoundaries,
-  getActoviqBridgeLatestCompactBoundary,
   getActoviqDefaultSessionMemoryTemplate,
 } from '../src/index.js';
 
@@ -178,7 +176,7 @@ describe('Actoviq memory helpers', () => {
     expect(state.sessionPrompt).toContain('update the session notes file');
   });
 
-  it('parses compact and microcompact boundaries from native transcripts', async () => {
+  it('returns default compact state when no bridge transcripts are available', async () => {
     const tempDir = await createTempDir('actoviq-memory-boundary-');
     process.env.ACTOVIQ_CONFIG_DIR = path.join(tempDir, '.actoviq');
 
@@ -204,54 +202,10 @@ describe('Actoviq memory helpers', () => {
           cwd: projectPath,
           message: { content: 'hello' },
         }),
-        JSON.stringify({
-          type: 'system',
-          subtype: 'compact_boundary',
-          uuid: 'compact-1',
-          parentUuid: 'user-1',
-          logicalParentUuid: 'user-1',
-          timestamp: '2026-04-01T00:01:00.000Z',
-          sessionId,
-          cwd: projectPath,
-          compactMetadata: {
-            trigger: 'manual',
-            preTokens: 12000,
-            messagesSummarized: 14,
-            userContext: 'keep current architecture choices',
-            preservedSegment: {
-              headUuid: 'assistant-keep-1',
-              anchorUuid: 'compact-1',
-              tailUuid: 'assistant-keep-3',
-            },
-          },
-        }),
-        JSON.stringify({
-          type: 'system',
-          subtype: 'microcompact_boundary',
-          uuid: 'micro-1',
-          parentUuid: 'compact-1',
-          logicalParentUuid: 'compact-1',
-          timestamp: '2026-04-01T00:02:00.000Z',
-          sessionId,
-          cwd: projectPath,
-          microcompactMetadata: {
-            trigger: 'auto',
-            preTokens: 18000,
-            tokensSaved: 3200,
-            compactedToolIds: ['tool-1'],
-            clearedAttachmentUUIDs: ['att-1'],
-          },
-        }),
       ].join('\n'),
       'utf8',
     );
 
-    const boundaries = await getActoviqBridgeCompactBoundaries(sessionId, {
-      dir: projectPath,
-    });
-    const latest = await getActoviqBridgeLatestCompactBoundary(sessionId, {
-      dir: projectPath,
-    });
     const compactState = await memory.compactState({
       sessionId,
       includeBoundaries: true,
@@ -259,51 +213,16 @@ describe('Actoviq memory helpers', () => {
       includeSummaryMessage: true,
     });
 
-    expect(boundaries).toHaveLength(2);
-    expect(boundaries[0]).toMatchObject({
-      kind: 'compact',
-      uuid: 'compact-1',
-      metadata: {
-        trigger: 'manual',
-        preTokens: 12000,
-        messagesSummarized: 14,
-        preservedSegment: {
-          headUuid: 'assistant-keep-1',
-          anchorUuid: 'compact-1',
-          tailUuid: 'assistant-keep-3',
-        },
-      },
-    });
-    expect(boundaries[1]).toMatchObject({
-      kind: 'microcompact',
-      uuid: 'micro-1',
-      metadata: {
-        trigger: 'auto',
-        preTokens: 18000,
-        tokensSaved: 3200,
-      },
-    });
-    expect(latest).toMatchObject({
-      kind: 'microcompact',
-      uuid: 'micro-1',
-    });
     expect(compactState).toMatchObject({
-      compactCount: 1,
-      microcompactCount: 1,
-      hasCompacted: true,
-      lastSummarizedMessageUuid: 'user-1',
-      latestPreservedSegment: {
-        headUuid: 'assistant-keep-1',
-        anchorUuid: 'compact-1',
-        tailUuid: 'assistant-keep-3',
-      },
+      compactCount: 0,
+      microcompactCount: 0,
+      hasCompacted: false,
+      lastSummarizedMessageUuid: undefined,
+      latestPreservedSegment: undefined,
       canUseSessionMemoryCompaction: false,
     });
-    expect(compactState.boundaries).toHaveLength(2);
-    expect(compactState.latestBoundary).toMatchObject({
-      kind: 'microcompact',
-      uuid: 'micro-1',
-    });
+    expect(compactState.boundaries).toBeUndefined();
+    expect(compactState.latestBoundary).toBeUndefined();
   });
 
   it('builds a continuation summary from session memory when compact state requests it', async () => {
