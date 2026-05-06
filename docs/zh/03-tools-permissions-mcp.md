@@ -226,7 +226,7 @@ const sdk = await createAgentSdk({
 
 ## 9. clean 命令式 helper
 
-clean SDK 现在也有不依赖 bridge 的命令式 helper：
+clean SDK 也提供命令式 helper：
 
 ```ts
 console.log(sdk.slashCommands.listMetadata());

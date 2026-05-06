@@ -60,7 +60,7 @@ npm run example:actoviq-agent-helpers
 - GitHub Pages docs site:
   - https://deconbear.github.io/actoviq-agent-sdk/
 
-If you want the clean SDK path first, start with:
+Start with these examples:
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
 - [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
