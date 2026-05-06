@@ -121,7 +121,7 @@ Repository example:
 
 ## 6. Clean slash-command replacements
 
-The clean SDK now exposes command-style helpers without bridge mode:
+The clean SDK exposes command-style helpers:
 
 ```ts
 console.log(sdk.slashCommands.listMetadata());

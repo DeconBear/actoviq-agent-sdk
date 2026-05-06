@@ -9,6 +9,7 @@ Recommended reading order:
 3. [03-tools-permissions-skills-mcp.md](./03-tools-permissions-skills-mcp.md)
 4. [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)
 5. [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)
+6. [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)
 
 The main execution path is `createAgentSdk()`. Use it for all product and application code.
 
