@@ -78,6 +78,18 @@ export {
   resolveActoviqSessionStartHooks,
 } from './hooks/actoviqHooks.js';
 export { createActoviqFileTools } from './tools/actoviqFileTools.js';
+export { SessionManager } from './runtime/sessionManager.js';
+export { parallel, race } from './runtime/parallel.js';
+export { WorkflowApi, WorkflowBuilder } from './workflow/workflowBuilder.js';
+export { WorkflowEngine } from './workflow/workflowEngine.js';
+export type {
+  WorkflowDefinition,
+  WorkflowStepDefinition,
+  WorkflowParameter,
+  WorkflowStepResult,
+  WorkflowRunResult,
+  WorkflowRunOptions,
+} from './workflow/types.js';
 export { createAgentSdk, ActoviqAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
 export {
   ActoviqAgentHandle,

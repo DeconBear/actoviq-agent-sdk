@@ -101,6 +101,9 @@ import {
   buildActoviqCleanToolCatalog,
   resolveActoviqCleanToolMetadata,
 } from './actoviqToolCatalog.js';
+import { WorkflowApi } from '../workflow/workflowBuilder.js';
+import { SessionManager } from './sessionManager.js';
+import { parallel, race } from './parallel.js';
 import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { AgentRunStream } from './asyncQueue.js';
@@ -237,6 +240,7 @@ export class AgentSessionsApi {
   constructor(
     private readonly store: SessionStore,
     private readonly resumeSession: (sessionId: string) => Promise<AgentSession>,
+    private readonly manager?: import('./sessionManager.js').SessionManager,
   ) {}
 
   list(): Promise<SessionSummary[]> {
@@ -249,6 +253,23 @@ export class AgentSessionsApi {
 
   delete(sessionId: string): Promise<void> {
     return this.store.delete(sessionId);
+  }
+
+  async stats(): Promise<import('../types.js').SessionStats> {
+    if (!this.manager) throw new Error('SessionManager is not configured');
+    return this.manager.getStats();
+  }
+
+  async prune(
+    params?: import('../types.js').SessionPruneParams,
+  ): Promise<number> {
+    if (!this.manager) throw new Error('SessionManager is not configured');
+    return this.manager.prune(params);
+  }
+
+  async closeIdle(): Promise<number> {
+    if (!this.manager) throw new Error('SessionManager is not configured');
+    return this.manager.closeIdle();
   }
 }
 
@@ -422,6 +443,8 @@ export class ActoviqAgentClient {
   readonly swarm: ActoviqSwarmApi;
   readonly context: ActoviqContextApi;
   readonly slashCommands: ActoviqSlashCommandsApi;
+  readonly workflow: WorkflowApi;
+  private readonly sessionManager: SessionManager;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
@@ -449,8 +472,14 @@ export class ActoviqAgentClient {
     defaultPermissions?: CreateAgentSdkOptions['permissions'],
     defaultClassifier?: ActoviqToolClassifier,
     defaultApprover?: ActoviqToolApprover,
+    sessionManagerConfig?: CreateAgentSdkOptions['sessionManager'],
   ) {
-    this.sessions = new AgentSessionsApi(this.store, (sessionId) => this.resumeSession(sessionId));
+    this.sessionManager = new SessionManager(this.store, sessionManagerConfig);
+    this.sessions = new AgentSessionsApi(
+      this.store,
+      (sessionId) => this.resumeSession(sessionId),
+      this.sessionManager,
+    );
     this.agentDefinitions = new Map(
       agentDefinitions.map(definition => [definition.name, cloneAgentDefinition(definition)]),
     );
@@ -523,6 +552,7 @@ export class ActoviqAgentClient {
       getAgentMetadata: () => this.listAgentDefinitions(),
     });
     this.slashCommands = new ActoviqSlashCommandsApi(this.context);
+    this.workflow = new WorkflowApi(this);
     this.swarm = new ActoviqSwarmApi(
       {
         createAgentSession: (agent, options) => this.createAgentSession(agent, options),
@@ -637,6 +667,7 @@ export class ActoviqAgentClient {
       options.permissions,
       options.classifier,
       options.approver,
+      options.sessionManager,
     );
   }
 
@@ -713,6 +744,20 @@ export class ActoviqAgentClient {
         throw error;
       }
     });
+  }
+
+  async parallel<T>(
+    tasks: Array<() => Promise<T>>,
+    options?: import('../types.js').ParallelOptions,
+  ): Promise<T[]> {
+    return parallel(tasks, options);
+  }
+
+  async race<T>(
+    tasks: Array<() => Promise<T>>,
+    options?: import('../types.js').RaceOptions,
+  ): Promise<T> {
+    return race(tasks, options);
   }
 
   async createSession(options: SessionCreateOptions = {}): Promise<AgentSession> {
@@ -1105,10 +1150,24 @@ export class ActoviqAgentClient {
         clearRuntimePermissionContext: (session) =>
           this.clearSessionRuntimePermissionContext(session.id),
         hydrate: (next) => this.hydrateSession(next),
+        saveCheckpoint: (_session, label) => this.store.saveCheckpoint(stored.id, label),
+        restoreCheckpoint: (session, checkpointId) =>
+          this.restoreCheckpointToSession(session, checkpointId),
+        listCheckpoints: (_session) => this.store.listCheckpoints(stored.id),
+        deleteCheckpoint: (_session, checkpointId) =>
+          this.store.deleteCheckpoint(stored.id, checkpointId),
       },
       this.store,
       stored,
     );
+  }
+
+  private async restoreCheckpointToSession(
+    session: AgentSession,
+    checkpointId: string,
+  ): Promise<void> {
+    const checkpoint = await this.store.loadCheckpoint(session.id, checkpointId);
+    session.replace(checkpoint.snapshot);
   }
 
   private async runSkillOnSession(
@@ -1191,6 +1250,7 @@ export class ActoviqAgentClient {
       execution.augmentations.surfacedMemories,
       hookOutcome,
     );
+    await this.sessionManager.touch(session.id);
     return execution.result;
   }
 

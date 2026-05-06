@@ -18,6 +18,8 @@ import type {
   ActoviqSessionMemoryExtractionResult,
   ActoviqToolApprover,
   ActoviqToolClassifier,
+  SessionCheckpoint,
+  SessionCheckpointSummary,
   SessionForkOptions,
   StoredSession,
 } from '../types.js';
@@ -83,6 +85,10 @@ interface AgentSessionBindings {
   ) => void;
   clearRuntimePermissionContext: (session: AgentSession) => void;
   hydrate: (stored: StoredSession) => AgentSession;
+  saveCheckpoint: (session: AgentSession, label: string) => Promise<SessionCheckpoint>;
+  restoreCheckpoint: (session: AgentSession, checkpointId: string) => Promise<void>;
+  listCheckpoints: (session: AgentSession) => Promise<SessionCheckpointSummary[]>;
+  deleteCheckpoint: (session: AgentSession, checkpointId: string) => Promise<void>;
 }
 
 export class AgentSession {
@@ -234,6 +240,22 @@ export class AgentSession {
   async fork(options: SessionForkOptions = {}): Promise<AgentSession> {
     const next = await this.store.fork(this.stored.id, options);
     return this.bindings.hydrate(next);
+  }
+
+  async saveCheckpoint(label: string): Promise<SessionCheckpoint> {
+    return this.bindings.saveCheckpoint(this, label);
+  }
+
+  async restoreCheckpoint(checkpointId: string): Promise<void> {
+    return this.bindings.restoreCheckpoint(this, checkpointId);
+  }
+
+  listCheckpoints(): Promise<SessionCheckpointSummary[]> {
+    return this.bindings.listCheckpoints(this);
+  }
+
+  async deleteCheckpoint(checkpointId: string): Promise<void> {
+    return this.bindings.deleteCheckpoint(this, checkpointId);
   }
 
   replace(next: StoredSession): void {
