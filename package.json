@@ -1,6 +1,6 @@
 {
   "name": "actoviq-agent-sdk",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "A clean, public agent SDK with Actoviq and MCP integrations.",
   "repository": {
     "type": "git",
@@ -78,4 +78,3 @@
     "vitest": "^4.0.8"
   }
 }
-
