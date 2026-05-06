@@ -54,7 +54,11 @@
     "example:actoviq-workspaces": "npm run build && tsx examples/actoviq-workspaces.ts",
     "example:quickstart": "npm run build && tsx examples/quickstart.ts",
     "example:session": "npm run build && tsx examples/session.ts",
-    "example:stream-loop": "npm run build && tsx examples/stream-loop.ts"
+    "example:stream-loop": "npm run build && tsx examples/stream-loop.ts",
+    "example:workflow": "npm run build && tsx examples/workflow.ts",
+    "example:parallel": "npm run build && tsx examples/parallel.ts",
+    "example:session-manager": "npm run build && tsx examples/session-manager.ts",
+    "example:checkpoint": "npm run build && tsx examples/checkpoint.ts"
   },
   "keywords": [
     "agent",

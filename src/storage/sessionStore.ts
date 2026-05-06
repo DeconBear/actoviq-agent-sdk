@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { SessionNotFoundError } from '../errors.js';
 import type {
+  SessionCheckpoint,
+  SessionCheckpointSummary,
   SessionCreateOptions,
   SessionForkOptions,
   SessionSummary,
@@ -28,6 +30,8 @@ export class SessionStore {
       metadata: { ...(options.metadata ?? {}) },
       createdAt,
       updatedAt: createdAt,
+      lastActiveAt: createdAt,
+      status: 'active',
       messages: deepClone(options.initialMessages ?? []),
       runs: [],
     };
@@ -80,6 +84,21 @@ export class SessionStore {
     await rm(this.sessionPath(sessionId), { force: true });
   }
 
+  async updateStatus(sessionId: string, status: import('../types.js').SessionStatus): Promise<void> {
+    await this.ensureReady();
+    const session = await this.load(sessionId);
+    session.status = status;
+    session.updatedAt = nowIso();
+    await this.save(session);
+  }
+
+  async updateLastActiveAt(sessionId: string): Promise<void> {
+    await this.ensureReady();
+    const session = await this.load(sessionId);
+    session.lastActiveAt = nowIso();
+    await this.save(session);
+  }
+
   async fork(sessionId: string, options: SessionForkOptions = {}): Promise<StoredSession> {
     const original = await this.load(sessionId);
     const createdAt = nowIso();
@@ -96,10 +115,81 @@ export class SessionStore {
       createdAt,
       updatedAt: createdAt,
       lastRunAt: undefined,
+      lastActiveAt: createdAt,
+      status: 'active',
       runs: [],
     };
     await this.save(forked);
     return forked;
+  }
+
+  async saveCheckpoint(sessionId: string, label: string): Promise<SessionCheckpoint> {
+    const session = await this.load(sessionId);
+    const checkpointId = createId();
+    const checkpoint: SessionCheckpoint = {
+      id: checkpointId,
+      label,
+      sessionId,
+      createdAt: nowIso(),
+      snapshot: deepClone(session),
+    };
+    await this.ensureReady();
+    const dir = this.checkpointsDirectory(sessionId);
+    await mkdir(dir, { recursive: true });
+    const filePath = path.join(dir, `${checkpointId}.json`);
+    await writeJsonAtomic(filePath, checkpoint);
+    return checkpoint;
+  }
+
+  async loadCheckpoint(sessionId: string, checkpointId: string): Promise<SessionCheckpoint> {
+    const filePath = path.join(
+      this.checkpointsDirectory(sessionId),
+      `${checkpointId}.json`,
+    );
+    try {
+      const raw = await readFile(filePath, 'utf8');
+      return JSON.parse(raw) as SessionCheckpoint;
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code === 'ENOENT') {
+        throw new SessionNotFoundError(`checkpoint ${checkpointId}`);
+      }
+      throw error;
+    }
+  }
+
+  async listCheckpoints(sessionId: string): Promise<SessionCheckpointSummary[]> {
+    const dir = this.checkpointsDirectory(sessionId);
+    let files: string[];
+    try {
+      files = await readdir(dir);
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError.code === 'ENOENT') return [];
+      throw error;
+    }
+    const summaries: SessionCheckpointSummary[] = [];
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      const raw = await readFile(path.join(dir, file), 'utf8');
+      const cp = JSON.parse(raw) as SessionCheckpoint;
+      summaries.push({ id: cp.id, label: cp.label, createdAt: cp.createdAt });
+    }
+    return summaries.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  }
+
+  async deleteCheckpoint(sessionId: string, checkpointId: string): Promise<void> {
+    const filePath = path.join(
+      this.checkpointsDirectory(sessionId),
+      `${checkpointId}.json`,
+    );
+    await rm(filePath, { force: true });
+  }
+
+  private checkpointsDirectory(sessionId: string): string {
+    return path.join(this.sessionsDirectory(), '.checkpoints', sessionId);
   }
 
   private async ensureReady(): Promise<void> {
@@ -123,6 +213,8 @@ export class SessionStore {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       lastRunAt: session.lastRunAt,
+      lastActiveAt: session.lastActiveAt,
+      status: session.status,
       tags: [...session.tags],
       preview: truncateText(extractPreviewFromMessages(session.messages), 160),
       messageCount: session.messages.length,

@@ -159,6 +159,52 @@ const restored = await sdk.resumeSession(session.id);
 console.log((await restored.send('What must the release include?')).text);
 ```
 
+## 11. Running tasks in parallel
+
+Use `sdk.parallel()` to run independent tasks concurrently:
+
+```ts
+const results = await sdk.parallel([
+  () => sdk.run('Summarize the project.'),
+  () => sdk.run('List action items.'),
+], { maxConcurrency: 2 });
+```
+
+Use `sdk.race()` to return the first completed result:
+
+```ts
+const fastest = await sdk.race([
+  () => sdk.run('Quick answer', { model: 'claude-haiku-4-5' }),
+  () => sdk.run('Detailed answer', { model: 'claude-sonnet-4-6' }),
+]);
+```
+
+## 12. Session lifecycle
+
+Configure `sessionManager` to auto-manage idle timeouts and session limits:
+
+```ts
+const sdk = await createAgentSdk({
+  sessionManager: { idleTimeoutMs: 30 * 60_000, maxSessions: 100 },
+});
+
+// Check stats or prune old sessions
+const stats = await sdk.sessions.stats();
+await sdk.sessions.prune({ status: 'idle', olderThan: '1h' });
+```
+
+## 13. Session checkpoints
+
+Save and restore session state for experimentation:
+
+```ts
+const cp = await session.saveCheckpoint('before-refactor');
+await session.send('Risky refactoring...');
+await session.restoreCheckpoint(cp.id); // undo
+```
+
+Full details for all orchestration features are in chapter 07.
+
 Next chapter:
 
 - [03-tools-permissions-skills-mcp.md](./03-tools-permissions-skills-mcp.md)

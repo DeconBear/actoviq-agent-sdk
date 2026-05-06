@@ -9,6 +9,7 @@
 4. [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)
 5. [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)
 6. [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)
+7. [07-workflow-orchestration.md](./07-workflow-orchestration.md)
 
 如果你想最快跑起来：
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
