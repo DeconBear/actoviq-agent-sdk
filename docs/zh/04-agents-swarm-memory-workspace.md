@@ -216,4 +216,4 @@ clean SDK 当前支持：
 
 下一章：
 
-- [05-bridge-runtime.md](./05-bridge-runtime.md)
+- [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)

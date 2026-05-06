@@ -53,16 +53,3 @@ export class ActoviqProviderApiError extends ActoviqSdkError {
   }
 }
 
-export class ActoviqBridgeProcessError extends ActoviqSdkError {
-  readonly stderr?: string;
-  readonly exitCode?: number | null;
-
-  constructor(
-    message: string,
-    options?: { cause?: unknown; stderr?: string; exitCode?: number | null },
-  ) {
-    super(message, 'ACTOVIQ_BRIDGE_PROCESS_ERROR', options);
-    this.stderr = options?.stderr;
-    this.exitCode = options?.exitCode;
-  }
-}

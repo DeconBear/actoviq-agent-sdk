@@ -9,9 +9,8 @@ const zhSidebar = [
       { text: '02 基础运行、流式输出与会话', link: '/zh/02-basic-run-stream-session' },
       { text: '03 工具、权限、Skills 与 MCP', link: '/zh/03-tools-permissions-mcp' },
       { text: '04 Agents、Swarm、Memory 与 Workspace', link: '/zh/04-agents-swarm-memory-workspace' },
-      { text: '05 Bridge Runtime', link: '/zh/05-bridge-runtime' },
-      { text: '06 测试、排错与速查', link: '/zh/06-testing-troubleshooting-cheatsheet' },
-      { text: '07 从 0 到 1 做完整 Clean Agent', link: '/zh/07-build-a-complete-clean-agent' },
+      { text: '05 测试、排错与速查', link: '/zh/05-testing-troubleshooting-cheatsheet' },
+      { text: '06 从 0 到 1 做完整 Clean Agent', link: '/zh/06-build-a-complete-clean-agent' },
     ],
   },
 ];
@@ -25,9 +24,8 @@ const enSidebar = [
       { text: '02 Run, Stream, and Session Basics', link: '/en/02-basic-run-stream-session' },
       { text: '03 Tools, Permissions, Skills, and MCP', link: '/en/03-tools-permissions-skills-mcp' },
       { text: '04 Agents, Swarm, Memory, and Workspace', link: '/en/04-agents-swarm-memory-workspace' },
-      { text: '05 Bridge Runtime', link: '/en/05-bridge-runtime' },
-      { text: '06 Testing, Troubleshooting, and Cheatsheet', link: '/en/06-testing-troubleshooting-cheatsheet' },
-      { text: '07 Build a Complete Clean Agent', link: '/en/07-build-a-complete-clean-agent' },
+      { text: '05 Testing, Troubleshooting, and Cheatsheet', link: '/en/05-testing-troubleshooting-cheatsheet' },
+      { text: '06 Build a Complete Clean Agent', link: '/en/06-build-a-complete-clean-agent' },
     ],
   },
 ];

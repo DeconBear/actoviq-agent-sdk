@@ -1,8 +1,0 @@
-{
-  "upstreamRootName": "actoviq-runtime-upstream",
-  "upstreamRootSource": "sanitized-sync",
-  "generatedAt": "2026-03-31T20:52:53.368Z",
-  "runtimeBundleHash": "1a906d17618d1f42",
-  "runtimeBundleFile": "runtime.bundle.br",
-  "layout": "public-runtime-wrapper"
-}

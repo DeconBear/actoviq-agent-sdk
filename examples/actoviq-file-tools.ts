@@ -17,7 +17,7 @@ try {
     'Use the Glob tool to find TypeScript files in the examples directory, then use Read to inspect examples/quickstart.ts and summarize what it does.',
     {
       systemPrompt:
-        'You are testing Actoviq Runtime parity file tools. Prefer Read, Glob, and Grep when inspecting the local codebase.',
+        'You are testing Actoviq file tools. Prefer Read, Glob, and Grep when inspecting the local codebase.',
     },
   );
 

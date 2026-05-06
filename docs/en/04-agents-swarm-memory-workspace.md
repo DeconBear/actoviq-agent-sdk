@@ -195,4 +195,4 @@ This matters most in long-running sessions and multi-turn task flows.
 
 Next chapter:
 
-- [05-bridge-runtime.md](./05-bridge-runtime.md)
+- [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)

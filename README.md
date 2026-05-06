@@ -1,7 +1,7 @@
 ﻿# Actoviq Agent SDK
 
-[![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
-[![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
+[![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
+[![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
 [![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/actoviq-agent-sdk/)
 
@@ -9,7 +9,7 @@
 
 Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
-Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, memory helpers, and an optional compatibility bridge path.
+Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, and memory helpers.
 
 This project is inspired by excellent agent projects and runtimes including Claude Code, Codex, Deepagents, and similar work in the ecosystem. Actoviq remains an independent project with its own public SDK surface and documentation.
 
@@ -50,7 +50,6 @@ Run the repository examples with:
 
 ```bash
 npm run example:quickstart
-npm run example:actoviq-interactive-agent
 npm run example:actoviq-agent-helpers
 ```
 
@@ -61,20 +60,14 @@ npm run example:actoviq-agent-helpers
 - GitHub Pages docs site:
   - https://deconbear.github.io/actoviq-agent-sdk/
 
-If you want a ready-to-run terminal chat program with streaming output and tool calls, start with:
-
-- [examples/actoviq-interactive-agent.ts](./examples/actoviq-interactive-agent.ts)
-
 If you want the clean SDK path first, start with:
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
 - [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
 
-Bridge documentation is kept as compatibility guidance. New application work should prefer the clean SDK path first.
-
 ## Contributing
 
-Contributions are welcome. If you spot a bug, a documentation gap, or a parity issue, please open an issue or submit a pull request.
+Contributions are welcome. If you spot a bug or a documentation gap, please open an issue or submit a pull request.
 
 Licensed under the [MIT License](./LICENSE).

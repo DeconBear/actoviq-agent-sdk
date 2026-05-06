@@ -47,23 +47,15 @@ interface ApiErrorShape {
   message?: string;
 }
 
-const LEGACY_HEADER_PARTS = {
-  apiVersion: ['anth', 'ropic-version'],
-  apiBeta: ['anth', 'ropic-beta'],
-};
-
-const LEGACY_DEFAULT_BASE_URL = ['https://api.', 'anth', 'ropic.com'].join('');
-
-function getLegacyHeaderName(kind: keyof typeof LEGACY_HEADER_PARTS): string {
-  return LEGACY_HEADER_PARTS[kind].join('');
-}
+const ANTHROPIC_API_VERSION = '2023-06-01';
+const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
 function normalizeMessagesUrl(baseURL?: string | null): string {
-  const normalized = (baseURL ?? LEGACY_DEFAULT_BASE_URL).replace(/\/+$/u, '');
+  const normalized = (baseURL ?? DEFAULT_BASE_URL).replace(/\/+$/u, '');
   if (/\/v1\/messages$/iu.test(normalized)) {
     return normalized;
   }
@@ -520,7 +512,7 @@ export default class ActoviqProviderClient {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: streaming ? 'text/event-stream' : 'application/json',
-      [getLegacyHeaderName('apiVersion')]: '2023-06-01',
+      'anthropic-version': ANTHROPIC_API_VERSION,
     };
 
     if (this.authToken) {

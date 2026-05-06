@@ -1,6 +1,6 @@
 ﻿# 从 0 到 1：用 clean SDK 做一个完整可用的 Agent 项目
 
-这篇教程的目标不是只让你跑一个 demo，而是手把手带你做出一个“能持续对话、能调用工具、能使用 skills、能保留会话”的 clean SDK 项目。整篇教程只使用 `createAgentSdk()`，不依赖 bridge。
+这篇教程的目标不是只让你跑一个 demo，而是手把手带你做出一个“能持续对话、能调用工具、能使用 skills、能保留会话”的 clean SDK 项目。整篇教程只使用 `createAgentSdk()`。
 
 ## 你最终会得到什么
 
@@ -386,27 +386,14 @@ const sdk = await createAgentSdk({
 2. `createTempWorkspace(...)`
 3. `createGitWorktreeWorkspace(...)`
 
-## 十一、什么时候才需要 bridge
-
-这篇教程故意只使用 clean SDK，因为它已经足够支撑绝大多数业务项目。
-
-只有在这些场景里，你才更可能需要 bridge：
-
-1. 你要研究兼容 runtime 的原生行为
-2. 你要接已有 runtime 的内置能力池
-3. 你要做 runtime 对照、迁移或兼容接入
-
-如果你是要开发自己的产品、机器人或自动化助手，建议优先坚持 clean SDK。
-
-## 十二、你可以直接参考哪些现成示例
+## 十一、你可以直接参考哪些现成示例
 
 如果你想对照更多官方示例，可以继续看：
 
 1. [examples/quickstart.ts](../../examples/quickstart.ts)
-2. [examples/actoviq-interactive-agent.ts](../../examples/actoviq-interactive-agent.ts)
-3. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-4. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
-5. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
+3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
+4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
 
 ## 十三、你下一步应该怎么做
 

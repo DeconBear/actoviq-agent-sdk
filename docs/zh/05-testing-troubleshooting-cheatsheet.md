@@ -1,4 +1,4 @@
-# 06. 测试、排错与速查
+# 05. 测试、排错与速查
 
 这一章是日常开发和发布时最实用的维护手册。
 
@@ -18,7 +18,6 @@ npm pack --dry-run
 ```bash
 npm run smoke
 npm run example:quickstart
-npm run example:actoviq-interactive-agent
 ```
 
 ## 2. 常见问题
@@ -46,7 +45,6 @@ npm run example:actoviq-interactive-agent
 
 1. 你是否把工具传给了 `createAgentSdk(...)`
 2. 你是否挂上了正确的 MCP server
-3. 你是不是把 bridge/runtime 才有的能力误以为 clean SDK 默认自带
 
 ### 找不到 skill
 
@@ -54,7 +52,6 @@ npm run example:actoviq-interactive-agent
 
 1. 它是 bundled、custom，还是从磁盘加载的 skill
 2. skill 目录是否在搜索路径中
-3. 你现在运行的是 clean SDK 还是 bridge SDK
 
 ### dream 没有触发
 
@@ -83,12 +80,9 @@ npm run example:actoviq-skills
 npm run example:actoviq-memory
 npm run example:actoviq-dream
 npm run example:actoviq-swarm
-npm run example:actoviq-interactive-agent
 ```
 
 ## 4. API 速查
-
-clean SDK：
 
 1. `createAgentSdk(...)`
 2. `sdk.run(...)`
@@ -103,12 +97,3 @@ clean SDK：
 11. `session.dream(...)`
 12. `sdk.buddy.hatch(...)`
 13. `sdk.swarm.createTeam(...)`
-
-bridge SDK：
-
-1. `createActoviqBridgeSdk(...)`
-2. `sdk.getRuntimeInfo()`
-3. `sdk.listAgents()`
-4. `sdk.listSkills()`
-5. `sdk.runSkill(...)`
-6. `sdk.runWithAgent(...)`
