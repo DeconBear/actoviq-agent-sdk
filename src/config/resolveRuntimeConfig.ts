@@ -5,7 +5,7 @@ import { ConfigurationError } from '../errors.js';
 import type { CreateAgentSdkOptions, ResolvedRuntimeConfig } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
 
-const FALLBACK_MODEL = ['cl', 'aude-sonnet-4-5-20250929'].join('');
+const FALLBACK_MODEL = 'claude-sonnet-4-5-20250929';
 const DEFAULT_COMPACT_CONFIG = {
   enabled: true,
   autoCompactThresholdTokens: 20_000,

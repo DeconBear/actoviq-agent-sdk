@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   clearLoadedJsonConfig,
-  createActoviqBridgeSdk,
   createActoviqBuddyApi,
   createAgentSdk,
   loadJsonConfigFile,
@@ -18,7 +17,6 @@ import {
 import type { Message, MessageStreamEvent } from '../src/provider/types.js';
 
 const tempDirs: string[] = [];
-const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
 
 afterEach(async () => {
   clearLoadedJsonConfig();
@@ -170,43 +168,4 @@ describe('Actoviq buddy API', () => {
     }
   });
 
-  it('is also exposed on the bridge SDK without needing TUI components', async () => {
-    const tempDir = await createTempDir('actoviq-buddy-bridge-');
-    const configPath = path.join(tempDir, 'bridge-settings.json');
-    await writeFile(
-      configPath,
-      `${JSON.stringify(
-        {
-          userID: 'bridge-buddy-user',
-        },
-        null,
-        2,
-      )}\n`,
-      'utf8',
-    );
-
-    await loadJsonConfigFile(configPath);
-
-    const sdk = await createActoviqBridgeSdk({
-      executable: process.execPath,
-      cliPath: fixtureCliPath,
-      workDir: tempDir,
-    });
-
-    try {
-      const hatched = await sdk.buddy.hatch({
-        name: 'Comet',
-        personality: 'small, fast, and bright',
-      });
-      const state = await sdk.buddy.state();
-
-      expect(hatched.name).toBe('Comet');
-      expect(state.configPath).toBe(configPath);
-      expect(state.buddy).toMatchObject({
-        name: 'Comet',
-      });
-    } finally {
-      await sdk.close();
-    }
-  });
 });

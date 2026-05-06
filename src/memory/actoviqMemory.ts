@@ -41,7 +41,7 @@ import type {
   ActoviqTranscriptBoundary,
   UpdateActoviqMemorySettingsInput,
 } from '../types.js';
-import { getActoviqBridgeCompactBoundaries } from '../parity/actoviqTranscripts.js';
+
 
 const DEFAULT_SESSION_MEMORY_TEMPLATE = `
 # Session Title
@@ -887,36 +887,13 @@ Return the FULL updated notes file as markdown only.
           })
         : undefined;
 
-    let boundaries: ActoviqTranscriptBoundary[] | undefined;
-    let latestBoundary: ActoviqTranscriptBoundary | undefined;
-    let compactCount = 0;
-    let microcompactCount = 0;
-    let lastSummarizedMessageUuid: string | undefined;
-    let latestPreservedSegment: ActoviqPreservedSegment | undefined;
-    let latestBoundarySummary: string | undefined;
-
-    if (options.includeBoundaries !== false && sessionId) {
-      boundaries = await getActoviqBridgeCompactBoundaries(sessionId, {
-        dir: baseState.paths.projectPath,
-        includeSystemMessages: true,
-      });
-      compactCount = boundaries.filter(boundary => boundary.kind === 'compact').length;
-      microcompactCount = boundaries.filter(boundary => boundary.kind === 'microcompact').length;
-      latestBoundary = boundaries.at(-1);
-      const latestCompactBoundary = [...boundaries].reverse().find(boundary => boundary.kind === 'compact');
-      lastSummarizedMessageUuid = latestCompactBoundary?.logicalParentUuid ?? undefined;
-      latestPreservedSegment =
-        latestCompactBoundary?.kind === 'compact'
-          ? (latestCompactBoundary.metadata as ActoviqCompactBoundaryMetadata | undefined)
-              ?.preservedSegment
-          : undefined;
-      latestBoundarySummary =
-        latestBoundary?.kind === 'compact'
-          ? getActoviqCompactBoundarySummary(
-              latestBoundary.metadata as ActoviqCompactBoundaryMetadata | undefined,
-            )
-          : undefined;
-    }
+    const boundaries = undefined;
+    const latestBoundary = undefined;
+    const compactCount = 0;
+    const microcompactCount = 0;
+    const lastSummarizedMessageUuid: string | undefined = undefined;
+    const latestPreservedSegment: ActoviqPreservedSegment | undefined = undefined;
+    const latestBoundarySummary: string | undefined = undefined;
 
     return {
       ...baseState,

@@ -64,7 +64,6 @@ export {
 export {
   ActoviqSdkError,
   ActoviqProviderApiError,
-  ActoviqBridgeProcessError,
   ConfigurationError,
   RunAbortedError,
   SessionNotFoundError,
@@ -78,35 +77,7 @@ export {
   resolveActoviqPostRunHooks,
   resolveActoviqSessionStartHooks,
 } from './hooks/actoviqHooks.js';
-export {
-  ActoviqBridgeAgentHandle,
-  ActoviqBridgeAgentsApi,
-  ActoviqBridgeContextApi,
-  ActoviqBridgeRunStream,
-  ActoviqBridgeSession,
-  ActoviqBridgeSessionsApi,
-  ActoviqBridgeSlashCommandsApi,
-  ActoviqBridgeSkillHandle,
-  ActoviqBridgeSkillsApi,
-  ActoviqBridgeSdkClient,
-  ActoviqBridgeToolsApi,
-  createActoviqBridgeSdk,
-} from './parity/actoviqBridgeSdk.js';
-export {
-  analyzeActoviqBridgeEvents,
-  extractActoviqBridgeTaskInvocations,
-  extractActoviqBridgeToolRequests,
-  extractActoviqBridgeToolResults,
-  getActoviqBridgeTextDelta,
-} from './parity/actoviqBridgeEvents.js';
-export {
-  getActoviqBridgeCompactBoundaries,
-  getActoviqBridgeLatestCompactBoundary,
-  getActoviqBridgeSessionInfo,
-  getActoviqBridgeSessionMessages,
-  listActoviqBridgeSessions,
-} from './parity/actoviqTranscripts.js';
-export { createActoviqFileTools } from './parity/actoviqFileTools.js';
+export { createActoviqFileTools } from './tools/actoviqFileTools.js';
 export { createAgentSdk, ActoviqAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
 export {
   ActoviqAgentHandle,

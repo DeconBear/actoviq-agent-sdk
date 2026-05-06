@@ -169,9 +169,6 @@ After the first version works, expand in this order:
 Useful repository examples:
 
 1. [examples/quickstart.ts](../../examples/quickstart.ts)
-2. [examples/actoviq-interactive-agent.ts](../../examples/actoviq-interactive-agent.ts)
-3. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-4. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
-5. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
-
-Use bridge only when you truly need runtime-compatibility work. For a new product or application, stay on the clean SDK path first.
+2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
+3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
+4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)

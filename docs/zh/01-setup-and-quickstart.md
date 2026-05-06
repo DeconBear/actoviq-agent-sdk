@@ -108,25 +108,9 @@ try {
 }
 ```
 
-## 6. 一个可以直接使用的交互程序示例
+## 6. 下一步
 
-如果你想直接运行一个更完整的程序，而不是自己先写循环，推荐直接看：
-
-- [examples/actoviq-interactive-agent.ts](../../examples/actoviq-interactive-agent.ts)
-
-它已经是一个可直接使用的交互式终端程序，具备：
-
-1. 流式输出
-2. 持续对话循环
-3. 工具调用
-4. 可配置工作空间路径
-5. 可配置 JSON 配置路径
-
-运行方式：
-
-```bash
-npm run example:actoviq-interactive-agent
-```
+继续阅读下一章，了解流式输出、会话和工具使用。
 
 下一章：
 

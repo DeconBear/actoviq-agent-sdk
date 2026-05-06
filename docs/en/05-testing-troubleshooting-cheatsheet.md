@@ -1,4 +1,4 @@
-# 06. Testing, Troubleshooting, and Cheat Sheet
+# 05. Testing, Troubleshooting, and Cheat Sheet
 
 This chapter is the short maintenance guide for daily development.
 
@@ -18,7 +18,6 @@ Optional local checks:
 ```bash
 npm run smoke
 npm run example:quickstart
-npm run example:actoviq-interactive-agent
 ```
 
 ## 2. Common problems
@@ -41,7 +40,6 @@ Check whether:
 
 1. you passed the tool into `createAgentSdk(...)`
 2. you attached the expected MCP server
-3. you are expecting a runtime-native tool that only exists on the bridge path
 
 ### Skill not available
 
@@ -49,7 +47,6 @@ Check whether:
 
 1. the skill is bundled, custom, or disk-loaded
 2. the skill directory is one of the configured search paths
-3. you are looking for a runtime-native skill that only exists on the bridge path
 
 ## 3. Handy example commands
 
@@ -61,12 +58,9 @@ npm run example:actoviq-skills
 npm run example:actoviq-file-tools
 npm run example:actoviq-memory
 npm run example:actoviq-swarm
-npm run example:actoviq-interactive-agent
 ```
 
 ## 4. API cheat sheet
-
-Clean SDK:
 
 1. `createAgentSdk(...)`
 2. `sdk.run(...)`
@@ -78,16 +72,6 @@ Clean SDK:
 8. `session.extractMemory(...)`
 9. `session.compactState(...)`
 10. `sdk.swarm.createTeam(...)`
-
-Bridge SDK:
-
-1. `createActoviqBridgeSdk(...)`
-2. `sdk.getRuntimeInfo()`
-3. `sdk.skills.listMetadata()`
-4. `sdk.runSkill(...)`
-5. `sdk.runWithAgent(...)`
-6. `sdk.sessions.continueMostRecent(...)`
-7. `sdk.sessions.fork(...)`
 
 You now have the full tutorial set. If you want a single next step, run:
 

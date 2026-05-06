@@ -108,25 +108,9 @@ try {
 }
 ```
 
-## 6. Ready-to-run interactive program
+## 6. Next steps
 
-If you want a fuller program with tool calls and a built-in REPL loop, use:
-
-- [examples/actoviq-interactive-agent.ts](../../examples/actoviq-interactive-agent.ts)
-
-Run it with:
-
-```bash
-npm run example:actoviq-interactive-agent
-```
-
-That example is already a usable interactive program with:
-
-- streaming output
-- tool access
-- an infinite loop until you exit
-- configurable workspace path
-- configurable JSON config path
+Continue to the next chapter to learn about streaming, sessions, and tool use.
 
 Next chapter:
 
