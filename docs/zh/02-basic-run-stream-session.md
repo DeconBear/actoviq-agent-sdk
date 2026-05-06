@@ -159,6 +159,52 @@ const restored = await sdk.resumeSession(session.id);
 console.log((await restored.send('发布步骤里必须包含什么？')).text);
 ```
 
+## 11. 并行运行任务
+
+用 `sdk.parallel()` 并发运行独立任务：
+
+```ts
+const results = await sdk.parallel([
+  () => sdk.run('用一句话总结项目。'),
+  () => sdk.run('列出待办事项。'),
+], { maxConcurrency: 2 });
+```
+
+用 `sdk.race()` 返回最先完成的结果：
+
+```ts
+const fastest = await sdk.race([
+  () => sdk.run('快速回答', { model: 'claude-min-4-5' }),
+  () => sdk.run('详细回答', { model: 'claude-medium-4-6' }),
+]);
+```
+
+## 12. 会话生命周期
+
+配置 `sessionManager` 自动管理空闲超时和会话上限：
+
+```ts
+const sdk = await createAgentSdk({
+  sessionManager: { idleTimeoutMs: 30 * 60_000, maxSessions: 100 },
+});
+
+// 查看统计或清理旧会话
+const stats = await sdk.sessions.stats();
+await sdk.sessions.prune({ status: 'idle', olderThan: '1h' });
+```
+
+## 13. 会话检查点
+
+保存和恢复会话状态，方便尝试不同方案：
+
+```ts
+const cp = await session.saveCheckpoint('重构前');
+await session.send('大规模重构……');
+await session.restoreCheckpoint(cp.id); // 撤销
+```
+
+所有编排功能的完整文档见第 07 章。
+
 下一章：
 
 - [03-tools-permissions-mcp.md](./03-tools-permissions-mcp.md)

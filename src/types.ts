@@ -532,6 +532,7 @@ export interface CreateAgentSdkOptions {
   approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
   modelApi?: ModelApi;
+  sessionManager?: SessionManagerConfig;
 }
 
 export interface ActoviqCompactConfig {
@@ -996,6 +997,38 @@ export type AgentEvent =
         stack?: string;
       };
       timestamp: string;
+    }
+  | {
+      type: 'workflow.start';
+      runId: string;
+      workflowName: string;
+      stepCount: number;
+      timestamp: string;
+    }
+  | {
+      type: 'step.start';
+      runId: string;
+      workflowName: string;
+      stepId: string;
+      stepName: string;
+      timestamp: string;
+    }
+  | {
+      type: 'step.done';
+      runId: string;
+      workflowName: string;
+      stepId: string;
+      status: string;
+      durationMs: number;
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.done';
+      runId: string;
+      workflowName: string;
+      status: string;
+      durationMs: number;
+      timestamp: string;
     };
 
 export interface StoredRunSummary {
@@ -1009,6 +1042,8 @@ export interface StoredRunSummary {
   usage?: Usage;
 }
 
+export type SessionStatus = 'active' | 'idle' | 'closed';
+
 export interface StoredSession {
   version: 1;
   id: string;
@@ -1021,6 +1056,8 @@ export interface StoredSession {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
+  lastActiveAt?: string;
+  status: SessionStatus;
   messages: MessageParam[];
   runs: StoredRunSummary[];
 }
@@ -1033,10 +1070,56 @@ export interface SessionSummary {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
+  lastActiveAt?: string;
+  status: SessionStatus;
   tags: string[];
   preview: string;
   messageCount: number;
   runCount: number;
+}
+
+export interface SessionManagerConfig {
+  maxSessions?: number;
+  idleTimeoutMs?: number;
+  maxConcurrentActive?: number;
+  cleanupIntervalMs?: number;
+}
+
+export interface SessionStats {
+  total: number;
+  active: number;
+  idle: number;
+  closed: number;
+}
+
+export interface SessionPruneParams {
+  olderThan?: string;
+  status?: SessionStatus;
+}
+
+export interface ParallelOptions {
+  maxConcurrency?: number;
+  failFast?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface RaceOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface SessionCheckpoint {
+  id: string;
+  label: string;
+  sessionId: string;
+  createdAt: string;
+  snapshot: StoredSession;
+}
+
+export interface SessionCheckpointSummary {
+  id: string;
+  label: string;
+  createdAt: string;
 }
 
 
