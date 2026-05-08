@@ -106,6 +106,7 @@ import { SessionManager } from './sessionManager.js';
 import { parallel, race } from './parallel.js';
 import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
+import { createOpenaiModelApi } from '../provider/openai-model-api.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
 import { asError, createId, deepClone, isRecord, nowIso, truncateText } from './helpers.js';
@@ -632,7 +633,11 @@ export class ActoviqAgentClient {
     const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
     const mailboxStore = new MailboxStore(config.sessionDirectory);
     const teammateStore = new TeammateStore(config.sessionDirectory);
-    const modelApi = options.modelApi ?? createActoviqModelApi(config);
+    const modelApi =
+      options.modelApi ??
+      (config.provider === 'openai'
+        ? createOpenaiModelApi(config)
+        : createActoviqModelApi(config));
     const mcpManager = new McpConnectionManager({
       name: config.clientName,
       version: config.clientVersion,

@@ -219,6 +219,7 @@ export interface ResolvedRuntimeConfig {
   userId?: string;
   metadata: Record<string, unknown>;
   compact: ActoviqCompactConfig;
+  provider: 'anthropic' | 'openai';
 }
 
 export interface ActoviqSessionStartHookContext {
@@ -531,6 +532,7 @@ export interface CreateAgentSdkOptions {
   classifier?: ActoviqToolClassifier;
   approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
+  provider?: 'anthropic' | 'openai';
   modelApi?: ModelApi;
   sessionManager?: SessionManagerConfig;
 }
