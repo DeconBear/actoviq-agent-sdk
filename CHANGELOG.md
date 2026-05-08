@@ -21,6 +21,7 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - **`SessionManager`** with idle timeout, auto-prune, stats, and lifecycle management
 - **Session checkpoints**: `saveCheckpoint()`, `restoreCheckpoint()`, `listCheckpoints()`, `deleteCheckpoint()`
 - **OpenAI protocol compatibility**: new `provider: 'openai'` option in `createAgentSdk()`. Use OpenAI, DeepSeek, or any OpenAI-compatible API with the same SDK surface. Automatic Anthropic ↔ OpenAI format translation.
+- **Alignment with Claude Code architecture**: tool self-declaration (isReadOnly/isDestructive/checkPermissions), canUseTool callback, compaction layered defense + circuit breaker, post-compaction context restoration, stop hooks system
 - Session lifecycle management: idle timeout, prune by age/status, close idle
 
 ### Docs
@@ -33,6 +34,10 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - Added `actoviq-platform.ts` — consolidated workspaces + swarm + session memory + dream
 - Removed 8 redundant examples (buddy, computer-use, dream, memory, session-memory, skills, swarm, workspaces)
 - 12 focused examples remaining
+
+### Fixes
+- 18 bugs across provider layer, runtime, and workflow engine
+- Missing public API exports (trackRecentFile, resolveActoviqStopHooks, etc.)
 
 ### Internal
 - Fixed regex for hyphenated step IDs in variable interpolation (`\w+` → `[\w-]+`)
