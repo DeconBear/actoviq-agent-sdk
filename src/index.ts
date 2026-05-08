@@ -138,6 +138,7 @@ export {
 export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
+export { OpenaiModelApi, createOpenaiModelApi } from './provider/openai-model-api.js';
 export {
   ActoviqSwarmApi,
   ActoviqSwarmTeam,

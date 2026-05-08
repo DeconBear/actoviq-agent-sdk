@@ -6,6 +6,7 @@ import type { CreateAgentSdkOptions, ResolvedRuntimeConfig } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
 
 const FALLBACK_MODEL = 'claude-sonnet-4-5-20250929';
+const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 const DEFAULT_COMPACT_CONFIG = {
   enabled: true,
   autoCompactThresholdTokens: 20_000,
@@ -54,6 +55,13 @@ export async function resolveRuntimeConfig(
     );
   }
 
+  const provider =
+    options.provider ??
+    (getConfigValue(envFromProcess, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
+    (getConfigValue(envFromLoadedConfig, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
+    'anthropic';
+
+  const fallbackModel = provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL;
   const model =
     options.model ??
     getConfigValue(envFromProcess, 'ACTOVIQ_MODEL') ??
@@ -61,7 +69,7 @@ export async function resolveRuntimeConfig(
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_SONNET_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_OPUS_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_HAIKU_MODEL') ??
-    FALLBACK_MODEL;
+    fallbackModel;
 
   return {
     homeDir,
@@ -90,5 +98,6 @@ export async function resolveRuntimeConfig(
       ...DEFAULT_COMPACT_CONFIG,
       ...(options.compact ?? {}),
     },
+    provider,
   };
 }

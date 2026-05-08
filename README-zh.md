@@ -36,7 +36,15 @@ import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
 
 await loadDefaultActoviqSettings();
 
+// 默认：Anthropic 协议
 const sdk = await createAgentSdk();
+
+// 或使用 OpenAI / OpenAI 兼容接口（DeepSeek、vLLM 等）
+const sdk = await createAgentSdk({
+  provider: 'openai',
+  baseURL: 'https://api.deepseek.com',
+  model: 'deepseek-chat',
+});
 
 try {
   const result = await sdk.run('请用一句话做自我介绍。');
@@ -63,7 +71,7 @@ npm run example:actoviq-agent-helpers
 推荐从这里开始上手：
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
-- [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
+- [examples/workflow.ts](./examples/workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
 
 ## 欢迎贡献

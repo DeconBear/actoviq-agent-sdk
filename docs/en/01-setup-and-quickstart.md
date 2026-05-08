@@ -38,6 +38,47 @@ Example:
 
 You can also keep a project-local JSON file and preload it with `loadJsonConfigFile(...)`.
 
+### Choosing a provider
+
+The SDK supports two provider protocols. Set `provider` in `createAgentSdk()` (default: `'anthropic'`).
+
+**Anthropic protocol** (default):
+
+```ts
+const sdk = await createAgentSdk({
+  // provider: 'anthropic' is the default
+  baseURL: 'https://api.anthropic.com',
+  apiKey: 'sk-ant-xxx',
+  model: 'claude-sonnet-4-6',
+});
+```
+
+**OpenAI protocol** — works with OpenAI, DeepSeek, vLLM, and any OpenAI-compatible API:
+
+```ts
+const sdk = await createAgentSdk({
+  provider: 'openai',
+  baseURL: 'https://api.openai.com',        // or https://api.deepseek.com
+  apiKey: 'sk-xxx',
+  model: 'gpt-4o',                          // or deepseek-chat
+});
+```
+
+The provider can also be set via environment variable or JSON config:
+
+```json
+{
+  "env": {
+    "ACTOVIQ_PROVIDER": "openai",
+    "ACTOVIQ_API_KEY": "sk-xxx",
+    "ACTOVIQ_BASE_URL": "https://api.deepseek.com",
+    "ACTOVIQ_MODEL": "deepseek-chat"
+  }
+}
+```
+
+The SDK automatically handles protocol translation. All APIs (`sdk.run()`, `session.send()`, `workflow`, `parallel()`, etc.) work identically regardless of which provider you choose.
+
 ## 3. Your first SDK call
 
 ```ts
