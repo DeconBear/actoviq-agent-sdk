@@ -34,6 +34,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      # npm bug #4828: lockfile from another platform omits native optional deps.
+      # Remove it so Linux gets @rolldown/binding-linux-x64-gnu at install time.
+      - name: Remove platform-specific lockfile
+        run: rm -f package-lock.json
+
       - name: Install dependencies
         run: npm install
 
