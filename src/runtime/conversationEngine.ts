@@ -23,7 +23,7 @@ import type {
 } from '../types.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
-import { resolveActoviqPostSamplingHooks } from '../hooks/actoviqHooks.js';
+import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
 import { getActoviqApiContextManagement } from './actoviqApiMicrocompact.js';
 import { decideActoviqToolPermission } from './actoviqPermissions.js';
 import {
@@ -52,6 +52,7 @@ export interface ExecuteConversationOptions {
   permissions?: AgentRunOptions['permissions'];
   classifier?: AgentRunOptions['classifier'];
   approver?: AgentRunOptions['approver'];
+  canUseTool?: AgentRunOptions['canUseTool'];
   hooks?: ActoviqHooks;
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
@@ -170,6 +171,52 @@ export async function executeConversation(
       });
     }
 
+    // Run stop hooks — allow termination or error injection before tool loop
+    const stopHooks = resolveActoviqStopHooks(options.hooks);
+    let preventContinuation = false;
+    let hookStopReason: string | undefined;
+    const hookDurations: Array<{ index: number; durationMs: number }> = [];
+    for (let hookIdx = 0; hookIdx < stopHooks.length; hookIdx++) {
+      const stopHook = stopHooks[hookIdx]!;
+      const hookStarted = Date.now();
+      const result = await stopHook({
+        runId: options.runId,
+        sessionId: options.sessionId,
+        messages: deepClone(conversation),
+        assistantMessage: deepClone(message),
+        systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
+        stopHookActive: true,
+      });
+      const durationMs = Date.now() - hookStarted;
+      hookDurations.push({ index: hookIdx, durationMs });
+      if (result?.preventContinuation) {
+        preventContinuation = true;
+        hookStopReason = result.stopReason ?? hookStopReason;
+      }
+      if (result?.blockingErrors && result.blockingErrors.length > 0) {
+        for (const err of result.blockingErrors) {
+          const msg = typeof err === 'string' ? err : `${err.command ? `[${err.command}] ` : ''}${err.reason}`;
+          conversation.push({
+            role: 'user',
+            content: `<system-reminder>\nStop hook reported blocking error: ${msg}\n</system-reminder>`,
+          });
+        }
+      }
+      if (result?.nonBlockingErrors && result.nonBlockingErrors.length > 0) {
+        for (const err of result.nonBlockingErrors) {
+          const msg = typeof err === 'string' ? err : `${err.command ? `[${err.command}] ` : ''}${err.reason}`;
+          options.emit?.({
+            type: 'response.text.delta',
+            runId: options.runId,
+            iteration,
+            delta: `\n[stop hook warning] ${msg}`,
+            snapshot: '',
+            timestamp: nowIso(),
+          });
+        }
+      }
+    }
+
     for (const block of message.content) {
       options.emit?.({
         type: 'response.content',
@@ -199,7 +246,7 @@ export async function executeConversation(
     });
 
     const toolUses = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use');
-    if (toolUses.length === 0) {
+    if (preventContinuation || toolUses.length === 0) {
       const completedAt = nowIso();
       if (!finalMessage) {
         throw new ActoviqSdkError('No final message was produced.');
@@ -212,6 +259,7 @@ export async function executeConversation(
         message: finalMessage,
         messages: conversation,
         stopReason: finalMessage.stop_reason ?? null,
+        hookStopReason,
         usage: finalMessage.usage,
         requests: requestSummaries,
         toolCalls,
@@ -270,6 +318,12 @@ export async function executeConversation(
           rules: options.permissions ?? [],
           classifier: options.classifier,
           approver: options.approver,
+          canUseTool: options.canUseTool,
+          adapter: {
+            isReadOnly: adapter.isReadOnly as ((input?: unknown) => boolean) | undefined,
+            requiresUserInteraction: adapter.requiresUserInteraction,
+            checkPermissions: adapter.checkPermissions,
+          },
           runId: options.runId,
           sessionId: options.sessionId,
           workDir: options.config.workDir,

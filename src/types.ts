@@ -58,7 +58,7 @@ export interface ActoviqPermissionDecision {
   publicName: string;
   behavior: 'allow' | 'deny';
   reason: string;
-  source: 'mode' | 'rule' | 'classifier' | 'approver';
+  source: 'mode' | 'rule' | 'classifier' | 'approver' | 'canUseTool';
   matchedRule?: string;
   timestamp: string;
 }
@@ -105,6 +105,25 @@ export type ActoviqToolApprover = (
   | ActoviqToolApprovalOutcome
   | void;
 
+export interface ActoviqCanUseToolContext {
+  runId: string;
+  sessionId?: string;
+  workDir: string;
+  toolName: string;
+  publicName: string;
+  input: unknown;
+  prompt: string;
+  iteration: number;
+}
+
+export type ActoviqCanUseToolResult =
+  | { behavior: 'allow' | 'deny' | 'ask'; reason?: string }
+  | void;
+
+export type ActoviqCanUseTool = (
+  context: ActoviqCanUseToolContext,
+) => Promise<ActoviqCanUseToolResult> | ActoviqCanUseToolResult;
+
 export interface CreateToolOptions<Input = any, Output = any> {
   name: string;
   description: string;
@@ -113,6 +132,13 @@ export interface CreateToolOptions<Input = any, Output = any> {
   serialize?: (output: Output) => string | ToolResultBlockParam['content'];
   strict?: boolean;
   examples?: Array<Record<string, unknown>>;
+  isReadOnly?: (input?: Input) => boolean;
+  isDestructive?: (input?: Input) => boolean;
+  requiresUserInteraction?: () => boolean;
+  isConcurrencySafe?: () => boolean;
+  checkPermissions?: (
+    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+  ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
 }
 
 export interface AgentToolDefinition<Input = any, Output = any> {
@@ -126,6 +152,13 @@ export interface AgentToolDefinition<Input = any, Output = any> {
   execute: (input: Input, context: ToolExecutionContext) => Promise<Output> | Output;
   strict?: boolean;
   examples?: Array<Record<string, unknown>>;
+  isReadOnly?: (input?: Input) => boolean;
+  isDestructive?: (input?: Input) => boolean;
+  requiresUserInteraction?: () => boolean;
+  isConcurrencySafe?: () => boolean;
+  checkPermissions?: (
+    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+  ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
 }
 
 export interface LocalMcpServerDefinition {
@@ -197,6 +230,13 @@ export interface ResolvedToolAdapter {
   mcpServerName?: string;
   providerTool: ProviderTool;
   execute: (input: unknown, context: ToolExecutionContext) => Promise<ResolvedToolExecutionResult>;
+  isReadOnly?: (input?: unknown) => boolean;
+  isDestructive?: (input?: unknown) => boolean;
+  requiresUserInteraction?: () => boolean;
+  isConcurrencySafe?: () => boolean;
+  checkPermissions?: (
+    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+  ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
 }
 
 export interface ResolvedRuntimeConfig {
@@ -282,10 +322,36 @@ export type ActoviqPostSamplingHook =
       context: ActoviqPostSamplingHookContext,
     ) => Promise<void> | void);
 
+export interface ActoviqStopHookContext {
+  runId: string;
+  sessionId?: string;
+  messages: MessageParam[];
+  assistantMessage: Message;
+  systemPrompt?: string;
+  stopHookActive: boolean;
+}
+
+export interface ActoviqHookBlockingError {
+  command?: string;
+  reason: string;
+}
+
+export interface ActoviqStopHookResult {
+  preventContinuation?: boolean;
+  stopReason?: string;
+  blockingErrors?: Array<string | ActoviqHookBlockingError>;
+  nonBlockingErrors?: Array<string | ActoviqHookBlockingError>;
+}
+
+export type ActoviqStopHook = (
+  context: ActoviqStopHookContext,
+) => Promise<ActoviqStopHookResult | void> | ActoviqStopHookResult | void;
+
 export interface ActoviqHooks {
   sessionStart?: ActoviqSessionStartHook[];
   postSampling?: ActoviqPostSamplingHook[];
   postRun?: ActoviqPostRunHook[];
+  stopHooks?: ActoviqStopHook[];
 }
 
 export interface ActoviqAgentDefinition {
@@ -602,6 +668,7 @@ export interface AgentRunOptions {
   permissions?: ActoviqPermissionRule[];
   classifier?: ActoviqToolClassifier;
   approver?: ActoviqToolApprover;
+  canUseTool?: ActoviqCanUseTool;
   signal?: AbortSignal;
 }
 
@@ -657,6 +724,7 @@ export interface AgentRunResult {
   messages: MessageParam[];
   surfacedMemories?: ActoviqSurfacedMemory[];
   stopReason: StopReason | null;
+  hookStopReason?: string;
   usage?: Usage;
   requests: AgentRequestSummary[];
   toolCalls: AgentToolCallRecord[];
@@ -740,7 +808,8 @@ export interface ActoviqSessionCompactResult {
     | 'threshold_not_met'
     | 'no_messages'
     | 'microcompact'
-    | 'compacted';
+    | 'compacted'
+    | 'circuit_breaker_open';
   tokenEstimateBefore: number;
   tokenEstimateAfter?: number;
   summaryMessage?: string;

@@ -98,6 +98,7 @@ export interface Tool {
   input_schema: Record<string, unknown>;
   strict?: boolean;
   input_examples?: Array<Record<string, unknown>>;
+  readonly?: boolean;
   [key: string]: unknown;
 }
 
