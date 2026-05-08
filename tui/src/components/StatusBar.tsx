@@ -19,7 +19,7 @@ export const StatusBar = memo(function StatusBar({
     permissionMode === 'plan' ? 'blue' : 'white';
 
   const modeLabel =
-    permissionMode === 'bypassPermissions' ? 'BYPASS' :
+    permissionMode === 'bypassPermissions' ? 'YOLO' :
     permissionMode === 'acceptEdits' ? 'ACCEPT' :
     permissionMode === 'plan' ? 'PLAN' : 'DEFAULT';
 
