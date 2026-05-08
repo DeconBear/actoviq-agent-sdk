@@ -24,6 +24,10 @@ import {
 export const ACTOVIQ_COMPACT_STATE_KEY = '__actoviqCompactState';
 export const ACTOVIQ_COMPACT_HISTORY_KEY = '__actoviqCompactHistory';
 export const ACTOVIQ_MICROCOMPACT_CLEARED_MESSAGE = '[Old tool result content cleared]';
+export const ACTOVIQ_RECENT_FILES_KEY = '__actoviqRecentFiles';
+export const ACTOVIQ_RECENT_SKILLS_KEY = '__actoviqRecentSkills';
+const MAX_RECENT_FILES = 5;
+const MAX_RECENT_SKILLS = 5;
 
 interface PersistedCompactState {
   compactCount: number;
@@ -51,6 +55,8 @@ const PROMPT_TOO_LONG_PATTERNS = [
   'request is too large',
 ];
 const MAX_COMPACT_PROMPT_TOO_LONG_RETRIES = 3;
+const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
+const compactionFailureCounts = new Map<string, number>();
 
 export interface ActoviqCompactExecutionContext {
   workDir: string;
@@ -310,6 +316,11 @@ function buildCompactSummaryPrompt(
     : '';
 
   return [
+    'CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.',
+    'You already have all the context you need in the conversation above.',
+    'Tool calls will be REJECTED — you will fail the task.',
+    'Your entire response must be plain text only.',
+    '',
     'Summarize the earlier portion of this engineering conversation for future continuation.',
     'Return only the summary text.',
     'Focus on concrete state, important decisions, active tasks, files, commands, errors, and next steps.',
@@ -341,6 +352,60 @@ function serializeMessagesForSummary(messages: readonly MessageParam[]): string 
     .join('\n\n');
 }
 
+export function trackRecentFile(session: StoredSession, filePath: string): void {
+  const files: string[] = (
+    Array.isArray(session.metadata[ACTOVIQ_RECENT_FILES_KEY])
+      ? session.metadata[ACTOVIQ_RECENT_FILES_KEY]
+      : []
+  ) as string[];
+  const deduped = files.filter((f) => f !== filePath);
+  deduped.push(filePath);
+  session.metadata[ACTOVIQ_RECENT_FILES_KEY] = deduped.slice(-MAX_RECENT_FILES);
+}
+
+export function trackRecentSkill(session: StoredSession, skillName: string): void {
+  const skills: string[] = (
+    Array.isArray(session.metadata[ACTOVIQ_RECENT_SKILLS_KEY])
+      ? session.metadata[ACTOVIQ_RECENT_SKILLS_KEY]
+      : []
+  ) as string[];
+  const deduped = skills.filter((s) => s !== skillName);
+  deduped.push(skillName);
+  session.metadata[ACTOVIQ_RECENT_SKILLS_KEY] = deduped.slice(-MAX_RECENT_SKILLS);
+}
+
+function buildPostCompactContextMessages(
+  session: StoredSession,
+): MessageParam[] {
+  const messages: MessageParam[] = [];
+  const recentFiles: string[] = (
+    Array.isArray(session.metadata[ACTOVIQ_RECENT_FILES_KEY])
+      ? session.metadata[ACTOVIQ_RECENT_FILES_KEY]
+      : []
+  ) as string[];
+  const recentSkills: string[] = (
+    Array.isArray(session.metadata[ACTOVIQ_RECENT_SKILLS_KEY])
+      ? session.metadata[ACTOVIQ_RECENT_SKILLS_KEY]
+      : []
+  ) as string[];
+
+  if (recentFiles.length > 0) {
+    messages.push({
+      role: 'user',
+      content: `<system-reminder>\nRecently accessed files (may be relevant to continue):\n${recentFiles.map((f) => `- ${f}`).join('\n')}\n</system-reminder>`,
+    });
+  }
+
+  if (recentSkills.length > 0) {
+    messages.push({
+      role: 'user',
+      content: `<system-reminder>\nPreviously invoked skills:\n${recentSkills.map((s) => `- ${s}`).join('\n')}\n</system-reminder>`,
+    });
+  }
+
+  return messages;
+}
+
 export async function compactActoviqSession(
   session: StoredSession,
   options: AgentSessionCompactOptions & { trigger: ActoviqCompactTrigger },
@@ -349,6 +414,22 @@ export async function compactActoviqSession(
   session: StoredSession;
   result: ActoviqSessionCompactResult;
 }> {
+  const consecutiveFailures = compactionFailureCounts.get(session.id) ?? 0;
+  if (consecutiveFailures >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
+    return {
+      session,
+      result: {
+        compacted: false,
+        trigger: options.trigger,
+        reason: 'circuit_breaker_open',
+        tokenEstimateBefore: estimateActoviqConversationTokens(session.messages),
+        compactCount: getPersistedActoviqCompactState(session.metadata).compactCount,
+        microcompactCount: getPersistedActoviqCompactState(session.metadata).microcompactCount,
+        state: context.runtimeState,
+      },
+    };
+  }
+
   const persistedState = getPersistedActoviqCompactState(session.metadata);
   const filteredMessages = filterActoviqMessagesForSessionMemory(session.messages);
   const compactableMessages =
@@ -390,7 +471,14 @@ export async function compactActoviqSession(
     };
   }
 
-  if (!options.force && tokenEstimateBefore < context.compactConfig.autoCompactThresholdTokens) {
+  // Recompaction-in-chain: if already compacted, use a higher effective threshold
+  // to avoid compact-then-immediately-recompact loops
+  const effectiveThreshold =
+    persistedState.lastTrigger === 'auto' || persistedState.lastTrigger === 'reactive'
+      ? context.compactConfig.autoCompactThresholdTokens * 1.5
+      : context.compactConfig.autoCompactThresholdTokens;
+
+  if (!options.force && tokenEstimateBefore < effectiveThreshold) {
     if (microcompacted.clearedCount > 0) {
       const cloned = structuredClone(session);
       cloned.messages = microcompacted.messages;
@@ -495,12 +583,14 @@ export async function compactActoviqSession(
         signal: options.signal,
       };
       response = await context.modelApi.createMessage(request);
+      compactionFailureCounts.delete(session.id);
       break;
     } catch (error) {
       if (
         retryCount >= MAX_COMPACT_PROMPT_TOO_LONG_RETRIES ||
         !isActoviqPromptTooLongError(error)
       ) {
+        compactionFailureCounts.set(session.id, consecutiveFailures + 1);
         throw error;
       }
 
@@ -521,7 +611,12 @@ export async function compactActoviqSession(
     pendingPostCompaction: true,
   };
 
-  const nextMessages = [buildPostCompactSummaryMessage(summary, options.trigger), ...messagesToKeep];
+  const contextMessages = buildPostCompactContextMessages(session);
+  const nextMessages = [
+    buildPostCompactSummaryMessage(summary, options.trigger),
+    ...contextMessages,
+    ...messagesToKeep,
+  ];
   const nextSession = structuredClone(session);
   const latestBoundary = getLatestPersistedCompactBoundary(nextSession);
   const continuationDepth = getPersistedCompactContinuationDepth(nextSession) + 1;

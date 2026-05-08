@@ -3,6 +3,7 @@ import type {
   ActoviqPostSamplingHook,
   ActoviqPostRunHook,
   ActoviqSessionStartHook,
+  ActoviqStopHook,
 } from '../types.js';
 import type { MessageParam } from '../provider/types.js';
 
@@ -38,8 +39,12 @@ export function mergeActoviqHooks(
     ...(base?.postRun ?? []),
     ...(extra?.postRun ?? []),
   ];
+  const stopHooks = [
+    ...(base?.stopHooks ?? []),
+    ...(extra?.stopHooks ?? []),
+  ];
 
-  if (sessionStart.length === 0 && postSampling.length === 0 && postRun.length === 0) {
+  if (sessionStart.length === 0 && postSampling.length === 0 && postRun.length === 0 && stopHooks.length === 0) {
     return undefined;
   }
 
@@ -47,6 +52,7 @@ export function mergeActoviqHooks(
     sessionStart: sessionStart.length > 0 ? sessionStart : undefined,
     postSampling: postSampling.length > 0 ? postSampling : undefined,
     postRun: postRun.length > 0 ? postRun : undefined,
+    stopHooks: stopHooks.length > 0 ? stopHooks : undefined,
   };
 }
 
@@ -62,6 +68,12 @@ export function resolveActoviqPostSamplingHooks(
   hooks?: ActoviqHooks,
 ): ActoviqPostSamplingHook[] {
   return hooks?.postSampling ?? [];
+}
+
+export function resolveActoviqStopHooks(
+  hooks?: ActoviqHooks,
+): ActoviqStopHook[] {
+  return hooks?.stopHooks ?? [];
 }
 
 export function normalizeActoviqHookMessages(messages: MessageParam[] | undefined): MessageParam[] {
