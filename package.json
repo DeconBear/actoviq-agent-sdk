@@ -53,7 +53,8 @@
     "example:checkpoint": "npm run build && tsx examples/checkpoint.ts",
     "example:workflow": "npm run build && tsx examples/workflow.ts",
     "example:workflow-annotated": "npm run build && tsx examples/workflow-annotated.ts",
-    "example:workflow-agent-orchestration": "npm run build && tsx examples/workflow-agent-orchestration.ts"
+    "example:workflow-agent-orchestration": "npm run build && tsx examples/workflow-agent-orchestration.ts",
+    "example:scheduling": "npm run build && tsx examples/scheduling.ts"
   },
   "keywords": [
     "agent",
