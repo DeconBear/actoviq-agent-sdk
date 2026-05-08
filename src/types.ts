@@ -1558,7 +1558,59 @@ export interface ActoviqBuddyPromptContextOptions extends ActoviqBuddyOptions {
   announcedNames?: string[];
 }
 
+// ─── Scheduling ───────────────────────────────────────────────
 
+export interface CronSchedule {
+  /** 5-field cron expression: "minute hour dayOfMonth month dayOfWeek" */
+  cron: string;
+  /** IANA timezone (e.g. "Asia/Shanghai"). Omit for local timezone. */
+  timezone?: string;
+}
 
+export interface ScheduledTaskDefinition<TOutput = unknown> {
+  id: string;
+  schedule: CronSchedule;
+  task: (context: ScheduledTaskContext) => Promise<TOutput> | TOutput;
+  description?: string;
+  enabled?: boolean;
+  maxRetries?: number;
+  retryDelayMs?: number;
+  timeoutMs?: number;
+}
+
+export interface ScheduledTaskContext {
+  taskId: string;
+  scheduledAt: string;
+  invocationCount: number;
+  previousResult?: unknown;
+}
+
+export interface ScheduledTaskRecord {
+  id: string;
+  schedule: string;
+  description?: string;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastResult?: 'success' | 'failure' | 'timeout';
+  lastError?: string;
+  nextRunAt: string;
+  invocationCount: number;
+  createdAt: string;
+}
+
+export interface ScheduledTaskStore {
+  save(task: ScheduledTaskRecord): Promise<void>;
+  load(id: string): Promise<ScheduledTaskRecord | undefined>;
+  list(): Promise<ScheduledTaskRecord[]>;
+  delete(id: string): Promise<void>;
+}
+
+export interface TaskSchedulerOptions {
+  tickIntervalMs?: number;
+  store?: ScheduledTaskStore;
+  defaultTimeoutMs?: number;
+  defaultMaxRetries?: number;
+  defaultRetryDelayMs?: number;
+}
 
 

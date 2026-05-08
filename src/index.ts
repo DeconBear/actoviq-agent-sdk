@@ -140,6 +140,8 @@ export {
   ActoviqBackgroundTaskManager,
   ActoviqBackgroundTasksApi,
 } from './runtime/actoviqBackgroundTasks.js';
+export { TaskScheduler, InMemoryTaskStore } from './scheduling/index.js';
+export { parseCron, nextCronTime, msUntilNextCron } from './scheduling/index.js';
 export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
