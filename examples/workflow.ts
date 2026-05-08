@@ -19,17 +19,15 @@ const sdk = await createAgentSdk();
 // ---- 1. Define and run a simple linear workflow ----
 const result1 = await sdk.workflow
   .define('code-review', 'Automated code review pipeline')
-  .step('typecheck', 'Type Check', 'Run type checking', 'Run tsc --noEmit on the project.')
+  .step('typecheck', 'Run type checking', 'Run tsc --noEmit on the project.')
   .step(
     'lint',
-    'Lint',
     'Run linter',
     'Run ESLint on the project, using the results from typecheck: $steps.typecheck.text',
     { dependsOn: ['typecheck'] },
   )
   .step(
     'report',
-    'Report',
     'Generate report',
     'Write a summary report combining typecheck ($steps.typecheck.text) and lint ($steps.lint.text) results.',
     { dependsOn: ['typecheck', 'lint'] },
@@ -58,13 +56,11 @@ const result2 = await sdk.workflow
   })
   .step(
     'checkout',
-    'Checkout',
     'Checkout the target branch',
     'Navigate to $REPO_PATH and checkout branch $BRANCH.',
   )
   .step(
     'verify',
-    'Verify',
     'Verify the branch',
     'Based on checkout result ($steps.checkout.text), verify everything is correct.',
     { dependsOn: ['checkout'] },
@@ -78,7 +74,6 @@ const result3 = await sdk.workflow
   .define('safe-read', 'Read-only analysis workflow')
   .step(
     'analyze',
-    'Analyze',
     'Read-only analysis',
     'Read and analyze project files to understand the structure.',
     { allowedTools: ['read', 'glob', 'grep'] },
@@ -96,20 +91,8 @@ const result4 = await sdk.workflow.run(
     name: 'event-demo',
     description: 'Workflow with event listener',
     steps: [
-      {
-        id: 'step1',
-        name: 'Step 1',
-        description: 'First step',
-        prompt: 'Say hello.',
-        dependsOn: [],
-      },
-      {
-        id: 'step2',
-        name: 'Step 2',
-        description: 'Second step',
-        prompt: 'Based on: $steps.step1.text — say goodbye.',
-        dependsOn: ['step1'],
-      },
+      { id: 'step1', description: 'First step', prompt: 'Say hello.', dependsOn: [] },
+      { id: 'step2', description: 'Second step', prompt: 'Based on: $steps.step1.text — say goodbye.', dependsOn: ['step1'] },
     ],
   },
   {},

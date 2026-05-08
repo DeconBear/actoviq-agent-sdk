@@ -590,6 +590,11 @@ export class ActoviqAgentClient {
     return (await this.listToolMetadata(options)).find(tool => tool.name === name);
   }
 
+  /** Resolve a tool definition by name from the default tool registry. */
+  getTool(name: string): AgentToolDefinition | undefined {
+    return this.defaultTools.find(t => t.name === name);
+  }
+
   async getToolCatalog(
     options?: import('../types.js').ActoviqCleanToolLookupOptions,
   ): Promise<import('../types.js').ActoviqCleanToolCatalog> {

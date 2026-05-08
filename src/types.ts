@@ -1018,7 +1018,7 @@ export type AgentEvent =
       runId: string;
       workflowName: string;
       stepId: string;
-      status: string;
+      status: 'completed' | 'failed' | 'skipped';
       durationMs: number;
       timestamp: string;
     }
@@ -1079,9 +1079,13 @@ export interface SessionSummary {
 }
 
 export interface SessionManagerConfig {
+  /** Maximum stored sessions. When exceeded, the oldest idle/closed sessions are evicted during `touch()`. */
   maxSessions?: number;
+  /** Mark session as idle after this many ms of inactivity. Default: 30 min. */
   idleTimeoutMs?: number;
+  /** NOT YET ENFORCED — reserved for future use. */
   maxConcurrentActive?: number;
+  /** Interval for auto-cleanup of closed sessions. Default: 5 min. */
   cleanupIntervalMs?: number;
 }
 

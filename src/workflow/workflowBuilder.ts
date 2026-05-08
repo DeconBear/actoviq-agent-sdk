@@ -9,11 +9,15 @@ import type {
 } from './types.js';
 
 interface StepOptions {
+  dependsOn?: string[];
   allowedTools?: string[];
+  tools?: (string | import('../types.js').AgentToolDefinition)[];
+  mcpServers?: WorkflowStepDefinition['mcpServers'];
+  skillDirectories?: string[];
   model?: string | null;
   systemPrompt?: string;
-  dependsOn?: string[];
-  mcpServers?: WorkflowStepDefinition['mcpServers'];
+  /** 'react' (default) = full tool-using loop; 'single' = one-shot answer, no tools. */
+  mode?: 'react' | 'single';
 }
 
 export class WorkflowBuilder {
@@ -44,23 +48,19 @@ export class WorkflowBuilder {
     return this;
   }
 
-  step(
-    id: string,
-    name: string,
-    description: string,
-    prompt: string,
-    opts: StepOptions = {},
-  ): this {
+  step(id: string, description: string, prompt: string, opts?: StepOptions): this {
     this.steps.push({
       id,
-      name,
       description,
       prompt,
-      allowedTools: opts.allowedTools,
-      model: opts.model,
-      systemPrompt: opts.systemPrompt,
-      mcpServers: opts.mcpServers,
-      dependsOn: opts.dependsOn ?? [],
+      tools: opts?.tools,
+      mcpServers: opts?.mcpServers,
+      allowedTools: opts?.allowedTools,
+      skillDirectories: opts?.skillDirectories,
+      model: opts?.model,
+      systemPrompt: opts?.systemPrompt,
+      mode: opts?.mode,
+      dependsOn: opts?.dependsOn ?? [],
     });
     return this;
   }
