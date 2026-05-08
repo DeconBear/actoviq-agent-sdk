@@ -4,6 +4,7 @@ import type {
   MessageParam,
   MessageStreamEvent,
   Tool as ProviderTool,
+  ToolChoice,
   ToolResultBlockParam,
   ToolUseBlock,
   Usage,
@@ -13,6 +14,8 @@ import type {
   OpenaiChatCompletion,
   OpenaiChatCompletionRequest,
   OpenaiMessage,
+  OpenaiMessageContentText,
+  OpenaiMessageContentImage,
   OpenaiTool,
 } from './openai-types.js';
 import OpenaiProviderClient, { OpenaiProviderMessageStream } from './openai-client.js';
@@ -30,14 +33,15 @@ function anthropicMessagesToOpenai(msgs: MessageParam[]): OpenaiMessage[] {
     }
 
     // Content is ContentBlockParam[]
-    const textParts: string[] = [];
+    const contentParts: (OpenaiMessageContentText | OpenaiMessageContentImage)[] = [];
     let toolCalls: OpenaiMessage['tool_calls'] | undefined;
+    let hasImage = false;
 
     for (const block of msg.content) {
       if (!isRecord(block)) continue;
 
       if (block.type === 'text' && typeof block.text === 'string') {
-        textParts.push(block.text);
+        contentParts.push({ type: 'text', text: block.text });
       } else if (block.type === 'tool_use' && typeof block.id === 'string') {
         const tc = block as ToolUseBlock;
         if (!toolCalls) toolCalls = [];
@@ -50,7 +54,6 @@ function anthropicMessagesToOpenai(msgs: MessageParam[]): OpenaiMessage[] {
           },
         });
       } else if (block.type === 'tool_result') {
-        // Convert to tool role message
         const tr = block as ToolResultBlockParam;
         const content = typeof tr.content === 'string'
           ? tr.content
@@ -64,33 +67,28 @@ function anthropicMessagesToOpenai(msgs: MessageParam[]): OpenaiMessage[] {
         });
       } else if (block.type === 'image' && 'source' in block && block.source) {
         const img = block as unknown as { source: { type?: string; media_type?: string; data?: string } };
-        openaiMsgs.push({
-          role: msg.role as 'user' | 'assistant',
-          content: [
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${img.source.media_type ?? 'image/png'};base64,${img.source.data ?? ''}`,
-              },
-            },
-          ],
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${img.source.media_type ?? 'image/png'};base64,${img.source.data ?? ''}`,
+          },
         });
+        hasImage = true;
       }
     }
 
     if (msg.role === 'assistant' && toolCalls && toolCalls.length > 0) {
       openaiMsgs.push({
         role: 'assistant',
-        content: textParts.join('') || null,
+        content: contentParts.length > 0 ? contentParts : null,
         tool_calls: toolCalls,
       });
-    } else if (textParts.length > 0 || msg.role === 'assistant') {
+    } else if (contentParts.length > 0 || msg.role === 'assistant' || hasImage) {
       openaiMsgs.push({
         role: msg.role as 'user' | 'assistant',
-        content: textParts.join('') || null,
+        content: contentParts.length > 0 ? contentParts : null,
       });
     }
-    // If neither text nor tool_calls, skip this message (empty or already handled as tool)
   }
 
   return openaiMsgs;
@@ -109,7 +107,7 @@ function providerToolsToOpenai(tools?: ProviderTool[]): OpenaiTool[] | undefined
   }));
 }
 
-function mapToolChoice(toolChoice?: ProviderTool['tool_choice']): OpenaiChatCompletionRequest['tool_choice'] {
+function mapToolChoice(toolChoice?: ToolChoice): OpenaiChatCompletionRequest['tool_choice'] {
   if (!toolChoice) return undefined;
   const tc = toolChoice as Record<string, unknown>;
   if (tc.type === 'none') return 'none';
@@ -190,6 +188,7 @@ function mapUsage(usage?: { prompt_tokens?: number; completion_tokens?: number; 
 class OpenaiStreamAdapter implements ModelStreamHandle {
   private started = false;
   private accumulated: OpenaiChatCompletionChunkAccumulator;
+  private startedBlockIndices = new Set<number>();
 
   constructor(
     private readonly inner: OpenaiProviderMessageStream,
@@ -237,6 +236,7 @@ class OpenaiStreamAdapter implements ModelStreamHandle {
           // Start a text content block on first content delta
           if (contentBlockIndex === -1) {
             contentBlockIndex = 0;
+            this.startedBlockIndices.add(contentBlockIndex);
             yield {
               type: 'content_block_start',
               index: contentBlockIndex,
@@ -255,6 +255,7 @@ class OpenaiStreamAdapter implements ModelStreamHandle {
             const blockIndex = tc.index + (contentBlockIndex >= 0 ? contentBlockIndex + 1 : 0);
             if (tc.id) {
               // New tool call block starting
+              this.startedBlockIndices.add(blockIndex);
               yield {
                 type: 'content_block_start',
                 index: blockIndex,
@@ -277,9 +278,10 @@ class OpenaiStreamAdapter implements ModelStreamHandle {
         }
 
         if (choice.finish_reason) {
-          // Stop content blocks
-          for (let i = 0; i <= contentBlockIndex; i++) {
-            yield { type: 'content_block_stop', index: i };
+          // Stop all content blocks that were started
+          const indices = [...this.startedBlockIndices].sort((a, b) => a - b);
+          for (const idx of indices) {
+            yield { type: 'content_block_stop', index: idx };
           }
           yield {
             type: 'message_delta',
@@ -334,7 +336,7 @@ class OpenaiChatCompletionChunkAccumulator {
           }
           const atc = acc.toolCalls.get(tc.index)!;
           if (tc.id) atc.id = tc.id;
-          if (tc.function?.name) atc.name += tc.function.name;
+          if (tc.function?.name) atc.name = tc.function.name;
           if (tc.function?.arguments) atc.args += tc.function.arguments;
         }
       }
@@ -401,7 +403,8 @@ export class OpenaiModelApi implements ModelApi {
       openaiMessages.unshift({ role: 'system', content: request.system });
     }
 
-    return {
+    const tc = request.tool_choice as Record<string, unknown> | undefined;
+    const body: OpenaiChatCompletionRequest = {
       model: request.model,
       messages: openaiMessages,
       max_completion_tokens: request.max_tokens,
@@ -410,6 +413,12 @@ export class OpenaiModelApi implements ModelApi {
       tool_choice: mapToolChoice(request.tool_choice),
       stop: request.stop_sequences,
     };
+
+    if (tc?.disable_parallel_tool_use !== undefined) {
+      body.parallel_tool_calls = !tc.disable_parallel_tool_use;
+    }
+
+    return body;
   }
 }
 

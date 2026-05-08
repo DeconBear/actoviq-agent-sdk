@@ -38,10 +38,11 @@ export class SessionManager {
     const existing = this.idleTimers.get(sessionId);
     if (existing) clearTimeout(existing);
 
-    this.idleTimers.set(
-      sessionId,
-      setTimeout(() => this.onIdle(sessionId), this.config.idleTimeoutMs),
+    const timer = setTimeout(
+      () => this.onIdle(sessionId, timer),
+      this.config.idleTimeoutMs,
     );
+    this.idleTimers.set(sessionId, timer);
 
     // Update lastActiveAt on the store
     await this.store.updateLastActiveAt(sessionId).catch(() => {
@@ -133,12 +134,17 @@ export class SessionManager {
     }
   }
 
-  private async onIdle(sessionId: string): Promise<void> {
-    this.idleTimers.delete(sessionId);
+  private async onIdle(sessionId: string, timer: ReturnType<typeof setTimeout>): Promise<void> {
+    // Only process if this timer is still the active one for this session
+    if (this.idleTimers.get(sessionId) !== timer) return;
     try {
       await this.store.updateStatus(sessionId, 'idle');
     } catch {
       /* session may have been deleted */
+    }
+    // Only clean up if timer hasn't been replaced by touch()
+    if (this.idleTimers.get(sessionId) === timer) {
+      this.idleTimers.delete(sessionId);
     }
   }
 

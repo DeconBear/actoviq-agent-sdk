@@ -370,7 +370,12 @@ function parseSsePayload(
     return { type: 'message_stop' };
   }
 
-  const parsed = JSON.parse(payload) as Record<string, unknown>;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
   if (!isRecord(parsed)) {
     return undefined;
   }
@@ -462,10 +467,10 @@ export default class ActoviqProviderClient {
     body: Record<string, unknown>,
     options?: ActoviqRequestOptions,
   ): Promise<Response> {
-    const requestSignal = makeTimeoutSignal(this.timeoutMs, options?.signal);
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const requestSignal = makeTimeoutSignal(this.timeoutMs, options?.signal);
       try {
         const response = await this.fetchImpl(normalizeMessagesUrl(this.baseURL), {
           method: 'POST',

@@ -566,7 +566,6 @@ export class ActoviqAgentClient {
       this.mailboxStore,
     );
     if (
-      this.agentDefinitions.size > 0 &&
       !this.defaultTools.some(tool => tool.name === 'Task')
     ) {
       this.defaultTools.unshift(this.createTaskTool());

@@ -205,7 +205,7 @@ export class OpenaiProviderMessageStream
             }
             const atc = acc.toolCalls.get(tc.index)!;
             if (tc.id) atc.id = tc.id;
-            if (tc.function?.name) atc.name += tc.function.name;
+            if (tc.function?.name) atc.name = tc.function.name;
             if (tc.function?.arguments) atc.args += tc.function.arguments;
           }
         }
@@ -297,10 +297,10 @@ export default class OpenaiProviderClient {
     body: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<Response> {
-    const requestSignal = makeTimeoutSignal(this.timeoutMs, signal);
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const requestSignal = makeTimeoutSignal(this.timeoutMs, signal);
       try {
         const response = await this.fetchImpl(normalizeChatUrl(this.baseURL), {
           method: 'POST',
