@@ -76,8 +76,15 @@ export {
   resolveActoviqPostSamplingHooks,
   resolveActoviqPostRunHooks,
   resolveActoviqSessionStartHooks,
+  resolveActoviqStopHooks,
 } from './hooks/actoviqHooks.js';
 export { createActoviqFileTools } from './tools/actoviqFileTools.js';
+export {
+  ACTOVIQ_RECENT_FILES_KEY,
+  ACTOVIQ_RECENT_SKILLS_KEY,
+  trackRecentFile,
+  trackRecentSkill,
+} from './runtime/actoviqCompact.js';
 export { SessionManager } from './runtime/sessionManager.js';
 export { parallel, race } from './runtime/parallel.js';
 export { WorkflowApi, WorkflowBuilder } from './workflow/workflowBuilder.js';
