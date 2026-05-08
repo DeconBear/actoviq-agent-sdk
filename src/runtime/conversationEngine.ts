@@ -113,7 +113,7 @@ export async function executeConversation(
       system: options.systemPrompt ?? options.config.systemPrompt,
       temperature: options.temperature ?? options.config.temperature,
       tools: resolvedTools.length > 0 ? resolvedTools.map((tool) => tool.providerTool) : undefined,
-      tool_choice: resolvedTools.length > 0 ? options.toolChoice : undefined,
+      tool_choice: options.toolChoice,
       metadata:
         options.userId ?? options.config.userId
           ? { user_id: options.userId ?? options.config.userId ?? null }

@@ -115,7 +115,7 @@ export class AgentSession {
   }
 
   get metadata(): Record<string, unknown> {
-    return { ...this.stored.metadata };
+    return deepClone(this.stored.metadata);
   }
 
   get tags(): string[] {
@@ -212,25 +212,28 @@ export class AgentSession {
   }
 
   async rename(title: string): Promise<void> {
-    this.stored.title = title;
-    this.stored.titleSource = 'manual';
-    this.stored.updatedAt = new Date().toISOString();
-    await this.store.save(this.stored);
+    const updatedAt = new Date().toISOString();
+    const updated = { ...this.stored, title, titleSource: 'manual' as const, updatedAt };
+    await this.store.save(updated);
+    this.stored = updated;
   }
 
   async setTags(tags: string[]): Promise<void> {
-    this.stored.tags = [...tags];
-    this.stored.updatedAt = new Date().toISOString();
-    await this.store.save(this.stored);
+    const updatedAt = new Date().toISOString();
+    const updated = { ...this.stored, tags: [...tags], updatedAt };
+    await this.store.save(updated);
+    this.stored = updated;
   }
 
   async mergeMetadata(metadata: Record<string, unknown>): Promise<void> {
-    this.stored.metadata = {
-      ...this.stored.metadata,
-      ...metadata,
+    const updatedAt = new Date().toISOString();
+    const updated = {
+      ...this.stored,
+      metadata: { ...this.stored.metadata, ...metadata },
+      updatedAt,
     };
-    this.stored.updatedAt = new Date().toISOString();
-    await this.store.save(this.stored);
+    await this.store.save(updated);
+    this.stored = updated;
   }
 
   async delete(): Promise<void> {

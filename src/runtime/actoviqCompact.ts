@@ -415,9 +415,9 @@ export async function compactActoviqSession(
       return {
         session: cloned,
         result: {
-          compacted: false,
+          compacted: true,
           trigger: options.trigger,
-          reason: 'threshold_not_met',
+          reason: 'microcompact',
           tokenEstimateBefore,
           tokenEstimateAfter: estimateActoviqConversationTokens(cloned.messages),
           compactCount: persistedState.compactCount,
