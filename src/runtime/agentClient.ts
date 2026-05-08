@@ -1377,6 +1377,7 @@ export class ActoviqAgentClient {
       permissions: options.permissions ?? this.defaultPermissions,
       classifier: options.classifier ?? this.defaultClassifier,
       approver: options.approver ?? this.defaultApprover,
+      canUseTool: options.canUseTool,
       hooks: augmentations?.hooks,
       streaming,
       emit,

@@ -75,6 +75,7 @@ export class McpConnectionManager {
               listedTool.description ??
               `Tool exposed by MCP server "${server.name}".`,
             input_schema: listedTool.inputSchema as ProviderTool['input_schema'],
+            readonly: (listedTool as { annotations?: { readOnlyHint?: boolean } }).annotations?.readOnlyHint ?? undefined,
           },
           execute: (input, context) =>
             this.callExternalTool(connection, listedTool.name, input, context),

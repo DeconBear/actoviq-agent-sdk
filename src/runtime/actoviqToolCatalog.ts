@@ -8,7 +8,6 @@ import type {
   AgentToolDefinition,
   ResolvedToolAdapter,
 } from '../types.js';
-import { isMutatingActoviqTool, isReadOnlyActoviqTool } from './actoviqPermissions.js';
 
 const FILE_TOOL_NAMES = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
 
@@ -64,8 +63,8 @@ export function summarizeActoviqResolvedTool(adapter: ResolvedToolAdapter): Acto
     category: inferActoviqCleanToolCategory(adapter),
     server: adapter.mcpServerName,
     strict: adapter.providerTool.strict ?? true,
-    readOnly: isReadOnlyActoviqTool(adapter.publicName),
-    mutating: isMutatingActoviqTool(adapter.publicName),
+    readOnly: adapter.isReadOnly?.(undefined) ?? false,
+    mutating: adapter.isReadOnly !== undefined && adapter.isReadOnly(undefined) === false,
     examples: adapter.providerTool.input_examples,
   };
 }

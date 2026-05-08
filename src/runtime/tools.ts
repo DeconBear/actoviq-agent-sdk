@@ -31,6 +31,11 @@ export function tool<Input, Output>(
     execute,
     strict: config.strict ?? true,
     examples: config.examples,
+    isReadOnly: config.isReadOnly,
+    isDestructive: config.isDestructive,
+    requiresUserInteraction: config.requiresUserInteraction,
+    isConcurrencySafe: config.isConcurrencySafe,
+    checkPermissions: config.checkPermissions,
   };
 }
 
@@ -68,6 +73,11 @@ export function createLocalToolAdapter(
     provider: mcpServerName ? 'mcp' : 'local',
     mcpServerName,
     providerTool: buildProviderTool(definition, publicName),
+    isReadOnly: definition.isReadOnly as ((input?: unknown) => boolean) | undefined,
+    isDestructive: definition.isDestructive as ((input?: unknown) => boolean) | undefined,
+    requiresUserInteraction: definition.requiresUserInteraction,
+    isConcurrencySafe: definition.isConcurrencySafe,
+    checkPermissions: definition.checkPermissions as ResolvedToolAdapter['checkPermissions'],
     execute: async (input: unknown, context: ToolExecutionContext) => {
       try {
         const parsedInput = await definition.inputSchema.parseAsync(input);
@@ -146,6 +156,7 @@ function buildProviderTool(
     input_schema: definition.inputJsonSchema as ProviderTool['input_schema'],
     strict: definition.strict ?? true,
     input_examples: definition.examples,
+    readonly: definition.isReadOnly?.(undefined) ?? undefined,
   };
 }
 

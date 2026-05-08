@@ -120,8 +120,6 @@ export {
 } from './runtime/actoviqSkills.js';
 export {
   decideActoviqToolPermission,
-  isMutatingActoviqTool,
-  isReadOnlyActoviqTool,
 } from './runtime/actoviqPermissions.js';
 export {
   ActoviqToolsApi,
