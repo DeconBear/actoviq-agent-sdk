@@ -739,6 +739,7 @@ export interface ActoviqSessionCompactResult {
     | 'disabled'
     | 'threshold_not_met'
     | 'no_messages'
+    | 'microcompact'
     | 'compacted';
   tokenEstimateBefore: number;
   tokenEstimateAfter?: number;
@@ -1028,9 +1029,10 @@ export type AgentEvent =
       type: 'workflow.done';
       runId: string;
       workflowName: string;
-      status: string;
+      status: 'completed' | 'partial' | 'failed';
       durationMs: number;
       timestamp: string;
+      errors?: Array<{ stepId: string; error: string }>;
     };
 
 export interface StoredRunSummary {

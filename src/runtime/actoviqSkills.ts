@@ -496,18 +496,18 @@ function interpolateSkillTemplate(
   const trimmedArgs = args.trim();
   const argValues = splitArgumentValues(trimmedArgs);
   let next = value
-    .replace(/\$ARGUMENTS\b/gu, trimmedArgs)
-    .replace(/\$\{ACTOVIQ_SKILL_ARGS\}/gu, trimmedArgs)
-    .replace(/\$\{ACTOVIQ_SESSION_ID\}/gu, context.sessionId ?? '')
-    .replace(/\$\{ACTOVIQ_SKILL_DIR\}/gu, normalizeSkillDir(definition.skillRoot));
+    .replace(/\$ARGUMENTS\b/gu, () => trimmedArgs)
+    .replace(/\$\{ACTOVIQ_SKILL_ARGS\}/gu, () => trimmedArgs)
+    .replace(/\$\{ACTOVIQ_SESSION_ID\}/gu, () => context.sessionId ?? '')
+    .replace(/\$\{ACTOVIQ_SKILL_DIR\}/gu, () => normalizeSkillDir(definition.skillRoot));
 
   for (const [index, token] of argValues.entries()) {
-    next = next.replace(new RegExp(`\\$\\{${index + 1}\\}`, 'gu'), token);
+    next = next.replace(new RegExp(`\\$\\{${index + 1}\\}`, 'gu'), () => token);
   }
 
   for (const [index, argName] of (definition.argNames ?? []).entries()) {
     const replacement = argValues[index] ?? '';
-    next = next.replace(new RegExp(`\\$\\{${escapeRegExp(argName)}\\}`, 'gu'), replacement);
+    next = next.replace(new RegExp(`\\$\\{${escapeRegExp(argName)}\\}`, 'gu'), () => replacement);
   }
 
   if (prependBaseDir && definition.skillRoot) {

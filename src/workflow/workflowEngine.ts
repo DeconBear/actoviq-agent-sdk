@@ -31,6 +31,7 @@ export class WorkflowEngine {
     options: WorkflowRunOptions,
   ): Promise<WorkflowRunResult> {
     const runId = createId();
+    const resolvedParams = resolveParameters(definition.parameters, params);
     const steps = definition.steps ?? [];
     const levels = topologicalSort(steps);
     const stepResults = new Map<string, WorkflowStepResult>();
@@ -90,7 +91,7 @@ export class WorkflowEngine {
 
       const results = await Promise.all(
         runnable.map((step) =>
-          this.executeStep(step, definition, params, stepResults, runId, options),
+          this.executeStep(step, definition, resolvedParams, stepResults, runId, options),
         ),
       );
 
@@ -121,6 +122,9 @@ export class WorkflowEngine {
     const lastCompleted = allResults.filter((r) => r.status === 'completed').pop();
     const workflowStatus = aggregateStatus(allResults);
     const durationMs = Date.now() - startedAt;
+    const errors = allResults
+      .filter((r) => r.status === 'failed' && r.error)
+      .map((r) => ({ stepId: r.id, error: r.error! }));
 
     emit(options, {
       type: 'workflow.done',
@@ -129,6 +133,7 @@ export class WorkflowEngine {
       status: workflowStatus,
       durationMs,
       timestamp: isoNow(),
+      ...(errors.length > 0 ? { errors } : {}),
     });
 
     return {
@@ -164,81 +169,149 @@ export class WorkflowEngine {
     // Resolve variable interpolation
     const prompt = resolveVariables(step.prompt, params, previousResults);
 
-    // Create an independent session for this step
-    const session = await this.sdk.createSession({
-      title: `${definition.name}/${stepName}`,
+    let session: Awaited<ReturnType<typeof this.sdk.createSession>> | undefined;
+
+    const maxAttempts = (step.retries ?? 0) + 1;
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // Create session on first attempt, reuse on retry
+        if (!session) {
+          session = await this.sdk.createSession({
+            title: `${definition.name}/${stepName}`,
+          });
+        }
+
+        const toolPermissions =
+          step.allowedTools?.map((toolName) => ({
+            toolName,
+            behavior: 'allow' as const,
+            source: `workflow:${definition.name}/${step.id}`,
+          })) ?? [];
+
+        const resolvedTools: AgentToolDefinition[] | undefined = step.tools
+          ?.map((t) => (typeof t === 'string' ? this.sdk.getTool(t) : t))
+          .filter((t): t is AgentToolDefinition => t !== undefined);
+
+        const isSingleMode = step.mode === 'single';
+
+        // Per-step timeout
+        const stepSignal = step.timeoutMs
+          ? AbortSignal.any(
+              [options.signal, AbortSignal.timeout(step.timeoutMs)].filter(
+                (s): s is AbortSignal => s !== undefined,
+              ),
+            )
+          : options.signal;
+
+        const result = await session.send(prompt, {
+          systemPrompt: step.systemPrompt ?? definition.systemPrompt,
+          model: step.model ?? definition.model ?? undefined,
+          tools: resolvedTools,
+          mcpServers: step.mcpServers,
+          signal: stepSignal,
+          permissions: toolPermissions.length > 0 ? toolPermissions : undefined,
+          toolChoice: isSingleMode ? { type: 'none' as const } : undefined,
+        });
+
+        const stepResult: WorkflowStepResult = {
+          id: step.id,
+          name: stepName,
+          status: 'completed',
+          text: result.text,
+          toolCalls: result.toolCalls.map((c: AgentToolCallRecord) => c.name),
+          durationMs: Date.now() - startedAt,
+          sessionId: session.id,
+        };
+
+        emit(options, {
+          type: 'step.done',
+          runId,
+          workflowName: definition.name,
+          stepId: step.id,
+          status: stepResult.status,
+          durationMs: stepResult.durationMs,
+          timestamp: isoNow(),
+        });
+
+        return stepResult;
+      } catch (err) {
+        lastError = asError(err);
+        if (attempt >= maxAttempts - 1) break;
+      }
+    }
+
+    const stepResult: WorkflowStepResult = {
+      id: step.id,
+      name: stepName,
+      status: 'failed',
+      text: '',
+      toolCalls: [],
+      durationMs: Date.now() - startedAt,
+      sessionId: session?.id ?? '',
+      error: lastError?.message ?? 'Unknown error',
+    };
+
+    emit(options, {
+      type: 'step.done',
+      runId,
+      workflowName: definition.name,
+      stepId: step.id,
+      status: stepResult.status,
+      durationMs: stepResult.durationMs,
+      timestamp: isoNow(),
     });
 
-    try {
-      const toolPermissions =
-        step.allowedTools?.map((toolName) => ({
-          toolName,
-          behavior: 'allow' as const,
-          source: `workflow:${definition.name}/${step.id}`,
-        })) ?? [];
+    return stepResult;
+  }
+}
 
-      const resolvedTools: AgentToolDefinition[] | undefined = step.tools
-        ?.map((t) => (typeof t === 'string' ? this.sdk.getTool(t) : t))
-        .filter((t): t is AgentToolDefinition => t !== undefined);
+function resolveParameters(
+  parameterDefs: Record<string, import('./types.js').WorkflowParameter> | undefined,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const resolved: Record<string, unknown> = { ...params };
+  if (!parameterDefs) return resolved;
 
-      const isSingleMode = step.mode === 'single';
-
-      const result = await session.send(prompt, {
-        systemPrompt: step.systemPrompt ?? definition.systemPrompt,
-        model: step.model ?? definition.model ?? undefined,
-        tools: resolvedTools,
-        mcpServers: step.mcpServers,
-        signal: options.signal,
-        permissions: toolPermissions.length > 0 ? toolPermissions : undefined,
-        toolChoice: isSingleMode ? { type: 'none' as const } : undefined,
-      });
-
-      const stepResult: WorkflowStepResult = {
-        id: step.id,
-        name: stepName,
-        status: 'completed',
-        text: result.text,
-        toolCalls: result.toolCalls.map((c: AgentToolCallRecord) => c.name),
-        durationMs: Date.now() - startedAt,
-        sessionId: session.id,
-      };
-
-      emit(options, {
-        type: 'step.done',
-        runId,
-        workflowName: definition.name,
-        stepId: step.id,
-        status: stepResult.status,
-        durationMs: stepResult.durationMs,
-        timestamp: isoNow(),
-      });
-
-      return stepResult;
-    } catch (err) {
-      const stepResult: WorkflowStepResult = {
-        id: step.id,
-        name: stepName,
-        status: 'failed',
-        text: '',
-        toolCalls: [],
-        durationMs: Date.now() - startedAt,
-        sessionId: session.id,
-        error: asError(err).message,
-      };
-
-      emit(options, {
-        type: 'step.done',
-        runId,
-        workflowName: definition.name,
-        stepId: step.id,
-        status: stepResult.status,
-        durationMs: stepResult.durationMs,
-        timestamp: isoNow(),
-      });
-
-      return stepResult;
+  for (const [name, def] of Object.entries(parameterDefs)) {
+    if (params[name] === undefined && def.default !== undefined) {
+      resolved[name] = def.default;
+    }
+    if (def.required && resolved[name] === undefined) {
+      throw new Error(
+        `Workflow parameter "${name}" is required but was not provided.`,
+      );
+    }
+    // Convert type
+    if (resolved[name] !== undefined) {
+      switch (def.type) {
+        case 'json':
+          if (typeof resolved[name] !== 'object' || resolved[name] === null) {
+            try {
+              resolved[name] = JSON.parse(String(resolved[name]));
+            } catch {
+              throw new Error(
+                `Workflow parameter "${name}" type is "json" but could not parse: ${String(resolved[name])}`,
+              );
+            }
+          }
+          break;
+        case 'number':
+          resolved[name] = Number(resolved[name]);
+          break;
+        case 'boolean':
+          resolved[name] =
+            resolved[name] === 'true' || resolved[name] === true;
+          break;
+        case 'string':
+          resolved[name] = String(resolved[name]);
+          break;
+      }
     }
   }
+
+  return resolved;
 }
 
 function resolveVariables(
@@ -303,6 +376,17 @@ function topologicalSort(
     }
     queue.length = 0;
     queue.push(...next);
+  }
+
+  // Detect cycles and dangling references
+  const scheduledCount = levels.reduce((sum, l) => sum + l.length, 0);
+  if (scheduledCount !== steps.length) {
+    const scheduled = new Set(levels.flat().map((s) => s.id));
+    const unscheduled = steps.filter((s) => !scheduled.has(s.id));
+    const ids = unscheduled.map((s) => s.id).join(', ');
+    throw new Error(
+      `Workflow has circular dependencies or references non-existent steps: ${ids}`,
+    );
   }
 
   return levels;

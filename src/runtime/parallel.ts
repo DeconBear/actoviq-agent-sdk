@@ -89,6 +89,8 @@ export async function race<T>(
         );
       }),
     );
+    // Suppress unhandled rejection when another contender wins first
+    contenders[contenders.length - 1]!.catch(() => {});
   }
 
   if (signal) {
@@ -102,6 +104,7 @@ export async function race<T>(
         }
       }),
     );
+    contenders[contenders.length - 1]!.catch(() => {});
   }
 
   try {
