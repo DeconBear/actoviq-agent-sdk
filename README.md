@@ -36,7 +36,15 @@ import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
 
 await loadDefaultActoviqSettings();
 
+// Default: Anthropic protocol
 const sdk = await createAgentSdk();
+
+// Or use OpenAI / OpenAI-compatible APIs (DeepSeek, vLLM, etc.)
+const sdk = await createAgentSdk({
+  provider: 'openai',
+  baseURL: 'https://api.deepseek.com',
+  model: 'deepseek-chat',
+});
 
 try {
   const result = await sdk.run('Introduce yourself in one short sentence.');
@@ -63,7 +71,7 @@ npm run example:actoviq-agent-helpers
 Start with these examples:
 
 - [examples/quickstart.ts](./examples/quickstart.ts)
-- [examples/actoviq-skills.ts](./examples/actoviq-skills.ts)
+- [examples/workflow.ts](./examples/workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
 
 ## Contributing

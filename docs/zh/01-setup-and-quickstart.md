@@ -38,6 +38,47 @@ npm install
 
 如果你不想使用默认位置，也可以在代码里先调用 `loadJsonConfigFile(...)` 加载任意路径的 JSON。
 
+### 选择协议提供方
+
+SDK 支持两种协议。在 `createAgentSdk()` 中设置 `provider`（默认 `'anthropic'`）。
+
+**Anthropic 协议**（默认）：
+
+```ts
+const sdk = await createAgentSdk({
+  // provider: 'anthropic' 为默认值
+  baseURL: 'https://api.anthropic.com',
+  apiKey: 'sk-ant-xxx',
+  model: 'claude-medium-4-6',
+});
+```
+
+**OpenAI 协议** — 兼容 OpenAI、DeepSeek、vLLM 及任何 OpenAI 兼容接口：
+
+```ts
+const sdk = await createAgentSdk({
+  provider: 'openai',
+  baseURL: 'https://api.openai.com',        // 或 https://api.deepseek.com
+  apiKey: 'sk-xxx',
+  model: 'gpt-4o',                          // 或 deepseek-chat
+});
+```
+
+也可以通过环境变量或 JSON 配置文件设置：
+
+```json
+{
+  "env": {
+    "ACTOVIQ_PROVIDER": "openai",
+    "ACTOVIQ_API_KEY": "sk-xxx",
+    "ACTOVIQ_BASE_URL": "https://api.deepseek.com",
+    "ACTOVIQ_MODEL": "deepseek-chat"
+  }
+}
+```
+
+SDK 自动处理协议转换。无论选择哪种协议，所有 API（`sdk.run()`、`session.send()`、`workflow`、`parallel()` 等）的使用方式完全一致。
+
 ## 3. 第一个 SDK 调用
 
 ```ts
