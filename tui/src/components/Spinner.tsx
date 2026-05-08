@@ -13,15 +13,17 @@ interface SpinnerProps {
 export function Spinner({ visible }: SpinnerProps) {
   const [frame, setFrame] = useState(0);
   const [verb] = useState(() => VERBS[Math.floor(Math.random() * VERBS.length)]!);
-  const [startTime] = useState(() => Date.now());
+  const [startTime, setStartTime] = useState(0);
   const [show, setShow] = useState(false);
 
-  // Minimum 300ms before showing spinner
+  // Reset startTime when spinner becomes visible
   useEffect(() => {
     if (!visible) {
       setShow(false);
+      setStartTime(0);
       return;
     }
+    setStartTime(Date.now());
     const timer = setTimeout(() => setShow(true), 300);
     return () => clearTimeout(timer);
   }, [visible]);
@@ -36,7 +38,7 @@ export function Spinner({ visible }: SpinnerProps) {
   if (!show) return null;
 
   const dots = '.'.repeat(frame + 1);
-  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  const elapsed = startTime > 0 ? Math.floor((Date.now() - startTime) / 1000) : 0;
 
   return (
     <Box marginY={1}>

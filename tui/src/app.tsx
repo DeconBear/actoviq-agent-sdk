@@ -204,6 +204,10 @@ export function App({ client, initialModel }: AppProps) {
     setInputHistory((prev) => [...prev, text]);
     await send(activeSession, text, {
       onPermissionRequest: async (toolName, args, toolDesc) => {
+        // YOLO mode: auto-approve all tool calls without prompting
+        if (permissionMode === 'bypassPermissions') {
+          return true;
+        }
         return new Promise<boolean>((resolve) => {
           setPermissionDialog({
             toolName,
@@ -214,7 +218,7 @@ export function App({ client, initialModel }: AppProps) {
         });
       },
     });
-  }, [activeSession, commandRegistry, send, clearMessages, appendSystemMessage, autocomplete]);
+  }, [activeSession, commandRegistry, send, clearMessages, appendSystemMessage, autocomplete, permissionMode]);
 
   // ── Navigation ────────────────────────────────────────────────
   const [historyIdx, setHistoryIdx] = useState(-1);
