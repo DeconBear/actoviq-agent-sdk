@@ -47,6 +47,9 @@ export class SessionManager {
     await this.store.updateLastActiveAt(sessionId).catch(() => {
       /* silent */
     });
+
+    // Enforce maxSessions: if over limit, prune oldest idle/closed sessions
+    await this.enforceMaxSessions();
   }
 
   async getStats(): Promise<{ total: number; active: number; idle: number; closed: number }> {
@@ -94,6 +97,28 @@ export class SessionManager {
       }
     }
     return closed;
+  }
+
+  private async enforceMaxSessions(): Promise<void> {
+    const all = await this.store.list();
+    const over = all.length - this.config.maxSessions;
+    if (over <= 0) return;
+
+    // Sort by lastActiveAt ascending (oldest first), then evict idle/closed
+    const sorted = all
+      .filter((s) => s.status === 'idle' || s.status === 'closed')
+      .sort((a, b) => {
+        const aTime = new Date(a.lastActiveAt ?? a.lastRunAt ?? a.updatedAt ?? 0).getTime();
+        const bTime = new Date(b.lastActiveAt ?? b.lastRunAt ?? b.updatedAt ?? 0).getTime();
+        return aTime - bTime;
+      });
+
+    for (let i = 0; i < sorted.length && i < over; i++) {
+      const s = sorted[i];
+      if (!s) continue;
+      this.clearIdleTimer(s.id);
+      await this.store.delete(s.id);
+    }
   }
 
   dispose(): void {

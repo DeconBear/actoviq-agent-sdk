@@ -120,4 +120,33 @@ describe('SessionManager', () => {
     const updated = await store.load(session.id);
     expect(updated.status).toBe('active');
   });
+
+  it('enforces maxSessions by evicting oldest idle/closed sessions', async () => {
+    const store = await createStore();
+    const manager = new SessionManager(store, { maxSessions: 3 });
+
+    // Create 5 sessions
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const s = await store.create({ title: `Session ${i}` });
+      // Set distinct lastActiveAt — oldest first
+      s.lastActiveAt = new Date(Date.now() - (5 - i) * 3600_000).toISOString();
+      await store.save(s);
+      ids.push(s.id);
+    }
+
+    // Mark sessions 0-1 as idle, 2-3 as closed, 4 as active
+    await store.updateStatus(ids[0]!, 'idle');
+    await store.updateStatus(ids[1]!, 'idle');
+    await store.updateStatus(ids[2]!, 'closed');
+    await store.updateStatus(ids[3]!, 'closed');
+
+    // Touch session 4 (active) — triggers eviction of oldest idle/closed
+    await manager.touch(ids[4]!);
+
+    const remaining = await store.list();
+    expect(remaining.length).toBeLessThanOrEqual(3);
+    // Active session should survive
+    expect(remaining.some((s) => s.id === ids[4])).toBe(true);
+  });
 });

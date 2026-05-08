@@ -12,7 +12,6 @@ export async function parallel<T>(
   const results = new Array<T>(tasks.length);
   const errors: Array<{ index: number; error: Error }> = [];
   let nextIndex = 0;
-  let running = 0;
   let done = false;
 
   const worker = async (): Promise<void> => {
@@ -37,7 +36,6 @@ export async function parallel<T>(
   const workers: Promise<void>[] = [];
   for (let i = 0; i < Math.min(maxConcurrency, tasks.length); i++) {
     workers.push(worker());
-    running++;
   }
 
   // Wait for all workers to settle, collecting the first error for failFast
@@ -80,14 +78,16 @@ export async function race<T>(
     t().then((value) => ({ value })),
   );
 
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
   if (timeoutMs !== undefined) {
     contenders.push(
-      new Promise<never>((_, reject) =>
-        setTimeout(
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
           () => reject(new ActoviqSdkError(`race() timed out after ${timeoutMs}ms`)),
           timeoutMs,
-        ),
-      ),
+        );
+      }),
     );
   }
 
@@ -97,14 +97,17 @@ export async function race<T>(
         if (signal.aborted) {
           reject(new ActoviqSdkError('race() aborted'));
         } else {
-          signal.addEventListener('abort', () =>
-            reject(new ActoviqSdkError('race() aborted')),
-          );
+          const onAbort = () => reject(new ActoviqSdkError('race() aborted'));
+          signal.addEventListener('abort', onAbort, { once: true });
         }
       }),
     );
   }
 
-  const winner = await Promise.race(contenders);
-  return winner.value;
+  try {
+    const winner = await Promise.race(contenders);
+    return winner.value;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
 }

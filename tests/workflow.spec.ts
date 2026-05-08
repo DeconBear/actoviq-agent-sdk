@@ -59,8 +59,7 @@ describe('WorkflowEngine', () => {
       steps: [
         {
           id: 'step1',
-          name: 'Step 1',
-          description: 'First step',
+          description: 'Step 1',
           prompt: 'Do something',
           dependsOn: [],
         },
@@ -111,9 +110,9 @@ describe('WorkflowEngine', () => {
       name: 'dag-test',
       description: 'DAG test',
       steps: [
-        { id: 'a', name: 'A', description: 'Step A', prompt: 'Do A', dependsOn: [] },
-        { id: 'b', name: 'B', description: 'Step B', prompt: 'Do B', dependsOn: ['a'] },
-        { id: 'c', name: 'C', description: 'Step C', prompt: 'Do C', dependsOn: ['b'] },
+        { id: 'a', description: 'A', prompt: 'Do A', dependsOn: [] },
+        { id: 'b', description: 'B', prompt: 'Do B', dependsOn: ['a'] },
+        { id: 'c', description: 'C', prompt: 'Do C', dependsOn: ['b'] },
       ],
     };
 
@@ -160,8 +159,8 @@ describe('WorkflowEngine', () => {
       name: 'parallel-test',
       description: 'Parallel test',
       steps: [
-        { id: 'a', name: 'A', description: 'Step A', prompt: 'Do A', dependsOn: [] },
-        { id: 'b', name: 'B', description: 'Step B', prompt: 'Do B', dependsOn: [] },
+        { id: 'a', description: 'A', prompt: 'Do A', dependsOn: [] },
+        { id: 'b', description: 'B', prompt: 'Do B', dependsOn: [] },
       ],
     };
 
@@ -209,14 +208,8 @@ describe('WorkflowEngine', () => {
       name: 'var-test',
       description: 'Variable interpolation test',
       steps: [
-        { id: 'a', name: 'A', description: 'Step A', prompt: 'Do A', dependsOn: [] },
-        {
-          id: 'b',
-          name: 'B',
-          description: 'Step B',
-          prompt: 'Summary from step A: $steps.a.text',
-          dependsOn: ['a'],
-        },
+        { id: 'a', description: 'Step A', prompt: 'Do A', dependsOn: [] },
+        { id: 'b', description: 'Step B', prompt: 'Summary from step A: $steps.a.text', dependsOn: ['a'] },
       ],
     };
 
@@ -254,13 +247,7 @@ describe('WorkflowEngine', () => {
       name: 'param-test',
       description: 'Parameter test',
       steps: [
-        {
-          id: 'a',
-          name: 'A',
-          description: 'Step A',
-          prompt: 'Check $REPO_PATH for issues in $BRANCH',
-          dependsOn: [],
-        },
+        { id: 'a', description: 'Step A', prompt: 'Check $REPO_PATH for issues in $BRANCH', dependsOn: [] },
       ],
     };
 
@@ -309,8 +296,8 @@ describe('WorkflowEngine', () => {
       name: 'fail-test',
       description: 'Failure test',
       steps: [
-        { id: 'a', name: 'A', description: 'Step A', prompt: 'Do A', dependsOn: [] },
-        { id: 'b', name: 'B', description: 'Step B', prompt: 'Do B', dependsOn: ['a'] },
+        { id: 'a', description: 'A', prompt: 'Do A', dependsOn: [] },
+        { id: 'b', description: 'B', prompt: 'Do B', dependsOn: ['a'] },
       ],
     };
 
@@ -324,6 +311,65 @@ describe('WorkflowEngine', () => {
     expect(result.status).toBe('failed');
   });
 
+  it('skips only steps whose dependencies failed, not all subsequent steps', async () => {
+    const executionOrder: string[] = [];
+    const sdk = {
+      config: { workDir: '/tmp/test' },
+      createSession: vi.fn(async (opts: { title: string }) => {
+        const stepName = opts.title.split('/')[1] ?? 'unknown';
+        return {
+          id: `sess_${stepName}`,
+          title: opts.title,
+          send: async (_prompt: string, _opts: Record<string, unknown>) => {
+            executionOrder.push(stepName);
+            if (stepName === 'A') throw new Error('Step A failed');
+            return {
+              text: `result: ${stepName}`,
+              toolCalls: [],
+              runId: 'run-1',
+              model: 'test-model',
+              message: { id: 'msg_1', type: 'message' as const, role: 'assistant' as const, content: [], model: 'test-model', stop_reason: 'end_turn' as const, usage: { input_tokens: 10, output_tokens: 5 } },
+              messages: [],
+              stopReason: 'end_turn' as const,
+              requests: [],
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+            };
+          },
+        };
+      }),
+    };
+
+    const engine = new WorkflowEngine(sdk as never);
+
+    const definition: WorkflowDefinition = {
+      name: 'mixed-fail-test',
+      description: 'Mixed failure test',
+      steps: [
+        { id: 'a', description: 'A', prompt: 'Do A', dependsOn: [] },
+        { id: 'c', description: 'C', prompt: 'Do C', dependsOn: [] },
+        { id: 'b', description: 'B', prompt: 'Do B', dependsOn: ['a'] },
+        { id: 'd', description: 'D', prompt: 'Do D', dependsOn: ['c'] },
+      ],
+    };
+
+    const result = await engine.run(definition, {}, { workDir: '/tmp/test' });
+
+    const stepA = result.steps.find((s) => s.id === 'a')!;
+    const stepB = result.steps.find((s) => s.id === 'b')!;
+    const stepC = result.steps.find((s) => s.id === 'c')!;
+    const stepD = result.steps.find((s) => s.id === 'd')!;
+
+    expect(stepA.status).toBe('failed');
+    expect(stepB.status).toBe('skipped');    // depends on failed A
+    expect(stepC.status).toBe('completed');  // same level as A, but independent
+    expect(stepD.status).toBe('completed');  // depends on successful C
+    expect(executionOrder).toContain('C');
+    expect(executionOrder).toContain('D');
+    expect(executionOrder).not.toContain('B');
+    expect(result.status).toBe('partial');
+  });
+
   it('emits workflow events via onEvent callback', async () => {
     const sdk = createMockSdk();
     const engine = new WorkflowEngine(sdk as never);
@@ -333,7 +379,7 @@ describe('WorkflowEngine', () => {
       name: 'event-test',
       description: 'Event test',
       steps: [
-        { id: 'a', name: 'A', description: 'Step A', prompt: 'Do A', dependsOn: [] },
+        { id: 'a', description: 'Step A', prompt: 'Do A', dependsOn: [] },
       ],
     };
 
@@ -380,7 +426,6 @@ describe('WorkflowEngine', () => {
       steps: [
         {
           id: 'a',
-          name: 'A',
           description: 'Step A',
           prompt: 'Do A',
           dependsOn: [],
