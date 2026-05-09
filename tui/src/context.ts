@@ -29,26 +29,3 @@ export interface PermissionState {
 }
 
 export type OverlayPanel = 'transcript' | 'todos' | 'help' | 'model-picker' | 'sessions' | 'memory' | null;
-
-// ── Legacy types for backward compat during migration ─────────────
-
-export interface UIToolCall {
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
-  result?: string;
-  status: ToolStatus;
-  durationMs?: number;
-}
-
-export interface PermissionDialogState {
-  toolName: string;
-  toolDescription?: string;
-  arguments: Record<string, unknown>;
-  resolve: (decision: PermissionDecision) => void;
-}
-
-export type PermissionDecision =
-  | { behavior: 'allow' }
-  | { behavior: 'deny'; reason?: string }
-  | { behavior: 'always'; toolName: string };

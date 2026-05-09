@@ -49,11 +49,6 @@ export function InputArea({
     [onSubmit, onInputChange],
   );
 
-  // Handle Tab: complete with first suggestion, notify parent
-  const handleTab = useCallback(() => {
-    onTabComplete?.();
-  }, [onTabComplete]);
-
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={1}>
       <Box flexDirection="row" gap={1}>

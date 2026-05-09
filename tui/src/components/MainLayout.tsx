@@ -6,10 +6,8 @@ import { Messages } from './Messages.js';
 import { Spinner } from './Spinner.js';
 import { InputArea } from './input/InputArea.js';
 import { PermissionDialog } from './modals/PermissionDialog.js';
-import { SlashCommandOverlay } from './SlashCommandOverlay.js';
 import type { UIMessage, ContentBlock, PermissionState } from '../context.js';
 import type { ActoviqPermissionMode } from 'actoviq-agent-sdk';
-import type { CompletionItem } from '../hooks/useAutocomplete.js';
 
 interface MainLayoutProps {
   sessionName: string;
@@ -28,6 +26,8 @@ interface MainLayoutProps {
   onInputChange?: (value: string) => void;
   onTabComplete?: () => void;
   suppressChar?: (value: string) => string;
+  startedAt?: string;
+  scrollOffset?: number;
 }
 
 export function MainLayout({
@@ -36,7 +36,7 @@ export function MainLayout({
   permissionDialog, overlay,
   inputHistory, inputValue,
   onSend, onInputChange, onTabComplete,
-  suppressChar,
+  suppressChar, startedAt, scrollOffset,
 }: MainLayoutProps) {
   const scrollable = (
     <Box flexDirection="column" flexGrow={1}>
@@ -44,6 +44,7 @@ export function MainLayout({
         messages={messages}
         streamingBlocks={streamingBlocks}
         error={error}
+        scrollOffset={scrollOffset}
       />
       <Spinner visible={streaming && streamingBlocks.length === 0} />
     </Box>
@@ -51,9 +52,7 @@ export function MainLayout({
 
   const bottom = (
     <Box flexDirection="column">
-      {overlay}
-      {permissionDialog && <PermissionDialog state={permissionDialog} />}
-        <InputArea
+      <InputArea
         onSubmit={onSend}
         onInputChange={onInputChange}
         onTabComplete={onTabComplete}
@@ -67,6 +66,7 @@ export function MainLayout({
         permissionMode={permissionMode}
         streaming={streaming}
         messageCount={messages.length}
+        startedAt={startedAt}
       />
     </Box>
   );
@@ -75,8 +75,8 @@ export function MainLayout({
     <FullscreenLayout
       scrollable={scrollable}
       bottom={bottom}
-      overlay={null}
-      modal={null}
+      overlay={overlay}
+      modal={permissionDialog ? <PermissionDialog state={permissionDialog} /> : null}
     />
   );
 }

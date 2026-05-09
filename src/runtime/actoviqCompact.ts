@@ -406,6 +406,61 @@ function buildPostCompactContextMessages(
   return messages;
 }
 
+/**
+ * Extend the preserve-start index backwards so that any tool_result blocks
+ * in the preserved portion have their corresponding tool_use blocks also
+ * preserved.  Without this, compaction can create orphaned tool_result
+ * blocks that cause provider-side HTTP 400 errors ("unexpected tool_use_id").
+ */
+function extendPreserveToIncludeReferencedToolUses(
+  messages: readonly MessageParam[],
+  preserveStart: number,
+): number {
+  if (preserveStart <= 0 || preserveStart >= messages.length) {
+    return preserveStart;
+  }
+
+  const kept = messages.slice(preserveStart);
+  const referencedIds = new Set<string>();
+  for (const msg of kept) {
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (
+        isRecord(block) &&
+        block.type === 'tool_result' &&
+        typeof block.tool_use_id === 'string'
+      ) {
+        referencedIds.add(block.tool_use_id);
+      }
+    }
+  }
+
+  if (referencedIds.size === 0) return preserveStart;
+
+  // Walk backwards from preserveStart - 1 to find assistant messages that
+  // contain any of the referenced tool_use blocks.  Extend preserveStart
+  // to include the earliest such assistant message.
+  let extended = preserveStart;
+  for (let i = preserveStart - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (
+        isRecord(block) &&
+        block.type === 'tool_use' &&
+        typeof block.id === 'string' &&
+        referencedIds.has(block.id)
+      ) {
+        referencedIds.delete(block.id);
+        extended = Math.min(extended, i);
+      }
+    }
+    if (referencedIds.size === 0) break;
+  }
+
+  return extended;
+}
+
 export async function compactActoviqSession(
   session: StoredSession,
   options: AgentSessionCompactOptions & { trigger: ActoviqCompactTrigger },
@@ -533,7 +588,17 @@ export async function compactActoviqSession(
     options.preserveRecentMessages ?? context.compactConfig.preserveRecentMessages,
     1,
   );
-  const preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
+  let preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
+
+  // Extend preserve window backwards to include tool_use blocks referenced
+  // by tool_result blocks in the preserved portion. Without this, compaction
+  // can create orphaned tool_result blocks that cause provider-side
+  // "unexpected tool_use_id" HTTP 400 errors.
+  preserveStart = extendPreserveToIncludeReferencedToolUses(
+    microcompacted.messages,
+    preserveStart,
+  );
+
   const messagesToSummarize = microcompacted.messages.slice(0, preserveStart);
   const messagesToKeep = microcompacted.messages.slice(preserveStart);
 

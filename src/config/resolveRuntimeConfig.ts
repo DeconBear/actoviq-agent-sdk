@@ -55,58 +55,32 @@ export async function resolveRuntimeConfig(
     );
   }
 
-  // Only auto-detect models that are definitively OpenAI-native.
-  // Third-party providers (deepseek, etc.) may use either protocol —
-  // rely on explicit ACTOVIQ_PROVIDER or the default provider.
-  const OPENAI_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o1-', 'o3-', 'o4-'];
-
-  // Known base URLs for third-party OpenAI-compatible providers.
-  // Only applied when provider is explicitly or auto-detected as 'openai'.
-  const OPENAI_PROVIDER_BASE_URLS: Record<string, string> = {
-    'deepseek-': 'https://api.deepseek.com',
-  };
-
-  const explicitProvider =
+  const provider =
     options.provider ??
     (getConfigValue(envFromProcess, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
-    (getConfigValue(envFromLoadedConfig, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined);
+    (getConfigValue(envFromLoadedConfig, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
+    'anthropic';
 
-  // Resolve model before provider in case we need to auto-detect
-  const detectedModel =
+  const model =
     options.model ??
     getConfigValue(envFromProcess, 'ACTOVIQ_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_SONNET_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_OPUS_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_HAIKU_MODEL');
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_HAIKU_MODEL') ??
+    (provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL);
 
-  const autoProvider = detectedModel && OPENAI_MODEL_PREFIXES.some((p) => detectedModel.startsWith(p))
-    ? 'openai'
-    : 'anthropic';
-
-  const provider = explicitProvider ?? autoProvider;
-
-  // Auto-detect base URL for known providers when not explicitly set
-  const explicitBaseURL =
+  const baseURL =
     options.baseURL ??
     getConfigValue(envFromProcess, 'ACTOVIQ_BASE_URL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_BASE_URL');
-  const autoBaseURL = detectedModel
-    ? (() => {
-        const key = Object.keys(OPENAI_PROVIDER_BASE_URLS).find((k) => detectedModel.startsWith(k));
-        return key ? OPENAI_PROVIDER_BASE_URLS[key] : undefined;
-      })()
-    : undefined;
-
-  const fallbackModel = provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL;
-  const model = detectedModel ?? fallbackModel;
 
   return {
     homeDir,
     loadedConfigPath: loadedConfig?.path,
     apiKey,
     authToken,
-    baseURL: explicitBaseURL ?? autoBaseURL,
+    baseURL,
     model,
     maxTokens: options.maxTokens ?? 2048,
     temperature: options.temperature,

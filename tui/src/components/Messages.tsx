@@ -8,9 +8,15 @@ interface MessagesProps {
   messages: UIMessage[];
   streamingBlocks: ContentBlock[];
   error: string | null;
+  scrollOffset?: number;
 }
 
-export const Messages = memo(function Messages({ messages, streamingBlocks, error }: MessagesProps) {
+export const Messages = memo(function Messages({ messages, streamingBlocks, error, scrollOffset = 0 }: MessagesProps) {
+  const visibleMessages = scrollOffset > 0 && messages.length > scrollOffset
+    ? messages.slice(0, messages.length - scrollOffset)
+    : messages;
+  const hasHidden = scrollOffset > 0 && messages.length > scrollOffset;
+
   return (
     <Box flexDirection="column">
       {messages.length === 0 && streamingBlocks.length === 0 && (
@@ -18,12 +24,20 @@ export const Messages = memo(function Messages({ messages, streamingBlocks, erro
           <Text bold>Actoviq TUI Agent</Text>
           <Text dimColor>Type a message to start, or /help for commands.</Text>
           <Box marginTop={1}>
-            <Text dimColor>Enter: send  |  Ctrl+C: abort  |  Ctrl+P: perm mode  |  Ctrl+L: clear</Text>
+            <Text dimColor>Enter: send  |  Ctrl+C: abort  |  Ctrl+P: perm mode  |  Ctrl+L: clear  |  PgUp/PgDn: scroll</Text>
           </Box>
         </Box>
       )}
 
-      {messages.map((msg) => (
+      {hasHidden && (
+        <Box paddingX={2} paddingY={1}>
+          <Text dimColor>
+            ^ {scrollOffset} messages hidden (PgDn to show more)
+          </Text>
+        </Box>
+      )}
+
+      {visibleMessages.map((msg) => (
         <MessageRow key={msg.id} message={msg} />
       ))}
 
@@ -133,7 +147,7 @@ const ContentBlockView = memo(function ContentBlockView(
   }
 });
 
-// ── Thinking block (collapsible) ──────────────────────────────────
+// ── Thinking block (collapsible, toggled via Tab/Enter focus) ─────
 
 const ThinkingBlock = memo(function ThinkingBlock(
   { thinking }: { thinking: Extract<ContentBlock, { type: 'thinking' }> },
@@ -143,7 +157,6 @@ const ThinkingBlock = memo(function ThinkingBlock(
   return (
     <Box flexDirection="column" marginY={1}>
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>{expanded ? '▼' : '▶'}</Text>
         <Text dimColor>Thinking</Text>
         <Text dimColor>({estimateTokens(thinking.text)} tok)</Text>
       </Box>

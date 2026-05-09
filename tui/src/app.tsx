@@ -56,6 +56,13 @@ export function App({ client, initialModel }: AppProps) {
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [systemMessages, setSystemMessages] = useState<UIMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
+  const inputRef = useRef('');
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  // Auto-scroll to bottom when new messages arrive during streaming
+  useEffect(() => {
+    if (streaming) setScrollOffset(0);
+  }, [streaming, messages.length]);
 
   // ── Scheduler ref ─────────────────────────────────────────────
   const schedulerRef = useRef<TaskScheduler | null>(null);
@@ -64,7 +71,10 @@ export function App({ client, initialModel }: AppProps) {
     return () => { schedulerRef.current?.dispose().catch(() => {}); };
   }, []);
 
-  // ── Slash command definitions (names + descriptions) ──────────
+  // ── Started-at ref for status bar ─────────────────────────────
+  const startedAtRef = useRef(new Date().toISOString());
+
+  // ── Slash command definitions ─────────────────────────────────
   const commandDefs: CommandDef[] = useMemo(() => [
     { name: 'help', description: 'Show available commands' },
     { name: 'clear', description: 'Clear the screen' },
@@ -110,6 +120,19 @@ export function App({ client, initialModel }: AppProps) {
     }
   }, [activeSession]);
 
+  // ── Skills / agents / buddy — resolved from SDK ───────────────
+  const getSkills = useCallback(() => {
+    try { return client.skills.list(); } catch { return []; }
+  }, [client]);
+
+  const getAgents = useCallback(() => {
+    try { return client.agents.list(); } catch { return []; }
+  }, [client]);
+
+  const getBuddyStatus = useCallback(() => {
+    try { return `Buddy: ${client.buddy ? 'configured' : 'not configured'}`; } catch { return 'Buddy is not configured.'; }
+  }, [client]);
+
   // ── Slash command context ─────────────────────────────────────
   const commandContext: CommandContext = useMemo(() => ({
     currentSessionId: activeSession?.id ?? null,
@@ -134,8 +157,8 @@ export function App({ client, initialModel }: AppProps) {
         return [];
       }
     },
-    getSkills: () => [],
-    getAgents: () => [],
+    getSkills,
+    getAgents,
     getSessions: () => sessions.map((s) => ({ id: s.id, title: s.title })),
     createSession: async (opts) => { await createNewSession(opts?.title); },
     switchSession: async (id) => { await switchSession(id); },
@@ -160,14 +183,29 @@ export function App({ client, initialModel }: AppProps) {
     getModel: () => model,
     setModel: async (m: string) => { setModel(m); return true; },
     listModels: () => DEFAULT_MODELS,
-    getBuddyStatus: () => 'Buddy is not configured.',
-  }), [activeSession, sessions, clearMessages, createNewSession, switchSession, deleteSession, model]);
+    getBuddyStatus,
+  }), [activeSession, sessions, clearMessages, createNewSession, switchSession, deleteSession, model, getSkills, getAgents, getBuddyStatus]);
 
   const commandRegistry = useMemo(() => {
     const reg = createCommandRegistry();
     registerBuiltinCommands(reg, commandContext);
     return reg;
   }, [commandContext]);
+
+  // ── Navigation ────────────────────────────────────────────────
+  const [historyIdx, setHistoryIdx] = useState(-1);
+
+  // Update input from history when navigating
+  useEffect(() => {
+    if (historyIdx >= 0 && historyIdx < inputHistory.length) {
+      const text = inputHistory[inputHistory.length - 1 - historyIdx]!;
+      setInputValue(text);
+      inputRef.current = text;
+    } else if (historyIdx === -1) {
+      setInputValue('');
+      inputRef.current = '';
+    }
+  }, [historyIdx, inputHistory]);
 
   // ── Tab completion ────────────────────────────────────────────
   const handleTabComplete = useCallback(() => {
@@ -180,12 +218,17 @@ export function App({ client, initialModel }: AppProps) {
   // ── Input change ─────────────────────────────────────────────
   const handleInputChange = useCallback((value: string) => {
     setInputValue(value);
+    inputRef.current = value;
     autocomplete.update(value);
-  }, [autocomplete]);
+    // Reset history navigation when user starts typing manually
+    if (historyIdx !== -1) {
+      setHistoryIdx(-1);
+    }
+  }, [autocomplete, historyIdx]);
 
   // ── Send handler ──────────────────────────────────────────────
   const handleSend = useCallback(async (text: string) => {
-    // Don't send if overlay is active (TextInput fires onSubmit on Enter even when overlay handles it)
+    // Don't send if overlay is active
     if (autocomplete.active) return;
     autocomplete.dismiss();
 
@@ -211,7 +254,6 @@ export function App({ client, initialModel }: AppProps) {
     setInputHistory((prev) => [...prev, text]);
     await send(activeSession, text, {
       onPermissionRequest: async (toolName, args, toolDesc) => {
-        // YOLO mode: auto-approve all tool calls without prompting
         if (permissionMode === 'bypassPermissions') {
           return true;
         }
@@ -227,9 +269,6 @@ export function App({ client, initialModel }: AppProps) {
     });
   }, [activeSession, commandRegistry, send, clearMessages, appendSystemMessage, autocomplete, permissionMode]);
 
-  // ── Navigation ────────────────────────────────────────────────
-  const [historyIdx, setHistoryIdx] = useState(-1);
-
   const cyclePermissionMode = useCallback(() => {
     setPermissionMode((prev) => {
       const modes: ActoviqPermissionMode[] = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
@@ -243,16 +282,23 @@ export function App({ client, initialModel }: AppProps) {
   const keyContext = permissionDialog ? 'permission' : streaming ? 'streaming' : overlayActive ? 'overlay' : 'default';
 
   const { suppressChar } = useKeyboard({
-    onSubmit: () => {},
+    // Ctrl+Enter submit: use the ref to get current input value
+    onSubmit: () => {
+      const currentValue = inputRef.current.trim();
+      if (currentValue) {
+        handleSend(currentValue);
+        setInputValue('');
+        inputRef.current = '';
+        autocomplete.dismiss();
+      }
+    },
     onAbort: () => { if (streaming) abort(); },
     onClear: () => { clearMessages(); setSystemMessages([]); },
     onCyclePermissionMode: cyclePermissionMode,
-    // Overlay navigation (when slash command panel is open)
     onOverlayUp: () => autocomplete.selectPrev(),
     onOverlayDown: () => autocomplete.selectNext(),
     onOverlayComplete: handleTabComplete,
     onOverlayDismiss: () => autocomplete.dismiss(),
-    // History navigation (when no overlay)
     onNavigateUp: () => setHistoryIdx((i) => Math.min(i + 1, inputHistory.length - 1)),
     onNavigateDown: () => setHistoryIdx((i) => Math.max(i - 1, -1)),
     onPermissionYes: () => {
@@ -261,6 +307,8 @@ export function App({ client, initialModel }: AppProps) {
     onPermissionNo: () => {
       if (permissionDialog) permissionDialog.resolve(false);
     },
+    onScrollUp: () => setScrollOffset((o) => Math.min(o + 5, Math.max(0, allMessages.length - 1))),
+    onScrollDown: () => setScrollOffset((o) => Math.max(0, o - 5)),
     context: keyContext,
     enabled: true,
   });
@@ -292,6 +340,8 @@ export function App({ client, initialModel }: AppProps) {
       onInputChange={handleInputChange}
       onTabComplete={handleTabComplete}
       suppressChar={suppressChar}
+      startedAt={startedAtRef.current}
+      scrollOffset={scrollOffset}
     />
   );
 }

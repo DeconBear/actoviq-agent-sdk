@@ -16,13 +16,11 @@ export function FullscreenLayout({ scrollable, bottom, overlay, modal }: Fullscr
   const { stdout } = useStdout();
   const termRows = stdout?.rows ?? 24;
 
-  // Reserve bottom area: modal (if any) + overlay (if any) + input + status
   const overlayRows = overlay ? 6 : 0;
   const modalRows = modal ? 5 : 0;
   const bottomReserved = modalRows + overlayRows + INPUT_HEIGHT + STATUS_HEIGHT;
   const scrollableHeight = Math.max(MIN_SCROLLABLE, termRows - bottomReserved);
 
-  // Compute explicit heights to avoid layout oscillation during streaming
   const scrollableStyle = useMemo(() => ({
     height: scrollableHeight,
     overflow: 'hidden' as const,
@@ -35,16 +33,8 @@ export function FullscreenLayout({ scrollable, bottom, overlay, modal }: Fullscr
       </Box>
 
       <Box flexDirection="column" flexShrink={0}>
-        {modal && (
-          <Box flexDirection="column" flexShrink={0}>
-            {modal}
-          </Box>
-        )}
-        {overlay && (
-          <Box flexDirection="column" flexShrink={0}>
-            {overlay}
-          </Box>
-        )}
+        {modal}
+        {overlay}
         {bottom}
       </Box>
     </Box>
