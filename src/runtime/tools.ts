@@ -99,12 +99,9 @@ export function createLocalToolAdapter(
         return normalizeToolExecutionResult(definition.serialize?.(output), output);
       } catch (error) {
         if (error instanceof z.ZodError) {
-          const rawStr = typeof input === 'string'
-            ? input
-            : JSON.stringify(input, null, 2);
           throw new ToolExecutionError(
             publicName,
-            `Invalid tool input for "${publicName}": ${error.message}\n\nReceived input:\n${rawStr}`,
+            formatZodValidationError(publicName, error, input),
             { cause: error },
           );
         }
@@ -181,7 +178,64 @@ function toInputJsonSchema(schema: z.ZodType, toolName: string): Record<string, 
       `Tool "${toolName}" must use a Zod object schema for its input.`,
     );
   }
+  // Reject unexpected parameters at the API level (Claude Code pattern)
+  if (jsonSchema.additionalProperties === undefined) {
+    jsonSchema.additionalProperties = false;
+  }
   return jsonSchema;
+}
+
+/**
+ * Format Zod validation errors into model-friendly messages.
+ * Claude Code-style: clearly states what parameter was missing,
+ * unexpected, or had the wrong type — so the model can self-correct.
+ */
+function formatZodValidationError(toolName: string, error: z.ZodError, rawInput: unknown): string {
+  const lines: string[] = [`Invalid input for "${toolName}":`];
+
+  for (const issue of error.issues) {
+    const path = issue.path.length > 0 ? `'${issue.path.join('.')}'` : 'input';
+
+    // Unexpected keys (strictObject / additionalProperties rejection)
+    if (issue.code === 'unrecognized_keys') {
+      for (const k of (issue as { keys: string[] }).keys) {
+        lines.push(`  - unexpected parameter '${k}'`);
+      }
+      continue;
+    }
+
+    // Required but missing — invalid_type where the value was undefined
+    if (issue.code === 'invalid_type' && issue.input === undefined) {
+      lines.push(`  - ${path} is required but missing`);
+      continue;
+    }
+
+    // Wrong type
+    if (issue.code === 'invalid_type') {
+      const received = typeof issue.input;
+      const expected = (issue as { expected: string }).expected;
+      lines.push(`  - ${path} should be ${expected}, received ${received}`);
+      continue;
+    }
+
+    // Invalid value (enum, literal mismatch, etc.)
+    if (issue.code === 'invalid_value') {
+      const values = (issue as { values: unknown[] }).values ?? [];
+      lines.push(`  - ${path} should be one of [${values.map(String).join(', ')}], received ${JSON.stringify(issue.input)}`);
+      continue;
+    }
+
+    // Fallback: Zod's built-in message
+    lines.push(`  - ${path}: ${issue.message}`);
+  }
+
+  // Show what was actually received (truncated)
+  const rawStr = typeof rawInput === 'string'
+    ? rawInput
+    : JSON.stringify(rawInput);
+  lines.push(`\nReceived: ${rawStr.length > 300 ? rawStr.slice(0, 300) + '...' : rawStr}`);
+
+  return lines.join('\n');
 }
 
 

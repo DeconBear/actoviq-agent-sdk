@@ -124,7 +124,7 @@ export function useAgentStream() {
           case 'response.content': {
             const content = event.content as { type: string; text?: string; thinking?: string };
             if (content.type === 'thinking' && content.thinking) {
-              blocks.push({ type: 'thinking', text: content.thinking, collapsed: true });
+              blocks.push({ type: 'thinking', text: content.thinking, collapsed: false });
               scheduleUpdate([...blocks], true);
             } else if (content.type === 'text' && content.text) {
               currentText = content.text;

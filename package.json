@@ -17,6 +17,9 @@
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
+  "bin": {
+    "actoviq-react": "./bin/actoviq-react.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
@@ -54,7 +57,8 @@
     "example:workflow": "npm run build && tsx examples/workflow.ts",
     "example:workflow-annotated": "npm run build && tsx examples/workflow-annotated.ts",
     "example:workflow-agent-orchestration": "npm run build && tsx examples/workflow-agent-orchestration.ts",
-    "example:scheduling": "npm run build && tsx examples/scheduling.ts"
+    "example:scheduling": "npm run build && tsx examples/scheduling.ts",
+    "example:react-loop": "npm run build && tsx examples/react-loop.ts"
   },
   "keywords": [
     "agent",

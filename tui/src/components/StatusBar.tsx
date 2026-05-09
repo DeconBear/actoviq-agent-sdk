@@ -1,4 +1,4 @@
-import React, { memo, useState, useEffect, useRef } from 'react';
+import React, { memo, useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import type { ActoviqPermissionMode } from 'actoviq-agent-sdk';
 
@@ -18,22 +18,20 @@ export const StatusBar = memo(function StatusBar({
 }: StatusBarProps) {
   const [pulse, setPulse] = useState(0);
   const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (streaming || !startRef.current) {
-      startRef.current = Date.now();
-    }
-    const timer = setInterval(() => {
+    if (!startedAt) return;
+    const startedMs = new Date(startedAt).getTime();
+    const tick = () => {
       if (streaming) {
         setPulse((p) => (p + 1) % PULSE_CHARS.length);
       }
-      if (startRef.current) {
-        setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-      }
-    }, 500);
+      setElapsed(Math.floor((Date.now() - startedMs) / 1000));
+    };
+    tick();
+    const timer = setInterval(tick, 500);
     return () => clearInterval(timer);
-  }, [streaming]);
+  }, [streaming, startedAt]);
 
   const modeColor =
     permissionMode === 'bypassPermissions' ? 'yellow' :

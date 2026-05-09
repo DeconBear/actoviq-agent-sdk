@@ -11,6 +11,7 @@ interface CliOptions {
   workDir?: string;
   model?: string;
   sessionId?: string;
+  configPath?: string;
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -23,6 +24,8 @@ function parseArgs(argv: string[]): CliOptions {
       opts.model = argv[++i];
     } else if (arg === '--session' || arg === '-s') {
       opts.sessionId = argv[++i];
+    } else if (arg === '--config' || arg === '-c') {
+      opts.configPath = argv[++i];
     } else if (arg === '--help' || arg === '-h') {
       const bindings = loadKeybindings();
       console.log(`Actoviq TUI Agent
@@ -33,6 +36,7 @@ Options:
   -p, --project <path>   Project directory (default: cwd)
   -m, --model <name>     Model to use (e.g. claude-medium-4-6)
   -s, --session <id>     Resume session by ID
+  -c, --config <path>    Path to settings.json (default: ~/.actoviq/settings.json)
   -h, --help             Show this help
 
 Configuration:
@@ -41,8 +45,10 @@ Configuration:
 
 Example settings.json:
   {
-    "ACTOVIQ_API_KEY": "sk-...",
-    "ACTOVIQ_MODEL": "claude-medium-4-6"
+    "env": {
+      "ACTOVIQ_AUTH_TOKEN": "sk-...",
+      "ACTOVIQ_MODEL": "claude-medium-4-6"
+    }
   }
 
 Keybindings (configure in ~/.actoviq/keybindings.json):
@@ -54,36 +60,34 @@ Keybindings (configure in ~/.actoviq/keybindings.json):
   return opts;
 }
 
-async function loadActoviqConfig(): Promise<Record<string, string>> {
+function resolveConfigPath(cliPath?: string): string {
+  if (cliPath) return path.resolve(cliPath);
   const homeDir = os.homedir();
-  const settingsPath = path.join(homeDir, '.actoviq', 'settings.json');
-
-  try {
-    const { loadJsonConfigFile } = await import('actoviq-agent-sdk');
-    const config = await loadJsonConfigFile(settingsPath);
-    return config.env ?? {};
-  } catch {
-    return {};
-  }
+  return path.join(homeDir, '.actoviq', 'settings.json');
 }
 
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv);
 
-  // Load ~/.actoviq/settings.json (API key, model, etc.)
-  const configEnv = await loadActoviqConfig();
-  for (const [key, value] of Object.entries(configEnv)) {
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
-  }
+  const configPath = resolveConfigPath(opts.configPath);
 
-  const { createAgentSdk, createActoviqFileTools, createActoviqWebTools } = await import('actoviq-agent-sdk');
+  // Use the SDK's built-in config loader which properly handles the { env: {...} }
+  // wrapper and stores the result for resolveRuntimeConfig to consume.
+  const { loadJsonConfigFile, createAgentSdk, createActoviqFileTools, createActoviqWebTools } =
+    await import('actoviq-agent-sdk');
+
+  try {
+    await loadJsonConfigFile(configPath);
+    process.stderr.write(`[actoviq] Loaded config from ${configPath}\n`);
+  } catch (err) {
+    process.stderr.write(`[actoviq] Config warning: ${(err as Error).message}\n`);
+  }
 
   const workDir = opts.workDir ?? process.cwd();
   const sdk = await createAgentSdk({
     workDir,
     model: opts.model,
+    systemPrompt: `You are Actoviq, an interactive CLI agent. Your working directory is ${workDir}. Use absolute paths for all file operations. Create files in the working directory unless the user specifies otherwise.`,
     tools: [
       ...createActoviqFileTools({ cwd: workDir }),
       ...createActoviqWebTools(),

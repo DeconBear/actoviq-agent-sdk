@@ -64,16 +64,30 @@ export function useSessionList(client: ActoviqAgentClient | null) {
     if (client) refresh();
   }, [client, refresh]);
 
-  // Auto-create a session on mount if none exists
+  // Auto-create a session on mount only if no sessions exist
   useEffect(() => {
     if (!client || autoCreatedRef.current) return;
     autoCreatedRef.current = true;
-    client.createSession({ title: undefined })
-      .then((session) => {
-        setActiveSession(session);
-        refresh();
-      })
-      .catch(() => {});
+    client.sessions.list().then((list) => {
+      if (list.length === 0) {
+        client.createSession({ title: undefined })
+          .then((session) => {
+            setActiveSession(session);
+            refresh();
+          })
+          .catch(() => {});
+      } else {
+        // Resume the most recent session
+        const mostRecent = list[list.length - 1];
+        if (mostRecent) {
+          client.sessions.get(mostRecent.id)
+            .then((session) => {
+              setActiveSession(session);
+            })
+            .catch(() => {});
+        }
+      }
+    }).catch(() => {});
   }, [client, refresh]);
 
   return {

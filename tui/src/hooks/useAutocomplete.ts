@@ -11,7 +11,7 @@ export interface CommandDef {
   description: string;
 }
 
-export function useAutocomplete(commandDefs: CommandDef[], workDir?: string) {
+export function useAutocomplete(commandDefs: CommandDef[]) {
   const [suggestions, setSuggestions] = useState<CompletionItem[]>([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [active, setActive] = useState(false);
