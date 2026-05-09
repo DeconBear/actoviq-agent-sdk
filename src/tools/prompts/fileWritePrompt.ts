@@ -1,12 +1,14 @@
-import type { ToolPromptOptions } from '../../types.js';
+import { FILE_READ_TOOL_NAME } from './fileReadPrompt.js';
 
-export function fileWritePrompt(_options: ToolPromptOptions): string {
-  return `## Write Tool
-- Writes a file to the local filesystem.
-- Usage:
-  - This tool will overwrite the existing file if there is one at the provided path. You MUST use the Read tool first to read the file's contents.
-  - Always prefer editing existing files using the Edit tool in the codebase. NEVER write new files unless explicitly required.
-  - The \`file_path\` parameter must be an absolute path, not a relative path.
-  - Parent directories will be created automatically if they do not exist.
-- NEVER proactively create documentation files (*.md) or README files unless explicitly requested by the User.`;
+export const FILE_WRITE_TOOL_NAME = 'Write';
+
+export function fileWritePrompt(_options?: any): string {
+  return `Writes a file to the local filesystem.
+
+Usage:
+- This tool will overwrite the existing file if there is one at the provided path.
+- If this is an existing file, you MUST use the \`${FILE_READ_TOOL_NAME}\` tool first to read the file's contents. This tool will fail if you did not read the file first.
+- Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
+- NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
+- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`;
 }

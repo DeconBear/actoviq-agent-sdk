@@ -1,6 +1,6 @@
 import type { ToolPromptOptions } from '../../types.js';
 
-export function fileSearchPrompt(_options: ToolPromptOptions): string {
+export function fileSearchPrompt(_options?: any): string {
   return `## File Search Tools (Glob & Grep)
 
 ### Glob
