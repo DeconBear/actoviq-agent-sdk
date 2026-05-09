@@ -1,25 +1,34 @@
+/**
+ * Actoviq Core Tools — unified factory for all tools.
+ *
+ * Provides Read, Write, Edit, Glob, Grep, Bash, TodoWrite, AskUserQuestion,
+ * WebFetch, WebSearch, Task tools, NotebookEdit, PowerShell, Config,
+ * ToolSearch, Skill, SendMessage, and RemoteTrigger.
+ *
+ * All schemas, descriptions, and prompts match Claude Code exactly.
+ */
 import type { AgentToolDefinition } from '../types.js';
 import { createActoviqFileTools, type ActoviqFileToolsOptions } from './actoviqFileTools.js';
 import { createActoviqWebTools } from './actoviqWebTools.js';
 import { createBashTool } from './bash/BashTool.js';
 import { createTodoWriteTool } from './todo/TodoWriteTool.js';
 import { createAskUserQuestionTool } from './askUserQuestion/AskUserQuestionTool.js';
+import { createActoviqTaskTools } from './actoviqTaskTools.js';
+import { createNotebookEditTool } from './actoviqNotebookEdit.js';
+import { createPowerShellTool } from './actoviqShellTools.js';
+import { createActoviqMiscTools } from './actoviqMiscTools.js';
 
 export interface ActoviqCoreToolsOptions extends ActoviqFileToolsOptions {
-  /** Include Bash tool. Default: true */
   bash?: boolean;
-  /** Include TodoWrite tool. Default: true */
   todoWrite?: boolean;
-  /** Include AskUserQuestion tool. Default: true */
   askUserQuestion?: boolean;
-  /** Include Web tools (WebFetch, WebSearch). Default: true */
   webTools?: boolean;
+  taskTools?: boolean;
+  notebookEdit?: boolean;
+  powershell?: boolean;
+  miscTools?: boolean;
 }
 
-/**
- * Creates the full set of core Actoviq tools, aligned with Claude Code's
- * tool naming conventions, schemas, descriptions, and prompts.
- */
 export function createActoviqCoreTools(
   options: ActoviqCoreToolsOptions = {},
 ): AgentToolDefinition[] {
@@ -27,18 +36,14 @@ export function createActoviqCoreTools(
     ...createActoviqFileTools({ cwd: options.cwd }),
   ];
 
-  if (options.bash !== false) {
-    tools.push(createBashTool());
-  }
-  if (options.todoWrite !== false) {
-    tools.push(createTodoWriteTool());
-  }
-  if (options.askUserQuestion !== false) {
-    tools.push(createAskUserQuestionTool());
-  }
-  if (options.webTools !== false) {
-    tools.push(...createActoviqWebTools());
-  }
+  if (options.bash !== false) tools.push(createBashTool());
+  if (options.todoWrite !== false) tools.push(createTodoWriteTool());
+  if (options.askUserQuestion !== false) tools.push(createAskUserQuestionTool());
+  if (options.webTools !== false) tools.push(...createActoviqWebTools());
+  if (options.taskTools !== false) tools.push(...createActoviqTaskTools());
+  if (options.notebookEdit !== false) tools.push(createNotebookEditTool());
+  if (options.powershell !== false) tools.push(createPowerShellTool());
+  if (options.miscTools !== false) tools.push(...createActoviqMiscTools());
 
   return tools;
 }
