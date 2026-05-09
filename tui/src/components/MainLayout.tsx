@@ -27,6 +27,7 @@ interface MainLayoutProps {
   inputValue?: string;
   onInputChange?: (value: string) => void;
   onTabComplete?: () => void;
+  suppressChar?: (value: string) => string;
 }
 
 export function MainLayout({
@@ -35,6 +36,7 @@ export function MainLayout({
   permissionDialog, overlay,
   inputHistory, inputValue,
   onSend, onInputChange, onTabComplete,
+  suppressChar,
 }: MainLayoutProps) {
   const scrollable = (
     <Box flexDirection="column" flexGrow={1}>
@@ -57,6 +59,7 @@ export function MainLayout({
         onTabComplete={onTabComplete}
         streaming={streaming}
         initialValue={inputValue}
+        suppressChar={suppressChar}
       />
       <StatusBar
         sessionName={sessionName}

@@ -231,6 +231,7 @@ describe('Actoviq advanced parity features', () => {
       model: 'test-model',
       sessionDirectory,
       modelApi,
+      compact: { apiMicrocompactClearToolUses: true },
     });
 
     const lookupNumber = tool(

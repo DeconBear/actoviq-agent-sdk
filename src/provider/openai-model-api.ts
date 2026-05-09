@@ -121,6 +121,8 @@ function mapToolChoice(toolChoice?: ToolChoice): OpenaiChatCompletionRequest['to
 
 // ── Response: OpenAI → Anthropic ─────────────────────────────────
 
+import { robustJsonParse } from './json-parse.js';
+
 function openaiToAnthropicMessage(completion: OpenaiChatCompletion): Message {
   const choice = completion.choices[0];
   const content: ContentBlock[] = [];
@@ -132,12 +134,7 @@ function openaiToAnthropicMessage(completion: OpenaiChatCompletion): Message {
     }
     if (choice.message.tool_calls) {
       for (const tc of choice.message.tool_calls) {
-        let input: Record<string, unknown> = {};
-        try {
-          input = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-        } catch {
-          input = { raw: tc.function.arguments };
-        }
+        const input = robustJsonParse(tc.function.arguments, tc.function.name);
         content.push({
           type: 'tool_use',
           id: tc.id,

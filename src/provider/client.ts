@@ -13,6 +13,7 @@ import type {
   Usage,
 } from './types.js';
 import { ActoviqProviderApiError } from '../errors.js';
+import { robustJsonParse } from './json-parse.js';
 
 export interface ActoviqProviderClientOptions {
   apiKey?: string | null;
@@ -33,6 +34,7 @@ export interface ActoviqCreateMessageRequest {
   tool_choice?: ToolChoice;
   metadata?: Metadata;
   stop_sequences?: string[];
+  extra_tool_schemas?: Record<string, unknown>[];
 }
 
 export interface ActoviqRequestOptions {
@@ -253,11 +255,7 @@ class MessageAccumulator {
       return;
     }
 
-    try {
-      block.input = JSON.parse(pending) as Record<string, unknown>;
-    } catch {
-      block.input = { raw: pending };
-    }
+    block.input = robustJsonParse(pending);
     this.pendingJsonByIndex.delete(index);
   }
 }

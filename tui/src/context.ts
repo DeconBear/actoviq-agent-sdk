@@ -4,9 +4,10 @@ export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
 
 export type ContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'separator'; iteration: number; runId?: string }
   | { type: 'thinking'; text: string; collapsed: boolean }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; status: ToolStatus }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; durationMs?: number };
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; status: ToolStatus; iteration?: number; provider?: 'local' | 'mcp'; progressMessage?: string }
+  | { type: 'tool_result'; toolUseId: string; content: string; isError: boolean; durationMs?: number; iteration?: number };
 
 // ── UIMessage ─────────────────────────────────────────────────────
 

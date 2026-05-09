@@ -312,8 +312,9 @@ export default class OpenaiProviderClient {
         if (response.ok) return response;
 
         const payload = await safeReadJson(response.clone());
+        const url = normalizeChatUrl(this.baseURL);
         const error = new ActoviqProviderApiError(
-          createErrorMessage(response.status, payload),
+          `${createErrorMessage(response.status, payload)} [url: ${url}]`,
           {
             status: response.status,
             errorType: payload?.error?.type,

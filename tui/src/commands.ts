@@ -120,8 +120,8 @@ export function registerBuiltinCommands(
   registry.register({
     name: 'tools',
     description: 'List available tools',
-    handler: () => {
-      const tools = context.getTools();
+    handler: async () => {
+      const tools = await context.getTools();
       if (!tools || tools.length === 0) return 'No tools available.';
       const lines = tools.map((t) => `  ${t.name.padEnd(24)} ${t.description ?? ''}`);
       return `Available tools (${tools.length}):\n\n${lines.join('\n')}`;
@@ -271,7 +271,7 @@ export interface CommandContext {
   getCompactState: () => Promise<{ compactCount?: number } | null>;
   compact: (force?: boolean) => Promise<{ summarizedCount?: number } | null>;
   dream: (force?: boolean) => Promise<void>;
-  getTools: () => Array<{ name: string; description?: string }>;
+  getTools: () => Promise<Array<{ name: string; description?: string }>>;
   getSkills: () => Array<{ name: string; description?: string }>;
   getAgents: () => Array<{ name: string; description?: string }>;
   getSessions: () => Array<{ id: string; title?: string }>;

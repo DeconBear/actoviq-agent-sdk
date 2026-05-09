@@ -46,25 +46,18 @@ export function getActoviqApiContextManagement(
     });
   }
 
-  if (hasToolUseOrResult(messages)) {
+  // Only emit clear_tool_uses edits when explicitly enabled.
+  // Third-party proxies can mishandle these server-side edits and break
+  // tool_use_id → tool_result pairing.
+  if (compact.apiMicrocompactClearToolUses && hasToolUseOrResult(messages)) {
     const trigger = compact.apiMicrocompactMaxInputTokens ?? 180_000;
     const target = compact.apiMicrocompactTargetInputTokens ?? 40_000;
-    if (compact.apiMicrocompactClearToolResults !== false) {
-      edits.push({
-        type: 'clear_tool_uses_20250919',
-        trigger: { type: 'input_tokens', value: trigger },
-        clear_at_least: { type: 'input_tokens', value: Math.max(trigger - target, 1) },
-        clear_tool_inputs: ['Bash', 'PowerShell', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'],
-      });
-    }
-    if (compact.apiMicrocompactClearToolUses) {
-      edits.push({
-        type: 'clear_tool_uses_20250919',
-        trigger: { type: 'input_tokens', value: trigger },
-        clear_at_least: { type: 'input_tokens', value: Math.max(trigger - target, 1) },
-        exclude_tools: ['Edit', 'Write', 'NotebookEdit'],
-      });
-    }
+    edits.push({
+      type: 'clear_tool_uses_20250919',
+      trigger: { type: 'input_tokens', value: trigger },
+      clear_at_least: { type: 'input_tokens', value: Math.max(trigger - target, 1) },
+      exclude_tools: ['Edit', 'Write', 'NotebookEdit'],
+    });
   }
 
   return edits.length > 0 ? { edits } : undefined;

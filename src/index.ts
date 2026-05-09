@@ -79,6 +79,7 @@ export {
   resolveActoviqStopHooks,
 } from './hooks/actoviqHooks.js';
 export { createActoviqFileTools } from './tools/actoviqFileTools.js';
+export { createActoviqWebTools } from './tools/actoviqWebTools.js';
 export {
   ACTOVIQ_RECENT_FILES_KEY,
   ACTOVIQ_RECENT_SKILLS_KEY,

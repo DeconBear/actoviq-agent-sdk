@@ -35,6 +35,9 @@ export interface ToolExecutionContext {
   classifier?: ActoviqToolClassifier;
   approver?: ActoviqToolApprover;
   hooks?: ActoviqHooks;
+  modelApi?: ModelApi;
+  model?: string;
+  provider?: string;
 }
 
 export type ActoviqPermissionMode =
@@ -124,6 +127,38 @@ export type ActoviqCanUseTool = (
   context: ActoviqCanUseToolContext,
 ) => Promise<ActoviqCanUseToolResult> | ActoviqCanUseToolResult;
 
+// ── Tool Progress ─────────────────────────────────────────────────
+
+export interface ToolProgressData {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface ToolProgress<P extends ToolProgressData = ToolProgressData> {
+  toolUseID: string;
+  data: P;
+}
+
+export type ToolCallProgress<P extends ToolProgressData = ToolProgressData> = (
+  progress: ToolProgress<P>,
+) => void;
+
+// ── Tool Validation ───────────────────────────────────────────────
+
+export type ValidationResult =
+  | { result: true }
+  | { result: false; message: string; errorCode?: number };
+
+// ── Tool Prompt ───────────────────────────────────────────────────
+
+export interface ToolPromptOptions {
+  tools: string[];
+  workDir: string;
+  permissionMode?: ActoviqPermissionMode;
+}
+
+// ── Tool Definition ───────────────────────────────────────────────
+
 export interface CreateToolOptions<Input = any, Output = any> {
   name: string;
   description: string;
@@ -139,6 +174,26 @@ export interface CreateToolOptions<Input = any, Output = any> {
   checkPermissions?: (
     context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
+  /** Alternative names for backwards compatibility when a tool is renamed. */
+  aliases?: string[];
+  /** Human-readable display name shown in the UI. Defaults to name. */
+  userFacingName?: (input?: Input) => string;
+  /** One-line capability phrase (3-10 words) for tool search keyword matching. */
+  searchHint?: string;
+  /** Behavior when a new user message arrives during tool execution. Defaults to 'block'. */
+  interruptBehavior?: 'cancel' | 'block';
+  /** Whether the non-verbose rendering is truncated (gates expand affordance). */
+  isResultTruncated?: (output: Output) => boolean;
+  /** Maximum size in characters before result is persisted to disk. Defaults to 50000. */
+  maxResultSizeChars?: number;
+  /** Whether two inputs are equivalent (for dedup). */
+  inputsEquivalent?: (a: Input, b: Input) => boolean;
+  /** Pre-flight validation — determines if the tool is allowed to run with this input. */
+  validateInput?: (input: Input, context: ToolExecutionContext) => Promise<ValidationResult> | ValidationResult;
+  /** Compact summary for the tool invocation in collapsed views. */
+  getToolUseSummary?: (input: Input) => string;
+  /** System prompt text teaching the model how to use this tool. */
+  prompt?: (options: ToolPromptOptions) => Promise<string> | string;
 }
 
 export interface AgentToolDefinition<Input = any, Output = any> {
@@ -149,7 +204,11 @@ export interface AgentToolDefinition<Input = any, Output = any> {
   outputSchema?: z.ZodType<Output>;
   inputJsonSchema: Record<string, unknown>;
   serialize?: (output: Output) => string | ToolResultBlockParam['content'];
-  execute: (input: Input, context: ToolExecutionContext) => Promise<Output> | Output;
+  execute: (
+    input: Input,
+    context: ToolExecutionContext,
+    onProgress?: ToolCallProgress,
+  ) => Promise<Output> | Output;
   strict?: boolean;
   examples?: Array<Record<string, unknown>>;
   isReadOnly?: (input?: Input) => boolean;
@@ -159,6 +218,16 @@ export interface AgentToolDefinition<Input = any, Output = any> {
   checkPermissions?: (
     context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
+  aliases?: string[];
+  userFacingName?: (input?: Input) => string;
+  searchHint?: string;
+  interruptBehavior?: 'cancel' | 'block';
+  isResultTruncated?: (output: Output) => boolean;
+  maxResultSizeChars?: number;
+  inputsEquivalent?: (a: Input, b: Input) => boolean;
+  validateInput?: (input: Input, context: ToolExecutionContext) => Promise<ValidationResult> | ValidationResult;
+  getToolUseSummary?: (input: Input) => string;
+  prompt?: (options: ToolPromptOptions) => Promise<string> | string;
 }
 
 export interface LocalMcpServerDefinition {
@@ -204,6 +273,7 @@ export interface ModelRequest {
   metadata?: Metadata;
   context_management?: Record<string, unknown>;
   stop_sequences?: string[];
+  extra_tool_schemas?: Record<string, unknown>[];
   signal?: AbortSignal;
 }
 
@@ -229,7 +299,7 @@ export interface ResolvedToolAdapter {
   provider: 'local' | 'mcp';
   mcpServerName?: string;
   providerTool: ProviderTool;
-  execute: (input: unknown, context: ToolExecutionContext) => Promise<ResolvedToolExecutionResult>;
+  execute: (input: unknown, context: ToolExecutionContext, onProgress?: ToolCallProgress) => Promise<ResolvedToolExecutionResult>;
   isReadOnly?: (input?: unknown) => boolean;
   isDestructive?: (input?: unknown) => boolean;
   requiresUserInteraction?: () => boolean;
@@ -1044,6 +1114,14 @@ export type AgentEvent =
       runId: string;
       iteration: number;
       result: AgentToolCallRecord;
+      timestamp: string;
+    }
+  | {
+      type: 'tool.progress';
+      runId: string;
+      iteration: number;
+      toolUseId: string;
+      data: ToolProgressData;
       timestamp: string;
     }
   | {

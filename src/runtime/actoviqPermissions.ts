@@ -7,6 +7,7 @@ import type {
   ActoviqToolClassifier,
 } from '../types.js';
 import { nowIso } from './helpers.js';
+import { checkSafety } from './safetyChecks.js';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -57,7 +58,154 @@ export async function decideActoviqToolPermission(input: {
 }): Promise<ActoviqPermissionDecision> {
   const timestamp = nowIso();
 
-  // Step 0: canUseTool callback — fires before all rules and classifiers
+  // ── Step 1: Deny rules (highest priority) ─────────────────────
+  const denyRule = input.rules.find(
+    (rule) => rule.behavior === 'deny' && matchesRule(rule, input.publicName, input.toolInput),
+  );
+  if (denyRule) {
+    return {
+      toolName: input.toolName,
+      publicName: input.publicName,
+      behavior: 'deny',
+      reason: `Denied by permission rule ${denyRule.toolName}.`,
+      source: 'rule',
+      matchedRule: denyRule.toolName,
+      timestamp,
+    };
+  }
+
+  // ── Step 2: Tool-specific checkPermissions ────────────────────
+  if (input.adapter?.checkPermissions) {
+    const result = await input.adapter.checkPermissions({
+      mode: input.mode,
+      runId: input.runId,
+      sessionId: input.sessionId,
+    });
+    if (result === 'deny') {
+      return {
+        toolName: input.toolName,
+        publicName: input.publicName,
+        behavior: 'deny',
+        reason: `Tool ${input.publicName} denied via checkPermissions.`,
+        source: 'mode',
+        timestamp,
+      };
+    }
+    if (result === 'allow') {
+      return {
+        toolName: input.toolName,
+        publicName: input.publicName,
+        behavior: 'allow',
+        reason: `Tool ${input.publicName} allowed via checkPermissions.`,
+        source: 'mode',
+        timestamp,
+      };
+    }
+    if (result === 'ask') {
+      return resolveActoviqAskPermission(
+        input,
+        {
+          toolName: input.toolName,
+          publicName: input.publicName,
+          behavior: 'deny',
+          reason: `Tool ${input.publicName} requires approval via checkPermissions.`,
+          source: 'mode',
+          timestamp,
+        },
+        timestamp,
+      );
+    }
+  }
+
+  // ── Step 3: Safety checks ─────────────────────────────────────
+  const safetyResult = checkSafety({
+    toolName: input.toolName,
+    publicName: input.publicName,
+    toolInput: input.toolInput,
+    workDir: input.workDir,
+  });
+  if (safetyResult.blocked) {
+    return {
+      toolName: input.toolName,
+      publicName: input.publicName,
+      behavior: 'deny',
+      reason: safetyResult.reason ?? 'Blocked by safety check.',
+      source: 'mode',
+      timestamp,
+    };
+  }
+
+  // ── Step 4: Ask rules ─────────────────────────────────────────
+  const askRule = input.rules.find(
+    (rule) => rule.behavior === 'ask' && matchesRule(rule, input.publicName, input.toolInput),
+  );
+  if (askRule) {
+    return resolveActoviqAskPermission(
+      input,
+      {
+        toolName: input.toolName,
+        publicName: input.publicName,
+        behavior: 'deny',
+        reason: `Tool ${input.publicName} requires approval before execution.`,
+        source: 'rule',
+        matchedRule: askRule.toolName,
+        timestamp,
+      },
+      timestamp,
+    );
+  }
+
+  // ── Step 5: Classifier ────────────────────────────────────────
+  if (input.classifier) {
+    const outcome = await input.classifier({
+      runId: input.runId,
+      sessionId: input.sessionId,
+      workDir: input.workDir,
+      toolName: input.toolName,
+      publicName: input.publicName,
+      input: input.toolInput,
+      prompt: input.prompt,
+      iteration: input.iteration,
+    });
+    if (outcome) {
+      if (outcome.behavior === 'deny') {
+        return {
+          toolName: input.toolName,
+          publicName: input.publicName,
+          behavior: 'deny',
+          reason: outcome.reason,
+          source: 'classifier',
+          timestamp,
+        };
+      }
+      if (outcome.behavior === 'ask') {
+        return resolveActoviqAskPermission(
+          input,
+          {
+            toolName: input.toolName,
+            publicName: input.publicName,
+            behavior: 'deny',
+            reason: outcome.reason,
+            source: 'classifier',
+            timestamp,
+          },
+          timestamp,
+        );
+      }
+      if (outcome.behavior === 'allow') {
+        return {
+          toolName: input.toolName,
+          publicName: input.publicName,
+          behavior: 'allow',
+          reason: outcome.reason,
+          source: 'classifier',
+          timestamp,
+        };
+      }
+    }
+  }
+
+  // ── Step 6: canUseTool callback ────────────────────────────────
   if (input.canUseTool) {
     const outcome = await input.canUseTool({
       runId: input.runId,
@@ -70,6 +218,16 @@ export async function decideActoviqToolPermission(input: {
       iteration: input.iteration,
     });
     if (outcome) {
+      if (outcome.behavior === 'deny') {
+        return {
+          toolName: input.toolName,
+          publicName: input.publicName,
+          behavior: 'deny',
+          reason: outcome.reason ?? `Denied by canUseTool.`,
+          source: 'canUseTool',
+          timestamp,
+        };
+      }
       if (outcome.behavior === 'ask') {
         return resolveActoviqAskPermission(
           input,
@@ -87,117 +245,31 @@ export async function decideActoviqToolPermission(input: {
       return {
         toolName: input.toolName,
         publicName: input.publicName,
-        behavior: outcome.behavior === 'allow' ? 'allow' : 'deny',
-        reason: outcome.reason ?? `Decision from canUseTool: ${outcome.behavior}.`,
+        behavior: 'allow',
+        reason: outcome.reason ?? `Allowed by canUseTool.`,
         source: 'canUseTool',
         timestamp,
       };
     }
   }
 
-  // Step 1: Per-tool checkPermissions — tool declares its own permission behavior
-  if (input.adapter?.checkPermissions) {
-    const result = await input.adapter.checkPermissions({
-      mode: input.mode,
-      runId: input.runId,
-      sessionId: input.sessionId,
-    });
-    if (result === 'ask') {
-      return resolveActoviqAskPermission(
-        input,
-        {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'deny',
-          reason: `Tool ${input.publicName} requires approval via checkPermissions.`,
-          source: 'mode',
-          timestamp,
-        },
-        timestamp,
-      );
-    }
-    if (result === 'allow' || result === 'deny') {
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: result,
-        reason: `Tool ${input.publicName} checkPermissions: ${result}.`,
-        source: 'mode',
-        timestamp,
-      };
-    }
-  }
-
-  const matchedRule = input.rules.find(rule =>
-    matchesRule(rule, input.publicName, input.toolInput),
+  // ── Step 7: Always-allow rules ───────────────────────────────
+  const allowRule = input.rules.find(
+    (rule) => rule.behavior === 'allow' && matchesRule(rule, input.publicName, input.toolInput),
   );
-  if (matchedRule) {
-    if (matchedRule.behavior === 'ask') {
-      return resolveActoviqAskPermission(
-        input,
-        {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'deny',
-          reason: `Tool ${input.publicName} requires approval before execution.`,
-          source: 'rule',
-          matchedRule: matchedRule.toolName,
-          timestamp,
-        },
-        timestamp,
-      );
-    }
+  if (allowRule) {
     return {
       toolName: input.toolName,
       publicName: input.publicName,
-      behavior: matchedRule.behavior === 'deny' ? 'deny' : 'allow',
-      reason:
-        matchedRule.behavior === 'allow'
-          ? `Allowed by permission rule ${matchedRule.toolName}.`
-          : `Denied by permission rule ${matchedRule.toolName}.`,
+      behavior: 'allow',
+      reason: `Allowed by permission rule ${allowRule.toolName}.`,
       source: 'rule',
-      matchedRule: matchedRule.toolName,
+      matchedRule: allowRule.toolName,
       timestamp,
     };
   }
 
-  if (input.classifier) {
-    const outcome = await input.classifier({
-      runId: input.runId,
-      sessionId: input.sessionId,
-      workDir: input.workDir,
-      toolName: input.toolName,
-      publicName: input.publicName,
-      input: input.toolInput,
-      prompt: input.prompt,
-      iteration: input.iteration,
-    });
-    if (outcome) {
-      if (outcome.behavior === 'ask') {
-        return resolveActoviqAskPermission(
-          input,
-          {
-            toolName: input.toolName,
-            publicName: input.publicName,
-            behavior: 'deny',
-            reason: outcome.reason,
-            source: 'classifier',
-            timestamp,
-          },
-          timestamp,
-        );
-      }
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: outcome.behavior === 'allow' ? 'allow' : 'deny',
-        reason: outcome.reason,
-        source: 'classifier',
-        timestamp,
-      };
-    }
-  }
-
+  // ── Step 8: Mode-based fallback ─────────────────────────────
   switch (input.mode) {
     case 'bypassPermissions':
       return {

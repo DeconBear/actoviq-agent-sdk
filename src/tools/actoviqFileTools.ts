@@ -7,6 +7,10 @@ import { z } from 'zod';
 import { ToolExecutionError } from '../errors.js';
 import { tool } from '../runtime/tools.js';
 import type { AgentToolDefinition, ToolExecutionContext } from '../types.js';
+import { fileReadPrompt } from './prompts/fileReadPrompt.js';
+import { fileWritePrompt } from './prompts/fileWritePrompt.js';
+import { fileEditPrompt } from './prompts/fileEditPrompt.js';
+import { fileSearchPrompt } from './prompts/fileSearchPrompt.js';
 
 export interface ActoviqFileToolsOptions {
   cwd?: string;
@@ -53,7 +57,9 @@ export function createActoviqFileTools(
           .optional()
           .describe(`Maximum number of lines to read. Defaults to ${maxReadLines}.`),
       }),
+      isReadOnly: () => true,
       serialize: (output: ReadOutput) => output.content,
+      prompt: fileReadPrompt,
     },
     async (input, context) => {
       const filePath = requireAbsolutePath(input.file_path);
@@ -93,8 +99,10 @@ export function createActoviqFileTools(
         file_path: z.string().describe('Absolute path to the file to write.'),
         content: z.string().describe('The full file contents to write.'),
       }),
+      isDestructive: () => true,
       serialize: (output: WriteOutput) =>
         `${output.type === 'create' ? 'Created' : 'Updated'} ${output.filePath}`,
+      prompt: fileWritePrompt,
     },
     async (input) => {
       const resolvedPath = normalizeAbsolutePath(requireAbsolutePath(input.file_path));
@@ -127,8 +135,10 @@ export function createActoviqFileTools(
         new_string: z.string().describe('The replacement text.'),
         replace_all: z.boolean().optional().default(false),
       }),
+      isDestructive: () => true,
       serialize: (output: EditOutput) =>
         `Edited ${output.filePath} (${output.replacements} replacement${output.replacements === 1 ? '' : 's'})`,
+      prompt: fileEditPrompt,
     },
     async (input) => {
       const resolvedPath = normalizeAbsolutePath(requireAbsolutePath(input.file_path));
@@ -183,13 +193,26 @@ export function createActoviqFileTools(
           .optional()
           .describe(`Maximum number of results. Defaults to ${defaultGlobLimit}.`),
       }),
+      isReadOnly: () => true,
       serialize: (output: GlobOutput) =>
         output.filenames.length ? output.filenames.join('\n') : 'No files found',
+      prompt: fileSearchPrompt,
     },
-    async (input, context) => {
+    async (input, context, onProgress) => {
       const searchRoot = resolveSearchRoot(input.path, context, baseCwd);
       const limit = input.limit ?? defaultGlobLimit;
-      const matches = await listGlobMatches(input.pattern, searchRoot, limit);
+
+      onProgress?.({
+        toolUseID: '',
+        data: { type: 'searching', message: `Searching ${input.pattern}`, pattern: input.pattern },
+      });
+
+      const matches = await listGlobMatches(input.pattern, searchRoot, limit, (count) => {
+        onProgress?.({
+          toolUseID: '',
+          data: { type: 'found', message: `Found ${count} files`, count },
+        });
+      });
 
       return {
         root: searchRoot,
@@ -233,9 +256,11 @@ export function createActoviqFileTools(
         context: z.number().int().nonnegative().optional(),
         multiline: z.boolean().optional().default(false),
       }),
+      isReadOnly: () => true,
       serialize: (output: GrepOutput) => serializeGrepOutput(output),
+      prompt: fileSearchPrompt,
     },
-    async (input, context) => {
+    async (input, context, onProgress) => {
       const searchRoot = resolveSearchRoot(input.path, context, baseCwd);
       const outputMode = input.output_mode ?? 'files_with_matches';
       const limit = input.head_limit ?? defaultGrepLimit;
@@ -246,6 +271,8 @@ export function createActoviqFileTools(
         global: outputMode === 'count',
       });
 
+      let filesSearched = 0;
+
       const beforeContext = input['-C'] ?? input.context ?? input['-B'] ?? 0;
       const afterContext = input['-C'] ?? input.context ?? input['-A'] ?? 0;
 
@@ -254,7 +281,25 @@ export function createActoviqFileTools(
       const countEntries: Array<{ filePath: string; count: number }> = [];
       let totalMatches = 0;
 
+      onProgress?.({
+        toolUseID: '',
+        data: { type: 'searching', message: `Searching pattern "${input.pattern}"`, pattern: input.pattern },
+      });
+
       for await (const absolutePath of iterateSearchFiles(searchRoot, input.glob)) {
+        filesSearched += 1;
+        if (filesSearched % 20 === 0 && onProgress) {
+          onProgress({
+            toolUseID: '',
+            data: {
+              type: 'progress',
+              message: `Searched ${filesSearched} files, ${matchedFiles.length} matches`,
+              filesSearched,
+              matchesFound: matchedFiles.length,
+            },
+          });
+        }
+
         const fileStats = await safeStat(absolutePath);
         if (!fileStats?.isFile()) {
           continue;
@@ -508,8 +553,10 @@ async function listGlobMatches(
   pattern: string,
   searchRoot: string,
   limit?: number,
+  onProgress?: (count: number) => void,
 ): Promise<string[]> {
-  const matches = await glob(pattern, {
+  const matches: string[] = [];
+  const stream = glob.stream(pattern, {
     cwd: searchRoot,
     absolute: true,
     nodir: true,
@@ -517,7 +564,17 @@ async function listGlobMatches(
     windowsPathsNoEscape: true,
   });
 
-  return typeof limit === 'number' ? matches.slice(0, limit) : matches;
+  for await (const match of stream) {
+    if (typeof match === 'string') {
+      matches.push(match);
+      if (matches.length % 50 === 0 && onProgress) {
+        onProgress(matches.length);
+      }
+    }
+    if (limit != null && matches.length >= limit) break;
+  }
+
+  return limit != null ? matches.slice(0, limit) : matches;
 }
 
 function buildSearchRegex(
