@@ -79,7 +79,13 @@ export {
   resolveActoviqStopHooks,
 } from './hooks/actoviqHooks.js';
 export { createActoviqFileTools } from './tools/actoviqFileTools.js';
+export type { ActoviqFileToolsOptions } from './tools/actoviqFileTools.js';
 export { createActoviqWebTools } from './tools/actoviqWebTools.js';
+export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
+export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
+export { createBashTool, BASH_TOOL_NAME } from './tools/bash/BashTool.js';
+export { createTodoWriteTool, TODO_WRITE_TOOL_NAME } from './tools/todo/TodoWriteTool.js';
+export { createAskUserQuestionTool, ASK_USER_QUESTION_TOOL_NAME } from './tools/askUserQuestion/AskUserQuestionTool.js';
 export {
   ACTOVIQ_RECENT_FILES_KEY,
   ACTOVIQ_RECENT_SKILLS_KEY,
