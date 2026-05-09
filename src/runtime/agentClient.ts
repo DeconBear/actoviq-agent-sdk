@@ -61,6 +61,7 @@ import type {
   ActoviqSkillDefinitionSummary,
   ActoviqInvokedSkillRecord,
   ActoviqSurfacedMemory,
+  ActoviqPermissionMode,
   ActoviqToolApprover,
   ActoviqToolClassifier,
   CreateAgentSdkOptions,
@@ -1345,10 +1346,21 @@ export class ActoviqAgentClient {
       ...(augmentations?.metadata ?? {}),
       ...(options.metadata ?? {}),
     };
+
+    const mergedTools = mergeUniqueByName(
+      options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
+      options.tools ?? [],
+    );
+
+    // Collect tool prompts for system prompt assembly
+    const toolPromptParts = await collectToolPrompts(mergedTools, {
+      workDir: this.config.workDir,
+      permissionMode: options.permissionMode ?? this.defaultPermissionMode,
+    });
     const systemPrompt = await this.resolveSystemPrompt(
       options,
       session,
-      augmentations?.systemPromptParts,
+      [...(augmentations?.systemPromptParts ?? []), ...toolPromptParts],
     );
 
     return executeConversation({
@@ -1358,10 +1370,7 @@ export class ActoviqAgentClient {
       prefixedMessages: augmentations?.prefixedMessages,
       sessionId: session?.id,
       systemPrompt,
-      tools: mergeUniqueByName(
-        options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
-        options.tools ?? [],
-      ),
+      tools: mergedTools,
       mcpServers: mergeUniqueByName(
         options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
         options.mcpServers ?? [],
@@ -2450,6 +2459,30 @@ function mergeUniqueByName<T extends { name: string }>(defaults: T[], overrides:
     merged.set(item.name, item);
   }
   return [...merged.values()];
+}
+
+async function collectToolPrompts(
+  tools: AgentToolDefinition[],
+  context: { workDir: string; permissionMode?: ActoviqPermissionMode },
+): Promise<string[]> {
+  const parts: string[] = [];
+  const toolNames = tools.map((t) => t.name);
+  for (const toolDef of tools) {
+    if (!toolDef.prompt) continue;
+    try {
+      const result = await toolDef.prompt({
+        tools: toolNames,
+        workDir: context.workDir,
+        permissionMode: context.permissionMode,
+      });
+      if (result && result.trim().length > 0) {
+        parts.push(result.trim());
+      }
+    } catch {
+      // Silently skip prompt failures — don't break the run
+    }
+  }
+  return parts;
 }
 
 function createActoviqDreamClassifier(paths: {

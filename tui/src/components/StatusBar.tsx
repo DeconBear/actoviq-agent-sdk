@@ -1,6 +1,8 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import type { ActoviqPermissionMode } from 'actoviq-agent-sdk';
+
+const PULSE_CHARS = ['●', '○'];
 
 interface StatusBarProps {
   sessionName: string;
@@ -8,11 +10,31 @@ interface StatusBarProps {
   permissionMode: ActoviqPermissionMode;
   streaming: boolean;
   messageCount: number;
+  startedAt?: string;
 }
 
 export const StatusBar = memo(function StatusBar({
-  sessionName, model, permissionMode, streaming, messageCount,
+  sessionName, model, permissionMode, streaming, messageCount, startedAt,
 }: StatusBarProps) {
+  const [pulse, setPulse] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (streaming || !startRef.current) {
+      startRef.current = Date.now();
+    }
+    const timer = setInterval(() => {
+      if (streaming) {
+        setPulse((p) => (p + 1) % PULSE_CHARS.length);
+      }
+      if (startRef.current) {
+        setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+      }
+    }, 500);
+    return () => clearInterval(timer);
+  }, [streaming]);
+
   const modeColor =
     permissionMode === 'bypassPermissions' ? 'yellow' :
     permissionMode === 'acceptEdits' ? 'green' :
@@ -22,6 +44,12 @@ export const StatusBar = memo(function StatusBar({
     permissionMode === 'bypassPermissions' ? 'YOLO' :
     permissionMode === 'acceptEdits' ? 'ACCEPT' :
     permissionMode === 'plan' ? 'PLAN' : 'DEFAULT';
+
+  const fmtElapsed = elapsed >= 3600
+    ? `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`
+    : elapsed >= 60
+      ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+      : `${elapsed}s`;
 
   return (
     <Box
@@ -35,9 +63,10 @@ export const StatusBar = memo(function StatusBar({
         <Text dimColor>{model}</Text>
         <Text dimColor>|</Text>
         <Text color={modeColor}>{modeLabel}</Text>
-        {streaming && <Text color="yellow"> ●</Text>}
+        {streaming && <Text color="yellow">{PULSE_CHARS[pulse]}</Text>}
       </Box>
       <Box gap={1}>
+        {startedAt && <Text dimColor>{fmtElapsed}</Text>}
         <Text dimColor>{messageCount} msgs</Text>
       </Box>
     </Box>

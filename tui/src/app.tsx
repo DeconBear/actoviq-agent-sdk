@@ -126,7 +126,14 @@ export function App({ client, initialModel }: AppProps) {
       if (!activeSession) return;
       try { await activeSession.dream({ force }); } catch {}
     },
-    getTools: () => [],
+    getTools: async () => {
+      try {
+        const metadata = await client.tools.listMetadata();
+        return metadata.map((t) => ({ name: t.name, description: t.description }));
+      } catch {
+        return [];
+      }
+    },
     getSkills: () => [],
     getAgents: () => [],
     getSessions: () => sessions.map((s) => ({ id: s.id, title: s.title })),
@@ -235,7 +242,7 @@ export function App({ client, initialModel }: AppProps) {
   const overlayActive = autocomplete.active;
   const keyContext = permissionDialog ? 'permission' : streaming ? 'streaming' : overlayActive ? 'overlay' : 'default';
 
-  useKeyboard({
+  const { suppressChar } = useKeyboard({
     onSubmit: () => {},
     onAbort: () => { if (streaming) abort(); },
     onClear: () => { clearMessages(); setSystemMessages([]); },
@@ -284,6 +291,7 @@ export function App({ client, initialModel }: AppProps) {
       onSend={handleSend}
       onInputChange={handleInputChange}
       onTabComplete={handleTabComplete}
+      suppressChar={suppressChar}
     />
   );
 }

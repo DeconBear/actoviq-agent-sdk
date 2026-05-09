@@ -20,6 +20,7 @@ import type {
   ModelApi,
   ModelRequest,
   ResolvedRuntimeConfig,
+  ToolCallProgress,
 } from '../types.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
@@ -96,6 +97,9 @@ export async function executeConversation(
 
   let iteration = 0;
   let finalMessage: AgentRunResult['message'] | undefined;
+  let toolResults: ToolResultBlockParam[] = [];
+  let consecutiveFailures = 0;
+  let lastFailedTool = '';
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -270,12 +274,29 @@ export async function executeConversation(
     }
 
     if (iteration >= options.config.maxToolIterations) {
+      const completedAt = nowIso();
+      if (finalMessage) {
+        return {
+          runId: options.runId,
+          sessionId: options.sessionId,
+          model,
+          text: extractTextFromContent(finalMessage.content),
+          message: finalMessage,
+          messages: conversation,
+          stopReason: finalMessage.stop_reason ?? null,
+          hookStopReason,
+          usage: finalMessage.usage,
+          requests: requestSummaries,
+          toolCalls,
+          permissionDecisions,
+          startedAt,
+          completedAt,
+        };
+      }
       throw new ActoviqSdkError(
         `The run exceeded the max tool iteration limit (${options.config.maxToolIterations}).`,
       );
     }
-
-    const toolResults: ToolResultBlockParam[] = [];
 
     for (const toolUse of toolUses) {
       ensureNotAborted(options.signal);
@@ -344,6 +365,19 @@ export async function executeConversation(
         if (permissionDecision.behavior === 'deny') {
           throw new ToolExecutionError(toolUse.name, permissionDecision.reason);
         }
+        const onProgress: ToolCallProgress | undefined = options.emit
+          ? (progress) => {
+              options.emit?.({
+                type: 'tool.progress',
+                runId: options.runId,
+                iteration,
+                toolUseId: progress.toolUseID,
+                data: progress.data,
+                timestamp: nowIso(),
+              });
+            }
+          : undefined;
+
         const execution = await adapter.execute(toolUse.input, {
           signal: options.signal,
           runId: options.runId,
@@ -357,7 +391,10 @@ export async function executeConversation(
           classifier: options.classifier,
           approver: options.approver,
           hooks: options.hooks,
-        });
+          modelApi: options.modelApi,
+          model,
+          provider: options.config.provider,
+        }, onProgress);
         outputText = execution.text;
         output = execution.rawOutput;
         isError = execution.isError ?? false;
@@ -403,10 +440,53 @@ export async function executeConversation(
       });
     }
 
+    // Detect repeated tool failures to prevent retry loops
+    // Only check newly added results (from this iteration)
+    for (const tr of toolResults.slice(-toolUses.length)) {
+      if (tr.is_error) {
+        const toolName = toolCalls.find((tc) => tc.id === tr.tool_use_id)?.name;
+        if (toolName && toolName === lastFailedTool) {
+          consecutiveFailures += 1;
+        } else {
+          lastFailedTool = toolName ?? '';
+          consecutiveFailures = 1;
+        }
+      } else {
+        consecutiveFailures = 0;
+        lastFailedTool = '';
+      }
+    }
+
+    if (consecutiveFailures >= 3 && lastFailedTool) {
+      const completedAt = nowIso();
+      if (finalMessage) {
+        return {
+          runId: options.runId,
+          sessionId: options.sessionId,
+          model,
+          text: extractTextFromContent(finalMessage.content),
+          message: finalMessage,
+          messages: conversation,
+          stopReason: finalMessage.stop_reason ?? null,
+          hookStopReason,
+          usage: finalMessage.usage,
+          requests: requestSummaries,
+          toolCalls,
+          permissionDecisions,
+          startedAt,
+          completedAt,
+        };
+      }
+      throw new ActoviqSdkError(
+        `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
+      );
+    }
+
     conversation.push({
       role: 'user',
       content: toolResults,
     });
+    toolResults = [];
   }
 }
 

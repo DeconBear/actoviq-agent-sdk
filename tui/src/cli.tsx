@@ -78,11 +78,16 @@ async function main(): Promise<void> {
     }
   }
 
-  const { createAgentSdk } = await import('actoviq-agent-sdk');
+  const { createAgentSdk, createActoviqFileTools, createActoviqWebTools } = await import('actoviq-agent-sdk');
 
+  const workDir = opts.workDir ?? process.cwd();
   const sdk = await createAgentSdk({
-    workDir: opts.workDir ?? process.cwd(),
+    workDir,
     model: opts.model,
+    tools: [
+      ...createActoviqFileTools({ cwd: workDir }),
+      ...createActoviqWebTools(),
+    ],
   });
 
   const { waitUntilExit } = render(

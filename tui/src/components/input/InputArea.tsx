@@ -10,6 +10,7 @@ interface InputAreaProps {
   disabled?: boolean;
   placeholder?: string;
   initialValue?: string;
+  suppressChar?: (value: string) => string;
 }
 
 export function InputArea({
@@ -20,6 +21,7 @@ export function InputArea({
   disabled,
   placeholder,
   initialValue,
+  suppressChar,
 }: InputAreaProps) {
   const [value, setValue] = useState(initialValue ?? '');
 
@@ -29,10 +31,11 @@ export function InputArea({
 
   const handleChange = useCallback(
     (text: string) => {
-      setValue(text);
-      onInputChange?.(text);
+      const filtered = suppressChar ? suppressChar(text) : text;
+      setValue(filtered);
+      onInputChange?.(filtered);
     },
-    [onInputChange],
+    [onInputChange, suppressChar],
   );
 
   const handleSubmit = useCallback(

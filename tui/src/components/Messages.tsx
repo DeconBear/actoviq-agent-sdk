@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { Box, Text } from 'ink';
 import type { UIMessage, ContentBlock } from '../context.js';
 import { ToolCallBlock } from './chat/ToolCallBlock.js';
@@ -64,7 +64,7 @@ const MessageRow = memo(function MessageRow({ message }: { message: UIMessage })
       ) : (
         <Box flexDirection="column">
           {message.content.map((block, i) => (
-            <ContentBlockView key={i} block={block} />
+            <ContentBlockView key={blockKey(block, i)} block={block} />
           ))}
         </Box>
       )}
@@ -78,7 +78,7 @@ function StreamingRow({ blocks }: { blocks: ContentBlock[] }) {
   return (
     <Box flexDirection="column" marginY={1} paddingX={2}>
       {blocks.map((block, i) => (
-        <ContentBlockView key={i} block={block} live />
+        <ContentBlockView key={blockKey(block, i)} block={block} live />
       ))}
     </Box>
   );
@@ -86,30 +86,109 @@ function StreamingRow({ blocks }: { blocks: ContentBlock[] }) {
 
 // ── Content block renderer ────────────────────────────────────────
 
-function ContentBlockView({ block, live }: { block: ContentBlock; live?: boolean }) {
+const ContentBlockView = memo(function ContentBlockView(
+  { block, live }: { block: ContentBlock; live?: boolean },
+) {
   switch (block.type) {
+    case 'separator':
+      return (
+        <Box paddingY={1} paddingX={2}>
+          <Text dimColor>
+            ── Reasoning loop {block.iteration} ──
+          </Text>
+        </Box>
+      );
+
     case 'text':
       return <Text>{renderMarkdown(block.text)}</Text>;
+
     case 'thinking':
-      return null; // Hidden by default
+      return <ThinkingBlock thinking={block} />;
+
     case 'tool_use':
       return <ToolCallBlock toolUse={block} live={live} />;
+
     case 'tool_result':
       return (
         <Box marginLeft={2} marginY={1} flexDirection="column">
           <Box flexDirection="row" gap={1}>
             <Text dimColor>└─</Text>
-            <Text dimColor>{block.isError ? 'Error' : 'Result'}</Text>
+            <Text dimColor color={block.isError ? 'red' : undefined}>
+              {block.isError ? 'Error' : 'Result'}
+            </Text>
             {block.durationMs != null && (
-              <Text dimColor>({Math.round(block.durationMs / 1000)}s)</Text>
+              <Text dimColor>({formatDuration(block.durationMs)})</Text>
+            )}
+            {block.iteration != null && block.iteration > 0 && (
+              <Text dimColor>loop {block.iteration}</Text>
             )}
           </Box>
-          <Box marginLeft={3} height={10} overflow="hidden">
+          <Box marginLeft={3} paddingRight={2}>
             <Text dimColor>
-              {block.content.length > 300 ? block.content.slice(0, 300) + '...' : block.content}
+              {truncateOutput(block.content, block.isError)}
             </Text>
           </Box>
         </Box>
       );
   }
+});
+
+// ── Thinking block (collapsible) ──────────────────────────────────
+
+const ThinkingBlock = memo(function ThinkingBlock(
+  { thinking }: { thinking: Extract<ContentBlock, { type: 'thinking' }> },
+) {
+  const [expanded, setExpanded] = useState(!thinking.collapsed);
+
+  return (
+    <Box flexDirection="column" marginY={1}>
+      <Box flexDirection="row" gap={1}>
+        <Text dimColor>{expanded ? '▼' : '▶'}</Text>
+        <Text dimColor>Thinking</Text>
+        <Text dimColor>({estimateTokens(thinking.text)} tok)</Text>
+      </Box>
+      {expanded && (
+        <Box marginLeft={3} marginTop={1}>
+          <Text dimColor>
+            {thinking.text.length > 500 ? thinking.text.slice(0, 500) + '...' : thinking.text}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  );
+});
+
+// ── Block key generator ──────────────────────────────────────────
+
+function blockKey(block: ContentBlock, index: number): string {
+  switch (block.type) {
+    case 'tool_use': return `tu-${block.id}`;
+    case 'tool_result': return `tr-${block.toolUseId}`;
+    case 'separator': return `sep-${block.iteration}`;
+    case 'thinking': return `th-${index}`;
+    case 'text': return `tx-${index}`;
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+
+function truncateOutput(content: string, _isError: boolean): string {
+  const lines = content.split('\n');
+  if (lines.length > 20) {
+    return lines.slice(0, 20).join('\n') + `\n... (${lines.length - 20} more lines)`;
+  }
+  if (content.length > 1000) {
+    return content.slice(0, 1000) + '...';
+  }
+  return content;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+}
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
 }

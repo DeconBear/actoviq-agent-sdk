@@ -7,6 +7,7 @@ import type {
   CreateToolOptions,
   ResolvedToolAdapter,
   ResolvedToolExecutionResult,
+  ToolCallProgress,
   ToolExecutionContext,
 } from '../types.js';
 import { isRecord } from './helpers.js';
@@ -36,6 +37,16 @@ export function tool<Input, Output>(
     requiresUserInteraction: config.requiresUserInteraction,
     isConcurrencySafe: config.isConcurrencySafe,
     checkPermissions: config.checkPermissions,
+    aliases: config.aliases,
+    userFacingName: config.userFacingName,
+    searchHint: config.searchHint,
+    interruptBehavior: config.interruptBehavior ?? 'block',
+    isResultTruncated: config.isResultTruncated,
+    maxResultSizeChars: config.maxResultSizeChars ?? 50_000,
+    inputsEquivalent: config.inputsEquivalent,
+    validateInput: config.validateInput,
+    getToolUseSummary: config.getToolUseSummary,
+    prompt: config.prompt,
   };
 }
 
@@ -78,19 +89,22 @@ export function createLocalToolAdapter(
     requiresUserInteraction: definition.requiresUserInteraction,
     isConcurrencySafe: definition.isConcurrencySafe,
     checkPermissions: definition.checkPermissions as ResolvedToolAdapter['checkPermissions'],
-    execute: async (input: unknown, context: ToolExecutionContext) => {
+    execute: async (input: unknown, context: ToolExecutionContext, onProgress?: ToolCallProgress) => {
       try {
         const parsedInput = await definition.inputSchema.parseAsync(input);
-        const output = await definition.execute(parsedInput, context);
+        const output = await definition.execute(parsedInput, context, onProgress);
         if (definition.outputSchema) {
           await definition.outputSchema.parseAsync(output);
         }
         return normalizeToolExecutionResult(definition.serialize?.(output), output);
       } catch (error) {
         if (error instanceof z.ZodError) {
+          const rawStr = typeof input === 'string'
+            ? input
+            : JSON.stringify(input, null, 2);
           throw new ToolExecutionError(
             publicName,
-            `Invalid tool input for "${publicName}": ${error.message}`,
+            `Invalid tool input for "${publicName}": ${error.message}\n\nReceived input:\n${rawStr}`,
             { cause: error },
           );
         }
