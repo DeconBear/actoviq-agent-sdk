@@ -55,12 +55,14 @@ describe('Actoviq Runtime parity file tools', () => {
       context,
     );
     expect(readResult).toMatchObject({
-      filePath,
-      startLine: 2,
-      endLine: 3,
-      totalLines: 4,
+      type: 'text',
+      file: {
+        filePath,
+        startLine: 2,
+        totalLines: 4,
+      },
     });
-    expect((readResult as { content: string }).content).toContain('2\tbeta');
+    expect((readResult as { file: { content: string } }).file.content).toContain('2\tbeta');
 
     const editResult = await Edit.execute(
       {
@@ -142,7 +144,8 @@ describe('Actoviq Runtime parity file tools', () => {
       },
       context,
     );
-    expect((grepResult as { filenames: string[] }).filenames.join('\n')).toContain('one.ts:1:export const alpha = 1;');
-    expect((grepResult as { filenames: string[] }).filenames.join('\n')).toContain('two.ts:1:export const beta = 2;');
+    const grepOutput = (grepResult as { filenames: string[] }).filenames.join('\n');
+    expect(grepOutput).toContain('one.ts:1:export const alpha = 1;');
+    expect(grepOutput).toContain('two.ts:1:export const beta = 2;');
   });
 });

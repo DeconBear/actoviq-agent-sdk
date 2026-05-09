@@ -84,8 +84,14 @@ export { createActoviqWebTools } from './tools/actoviqWebTools.js';
 export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
 export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
 export { createBashTool, BASH_TOOL_NAME } from './tools/bash/BashTool.js';
+export type { BashInput } from './tools/bash/BashTool.js';
 export { createTodoWriteTool, TODO_WRITE_TOOL_NAME } from './tools/todo/TodoWriteTool.js';
 export { createAskUserQuestionTool, ASK_USER_QUESTION_TOOL_NAME } from './tools/askUserQuestion/AskUserQuestionTool.js';
+export { createActoviqTaskTools } from './tools/actoviqTaskTools.js';
+export { createTaskCreateTool, TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME } from './tools/actoviqTaskTools.js';
+export { createNotebookEditTool, NOTEBOOK_EDIT_TOOL_NAME } from './tools/actoviqNotebookEdit.js';
+export { createPowerShellTool, POWERSHELL_TOOL_NAME } from './tools/actoviqShellTools.js';
+export { createActoviqMiscTools, createConfigTool, createToolSearchTool, createSkillTool, CONFIG_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, SKILL_TOOL_NAME } from './tools/actoviqMiscTools.js';
 export {
   ACTOVIQ_RECENT_FILES_KEY,
   ACTOVIQ_RECENT_SKILLS_KEY,
