@@ -81,9 +81,29 @@ console.log(`${c.cyan}│${c.reset}  session  : ${c.yellow}${session.id}${c.rese
 console.log(`${c.cyan}│${c.reset}  config   : provider=${sdk.config.provider}, model=${sdk.config.model}`);
 console.log(`${c.cyan}│${c.reset}            baseURL=${sdk.config.baseURL ?? '(unset)'}`);
 console.log(`${c.cyan}│${c.reset}  tools    : ${tools.map((t) => t.name).join(', ')}`);
-console.log(`${c.cyan}│${c.reset}  commands : /help /clear /debug /memory /compact /exit`);
+console.log(`${c.cyan}│${c.reset}  commands : /help /clear /debug /dump /memory /compact /exit`);
 console.log(`${c.cyan}├───────────────────────────────────────────────────┤${c.reset}`);
 console.log('');
+
+// Dump tool definitions in both Anthropic and OpenAI formats
+function dumpToolFormats() {
+  const providerTools = tools.map(t => ({
+    name: t.name,
+    description: t.description,
+    inputJsonSchema: t.inputJsonSchema,
+  }));
+  console.log(`\n${c.bold}=== Anthropic format (provider=anthropic) ===${c.reset}`);
+  for (const t of providerTools) {
+    console.log(`${c.yellow}  ${t.name}${c.reset}`);
+    console.log(`${c.dim}    input_schema: ${JSON.stringify(t.inputJsonSchema).slice(0, 300)}${c.reset}`);
+  }
+  console.log(`\n${c.bold}=== OpenAI format (provider=openai) ===${c.reset}`);
+  for (const t of providerTools) {
+    console.log(`${c.yellow}  ${t.name}${c.reset}`);
+    const oai = { type: 'function', function: { name: t.name, description: t.description, parameters: t.inputJsonSchema } };
+    console.log(`${c.dim}    ${JSON.stringify(oai).slice(0, 400)}${c.reset}`);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Core: process one user message through the ReAct loop
@@ -255,6 +275,10 @@ async function handleCommand(cmd: string, _args: string): Promise<boolean> {
       if (debugMode) {
         console.log(`${c.dim}  Shows full tool call inputs, provider info, and raw error details.${c.reset}`);
       }
+      return true;
+
+    case 'dump':
+      dumpToolFormats();
       return true;
 
     default:
