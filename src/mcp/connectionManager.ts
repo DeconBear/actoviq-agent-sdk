@@ -70,6 +70,7 @@ export class McpConnectionManager {
           provider: 'mcp',
           mcpServerName: server.name,
           providerTool: {
+            type: 'custom',
             name: publicName,
             description:
               listedTool.description ??

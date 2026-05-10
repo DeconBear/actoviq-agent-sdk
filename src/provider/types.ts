@@ -94,6 +94,7 @@ export interface MessageParam {
 
 export interface Tool {
   name: string;
+  type?: string;
   description?: string;
   input_schema: Record<string, unknown>;
   strict?: boolean;

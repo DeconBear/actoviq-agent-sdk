@@ -162,6 +162,7 @@ function buildProviderTool(
   publicName: string,
 ): ProviderTool {
   return {
+    type: 'custom',
     name: publicName,
     description: definition.description,
     input_schema: definition.inputJsonSchema as ProviderTool['input_schema'],
