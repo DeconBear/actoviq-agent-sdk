@@ -84,7 +84,7 @@ export async function resolveRuntimeConfig(
     model,
     maxTokens: options.maxTokens ?? 32000,
     temperature: options.temperature,
-    timeoutMs: options.timeoutMs ?? 120000,
+    timeoutMs: options.timeoutMs ?? 600000,
     maxRetries: options.maxRetries ?? 2,
     workDir: options.workDir ?? process.cwd(),
     sessionDirectory:
