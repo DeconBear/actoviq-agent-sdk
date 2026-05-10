@@ -60,8 +60,11 @@ export async function resolveRuntimeConfig(
   const model =
     options.model ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_medium_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MAX_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_max_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MEDIUM_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_medium_MODEL') ??
+    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MIN_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_min_MODEL') ??
     (provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL);
 
