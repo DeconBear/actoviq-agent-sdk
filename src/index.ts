@@ -64,6 +64,7 @@ export {
 export {
   ActoviqSdkError,
   ActoviqProviderApiError,
+  ActoviqBridgeProcessError,
   ConfigurationError,
   RunAbortedError,
   SessionNotFoundError,
@@ -174,6 +175,37 @@ export {
   createTempWorkspace,
   createWorkspace,
 } from './workspace/actoviqWorkspace.js';
+
+// ── Bridge SDK ────────────────────────────────────────────────────────
+export {
+  ActoviqBridgeAgentHandle,
+  ActoviqBridgeAgentsApi,
+  ActoviqBridgeContextApi,
+  ActoviqBridgeRunStream,
+  ActoviqBridgeSession,
+  ActoviqBridgeSessionsApi,
+  ActoviqBridgeSlashCommandsApi,
+  ActoviqBridgeSkillHandle,
+  ActoviqBridgeSkillsApi,
+  ActoviqBridgeSdkClient,
+  ActoviqBridgeToolsApi,
+  createActoviqBridgeSdk,
+} from './parity/actoviqBridgeSdk.js';
+export {
+  analyzeActoviqBridgeEvents,
+  extractActoviqBridgeTaskInvocations,
+  extractActoviqBridgeToolRequests,
+  extractActoviqBridgeToolResults,
+  getActoviqBridgeTextDelta,
+} from './parity/actoviqBridgeEvents.js';
+export {
+  getActoviqBridgeCompactBoundaries,
+  getActoviqBridgeLatestCompactBoundary,
+  getActoviqBridgeSessionInfo,
+  getActoviqBridgeSessionMessages,
+  listActoviqBridgeSessions,
+} from './parity/actoviqTranscripts.js';
+
 export type * from './types.js';
 
 export function localMcpServer(

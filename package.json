@@ -29,7 +29,9 @@
   "files": [
     "dist",
     "README.md",
-    "README-zh.md"
+    "README-zh.md",
+    "vendor/actoviq-runtime/cli.js",
+    "vendor/actoviq-runtime/runtime.bundle.br"
   ],
   "engines": {
     "node": ">=18"
@@ -58,7 +60,9 @@
     "example:workflow-annotated": "npm run build && tsx examples/workflow-annotated.ts",
     "example:workflow-agent-orchestration": "npm run build && tsx examples/workflow-agent-orchestration.ts",
     "example:scheduling": "npm run build && tsx examples/scheduling.ts",
-    "example:react-loop": "npm run build && tsx examples/react-loop.ts"
+    "example:react-loop": "npm run build && tsx examples/react-loop.ts",
+    "example:actoviq-buddy": "npm run build && tsx examples/actoviq-buddy.ts",
+    "example:actoviq-bridge-sdk": "npm run build && tsx examples/actoviq-bridge-sdk.ts"
   },
   "keywords": [
     "agent",
@@ -69,6 +73,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "bun": "^1.3.11",
     "glob": "^13.0.0",
     "lodash-es": "^4.17.23",
     "zod": "^4.1.12"
