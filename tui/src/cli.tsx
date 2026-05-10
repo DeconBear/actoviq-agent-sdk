@@ -73,7 +73,7 @@ async function main(): Promise<void> {
 
   // Use the SDK's built-in config loader which properly handles the { env: {...} }
   // wrapper and stores the result for resolveRuntimeConfig to consume.
-  const { loadJsonConfigFile, createAgentSdk, createActoviqFileTools, createActoviqWebTools } =
+  const { loadJsonConfigFile, createAgentSdk, createActoviqCoreTools } =
     await import('actoviq-agent-sdk');
 
   try {
@@ -84,14 +84,36 @@ async function main(): Promise<void> {
   }
 
   const workDir = opts.workDir ?? process.cwd();
+
+  let isGit = false;
+  try {
+    const { execSync } = await import('node:child_process');
+    execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' });
+    isGit = true;
+  } catch {}
   const sdk = await createAgentSdk({
     workDir,
     model: opts.model,
-    systemPrompt: `You are Actoviq, an interactive CLI agent. Your working directory is ${workDir}. Use absolute paths for all file operations. Create files in the working directory unless the user specifies otherwise.`,
-    tools: [
-      ...createActoviqFileTools({ cwd: workDir }),
-      ...createActoviqWebTools(),
-    ],
+    systemPrompt:
+      `You are Actoviq, an interactive CLI agent. Your working directory is ${workDir}. Use absolute paths for all file operations.\n\n` +
+      `<env>\nWorking directory: ${workDir}\nIs directory a git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\n</env>\n\n` +
+      `# Tone and style\n` +
+      `- Only use emojis if the user explicitly requests it.\n` +
+      `- Your responses should be short and concise.\n` +
+      `- When referencing code include the pattern file_path:line_number.\n\n` +
+      `# Doing tasks\n` +
+      `- Prefer editing existing files to creating new ones.\n` +
+      `- Do not add features, refactor, or introduce abstractions beyond what the task requires.\n` +
+      `- Default to writing no comments.\n\n` +
+      `# Git Safety Protocol\n` +
+      `- NEVER update the git config\n` +
+      `- NEVER run destructive git commands unless the user explicitly requests\n` +
+      `- NEVER skip hooks unless the user explicitly requests it\n` +
+      `- NEVER commit changes unless the user explicitly asks you to\n\n` +
+      `# Other\n` +
+      `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
+      `- When in doubt, use TodoWrite to track progress.`,
+    tools: createActoviqCoreTools({ cwd: workDir }),
   });
 
   const { waitUntilExit } = render(

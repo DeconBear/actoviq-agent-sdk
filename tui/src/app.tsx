@@ -253,6 +253,7 @@ export function App({ client, initialModel }: AppProps) {
 
     setInputHistory((prev) => [...prev, text]);
     await send(activeSession, text, {
+      model,
       onPermissionRequest: async (toolName, args, toolDesc) => {
         if (permissionMode === 'bypassPermissions') {
           return true;
