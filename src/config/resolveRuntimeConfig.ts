@@ -82,7 +82,7 @@ export async function resolveRuntimeConfig(
     authToken,
     baseURL,
     model,
-    maxTokens: options.maxTokens ?? 8192,
+    maxTokens: options.maxTokens ?? 16384,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs ?? 120000,
     maxRetries: options.maxRetries ?? 2,
