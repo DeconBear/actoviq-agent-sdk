@@ -71,6 +71,7 @@ let requestCount = 0;
 let totalToolCalls = 0;
 let currentAbort: AbortController | null = null;
 let debugMode = false;
+let traceMode = false;
 
 // ── Print intro ───────────────────────────────────────────────────────
 
@@ -274,6 +275,14 @@ async function handleCommand(cmd: string, _args: string): Promise<boolean> {
       console.log(`${c.yellow}Debug mode: ${debugMode ? 'ON' : 'OFF'}${c.reset}`);
       if (debugMode) {
         console.log(`${c.dim}  Shows full tool call inputs, provider info, and raw error details.${c.reset}`);
+      }
+      return true;
+
+    case 'trace':
+      traceMode = !traceMode;
+      console.log(`${c.yellow}Trace mode: ${traceMode ? 'ON' : 'OFF'}${c.reset}`);
+      if (traceMode) {
+        console.log(`${c.dim}  Logs raw API request/response for debugging.${c.reset}`);
       }
       return true;
 
