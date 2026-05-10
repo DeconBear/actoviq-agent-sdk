@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Volcano Eruption</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #030308;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    user-select: none;
+  }
+  #container { position: relative; width: 100vw; height: 100vh; }
+  canvas { display: block; }
+
+  #ui {
+    position: absolute;
+    bottom: 34px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    background: rgba(8, 8, 18, 0.78);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 100, 20, 0.22);
+    border-radius: 18px;
+    padding: 15px 24px 13px;
+    z-index: 10;
+    box-shadow: 0 4px 30px rgba(0,0,0,0.55);
+  }
+  #ui label {
+    color: #cc9966;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  #ui .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  #intensity {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 240px;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #2a0800, #cc3300, #ff6600, #ffbb00);
+    outline: none;
+    cursor: pointer;
+  }
+  #intensity::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 34%, #ffe0a0, #ff6611);
+    border: 2px solid #ff9944;
+    box-shadow: 0 0 18px #ff5500, 0 0 36px rgba(255,80,0,0.45);
+    cursor: pointer;
+    transition: box-shadow 0.18s;
+  }
+  #intensity::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 26px #ff7733, 0 0 50px rgba(255,90,0,0.6);
+  }
+  #val {
+    color: #ff8833;
+    font-size: 19px;
+    font-weight: 700;
+    min-width: 28px;
+    text-align: center;
+    transition: color 0.15s;
+    text-shadow: 0 0 10px rgba(255,100,0,0.5);
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <label for="intensity">Eruption Intensity</label>
+    <div class="row">
+      <input type="range" id="intensity" min="1" max="100" value="50">
+      <span id="val">50</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const slider = document.getElementById('intensity');
+  const valEl = document.getElementById('val');
+
+  let W, H;
+  let intensity = 50;
+
+  // ── Stars ──────────────────────────────────────────────────────────
+  const stars = [];
+  function seedStars(count) {
+    stars.length = 0;
+    for (let i = 0; i < count; i++) {
+      stars.push({
+        x: Math.random(),
+        y: Math.random() * 0.52,
+        r: Math.random() * 1.5 + 0.25,
+        baseAlpha: Math.random() * 0.65 + 0.2,
+        phase: Math.random() * Math.PI * 2,
+        freq: Math.random() * 0.018 + 0.004,
+        hue: Math.random() < 0.18 ? 200 + Math.random() * 55 : 30 + Math.random() * 25
+      });
+    }
+  }
+
+  // ── Particles ──────────────────────────────────────────────────────
+  const MAX = 1000;
+  const particles = [];
+
+  // Lava bomb — heavy, bright, arcs out and falls
+  function spawnLava() {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.05;
+    const spd = (Math.random() * 5.5 + 2.8) * (intensity / 50);
+    return {
+      type: 'lava',
+      x: W * 0.5 + (Math.random() - 0.5) * 32,
+      y: H * 0.432,
+      vx: Math.cos(a) * spd,
+      vy: Math.sin(a) * spd,
+      r: Math.random() * 3.8 + 1.8,
+      life: 1,
+      decay: 0.004 + Math.random() * 0.008,
+      hue: Math.random() < 0.45 ? 40 : 15
+    };
+  }
+
+  // Ember — small, flickers, buoyant
+  function spawnEmber() {
+    return {
+      type: 'ember',
+      x: W * 0.5 + (Math.random() - 0.5) * 55,
+      y: H * 0.43 - Math.random() * 10,
+      vx: (Math.random() - 0.5) * 1.6,
+      vy: -(Math.random() * 2.2 + 0.5),
+      r: Math.random() * 2 + 0.5,
+      life: 1,
+      decay: 0.003 + Math.random() * 0.006,
+      flickerPhase: Math.random() * Math.PI * 2,
+      flickerSpeed: 0.06 + Math.random() * 0.16,
+      hue: Math.random() < 0.5 ? 35 : 25
+    };
+  }
+
+  // Ash particle — dark, drifts and rises, grows
+  function spawnAsh() {
+    return {
+      type: 'ash',
+      x: W * 0.5 + (Math.random() - 0.5) * 60,
+      y: H * 0.43 - Math.random() * 8,
+      vx: (Math.random() - 0.5) * 1.0,
+      vy: -(Math.random() * 1.0 + 0.2),
+      r: Math.random() * 5.5 + 2,
+      life: 1,
+      decay: 0.0012 + Math.random() * 0.003,
+      opacity: 0.25 + Math.random() * 0.45
+    };
+  }
+
+  // Glow burst — expanding light ring
+  function spawnGlow() {
+    return {
+      type: 'glow',
+      x: W * 0.5 + (Math.random() - 0.5) * 20,
+      y: H * 0.432 + (Math.random() - 0.5) * 6,
+      r: Math.random() * 2.5 + 1,
+      life: 1,
+      decay: 0.022 + Math.random() * 0.025,
+      maxR: Math.random() * 45 + 18
+    };
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life -= p.decay;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+
+      switch (p.type) {
+        case 'lava':
+          p.vy += 0.13;
+          p.x += p.vx;
+          p.y += p.vy;
+          break;
+        case 'ember':
+          p.vy -= 0.0025;
+          p.vx += Math.sin(p.flickerPhase) * 0.018;
+          p.flickerPhase += p.flickerSpeed;
+          p.x += p.vx;
+          p.y += p.vy;
+          break;
+        case 'ash':
+          p.vy -= 0.0008;
+          p.vx += (Math.random() - 0.5) * 0.04;
+          p.x += p.vx;
+          p.y += p.vy;
+          p.r += 0.015;
+          break;
+        case 'glow':
+          p.r += (p.maxR - p.r) * 0.055;
+          p.x += (Math.random() - 0.5) * 0.35;
+          p.y -= 0.18;
+          break;
+      }
+
+      if (p.x < -30) p.x = W + 30;
+      if (p.x > W + 30) p.x = -30;
+    }
+  }
+
+  function spawnWave() {
+    const t = intensity / 100;
+    const nLava   = Math.floor(t * 4.0);
+    const nEmber  = Math.floor(t * 6.5);
+    const nAsh    = Math.floor(t * 3.5);
+    const nGlow   = Math.floor(t * 0.55);
+
+    for (let i = 0; i < nLava; i++)  if (particles.length < MAX) particles.push(spawnLava());
+    for (let i = 0; i < nEmber; i++) if (particles.length < MAX) particles.push(spawnEmber());
+    for (let i = 0; i < nAsh; i++)   if (particles.length < MAX) particles.push(spawnAsh());
+    for (let i = 0; i < nGlow; i++)  if (particles.length < MAX) particles.push(spawnGlow());
+  }
+
+  // ── Drawing ────────────────────────────────────────────────────────
+  function drawSky() {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#020210');
+    grad.addColorStop(0.35, '#08081c');
+    grad.addColorStop(0.62, '#12091c');
+    grad.addColorStop(0.88, '#170c14');
+    grad.addColorStop(1, '#140a0c');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    const t = Date.now() / 4000;
+    for (const s of stars) {
+      const twinkle = 0.55 + 0.45 * Math.sin(t * s.freq * 40 + s.phase);
+      const alpha = s.baseAlpha * twinkle;
+      const h = s.hue;
+      ctx.beginPath();
+      ctx.arc(s.x * W, s.y * H, s.r, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${h}, 30%, 82%, ${alpha.toFixed(3)})`;
+      ctx.fill();
+    }
+
+    // Sky glow from eruption
+    const t2 = intensity / 100;
+    if (t2 > 0.08) {
+      const g = ctx.createRadialGradient(W * 0.5, H * 0.38, 8, W * 0.5, H * 0.2, Math.min(W, H) * 0.7);
+      g.addColorStop(0, `rgba(255,110,18,${0.28 * t2})`);
+      g.addColorStop(0.4, `rgba(255,40,5,${0.10 * t2})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function drawVolcano() {
+    const cx = W * 0.5;
+    const peakY = H * 0.43;
+    const baseY = H * 0.98;
+
+    // Main cone
+    ctx.beginPath();
+    ctx.moveTo(cx - W * 0.24, baseY);
+    ctx.lineTo(cx - W * 0.065, peakY + 14);
+    ctx.quadraticCurveTo(cx - W * 0.026, peakY - 6, cx, peakY);
+    ctx.quadraticCurveTo(cx + W * 0.026, peakY - 6, cx + W * 0.065, peakY + 14);
+    ctx.lineTo(cx + W * 0.24, baseY);
+    ctx.closePath();
+
+    const bodyGrad = ctx.createLinearGradient(0, peakY, 0, baseY);
+    bodyGrad.addColorStop(0.00, '#1c100a');
+    bodyGrad.addColorStop(0.18, '#2c1c10');
+    bodyGrad.addColorStop(0.55, '#1e120a');
+    bodyGrad.addColorStop(1.00, '#0d0804');
+    ctx.fillStyle = bodyGrad;
+    ctx.fill();
+
+    // Subtle ridge lines
+    ctx.strokeStyle = 'rgba(60,40,28,0.35)';
+    ctx.lineWidth = 1.2;
+    for (let rx = -0.12; rx <= 0.12; rx += 0.06) {
+      const sx = cx + rx * W;
+      const topY = peakY + Math.abs(rx) * W * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(sx, topY);
+      ctx.lineTo(sx + (rx > 0 ? 15 : -15), baseY - Math.abs(rx) * 200);
+      ctx.stroke();
+    }
+
+    // Crater rim
+    ctx.beginPath();
+    ctx.ellipse(cx, peakY - 2, 52, 16, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(80,50,30,0.55)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Snow cap hint
+    ctx.beginPath();
+    ctx.moveTo(cx - 54, peakY + 8);
+    ctx.quadraticCurveTo(cx - 30, peakY - 8, cx, peakY - 4);
+    ctx.quadraticCurveTo(cx + 30, peakY - 8, cx + 54, peakY + 8);
+    ctx.fillStyle = 'rgba(48,38,32,0.55)';
+    ctx.fill();
+
+    // Crater interior glow
+    const gs = intensity / 100;
+    const craterGrad = ctx.createRadialGradient(cx, peakY + 1, 2, cx, peakY - 3, 48);
+    craterGrad.addColorStop(0, `rgba(255,200,50,${0.92 * gs})`);
+    craterGrad.addColorStop(0.25, `rgba(255,120,15,${0.75 * gs})`);
+    craterGrad.addColorStop(0.55, `rgba(255,40,0,${0.35 * gs})`);
+    craterGrad.addColorStop(1, 'rgba(200,15,0,0)');
+    ctx.fillStyle = craterGrad;
+    ctx.beginPath();
+    ctx.ellipse(cx, peakY - 2, 42, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawAshPlume() {
+    const cx = W * 0.5;
+    const peakY = H * 0.43;
+    const gs = intensity / 100;
+
+    // Rising ash column
+    for (let i = 0; i < 9; i++) {
+      const bx = cx + (Math.random() - 0.5) * 30 * gs;
+      const by = peakY - 5 - Math.random() * 6;
+      const spread = 16 + i * 13 * gs;
+      const rise = i * 17 * gs;
+
+      ctx.beginPath();
+      ctx.ellipse(bx, by - rise, spread, 6 + gs * 4.5, 0, 0, Math.PI * 2);
+      const a = Math.max(0, (0.12 - i * 0.013) * gs);
+      ctx.fillStyle = `rgba(28,22,22,${a})`;
+      ctx.fill();
+    }
+
+    // Glow behind the plume
+    const glowR = 48 * gs;
+    if (glowR > 1) {
+      const pg = ctx.createRadialGradient(cx, peakY - 8, 2, cx, peakY - 30, glowR);
+      pg.addColorStop(0, `rgba(255,130,25,${0.32 * gs})`);
+      pg.addColorStop(1, 'rgba(255,30,0,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath();
+      ctx.arc(cx, peakY - 10, glowR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawLavaFlows() {
+    const cx = W * 0.5;
+    const peakY = H * 0.43;
+    const baseY = H * 0.98;
+    const gs = intensity / 100;
+
+    const flows = [
+      { dx: -36, dy: 12, endDx: -70, endY: baseY - 8 },
+      { dx: 30, dy: 12, endDx: 62, endY: baseY - 14 },
+    ];
+
+    for (const f of flows) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(cx + f.dx - 10, peakY + f.dy);
+      ctx.quadraticCurveTo(cx + f.dx * 1.6, peakY + f.dy + 55, cx + f.endDx - 8, f.endY);
+      ctx.lineTo(cx + f.endDx, f.endY);
+      ctx.quadraticCurveTo(cx + f.dx * 1.4, peakY + f.dy + 50, cx + f.dx - 3, peakY + f.dy);
+      ctx.closePath();
+
+      const fg = ctx.createLinearGradient(0, peakY, 0, baseY);
+      fg.addColorStop(0, `rgba(255,160,30,${0.88 * gs})`);
+      fg.addColorStop(0.45, `rgba(255,70,8,${0.65 * gs})`);
+      fg.addColorStop(1, `rgba(180,15,0,${0.3 * gs})`);
+      ctx.fillStyle = fg;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawGround() {
+    const grad = ctx.createLinearGradient(0, H * 0.96, 0, H);
+    grad.addColorStop(0, '#0c0806');
+    grad.addColorStop(1, '#040302');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, H * 0.96, W, H * 0.04);
+  }
+
+  function drawParticles() {
+    const order = { glow: 0, ash: 1, ember: 2, lava: 3 };
+    const sorted = [...particles].sort((a, b) => (order[a.type] || 0) - (order[b.type] || 0));
+
+    for (const p of sorted) {
+      const a = p.life;
+      ctx.save();
+
+      switch (p.type) {
+        case 'lava': {
+          // Outer glow
+          const og = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 3.2);
+          og.addColorStop(0, `hsla(${p.hue}, 100%, 72%, ${0.65 * a})`);
+          og.addColorStop(0.5, `hsla(${p.hue}, 100%, 50%, ${0.22 * a})`);
+          og.addColorStop(1, 'rgba(255,10,0,0)');
+          ctx.fillStyle = og;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 3.2, 0, Math.PI * 2); ctx.fill();
+
+          // Core
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = `hsla(${p.hue}, 100%, 78%, ${a})`;
+          ctx.fill();
+          break;
+        }
+        case 'ember': {
+          ctx.shadowColor = `hsl(${p.hue}, 100%, 60%)`;
+          ctx.shadowBlur = 9 * a;
+          const flick = 0.65 + 0.35 * Math.sin(p.flickerPhase);
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = `hsla(${p.hue}, 100%, ${65 + 25 * flick}%, ${a * flick})`;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+          break;
+        }
+        case 'ash': {
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(28,22,20,${a * p.opacity})`;
+          ctx.fill();
+          // Darker inner
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 0.5, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(14,10,9,${a * p.opacity * 0.5})`;
+          ctx.fill();
+          break;
+        }
+        case 'glow': {
+          const gg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+          gg.addColorStop(0, `rgba(255,190,50,${0.4 * a})`);
+          gg.addColorStop(0.5, `rgba(255,70,12,${0.14 * a})`);
+          gg.addColorStop(1, 'rgba(255,15,0,0)');
+          ctx.fillStyle = gg;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+          break;
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  // ── Main loop ──────────────────────────────────────────────────────
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+
+    drawSky();
+    drawAshPlume();
+    drawLavaFlows();
+    drawVolcano();
+    drawGround();
+    drawParticles();
+
+    spawnWave();
+    updateParticles();
+
+    requestAnimationFrame(frame);
+  }
+
+  // ── Resize ─────────────────────────────────────────────────────────
+  function resize() {
+    W = canvas.width  = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    seedStars(160);
+  }
+  window.addEventListener('resize', resize);
+
+  // ── Slider ─────────────────────────────────────────────────────────
+  slider.addEventListener('input', () => {
+    intensity = parseInt(slider.value);
+    valEl.textContent = intensity;
+  });
+
+  // ── Start ──────────────────────────────────────────────────────────
+  resize();
+  valEl.textContent = intensity;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

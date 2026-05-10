@@ -20,7 +20,10 @@ export function robustJsonParse(
       return parsed as Record<string, unknown>;
     }
     return { raw };
-  } catch {
+  } catch (e1) {
+    if (process.env.ACTOVIQ_DEBUG_JSON) {
+      console.error(`[json-parse] attempt 1 FAILED:`, (e1 as Error).message.slice(0, 120));
+    }
     // Attempt 2: fix invalid backslash escapes (Windows paths)
     try {
       const fixed = raw.replace(INVALID_JSON_ESCAPE, '\\\\');
@@ -28,7 +31,7 @@ export function robustJsonParse(
       if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
         return parsed as Record<string, unknown>;
       }
-    } catch {
+    } catch (e2) {
       // Fall through
     }
     // Attempt 3: double-decode (some providers double-encode JSON)
@@ -43,7 +46,23 @@ export function robustJsonParse(
     } catch {
       // Fall through
     }
+    // Attempt 4: more aggressive — escape ALL backslashes that aren't
+    // already part of known escape sequences, treating the entire string
+    // as potentially malformed Windows path JSON.
+    try {
+      // Replace any backslash that isn't part of \\, \", \/, \b, \f, \n, \r, \t, \uXXXX
+      const aggressive = raw.replace(/\\(?!["\\/bfnrtu]|u[0-9a-fA-F]{4})/g, '\\\\');
+      const parsed = JSON.parse(aggressive);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Fall through
+    }
   }
   // Last resort: wrap raw string so the model can see what went wrong
+  if (process.env.ACTOVIQ_DEBUG_JSON) {
+    console.error(`[robustJsonParse] FAILED for ${toolName ?? '?'}: len=${raw.length} start=${raw.slice(0, 80)}`);
+  }
   return { raw };
 }
