@@ -7,3 +7,4 @@ coverage
 examples/*.local.json
 plan/
 AGENTS.md
+CLAUDE.md
