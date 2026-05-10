@@ -49,10 +49,10 @@ function logEvent(label: string, event: any) {
 console.log('\n=== CLEAN SDK ===');
 console.log(`model: ${(await createAgentSdk()).config.model}`);
 
-const sdk = await createAgentSdk();
+const sdk = await createAgentSdk({ timeoutMs: 300000, maxTokens: 8192 });
 const session = await sdk.createSession({ title: 'AB clean' });
 const stream = session.stream(prompt, {
-  tools, maxToolIterations: 10,
+  tools, maxToolIterations: 10, maxTokens: 8192,
   systemPrompt: 'You are an interactive CLI agent. Use tools to accomplish tasks. Write complete, working code.',
 });
 
