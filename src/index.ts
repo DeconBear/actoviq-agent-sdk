@@ -51,6 +51,7 @@ export {
   sanitizeActoviqSessionMemoryOutput,
   serializeActoviqSessionMemoryRuntimeState,
 } from './memory/actoviqSessionMemoryState.js';
+export { buildSystemPrompt } from './prompts/systemPrompt.js';
 export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
