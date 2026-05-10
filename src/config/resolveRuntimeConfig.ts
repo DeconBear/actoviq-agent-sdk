@@ -36,34 +36,29 @@ export async function resolveRuntimeConfig(
   const loadedConfig = getLoadedJsonConfig();
 
   const envFromLoadedConfig = loadedConfig?.env ?? {};
-  const envFromProcess = process.env;
 
   const apiKey =
     options.apiKey ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_API_KEY') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_API_KEY');
   const authToken =
     options.authToken ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_AUTH_TOKEN') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_AUTH_TOKEN');
 
   if (!options.modelApi && !apiKey && !authToken) {
     throw new ConfigurationError(
       loadedConfig
-        ? `No Actoviq credential was found. Checked process.env and "${loadedConfig.path}".`
-        : 'No Actoviq credential was found. Checked process.env and the preloaded JSON config. Call loadJsonConfigFile(...) before createAgentSdk() if you want to use a JSON file.',
+        ? `No Actoviq credential was found. Checked "${loadedConfig.path}".`
+        : 'No Actoviq credential was found. Call loadJsonConfigFile(...) before createAgentSdk() to use a JSON file.',
     );
   }
 
   const provider =
     options.provider ??
-    (getConfigValue(envFromProcess, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
     (getConfigValue(envFromLoadedConfig, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
     'anthropic';
 
   const model =
     options.model ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_SONNET_MODEL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_OPUS_MODEL') ??
@@ -72,7 +67,6 @@ export async function resolveRuntimeConfig(
 
   const baseURL =
     options.baseURL ??
-    getConfigValue(envFromProcess, 'ACTOVIQ_BASE_URL') ??
     getConfigValue(envFromLoadedConfig, 'ACTOVIQ_BASE_URL');
 
   return {
