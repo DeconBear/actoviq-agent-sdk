@@ -43,6 +43,8 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "prepack": "npm run build",
+    "prepare:public-runtime": "node scripts/prepare-public-runtime.mjs",
+    "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
