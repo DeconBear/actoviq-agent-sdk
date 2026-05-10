@@ -123,7 +123,11 @@ export async function executeConversation(
         options.userId ?? options.config.userId
           ? { user_id: options.userId ?? options.config.userId ?? null }
           : undefined,
-      context_management: getActoviqApiContextManagement(conversation, options.config.compact),
+      // Skip context_management for third-party providers — their APIs
+      // may not support server-side message edits, causing undefined behavior.
+      context_management: isAnthropicAPI(options.config.baseURL)
+        ? getActoviqApiContextManagement(conversation, options.config.compact)
+        : undefined,
       messages: deepClone(conversation),
       signal: options.signal,
     };
@@ -538,6 +542,16 @@ function ensureNotAborted(signal?: AbortSignal): void {
     signalAborted(signal);
   } catch (error) {
     throw new RunAbortedError(asError(error).message, { cause: error });
+  }
+}
+
+function isAnthropicAPI(baseURL?: string): boolean {
+  if (!baseURL) return true; // default is api.anthropic.com
+  try {
+    const host = new URL(baseURL).hostname;
+    return host === 'api.anthropic.com' || host.endsWith('.anthropic.com');
+  } catch {
+    return true;
   }
 }
 
