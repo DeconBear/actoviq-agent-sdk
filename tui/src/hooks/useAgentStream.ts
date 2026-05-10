@@ -3,6 +3,7 @@ import type { AgentSession, AgentRunResult } from 'actoviq-agent-sdk';
 import type { UIMessage, ContentBlock } from '../context.js';
 
 export interface UseAgentStreamOptions {
+  model?: string;
   onPermissionRequest?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -91,7 +92,7 @@ export function useAgentStream() {
     let hasCompactBoundary = false;
 
     try {
-      const stream = session.stream(text, { signal: mergedSignal });
+      const stream = session.stream(text, { signal: mergedSignal, model: options?.model });
 
       for await (const event of stream) {
         switch (event.type) {
