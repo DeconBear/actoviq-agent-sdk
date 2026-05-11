@@ -8,3 +8,4 @@ examples/*.local.json
 plan/
 AGENTS.md
 CLAUDE.md
+vendor/actoviq-runtime/runtime.bundle.br

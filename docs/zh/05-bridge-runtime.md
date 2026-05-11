@@ -2,7 +2,25 @@
 
 这一章解释什么是 bridge，以及什么时候才需要使用它。
 
-## 1. bridge 是什么
+## 1. 前置条件 — 链接运行时 bundle
+
+Bridge SDK 依赖 Claude Code 的运行时 bundle（`runtime.bundle.br`）。由于许可证限制，该文件**不包含**在 actoviq-agent-sdk 包中。
+
+如果你已安装 Claude Code，可以链接它的 bundle：
+
+```bash
+npx actoviq-link-runtime /path/to/claude-code
+```
+
+或者设置环境变量：
+
+```bash
+export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime.bundle.br"
+```
+
+没有这个 bundle，bridge SDK 功能将不可用。
+
+## 2. bridge 是什么
 
 bridge 可以理解成一层兼容适配层。它暴露的是更偏 runtime 风格的执行路径。
 
