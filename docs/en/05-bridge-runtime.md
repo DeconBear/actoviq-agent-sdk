@@ -9,7 +9,20 @@ The bridge SDK requires a Claude Code runtime bundle (`runtime.bundle.br`). Due 
 If you have Claude Code installed, link its runtime bundle:
 
 ```bash
-npx actoviq-link-runtime /path/to/claude-code
+# Claude Code is published as @anthropic-ai/claude-code on npm.
+# The bundle lives at: <claude-code-root>/vendor/actoviq-runtime/runtime.bundle.br
+
+# macOS / Linux (npm global)
+npx actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
+
+# macOS / Linux (nvm)
+npx actoviq-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
+
+# Windows
+npx actoviq-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
+
+# Or let npm find it for you:
+npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 ```
 
 Alternatively, set the environment variable:
