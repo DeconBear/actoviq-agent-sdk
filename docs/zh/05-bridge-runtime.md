@@ -9,7 +9,20 @@ Bridge SDK 依赖 Claude Code 的运行时 bundle（`runtime.bundle.br`）。由
 如果你已安装 Claude Code，可以链接它的 bundle：
 
 ```bash
-npx actoviq-link-runtime /path/to/claude-code
+# Claude Code 的 npm 包名为 @anthropic-ai/claude-code
+# bundle 路径：<claude-code-root>/vendor/actoviq-runtime/runtime.bundle.br
+
+# macOS / Linux（npm 全局安装）
+npx actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
+
+# macOS / Linux（nvm 安装）
+npx actoviq-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
+
+# Windows
+npx actoviq-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
+
+# 或者让 npm 自己找：
+npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 ```
 
 或者设置环境变量：
