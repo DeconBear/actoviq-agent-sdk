@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "actoviq-fullscreen": "./bin/actoviq.cjs"
+    "actoviq": "./bin/actoviq.cjs"
   },
   "main": "./dist/cli.js",
   "files": [
