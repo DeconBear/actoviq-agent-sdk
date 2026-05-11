@@ -1,29 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text } from 'ink';
+import Box from '../../ink/components/Box.js';
+import Text from '../../ink/components/Text.js';
 import type { ContentBlock, ToolStatus } from '../../context.js';
 
-const SPIN_CHARS = ['◐', '◓', '◑', '◒'];
-const VERBS = ['Running', 'Working', 'Thinking', 'Processing'];
+const SPIN_CHARS = ['◷', '◶', '◵', '◴'];
 
 const STATUS_COLORS: Record<ToolStatus, string> = {
-  pending: 'yellow',
-  running: 'yellow',
-  done: 'green',
-  error: 'red',
-};
-
-const STATUS_LABELS: Record<ToolStatus, string> = {
-  pending: '...',
-  running: '',
-  done: 'done',
-  error: 'error',
+  pending: 'ansi:yellow',
+  running: 'ansi:yellow',
+  done: 'ansi:green',
+  error: 'ansi:red',
 };
 
 function elapsedColor(elapsedSec: number): string {
-  if (elapsedSec >= 30) return 'red';
-  if (elapsedSec >= 15) return 'yellowBright';
-  if (elapsedSec >= 5) return 'yellow';
-  return 'yellow';
+  if (elapsedSec >= 30) return 'ansi:red';
+  if (elapsedSec >= 15) return 'ansi:yellow';
+  return 'ansi:yellow';
 }
 
 interface ToolCallBlockProps {
@@ -50,7 +42,7 @@ export function ToolCallBlock({ toolUse, live }: ToolCallBlockProps) {
 
   const isRunning = toolUse.status === 'running';
   const isDone = toolUse.status === 'done' || toolUse.status === 'error';
-  const runColor = isRunning ? elapsedColor(elapsed) : (STATUS_COLORS[toolUse.status] ?? 'white');
+  const statusColor = isRunning ? elapsedColor(elapsed) : (STATUS_COLORS[toolUse.status] ?? 'ansi:white');
 
   const args = formatArgs(toolUse.input);
 
@@ -59,40 +51,41 @@ export function ToolCallBlock({ toolUse, live }: ToolCallBlockProps) {
       <Box flexDirection="row" gap={1}>
         <Box width={2} flexShrink={0}>
           {isRunning ? (
-            <Text color={runColor}>{SPIN_CHARS[frame]}</Text>
+            <Text color={statusColor}>{SPIN_CHARS[frame]}</Text>
           ) : (
-            <Text color={runColor}>
+            <Text color={statusColor}>
               {toolUse.status === 'done' ? '✓' :
                toolUse.status === 'error' ? '✗' : '○'}
             </Text>
           )}
         </Box>
-        <Text bold color={isRunning ? runColor : undefined}>
-          {toolUse.name}
+        <Text bold color={isRunning ? statusColor : undefined}>
+          ⚡ {toolUse.name}
         </Text>
         {toolUse.provider === 'mcp' && (
-          <Text dimColor>[mcp]</Text>
-        )}
-        {isDone && (
-          <Text dimColor>{STATUS_LABELS[toolUse.status]}</Text>
+          <Text dim>[mcp]</Text>
         )}
         {isRunning && toolUse.progressMessage && (
-          <Text dimColor>— {toolUse.progressMessage}</Text>
+          <Text dim>— {toolUse.progressMessage}</Text>
         )}
         {isRunning && elapsed > 2 && (
-          <Text dimColor>({elapsed}s)</Text>
+          <Text dim>({elapsed}s)</Text>
         )}
         {toolUse.iteration != null && toolUse.iteration > 0 && (
-          <Text dimColor>loop {toolUse.iteration}</Text>
+          <Text dim>loop {toolUse.iteration}</Text>
         )}
       </Box>
-      {args.length > 0 && (
+      {args.length > 0 && !isDone && (
         <Box marginLeft={3} flexDirection="column">
           {args.map((a, i) => (
-            <Text key={i} dimColor>  {a.key}: {a.value}</Text>
+            <Text key={i} dim>
+              {a.key}: {a.value}
+            </Text>
           ))}
           {args.length < Object.keys(toolUse.input).length && (
-            <Text dimColor>  ... and {Object.keys(toolUse.input).length - args.length} more</Text>
+            <Text dim>
+              ... and {Object.keys(toolUse.input).length - args.length} more keys
+            </Text>
           )}
         </Box>
       )}

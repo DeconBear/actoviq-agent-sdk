@@ -1,9 +1,10 @@
-import React, { memo, useState, useEffect } from 'react';
-import { Box, Text } from 'ink';
+import React, { memo, useState, useEffect, useRef } from 'react';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 import type { ActoviqPermissionMode } from 'actoviq-agent-sdk';
 import type { AgentPhase } from '../context.js';
 
-const PULSE_CHARS = ['●', '○'];
+const SPINNER = ['◷', '◶', '◵', '◴'];
 
 const PHASE_LABELS: Record<AgentPhase, string> = {
   idle: '',
@@ -15,16 +16,6 @@ const PHASE_LABELS: Record<AgentPhase, string> = {
   'workflow-step': 'Running step',
 };
 
-const PHASE_COLORS: Record<AgentPhase, string> = {
-  idle: 'white',
-  waiting: 'yellow',
-  generating: 'green',
-  thinking: 'cyan',
-  'tool-calling': 'yellow',
-  planning: 'magenta',
-  'workflow-step': 'magenta',
-};
-
 interface StatusBarProps {
   sessionName: string;
   model: string;
@@ -33,30 +24,38 @@ interface StatusBarProps {
   messageCount: number;
   startedAt?: string;
   phase?: AgentPhase;
+  contextPct?: number;
 }
 
 export const StatusBar = memo(function StatusBar({
-  sessionName, model, permissionMode, streaming, messageCount, startedAt, phase = 'idle',
+  sessionName, model, permissionMode, streaming, messageCount, startedAt, phase = 'idle', contextPct,
 }: StatusBarProps) {
-  const [pulse, setPulse] = useState(0);
+  const [spinIdx, setSpinIdx] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const startedMsRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!startedAt || !streaming) return;
-    const startedMs = new Date(startedAt).getTime();
+    if (startedAt) {
+      startedMsRef.current = new Date(startedAt).getTime();
+    }
+    if (!startedAt || !streaming) {
+      startedMsRef.current = null;
+      return;
+    }
     const tick = () => {
-      setPulse((p) => (p + 1) % PULSE_CHARS.length);
-      setElapsed(Math.floor((Date.now() - startedMs) / 1000));
+      if (startedMsRef.current == null) return;
+      setSpinIdx((p) => (p + 1) % SPINNER.length);
+      setElapsed(Math.floor((Date.now() - startedMsRef.current) / 1000));
     };
     tick();
-    const timer = setInterval(tick, 500);
+    const timer = setInterval(tick, 150);
     return () => clearInterval(timer);
   }, [streaming, startedAt]);
 
   const modeColor =
-    permissionMode === 'bypassPermissions' ? 'yellow' :
-    permissionMode === 'acceptEdits' ? 'green' :
-    permissionMode === 'plan' ? 'blue' : 'white';
+    permissionMode === 'bypassPermissions' ? 'ansi:yellow' :
+    permissionMode === 'acceptEdits' ? 'ansi:green' :
+    permissionMode === 'plan' ? 'ansi:blue' : 'ansi:white';
 
   const modeLabel =
     permissionMode === 'bypassPermissions' ? 'YOLO' :
@@ -64,36 +63,38 @@ export const StatusBar = memo(function StatusBar({
     permissionMode === 'plan' ? 'PLAN' : 'DEFAULT';
 
   const fmtElapsed = elapsed >= 3600
-    ? `${Math.floor(elapsed / 3600)}h ${Math.floor((elapsed % 3600) / 60)}m`
+    ? `${Math.floor(elapsed / 3600)}h${Math.floor((elapsed % 3600) / 60)}m`
     : elapsed >= 60
-      ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+      ? `${Math.floor(elapsed / 60)}m${elapsed % 60}s`
       : `${elapsed}s`;
 
   const phaseLabel = PHASE_LABELS[phase];
-  const phaseColor = PHASE_COLORS[phase];
+  const phaseSpin = SPINNER[spinIdx]!;
 
   return (
-    <Box
-      flexDirection="row"
-      justifyContent="space-between"
-      paddingX={1}
-    >
+    <Box flexDirection="row" justifyContent="space-between" paddingX={2} height={1}>
       <Box gap={1}>
-        <Text bold>{sessionName || 'actoviq'}</Text>
-        <Text dimColor>|</Text>
-        <Text dimColor>{model}</Text>
-        <Text dimColor>|</Text>
+        <Text bold>{sessionName}</Text>
+        <Text dim>|</Text>
+        <Text dim>{model}</Text>
+        {contextPct != null && (
+          <Box gap={1}>
+            <Text dim>|</Text>
+            <Text dim>{contextPct}% ctx</Text>
+          </Box>
+        )}
+        <Text dim>|</Text>
         <Text color={modeColor}>{modeLabel}</Text>
         {streaming && phaseLabel && (
           <Box gap={1}>
-            <Text color="yellow">{PULSE_CHARS[pulse]}</Text>
-            <Text color={phaseColor}>{phaseLabel}</Text>
+            <Text dim>|</Text>
+            <Text color="ansi:yellow">{phaseSpin} {phaseLabel}</Text>
+            {startedAt && <Text dim>{fmtElapsed}</Text>}
           </Box>
         )}
       </Box>
       <Box gap={1}>
-        {startedAt && <Text dimColor>{fmtElapsed}</Text>}
-        <Text dimColor>{messageCount} msgs</Text>
+        <Text dim>{messageCount} msgs</Text>
       </Box>
     </Box>
   );

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 import type { CompletionItem } from '../hooks/useAutocomplete.js';
 
 interface SlashCommandOverlayProps {
@@ -14,24 +15,24 @@ export function SlashCommandOverlay({ suggestions, selectedIdx }: SlashCommandOv
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="cyan"
+      borderColor="ansi:cyan"
       paddingX={1}
       paddingY={1}
       marginBottom={1}
     >
       <Box marginBottom={1}>
-        <Text bold color="cyan">Commands</Text>
+        <Text bold color="ansi:cyan">Commands</Text>
       </Box>
 
       {suggestions.map((s, i) => {
         const isSelected = i === selectedIdx;
         return (
           <Box key={s.text} flexDirection="row" gap={2} paddingX={1}>
-            <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
+            <Text color={isSelected ? 'ansi:cyan' : undefined} bold={isSelected}>
               {isSelected ? '> ' : '  '}/{s.text}
             </Text>
             {s.description && (
-              <Text dimColor={!isSelected} color={isSelected ? 'white' : undefined}>
+              <Text dim={!isSelected}>
                 {s.description}
               </Text>
             )}
@@ -40,7 +41,7 @@ export function SlashCommandOverlay({ suggestions, selectedIdx }: SlashCommandOv
       })}
 
       <Box marginTop={1} paddingX={1}>
-        <Text dimColor>
+        <Text dim>
           Tab to complete, arrows to navigate, Esc to dismiss
         </Text>
       </Box>

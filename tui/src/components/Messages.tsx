@@ -1,5 +1,6 @@
-import React, { memo, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { memo } from 'react';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 import type { UIMessage, ContentBlock } from '../context.js';
 import { ToolCallBlock } from './chat/ToolCallBlock.js';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -8,38 +9,18 @@ interface MessagesProps {
   messages: UIMessage[];
   streamingBlocks: ContentBlock[];
   error: string | null;
-  scrollOffset?: number;
 }
 
-export const Messages = memo(function Messages({ messages, streamingBlocks, error, scrollOffset = 0 }: MessagesProps) {
-  const clampedOffset = Math.min(scrollOffset, Math.max(0, messages.length));
-  const visibleMessages = clampedOffset > 0
-    ? messages.slice(0, Math.max(0, messages.length - clampedOffset))
-    : messages;
-  const hasHiddenAbove = clampedOffset > 0;
-  const hasHiddenBelow = clampedOffset === 0 && messages.length > 0 && streamingBlocks.length === 0;
+export const Messages = memo(function Messages({ messages, streamingBlocks, error }: MessagesProps) {
+  const totalMsgs = messages.length;
 
   return (
     <Box flexDirection="column">
-      {messages.length === 0 && streamingBlocks.length === 0 && (
-        <Box flexDirection="column" paddingY={1} paddingX={2}>
-          <Text bold>Actoviq TUI Agent</Text>
-          <Text dimColor>Type a message to start, or /help for commands.</Text>
-          <Box marginTop={1}>
-            <Text dimColor>Enter: send  |  Ctrl+C: abort  |  Ctrl+P: perm mode  |  Ctrl+L: clear  |  PgUp/PgDn: scroll</Text>
-          </Box>
-        </Box>
+      {totalMsgs === 0 && streamingBlocks.length === 0 && (
+        <WelcomeScreen />
       )}
 
-      {hasHiddenAbove && (
-        <Box paddingX={2} paddingY={1}>
-          <Text dimColor>
-            ↑ {clampedOffset} newer messages below (PgDn)
-          </Text>
-        </Box>
-      )}
-
-      {visibleMessages.map((msg) => (
+      {messages.map((msg) => (
         <MessageRow key={msg.id} message={msg} />
       ))}
 
@@ -49,20 +30,32 @@ export const Messages = memo(function Messages({ messages, streamingBlocks, erro
 
       {error && (
         <Box paddingX={2} marginY={1}>
-          <Text color="red">Error: {error}</Text>
-        </Box>
-      )}
-
-      {clampedOffset === 0 && messages.length > 0 && (
-        <Box paddingX={2} paddingY={1}>
-          <Text dimColor>
-            ↑ PgUp to scroll up · {messages.length} messages
-          </Text>
+          <Text color="ansi:red">Error: {error}</Text>
         </Box>
       )}
     </Box>
   );
 });
+
+// ── Welcome screen ────────────────────────────────────────────────
+
+function WelcomeScreen() {
+  return (
+    <Box flexDirection="column" paddingY={1} paddingX={2}>
+      <Box marginBottom={1}>
+        <Text bold color="ansi:cyan">Actoviq</Text>
+        <Text dim> — Terminal AI Agent</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        <Text dim>Type a message to start, or /help for commands.</Text>
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        <Text dim>Enter  send    Ctrl+C  abort    Ctrl+P  perm mode    Ctrl+L  clear</Text>
+        <Text dim>PgUp/Ctrl+B  scroll up    PgDn/Ctrl+F  scroll down    Tab  complete    ↑↓  history</Text>
+      </Box>
+    </Box>
+  );
+}
 
 // ── Message row ───────────────────────────────────────────────────
 
@@ -73,13 +66,13 @@ const MessageRow = memo(function MessageRow({ message }: { message: UIMessage })
     <Box flexDirection="column" marginY={1} paddingX={2}>
       {message.compactBoundary && (
         <Box paddingY={1}>
-          <Text dimColor>── Compaction boundary ──</Text>
+          <Text dim>── Compaction boundary ──</Text>
         </Box>
       )}
       {isUser ? (
-        <Box flexDirection="row" gap={2}>
+        <Box flexDirection="row" gap={1}>
           <Box width={2} flexShrink={0}>
-            <Text color="cyan" bold>{'>'}</Text>
+            <Text color="ansi:cyan" bold>{'>'}</Text>
           </Box>
           <Box flexGrow={1} flexDirection="column">
             {message.content.map((block, i) => (
@@ -119,9 +112,7 @@ const ContentBlockView = memo(function ContentBlockView(
     case 'separator':
       return (
         <Box paddingY={1} paddingX={2}>
-          <Text dimColor>
-            ── Reasoning loop {block.iteration} ──
-          </Text>
+          <Text dim>── Reasoning loop {block.iteration} ──</Text>
         </Box>
       );
 
@@ -149,58 +140,48 @@ const ContentBlockView = memo(function ContentBlockView(
       return (
         <Box marginLeft={2} marginY={1} flexDirection="column">
           <Box flexDirection="row" gap={1}>
-            <Text dimColor>└─</Text>
-            <Text dimColor color={block.isError ? 'red' : undefined}>
-              {block.isError ? 'Error' : 'Result'}
+            <Text dim>└─</Text>
+            <Text color={block.isError ? 'ansi:red' : 'ansi:green'}>
+              {block.isError ? '✗ Error' : '✓ Result'}
             </Text>
             {block.durationMs != null && (
-              <Text dimColor>({formatDuration(block.durationMs)})</Text>
-            )}
-            {block.iteration != null && block.iteration > 0 && (
-              <Text dimColor>loop {block.iteration}</Text>
+              <Text dim>({formatDuration(block.durationMs)})</Text>
             )}
           </Box>
           <Box marginLeft={3} paddingRight={2}>
-            <Text dimColor>
-              {truncateOutput(block.content, block.isError)}
-            </Text>
+            <Text dim>{truncateOutput(block.content)}</Text>
           </Box>
         </Box>
       );
   }
 });
 
-// ── Thinking block (collapsible, toggled via Tab/Enter focus) ─────
+// ── Thinking block ────────────────────────────────────────────────
 
 const ThinkingBlock = memo(function ThinkingBlock(
   { thinking }: { thinking: Extract<ContentBlock, { type: 'thinking' }> },
 ) {
-  const [expanded, setExpanded] = useState(!thinking.collapsed);
-
-  useInput((_input, key) => {
-    if (key.return) {
-      setExpanded((prev) => !prev);
-    }
-  });
+  const collapsed = thinking.collapsed !== false;
+  const preview = thinking.text.length > 200
+    ? thinking.text.slice(0, 200) + '...'
+    : thinking.text;
 
   return (
     <Box flexDirection="column" marginY={1}>
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Thinking {expanded ? '▼' : '▶'}</Text>
-        <Text dimColor>({estimateTokens(thinking.text)} tok)</Text>
+        <Text dim>💭 Thinking</Text>
+        <Text dim>({estimateTokens(thinking.text)} tok)</Text>
       </Box>
-      {expanded && (
+      {!collapsed && (
         <Box marginLeft={3} marginTop={1}>
-          <Text dimColor>
-            {thinking.text.length > 500 ? thinking.text.slice(0, 500) + '...' : thinking.text}
-          </Text>
+          <Text dim>{preview}</Text>
         </Box>
       )}
     </Box>
   );
 });
 
-// ── Block key generator ──────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────
 
 function blockKey(block: ContentBlock, index: number): string {
   switch (block.type) {
@@ -212,9 +193,7 @@ function blockKey(block: ContentBlock, index: number): string {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
-
-function truncateOutput(content: string, _isError: boolean): string {
+function truncateOutput(content: string): string {
   const lines = content.split('\n');
   if (lines.length > 20) {
     return lines.slice(0, 20).join('\n') + `\n... (${lines.length - 20} more lines)`;

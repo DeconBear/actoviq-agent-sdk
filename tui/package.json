@@ -12,22 +12,33 @@
     "dist",
     "bin"
   ],
+  "imports": {
+    "src/*": "./src/*"
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/add-shebang.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/add-shebang.mjs && node scripts/fix-imports.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "node --loader tsx src/cli.tsx",
     "test": "vitest run"
   },
   "dependencies": {
     "actoviq-agent-sdk": "file:..",
+    "auto-bind": "^5.0.1",
+    "bidi-js": "^1.0.3",
+    "chalk": "^5.4.1",
     "ink": "^6.0.0",
-    "ink-text-input": "^6.0.0",
     "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "react": "^19.1.0",
-    "chalk": "^5.4.1"
+    "react-reconciler": "^0.33.0",
+    "semver": "^7.8.0",
+    "signal-exit": "^4.1.0",
+    "supports-hyperlinks": "^4.4.0",
+    "type-fest": "^5.6.0",
+    "usehooks-ts": "^3.1.1"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

@@ -59,16 +59,8 @@ export function App({ client, initialModel, initialSession }: AppProps) {
   const [systemMessages, setSystemMessages] = useState<UIMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef('');
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const prevStreamingRef = useRef(false);
-
-  // Auto-scroll to bottom only when streaming starts, not on every message
-  useEffect(() => {
-    if (streaming && !prevStreamingRef.current) {
-      setScrollOffset(0);
-    }
-    prevStreamingRef.current = streaming;
-  }, [streaming]);
+  // ScrollBox handle for keyboard-driven scrolling
+  const scrollRef = useRef<any>(null);
 
   // ── Scheduler ref ─────────────────────────────────────────────
   const schedulerRef = useRef<TaskScheduler | null>(null);
@@ -151,7 +143,7 @@ export function App({ client, initialModel, initialSession }: AppProps) {
   // ── Slash command context ─────────────────────────────────────
   const commandContext: CommandContext = useMemo(() => ({
     currentSessionId: activeSession?.id ?? null,
-    onClear: () => { clearMessages(); setSystemMessages([]); },
+    onClear: () => { abort(); clearMessages(); setSystemMessages([]); },
     getCompactState: async () => {
       if (!activeSession) return null;
       try { const s = await activeSession.compactState(); return { compactCount: s?.compactCount }; } catch { return null; }
@@ -318,7 +310,7 @@ export function App({ client, initialModel, initialSession }: AppProps) {
       }
     },
     onAbort: () => { if (streaming) abort(); },
-    onClear: () => { clearMessages(); setSystemMessages([]); },
+    onClear: () => { abort(); clearMessages(); setSystemMessages([]); },
     onCyclePermissionMode: cyclePermissionMode,
     onOverlayUp: () => autocomplete.selectPrev(),
     onOverlayDown: () => autocomplete.selectNext(),
@@ -336,8 +328,8 @@ export function App({ client, initialModel, initialSession }: AppProps) {
       permissionResolveRef.current = null;
       setPermissionDialog(null);
     },
-    onScrollUp: () => setScrollOffset((o) => Math.min(o + 5, Math.max(0, allMessages.length - 1))),
-    onScrollDown: () => setScrollOffset((o) => Math.max(0, o - 5)),
+    onScrollUp: () => { scrollRef.current?.scrollBy(5); },
+    onScrollDown: () => { scrollRef.current?.scrollBy(-5); },
     context: keyContext,
     enabled: true,
   });
@@ -369,7 +361,6 @@ export function App({ client, initialModel, initialSession }: AppProps) {
       onTabComplete={handleTabComplete}
       suppressChar={suppressChar}
       startedAt={startedAt}
-      scrollOffset={scrollOffset}
       phase={phase}
     />
   );

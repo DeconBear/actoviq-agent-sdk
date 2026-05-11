@@ -1,25 +1,27 @@
-import { useState, useEffect } from 'react';
-import { useStdout } from 'ink';
+import { useContext, useState, useEffect } from 'react';
+import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js';
 
 export function useTerminalSize() {
-  const { stdout } = useStdout();
-  const [size, setSize] = useState({ width: 80, height: 24 });
+  const ctxSize = useContext(TerminalSizeContext);
+  const [size, setSize] = useState({
+    width: ctxSize?.columns ?? process.stdout.columns ?? 80,
+    height: ctxSize?.rows ?? process.stdout.rows ?? 24,
+  });
 
   useEffect(() => {
     function update() {
       setSize({
-        width: stdout?.columns ?? process.stdout.columns ?? 80,
-        height: stdout?.rows ?? process.stdout.rows ?? 24,
+        width: process.stdout.columns ?? 80,
+        height: process.stdout.rows ?? 24,
       });
     }
-    update();
-    stdout?.on('resize', update);
     process.stdout.on('resize', update);
-    return () => {
-      stdout?.off('resize', update);
-      process.stdout.off('resize', update);
-    };
-  }, [stdout]);
+    return () => { process.stdout.off('resize', update); };
+  }, []);
 
+  // Use context size when available (custom Ink sets it)
+  if (ctxSize) {
+    return { width: ctxSize.columns, height: ctxSize.rows };
+  }
   return size;
 }
