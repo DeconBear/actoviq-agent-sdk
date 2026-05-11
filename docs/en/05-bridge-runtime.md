@@ -2,7 +2,25 @@
 
 This chapter explains the compatibility bridge path and when it is still useful.
 
-## 1. What bridge means
+## 1. Prerequisites — linking the runtime bundle
+
+The bridge SDK requires a Claude Code runtime bundle (`runtime.bundle.br`). Due to licensing, this file is **not included** in the actoviq-agent-sdk package.
+
+If you have Claude Code installed, link its runtime bundle:
+
+```bash
+npx actoviq-link-runtime /path/to/claude-code
+```
+
+Alternatively, set the environment variable:
+
+```bash
+export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime.bundle.br"
+```
+
+Without this bundle, bridge SDK features will not work.
+
+## 2. What bridge means
 
 The bridge SDK is a compatibility layer that exposes a runtime-oriented execution path from the current package.
 
@@ -12,7 +30,7 @@ Use:
 import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
 ```
 
-## 2. When to use bridge
+## 3. When to use bridge
 
 Bridge is most useful when you want:
 
@@ -24,7 +42,7 @@ Bridge is most useful when you want:
 
 If you are building a new application, prefer the clean SDK first. Treat bridge as compatibility and runtime-integration guidance.
 
-## 3. Basic bridge example
+## 4. Basic bridge example
 
 ```ts
 import {
@@ -45,7 +63,7 @@ console.log(result.text);
 console.log(result.events.length);
 ```
 
-## 4. Runtime introspection
+## 5. Runtime introspection
 
 Bridge can list the current runtime surface:
 
@@ -61,7 +79,7 @@ Repository examples:
 - [examples/bridge-introspection.ts](../../examples/bridge-introspection.ts)
 - [examples/bridge-sdk.ts](../../examples/bridge-sdk.ts)
 
-## 5. Bridge helpers
+## 6. Bridge helpers
 
 Bridge also supports:
 
@@ -72,7 +90,7 @@ Bridge also supports:
 5. `session.runSkill(...)`
 6. `session.compact(...)`
 
-## 6. Event helpers
+## 7. Event helpers
 
 Bridge exports helpers for parsing runtime events:
 
