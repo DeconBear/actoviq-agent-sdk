@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import Box from '../../ink/components/Box.js';
+import Text from '../../ink/components/Text.js';
 import type { PermissionState } from '../../context.js';
 
 type RiskLevel = 'low' | 'medium' | 'high';
@@ -13,9 +14,9 @@ interface PermissionDialogProps {
 
 export function PermissionDialog({ state }: PermissionDialogProps) {
   const risk = assessRisk(state.toolName);
-  const borderColor = risk === 'high' ? 'red' : risk === 'medium' ? 'yellow' : 'green';
+  const borderColor = risk === 'high' ? 'ansi:red' : risk === 'medium' ? 'ansi:yellow' : 'ansi:green';
   const riskLabel = risk === 'high' ? 'HIGH RISK' : risk === 'medium' ? 'MUTATING' : 'READ-ONLY';
-  const riskColor = risk === 'high' ? 'red' : risk === 'medium' ? 'yellow' : 'green';
+  const riskColor = risk === 'high' ? 'ansi:red' : risk === 'medium' ? 'ansi:yellow' : 'ansi:green';
 
   const argsLines = formatArgs(state.input);
 
@@ -27,52 +28,48 @@ export function PermissionDialog({ state }: PermissionDialogProps) {
       paddingX={2}
       paddingY={1}
     >
-      {/* Header */}
       <Box flexDirection="row" gap={2} alignItems="center">
         <Text color={riskColor} bold>[{riskLabel}]</Text>
         <Text bold>{state.toolName}</Text>
         {state.toolDescription && (
-          <Text dimColor>{state.toolDescription.slice(0, 80)}</Text>
+          <Text dim>{state.toolDescription.slice(0, 80)}</Text>
         )}
       </Box>
 
-      {/* Arguments */}
       {argsLines.length > 0 && (
         <Box marginTop={1} flexDirection="column">
           {argsLines.slice(0, 8).map((line, i) => (
-            <Text key={i} dimColor>  {line}</Text>
+            <Text key={i} dim>  {line}</Text>
           ))}
           {argsLines.length > 8 && (
-            <Text dimColor>  ... and {argsLines.length - 8} more lines</Text>
+            <Text dim>  ... and {argsLines.length - 8} more lines</Text>
           )}
         </Box>
       )}
 
-      {/* Destructive warning */}
       {risk === 'high' && (
         <Box marginTop={1}>
-          <Text color="red">
+          <Text color="ansi:red">
             WARNING: This tool can modify your system. Review the arguments carefully.
           </Text>
         </Box>
       )}
       {risk === 'medium' && (
         <Box marginTop={1}>
-          <Text color="yellow">
+          <Text color="ansi:yellow">
             This tool modifies files. Make sure the target path is correct.
           </Text>
         </Box>
       )}
 
-      {/* Actions */}
       <Box flexDirection="row" gap={2} marginTop={1}>
         <Text>
-          [<Text bold color="green">y</Text>]es
+          [<Text bold color="ansi:green">y</Text>]es
         </Text>
         <Text>
-          [<Text bold color="red">n</Text>]o
+          [<Text bold color="ansi:red">n</Text>]o
         </Text>
-        <Text dimColor>or press Enter to deny</Text>
+        <Text dim>or press Enter to deny</Text>
       </Box>
     </Box>
   );

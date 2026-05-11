@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -21,7 +22,6 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   }
 
   override componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // Log to stderr so it doesn't clobber the TUI
     process.stderr.write(`[ErrorBoundary] ${error.message}\n${error.stack ?? ''}\nComponent stack: ${info.componentStack ?? ''}\n`);
   }
 
@@ -31,24 +31,17 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
         return this.props.fallback;
       }
       return (
-        <Box
-          flexDirection="column"
-          borderStyle="double"
-          borderColor="red"
-          paddingX={2}
-          paddingY={1}
-        >
+        <Box flexDirection="column" paddingX={2} paddingY={1}>
           <Box marginBottom={1}>
-            <Text bold color="red">Error</Text>
+            <Text bold color="ansi:red">Error</Text>
           </Box>
           <Text>{this.state.error.message}</Text>
           <Box marginTop={1}>
-            <Text dimColor>Press Ctrl+C to quit, or the UI will attempt to recover.</Text>
+            <Text dim>Press Ctrl+C to quit, or the UI will attempt to recover.</Text>
           </Box>
         </Box>
       );
     }
-
     return this.props.children;
   }
 }

@@ -1,6 +1,6 @@
 import React from 'react';
-import { Box } from 'ink';
-import { FullscreenLayout } from './FullscreenLayout.js';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 import { StatusBar } from './StatusBar.js';
 import { Messages } from './Messages.js';
 import { Spinner } from './Spinner.js';
@@ -28,6 +28,7 @@ interface MainLayoutProps {
   startedAt?: string;
   scrollOffset?: number;
   phase?: AgentPhase;
+  contextPct?: number;
 }
 
 export function MainLayout({
@@ -37,49 +38,57 @@ export function MainLayout({
   inputHistory, inputValue,
   onSend, onInputChange, onTabComplete,
   suppressChar, startedAt, scrollOffset,
-  phase,
+  phase, contextPct,
 }: MainLayoutProps) {
-  const scrollable = (
-    <Box flexDirection="column" flexGrow={1}>
-      <Messages
-        messages={messages}
-        streamingBlocks={streamingBlocks}
-        error={error}
-        scrollOffset={scrollOffset}
-      />
-      <Spinner visible={streaming && streamingBlocks.length === 0} phase={phase} />
-    </Box>
-  );
-
-  const bottom = (
-    <Box flexDirection="column">
-      <InputArea
-        onSubmit={onSend}
-        onInputChange={onInputChange}
-        onTabComplete={onTabComplete}
-        streaming={streaming}
-        phase={phase}
-        initialValue={inputValue}
-        suppressChar={suppressChar}
-      />
-      <StatusBar
-        sessionName={sessionName}
-        model={model}
-        permissionMode={permissionMode}
-        streaming={streaming}
-        messageCount={messages.length}
-        startedAt={startedAt}
-        phase={phase}
-      />
-    </Box>
-  );
-
   return (
-    <FullscreenLayout
-      scrollable={scrollable}
-      bottom={bottom}
-      overlay={overlay}
-      modal={permissionDialog ? <PermissionDialog state={permissionDialog} /> : null}
-    />
+    <Box flexDirection="column" width="100%">
+      {/* Messages area — all messages visible, no scroll limit for now */}
+      <Box flexDirection="column">
+        <Messages
+          messages={messages}
+          streamingBlocks={streamingBlocks}
+          error={error}
+        />
+        <Spinner visible={streaming && streamingBlocks.length === 0} phase={phase} />
+      </Box>
+
+      {/* Divider between messages and input */}
+      <Box flexShrink={0}>
+        <Text dim>──────────────────────────────────────────────</Text>
+      </Box>
+
+      {/* Permission / overlay */}
+      {permissionDialog && (
+        <Box flexShrink={0}>
+          <PermissionDialog state={permissionDialog} />
+        </Box>
+      )}
+      {overlay && (
+        <Box flexShrink={0}>{overlay}</Box>
+      )}
+
+      {/* Bottom bar */}
+      <Box flexDirection="column" flexShrink={0}>
+        <InputArea
+          onSubmit={onSend}
+          onInputChange={onInputChange}
+          onTabComplete={onTabComplete}
+          streaming={streaming}
+          phase={phase}
+          initialValue={inputValue}
+          suppressChar={suppressChar}
+        />
+        <StatusBar
+          sessionName={sessionName}
+          model={model}
+          permissionMode={permissionMode}
+          streaming={streaming}
+          messageCount={messages.length}
+          startedAt={startedAt}
+          phase={phase}
+          contextPct={contextPct}
+        />
+      </Box>
+    </Box>
   );
 }

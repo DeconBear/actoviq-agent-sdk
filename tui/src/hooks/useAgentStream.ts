@@ -132,11 +132,15 @@ export function useAgentStream() {
           case 'response.text.delta': {
             currentText = event.snapshot ?? (currentText + event.delta);
             setStreamingText(currentText);
-            const liveBlocks: ContentBlock[] = [
-              ...blocks,
-              ...(currentText ? [{ type: 'text' as const, text: currentText }] : []),
-            ];
-            scheduleUpdate(liveBlocks); // throttled — per-token, no immediate flush
+            // Merge text into blocks so tool.call doesn't erase streaming text
+            const textBlock: ContentBlock = { type: 'text' as const, text: currentText };
+            const existingTextIdx = blocks.findIndex(b => b.type === 'text');
+            if (existingTextIdx >= 0) {
+              blocks = blocks.map((b, i) => i === existingTextIdx ? textBlock : b);
+            } else {
+              blocks = [...blocks, textBlock];
+            }
+            scheduleUpdate(blocks, true); // immediate — fluid text streaming
             setPhase('generating');
             break;
           }

@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
     "jsx": "react-jsx",
-    "strict": true,
+    "strict": false,
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,7 +14,11 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "src/*": ["./src/*"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

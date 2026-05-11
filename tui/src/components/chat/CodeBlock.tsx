@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import Box from '../../ink/components/Box.js';
+import Text from '../../ink/components/Text.js';
 import { highlightCode } from '../../lib/markdown.js';
 
 interface CodeBlockProps {
@@ -14,14 +15,14 @@ export function CodeBlock({ code, language }: CodeBlockProps) {
     <Box flexDirection="column" marginY={1} paddingX={2}>
       {language && (
         <Box>
-          <Text dimColor>```{language}</Text>
+          <Text dim>```{language}</Text>
         </Box>
       )}
-      <Box borderStyle="round" borderColor="gray" paddingX={1}>
+      <Box borderStyle="round" borderColor="ansi:blackBright" paddingX={1}>
         <Text>{highlighted}</Text>
       </Box>
       <Box>
-        <Text dimColor>```</Text>
+        <Text dim>```</Text>
       </Box>
     </Box>
   );

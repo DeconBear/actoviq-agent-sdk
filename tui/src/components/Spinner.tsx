@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text } from 'ink';
+import Box from '../ink/components/Box.js';
+import Text from '../ink/components/Text.js';
 import type { AgentPhase } from '../context.js';
 
-const DEFAULT_VERBS = [
-  'thinking', 'analyzing', 'processing', 'computing', 'reasoning',
-  'evaluating', 'considering', 'planning', 'exploring', 'searching',
-];
+const SPINNER_FRAMES = ['◷', '◶', '◵', '◴'];
 
-const PHASE_VERBS: Record<AgentPhase, string> = {
+const PHASE_LABELS: Record<AgentPhase, string> = {
   idle: 'thinking',
   waiting: 'waiting',
   generating: 'generating',
@@ -24,15 +22,15 @@ interface SpinnerProps {
 
 export function Spinner({ visible, phase = 'idle' }: SpinnerProps) {
   const [frame, setFrame] = useState(0);
-  const [fallbackVerb] = useState(() => DEFAULT_VERBS[Math.floor(Math.random() * DEFAULT_VERBS.length)]!);
   const [startTime, setStartTime] = useState(0);
   const [show, setShow] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
-  // Reset startTime when spinner becomes visible
   useEffect(() => {
     if (!visible) {
       setShow(false);
       setStartTime(0);
+      setElapsed(0);
       return;
     }
     setStartTime(Date.now());
@@ -40,25 +38,26 @@ export function Spinner({ visible, phase = 'idle' }: SpinnerProps) {
     return () => clearTimeout(timer);
   }, [visible]);
 
-  // Animate spinner dots
   useEffect(() => {
     if (!show) return;
-    const interval = setInterval(() => setFrame((f) => (f + 1) % 4), 200);
+    const interval = setInterval(() => {
+      setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
+      setElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 150);
     return () => clearInterval(interval);
-  }, [show]);
+  }, [show, startTime]);
 
   if (!show) return null;
 
-  const dots = '.'.repeat(frame + 1);
-  const elapsed = startTime > 0 ? Math.floor((Date.now() - startTime) / 1000) : 0;
-  const verb = phase === 'idle' ? fallbackVerb : PHASE_VERBS[phase];
+  const label = PHASE_LABELS[phase];
+  const frameChar = SPINNER_FRAMES[frame]!;
+  const elapsedStr = elapsed > 2 ? ` (${elapsed}s)` : '';
 
   return (
-    <Box marginY={1}>
-      <Text color="yellow">
-        {verb}{dots}
-        {elapsed > 2 && <Text dimColor> ({elapsed}s)</Text>}
-      </Text>
+    <Box marginY={1} paddingX={2}>
+      <Text color="ansi:yellow">{frameChar} </Text>
+      <Text dim>{label}...</Text>
+      {elapsed > 2 && <Text dim>{elapsedStr}</Text>}
     </Box>
   );
 }

@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react';
-import { useInput } from 'ink';
+import useInput from '../ink/hooks/use-input.js';
 
 export type KeyContext = 'default' | 'streaming' | 'permission' | 'overlay';
 
@@ -24,8 +24,6 @@ export interface KeyboardBindings {
 }
 
 export interface KeyboardOutput {
-  /** Call this in InputArea onChange to filter out leaked chars from Ctrl combos
-   *  and overlay-mode typing. */
   suppressChar: (value: string) => string;
 }
 
@@ -39,13 +37,9 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
     context = 'default', enabled = true,
   } = bindings;
 
-  // Store the last character that should be suppressed from TextInput.
-  // Used for Ctrl+P and overlay-mode typing where useInput fires before
-  // TextInput's onChange.
   const suppressedCharRef = useRef<string | null>(null);
   const prevContextRef = useRef(context);
 
-  // Clear suppressed char when context changes to avoid deleting unrelated input
   useEffect(() => {
     if (context !== prevContextRef.current) {
       suppressedCharRef.current = null;
@@ -53,8 +47,8 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
     }
   }, [context]);
 
-  useInput((input, key) => {
-    // ── Esc — always first, highest priority ────────────────────
+  useInput((input: string, key: any) => {
+    // Esc — always first, highest priority
     if (key.escape || input === '\x1b') {
       if (context === 'overlay' && onOverlayDismiss) {
         onOverlayDismiss();
@@ -87,7 +81,6 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
     }
 
     // Overlay mode: intercept navigation keys, suppress all other typing
-    // so characters don't leak into the hidden TextInput behind the overlay.
     if (context === 'overlay') {
       if (key.upArrow) { onOverlayUp?.(); return; }
       if (key.downArrow) { onOverlayDown?.(); return; }
@@ -98,7 +91,7 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
       return;
     }
 
-    // Permission mode: y/n/Enter keys only, block everything else
+    // Permission mode: y/n/Enter keys only
     if (context === 'permission') {
       if (input === 'y' || input === 'Y') {
         onPermissionYes?.();
@@ -108,16 +101,14 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
         onPermissionNo?.();
         return;
       }
-      // Suppress all other characters during permission dialogs
       if (input && !key.ctrl && !key.meta && !key.tab && !key.return && !key.escape) {
         suppressedCharRef.current = input;
       }
       return;
     }
 
-    // Streaming mode: only abort/Esc work (handled above)
+    // Streaming mode: only abort/Esc work
     if (context === 'streaming') {
-      // Suppress any typing during streaming
       if (input && !key.ctrl && !key.meta && !key.tab && !key.return && !key.escape) {
         suppressedCharRef.current = input;
       }
@@ -146,11 +137,12 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
       return;
     }
 
-    if (key.pageUp) {
+    // Scroll: PgUp/PgDn (primary) and Ctrl+B/Ctrl+F (fallback)
+    if (key.pageUp || (key.ctrl && (input === 'b' || input === 'B'))) {
       onScrollUp?.();
       return;
     }
-    if (key.pageDown) {
+    if (key.pageDown || (key.ctrl && (input === 'f' || input === 'F'))) {
       onScrollDown?.();
       return;
     }
