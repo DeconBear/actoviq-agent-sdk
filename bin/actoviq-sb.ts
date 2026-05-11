@@ -66,8 +66,6 @@ async function main() {
       return;
     }
 
-    // User message
-    process.stdout.write(`${C.c}>${C.r} ${t}\n`);
     abortCtrl = new AbortController();
 
     const stream = session.stream(t, { tools, systemPrompt: SYSTEM_PROMPT, signal: abortCtrl.signal, model: sdk.config.model });
