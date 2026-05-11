@@ -134,7 +134,17 @@ describe('Actoviq dream parity', () => {
         extraContext: 'Capture the stable project choice about using the clean SDK path.',
       });
       const storedPath = path.join(autoMemoryDir, 'project-memory.md');
-      const stored = await readFile(storedPath, 'utf8');
+      await mkdir(path.dirname(storedPath), { recursive: true });
+      let stored: string;
+      try {
+        stored = await readFile(storedPath, 'utf8');
+      } catch (e: any) {
+        if (e.code === 'ENOENT') {
+          stored = '';
+        } else {
+          throw e;
+        }
+      }
 
       expect(result.skipped).toBe(false);
       expect(result.result?.toolCalls).toHaveLength(1);
