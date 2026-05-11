@@ -95,17 +95,33 @@ try {
 }
 ```
 
-## 4. Run the repository quickstart
+## 4. CLI REPL (scrollback-mode)
+
+The package includes a built-in interactive REPL. After installing, you can start it directly:
 
 ```bash
-npm run example:quickstart
+npx actoviq-react [work-dir]
+```
+
+This launches a readline-based agent in the main terminal buffer:
+- Type messages directly and see streaming responses
+- Use `/` slash commands: `/help`, `/clear`, `/compact`, `/memory`, `/model`, `/tools`, `/dream`, `/exit`
+- Tab completion for commands, ↑↓ for history
+- Ctrl+C once to abort the current request, twice to exit
+
+**Important:** `actoviq-react` is a lightweight scrollback REPL. It is **not a full TUI** — there is no alternate screen buffer, no ScrollBox, and no rich terminal rendering. It is intended for quick interaction and debugging. For programmatic use, see the SDK API below.
+
+## 5. Run the repository quickstart
+
+```bash
+npm run example:actoviq-quickstart
 ```
 
 Reference:
 
-- [examples/quickstart.ts](../../examples/quickstart.ts)
+- [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
 
-## 5. Minimal streaming chat bot
+## 6. Minimal streaming chat bot
 
 This is the smallest useful streaming chat loop. Once you connect your own API JSON, you can use it as a simple terminal chat bot.
 
@@ -149,7 +165,7 @@ try {
 }
 ```
 
-## 6. Next steps
+## 7. Next steps
 
 Continue to the next chapter to learn about streaming, sessions, and tool use.
 

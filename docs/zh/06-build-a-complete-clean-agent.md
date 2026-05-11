@@ -390,7 +390,7 @@ const sdk = await createAgentSdk({
 
 如果你想对照更多官方示例，可以继续看：
 
-1. [examples/quickstart.ts](../../examples/quickstart.ts)
+1. [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
 2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
 3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)

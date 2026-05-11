@@ -64,8 +64,8 @@ console.log(runtime.agents);
 
 仓库示例：
 
-- [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
-- [examples/actoviq-bridge-sdk.ts](../../examples/actoviq-bridge-sdk.ts)
+- [examples/bridge-introspection.ts](../../examples/bridge-introspection.ts)
+- [examples/bridge-sdk.ts](../../examples/bridge-sdk.ts)
 
 ## 5. Bridge Helper
 

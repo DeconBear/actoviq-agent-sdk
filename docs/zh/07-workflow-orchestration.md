@@ -163,11 +163,11 @@ const sdk = await createAgentSdk({
 
 ### 1.1 逐行讲解 — 配合完整示例
 
-以下配合 `examples/workflow-annotated.ts` 中的一个完整场景，逐步解释每个参数传什么、为什么这样传、数据流向哪里。
+以下配合 `examples/actoviq-workflow-annotated.ts` 中的一个完整场景，逐步解释每个参数传什么、为什么这样传、数据流向哪里。
 
 **场景：对指定的 Git 仓库做发布前检查。**要求：仓库路径和分支名由调用者传入、第一步只读、第二步依赖第一步、第三步用更快模型汇总。
 
-> 运行示例：`npm run example:workflow-annotated`
+> 运行示例：`npm run example:actoviq-workflow-annotated`
 
 ---
 
@@ -377,7 +377,7 @@ if (failed) {
 **运行示例：**
 
 ```bash
-npm run example:workflow-agent-orchestration
+npm run example:actoviq-workflow-agent-orchestration
 ```
 
 **核心代码 — 创建 `run_workflow` 工具：**
@@ -430,7 +430,7 @@ await session.send(taskPrompt, {
 - 构建能委托子工作流的元 Agent
 - 让最终用户用自然语言而非代码描述任务
 
-完整可运行示例见 [`examples/workflow-agent-orchestration.ts`](https://github.com/DeconBear/actoviq-agent-sdk/blob/main/examples/workflow-agent-orchestration.ts)。
+完整可运行示例见 [`examples/actoviq-workflow-agent-orchestration.ts`](https://github.com/DeconBear/actoviq-agent-sdk/blob/main/examples/actoviq-workflow-agent-orchestration.ts)。
 
 ---
 
@@ -602,11 +602,11 @@ await session.deleteCheckpoint('checkpoint-id');
 运行以下示例查看所有功能的实际运行效果：
 
 ```bash
-npm run example:workflow-annotated  # 逐参数注释的完整工作流示例（推荐先看这个）
-npm run example:workflow            # 工作流基础示例
-npm run example:parallel            # 并行和竞速原语
-npm run example:session-manager     # 会话生命周期管理
-npm run example:checkpoint          # 会话检查点
+npm run example:actoviq-workflow-annotated  # 逐参数注释的完整工作流示例（推荐先看这个）
+npm run example:actoviq-workflow            # 工作流基础示例
+npm run example:actoviq-parallel            # 并行和竞速原语
+npm run example:actoviq-session-manager     # 会话生命周期管理
+npm run example:actoviq-checkpoint          # 会话检查点
 ```
 
 ---

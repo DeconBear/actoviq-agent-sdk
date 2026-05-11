@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 /**
- * Actoviq — Claude Code-aligned terminal agent.
+ * Actoviq — Interactive terminal agent.
  *
- * Default: scrollback mode (main terminal buffer, native scrollback).
- * Ctrl+O: toggle fullscreen mode (Ink alt-screen with rich UI).
- *
- * Architecture: pure stdout streaming + readline for scrollback;
- * Ink for fullscreen overlay. Both share the same SDK session.
+ * Clean SDK scrollback-mode REPL with readline input, slash commands,
+ * and real-time streaming output. Uses the main terminal buffer for
+ * native scrollback.
  */
 import { createAgentSdk, loadJsonConfigFile, createActoviqCoreTools } from 'actoviq-agent-sdk';
-import { execSync, spawn } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as readline from 'node:readline';
 
-const WORK_DIR = process.argv[2] ?? process.cwd();
+const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
 
 let isGit = false;
@@ -23,25 +20,48 @@ try { execSync('git rev-parse --is-inside-work-tree', { cwd: WORK_DIR, stdio: 'i
 
 // ── ANSI ────────────────────────────────────────────────────────────
 
-const C = { r: '\x1b[0m', d: '\x1b[2m', c: '\x1b[36m', y: '\x1b[33m', g: '\x1b[32m', R: '\x1b[31m', b: '\x1b[1m' };
+const C = {
+  r: '\x1b[0m', d: '\x1b[2m', c: '\x1b[36m', y: '\x1b[33m',
+  g: '\x1b[32m', R: '\x1b[31m', b: '\x1b[1m', m: '\x1b[35m',
+};
+
+function stripAnsi(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+// ── System prompt ────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT =
   `You are Actoviq, an interactive CLI agent. Working directory: ${WORK_DIR}\n\n` +
-  `<env>\nWorking directory: ${WORK_DIR}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\n</env>\n\n` +
-  `# Tone and style\n- Only use emojis if user explicitly requests.\n- Responses short and concise.\n\n` +
-  `# Tasks\n- Prefer editing existing files to creating new ones.\n- Default to no comments.\n\n` +
-  `# Git Safety\n- Never destructive git commands unless requested.\n- Never commit unless asked.\n\n` +
-  `# Rules\n- Never create *.md files unless explicitly requested.`;
+  `<env>\nWorking directory: ${WORK_DIR}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
+  `# Tone and style\n` +
+  `- Only use emojis if the user explicitly requests it.\n` +
+  `- Your responses should be short and concise.\n` +
+  `- When referencing code include the pattern file_path:line_number.\n\n` +
+  `# Doing tasks\n` +
+  `- Prefer editing existing files to creating new ones.\n` +
+  `- Do not add features, refactor, or introduce abstractions beyond what the task requires.\n` +
+  `- Default to writing no comments.\n\n` +
+  `# Git Safety Protocol\n` +
+  `- NEVER update the git config\n` +
+  `- NEVER run destructive git commands unless the user explicitly requests\n` +
+  `- NEVER skip hooks unless the user explicitly requests it\n` +
+  `- NEVER commit changes unless the user explicitly asks you to\n\n` +
+  `# Other\n` +
+  `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
+  `- When in doubt, use TodoWrite to track progress.`;
 
-const CMDS: Record<string, { desc: string }> = {
-  help: { desc: 'Show available commands' },
-  clear: { desc: 'Clear the screen' },
-  exit: { desc: 'Quit' },
-  compact: { desc: 'Compact the current session' },
-  memory: { desc: 'Show memory/compact state' },
-  model: { desc: 'Show current model' },
-  tools: { desc: 'List available tools' },
-  dream: { desc: 'Trigger memory consolidation' },
+// ── Slash commands ────────────────────────────────────────────────────
+
+const CMDS: Record<string, string> = {
+  help:    'Show available commands',
+  clear:   'Clear the screen',
+  exit:    'Quit',
+  compact: 'Compact the current session',
+  memory:  'Show memory/compact state',
+  model:   'Show current model',
+  tools:   'List available tools',
+  dream:   'Trigger memory consolidation',
 };
 
 function completer(line: string): [string[], string] {
@@ -51,19 +71,7 @@ function completer(line: string): [string[], string] {
   return [hits.map(h => hits.length === 1 ? `/${h} ` : `/${h}`), line];
 }
 
-// ── Render helpers ──────────────────────────────────────────────────
-
-function statusLine(model: string, session: string, msgs: number, streaming: boolean) {
-  const w = process.stdout.columns || 80;
-  const left = `${C.d}${model}${C.r} ${C.d}|${C.r} ${session} ${C.d}|${C.r} ${msgs} msgs`;
-  const right = streaming ? `${C.y}streaming...${C.r}` : `${C.d}/help${C.r}`;
-  const pad = Math.max(1, w - stripAnsi(left) - stripAnsi(right));
-  process.stdout.write(`\r${left}${' '.repeat(pad)}${right}`);
-}
-
-function stripAnsi(s: string): number {
-  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
-}
+// ── Render helpers ────────────────────────────────────────────────────
 
 function toolLine(name: string, input: Record<string, unknown>) {
   const inp = JSON.stringify(input);
@@ -73,7 +81,8 @@ function toolLine(name: string, input: Record<string, unknown>) {
 function resultLine(isErr: boolean, dur?: number, output?: unknown) {
   const ok = isErr ? `${C.R}✗` : `${C.g}✓`;
   const d = dur ? ` ${dur < 1000 ? dur + 'ms' : (dur / 1000).toFixed(1) + 's'}` : '';
-  let o = ''; if (typeof output === 'string') o = output.slice(0, 200);
+  let o = '';
+  if (typeof output === 'string') o = output.slice(0, 200);
   else if (output) o = JSON.stringify(output).slice(0, 200);
   process.stdout.write(`${ok}${C.r}${C.d}${d} ${o}${C.r}\n`);
 }
@@ -82,8 +91,9 @@ function resultLine(isErr: boolean, dur?: number, output?: unknown) {
 
 async function main() {
   // Header
-  process.stdout.write(`\n${C.c}${C.b}╭─ Actoviq ─────────────────────────────────────────╮${C.r}\n`);
-  process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR}${C.r}\n`);
+  const w = process.stdout.columns || 80;
+  process.stdout.write(`\n${C.c}${C.b}╭${'─'.repeat(Math.min(w - 2, 60))}╮${C.r}\n`);
+  process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR.slice(0, 45)}${C.r}\n`);
 
   try { await loadJsonConfigFile(CONFIG_PATH); } catch {}
   const sdk = await createAgentSdk({ workDir: WORK_DIR });
@@ -92,8 +102,8 @@ async function main() {
 
   process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${sdk.config.model}${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  tools   : ${C.y}${tools.length} tools loaded${C.r}\n`);
-  process.stdout.write(`${C.c}│${C.r}  keys    : Tab=complete  ↑↓=history  Ctrl+C=abort  Ctrl+O=fullscreen${C.r}\n`);
-  process.stdout.write(`${C.c}├──────────────────────────────────────────────────┤${C.r}\n\n`);
+  process.stdout.write(`${C.c}│${C.r}  keys    : Tab=complete  ↑↓=history  Ctrl+C=abort${C.r}\n`);
+  process.stdout.write(`${C.c}├${'─'.repeat(Math.min(w - 2, 60))}┤${C.r}\n\n`);
 
   let abortCtrl: AbortController | null = null;
   let msgCount = 0;
@@ -113,21 +123,27 @@ async function main() {
         case 'help':
           process.stdout.write(`\n${C.b}Commands:${C.r}\n`);
           for (const [k, v] of Object.entries(CMDS))
-            process.stdout.write(`  ${C.y}/${k.padEnd(10)}${C.r} ${C.d}${v.desc}${C.r}\n`);
+            process.stdout.write(`  ${C.y}/${k.padEnd(10)}${C.r} ${C.d}${v}${C.r}\n`);
           process.stdout.write(`\n`);
           return;
         case 'model': process.stdout.write(`${C.d}Model: ${C.y}${sdk.config.model}${C.r}\n\n`); return;
-        case 'tools': process.stdout.write(`${C.d}${tools.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.d}${C.r}\n\n`); return;
+        case 'tools':
+          process.stdout.write(`${C.d}${tools.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.r}\n\n`);
+          return;
         case 'memory':
           try { const s = await session.compactState();
-            process.stdout.write(`${C.d}${JSON.stringify(s as any, null, 2)}${C.r}\n\n`); } catch { process.stdout.write(`${C.d}N/A${C.r}\n\n`); }
+            process.stdout.write(`${C.d}${JSON.stringify(s as any, null, 2)}${C.r}\n\n`); }
+          catch { process.stdout.write(`${C.d}N/A${C.r}\n\n`); }
           return;
         case 'compact':
           try { const r = await session.compact({ force: true });
-            process.stdout.write(`${C.g}✓ Compacted: ${(r as any).messagesRemoved ?? '?'} msgs removed${C.r}\n\n`); } catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
+            process.stdout.write(`${C.g}✓ Compacted: ${(r as any).messagesRemoved ?? '?'} msgs removed${C.r}\n\n`); }
+          catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
           return;
         case 'dream':
-          try { await session.dream({ force: true }); process.stdout.write(`${C.g}✓ Dream triggered${C.r}\n\n`); } catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
+          try { await session.dream({ force: true });
+            process.stdout.write(`${C.g}✓ Dream triggered${C.r}\n\n`); }
+          catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
           return;
         default:
           process.stdout.write(`${C.R}Unknown: /${cmd}${C.r}  ${C.d}Type /help${C.r}\n\n`);
@@ -189,33 +205,13 @@ async function main() {
     process.stdout.write(`\n`);
   }
 
-  // ── Permission handler (y/n inline) ───────────────────────────
-
-  async function processMsgWithPerms(text: string) {
-    await processMsg(text);
-  }
-
-  // ── Fullscreen launcher ────────────────────────────────────────
-
-  function launchFullscreen() {
-    const tuiBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tui', 'bin', 'actoviq.cjs');
-    process.stdout.write(`\n${C.d}Launching fullscreen TUI (session: ${session.id})...${C.r}\n`);
-    // Use actoviq-fullscreen command or fall back to direct node invocation
-    const child = spawn(process.execPath, [tuiBin, '--project', WORK_DIR, '--session', session.id, '--config', CONFIG_PATH], {
-      cwd: WORK_DIR, stdio: 'inherit', shell: false,
-    });
-    child.on('exit', () => {
-      process.stdout.write(`\n${C.d}Back to scrollback mode. Session preserved.${C.r}\n\n`);
-      rl.prompt();
-    });
-  }
-
   // ── Readline ──────────────────────────────────────────────────
 
   const rl = readline.createInterface({
     input: process.stdin, output: process.stdout,
     prompt: '', completer, historySize: 1000, terminal: true,
   });
+  rl.setPrompt(`${C.c}> ${C.r}`);
 
   let cc = 0; let ccT: ReturnType<typeof setTimeout> | null = null;
   readline.emitKeypressEvents(process.stdin);
@@ -230,24 +226,18 @@ async function main() {
       process.stdout.write('\n'); rl.prompt();
       return;
     }
-    if (key?.name === 'o' && key?.ctrl) {
-      launchFullscreen();
-      return;
-    }
     cc = 0;
   });
 
-  // Manual prompt since readline prompt is empty
-  process.stdout.write(`${C.c}> ${C.r}`);
-  rl.write('');
+  rl.prompt();
 
   rl.on('line', async (line) => {
     abortCtrl = null;
-    try { await processMsgWithPerms(line); } catch (e: any) {
+    try { await processMsg(line); } catch (e: any) {
       if (e.name === 'AbortError') process.stdout.write(`\n${C.y}  ⏹ aborted${C.r}\n`);
       else process.stdout.write(`\n${C.R}  ✕ ${(e as Error).message}${C.r}\n`);
     }
-    process.stdout.write(`${C.c}> ${C.r}`);
+    rl.prompt();
   });
 
   rl.on('close', async () => {

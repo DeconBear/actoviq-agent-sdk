@@ -17,4 +17,5 @@ The main execution path is `createAgentSdk()`. Use it for all product and applic
 If you only want to get moving quickly:
 
 1. Read [01-setup-and-quickstart.md](./01-setup-and-quickstart.md).
-2. Run `npm run example:quickstart`.
+2. Run `npm run example:actoviq-quickstart`.
+3. Or start the CLI REPL: `npx actoviq-react [work-dir]` (scrollback-mode, not a full TUI).

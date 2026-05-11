@@ -163,11 +163,11 @@ In both modes, each step creates an independent session. Steps can be resumed in
 
 ### 1.1 Step-by-Step Walkthrough
 
-The following walks through `examples/workflow-annotated.ts` — a complete example that uses every API method with detailed annotations. Open that file alongside this section for the full picture.
+The following walks through `examples/actoviq-workflow-annotated.ts` — a complete example that uses every API method with detailed annotations. Open that file alongside this section for the full picture.
 
 **Scenario: pre-release check on a specific Git repo.** Requirements: repo path and branch name are caller-supplied, step 1 is read-only, step 2 depends on step 1, step 3 uses a faster model for summarization.
 
-> Run it: `npm run example:workflow-annotated`
+> Run it: `npm run example:actoviq-workflow-annotated`
 
 ---
 
@@ -377,7 +377,7 @@ This pattern connects the two design paths: the Agent writes the JSON, and the e
 **Run the example:**
 
 ```bash
-npm run example:workflow-agent-orchestration
+npm run example:actoviq-workflow-agent-orchestration
 ```
 
 **Key code — creating the `run_workflow` tool:**
@@ -430,7 +430,7 @@ This pattern is especially powerful when:
 - You're building a meta-agent that delegates to sub-workflows
 - You want end users to describe tasks in natural language rather than code
 
-For the full runnable example, see [`examples/workflow-agent-orchestration.ts`](https://github.com/DeconBear/actoviq-agent-sdk/blob/main/examples/workflow-agent-orchestration.ts).
+For the full runnable example, see [`examples/actoviq-workflow-agent-orchestration.ts`](https://github.com/DeconBear/actoviq-agent-sdk/blob/main/examples/actoviq-workflow-agent-orchestration.ts).
 
 ---
 
@@ -602,11 +602,11 @@ await session.deleteCheckpoint('checkpoint-id');
 Run the examples to see everything in action:
 
 ```bash
-npm run example:workflow-annotated  # Fully annotated workflow walkthrough (start here)
-npm run example:workflow            # Workflow basics
-npm run example:parallel            # Parallel & race primitives
-npm run example:session-manager     # Session lifecycle management
-npm run example:checkpoint          # Session checkpoints
+npm run example:actoviq-workflow-annotated  # Fully annotated workflow walkthrough (start here)
+npm run example:actoviq-workflow            # Workflow basics
+npm run example:actoviq-parallel            # Parallel & race primitives
+npm run example:actoviq-session-manager     # Session lifecycle management
+npm run example:actoviq-checkpoint          # Session checkpoints
 ```
 
 ---

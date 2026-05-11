@@ -95,15 +95,31 @@ try {
 }
 ```
 
-## 4. 直接运行仓库示例
+## 4. CLI 交互式 REPL（scrollback 模式）
+
+安装包后，可以直接启动内置的交互式 REPL：
 
 ```bash
-npm run example:quickstart
+npx actoviq-react [工作目录]
+```
+
+这是一个基于 readline 的 Agent，在主终端缓冲区运行：
+- 直接输入消息，实时流式输出回复
+- 使用 `/` 斜杠命令：`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`
+- Tab 补全命令，↑↓ 浏览历史
+- Ctrl+C 一次中止当前请求，连按两次退出
+
+**注意：** `actoviq-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试，不适合作为完整的终端 UI 使用。
+
+## 5. 直接运行仓库示例
+
+```bash
+npm run example:actoviq-quickstart
 ```
 
 对应文件：
 
-- [examples/quickstart.ts](../../examples/quickstart.ts)
+- [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
 
 ## 5. 一个最小可用的流式聊天机器人
 

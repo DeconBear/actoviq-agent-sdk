@@ -58,8 +58,8 @@ console.log(runtime.agents);
 
 Repository examples:
 
-- [examples/actoviq-introspection.ts](../../examples/actoviq-introspection.ts)
-- [examples/actoviq-bridge-sdk.ts](../../examples/actoviq-bridge-sdk.ts)
+- [examples/bridge-introspection.ts](../../examples/bridge-introspection.ts)
+- [examples/bridge-sdk.ts](../../examples/bridge-sdk.ts)
 
 ## 5. Bridge helpers
 
