@@ -120,4 +120,4 @@ bridge 侧还支持：
 
 下一章：
 
-- [06-testing-troubleshooting-cheatsheet.md](./06-testing-troubleshooting-cheatsheet.md)
+- [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)
