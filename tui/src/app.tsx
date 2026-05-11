@@ -12,9 +12,10 @@ import { createCommandRegistry, registerBuiltinCommands, type CommandContext } f
 interface AppProps {
   client: ActoviqAgentClient;
   initialModel?: string;
+  initialSession?: string;
 }
 
-export function App({ client, initialModel }: AppProps) {
+export function App({ client, initialModel, initialSession }: AppProps) {
   const DEFAULT_MODELS = [
     'deepseek-v4-pro',
     'deepseek-v4-flash',
@@ -36,7 +37,7 @@ export function App({ client, initialModel }: AppProps) {
     createSession: createNewSession,
     deleteSession,
     renameSession,
-  } = useSessionList(client);
+  } = useSessionList(client, initialSession);
 
   // ── Stream state ──────────────────────────────────────────────
   const {

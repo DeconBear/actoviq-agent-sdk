@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { ActoviqAgentClient, AgentSession, SessionSummary } from 'actoviq-agent-sdk';
 
-export function useSessionList(client: ActoviqAgentClient | null) {
+export function useSessionList(client: ActoviqAgentClient | null, initialSession?: string) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSession, setActiveSession] = useState<AgentSession | null>(null);
   const [loading, setLoading] = useState(false);
@@ -94,6 +94,15 @@ export function useSessionList(client: ActoviqAgentClient | null) {
   useEffect(() => {
     if (!client || autoCreatedRef.current) return;
     autoCreatedRef.current = true;
+
+    // If an initial session ID was provided, resume it directly
+    if (initialSession) {
+      client.sessions.get(initialSession)
+        .then((session) => { if (isMountedRef.current) setActiveSession(session); refresh(); })
+        .catch(() => {});
+      return;
+    }
+
     client.sessions.list().then((list) => {
       if (!isMountedRef.current) return;
       if (list.length === 0) {
@@ -117,7 +126,7 @@ export function useSessionList(client: ActoviqAgentClient | null) {
         }
       }
     }).catch(() => {});
-  }, [client, refresh]);
+  }, [client, refresh, initialSession]);
 
   return {
     sessions,
