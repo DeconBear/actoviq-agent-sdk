@@ -199,9 +199,10 @@ async function main() {
 
   function launchFullscreen() {
     const tuiBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'tui', 'bin', 'actoviq.cjs');
-    process.stdout.write(`\n${C.d}Switching to fullscreen (session: ${session.id})...${C.r}\n`);
+    process.stdout.write(`\n${C.d}Launching fullscreen TUI (session: ${session.id})...${C.r}\n`);
+    // Use actoviq-fullscreen command or fall back to direct node invocation
     const child = spawn(process.execPath, [tuiBin, '--project', WORK_DIR, '--session', session.id, '--config', CONFIG_PATH], {
-      cwd: WORK_DIR, stdio: 'inherit',
+      cwd: WORK_DIR, stdio: 'inherit', shell: false,
     });
     child.on('exit', () => {
       process.stdout.write(`\n${C.d}Back to scrollback mode. Session preserved.${C.r}\n\n`);
