@@ -114,4 +114,4 @@ Bridge exports helpers for parsing runtime events:
 
 Next chapter:
 
-- [06-testing-troubleshooting-cheatsheet.md](./06-testing-troubleshooting-cheatsheet.md)
+- [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)
