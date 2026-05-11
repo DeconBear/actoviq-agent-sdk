@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Link or copy a Claude Code runtime bundle for use with the bridge SDK.
+ * Link or copy a third-party agent runtime bundle for use with the bridge SDK.
  *
  * Usage:
  *   npx actoviq-link-runtime /path/to/claude-code
- *   npx actoviq-link-runtime /path/to/runtime.bundle.br
+ *   npx actoviq-link-runtime /path/to/runtime-bundle
  */
 import { existsSync, symlinkSync, copyFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
@@ -18,17 +18,16 @@ const input = process.argv[2];
 if (!input || input === '--help' || input === '-h') {
   console.log('Usage: actoviq-link-runtime <path>');
   console.log('');
-  console.log('  <path>  Path to a Claude Code installation directory,');
-  console.log('          or directly to a runtime.bundle.br file.');
+  console.log('  <path>  Path to a third-party agent runtime installation,');
+  console.log('          or directly to a runtime bundle file.');
   console.log('');
   console.log('Examples:');
   console.log('  actoviq-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code');
   console.log('  actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code');
-  console.log('  actoviq-link-runtime ./runtime.bundle.br');
+  console.log('  actoviq-link-runtime ./runtime-bundle');
   console.log('');
-  console.log('The bridge SDK uses the Claude Code runtime bundle to provide');
-  console.log('the reference implementation. You must have a licensed copy');
-  console.log('of Claude Code to use this feature.');
+  console.log('The bridge SDK works with a third-party agent runtime bundle');
+  console.log('to provide the reference implementation.');
   process.exit(0);
 }
 
@@ -43,8 +42,8 @@ if (existsSync(sourcePath) && existsSync(join(sourcePath, 'vendor', 'actoviq-run
 } else if (existsSync(join(sourcePath, 'runtime.bundle.br'))) {
   bundlePath = join(sourcePath, 'runtime.bundle.br');
 } else {
-  console.error(`Could not find runtime.bundle.br in: ${sourcePath}`);
-  console.error('Make sure the path points to a Claude Code installation or a runtime.bundle.br file.');
+  console.error(`Could not find runtime bundle in: ${sourcePath}`);
+  console.error('Make sure the path points to an agent runtime installation or a runtime bundle file.');
   process.exit(1);
 }
 

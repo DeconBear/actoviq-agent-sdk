@@ -2,15 +2,14 @@
 
 This chapter explains the compatibility bridge path and when it is still useful.
 
-## 1. Prerequisites — linking the runtime bundle
+## 1. Prerequisites — linking a runtime bundle
 
-The bridge SDK requires a Claude Code runtime bundle (`runtime.bundle.br`). Due to licensing, this file is **not included** in the actoviq-agent-sdk package.
+The bridge SDK requires a runtime bundle from a third-party agent runtime (e.g. Claude Code). This file is **not included** in the actoviq-agent-sdk package.
 
 If you have Claude Code installed, link its runtime bundle:
 
 ```bash
-# Claude Code is published as @anthropic-ai/claude-code on npm.
-# The bundle lives at: <claude-code-root>/vendor/actoviq-runtime/runtime.bundle.br
+# Claude Code is published as @anthropic-ai/claude-code on npm
 
 # macOS / Linux (npm global)
 npx actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
@@ -28,7 +27,7 @@ npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 Alternatively, set the environment variable:
 
 ```bash
-export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime.bundle.br"
+export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 ```
 
 Without this bundle, bridge SDK features will not work.

@@ -15,13 +15,13 @@ function ensureRuntimeEntry() {
     console.error('Bridge runtime bundle not found.');
     console.error(`Expected at: ${compressedBundlePath}`);
     console.error('');
-    console.error('The bridge SDK requires a Claude Code runtime bundle.');
-    console.error('If you have Claude Code installed, link its bundle:');
+    console.error('The bridge SDK requires a third-party agent runtime bundle.');
+    console.error('For example, if you have Claude Code installed, link its bundle:');
     console.error(`  npx actoviq-link-runtime /path/to/claude-code`);
     console.error('');
     console.error('Or set the ACTOVIQ_RUNTIME_BUNDLE environment variable:');
-    console.error(`  $env:ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime.bundle.br"  # PowerShell`);
-    console.error(`  export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime.bundle.br"  # Bash`);
+    console.error(`  $env:ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # PowerShell`);
+    console.error(`  export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # Bash`);
     process.exit(1);
   }
 
