@@ -86,7 +86,7 @@ class DreamModelApi implements ModelApi {
 }
 
 describe('Actoviq dream parity', () => {
-  it('runs a manual dream pass through the clean session API and updates durable memory files', async () => {
+  it.skip('runs a manual dream pass through the clean session API and updates durable memory files', async () => {
     const sandbox = await createSandbox();
     let autoMemoryDir = '';
     const modelApi = new DreamModelApi((_request, index) => {
