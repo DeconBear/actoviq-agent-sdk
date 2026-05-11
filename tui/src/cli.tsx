@@ -118,7 +118,7 @@ async function main(): Promise<void> {
 
   const { waitUntilExit } = render(
     React.createElement(ErrorBoundary, null,
-      React.createElement(App, { client: sdk, initialModel: opts.model }),
+      React.createElement(App, { client: sdk, initialModel: opts.model, initialSession: opts.sessionId }),
     ),
     { patchConsole: false },
   );
