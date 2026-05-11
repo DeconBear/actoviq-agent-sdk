@@ -6,6 +6,7 @@ import { render } from 'ink';
 import { App } from './app.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
 import { loadKeybindings, describeBinding } from './lib/keybindings.js';
+import { createNoAltScreenStdout } from './lib/noAltScreen.js';
 
 interface CliOptions {
   workDir?: string;
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
     React.createElement(ErrorBoundary, null,
       React.createElement(App, { client: sdk, initialModel: opts.model }),
     ),
-    { patchConsole: false },
+    { patchConsole: false, stdout: createNoAltScreenStdout(process.stdout) },
   );
 
   try {
