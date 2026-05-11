@@ -44,6 +44,7 @@ export function App({ client, initialModel }: AppProps) {
     streamingText,
     streamingBlocks,
     streaming,
+    phase,
     error,
     send,
     abort,
@@ -58,11 +59,15 @@ export function App({ client, initialModel }: AppProps) {
   const [inputValue, setInputValue] = useState('');
   const inputRef = useRef('');
   const [scrollOffset, setScrollOffset] = useState(0);
+  const prevStreamingRef = useRef(false);
 
-  // Auto-scroll to bottom when new messages arrive during streaming
+  // Auto-scroll to bottom only when streaming starts, not on every message
   useEffect(() => {
-    if (streaming) setScrollOffset(0);
-  }, [streaming, messages.length]);
+    if (streaming && !prevStreamingRef.current) {
+      setScrollOffset(0);
+    }
+    prevStreamingRef.current = streaming;
+  }, [streaming]);
 
   // ── Scheduler ref ─────────────────────────────────────────────
   const schedulerRef = useRef<TaskScheduler | null>(null);
@@ -71,8 +76,17 @@ export function App({ client, initialModel }: AppProps) {
     return () => { schedulerRef.current?.dispose().catch(() => {}); };
   }, []);
 
-  // ── Started-at ref for status bar ─────────────────────────────
-  const startedAtRef = useRef(new Date().toISOString());
+  // ── Started-at for status bar ─────────────────────────────────
+  const [startedAt, setStartedAt] = useState<string | undefined>(undefined);
+
+  // Keep a ref to the latest activeSession to avoid stale closures in async handlers
+  const activeSessionRef = useRef(activeSession);
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  // Permission resolve ref to avoid dialog-state race
+  const permissionResolveRef = useRef<((allowed: boolean) => void) | null>(null);
 
   // ── Slash command definitions ─────────────────────────────────
   const commandDefs: CommandDef[] = useMemo(() => [
@@ -96,7 +110,7 @@ export function App({ client, initialModel }: AppProps) {
 
   // ── Merged messages ───────────────────────────────────────────
   const allMessages = useMemo(
-    () => [...systemMessages, ...messages].sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+    () => [...systemMessages, ...messages],
     [systemMessages, messages],
   );
 
@@ -241,34 +255,43 @@ export function App({ client, initialModel }: AppProps) {
       if (cmd) {
         const result = await Promise.resolve(cmd.handler(args));
         if (result) appendSystemMessage(result);
-        if (cmdName === 'clear') { clearMessages(); setSystemMessages([]); }
         return;
       }
     }
 
-    if (!activeSession) {
+    const session = activeSessionRef.current;
+    if (!session) {
       appendSystemMessage('No active session. Use /session new to create one.');
       return;
     }
 
-    setInputHistory((prev) => [...prev, text]);
-    await send(activeSession, text, {
+    setInputHistory((prev) => {
+      const next = [...prev, text];
+      return next.length > 100 ? next.slice(next.length - 100) : next;
+    });
+    setStartedAt(new Date().toISOString());
+    await send(session, text, {
       model,
       onPermissionRequest: async (toolName, args, toolDesc) => {
         if (permissionMode === 'bypassPermissions') {
           return true;
         }
         return new Promise<boolean>((resolve) => {
+          permissionResolveRef.current = resolve;
           setPermissionDialog({
             toolName,
             toolDescription: toolDesc,
             input: args,
-            resolve: (allowed) => { setPermissionDialog(null); resolve(allowed); },
+            resolve: (allowed) => {
+              permissionResolveRef.current = null;
+              setPermissionDialog(null);
+              resolve(allowed);
+            },
           });
         });
       },
     });
-  }, [activeSession, commandRegistry, send, clearMessages, appendSystemMessage, autocomplete, permissionMode]);
+  }, [commandRegistry, send, appendSystemMessage, autocomplete, permissionMode, model]);
 
   const cyclePermissionMode = useCallback(() => {
     setPermissionMode((prev) => {
@@ -303,10 +326,14 @@ export function App({ client, initialModel }: AppProps) {
     onNavigateUp: () => setHistoryIdx((i) => Math.min(i + 1, inputHistory.length - 1)),
     onNavigateDown: () => setHistoryIdx((i) => Math.max(i - 1, -1)),
     onPermissionYes: () => {
-      if (permissionDialog) permissionDialog.resolve(true);
+      permissionResolveRef.current?.(true);
+      permissionResolveRef.current = null;
+      setPermissionDialog(null);
     },
     onPermissionNo: () => {
-      if (permissionDialog) permissionDialog.resolve(false);
+      permissionResolveRef.current?.(false);
+      permissionResolveRef.current = null;
+      setPermissionDialog(null);
     },
     onScrollUp: () => setScrollOffset((o) => Math.min(o + 5, Math.max(0, allMessages.length - 1))),
     onScrollDown: () => setScrollOffset((o) => Math.max(0, o - 5)),
@@ -330,7 +357,6 @@ export function App({ client, initialModel }: AppProps) {
       permissionMode={permissionMode}
       streaming={streaming}
       messages={allMessages}
-      streamingText={streamingText}
       streamingBlocks={streamingBlocks}
       error={error}
       permissionDialog={permissionDialog}
@@ -341,8 +367,9 @@ export function App({ client, initialModel }: AppProps) {
       onInputChange={handleInputChange}
       onTabComplete={handleTabComplete}
       suppressChar={suppressChar}
-      startedAt={startedAtRef.current}
+      startedAt={startedAt}
       scrollOffset={scrollOffset}
+      phase={phase}
     />
   );
 }

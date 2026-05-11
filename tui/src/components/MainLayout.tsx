@@ -6,7 +6,7 @@ import { Messages } from './Messages.js';
 import { Spinner } from './Spinner.js';
 import { InputArea } from './input/InputArea.js';
 import { PermissionDialog } from './modals/PermissionDialog.js';
-import type { UIMessage, ContentBlock, PermissionState } from '../context.js';
+import type { UIMessage, ContentBlock, PermissionState, AgentPhase } from '../context.js';
 import type { ActoviqPermissionMode } from 'actoviq-agent-sdk';
 
 interface MainLayoutProps {
@@ -15,7 +15,6 @@ interface MainLayoutProps {
   permissionMode: ActoviqPermissionMode;
   streaming: boolean;
   messages: UIMessage[];
-  streamingText: string;
   streamingBlocks: ContentBlock[];
   error: string | null;
   permissionDialog: PermissionState | null;
@@ -28,15 +27,17 @@ interface MainLayoutProps {
   suppressChar?: (value: string) => string;
   startedAt?: string;
   scrollOffset?: number;
+  phase?: AgentPhase;
 }
 
 export function MainLayout({
   sessionName, model, permissionMode, streaming,
-  messages, streamingText, streamingBlocks, error,
+  messages, streamingBlocks, error,
   permissionDialog, overlay,
   inputHistory, inputValue,
   onSend, onInputChange, onTabComplete,
   suppressChar, startedAt, scrollOffset,
+  phase,
 }: MainLayoutProps) {
   const scrollable = (
     <Box flexDirection="column" flexGrow={1}>
@@ -46,7 +47,7 @@ export function MainLayout({
         error={error}
         scrollOffset={scrollOffset}
       />
-      <Spinner visible={streaming && streamingBlocks.length === 0} />
+      <Spinner visible={streaming && streamingBlocks.length === 0} phase={phase} />
     </Box>
   );
 
@@ -57,6 +58,7 @@ export function MainLayout({
         onInputChange={onInputChange}
         onTabComplete={onTabComplete}
         streaming={streaming}
+        phase={phase}
         initialValue={inputValue}
         suppressChar={suppressChar}
       />
@@ -67,6 +69,7 @@ export function MainLayout({
         streaming={streaming}
         messageCount={messages.length}
         startedAt={startedAt}
+        phase={phase}
       />
     </Box>
   );

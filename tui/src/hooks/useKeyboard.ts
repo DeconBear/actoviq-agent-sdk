@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import { useInput } from 'ink';
 
 export type KeyContext = 'default' | 'streaming' | 'permission' | 'overlay';
@@ -43,14 +43,25 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
   // Used for Ctrl+P and overlay-mode typing where useInput fires before
   // TextInput's onChange.
   const suppressedCharRef = useRef<string | null>(null);
+  const prevContextRef = useRef(context);
+
+  // Clear suppressed char when context changes to avoid deleting unrelated input
+  useEffect(() => {
+    if (context !== prevContextRef.current) {
+      suppressedCharRef.current = null;
+      prevContextRef.current = context;
+    }
+  }, [context]);
 
   useInput((input, key) => {
     // ── Esc — always first, highest priority ────────────────────
     if (key.escape || input === '\x1b') {
       if (context === 'overlay' && onOverlayDismiss) {
         onOverlayDismiss();
-      } else {
+      } else if (context === 'streaming') {
         onAbort();
+      } else if (context === 'permission' && onPermissionNo) {
+        onPermissionNo();
       }
       return;
     }
@@ -157,9 +168,12 @@ export function useKeyboard(bindings: KeyboardBindings): KeyboardOutput {
   return {
     suppressChar: (value: string) => {
       const ch = suppressedCharRef.current;
-      if (ch && value.endsWith(ch)) {
-        suppressedCharRef.current = null;
-        return value.slice(0, -ch.length);
+      if (ch) {
+        const idx = value.indexOf(ch);
+        if (idx !== -1) {
+          suppressedCharRef.current = null;
+          return value.slice(0, idx) + value.slice(idx + ch.length);
+        }
       }
       suppressedCharRef.current = null;
       return value;

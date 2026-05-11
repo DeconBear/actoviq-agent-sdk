@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
 import type { AgentSession, AgentRunResult } from 'actoviq-agent-sdk';
-import type { UIMessage, ContentBlock } from '../context.js';
+import type { UIMessage, ContentBlock, AgentPhase } from '../context.js';
 
 export interface UseAgentStreamOptions {
   model?: string;
@@ -19,7 +19,12 @@ export function useAgentStream() {
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AgentRunResult | null>(null);
+  const [phase, setPhase] = useState<AgentPhase>('idle');
   const abortRef = useRef<AbortController | null>(null);
+  const sendingRef = useRef(false);
+  const pendingToolsRef = useRef(0);
+  const inWorkflowRef = useRef(false);
+  const inStepRef = useRef(false);
 
   // Throttle mechanism: batches rapid setStreamingBlocks calls (e.g. text deltas)
   // to prevent per-token terminal repaints that break scroll position.
@@ -64,11 +69,18 @@ export function useAgentStream() {
     text: string,
     options?: UseAgentStreamOptions,
   ) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+
     setStreamingText('');
     setStreamingBlocks([]);
     setError(null);
     setResult(null);
     setStreaming(true);
+    setPhase('waiting');
+    pendingToolsRef.current = 0;
+    inWorkflowRef.current = false;
+    inStepRef.current = false;
 
     const userMsg: UIMessage = {
       id: `user-${Date.now()}`,
@@ -81,11 +93,15 @@ export function useAgentStream() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const mergedSignal = options?.signal
-      ? anySignal([options.signal, controller.signal])
-      : controller.signal;
+    let mergedSignalCleanup: (() => void) | undefined;
+    let mergedSignal: AbortSignal = controller.signal;
+    if (options?.signal) {
+      const res = anySignal([options.signal, controller.signal]);
+      mergedSignal = res.signal;
+      mergedSignalCleanup = res.cleanup;
+    }
 
-    const blocks: ContentBlock[] = [];
+    let blocks: ContentBlock[] = [];
     let currentIteration = 0;
     let currentText = '';
     let runId = '';
@@ -98,6 +114,7 @@ export function useAgentStream() {
         switch (event.type) {
           case 'run.started': {
             runId = event.runId;
+            setPhase('waiting');
             break;
           }
 
@@ -105,9 +122,10 @@ export function useAgentStream() {
             currentIteration = event.iteration;
             flushPending();
             if (currentIteration > 0) {
-              blocks.push({ type: 'separator', iteration: currentIteration, runId });
-              scheduleUpdate([...blocks], true);
+              blocks = [...blocks, { type: 'separator', iteration: currentIteration, runId }];
+              scheduleUpdate(blocks, true);
             }
+            setPhase('waiting');
             break;
           }
 
@@ -119,18 +137,21 @@ export function useAgentStream() {
               ...(currentText ? [{ type: 'text' as const, text: currentText }] : []),
             ];
             scheduleUpdate(liveBlocks); // throttled — per-token, no immediate flush
+            setPhase('generating');
             break;
           }
 
           case 'response.content': {
             const content = event.content as { type: string; text?: string; thinking?: string };
             if (content.type === 'thinking' && content.thinking) {
-              blocks.push({ type: 'thinking', text: content.thinking, collapsed: false });
-              scheduleUpdate([...blocks], true);
+              blocks = [...blocks, { type: 'thinking', text: content.thinking, collapsed: false }];
+              scheduleUpdate(blocks, true);
+              setPhase('thinking');
             } else if (content.type === 'text' && content.text) {
               currentText = content.text;
               setStreamingText(currentText);
-              scheduleUpdate([...blocks], true);
+              scheduleUpdate(blocks, true);
+              setPhase('generating');
             }
             break;
           }
@@ -141,14 +162,13 @@ export function useAgentStream() {
             if (Array.isArray(contentBlocks)) {
               for (const cb of contentBlocks) {
                 const typed = cb as { type: string; text?: string; thinking?: string };
-                if (typed.type === 'text' && typed.text && !blocks.some(
-                  (b) => b.type === 'text' && b.text === typed.text,
-                )) {
-                  const idx = blocks.findIndex((b) => b.type === 'text');
-                  if (idx >= 0) {
-                    blocks[idx] = { type: 'text', text: typed.text };
+                if (typed.type === 'text' && typed.text) {
+                  const txt = typed.text;
+                  const hasText = blocks.some((b) => b.type === 'text');
+                  if (hasText) {
+                    blocks = blocks.map((b) => b.type === 'text' ? { type: 'text' as const, text: txt } : b);
                   } else {
-                    blocks.push({ type: 'text', text: typed.text });
+                    blocks = [...blocks, { type: 'text' as const, text: txt }];
                   }
                 }
               }
@@ -158,6 +178,8 @@ export function useAgentStream() {
 
           case 'tool.call': {
             flushPending();
+            pendingToolsRef.current++;
+            setPhase('tool-calling');
             const input = isRecord(event.call.input) ? event.call.input : { value: event.call.input };
             const toolBlock: ContentBlock = {
               type: 'tool_use',
@@ -168,19 +190,21 @@ export function useAgentStream() {
               iteration: currentIteration,
               provider: event.call.provider,
             };
-            blocks.push(toolBlock);
-            scheduleUpdate([...blocks], true);
+            blocks = [...blocks, toolBlock];
+            scheduleUpdate(blocks, true);
 
+            let status: 'running' | 'error' = 'running';
             if (options?.onPermissionRequest) {
               const allowed = await options.onPermissionRequest(
                 event.call.name,
                 input,
               );
-              toolBlock.status = allowed ? 'running' : 'error';
-            } else {
-              toolBlock.status = 'running';
+              status = allowed ? 'running' : 'error';
             }
-            scheduleUpdate([...blocks], true);
+            blocks = blocks.map((b) =>
+              b.type === 'tool_use' && b.id === event.call.id ? { ...b, status } : b,
+            );
+            scheduleUpdate(blocks, true);
             break;
           }
 
@@ -190,18 +214,17 @@ export function useAgentStream() {
           }
 
           case 'tool.progress': {
-            const progressBlock = blocks.find(
-              (b) => b.type === 'tool_use' && b.id === event.toolUseId,
-            ) as Extract<ContentBlock, { type: 'tool_use' }> | undefined;
-            if (progressBlock && event.data) {
+            if (event.data) {
               const msg = typeof event.data.message === 'string'
                 ? event.data.message
                 : event.data.type
                   ? `${event.data.type}...`
                   : undefined;
               if (msg) {
-                progressBlock.progressMessage = msg;
-                scheduleUpdate([...blocks], false);
+                blocks = blocks.map((b) =>
+                  b.type === 'tool_use' && b.id === event.toolUseId ? { ...b, progressMessage: msg } : b,
+                );
+                scheduleUpdate(blocks, false);
               }
             }
             break;
@@ -209,24 +232,27 @@ export function useAgentStream() {
 
           case 'tool.result': {
             flushPending();
-            const toolBlock = blocks.find(
-              (b) => b.type === 'tool_use' && b.id === event.result.id,
-            ) as Extract<ContentBlock, { type: 'tool_use' }> | undefined;
-            if (toolBlock) {
-              toolBlock.status = event.result.isError ? 'error' : 'done';
-            }
+            pendingToolsRef.current = Math.max(0, pendingToolsRef.current - 1);
+            blocks = blocks.map((b) =>
+              b.type === 'tool_use' && b.id === event.result.id
+                ? { ...b, status: event.result.isError ? 'error' : 'done' }
+                : b,
+            );
             const resultContent = event.result.isError
               ? event.result.outputText
               : formatToolOutput(event.result.output ?? event.result.outputText);
-            blocks.push({
+            blocks = [...blocks, {
               type: 'tool_result',
               toolUseId: event.result.id,
               content: resultContent,
               isError: event.result.isError,
               durationMs: event.result.durationMs,
               iteration: currentIteration,
-            });
-            scheduleUpdate([...blocks], true);
+            }];
+            scheduleUpdate(blocks, true);
+            if (pendingToolsRef.current === 0 && !inWorkflowRef.current) {
+              setPhase('waiting');
+            }
             break;
           }
 
@@ -237,11 +263,50 @@ export function useAgentStream() {
 
           case 'response.completed': {
             setResult(event.result);
+            if (!inWorkflowRef.current && pendingToolsRef.current === 0) {
+              setPhase('idle');
+            }
             break;
           }
 
           case 'error': {
             setError(event.error.message);
+            setPhase('idle');
+            break;
+          }
+
+          case 'workflow.start': {
+            inWorkflowRef.current = true;
+            setPhase('planning');
+            break;
+          }
+
+          case 'step.start': {
+            inStepRef.current = true;
+            setPhase('workflow-step');
+            break;
+          }
+
+          case 'step.done': {
+            inStepRef.current = false;
+            if (inWorkflowRef.current) {
+              setPhase('planning');
+            } else if (pendingToolsRef.current > 0) {
+              setPhase('tool-calling');
+            } else {
+              setPhase('waiting');
+            }
+            break;
+          }
+
+          case 'workflow.done': {
+            inWorkflowRef.current = false;
+            inStepRef.current = false;
+            if (pendingToolsRef.current > 0) {
+              setPhase('tool-calling');
+            } else {
+              setPhase('idle');
+            }
             break;
           }
         }
@@ -280,15 +345,11 @@ export function useAgentStream() {
       flushPending();
       const err = e as Error & { name?: string };
       if (err?.name === 'AbortError') {
-        if (currentText || blocks.length > 0) {
-          const finalBlocks: ContentBlock[] = [
-            ...blocks,
-            ...(currentText ? [{ type: 'text' as const, text: currentText }] : []),
-          ];
+        if (blocks.length > 0) {
           const assistantMsg: UIMessage = {
             id: `assistant-${Date.now()}`,
             role: 'assistant',
-            content: finalBlocks,
+            content: blocks,
             timestamp: new Date().toISOString(),
           };
           setMessages((prev) => [...prev, assistantMsg]);
@@ -304,8 +365,16 @@ export function useAgentStream() {
         throttleTimer.current = null;
       }
       pendingBlocks.current = null;
-      setStreaming(false);
-      abortRef.current = null;
+      pendingToolsRef.current = 0;
+      inWorkflowRef.current = false;
+      inStepRef.current = false;
+      mergedSignalCleanup?.();
+      if (abortRef.current === controller) {
+        setStreaming(false);
+        setPhase('idle');
+        abortRef.current = null;
+      }
+      sendingRef.current = false;
     }
   }, []);
 
@@ -325,6 +394,7 @@ export function useAgentStream() {
     streamingText,
     streamingBlocks,
     streaming,
+    phase,
     error,
     result,
     send,
@@ -348,14 +418,22 @@ function formatToolOutput(output: unknown): string {
   }
 }
 
-function anySignal(signals: AbortSignal[]): AbortSignal {
+function anySignal(signals: AbortSignal[]): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
+  const cleanups: Array<() => void> = [];
   for (const signal of signals) {
     if (signal.aborted) {
       controller.abort(signal.reason);
-      return controller.signal;
+      return { signal: controller.signal, cleanup: () => {} };
     }
-    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+    const listener = () => controller.abort(signal.reason);
+    signal.addEventListener('abort', listener, { once: true });
+    cleanups.push(() => signal.removeEventListener('abort', listener));
   }
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const fn of cleanups) fn();
+    },
+  };
 }
