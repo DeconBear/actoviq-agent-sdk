@@ -17,7 +17,7 @@ npm pack --dry-run
 
 ```bash
 npm run smoke
-npm run example:quickstart
+npm run example:actoviq-quickstart
 ```
 
 ## 2. 常见问题
@@ -73,9 +73,9 @@ npm run example:quickstart
 ## 3. 常用示例命令
 
 ```bash
-npm run example:quickstart
-npm run example:session
-npm run example:stream-loop
+npm run example:actoviq-quickstart
+npm run example:actoviq-session
+npm run example:actoviq-stream-loop
 npm run example:actoviq-skills
 npm run example:actoviq-memory
 npm run example:actoviq-dream

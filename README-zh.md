@@ -57,9 +57,25 @@ try {
 运行仓库自带示例：
 
 ```bash
-npm run example:quickstart
+npm run example:actoviq-quickstart
 npm run example:actoviq-agent-helpers
 ```
+
+## CLI 交互式 REPL
+
+安装包后，可以直接在终端启动交互式 REPL：
+
+```bash
+npx actoviq-react [工作目录]
+```
+
+这是一个基于 readline 的交互式 Agent，特点：
+- 主终端缓冲区实时流式输出（支持原生滚动回看）
+- Tab 补全斜杠命令（`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`）
+- ↑↓ 方向键浏览历史命令
+- Ctrl+C 中止当前请求，连按两次退出
+
+**注意：** `actoviq-react` 是一个轻量级滚动 REPL，**不是功能完整的 TUI**。它不使用 alternate screen buffer，不支持 ScrollBox 或富文本终端渲染。适合快速交互和调试，而非替代完整的终端 UI。
 
 ## 教程入口
 
@@ -70,8 +86,8 @@ npm run example:actoviq-agent-helpers
 
 推荐从这里开始上手：
 
-- [examples/quickstart.ts](./examples/quickstart.ts)
-- [examples/workflow.ts](./examples/workflow.ts)
+- [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
+- [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
 
 ## 欢迎贡献

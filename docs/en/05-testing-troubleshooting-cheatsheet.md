@@ -17,7 +17,7 @@ Optional local checks:
 
 ```bash
 npm run smoke
-npm run example:quickstart
+npm run example:actoviq-quickstart
 ```
 
 ## 2. Common problems
@@ -51,9 +51,9 @@ Check whether:
 ## 3. Handy example commands
 
 ```bash
-npm run example:quickstart
-npm run example:session
-npm run example:stream-loop
+npm run example:actoviq-quickstart
+npm run example:actoviq-session
+npm run example:actoviq-stream-loop
 npm run example:actoviq-skills
 npm run example:actoviq-file-tools
 npm run example:actoviq-memory
@@ -76,5 +76,5 @@ npm run example:actoviq-swarm
 You now have the full tutorial set. If you want a single next step, run:
 
 ```bash
-npm run example:quickstart
+npm run example:actoviq-quickstart
 ```

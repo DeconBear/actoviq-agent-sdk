@@ -168,7 +168,7 @@ After the first version works, expand in this order:
 
 Useful repository examples:
 
-1. [examples/quickstart.ts](../../examples/quickstart.ts)
+1. [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
 2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
 3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)

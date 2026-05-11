@@ -13,7 +13,7 @@
 
 如果你想最快跑起来：
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
-2. 运行 `npm run example:quickstart`
+2. 运行 `npm run example:actoviq-quickstart`
 
 如果你想完整做一个真正可用的 clean SDK 项目，推荐直接阅读：
 - [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)

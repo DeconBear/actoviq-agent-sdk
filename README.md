@@ -57,9 +57,25 @@ try {
 Run the repository examples with:
 
 ```bash
-npm run example:quickstart
+npm run example:actoviq-quickstart
 npm run example:actoviq-agent-helpers
 ```
+
+## CLI REPL
+
+After installing the package, you can start an interactive scrollback-mode REPL directly from the terminal:
+
+```bash
+npx actoviq-react [work-dir]
+```
+
+This launches a readline-based interactive agent with:
+- Real-time streaming output in the main terminal buffer (native scrollback)
+- Tab completion for slash commands (`/help`, `/clear`, `/compact`, `/memory`, `/model`, `/tools`, `/dream`, `/exit`)
+- Command history via ↑↓ arrow keys
+- Ctrl+C to abort the current request, press twice to exit
+
+**Note:** `actoviq-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging, not as a replacement for a complete terminal UI.
 
 ## Tutorials
 
@@ -70,8 +86,8 @@ npm run example:actoviq-agent-helpers
 
 Start with these examples:
 
-- [examples/quickstart.ts](./examples/quickstart.ts)
-- [examples/workflow.ts](./examples/workflow.ts)
+- [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
+- [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
 
 ## Contributing
