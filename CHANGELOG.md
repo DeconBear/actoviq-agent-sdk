@@ -4,13 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## v0.3.0 - 2026-05-11
+
+**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/commits/v0.3.0
+
 ## v0.2.0 - 2026-05-08
 
 ### Breaking Changes
+
 - **`WorkflowBuilder.step()`** signature changed from 5 params `(id, name, description, prompt, opts?)` to 4 params `(id, description, prompt, opts?)`. The `name` field is removed — `description` now serves as the display name.
 - **`WorkflowStepDefinition`** removed `name` field. Use `description` for human-readable display names.
 
 ### Features
+
 - **Workflow orchestration engine** with DAG execution, topological sort, and parallel step execution
 - **Builder DSL** (`sdk.workflow.define(...).step(...).run()`) and **JSON API** dual design paths
 - **Agent-orchestrated workflows**: Agent designs and executes workflow JSON via a `run_workflow` custom tool
@@ -25,10 +31,12 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - Session lifecycle management: idle timeout, prune by age/status, close idle
 
 ### Docs
+
 - Added agent-orchestrated workflow section (1.2) to EN and ZH tutorial docs
 - Documented OpenAI protocol configuration in setup/quickstart (EN + ZH)
 
 ### Examples
+
 - Added `workflow-annotated.ts` — annotated walkthrough of every API parameter
 - Added `workflow-agent-orchestration.ts` — Agent autonomously designs and executes workflows
 - Added `actoviq-platform.ts` — consolidated workspaces + swarm + session memory + dream
@@ -36,10 +44,12 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - 12 focused examples remaining
 
 ### Fixes
+
 - 18 bugs across provider layer, runtime, and workflow engine
 - Missing public API exports (trackRecentFile, resolveActoviqStopHooks, etc.)
 
 ### Internal
+
 - Fixed regex for hyphenated step IDs in variable interpolation (`\w+` → `[\w-]+`)
 - Defensive `?.` checks on optional `dependsOn` and `steps` fields across workflow engine
 - `getTool()` public method on `ActoviqAgentClient` for tool registry lookup
@@ -87,4 +97,3 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 ## v0.1.2 - 2026-04-01
 
 **Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.1...v0.1.2
-
