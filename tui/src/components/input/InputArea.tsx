@@ -1,6 +1,17 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
+import type { AgentPhase } from '../../context.js';
+
+const PHASE_PLACEHOLDERS: Record<AgentPhase, string> = {
+  idle: 'Waiting for response...',
+  waiting: 'Waiting for response...',
+  generating: 'Generating response...',
+  thinking: 'Thinking...',
+  'tool-calling': 'Calling tools...',
+  planning: 'Planning...',
+  'workflow-step': 'Running workflow step...',
+};
 
 interface InputAreaProps {
   onSubmit: (text: string) => void;
@@ -11,6 +22,7 @@ interface InputAreaProps {
   placeholder?: string;
   initialValue?: string;
   suppressChar?: (value: string) => string;
+  phase?: AgentPhase;
 }
 
 export function InputArea({
@@ -22,15 +34,20 @@ export function InputArea({
   placeholder,
   initialValue,
   suppressChar,
+  phase = 'idle',
 }: InputAreaProps) {
   const [value, setValue] = useState(initialValue ?? '');
+  const userEditedRef = useRef(false);
 
   useEffect(() => {
-    if (initialValue !== undefined) setValue(initialValue);
+    if (initialValue !== undefined && !userEditedRef.current) {
+      setValue(initialValue);
+    }
   }, [initialValue]);
 
   const handleChange = useCallback(
     (text: string) => {
+      userEditedRef.current = true;
       const filtered = suppressChar ? suppressChar(text) : text;
       setValue(filtered);
       onInputChange?.(filtered);
@@ -40,13 +57,15 @@ export function InputArea({
 
   const handleSubmit = useCallback(
     (text: string) => {
+      if (streaming || disabled) return;
       const trimmed = text.trim();
       if (!trimmed) return;
       onSubmit(trimmed);
       setValue('');
+      userEditedRef.current = false;
       onInputChange?.('');
     },
-    [onSubmit, onInputChange],
+    [onSubmit, onInputChange, streaming, disabled],
   );
 
   return (
@@ -54,7 +73,7 @@ export function InputArea({
       <Box flexDirection="row" gap={1}>
         <Text color="cyan" bold>{'> '}</Text>
         {streaming ? (
-          <Text dimColor>Waiting for response...</Text>
+          <Text dimColor>{PHASE_PLACEHOLDERS[phase]}</Text>
         ) : disabled ? (
           <Text dimColor>No session active. Type /help for commands.</Text>
         ) : (

@@ -6,15 +6,30 @@ export function useSessionList(client: ActoviqAgentClient | null) {
   const [activeSession, setActiveSession] = useState<AgentSession | null>(null);
   const [loading, setLoading] = useState(false);
   const autoCreatedRef = useRef(false);
+  const prevClientRef = useRef(client);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
+  // Reset auto-created flag when client changes so new clients can auto-init
+  useEffect(() => {
+    if (client !== prevClientRef.current) {
+      autoCreatedRef.current = false;
+      prevClientRef.current = client;
+    }
+  }, [client]);
 
   const refresh = useCallback(async () => {
     if (!client) return;
     setLoading(true);
     try {
       const list = await client.sessions.list();
-      setSessions(list);
+      if (isMountedRef.current) setSessions(list);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, [client]);
 
@@ -22,7 +37,7 @@ export function useSessionList(client: ActoviqAgentClient | null) {
     async (sessionId: string) => {
       if (!client) return;
       const session = await client.sessions.get(sessionId);
-      setActiveSession(session);
+      if (isMountedRef.current) setActiveSession(session);
     },
     [client],
   );
@@ -31,8 +46,10 @@ export function useSessionList(client: ActoviqAgentClient | null) {
     async (title?: string) => {
       if (!client) return;
       const session = await client.createSession({ title });
-      setActiveSession(session);
-      await refresh();
+      if (isMountedRef.current) {
+        setActiveSession(session);
+        await refresh();
+      }
       return session;
     },
     [client, refresh],
@@ -42,12 +59,21 @@ export function useSessionList(client: ActoviqAgentClient | null) {
     async (sessionId: string) => {
       if (!client) return;
       await client.sessions.delete(sessionId);
-      if (activeSession?.id === sessionId) {
-        setActiveSession(null);
+      if (isMountedRef.current) {
+        if (activeSession?.id === sessionId) {
+          const remaining = sessions.filter((s) => s.id !== sessionId);
+          if (remaining.length > 0) {
+            const mostRecent = remaining[remaining.length - 1]!;
+            const session = await client.sessions.get(mostRecent.id);
+            if (isMountedRef.current) setActiveSession(session);
+          } else {
+            setActiveSession(null);
+          }
+        }
+        await refresh();
       }
-      await refresh();
     },
-    [client, activeSession, refresh],
+    [client, activeSession, refresh, sessions],
   );
 
   const renameSession = useCallback(
@@ -69,11 +95,14 @@ export function useSessionList(client: ActoviqAgentClient | null) {
     if (!client || autoCreatedRef.current) return;
     autoCreatedRef.current = true;
     client.sessions.list().then((list) => {
+      if (!isMountedRef.current) return;
       if (list.length === 0) {
         client.createSession({ title: undefined })
           .then((session) => {
-            setActiveSession(session);
-            refresh();
+            if (isMountedRef.current) {
+              setActiveSession(session);
+              refresh();
+            }
           })
           .catch(() => {});
       } else {
@@ -82,7 +111,7 @@ export function useSessionList(client: ActoviqAgentClient | null) {
         if (mostRecent) {
           client.sessions.get(mostRecent.id)
             .then((session) => {
-              setActiveSession(session);
+              if (isMountedRef.current) setActiveSession(session);
             })
             .catch(() => {});
         }

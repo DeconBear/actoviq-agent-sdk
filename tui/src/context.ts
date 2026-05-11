@@ -28,4 +28,13 @@ export interface PermissionState {
   resolve: (allowed: boolean) => void;
 }
 
+export type AgentPhase =
+  | 'idle'
+  | 'waiting'
+  | 'generating'
+  | 'thinking'
+  | 'tool-calling'
+  | 'planning'
+  | 'workflow-step';
+
 export type OverlayPanel = 'transcript' | 'todos' | 'help' | 'model-picker' | 'sessions' | 'memory' | null;

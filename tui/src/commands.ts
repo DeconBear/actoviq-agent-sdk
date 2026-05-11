@@ -211,6 +211,7 @@ export function registerBuiltinCommands(
         }
         if (sub === 'restore' && parts[1]) {
           await context.restoreCheckpoint(parts[1]);
+          context.onClear();
           return `Restored checkpoint ${parts[1]}.`;
         }
       } catch (e) {
@@ -248,6 +249,10 @@ export function registerBuiltinCommands(
         return `Available models:\n${lines.join('\n')}`;
       }
       // Treat as a model name
+      const models = context.listModels();
+      if (!models.includes(sub)) {
+        return `Unknown model "${sub}". Use /model list to see available models.`;
+      }
       const ok = await context.setModel(sub);
       if (ok) return `Model changed to ${sub}.`;
       return `Failed to set model "${sub}".`;

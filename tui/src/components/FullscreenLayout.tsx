@@ -28,7 +28,7 @@ export function FullscreenLayout({ scrollable, bottom, overlay, modal }: Fullscr
 
   return (
     <Box flexDirection="column" height={termRows}>
-      <Box flexDirection="column" {...scrollableStyle}>
+      <Box flexDirection="column" justifyContent="flex-end" {...scrollableStyle}>
         {scrollable}
       </Box>
 

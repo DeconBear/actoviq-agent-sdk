@@ -1,5 +1,5 @@
 import React, { memo, useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import type { UIMessage, ContentBlock } from '../context.js';
 import { ToolCallBlock } from './chat/ToolCallBlock.js';
 import { renderMarkdown } from '../lib/markdown.js';
@@ -12,10 +12,12 @@ interface MessagesProps {
 }
 
 export const Messages = memo(function Messages({ messages, streamingBlocks, error, scrollOffset = 0 }: MessagesProps) {
-  const visibleMessages = scrollOffset > 0 && messages.length > scrollOffset
-    ? messages.slice(0, messages.length - scrollOffset)
+  const clampedOffset = Math.min(scrollOffset, Math.max(0, messages.length));
+  const visibleMessages = clampedOffset > 0
+    ? messages.slice(0, Math.max(0, messages.length - clampedOffset))
     : messages;
-  const hasHidden = scrollOffset > 0 && messages.length > scrollOffset;
+  const hasHiddenAbove = clampedOffset > 0;
+  const hasHiddenBelow = clampedOffset === 0 && messages.length > 0 && streamingBlocks.length === 0;
 
   return (
     <Box flexDirection="column">
@@ -29,10 +31,10 @@ export const Messages = memo(function Messages({ messages, streamingBlocks, erro
         </Box>
       )}
 
-      {hasHidden && (
+      {hasHiddenAbove && (
         <Box paddingX={2} paddingY={1}>
           <Text dimColor>
-            ^ {scrollOffset} messages hidden (PgDn to show more)
+            ↑ {clampedOffset} newer messages below (PgDn)
           </Text>
         </Box>
       )}
@@ -48,6 +50,14 @@ export const Messages = memo(function Messages({ messages, streamingBlocks, erro
       {error && (
         <Box paddingX={2} marginY={1}>
           <Text color="red">Error: {error}</Text>
+        </Box>
+      )}
+
+      {clampedOffset === 0 && messages.length > 0 && (
+        <Box paddingX={2} paddingY={1}>
+          <Text dimColor>
+            ↑ PgUp to scroll up · {messages.length} messages
+          </Text>
         </Box>
       )}
     </Box>
@@ -71,8 +81,10 @@ const MessageRow = memo(function MessageRow({ message }: { message: UIMessage })
           <Box width={2} flexShrink={0}>
             <Text color="cyan" bold>{'>'}</Text>
           </Box>
-          <Box flexGrow={1}>
-            <Text>{message.content[0]?.type === 'text' ? message.content[0].text : ''}</Text>
+          <Box flexGrow={1} flexDirection="column">
+            {message.content.map((block, i) => (
+              <ContentBlockView key={blockKey(block, i)} block={block} />
+            ))}
           </Box>
         </Box>
       ) : (
@@ -113,8 +125,19 @@ const ContentBlockView = memo(function ContentBlockView(
         </Box>
       );
 
-    case 'text':
-      return <Text>{renderMarkdown(block.text)}</Text>;
+    case 'text': {
+      const lines = block.text.split('\n');
+      if (lines.length <= 1) {
+        return <Text>{renderMarkdown(block.text)}</Text>;
+      }
+      return (
+        <Box flexDirection="column">
+          {lines.map((line, i) => (
+            <Text key={`${i}`}>{renderMarkdown(line)}</Text>
+          ))}
+        </Box>
+      );
+    }
 
     case 'thinking':
       return <ThinkingBlock thinking={block} />;
@@ -154,10 +177,16 @@ const ThinkingBlock = memo(function ThinkingBlock(
 ) {
   const [expanded, setExpanded] = useState(!thinking.collapsed);
 
+  useInput((_input, key) => {
+    if (key.return) {
+      setExpanded((prev) => !prev);
+    }
+  });
+
   return (
     <Box flexDirection="column" marginY={1}>
       <Box flexDirection="row" gap={1}>
-        <Text dimColor>Thinking</Text>
+        <Text dimColor>Thinking {expanded ? '▼' : '▶'}</Text>
         <Text dimColor>({estimateTokens(thinking.text)} tok)</Text>
       </Box>
       {expanded && (

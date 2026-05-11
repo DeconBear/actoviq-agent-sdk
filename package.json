@@ -19,7 +19,8 @@
   "types": "./dist/src/index.d.ts",
   "bin": {
     "actoviq-react": "./bin/actoviq-react.js",
-    "actoviq-interactive-agent": "./bin/actoviq-interactive-agent.js"
+    "actoviq-interactive-agent": "./bin/actoviq-interactive-agent.js",
+    "actoviq-sb": "./bin/actoviq-sb.js"
   },
   "exports": {
     ".": {

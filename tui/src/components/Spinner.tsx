@@ -1,18 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
+import type { AgentPhase } from '../context.js';
 
-const VERBS = [
+const DEFAULT_VERBS = [
   'thinking', 'analyzing', 'processing', 'computing', 'reasoning',
   'evaluating', 'considering', 'planning', 'exploring', 'searching',
 ];
 
+const PHASE_VERBS: Record<AgentPhase, string> = {
+  idle: 'thinking',
+  waiting: 'waiting',
+  generating: 'generating',
+  thinking: 'thinking',
+  'tool-calling': 'calling tools',
+  planning: 'planning',
+  'workflow-step': 'running step',
+};
+
 interface SpinnerProps {
   visible: boolean;
+  phase?: AgentPhase;
 }
 
-export function Spinner({ visible }: SpinnerProps) {
+export function Spinner({ visible, phase = 'idle' }: SpinnerProps) {
   const [frame, setFrame] = useState(0);
-  const [verb] = useState(() => VERBS[Math.floor(Math.random() * VERBS.length)]!);
+  const [fallbackVerb] = useState(() => DEFAULT_VERBS[Math.floor(Math.random() * DEFAULT_VERBS.length)]!);
   const [startTime, setStartTime] = useState(0);
   const [show, setShow] = useState(false);
 
@@ -39,6 +51,7 @@ export function Spinner({ visible }: SpinnerProps) {
 
   const dots = '.'.repeat(frame + 1);
   const elapsed = startTime > 0 ? Math.floor((Date.now() - startTime) / 1000) : 0;
+  const verb = phase === 'idle' ? fallbackVerb : PHASE_VERBS[phase];
 
   return (
     <Box marginY={1}>
