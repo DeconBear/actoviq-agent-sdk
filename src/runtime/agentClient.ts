@@ -772,6 +772,7 @@ export class ActoviqAgentClient {
 
   async createSession(options: SessionCreateOptions = {}): Promise<AgentSession> {
     const stored = await this.store.create({
+      id: options.id,
       title: options.title,
       systemPrompt: options.systemPrompt ?? this.config.systemPrompt,
       model: options.model ?? this.config.model,

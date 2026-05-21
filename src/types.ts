@@ -743,6 +743,7 @@ export interface AgentRunOptions {
 }
 
 export interface SessionCreateOptions {
+  id?: string;
   title?: string;
   systemPrompt?: string;
   model?: string;
@@ -1895,6 +1896,42 @@ export interface ActoviqContextUsage {
 export interface ActoviqBridgeCapabilityLookupOptions
   extends Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> {
   includeContext?: boolean;
+}
+
+export type ActoviqCleanBridgeParityStatus =
+  | 'exact'
+  | 'mapped'
+  | 'simulated'
+  | 'unsupported';
+
+export interface ActoviqCleanBridgeParityMatrixEntry {
+  option: keyof ActoviqBridgeRunOptions | keyof CreateActoviqBridgeSdkOptions;
+  status: ActoviqCleanBridgeParityStatus;
+  cleanTarget?: string;
+  notes: string;
+}
+
+export interface ActoviqCleanBridgeUnsupportedOption {
+  option: string;
+  value: unknown;
+  reason: string;
+}
+
+export interface ActoviqCleanBridgeCompatibilityReport {
+  mapped: Array<{
+    option: string;
+    cleanTarget: string;
+    status: Exclude<ActoviqCleanBridgeParityStatus, 'unsupported'>;
+    note?: string;
+  }>;
+  unsupported: ActoviqCleanBridgeUnsupportedOption[];
+}
+
+export type ActoviqCleanBridgeUnsupportedOptionPolicy = 'metadata' | 'warn' | 'throw';
+
+export interface CreateActoviqCleanBridgeSdkOptions extends CreateAgentSdkOptions {
+  bridgeDefaults?: CreateActoviqBridgeSdkOptions;
+  unsupportedOptionPolicy?: ActoviqCleanBridgeUnsupportedOptionPolicy;
 }
 
 export type ActoviqBridgeToolProvider = 'runtime' | 'server' | 'mcp' | 'unknown';

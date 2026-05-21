@@ -23,10 +23,20 @@ export class SessionStore {
 
   async create(options: SessionCreateOptions = {}): Promise<StoredSession> {
     await this.ensureReady();
+    if (options.id) {
+      try {
+        await this.load(options.id);
+        throw new Error(`Session already exists: ${options.id}`);
+      } catch (error) {
+        if (!(error instanceof SessionNotFoundError)) {
+          throw error;
+        }
+      }
+    }
     const createdAt = nowIso();
     const session: StoredSession = {
       version: 1,
-      id: createId(),
+      id: options.id ?? createId(),
       title: options.title?.trim() || 'Untitled Session',
       titleSource: options.title?.trim() ? 'manual' : 'auto',
       model: options.model ?? 'unknown',

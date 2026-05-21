@@ -193,6 +193,23 @@ export {
   createActoviqBridgeSdk,
 } from './parity/actoviqBridgeSdk.js';
 export {
+  ActoviqCleanBridgeAgentHandle,
+  ActoviqCleanBridgeAgentsApi,
+  ActoviqCleanBridgeContextApi,
+  ActoviqCleanBridgeRunStream,
+  ActoviqCleanBridgeSession,
+  ActoviqCleanBridgeSessionsApi,
+  ActoviqCleanBridgeSlashCommandsApi,
+  ActoviqCleanBridgeSkillHandle,
+  ActoviqCleanBridgeSkillsApi,
+  ActoviqCleanBridgeSdkClient,
+  ActoviqCleanBridgeToolsApi,
+  bridgePromptFromMessageContent,
+  createActoviqCleanBridgeSdk,
+  getActoviqCleanBridgeParityMatrix,
+  normalizeCleanBridgeError,
+} from './parity/actoviqCleanBridgeCompatSdk.js';
+export {
   analyzeActoviqBridgeEvents,
   extractActoviqBridgeTaskInvocations,
   extractActoviqBridgeToolRequests,
