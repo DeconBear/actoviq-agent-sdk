@@ -9,6 +9,11 @@ import {
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
 import {
+  assertSafeStorageSegment,
+  joinUnderStorageRoot,
+  safeStorageFileName,
+} from '../storage/pathSafety.js';
+import {
   formatMemoryManifest,
   memoryAge,
   memoryAgeDays,
@@ -192,6 +197,9 @@ function buildPaths(
   const memoryBaseDir = getMemoryBaseDir(raw, homeDir);
   const projectStateDir = getProjectStateDir(memoryBaseDir, projectPath);
   const autoMemoryDir = getAutoMemoryDirectory(raw, homeDir, memoryBaseDir, projectPath);
+  const safeSessionId = sessionId
+    ? assertSafeStorageSegment('sessionId', sessionId)
+    : undefined;
 
   return {
     configPath,
@@ -203,12 +211,12 @@ function buildPaths(
     autoMemoryEntrypoint: path.join(autoMemoryDir, ENTRYPOINT_NAME),
     teamMemoryDir: path.join(autoMemoryDir, 'team'),
     teamMemoryEntrypoint: path.join(autoMemoryDir, 'team', ENTRYPOINT_NAME),
-    sessionId,
-    sessionMemoryDir: sessionId
-      ? path.join(projectStateDir, sessionId, 'session-memory')
+    sessionId: safeSessionId,
+    sessionMemoryDir: safeSessionId
+      ? joinUnderStorageRoot(projectStateDir, safeSessionId, 'session-memory')
       : undefined,
-    sessionMemoryPath: sessionId
-      ? path.join(projectStateDir, sessionId, 'session-memory', 'summary.md')
+    sessionMemoryPath: safeSessionId
+      ? joinUnderStorageRoot(projectStateDir, safeSessionId, 'session-memory', 'summary.md')
       : undefined,
   };
 }
@@ -872,7 +880,10 @@ Return the FULL updated notes file as markdown only.
     const sessionId = options.sessionId ?? this.defaults.sessionId;
     const transcriptPath =
       sessionId != null
-        ? path.join(baseState.paths.projectStateDir, `${sessionId}.jsonl`)
+        ? joinUnderStorageRoot(
+            baseState.paths.projectStateDir,
+            safeStorageFileName('sessionId', sessionId, 'jsonl'),
+          )
         : undefined;
     const progress =
       options.currentTokenCount != null ||

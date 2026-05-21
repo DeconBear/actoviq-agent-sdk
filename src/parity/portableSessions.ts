@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { joinUnderStorageRoot, safeStorageFileName } from '../storage/pathSafety.js';
 
 export interface ListSessionsOptions {
   dir?: string;
@@ -60,8 +61,10 @@ export async function resolveSessionFilePath(
   sessionId: string,
   dir?: string,
 ): Promise<{ filePath: string; fileSize: number; projectPath?: string } | undefined> {
+  const sessionFileName = safeStorageFileName('sessionId', sessionId, 'jsonl');
   if (dir) {
-    const filePath = path.join(getProjectDir(dir), `${sessionId}.jsonl`);
+    const projectDir = getProjectDir(dir);
+    const filePath = joinUnderStorageRoot(projectDir, sessionFileName);
     try {
       const info = await stat(filePath);
       return {
@@ -83,7 +86,8 @@ export async function resolveSessionFilePath(
       if (!projectEntry.isDirectory()) {
         continue;
       }
-      const filePath = path.join(projectsRoot, projectEntry.name, `${sessionId}.jsonl`);
+      const projectDir = joinUnderStorageRoot(projectsRoot, projectEntry.name);
+      const filePath = joinUnderStorageRoot(projectDir, sessionFileName);
       try {
         const info = await stat(filePath);
         return {

@@ -19,6 +19,25 @@ async function createStore(): Promise<SessionStore> {
   return new SessionStore(dir);
 }
 
+async function waitForSessionStatus(
+  store: SessionStore,
+  sessionId: string,
+  status: string,
+  timeoutMs = 1_000,
+): Promise<void> {
+  const startedAt = Date.now();
+  let lastStatus: string | undefined;
+  while (Date.now() - startedAt < timeoutMs) {
+    const loaded = await store.load(sessionId);
+    lastStatus = loaded.status;
+    if (lastStatus === status) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Session ${sessionId} did not reach ${status}; last status was ${lastStatus ?? 'unknown'}.`);
+}
+
 describe('SessionManager', () => {
   it('tracks active sessions via touch', async () => {
     const store = await createStore();
@@ -39,11 +58,7 @@ describe('SessionManager', () => {
     const session = await store.create({ title: 'Test' });
     await manager.touch(session.id);
 
-    // Wait for idle timeout
-    await new Promise((r) => setTimeout(r, 120));
-
-    const updated = await store.load(session.id);
-    expect(updated.status).toBe('idle');
+    await waitForSessionStatus(store, session.id, 'idle');
   });
 
   it('closes idle sessions via closeIdle', async () => {
@@ -53,7 +68,7 @@ describe('SessionManager', () => {
     const session = await store.create({ title: 'Test' });
     await manager.touch(session.id);
 
-    await new Promise((r) => setTimeout(r, 120));
+    await waitForSessionStatus(store, session.id, 'idle');
 
     const closed = await manager.closeIdle();
     expect(closed).toBeGreaterThanOrEqual(1);

@@ -115,6 +115,15 @@ describe('nextCronTime', () => {
     expect(next.getMinutes()).toBe(0);
   });
 
+  it('treats day-of-week 7 as Sunday only', () => {
+    const from = localDate(2026, 5, 8, 10, 0); // Friday
+    const next = nextCronTime('0 9 * * 7', from);
+    expect(next.getDay()).toBe(0);
+    expect(next.getDate()).toBe(10);
+    expect(next.getHours()).toBe(9);
+    expect(next.getMinutes()).toBe(0);
+  });
+
   it('respects day-of-month', () => {
     const from = localDate(2026, 5, 8, 10, 0);
     const next = nextCronTime('0 9 15 * *', from);

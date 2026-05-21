@@ -39,7 +39,7 @@ export function checkSafety(
     return { blocked: false };
   }
 
-  const normalized = path.normalize(filePath);
+  const normalized = normalizeForSafetyCompare(filePath);
 
   // Check protected paths
   for (const protectedPath of PROTECTED_PATHS) {
@@ -53,7 +53,11 @@ export function checkSafety(
 
   // Check shell config files
   for (const shellFile of PROTECTED_SHELL_FILES) {
-    if (normalized.endsWith(shellFile) || normalized.includes(`/${shellFile}`)) {
+    const normalizedShellFile = normalizeForSafetyCompare(shellFile);
+    if (
+      normalized === normalizedShellFile ||
+      normalized.endsWith(`/${normalizedShellFile}`)
+    ) {
       return {
         blocked: true,
         reason: `Modifying shell configuration files (${shellFile}) is restricted for safety.`,
@@ -76,13 +80,18 @@ function extractFilePath(
 }
 
 function isWithinProtectedPath(target: string, protectedDir: string): boolean {
-  const sep = path.sep;
-  const pattern = `${sep}${protectedDir}${sep}`;
-  const patternStart = `${protectedDir}${sep}`;
-  const patternEnd = `${sep}${protectedDir}`;
+  const normalized = normalizeForSafetyCompare(target);
+  const normalizedProtectedDir = normalizeForSafetyCompare(protectedDir);
+  const pattern = `/${normalizedProtectedDir}/`;
+  const patternStart = `${normalizedProtectedDir}/`;
+  const patternEnd = `/${normalizedProtectedDir}`;
   return (
-    target.includes(pattern) ||
-    target.startsWith(patternStart) ||
-    target.endsWith(patternEnd)
+    normalized.includes(pattern) ||
+    normalized.startsWith(patternStart) ||
+    normalized.endsWith(patternEnd)
   );
+}
+
+function normalizeForSafetyCompare(value: string): string {
+  return path.normalize(value).replace(/\\/gu, '/').toLowerCase();
 }

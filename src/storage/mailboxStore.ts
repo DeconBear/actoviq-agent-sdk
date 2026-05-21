@@ -3,6 +3,11 @@ import path from 'node:path';
 
 import type { ActoviqMailboxMessage } from '../types.js';
 import { createId } from '../runtime/helpers.js';
+import {
+  assertSafeStorageSegment,
+  joinUnderStorageRoot,
+  safeStorageFileName,
+} from './pathSafety.js';
 
 export class MailboxStore {
   constructor(private readonly rootDirectory: string) {}
@@ -52,11 +57,18 @@ export class MailboxStore {
   }
 
   private teamDirectory(teamName: string): string {
-    return path.join(this.rootDirectory, 'mailboxes', teamName);
+    return joinUnderStorageRoot(
+      this.rootDirectory,
+      'mailboxes',
+      assertSafeStorageSegment('teamName', teamName),
+    );
   }
 
   private mailboxPath(teamName: string, recipient: string): string {
-    return path.join(this.teamDirectory(teamName), `${recipient}.json`);
+    return joinUnderStorageRoot(
+      this.teamDirectory(teamName),
+      safeStorageFileName('recipient', recipient, 'json'),
+    );
   }
 
   private async ensureReady(teamName: string): Promise<void> {

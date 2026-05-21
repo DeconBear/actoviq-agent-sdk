@@ -313,6 +313,16 @@ const Grep = (opts: { cwd: string; defaultGrepLimit: number }) =>
         return new RegExp(pattern, f);
       }
 
+      let matchRegex: RegExp;
+      let globalMatchRegex: RegExp;
+      try {
+        matchRegex = buildRegex(input.pattern);
+        globalMatchRegex = buildRegex(input.pattern, true);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ToolExecutionError('Grep', `Invalid regular expression "${input.pattern}": ${message}`);
+      }
+
       const files = await findFiles(searchRoot, input.glob);
       for (const f of files) {
         try {
@@ -322,15 +332,16 @@ const Grep = (opts: { cwd: string; defaultGrepLimit: number }) =>
           const relPath = path.relative(searchRoot, f) || f;
 
           if (outputMode === 'files_with_matches') {
-            if (buildRegex(input.pattern).test(content)) matchedFiles.push(relPath);
+            if (matchRegex.test(content)) matchedFiles.push(relPath);
           } else if (outputMode === 'count') {
-            const count = [...content.matchAll(buildRegex(input.pattern, true))].length;
+            globalMatchRegex.lastIndex = 0;
+            const count = [...content.matchAll(globalMatchRegex)].length;
             if (count > 0) { totalMatches += count; countEntries.push({ file: relPath, count }); }
           } else {
             const lines = content.split(/\r?\n/);
             const visited = new Set<number>();
             for (let i = 0; i < lines.length; i++) {
-              if (!buildRegex(input.pattern).test(lines[i]!)) continue;
+              if (!matchRegex.test(lines[i]!)) continue;
               for (let j = Math.max(0, i - before); j <= Math.min(lines.length - 1, i + after); j++) {
                 if (visited.has(j)) continue;
                 visited.add(j);

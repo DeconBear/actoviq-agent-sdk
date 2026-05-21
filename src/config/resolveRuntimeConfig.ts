@@ -29,6 +29,19 @@ function getConfigValue(
   return source[primaryKey];
 }
 
+function getRuntimeConfigValue(
+  primaryKey: string,
+  ...sources: Array<NodeJS.ProcessEnv | Record<string, string>>
+): string | undefined {
+  for (const source of sources) {
+    const value = getConfigValue(source, primaryKey);
+    if (value != null && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export async function resolveRuntimeConfig(
   options: CreateAgentSdkOptions = {},
 ): Promise<ResolvedRuntimeConfig> {
@@ -36,13 +49,14 @@ export async function resolveRuntimeConfig(
   const loadedConfig = getLoadedJsonConfig();
 
   const envFromLoadedConfig = loadedConfig?.env ?? {};
+  const envSources = [envFromLoadedConfig, process.env];
 
   const apiKey =
     options.apiKey ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_API_KEY');
+    getRuntimeConfigValue('ACTOVIQ_API_KEY', ...envSources);
   const authToken =
     options.authToken ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_AUTH_TOKEN');
+    getRuntimeConfigValue('ACTOVIQ_AUTH_TOKEN', ...envSources);
 
   if (!options.modelApi && !apiKey && !authToken) {
     throw new ConfigurationError(
@@ -54,23 +68,23 @@ export async function resolveRuntimeConfig(
 
   const provider =
     options.provider ??
-    (getConfigValue(envFromLoadedConfig, 'ACTOVIQ_PROVIDER') as 'anthropic' | 'openai' | undefined) ??
+    (getRuntimeConfigValue('ACTOVIQ_PROVIDER', ...envSources) as 'anthropic' | 'openai' | undefined) ??
     'anthropic';
 
   const model =
     options.model ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MAX_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_max_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MEDIUM_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_medium_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_MIN_MODEL') ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_DEFAULT_min_MODEL') ??
+    getRuntimeConfigValue('ACTOVIQ_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MAX_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_max_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MEDIUM_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_medium_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MIN_MODEL', ...envSources) ??
+    getRuntimeConfigValue('ACTOVIQ_DEFAULT_min_MODEL', ...envSources) ??
     (provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL);
 
   const baseURL =
     options.baseURL ??
-    getConfigValue(envFromLoadedConfig, 'ACTOVIQ_BASE_URL');
+    getRuntimeConfigValue('ACTOVIQ_BASE_URL', ...envSources);
 
   return {
     homeDir,

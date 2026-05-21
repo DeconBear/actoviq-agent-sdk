@@ -12,6 +12,11 @@ import type {
 } from '../types.js';
 import { createId, deepClone, nowIso, truncateText } from '../runtime/helpers.js';
 import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
+import {
+  assertSafeStorageSegment,
+  joinUnderStorageRoot,
+  safeStorageFileName,
+} from './pathSafety.js';
 
 export class SessionStore {
   constructor(private readonly rootDirectory: string) {}
@@ -136,7 +141,10 @@ export class SessionStore {
     await this.ensureReady();
     const dir = this.checkpointsDirectory(sessionId);
     await mkdir(dir, { recursive: true });
-    const filePath = path.join(dir, `${checkpointId}.json`);
+    const filePath = joinUnderStorageRoot(
+      dir,
+      safeStorageFileName('checkpointId', checkpointId, 'json'),
+    );
     await writeJsonAtomic(filePath, checkpoint);
     return checkpoint;
   }
@@ -144,7 +152,7 @@ export class SessionStore {
   async loadCheckpoint(sessionId: string, checkpointId: string): Promise<SessionCheckpoint> {
     const filePath = path.join(
       this.checkpointsDirectory(sessionId),
-      `${checkpointId}.json`,
+      safeStorageFileName('checkpointId', checkpointId, 'json'),
     );
     try {
       const raw = await readFile(filePath, 'utf8');
@@ -183,13 +191,17 @@ export class SessionStore {
   async deleteCheckpoint(sessionId: string, checkpointId: string): Promise<void> {
     const filePath = path.join(
       this.checkpointsDirectory(sessionId),
-      `${checkpointId}.json`,
+      safeStorageFileName('checkpointId', checkpointId, 'json'),
     );
     await rm(filePath, { force: true });
   }
 
   private checkpointsDirectory(sessionId: string): string {
-    return path.join(this.sessionsDirectory(), '.checkpoints', sessionId);
+    return joinUnderStorageRoot(
+      this.sessionsDirectory(),
+      '.checkpoints',
+      assertSafeStorageSegment('sessionId', sessionId),
+    );
   }
 
   private async ensureReady(): Promise<void> {
@@ -197,11 +209,14 @@ export class SessionStore {
   }
 
   private sessionsDirectory(): string {
-    return path.join(this.rootDirectory, 'sessions');
+    return joinUnderStorageRoot(this.rootDirectory, 'sessions');
   }
 
   private sessionPath(sessionId: string): string {
-    return path.join(this.sessionsDirectory(), `${sessionId}.json`);
+    return joinUnderStorageRoot(
+      this.sessionsDirectory(),
+      safeStorageFileName('sessionId', sessionId, 'json'),
+    );
   }
 
   private toSummary(session: StoredSession): SessionSummary {

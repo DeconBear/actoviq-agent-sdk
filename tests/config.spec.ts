@@ -90,6 +90,39 @@ describe('config loading', () => {
     expect(config.sessionDirectory).toContain('.actoviq');
   });
 
+  it('resolves runtime config from process environment variables', async () => {
+    const homeDir = await createTempHome();
+    const previous = {
+      token: process.env.ACTOVIQ_AUTH_TOKEN,
+      provider: process.env.ACTOVIQ_PROVIDER,
+      model: process.env.ACTOVIQ_MODEL,
+      baseURL: process.env.ACTOVIQ_BASE_URL,
+    };
+
+    process.env.ACTOVIQ_AUTH_TOKEN = 'env-token';
+    process.env.ACTOVIQ_PROVIDER = 'openai';
+    process.env.ACTOVIQ_MODEL = 'env-model';
+    process.env.ACTOVIQ_BASE_URL = 'https://example.test/env';
+
+    try {
+      const config = await resolveRuntimeConfig({ homeDir });
+
+      expect(config.authToken).toBe('env-token');
+      expect(config.provider).toBe('openai');
+      expect(config.model).toBe('env-model');
+      expect(config.baseURL).toBe('https://example.test/env');
+    } finally {
+      if (previous.token === undefined) delete process.env.ACTOVIQ_AUTH_TOKEN;
+      else process.env.ACTOVIQ_AUTH_TOKEN = previous.token;
+      if (previous.provider === undefined) delete process.env.ACTOVIQ_PROVIDER;
+      else process.env.ACTOVIQ_PROVIDER = previous.provider;
+      if (previous.model === undefined) delete process.env.ACTOVIQ_MODEL;
+      else process.env.ACTOVIQ_MODEL = previous.model;
+      if (previous.baseURL === undefined) delete process.env.ACTOVIQ_BASE_URL;
+      else process.env.ACTOVIQ_BASE_URL = previous.baseURL;
+    }
+  });
+
   it('loads the default Actoviq settings from ~/.actoviq/settings.json only', async () => {
     const homeDir = await createTempHome();
     const actoviqDir = path.join(homeDir, '.actoviq');

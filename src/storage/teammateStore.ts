@@ -3,6 +3,11 @@ import path from 'node:path';
 
 import type { ActoviqTeammateRecord } from '../types.js';
 import { createId } from '../runtime/helpers.js';
+import {
+  assertSafeStorageSegment,
+  joinUnderStorageRoot,
+  safeStorageFileName,
+} from './pathSafety.js';
 
 export class TeammateStore {
   constructor(private readonly rootDirectory: string) {}
@@ -60,11 +65,18 @@ export class TeammateStore {
   }
 
   private teamDirectory(teamName: string): string {
-    return path.join(this.rootDirectory, 'teammates', teamName);
+    return joinUnderStorageRoot(
+      this.rootDirectory,
+      'teammates',
+      assertSafeStorageSegment('teamName', teamName),
+    );
   }
 
   private recordPath(teamName: string, name: string): string {
-    return path.join(this.teamDirectory(teamName), `${name}.json`);
+    return joinUnderStorageRoot(
+      this.teamDirectory(teamName),
+      safeStorageFileName('name', name, 'json'),
+    );
   }
 
   private async ensureReady(teamName: string): Promise<void> {

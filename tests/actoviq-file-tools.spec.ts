@@ -148,4 +148,24 @@ describe('Actoviq Runtime parity file tools', () => {
     expect(grepOutput).toContain('one.ts:1:export const alpha = 1;');
     expect(grepOutput).toContain('two.ts:1:export const beta = 2;');
   });
+
+  it('reports invalid Grep regular expressions instead of returning empty results', async () => {
+    const cwd = await createTempDir('actoviq-parity-tools-');
+    await writeFile(path.join(cwd, 'sample.txt'), 'alpha\n', 'utf8');
+
+    const tools = createActoviqFileTools({ cwd });
+    const context = createContext(cwd);
+    const Grep = getTool(tools, 'Grep');
+
+    await expect(
+      Grep.execute(
+        {
+          pattern: '[',
+          path: cwd,
+          output_mode: 'files_with_matches',
+        },
+        context,
+      ),
+    ).rejects.toThrow('Invalid regular expression');
+  });
 });

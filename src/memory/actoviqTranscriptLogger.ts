@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, appendFile } from 'node:fs/promises';
-import path from 'node:path';
 import type { MessageParam } from '../provider/types.js';
+import { joinUnderStorageRoot, safeStorageFileName } from '../storage/pathSafety.js';
 
 export interface TranscriptEntry {
   type: 'user' | 'assistant';
@@ -21,7 +21,10 @@ export async function appendMessagesToTranscript(
   parentUuid: string | null = null,
 ): Promise<void> {
   await mkdir(transcriptDir, { recursive: true });
-  const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`);
+  const transcriptPath = joinUnderStorageRoot(
+    transcriptDir,
+    safeStorageFileName('sessionId', sessionId, 'jsonl'),
+  );
 
   const lines: string[] = [];
   let lastUuid = parentUuid;

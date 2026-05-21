@@ -135,7 +135,9 @@ export function nextCronTimeImpl(fields: CronField[], from: Date): Date {
     }
 
     const dow = current.getDay(); // 0=Sun
-    const dowMatch = dowField.allowed(dow) || dowField.allowed(7); // Support 7=Sun
+    const dowMatch = dow === 0
+      ? dowField.allowed(0) || dowField.allowed(7)
+      : dowField.allowed(dow);
     const domMatch = domField.allowed(dom);
 
     // For cron, if both dom and dow are specified (non-*), they OR together.

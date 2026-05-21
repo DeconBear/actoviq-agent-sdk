@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { ActoviqBackgroundTaskRecord } from '../types.js';
 import { createId } from '../runtime/helpers.js';
+import { joinUnderStorageRoot, safeStorageFileName } from './pathSafety.js';
 
 export class BackgroundTaskStore {
   constructor(private readonly rootDirectory: string) {}
@@ -62,11 +63,14 @@ export class BackgroundTaskStore {
   }
 
   private tasksDirectory(): string {
-    return path.join(this.rootDirectory, 'tasks');
+    return joinUnderStorageRoot(this.rootDirectory, 'tasks');
   }
 
   taskPath(taskId: string): string {
-    return path.join(this.tasksDirectory(), `${taskId}.json`);
+    return joinUnderStorageRoot(
+      this.tasksDirectory(),
+      safeStorageFileName('taskId', taskId, 'json'),
+    );
   }
 }
 

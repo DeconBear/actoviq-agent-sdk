@@ -34,23 +34,25 @@ export class SessionManager {
   async touch(sessionId: string): Promise<void> {
     if (this.disposed) return;
 
-    // Reset idle timer
+    // Reset the idle timer only after persistence work has finished. With very
+    // small idle timeouts, starting the timer first can race with the touch save.
     const existing = this.idleTimers.get(sessionId);
     if (existing) clearTimeout(existing);
 
-    const timer = setTimeout(
-      () => this.onIdle(sessionId, timer),
-      this.config.idleTimeoutMs,
-    );
-    this.idleTimers.set(sessionId, timer);
-
-    // Update lastActiveAt on the store
     await this.store.updateLastActiveAt(sessionId).catch(() => {
       /* silent */
     });
 
     // Enforce maxSessions: if over limit, prune oldest idle/closed sessions
     await this.enforceMaxSessions();
+
+    if (this.disposed) return;
+
+    const timer = setTimeout(
+      () => this.onIdle(sessionId, timer),
+      this.config.idleTimeoutMs,
+    );
+    this.idleTimers.set(sessionId, timer);
   }
 
   async getStats(): Promise<{ total: number; active: number; idle: number; closed: number }> {
