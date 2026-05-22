@@ -825,6 +825,7 @@ export class ActoviqAgentClient {
   }
 
   async close(): Promise<void> {
+    this.sessionManager.dispose();
     await this.mcpManager.closeAll();
   }
 

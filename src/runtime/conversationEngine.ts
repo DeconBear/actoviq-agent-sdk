@@ -278,6 +278,17 @@ export async function executeConversation(
     }
 
     if (iteration >= options.config.maxToolIterations) {
+      if (toolUses.length > 0) {
+        conversation.push({
+          role: 'user',
+          content: toolUses.map(toolUse => ({
+            type: 'tool_result',
+            tool_use_id: toolUse.id,
+            is_error: true,
+            content: `The run exceeded the max tool iteration limit (${options.config.maxToolIterations}) before this tool could execute.`,
+          })),
+        });
+      }
       const completedAt = nowIso();
       if (finalMessage) {
         return {

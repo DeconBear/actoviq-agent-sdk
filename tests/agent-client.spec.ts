@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   ActoviqProviderApiError,
   createAgentSdk,
+  SessionStore,
   tool,
   type ModelApi,
   type ModelRequest,
@@ -100,6 +101,77 @@ class MockModelApi implements ModelApi {
 }
 
 describe('ActoviqAgentClient', () => {
+  it('clears session manager timers when the client closes', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Timer test complete.' }]),
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      sessionManager: { idleTimeoutMs: 50 },
+    });
+
+    const session = await sdk.createSession({ title: 'Timer close test' });
+    await session.send('start timer');
+    await sdk.close();
+
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const stored = await new SessionStore(sessionDirectory).load(session.id);
+    expect(stored.status).toBe('active');
+  });
+
+  it('keeps session transcripts valid when max tool iterations stop on tool_use', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (_request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              {
+                type: 'tool_use',
+                id: 'toolu_unresolved',
+                name: 'missing_tool',
+                input: {},
+              },
+            ],
+            'tool_use',
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'Transcript is valid.' }]);
+      },
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      maxToolIterations: 1,
+    });
+
+    try {
+      const session = await sdk.createSession({ title: 'Max tool transcript test' });
+      const first = await session.send('trigger max tool iteration');
+      const last = first.messages.at(-1);
+      expect(last?.role).toBe('user');
+      expect(extractTextFromContent(last?.content)).toContain('max tool iteration limit');
+
+      await session.send('continue after max iteration');
+      const secondRequest = modelApi.createCalls[1];
+      expect(secondRequest?.messages.some(message =>
+        message.role === 'user' &&
+        Array.isArray(message.content) &&
+        message.content.some(block =>
+          block.type === 'tool_result' &&
+          block.tool_use_id === 'toolu_unresolved' &&
+          block.is_error === true,
+        ),
+      )).toBe(true);
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('executes a local tool loop and returns the final response', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({

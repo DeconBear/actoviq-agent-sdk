@@ -52,6 +52,9 @@ export class SessionManager {
       () => this.onIdle(sessionId, timer),
       this.config.idleTimeoutMs,
     );
+    if (typeof timer === 'object') {
+      timer.unref?.();
+    }
     this.idleTimers.set(sessionId, timer);
   }
 

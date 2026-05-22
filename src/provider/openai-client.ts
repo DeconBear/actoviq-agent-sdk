@@ -47,6 +47,9 @@ function makeTimeoutSignal(
     () => controller.abort(new Error('Request timed out.')),
     timeoutMs,
   );
+  if (typeof timeout === 'object') {
+    timeout.unref?.();
+  }
   const abortFromParent = () => controller.abort(signal?.reason);
 
   if (signal) {

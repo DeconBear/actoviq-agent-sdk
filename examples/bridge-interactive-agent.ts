@@ -53,6 +53,12 @@ async function main(): Promise<void> {
   }
 
   const sdk = await createActoviqBridgeSdk({
+    ...(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH
+      ? {
+          executable: process.execPath,
+          cliPath: path.resolve(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH),
+        }
+      : {}),
     workDir: WORKSPACE_PATH,
     tools: 'default',
     maxTurns: 32,

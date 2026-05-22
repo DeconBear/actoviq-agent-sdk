@@ -1,8 +1,16 @@
+import path from 'node:path';
+
 import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
 
 await loadDefaultActoviqSettings();
 
 const sdk = await createActoviqBridgeSdk({
+  ...(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH
+    ? {
+        executable: process.execPath,
+        cliPath: path.resolve(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH),
+      }
+    : {}),
   workDir: process.cwd(),
   maxTurns: 4,
 });
