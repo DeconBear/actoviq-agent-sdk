@@ -298,11 +298,10 @@ function resolveParameters(
           }
           break;
         case 'number':
-          resolved[name] = Number(resolved[name]);
+          resolved[name] = parseWorkflowNumberParameter(name, resolved[name]);
           break;
         case 'boolean':
-          resolved[name] =
-            resolved[name] === 'true' || resolved[name] === true;
+          resolved[name] = parseWorkflowBooleanParameter(name, resolved[name]);
           break;
         case 'string':
           resolved[name] = String(resolved[name]);
@@ -312,6 +311,35 @@ function resolveParameters(
   }
 
   return resolved;
+}
+
+function parseWorkflowNumberParameter(name: string, value: unknown): number {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim().length > 0
+        ? Number(value)
+        : NaN;
+  if (!Number.isFinite(numeric)) {
+    throw new Error(
+      `Workflow parameter "${name}" type is "number" but received invalid value: ${String(value)}`,
+    );
+  }
+  return numeric;
+}
+
+function parseWorkflowBooleanParameter(name: string, value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  throw new Error(
+    `Workflow parameter "${name}" type is "boolean" but received invalid value: ${String(value)}`,
+  );
 }
 
 function resolveVariables(

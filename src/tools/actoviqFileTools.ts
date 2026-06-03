@@ -267,14 +267,14 @@ const Grep = (opts: { cwd: string; defaultGrepLimit: number }) =>
     {
       name: GREP_TOOL_NAME,
       description:
-        'A powerful search tool built on ripgrep\n\n' +
+        'A file-content search tool using JavaScript regular expression syntax\n\n' +
         'Usage:\n' +
         '- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command.\n' +
         '- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")\n' +
         '- Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")\n' +
         '- Output modes: "content" shows matching lines, "files_with_matches" shows file paths (default), "count" shows match counts\n' +
         '- Use Agent tool for open-ended searches requiring multiple rounds\n' +
-        '- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping\n' +
+        '- Pattern syntax: JavaScript RegExp syntax\n' +
         '- Multiline matching: By default patterns match within single lines only. For cross-line patterns use `multiline: true`',
       inputSchema: z.strictObject({
         pattern: z.string().describe('The regular expression pattern to search for in file contents'),

@@ -3,8 +3,11 @@ node_modules
 coverage
 *.tsbuildinfo
 .DS_Store
+.codegraph/
 *.tgz
 examples/*.local.json
+bench/reports/
+bench/workspaces/
 plan/
 AGENTS.md
 CLAUDE.md

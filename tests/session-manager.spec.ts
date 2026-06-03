@@ -77,6 +77,25 @@ describe('SessionManager', () => {
     expect(updated.status).toBe('closed');
   });
 
+  it('reactivates idle sessions when touched', async () => {
+    const store = await createStore();
+    const manager = new SessionManager(store, { idleTimeoutMs: 50 });
+
+    const session = await store.create({ title: 'Test' });
+    await manager.touch(session.id);
+
+    await waitForSessionStatus(store, session.id, 'idle');
+    await manager.touch(session.id);
+
+    const updated = await store.load(session.id);
+    expect(updated.status).toBe('active');
+
+    const closed = await manager.closeIdle();
+    expect(closed).toBe(0);
+
+    manager.dispose();
+  });
+
   it('prunes closed sessions', async () => {
     const store = await createStore();
     const manager = new SessionManager(store);

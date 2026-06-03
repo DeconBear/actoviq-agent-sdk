@@ -501,7 +501,7 @@ const sdk = await createAgentSdk({
   sessionManager: {
     idleTimeoutMs: 30 * 60_000,    // Mark idle after 30 min (default)
     maxSessions: 100,               // Max stored sessions
-    maxConcurrentActive: 10,        // Max concurrent active sessions
+    maxConcurrentActive: 10,        // Reserved; not enforced yet
     cleanupIntervalMs: 5 * 60_000,  // Auto-cleanup interval (default: 5 min)
   },
 });

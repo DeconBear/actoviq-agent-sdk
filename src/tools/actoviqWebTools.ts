@@ -20,6 +20,37 @@ export interface WebFetchOptions {
 const DEFAULT_FETCH_TIMEOUT = 15000;
 const DEFAULT_MAX_CONTENT = 50000;
 
+function createToolAbortSignal(
+  timeoutMs: number,
+  parentSignal?: AbortSignal,
+): { signal: AbortSignal; timedOut: () => boolean; cleanup: () => void } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timeout = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort();
+  }, timeoutMs);
+  if (typeof timeout === 'object') {
+    timeout.unref?.();
+  }
+  const abortFromParent = () => controller.abort();
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeOut,
+    cleanup: () => {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+  };
+}
+
 function createWebFetch(options: WebFetchOptions = {}): AgentToolDefinition {
   const timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT;
   const maxContentLength = options.maxContentLength ?? DEFAULT_MAX_CONTENT;
@@ -49,7 +80,7 @@ function createWebFetch(options: WebFetchOptions = {}): AgentToolDefinition {
           : `Fetched ${output.url} (${output.contentLength} chars)`,
       prompt: webFetchPrompt,
     },
-    async (input, _context, onProgress) => {
+    async (input, context, onProgress) => {
       const url = normalizeUrl(input.url);
 
       onProgress?.({
@@ -57,19 +88,18 @@ function createWebFetch(options: WebFetchOptions = {}): AgentToolDefinition {
         data: { type: 'fetching', message: `Fetching ${url}`, url },
       });
 
+      let abortSignal: ReturnType<typeof createToolAbortSignal> | undefined;
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        abortSignal = createToolAbortSignal(timeoutMs, context.signal);
 
         const response = await fetch(url, {
-          signal: controller.signal,
+          signal: abortSignal.signal,
           headers: {
             'User-Agent': 'ActoviqAgent/1.0',
             Accept: 'text/html, text/plain, */*',
           },
           redirect: 'follow',
         });
-        clearTimeout(timer);
 
         if (!response.ok) {
           return {
@@ -107,7 +137,7 @@ function createWebFetch(options: WebFetchOptions = {}): AgentToolDefinition {
         } satisfies WebFetchOutput;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const isTimeout = message.includes('abort') || message.includes('AbortError');
+        const isTimeout = abortSignal?.timedOut() ?? false;
         return {
           url,
           content: '',
@@ -117,6 +147,8 @@ function createWebFetch(options: WebFetchOptions = {}): AgentToolDefinition {
             ? `Request timed out after ${timeoutMs}ms. The server did not respond. Try a different URL.`
             : `Fetch failed: ${message}`,
         } satisfies WebFetchOutput;
+      } finally {
+        abortSignal?.cleanup();
       }
     },
   );
@@ -195,12 +227,12 @@ function createWebSearch(options: WebSearchOptions = {}): AgentToolDefinition {
       }
 
       // ── Local search (DuckDuckGo) ──
-      const jsonResults = await tryJsonApi(query, limit, timeoutMs);
+      const jsonResults = await tryJsonApi(query, limit, timeoutMs, context.signal);
       if (jsonResults.results.length > 0) {
         return jsonResults;
       }
 
-      const htmlResults = await tryHtmlSearch(query, limit, timeoutMs);
+      const htmlResults = await tryHtmlSearch(query, limit, timeoutMs, context.signal);
       if (htmlResults.results.length > 0) {
         return htmlResults;
       }
@@ -289,17 +321,17 @@ async function tryJsonApi(
   query: string,
   limit: number,
   timeoutMs: number,
+  parentSignal?: AbortSignal,
 ): Promise<WebSearchOutput> {
+  let abortSignal: ReturnType<typeof createToolAbortSignal> | undefined;
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    abortSignal = createToolAbortSignal(timeoutMs, parentSignal);
 
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: abortSignal.signal,
       headers: { 'User-Agent': 'ActoviqAgent/1.0' },
     });
-    clearTimeout(timer);
 
     if (!response.ok) {
       return { query, results: [], isError: true, error: `HTTP ${response.status}` };
@@ -351,6 +383,8 @@ async function tryJsonApi(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { query, results: [], isError: true, error: `Search API failed: ${message}` };
+  } finally {
+    abortSignal?.cleanup();
   }
 }
 
@@ -358,17 +392,17 @@ async function tryHtmlSearch(
   query: string,
   limit: number,
   timeoutMs: number,
+  parentSignal?: AbortSignal,
 ): Promise<WebSearchOutput> {
+  let abortSignal: ReturnType<typeof createToolAbortSignal> | undefined;
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    abortSignal = createToolAbortSignal(timeoutMs, parentSignal);
 
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: abortSignal.signal,
       headers: { 'User-Agent': 'ActoviqAgent/1.0' },
     });
-    clearTimeout(timer);
 
     if (!response.ok) {
       return { query, results: [], isError: true, error: `HTTP ${response.status}` };
@@ -385,6 +419,8 @@ async function tryHtmlSearch(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { query, results: [], isError: true, error: `HTML search failed: ${message}` };
+  } finally {
+    abortSignal?.cleanup();
   }
 }
 

@@ -49,6 +49,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "bench": "tsx bench/runner.ts",
+    "bench:smoke": "tsx bench/runner.ts --cases \"bench/cases/smoke/*.json\" --use-gold",
+    "bench:clean": "tsx bench/runner.ts --cases \"bench/cases/smoke/*.json\" --agent-command \"tsx {cleanSdkRunner}\" --report-dir bench/reports/clean-sdk",
+    "bench:bridge": "tsx bench/runner.ts --cases \"bench/cases/smoke/*.json\" --agent-command \"tsx {bridgeSdkRunner}\" --report-dir bench/reports/bridge-sdk",
+    "bench:official": "tsx bench/runner.ts --cases \"bench/cases/smoke/*.json\" --agent-command \"tsx {officialClaudeSdkRunner}\" --report-dir bench/reports/official-claude-sdk",
+    "bench:parity": "tsx bench/run-parity.ts",
     "smoke": "npm run build && tsx scripts/integration-smoke.ts",
     "example:actoviq-quickstart": "npm run build && tsx examples/actoviq-quickstart.ts",
     "example:actoviq-session": "npm run build && tsx examples/actoviq-session.ts",
@@ -93,6 +99,7 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.161",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.6",

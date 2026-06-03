@@ -74,7 +74,25 @@ export async function decideActoviqToolPermission(input: {
     };
   }
 
-  // ── Step 2: Tool-specific checkPermissions ────────────────────
+  // ── Step 2: Safety checks ─────────────────────────────────────
+  const safetyResult = checkSafety({
+    toolName: input.toolName,
+    publicName: input.publicName,
+    toolInput: input.toolInput,
+    workDir: input.workDir,
+  });
+  if (safetyResult.blocked) {
+    return {
+      toolName: input.toolName,
+      publicName: input.publicName,
+      behavior: 'deny',
+      reason: safetyResult.reason ?? 'Blocked by safety check.',
+      source: 'mode',
+      timestamp,
+    };
+  }
+
+  // ── Step 3: Tool-specific checkPermissions ────────────────────
   if (input.adapter?.checkPermissions) {
     const result = await input.adapter.checkPermissions({
       mode: input.mode,
@@ -115,24 +133,6 @@ export async function decideActoviqToolPermission(input: {
         timestamp,
       );
     }
-  }
-
-  // ── Step 3: Safety checks ─────────────────────────────────────
-  const safetyResult = checkSafety({
-    toolName: input.toolName,
-    publicName: input.publicName,
-    toolInput: input.toolInput,
-    workDir: input.workDir,
-  });
-  if (safetyResult.blocked) {
-    return {
-      toolName: input.toolName,
-      publicName: input.publicName,
-      behavior: 'deny',
-      reason: safetyResult.reason ?? 'Blocked by safety check.',
-      source: 'mode',
-      timestamp,
-    };
   }
 
   // ── Step 4: Ask rules ─────────────────────────────────────────

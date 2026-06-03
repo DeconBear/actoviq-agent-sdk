@@ -261,7 +261,12 @@ class MessageAccumulator {
     block.input = robustJsonParse(pending, block.name as string | undefined);
 
     // Debug: log when tool input appears to have been fallback-wrapped
-    if (isRecord(block.input) && 'raw' in block.input && Object.keys(block.input).length === 1) {
+    if (
+      process.env.ACTOVIQ_DEBUG_JSON &&
+      isRecord(block.input) &&
+      'raw' in block.input &&
+      Object.keys(block.input).length === 1
+    ) {
       const rawLen = typeof block.input.raw === 'string' ? block.input.raw.length : 0;
       console.error(`\n[tool_use parse] name=${block.name ?? '?'} pendingLen=${pending.length} resultKeys=[raw] rawLen=${rawLen} pendingStart=${pending.slice(0, 100)}`);
     }

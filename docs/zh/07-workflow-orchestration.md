@@ -501,7 +501,7 @@ const sdk = await createAgentSdk({
   sessionManager: {
     idleTimeoutMs: 30 * 60_000,    // 30 分钟后标记为空闲（默认）
     maxSessions: 100,               // 最大存储会话数
-    maxConcurrentActive: 10,        // 最大并发活跃会话数
+    maxConcurrentActive: 10,        // 预留项；当前尚未强制执行
     cleanupIntervalMs: 5 * 60_000,  // 自动清理间隔（默认 5 分钟）
   },
 });

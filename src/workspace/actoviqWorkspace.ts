@@ -94,7 +94,8 @@ export async function createGitWorktreeWorkspace(
   }
 
   const repositoryPath = path.resolve(options.repositoryPath);
-  await execGit(['-C', repositoryPath, 'rev-parse', '--show-toplevel']);
+  const topLevel = await execGit(['-C', repositoryPath, 'rev-parse', '--show-toplevel']);
+  const repositoryRoot = path.resolve(topLevel.stdout.trim() || repositoryPath);
 
   const targetPath = options.path
     ? path.resolve(options.path)
@@ -106,6 +107,7 @@ export async function createGitWorktreeWorkspace(
   await mkdir(path.dirname(targetPath), { recursive: true });
 
   if (options.force) {
+    assertSafeRecursiveRemovalTarget(targetPath, [repositoryRoot]);
     await rm(targetPath, { recursive: true, force: true });
   }
 
@@ -145,10 +147,34 @@ export async function createGitWorktreeWorkspace(
       try {
         await execGit(['-C', repositoryPath, 'worktree', 'remove', '--force', targetPath]);
       } catch {
+        assertSafeRecursiveRemovalTarget(targetPath, [repositoryRoot]);
         await rm(targetPath, { recursive: true, force: true });
       }
     },
   );
+}
+
+function assertSafeRecursiveRemovalTarget(targetPath: string, protectedPaths: string[]): void {
+  const resolved = path.resolve(targetPath);
+  const unsafePaths = [
+    path.parse(resolved).root,
+    os.homedir(),
+    process.cwd(),
+    ...protectedPaths,
+  ];
+
+  if (unsafePaths.some((unsafePath) => isSamePath(resolved, unsafePath))) {
+    throw new ActoviqSdkError(`Refusing to recursively remove unsafe workspace path: ${resolved}`);
+  }
+}
+
+function isSamePath(left: string, right: string): boolean {
+  const resolvedLeft = path.resolve(left);
+  const resolvedRight = path.resolve(right);
+  if (process.platform === 'win32') {
+    return resolvedLeft.toLowerCase() === resolvedRight.toLowerCase();
+  }
+  return resolvedLeft === resolvedRight;
 }
 
 async function copyIntoWorkspace(sourcePath: string, workspacePath: string): Promise<void> {
@@ -157,12 +183,11 @@ async function copyIntoWorkspace(sourcePath: string, workspacePath: string): Pro
   await cp(sourcePath, workspacePath, { recursive: true, force: true });
 }
 
-async function execGit(args: string[]): Promise<void> {
+async function execGit(args: string[]): Promise<{ stdout: string; stderr: string }> {
   try {
-    await execFile('git', args, { windowsHide: true });
+    return await execFile('git', args, { windowsHide: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new ActoviqSdkError(`Git worktree operation failed: ${message}`);
   }
 }
-

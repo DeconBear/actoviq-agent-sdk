@@ -1,0 +1,23 @@
+{
+  "id": "smoke.coding.calculator-addition",
+  "title": "Fix a small calculator bug",
+  "category": "coding",
+  "runtimeTarget": "parity",
+  "instruction": "The calculator package has a failing test around addition. Fix the implementation so the package tests pass. Keep the change focused.",
+  "fixture": "bench/fixtures/repos/calculator-bug",
+  "tags": ["smoke", "coding", "tests"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 300,
+    "maxToolCalls": 80,
+    "maxTokens": 120000
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); const p='src/calculator.js'; fs.writeFileSync(p, fs.readFileSync(p,'utf8').replace('a - b','a + b'));\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node test.mjs",
+      "timeoutMs": 30000
+    }
+  ]
+}

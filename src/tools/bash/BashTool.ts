@@ -35,13 +35,13 @@ export function createBashTool(): AgentToolDefinition {
       isDestructive: () => true,
       prompt: () => BASH_DESCRIPTION,
     },
-    async (input: BashInput) => {
-      const timeoutMs = input.timeout ?? 120_000;
+    async (input: BashInput, context) => {
+      const timeoutMs = Math.min(Math.max(1, input.timeout ?? 120_000), 600_000);
       try {
         if (input.run_in_background) {
           // For background execution, spawn detached and return immediately
           const child = spawn(input.command, {
-            cwd: process.cwd(),
+            cwd: context.cwd,
             shell: true,
             stdio: 'ignore',
             detached: true,
@@ -51,7 +51,7 @@ export function createBashTool(): AgentToolDefinition {
         }
 
         const output = execSync(input.command, {
-          cwd: process.cwd(),
+          cwd: context.cwd,
           encoding: 'utf-8',
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024, // 10MB

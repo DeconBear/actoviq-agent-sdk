@@ -105,4 +105,18 @@ describe('workspace helpers', () => {
 
     await expect(readFile(path.join(worktreePath, 'tracked.txt'), 'utf8')).rejects.toThrow();
   });
+
+  it('refuses to force-remove unsafe git worktree targets', async () => {
+    const repoDir = await createTempDir('actoviq-worktree-repo-');
+    await execFile('git', ['init', '-b', 'main'], { cwd: repoDir, windowsHide: true });
+
+    await expect(
+      createGitWorktreeWorkspace({
+        repositoryPath: repoDir,
+        path: process.cwd(),
+        ref: 'HEAD',
+        force: true,
+      }),
+    ).rejects.toThrow('Refusing to recursively remove unsafe workspace path');
+  });
 });

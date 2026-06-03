@@ -39,7 +39,7 @@ export class SessionManager {
     const existing = this.idleTimers.get(sessionId);
     if (existing) clearTimeout(existing);
 
-    await this.store.updateLastActiveAt(sessionId).catch(() => {
+    await this.store.updateLastActiveAt(sessionId, 'active').catch(() => {
       /* silent */
     });
 

@@ -7,6 +7,7 @@ import type {
   SessionCheckpointSummary,
   SessionCreateOptions,
   SessionForkOptions,
+  SessionStatus,
   SessionSummary,
   StoredSession,
 } from '../types.js';
@@ -107,10 +108,13 @@ export class SessionStore {
     await this.save(session);
   }
 
-  async updateLastActiveAt(sessionId: string): Promise<void> {
+  async updateLastActiveAt(sessionId: string, status?: SessionStatus): Promise<void> {
     await this.ensureReady();
     const session = await this.load(sessionId);
     session.lastActiveAt = nowIso();
+    if (status && session.status !== 'closed') {
+      session.status = status;
+    }
     await this.save(session);
   }
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createNotebookEditTool, createPowerShellTool } from '../src/index.js';
+import { createBashTool, createNotebookEditTool, createPowerShellTool } from '../src/index.js';
 import type { ToolExecutionContext } from '../src/types.js';
 
 const tempDirs: string[] = [];
@@ -45,6 +45,22 @@ describe('PowerShell tool', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('actoviq-ok');
     expect(result.stderr).toBe('');
+  });
+});
+
+describe('Bash tool', () => {
+  it('executes commands in the tool context cwd', async () => {
+    const cwd = await createTempDir('actoviq-bash-tool-');
+    const tool = createBashTool();
+    const result = await tool.execute(
+      {
+        command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify('console.log(process.cwd())')}`,
+      },
+      createContext(cwd),
+    ) as { stdout: string; stderr: string; exitCode: number };
+
+    expect(result.exitCode).toBe(0);
+    expect(path.normalize(result.stdout.trim())).toBe(path.normalize(cwd));
   });
 });
 

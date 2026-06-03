@@ -263,6 +263,44 @@ describe('WorkflowEngine', () => {
     expect(callPrompt).not.toContain('$REPO_PATH');
   });
 
+  it('rejects invalid number workflow parameters', async () => {
+    const sdk = createMockSdk();
+    const engine = new WorkflowEngine(sdk as never);
+    const definition: WorkflowDefinition = {
+      name: 'bad-number',
+      description: 'Bad number parameter',
+      parameters: {
+        COUNT: { type: 'number', description: 'Count', required: true },
+      },
+      steps: [
+        { id: 'a', description: 'Step A', prompt: 'Count $COUNT', dependsOn: [] },
+      ],
+    };
+
+    await expect(
+      engine.run(definition, { COUNT: 'not-a-number' }, { workDir: '/tmp/test' }),
+    ).rejects.toThrow('type is "number"');
+  });
+
+  it('rejects invalid boolean workflow parameters', async () => {
+    const sdk = createMockSdk();
+    const engine = new WorkflowEngine(sdk as never);
+    const definition: WorkflowDefinition = {
+      name: 'bad-boolean',
+      description: 'Bad boolean parameter',
+      parameters: {
+        ENABLED: { type: 'boolean', description: 'Enabled flag', required: true },
+      },
+      steps: [
+        { id: 'a', description: 'Step A', prompt: 'Enabled $ENABLED', dependsOn: [] },
+      ],
+    };
+
+    await expect(
+      engine.run(definition, { ENABLED: 'maybe' }, { workDir: '/tmp/test' }),
+    ).rejects.toThrow('type is "boolean"');
+  });
+
   it('marks dependent steps as skipped when predecessor fails', async () => {
     const sdk = {
       config: { workDir: '/tmp/test' },

@@ -21,6 +21,7 @@
     "src/**/*.ts",
     "examples/**/*.ts",
     "tests/**/*.ts",
+    "bench/**/*.ts",
     "scripts/**/*.ts",
     "vitest.config.ts"
   ]
