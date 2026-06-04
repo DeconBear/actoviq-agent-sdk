@@ -205,6 +205,9 @@ async function runTrial(
       ACTOVIQ_BENCH_TRAJECTORY_FILE: trajectoryFile,
       ACTOVIQ_BENCH_INTERNAL_DIR: internalDir,
       ACTOVIQ_BENCH_RUNTIME_TARGET: benchmarkCase.runtimeTarget,
+      ...(benchmarkCase.budget?.maxTurns
+        ? { ACTOVIQ_BENCH_MAX_TURNS: String(benchmarkCase.budget.maxTurns) }
+        : {}),
     };
 
     const setupCommand = benchmarkCase.setupCommand
@@ -728,6 +731,12 @@ function normalizeSubagents(value: unknown): BenchmarkAgentMetrics['subagents'] 
       name,
       description: getString(entry, 'description') ?? getString(entry, 'lastDescription'),
       taskType: getString(entry, 'taskType') ?? getString(entry, 'task_type'),
+      status: getString(entry, 'status') ?? getString(entry, 'lastStatus'),
+      runIds: normalizeStringArray(entry.runIds),
+      sessionIds: normalizeStringArray(entry.sessionIds),
+      taskIds: normalizeStringArray(entry.taskIds),
+      toolCallCount: getNumber(entry, 'toolCallCount') ?? getNumber(entry, 'totalToolCallCount'),
+      toolErrorCount: getNumber(entry, 'toolErrorCount') ?? getNumber(entry, 'totalToolErrorCount'),
     });
   }
   return subagents.length > 0 ? subagents : undefined;
@@ -765,7 +774,7 @@ function scoreTrial(
 ): BenchmarkScore {
   const task = passed ? 1 : 0;
   const efficiency = scoreEfficiency(benchmarkCase, metrics, durationMs);
-  const behavior = scoreBehavior(metrics);
+  const behavior = scoreBehavior(benchmarkCase, metrics);
   return {
     total: roundScore((task * 0.7) + (efficiency * 0.2) + (behavior * 0.1)),
     task: roundScore(task),
@@ -796,14 +805,16 @@ function scoreEfficiency(
   return scores.reduce((sum, score) => sum + score, 0) / scores.length;
 }
 
-function scoreBehavior(metrics: BenchmarkAgentMetrics | undefined): number {
+function scoreBehavior(benchmarkCase: BenchmarkCase, metrics: BenchmarkAgentMetrics | undefined): number {
   if (!metrics) {
     return 1;
   }
   let score = 1;
-  const toolCallCount = metrics.toolCallCount ?? metrics.toolCalls?.length ?? 0;
-  if (toolCallCount > 0 && metrics.toolErrorCount && metrics.toolErrorCount > 0) {
-    score -= Math.min(0.6, metrics.toolErrorCount / toolCallCount);
+  const toolCallCount =
+    (metrics.toolCallCount ?? metrics.toolCalls?.length ?? 0) + sumSubagentMetric(metrics, 'toolCallCount');
+  const toolErrorCount = (metrics.toolErrorCount ?? 0) + sumSubagentMetric(metrics, 'toolErrorCount');
+  if (toolCallCount > 0 && toolErrorCount > 0) {
+    score -= Math.min(0.6, toolErrorCount / toolCallCount);
   }
   if (metrics.permissionDenialCount && metrics.permissionDenialCount > 0) {
     score -= Math.min(0.3, metrics.permissionDenialCount * 0.1);
@@ -811,7 +822,33 @@ function scoreBehavior(metrics: BenchmarkAgentMetrics | undefined): number {
   if (metrics.benchmarkInternalAccessCount && metrics.benchmarkInternalAccessCount > 0) {
     score -= Math.min(1, metrics.benchmarkInternalAccessCount * 0.25);
   }
+  const expectations = benchmarkCase.behaviorExpectations;
+  if (expectations?.maxToolErrors != null && toolErrorCount > expectations.maxToolErrors) {
+    const excess = toolErrorCount - expectations.maxToolErrors;
+    score -= Math.min(0.4, excess * 0.1);
+  }
+  if (expectations?.minSubagentCalls != null) {
+    const actual = metrics.subagentCallCount ?? 0;
+    if (actual < expectations.minSubagentCalls) {
+      const missingRatio = (expectations.minSubagentCalls - actual) / Math.max(expectations.minSubagentCalls, 1);
+      score -= Math.min(0.5, missingRatio * 0.5);
+    }
+  }
+  if (expectations?.minSkillUseCount != null) {
+    const actual = metrics.skillUseCount ?? 0;
+    if (actual < expectations.minSkillUseCount) {
+      const missingRatio = (expectations.minSkillUseCount - actual) / Math.max(expectations.minSkillUseCount, 1);
+      score -= Math.min(0.4, missingRatio * 0.4);
+    }
+  }
   return Math.max(0, score);
+}
+
+function sumSubagentMetric(
+  metrics: BenchmarkAgentMetrics,
+  key: 'toolCallCount' | 'toolErrorCount',
+): number {
+  return metrics.subagents?.reduce((sum, subagent) => sum + (subagent[key] ?? 0), 0) ?? 0;
 }
 
 function scoreBudgetValue(actual: number, max: number): number {
@@ -892,14 +929,14 @@ function renderMarkdownReport(report: BenchmarkReport): string {
     `Pass rate: ${(report.passRate * 100).toFixed(2)}% (${report.passedTrials}/${report.totalTrials})`,
     `Average score: ${report.averageScore.toFixed(3)}`,
     '',
-    '| Case | Trial | Runtime | Category | Result | Score | Duration | LLM req | Tools | Subagents | Skills | Trace events |',
-    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|',
+    '| Case | Trial | Runtime | Category | Result | Score | Task | Efficiency | Behavior | Duration | LLM req | Tools | Subagents | Skills | Trace events |',
+    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
   ];
   for (const trial of report.cases) {
     lines.push(
       `| ${trial.caseId} | ${trial.trial} | ${trial.runtimeTarget} | ${trial.category} | ${
         trial.passed ? 'pass' : 'fail'
-      } | ${trial.score.total.toFixed(3)} | ${trial.durationMs}ms | ${formatMetric(trial.agentMetrics?.llmRequestCount)} | ${formatMetric(
+      } | ${trial.score.total.toFixed(3)} | ${trial.score.task.toFixed(3)} | ${trial.score.efficiency.toFixed(3)} | ${trial.score.behavior.toFixed(3)} | ${trial.durationMs}ms | ${formatMetric(trial.agentMetrics?.llmRequestCount)} | ${formatMetric(
         trial.agentMetrics?.toolCallCount,
       )} | ${formatMetric(trial.agentMetrics?.subagentCallCount)} | ${formatMetric(trial.agentMetrics?.skillUseCount)} | ${formatMetric(
         trial.trajectoryEventCount,
@@ -921,7 +958,7 @@ function printTrialResult(result: BenchmarkTrialResult): void {
   const status = result.passed ? 'PASS' : 'FAIL';
   const metrics = result.agentMetrics;
   console.log(
-    `${status} ${result.caseId} trial=${result.trial} runtime=${result.runtimeTarget} score=${result.score.total.toFixed(3)} duration=${result.durationMs}ms tools=${formatMetric(
+    `${status} ${result.caseId} trial=${result.trial} runtime=${result.runtimeTarget} score=${result.score.total.toFixed(3)} behavior=${result.score.behavior.toFixed(3)} duration=${result.durationMs}ms tools=${formatMetric(
       metrics?.toolCallCount,
     )} llmReq=${formatMetric(metrics?.llmRequestCount)} subagents=${formatMetric(metrics?.subagentCallCount)} skills=${formatMetric(
       metrics?.skillUseCount,

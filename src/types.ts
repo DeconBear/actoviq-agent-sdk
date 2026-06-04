@@ -429,6 +429,7 @@ export interface ActoviqAgentDefinition {
   description: string;
   systemPrompt?: string;
   model?: string;
+  maxToolIterations?: number;
   metadata?: Record<string, unknown>;
   hooks?: ActoviqHooks;
   tools?: AgentToolDefinition[];
@@ -441,6 +442,7 @@ export interface ActoviqAgentDefinitionSummary {
   name: string;
   description: string;
   model?: string;
+  maxToolIterations?: number;
   toolNames: string[];
   mcpServerNames: string[];
   inheritDefaultTools: boolean;
@@ -657,6 +659,7 @@ export interface CreateAgentSdkOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   agents?: ActoviqAgentDefinition[];
+  disableDefaultAgents?: boolean;
   skills?: ActoviqSkillDefinition[];
   skillDirectories?: string[];
   disableDefaultSkills?: boolean;
@@ -891,8 +894,12 @@ export interface ActoviqSessionCompactResult {
 }
 
 export interface ActoviqTaskToolInput {
-  description: string;
+  description?: string;
+  prompt?: string;
+  task?: string;
   subagent_type?: string;
+  agent?: string;
+  agent_type?: string;
   run_in_background?: boolean;
 }
 
@@ -904,6 +911,7 @@ export interface ActoviqTaskToolSyncResult {
   model: string;
   text: string;
   toolCallCount: number;
+  toolErrorCount: number;
 }
 
 export interface ActoviqTaskToolAsyncResult {
@@ -925,6 +933,16 @@ export interface ActoviqDelegatedAgentRecord {
   count: number;
   lastInvokedAt: string;
   lastDescription?: string;
+  lastRunId?: string;
+  lastSessionId?: string;
+  lastStatus?: 'completed' | 'async_launched';
+  lastTaskId?: string;
+  lastTextSummary?: string;
+  runIds?: string[];
+  sessionIds?: string[];
+  taskIds?: string[];
+  totalToolCallCount?: number;
+  totalToolErrorCount?: number;
 }
 
 export interface ActoviqAgentContinuityState {

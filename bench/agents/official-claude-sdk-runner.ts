@@ -155,6 +155,9 @@ function extractSubagents(messagesToInspect: SDKMessage[]): Array<{ name?: strin
   const subagents: Array<{ name?: string; description?: string; taskType?: string }> = [];
   for (const message of messagesToInspect) {
     if (message.type === 'system' && message.subtype === 'task_started') {
+      if (!message.subagent_type) {
+        continue;
+      }
       subagents.push({
         name: message.subagent_type,
         description: message.description,

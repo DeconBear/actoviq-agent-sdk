@@ -110,20 +110,21 @@ The more accurate statement is:
   hidden external evaluation set.
 - Most graders are visible fixture tests or local checker scripts. They are
   deterministic but not fully hidden.
-- The suite uses one trial per case by default. A real comparison should report
-  repeated trials, pass@k or pass^k, and variance.
-- Subagent usage is measured but not required by current graders. Clean SDK can
-  pass many cases without exercising subagent orchestration.
+- The suite uses one trial per case by default. Use
+  `bench:complex:parity:repeated` when the comparison needs repeated trials,
+  pass@k or pass^k, and variance.
+- Subagent usage is now measurable as an optional behavior-expectation score
+  signal, but deterministic task correctness still does not require a fixed
+  subagent script.
 - The harness still relies on trajectory auditing rather than OS-level sandboxing
   to detect out-of-workspace information access.
 
 ## Next Steps
 
-- Add a `bench:complex:parity:repeated` script with at least 3 trials per case.
 - Move gold/reference commands into a separate non-agent-readable fixture source
   for serious evaluation runs.
 - Add hidden or generated mutation tests for coding/workflow cases.
 - Add a benchmark-internal canary case that intentionally fails if an agent
   reads internal harness paths or benchmark source files.
-- Add subagent-beneficial cases where delegation materially improves success
-  under the same task prompt.
+- Add more generated subagent-beneficial variants where delegation materially
+  improves reliability under the same task prompt.

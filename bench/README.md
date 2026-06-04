@@ -26,6 +26,10 @@ Each trial keeps `passed` as the deterministic end-state result and adds a separ
 Runtime wrappers should write JSON to `ACTOVIQ_BENCH_OUTPUT_FILE` with a `metrics` object when possible. Supported metrics include `llmRequestCount`, `toolCallCount`, `toolErrorCount`, `subagentCallCount`, `skillUseCount`, `permissionDenialCount`, token usage, cost, and summarized tool/subagent lists.
 The harness also scans JSONL trajectories for benchmark-internal access such as `.actoviq-bench`, `actoviq-bench-internal`, `goldCommand`, `bench/cases`, and `bench/reports`; detected access is reported as a `policy` grader failure.
 
+Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.
+`subagentCallCount` should count actual delegated agents only, not internal shell/tool helper tasks such as local bash execution events.
+Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for Bridge SDK and official Claude Agent SDK wrappers.
+
 ## Runtime Targets
 
 Actoviq has two agent runtime surfaces:
@@ -84,6 +88,12 @@ Run the complex cases against Clean SDK, Bridge SDK, and the official Claude Age
 
 ```bash
 npm run bench:complex:parity
+```
+
+Run repeated complex parity trials for variance and pass-rate stability:
+
+```bash
+npm run bench:complex:parity:repeated
 ```
 
 Generate example adapted cases from an external-style manifest:

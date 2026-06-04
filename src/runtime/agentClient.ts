@@ -77,6 +77,7 @@ import {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './actoviqAgents.js';
+import { getDefaultActoviqAgents } from './defaultActoviqAgents.js';
 import {
   ActoviqSkillsApi,
   loadActoviqSkillDefinitions,
@@ -144,6 +145,13 @@ interface PendingDelegationRecord {
   name: string;
   description?: string;
   invokedAt: string;
+  runId?: string;
+  sessionId?: string;
+  status?: 'completed' | 'async_launched';
+  taskId?: string;
+  toolCallCount?: number;
+  toolErrorCount?: number;
+  textSummary?: string;
 }
 
 interface SessionMemoryExtractionContext {
@@ -167,6 +175,7 @@ interface InternalAgentRunOptions extends AgentRunOptions {
   __actoviqUseDefaultTools?: boolean;
   __actoviqUseDefaultMcpServers?: boolean;
   __actoviqSkillContext?: 'inline' | 'fork';
+  __actoviqMaxToolIterations?: number;
 }
 
 interface PreparedSkillExecution {
@@ -335,11 +344,40 @@ function getAgentContinuityState(
               lastInvokedAt: record.lastInvokedAt,
               lastDescription:
                 typeof record.lastDescription === 'string' ? record.lastDescription : undefined,
+              lastRunId: typeof record.lastRunId === 'string' ? record.lastRunId : undefined,
+              lastSessionId:
+                typeof record.lastSessionId === 'string' ? record.lastSessionId : undefined,
+              lastStatus:
+                record.lastStatus === 'completed' || record.lastStatus === 'async_launched'
+                  ? record.lastStatus
+                  : undefined,
+              lastTaskId: typeof record.lastTaskId === 'string' ? record.lastTaskId : undefined,
+              lastTextSummary:
+                typeof record.lastTextSummary === 'string' ? record.lastTextSummary : undefined,
+              runIds: readStringArray(record.runIds),
+              sessionIds: readStringArray(record.sessionIds),
+              taskIds: readStringArray(record.taskIds),
+              totalToolCallCount:
+                typeof record.totalToolCallCount === 'number'
+                  ? record.totalToolCallCount
+                  : undefined,
+              totalToolErrorCount:
+                typeof record.totalToolErrorCount === 'number'
+                  ? record.totalToolErrorCount
+                  : undefined,
             },
           ];
         })
       : [],
   };
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const values = value.filter((entry): entry is string => typeof entry === 'string');
+  return values.length > 0 ? values : undefined;
 }
 
 function mergeDelegatedAgents(
@@ -356,6 +394,16 @@ function mergeDelegatedAgents(
         count: 1,
         lastInvokedAt: record.invokedAt,
         lastDescription: record.description,
+        lastRunId: record.runId,
+        lastSessionId: record.sessionId,
+        lastStatus: record.status,
+        lastTaskId: record.taskId,
+        lastTextSummary: record.textSummary,
+        runIds: record.runId ? [record.runId] : undefined,
+        sessionIds: record.sessionId ? [record.sessionId] : undefined,
+        taskIds: record.taskId ? [record.taskId] : undefined,
+        totalToolCallCount: record.toolCallCount,
+        totalToolErrorCount: record.toolErrorCount,
       });
       continue;
     }
@@ -363,11 +411,39 @@ function mergeDelegatedAgents(
     current.count += 1;
     current.lastInvokedAt = record.invokedAt;
     current.lastDescription = record.description ?? current.lastDescription;
+    current.lastRunId = record.runId ?? current.lastRunId;
+    current.lastSessionId = record.sessionId ?? current.lastSessionId;
+    current.lastStatus = record.status ?? current.lastStatus;
+    current.lastTaskId = record.taskId ?? current.lastTaskId;
+    current.lastTextSummary = record.textSummary ?? current.lastTextSummary;
+    current.runIds = appendUnique(current.runIds, record.runId);
+    current.sessionIds = appendUnique(current.sessionIds, record.sessionId);
+    current.taskIds = appendUnique(current.taskIds, record.taskId);
+    current.totalToolCallCount = sumOptional(current.totalToolCallCount, record.toolCallCount);
+    current.totalToolErrorCount = sumOptional(current.totalToolErrorCount, record.toolErrorCount);
   }
 
   return [...merged.values()].sort((left, right) =>
     right.lastInvokedAt.localeCompare(left.lastInvokedAt),
   );
+}
+
+function appendUnique(existing: string[] | undefined, value: string | undefined): string[] | undefined {
+  if (!value) {
+    return existing;
+  }
+  const next = existing ? [...existing] : [];
+  if (!next.includes(value)) {
+    next.push(value);
+  }
+  return next;
+}
+
+function sumOptional(current: number | undefined, next: number | undefined): number | undefined {
+  if (next === undefined) {
+    return current;
+  }
+  return (current ?? 0) + next;
 }
 
 function getInvokedSkillState(
@@ -649,6 +725,10 @@ export class ActoviqAgentClient {
       disableDefaultSkills: options.disableDefaultSkills,
       loadDefaultSkillDirectories: options.loadDefaultSkillDirectories,
     });
+    const agentDefinitions =
+      options.disableDefaultAgents === true
+        ? [...(options.agents ?? [])]
+        : [...getDefaultActoviqAgents(), ...(options.agents ?? [])];
     const defaultTools = [...(options.tools ?? [])];
     const defaultMcpServers = [...(options.mcpServers ?? [])];
     if (options.computerUse) {
@@ -671,7 +751,7 @@ export class ActoviqAgentClient {
       defaultTools,
       defaultMcpServers,
       options.hooks,
-      options.agents ?? [],
+      agentDefinitions,
       [...loadedSkills, ...(options.skills ?? [])],
       options.permissionMode,
       options.permissions,
@@ -915,13 +995,33 @@ export class ActoviqAgentClient {
   createTaskTool(options: { name?: string; description?: string } = {}): AgentToolDefinition {
     return createActoviqTaskTool({
       ...options,
+      listAgentDefinitions: () => this.listAgentDefinitions(),
       getAgentDefinition: (agent) => this.getAgentDefinition(agent),
       runAgent: (agent, prompt, runOptions) => this.runWithAgent(agent, prompt, runOptions),
-      onDelegated: ({ subagentType, description, parentSessionId, parentRunId }) => {
+      onDelegated: ({
+        subagentType,
+        description,
+        parentSessionId,
+        parentRunId,
+        runId,
+        sessionId,
+        status,
+        taskId,
+        toolCallCount,
+        toolErrorCount,
+        textSummary,
+      }) => {
         this.recordPendingDelegation(parentSessionId ?? parentRunId, {
           name: subagentType,
           description,
           invokedAt: nowIso(),
+          runId,
+          sessionId,
+          status,
+          taskId,
+          toolCallCount,
+          toolErrorCount,
+          textSummary,
         });
       },
       launchBackgroundAgent: (agent, prompt, backgroundOptions, runOptions) =>
@@ -1365,6 +1465,13 @@ export class ActoviqAgentClient {
       [...(augmentations?.systemPromptParts ?? []), ...toolPromptParts],
     );
 
+    const runtimeConfig = options.__actoviqMaxToolIterations
+      ? {
+          ...this.config,
+          maxToolIterations: options.__actoviqMaxToolIterations,
+        }
+      : this.config;
+
     return executeConversation({
       runId,
       input,
@@ -1394,7 +1501,7 @@ export class ActoviqAgentClient {
       emit,
       skipRunStartedEvent,
       modelApi: this.modelApi,
-      config: this.config,
+      config: runtimeConfig,
       mcpManager: this.mcpManager,
     }).then(result => ({
       ...result,
@@ -2400,6 +2507,7 @@ export class ActoviqAgentClient {
       mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
       __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
       __actoviqUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+      __actoviqMaxToolIterations: definition.maxToolIterations,
     };
   }
 

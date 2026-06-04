@@ -1309,6 +1309,306 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('registers default clean subagents and allows custom overrides', async () => {
+    const firstSessionDirectory = await createSessionDirectory();
+    const firstModelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Default agents listed.' }]),
+    });
+    const firstSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: firstSessionDirectory,
+      modelApi: firstModelApi,
+    });
+
+    try {
+      expect(firstSdk.agents.list()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'general-purpose' }),
+          expect.objectContaining({ name: 'code-reviewer' }),
+          expect.objectContaining({ name: 'debugger', maxToolIterations: 6 }),
+        ]),
+      );
+    } finally {
+      await firstSdk.close();
+    }
+
+    const overrideSessionDirectory = await createSessionDirectory();
+    const overrideSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: overrideSessionDirectory,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'Override agents listed.' }]),
+      }),
+      agents: [
+        {
+          name: 'general-purpose',
+          description: 'Custom generalist for this project.',
+          systemPrompt: 'Project-specific generalist.',
+        },
+      ],
+    });
+
+    try {
+      expect(overrideSdk.agents.get('general-purpose')).toMatchObject({
+        description: 'Custom generalist for this project.',
+        systemPrompt: 'Project-specific generalist.',
+      });
+    } finally {
+      await overrideSdk.close();
+    }
+
+    const disabledSessionDirectory = await createSessionDirectory();
+    const disabledSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: disabledSessionDirectory,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'No default agents.' }]),
+      }),
+      disableDefaultAgents: true,
+    });
+
+    try {
+      expect(disabledSdk.agents.list()).toEqual([]);
+    } finally {
+      await disabledSdk.close();
+    }
+  });
+
+  it('delegates through default subagents with bridge-compatible Task aliases', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (request.system?.includes('focused debugging subagent')) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Debugger summary: root cause isolated.',
+            },
+          ]);
+        }
+
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Delegating with alias fields.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_alias',
+                name: 'Task',
+                input: {
+                  task: 'Debug the failing release validation path.',
+                  agent_type: 'debugger',
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Main agent received debugger summary.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const result = await sdk.run('Please debug this validation path.');
+
+      expect(modelApi.createCalls[0]?.system).toContain('Available subagents');
+      expect(modelApi.createCalls[0]?.system).toContain('debugger');
+      expect(result.text).toContain('debugger summary');
+      expect(result.toolCalls[0]?.outputText).toContain('Tool calls: 0');
+      expect(result.toolCalls[0]?.outputText).toContain('Debugger summary');
+      expect(result.toolCalls[0]?.output).toMatchObject({
+        subagentType: 'debugger',
+        toolCallCount: 0,
+        toolErrorCount: 0,
+      });
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'debugger',
+            count: 1,
+            lastStatus: 'completed',
+            totalToolCallCount: 0,
+            totalToolErrorCount: 0,
+          }),
+        ]),
+      );
+      expect(result.delegatedAgents?.[0]?.runIds).toHaveLength(1);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('defaults omitted Task subagent_type to general-purpose when available', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (request.system?.includes('general-purpose Actoviq subagent')) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'General-purpose summary: independent inspection complete.',
+            },
+          ]);
+        }
+
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Delegating without an explicit subagent.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_default_agent',
+                name: 'Task',
+                input: {
+                  prompt: 'Inspect the release checklist independently.',
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'Main agent received general-purpose summary.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const result = await sdk.run('Delegate a broad inspection.');
+
+      expect(result.toolCalls[0]?.output).toMatchObject({
+        subagentType: 'general-purpose',
+      });
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'general-purpose',
+            lastStatus: 'completed',
+          }),
+        ]),
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('records delegated agents when Task is used during a streamed run', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        if (request.system?.includes('focused debugging subagent')) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Stream child summary: investigated failing checks.',
+            },
+          ]);
+        }
+        throw new Error('Unexpected non-stream parent request.');
+      },
+      stream: (_request, index) => {
+        if (index === 0) {
+          return {
+            events: [
+              {
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: 'Delegating streamed task.' },
+              } as MessageStreamEvent,
+            ],
+            message: makeMessage(
+              [
+                { type: 'text', text: 'Delegating streamed task.' },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_stream_task',
+                  name: 'Task',
+                  input: {
+                    description: 'Investigate streamed validation failure.',
+                    subagent_type: 'debugger',
+                  },
+                },
+              ],
+              'tool_use',
+            ),
+          };
+        }
+
+        return {
+          events: [
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'text_delta', text: 'Main stream received child summary.' },
+            } as MessageStreamEvent,
+          ],
+          message: makeMessage([
+            {
+              type: 'text',
+              text: 'Main stream received child summary.',
+            },
+          ]),
+        };
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const stream = sdk.stream('Debug this through a streamed run.');
+      const deltas: string[] = [];
+      for await (const event of stream) {
+        if (event.type === 'response.text.delta') {
+          deltas.push(event.delta);
+        }
+      }
+
+      const result = await stream.result;
+
+      expect(deltas.join('')).toContain('Main stream received child summary.');
+      expect(modelApi.streamCalls[0]?.system).toContain('Available subagents');
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'debugger',
+            count: 1,
+            lastStatus: 'completed',
+            totalToolCallCount: 0,
+            totalToolErrorCount: 0,
+          }),
+        ]),
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('applies agent definition hooks in the clean SDK path', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -1460,6 +1760,8 @@ describe('ActoviqAgentClient', () => {
 
       expect(taskOutput?.status).toBe('async_launched');
       expect(taskId).toBeTruthy();
+      expect(result.toolCalls[0]?.outputText).toContain('Use TaskOutput');
+      expect(result.toolCalls[0]?.outputText).not.toContain(String(taskOutput?.outputFile));
       expect(result.text).toContain('background');
 
       const completedTask = await sdk.tasks.wait(taskId!);

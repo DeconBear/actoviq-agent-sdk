@@ -18,8 +18,15 @@ export type BenchmarkCategory =
 
 export interface BenchmarkBudget {
   maxSeconds?: number;
+  maxTurns?: number;
   maxToolCalls?: number;
   maxTokens?: number;
+}
+
+export interface BenchmarkBehaviorExpectations {
+  minSubagentCalls?: number;
+  minSkillUseCount?: number;
+  maxToolErrors?: number;
 }
 
 export interface BenchmarkCase {
@@ -32,6 +39,7 @@ export interface BenchmarkCase {
   tags?: string[];
   trials?: number;
   budget?: BenchmarkBudget;
+  behaviorExpectations?: BenchmarkBehaviorExpectations;
   setupCommand?: string;
   goldCommand?: string;
   graders: BenchmarkGrader[];
@@ -80,6 +88,12 @@ export interface BenchmarkSubagentMetric {
   name?: string;
   description?: string;
   taskType?: string;
+  status?: string;
+  runIds?: string[];
+  sessionIds?: string[];
+  taskIds?: string[];
+  toolCallCount?: number;
+  toolErrorCount?: number;
 }
 
 export interface BenchmarkAgentMetrics {

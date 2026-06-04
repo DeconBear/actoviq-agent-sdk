@@ -50,6 +50,7 @@ export function summarizeActoviqAgentDefinition(
     name: definition.name,
     description: definition.description,
     model: definition.model,
+    maxToolIterations: definition.maxToolIterations,
     toolNames: (definition.tools ?? []).map(toolDefinition => toolDefinition.name),
     mcpServerNames: (definition.mcpServers ?? []).map(server => server.name),
     inheritDefaultTools: definition.inheritDefaultTools !== false,
@@ -150,6 +151,7 @@ export class ActoviqAgentsApi {
 }
 
 export function createActoviqTaskTool(options: {
+  listAgentDefinitions?: () => ActoviqAgentDefinitionSummary[];
   getAgentDefinition: (agent: string) => ActoviqAgentDefinition | undefined;
   runAgent: (
     agent: string,
@@ -172,6 +174,11 @@ export function createActoviqTaskTool(options: {
     parentSessionId?: string;
     runId: string;
     sessionId?: string;
+    status: 'completed' | 'async_launched';
+    taskId?: string;
+    toolCallCount?: number;
+    toolErrorCount?: number;
+    textSummary?: string;
   }) => void;
   name?: string;
   description?: string;
@@ -186,9 +193,21 @@ export function createActoviqTaskTool(options: {
       name,
       description,
       inputSchema: z.object({
-        description: z.string().min(1),
+        description: z.string().min(1).optional(),
+        prompt: z.string().min(1).optional(),
+        task: z.string().min(1).optional(),
         subagent_type: z.string().min(1).optional(),
+        agent: z.string().min(1).optional(),
+        agent_type: z.string().min(1).optional(),
         run_in_background: z.boolean().optional(),
+      }).superRefine((input, ctx) => {
+        if (!resolveTaskDescription(input)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['description'],
+            message: 'Provide `description`, `prompt`, or `task` for the delegated work.',
+          });
+        }
       }),
       outputSchema: z.union([
         z.object({
@@ -199,6 +218,7 @@ export function createActoviqTaskTool(options: {
           model: z.string(),
           text: z.string(),
           toolCallCount: z.number().int().nonnegative(),
+          toolErrorCount: z.number().int().nonnegative(),
         }),
         z.object({
           status: z.literal('async_launched'),
@@ -218,6 +238,7 @@ export function createActoviqTaskTool(options: {
               output.sessionId ? `Session id: ${output.sessionId}` : undefined,
               `Model: ${output.model}`,
               `Tool calls: ${output.toolCallCount}`,
+              `Tool errors: ${output.toolErrorCount}`,
               '',
               output.text,
             ]
@@ -227,7 +248,7 @@ export function createActoviqTaskTool(options: {
               `Background task launched for ${output.subagentType}.`,
               `Task id: ${output.taskId}`,
               output.sessionId ? `Session id: ${output.sessionId}` : undefined,
-              `Output file: ${output.outputFile}`,
+              'Use TaskOutput with this task id to read the result; do not inspect runtime session files directly.',
               `Description: ${output.description}`,
             ]
               .filter(Boolean)
@@ -235,15 +256,23 @@ export function createActoviqTaskTool(options: {
       examples: [
         {
           description: 'Review the current release workflow and call out missing steps.',
-          subagent_type: 'reviewer',
+          subagent_type: 'code-reviewer',
         },
       ],
+      prompt: () => buildTaskToolPrompt(options.listAgentDefinitions?.() ?? []),
     },
-    async ({ description: taskDescription, subagent_type, run_in_background }, context) => {
-      const resolvedSubagent = subagent_type?.trim();
-      if (!resolvedSubagent) {
+    async (input, context) => {
+      const taskDescription = resolveTaskDescription(input);
+      if (!taskDescription) {
         throw new ConfigurationError(
-          'Task tool requires `subagent_type` so the delegated task can be routed to a named agent definition.',
+          'Task tool requires `description`, `prompt`, or `task` so the delegated work is explicit.',
+        );
+      }
+      const resolvedSubagent = resolveSubagentType(input, options);
+      if (!resolvedSubagent) {
+        const available = formatAvailableSubagents(options.listAgentDefinitions?.() ?? []);
+        throw new ConfigurationError(
+          `Task tool requires \`subagent_type\` so the delegated task can be routed to a named agent definition.${available ? ` Available subagents: ${available}.` : ''}`,
         );
       }
 
@@ -256,7 +285,7 @@ export function createActoviqTaskTool(options: {
 
       const inheritedOptions = extractInheritedDelegationOptions(context);
 
-      if (run_in_background) {
+      if (input.run_in_background) {
         const backgroundTask = await options.launchBackgroundAgent(
           resolvedSubagent,
           taskDescription,
@@ -273,6 +302,8 @@ export function createActoviqTaskTool(options: {
           parentSessionId: context.sessionId,
           runId: backgroundTask.runId ?? backgroundTask.id,
           sessionId: backgroundTask.sessionId,
+          status: 'async_launched',
+          taskId: backgroundTask.id,
         });
         return {
           status: 'async_launched',
@@ -286,6 +317,7 @@ export function createActoviqTaskTool(options: {
       }
 
       const result = await options.runAgent(resolvedSubagent, taskDescription, inheritedOptions);
+      const toolErrorCount = result.toolCalls.filter(call => call.isError).length;
       options.onDelegated?.({
         subagentType: resolvedSubagent,
         description: taskDescription,
@@ -293,6 +325,10 @@ export function createActoviqTaskTool(options: {
         parentSessionId: context.sessionId,
         runId: result.runId,
         sessionId: result.sessionId,
+        status: 'completed',
+        toolCallCount: result.toolCalls.length,
+        toolErrorCount,
+        textSummary: result.text,
       });
       return {
         status: 'completed',
@@ -302,9 +338,63 @@ export function createActoviqTaskTool(options: {
         model: result.model,
         text: result.text,
         toolCallCount: result.toolCalls.length,
+        toolErrorCount,
       };
     },
   );
+}
+
+function resolveTaskDescription(input: {
+  description?: string;
+  prompt?: string;
+  task?: string;
+}): string | undefined {
+  return [input.description, input.prompt, input.task]
+    .map(value => value?.trim())
+    .find((value): value is string => Boolean(value));
+}
+
+function resolveSubagentType(
+  input: {
+    subagent_type?: string;
+    agent?: string;
+    agent_type?: string;
+  },
+  options: {
+    getAgentDefinition: (agent: string) => ActoviqAgentDefinition | undefined;
+  },
+): string | undefined {
+  const explicit = [input.subagent_type, input.agent, input.agent_type]
+    .map(value => value?.trim())
+    .find((value): value is string => Boolean(value));
+  if (explicit) {
+    return explicit;
+  }
+  return options.getAgentDefinition('general-purpose') ? 'general-purpose' : undefined;
+}
+
+function buildTaskToolPrompt(agents: ActoviqAgentDefinitionSummary[]): string {
+  if (agents.length === 0) {
+    return [
+      'Use the Task tool to delegate focused work to a named subagent when independent investigation, review, debugging, or verification would materially help.',
+      'Pass a concise `description` and a `subagent_type`.',
+    ].join('\n');
+  }
+
+  return [
+    'Use the Task tool to delegate focused work to a named subagent when independent investigation, review, debugging, or verification would materially help.',
+    'Do not use Task for trivial single-file edits. Prefer it when a separate review, root-cause analysis, or parallel investigation can reduce risk.',
+    'Good delegation candidates include multi-file regressions, independent failure paths, audit/review requests, confusing test failures, and risky changes that need a second focused pass.',
+    'Choose `debugger` for failing tests or logs, `code-reviewer` for risk review after or before edits, and `general-purpose` for broad investigation when no specialist fits.',
+    'Pass a concise `description` plus one of the available `subagent_type` values. If omitted, `general-purpose` is used when available.',
+    '',
+    'Available subagents:',
+    ...agents.map(agent => `- ${agent.name}: ${agent.description}`),
+  ].join('\n');
+}
+
+function formatAvailableSubagents(agents: ActoviqAgentDefinitionSummary[]): string {
+  return agents.map(agent => agent.name).join(', ');
 }
 
 function extractInheritedDelegationOptions(

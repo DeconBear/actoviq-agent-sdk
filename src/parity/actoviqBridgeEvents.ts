@@ -99,7 +99,7 @@ export function extractActoviqBridgeTaskInvocations(
   event: ActoviqBridgeJsonEvent,
 ): ActoviqBridgeTaskInvocation[] {
   return extractActoviqBridgeToolRequests(event).flatMap(request => {
-    if (request.name !== 'Task') {
+    if (request.name !== 'Task' && request.name !== 'Agent') {
       return [];
     }
 
@@ -127,7 +127,9 @@ export function extractActoviqBridgeTaskInvocations(
               ? input.agent
               : typeof input.agent_type === 'string'
                 ? input.agent_type
-                : undefined,
+                : request.name === 'Agent'
+                  ? 'agent'
+                  : undefined,
         input,
       } satisfies ActoviqBridgeTaskInvocation,
     ];

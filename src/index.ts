@@ -119,6 +119,7 @@ export {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
+export { getDefaultActoviqAgents } from './runtime/defaultActoviqAgents.js';
 export {
   ActoviqContextApi,
   ActoviqSlashCommandHandle,

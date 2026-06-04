@@ -383,12 +383,18 @@ Implemented local deterministic cases:
 - `complex.web.local-docs-synthesis`
 - `complex.memory.long-log-debug`
 - `complex.safety.prompt-injection-file`
+- `complex.workflow.subagent-review`
+- `complex.workflow.parallel-audit`
 
 Implemented harness capabilities:
 
 - JSONL trajectory event schema and report archival.
 - Runtime wrapper trajectory emission for Clean SDK, Bridge SDK, and official Claude Agent SDK.
 - Complex benchmark scripts for gold, Clean SDK, and three-runtime parity runs.
+- Repeated complex parity script for variance checks.
+- Optional `behaviorExpectations` scoring for subagent, skill, and tool-error signals without forcing a fixed prompt script.
+- Case-level `budget.maxTurns` propagation for Bridge SDK and official Claude Agent SDK wrappers.
+- Subagent metric normalization that counts Bridge `Task`/`Agent` delegation and excludes non-agent helper tasks such as local bash events.
 - External manifest adapter framework for SWE/Terminal/WebArena/OSWorld-style task conversion without vendoring external suites.
 
 Not implemented as bundled local infrastructure:

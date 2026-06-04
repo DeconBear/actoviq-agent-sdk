@@ -1,5 +1,39 @@
 # Agent Runtime Benchmark Results
 
+## Latest Hard Subagent Capability Probe
+
+The latest targeted parity run uses the new
+`complex.workflow.parallel-audit` case. This case is deliberately harder than
+the earlier natural workflow case: it asks the runtime to use delegated-agent
+capability when available, fixes two independent regressions, requires
+`repair-notes.md`, checks benchmark-internal access, and scores subagent/tool
+behavior separately from deterministic task correctness.
+
+| Field | Value |
+| --- | --- |
+| Generated report timestamp | `2026-06-04T18:06:05.842Z` |
+| Command | `npm run bench:parity -- --cases "bench/cases/complex/workflow-parallel-audit.json"` |
+| Case | `complex.workflow.parallel-audit` |
+| Result | All three runtimes passed deterministic graders and policy audit. |
+
+| Runtime | Passed | Score | Behavior | LLM Requests | Tool Calls | Tool Errors | Subagent Calls | Policy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Clean SDK | 1/1 | 1.000 | 1.000 | 21 | 26 | 0 | 1 | pass |
+| Bridge SDK | 1/1 | 0.995 | 0.955 | 1 | 22 | 1 | 2 | pass |
+| Official Claude Agent SDK | 1/1 | 0.964 | 1.000 | 12 | 17 | 0 | 7 | pass |
+
+Interpretation:
+
+- Clean SDK now exercises a real `Task`/`debugger` subagent path in this hard
+  case and records child run metadata without exposing benchmark internals.
+- Bridge SDK also uses delegated-agent behavior; the harness now counts both
+  Bridge `Task` and `Agent` tool invocations as subagent calls.
+- Official Claude Agent SDK shows the strongest subagent count, but needed the
+  case-level `maxTurns: 20` budget and scored lower on efficiency.
+- The benchmark now distinguishes final correctness from orchestration behavior;
+  a runtime can pass task graders but still lose behavior score for missing
+  delegated-agent signals, tool errors, or internal-access violations.
+
 ## Current Validity Note
 
 The original three-runtime result below is a historical run and should not be

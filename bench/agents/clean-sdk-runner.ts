@@ -70,6 +70,12 @@ try {
       subagents: result.delegatedAgents?.map((agent) => ({
         name: agent.name,
         description: agent.lastDescription,
+        status: agent.lastStatus,
+        runIds: agent.runIds,
+        sessionIds: agent.sessionIds,
+        taskIds: agent.taskIds,
+        toolCallCount: agent.totalToolCallCount,
+        toolErrorCount: agent.totalToolErrorCount,
       })),
       skills: skillNames,
     },
@@ -159,6 +165,27 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
         },
       });
     }
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId,
+      actor: { type: 'subagent', name: agent.name },
+      event: {
+        type: 'subagent_result',
+        name: agent.name,
+        outputSummary: summarizeText(agent.lastTextSummary),
+        data: {
+          status: agent.lastStatus,
+          lastRunId: agent.lastRunId,
+          lastSessionId: agent.lastSessionId,
+          lastTaskId: agent.lastTaskId,
+          runIds: agent.runIds,
+          sessionIds: agent.sessionIds,
+          taskIds: agent.taskIds,
+          toolCallCount: agent.totalToolCallCount,
+          toolErrorCount: agent.totalToolErrorCount,
+        },
+      },
+    });
   }
   for (const skill of result.invokedSkills ?? []) {
     await appendTrajectoryEvent(trajectoryFile, {
