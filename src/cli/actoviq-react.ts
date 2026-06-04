@@ -6,7 +6,7 @@
  * and real-time streaming output. Uses the main terminal buffer for
  * native scrollback.
  */
-import { createAgentSdk, loadJsonConfigFile, createActoviqCoreTools } from 'actoviq-agent-sdk';
+import { createAgentSdk, loadJsonConfigFile, loadDefaultActoviqSettings, createActoviqCoreTools } from 'actoviq-agent-sdk';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,8 @@ import * as readline from 'node:readline';
 
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
+const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
+const DEFAULT_MAX_TOOL_ITERATIONS = 24;
 
 let isGit = false;
 try { execSync('git rev-parse --is-inside-work-tree', { cwd: WORK_DIR, stdio: 'ignore' }); isGit = true; } catch {}
@@ -95,13 +97,22 @@ async function main() {
   process.stdout.write(`\n${C.c}${C.b}╭${'─'.repeat(Math.min(w - 2, 60))}╮${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR.slice(0, 45)}${C.r}\n`);
 
-  try { await loadJsonConfigFile(CONFIG_PATH); } catch {}
-  const sdk = await createAgentSdk({ workDir: WORK_DIR });
   const tools = createActoviqCoreTools({ cwd: WORK_DIR });
+  try {
+    if (process.argv[3]) await loadJsonConfigFile(CONFIG_PATH);
+    else await loadDefaultActoviqSettings();
+  } catch {}
+  const sdk = await createAgentSdk({
+    workDir: WORK_DIR,
+    tools,
+    permissionMode: DEFAULT_PERMISSION_MODE,
+    maxToolIterations: DEFAULT_MAX_TOOL_ITERATIONS,
+  });
+  const toolMetadata = await sdk.listToolMetadata();
   const session = await sdk.createSession({ title: path.basename(WORK_DIR) });
 
   process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${sdk.config.model}${C.r}\n`);
-  process.stdout.write(`${C.c}│${C.r}  tools   : ${C.y}${tools.length} tools loaded${C.r}\n`);
+  process.stdout.write(`${C.c}│${C.r}  tools   : ${C.y}${toolMetadata.length} tools loaded${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  keys    : Tab=complete  ↑↓=history  Ctrl+C=abort${C.r}\n`);
   process.stdout.write(`${C.c}├${'─'.repeat(Math.min(w - 2, 60))}┤${C.r}\n\n`);
 
@@ -128,7 +139,7 @@ async function main() {
           return;
         case 'model': process.stdout.write(`${C.d}Model: ${C.y}${sdk.config.model}${C.r}\n\n`); return;
         case 'tools':
-          process.stdout.write(`${C.d}${tools.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.r}\n\n`);
+          process.stdout.write(`${C.d}${toolMetadata.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.r}\n\n`);
           return;
         case 'memory':
           try { const s = await session.compactState();
@@ -153,7 +164,7 @@ async function main() {
 
     abortCtrl = new AbortController();
     const stream = session.stream(t, {
-      tools, systemPrompt: SYSTEM_PROMPT, signal: abortCtrl.signal, model: sdk.config.model,
+      systemPrompt: SYSTEM_PROMPT, signal: abortCtrl.signal, model: sdk.config.model, permissionMode: DEFAULT_PERMISSION_MODE,
     });
     let iteration = 0;
     let hasText = false;

@@ -39,6 +39,8 @@ This repository has two agent runtime surfaces:
 
 When changing runtime behavior, state explicitly whether the change targets Clean SDK, Bridge SDK, or both. The Clean SDK must keep moving toward full Claude Code capability parity, including tool use, subagent delegation, skills, memory/compact behavior, permissions, and verification loops. Bridge SDK success is useful reference behavior, but it is not proof that Clean SDK has the same capability. Use Anthropic's official Claude Agent SDK / Claude Code SDK as an external baseline when benchmark or parity work needs a source-of-truth comparison beyond this repository's bridge wrapper.
 
+`bin/actoviq-react.js` and `src/cli/actoviq-react.ts` are the Clean SDK interactive CLI surface. Preserve their readline/slash-command/streaming interaction behavior, but keep their agent runtime defaults aligned with `bench/agents/clean-sdk-runner.ts`: default Actoviq settings loading, `createActoviqCoreTools({ cwd })`, `permissionMode: 'bypassPermissions'`, and `maxToolIterations: 24`. Do not replace this CLI with a benchmark-only runner; benchmark-only session isolation, metrics, and trajectory logging should stay in `bench/`.
+
 ## Benchmark Harness Guidelines
 
 Benchmark work lives under `bench/`. Use isolated copied workspaces, deterministic end-state graders, and repeated trials where practical. The agent prompt should contain the user-style task and relevant workspace context, not the hidden grader, gold fix, or a forced implementation recipe.
