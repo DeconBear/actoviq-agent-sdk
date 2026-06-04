@@ -8,7 +8,11 @@ export type BenchmarkRuntimeTarget =
 export type BenchmarkCategory =
   | 'coding'
   | 'tools'
+  | 'terminal'
   | 'workflow'
+  | 'skills'
+  | 'dialogue'
+  | 'web'
   | 'memory'
   | 'safety';
 
@@ -107,6 +111,42 @@ export interface BenchmarkScore {
   behavior: number;
 }
 
+export type BenchmarkTrajectoryEventType =
+  | 'llm_request'
+  | 'assistant_message'
+  | 'tool_call'
+  | 'tool_result'
+  | 'subagent_start'
+  | 'subagent_result'
+  | 'skill_load'
+  | 'permission_decision'
+  | 'command_verification'
+  | 'grader_result'
+  | 'compact'
+  | 'error';
+
+export interface BenchmarkTrajectoryEvent {
+  eventId: string;
+  timestamp: string;
+  runtime?: BenchmarkRuntimeTarget | string;
+  caseId?: string;
+  trial?: number;
+  actor?: {
+    type: 'main-agent' | 'subagent' | 'harness' | 'tool' | 'grader';
+    name?: string;
+    parentToolUseId?: string | null;
+  };
+  event: {
+    type: BenchmarkTrajectoryEventType;
+    name?: string;
+    inputSummary?: string;
+    outputSummary?: string;
+    isError?: boolean;
+    durationMs?: number;
+    data?: Record<string, unknown>;
+  };
+}
+
 export interface BenchmarkGraderResult {
   type: BenchmarkGrader['type'];
   passed: boolean;
@@ -126,6 +166,8 @@ export interface BenchmarkTrialResult {
   setupCommand?: BenchmarkCommandResult;
   graders: BenchmarkGraderResult[];
   agentMetrics?: BenchmarkAgentMetrics;
+  trajectoryFile?: string;
+  trajectoryEventCount?: number;
   score: BenchmarkScore;
   passed: boolean;
   durationMs: number;

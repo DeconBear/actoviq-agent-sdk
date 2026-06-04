@@ -1,0 +1,24 @@
+{
+  "id": "complex.terminal.build-pipeline",
+  "title": "Repair a broken build pipeline",
+  "category": "terminal",
+  "runtimeTarget": "parity",
+  "instruction": "The build pipeline is broken after a config rename. Diagnose it from the package scripts and source files, then fix the implementation so npm test passes. Do not hand-edit files under dist/.",
+  "fixture": "bench/fixtures/repos/build-pipeline",
+  "tags": ["complex", "terminal", "build", "devops"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 180,
+    "maxToolCalls": 45,
+    "maxTokens": 80000
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); fs.writeFileSync('scripts/build.js', 'import { mkdirSync, readFileSync, writeFileSync } from \\'node:fs\\';\\n\\nconst config = JSON.parse(readFileSync(\\'build.config.json\\', \\'utf8\\'));\\nconst entryPath = config.entry ?? config.input;\\nif (!entryPath) throw new Error(\\'build.config.json must define entry\\');\\nconst source = readFileSync(entryPath, \\'utf8\\').trim();\\nmkdirSync(\\'dist\\', { recursive: true });\\nwriteFileSync(\\'dist/manifest.json\\', JSON.stringify({ entry: entryPath, bytes: source.length, upper: source.toUpperCase() }, null, 2) + \\'\\\\n\\');\\n');\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    }
+  ],
+  "notes": "Terminal-Bench-style local case: the agent must use package scripts and shell feedback to repair the pipeline."
+}

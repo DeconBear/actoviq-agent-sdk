@@ -1,5 +1,5 @@
 import { exec as execCallback } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -16,6 +16,7 @@ import type {
   BenchmarkScore,
   BenchmarkTrialResult,
 } from './types.js';
+import { appendTrajectoryEvent, readTrajectoryEvents } from './trajectory.js';
 
 const exec = promisify(execCallback);
 const DEFAULT_CASE_PATTERN = 'bench/cases/**/*.json';
@@ -191,6 +192,7 @@ async function runTrial(
   await mkdir(benchDir, { recursive: true });
   const instructionFile = path.join(benchDir, 'instruction.txt');
   const outputFile = path.join(benchDir, 'agent-output.txt');
+  const trajectoryFile = path.join(benchDir, 'trajectory.jsonl');
   await writeFile(instructionFile, `${benchmarkCase.instruction}\n`, 'utf8');
 
   try {
@@ -201,6 +203,7 @@ async function runTrial(
       ACTOVIQ_BENCH_INSTRUCTION: benchmarkCase.instruction,
       ACTOVIQ_BENCH_INSTRUCTION_FILE: instructionFile,
       ACTOVIQ_BENCH_OUTPUT_FILE: outputFile,
+      ACTOVIQ_BENCH_TRAJECTORY_FILE: trajectoryFile,
       ACTOVIQ_BENCH_RUNTIME_TARGET: benchmarkCase.runtimeTarget,
     };
 
@@ -211,6 +214,7 @@ async function runTrial(
           env,
         )
       : undefined;
+    await appendCommandEvent(trajectoryFile, benchmarkCase, trial, 'setup_command', setupCommand);
 
     const commandToRun = options.useGold ? benchmarkCase.goldCommand : options.agentCommand;
     const agentCommand = commandToRun
@@ -221,11 +225,14 @@ async function runTrial(
           benchmarkCase.budget?.maxSeconds ? benchmarkCase.budget.maxSeconds * 1000 : undefined,
         )
       : undefined;
+    await appendCommandEvent(trajectoryFile, benchmarkCase, trial, 'agent_command', agentCommand);
     const agentMetrics = await readAgentMetrics(outputFile);
 
     const graders: BenchmarkGraderResult[] = [];
     for (const grader of benchmarkCase.graders) {
-      graders.push(await runGrader(grader, workspace, env));
+      const graderResult = await runGrader(grader, workspace, env);
+      graders.push(graderResult);
+      await appendGraderEvent(trajectoryFile, benchmarkCase, trial, graderResult);
     }
 
     const passed =
@@ -234,6 +241,7 @@ async function runTrial(
       graders.every((grader) => grader.passed);
     const durationMs = Date.now() - startedAt;
     const score = scoreTrial(benchmarkCase, passed, agentMetrics, durationMs);
+    const archivedTrajectory = await archiveTrajectory(repoRoot, options.reportDir, benchmarkCase, trial, trajectoryFile);
 
     return {
       caseId: benchmarkCase.id,
@@ -247,6 +255,8 @@ async function runTrial(
       agentCommand,
       graders,
       agentMetrics,
+      trajectoryFile: archivedTrajectory?.relativePath,
+      trajectoryEventCount: archivedTrajectory?.eventCount,
       score,
       passed,
       durationMs,
@@ -436,6 +446,90 @@ async function runCommand(
       timedOut: nodeError.killed === true || nodeError.signal === 'SIGTERM',
     };
   }
+}
+
+async function appendCommandEvent(
+  trajectoryFile: string,
+  benchmarkCase: BenchmarkCase,
+  trial: number,
+  name: string,
+  command: BenchmarkCommandResult | undefined,
+): Promise<void> {
+  if (!command) {
+    return;
+  }
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: benchmarkCase.runtimeTarget,
+    caseId: benchmarkCase.id,
+    trial,
+    actor: { type: 'harness', name },
+    event: {
+      type: 'command_verification',
+      name,
+      inputSummary: command.command,
+      outputSummary: command.exitCode === 0 ? 'exit 0' : `exit ${command.exitCode ?? 'null'}`,
+      isError: command.exitCode !== 0 || command.timedOut,
+      durationMs: command.durationMs,
+      data: {
+        exitCode: command.exitCode,
+        timedOut: command.timedOut,
+      },
+    },
+  });
+}
+
+async function appendGraderEvent(
+  trajectoryFile: string,
+  benchmarkCase: BenchmarkCase,
+  trial: number,
+  grader: BenchmarkGraderResult,
+): Promise<void> {
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: benchmarkCase.runtimeTarget,
+    caseId: benchmarkCase.id,
+    trial,
+    actor: { type: 'grader', name: grader.type },
+    event: {
+      type: 'grader_result',
+      name: grader.type,
+      outputSummary: grader.message,
+      isError: !grader.passed,
+      durationMs: grader.command?.durationMs,
+      data: {
+        passed: grader.passed,
+        exitCode: grader.command?.exitCode,
+      },
+    },
+  });
+}
+
+async function archiveTrajectory(
+  repoRoot: string,
+  reportDir: string,
+  benchmarkCase: BenchmarkCase,
+  trial: number,
+  trajectoryFile: string,
+): Promise<{ relativePath: string; eventCount: number } | undefined> {
+  if (!(await pathExists(trajectoryFile))) {
+    return undefined;
+  }
+  const events = await readTrajectoryEvents(trajectoryFile);
+  const relativePath = path.join(
+    reportDir,
+    'trajectories',
+    `${sanitizeFileName(benchmarkCase.id)}-${trial}.jsonl`,
+  );
+  const destination = path.resolve(repoRoot, relativePath);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await copyFile(trajectoryFile, destination);
+  return {
+    relativePath,
+    eventCount: events.length,
+  };
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]+/g, '-');
 }
 
 async function readAgentMetrics(outputFile: string): Promise<BenchmarkAgentMetrics | undefined> {
@@ -681,8 +775,8 @@ function renderMarkdownReport(report: BenchmarkReport): string {
     `Pass rate: ${(report.passRate * 100).toFixed(2)}% (${report.passedTrials}/${report.totalTrials})`,
     `Average score: ${report.averageScore.toFixed(3)}`,
     '',
-    '| Case | Trial | Runtime | Category | Result | Score | Duration | LLM req | Tools | Subagents | Skills |',
-    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|',
+    '| Case | Trial | Runtime | Category | Result | Score | Duration | LLM req | Tools | Subagents | Skills | Trace events |',
+    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|',
   ];
   for (const trial of report.cases) {
     lines.push(
@@ -690,8 +784,17 @@ function renderMarkdownReport(report: BenchmarkReport): string {
         trial.passed ? 'pass' : 'fail'
       } | ${trial.score.total.toFixed(3)} | ${trial.durationMs}ms | ${formatMetric(trial.agentMetrics?.llmRequestCount)} | ${formatMetric(
         trial.agentMetrics?.toolCallCount,
-      )} | ${formatMetric(trial.agentMetrics?.subagentCallCount)} | ${formatMetric(trial.agentMetrics?.skillUseCount)} |`,
+      )} | ${formatMetric(trial.agentMetrics?.subagentCallCount)} | ${formatMetric(trial.agentMetrics?.skillUseCount)} | ${formatMetric(
+        trial.trajectoryEventCount,
+      )} |`,
     );
+  }
+  const traces = report.cases.filter((trial) => trial.trajectoryFile);
+  if (traces.length > 0) {
+    lines.push('', '## Trajectories', '');
+    for (const trial of traces) {
+      lines.push(`- ${trial.caseId}#${trial.trial}: ${trial.trajectoryFile}`);
+    }
   }
   lines.push('');
   return `${lines.join('\n')}\n`;

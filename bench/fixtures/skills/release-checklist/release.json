@@ -1,0 +1,5 @@
+{
+  "version": "1.4.0",
+  "tests": "pass",
+  "artifacts": ["dist/index.js", "dist/index.d.ts"]
+}

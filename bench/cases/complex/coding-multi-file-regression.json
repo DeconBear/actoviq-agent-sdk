@@ -1,0 +1,24 @@
+{
+  "id": "complex.coding.multi-file-regression",
+  "title": "Fix a multi-file invoice regression",
+  "category": "coding",
+  "runtimeTarget": "parity",
+  "instruction": "The invoice package has a regression in currency parsing and invoice totals. Fix the implementation so the existing tests pass. Keep the public function names unchanged and avoid broad rewrites.",
+  "fixture": "bench/fixtures/repos/invoice-regression",
+  "tags": ["complex", "coding", "multi-file", "regression"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 180,
+    "maxToolCalls": 40,
+    "maxTokens": 80000
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); fs.writeFileSync('src/money.js', 'export function parseCurrency(value) {\\n  const normalized = String(value ?? 0).replace(/[$,]/g, \\'\\');\\n  const parsed = Number(normalized);\\n  if (!Number.isFinite(parsed)) throw new Error(`Invalid currency value: ${value}`);\\n  return parsed;\\n}\\n\\nexport function formatCurrency(amount) {\\n  return `$${amount.toLocaleString(\\'en-US\\', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;\\n}\\n'); fs.writeFileSync('src/invoice.js', 'import { formatCurrency, parseCurrency } from \\'./money.js\\';\\n\\nexport function invoiceTotal(invoice) {\\n  const subtotal = invoice.items.reduce((sum, item) => sum + parseCurrency(item.amount), 0);\\n  return subtotal - parseCurrency(invoice.discount ?? \\'$0\\');\\n}\\n\\nexport function invoiceSummary(invoice) {\\n  return {\\n    id: invoice.id,\\n    itemCount: invoice.items.length,\\n    total: formatCurrency(invoiceTotal(invoice)),\\n  };\\n}\\n');\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    }
+  ],
+  "notes": "SWE-bench-style local coding case: real tests, hidden gold, no prescribed tool sequence."
+}

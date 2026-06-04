@@ -6,11 +6,13 @@ import {
   createAgentSdk,
   loadDefaultActoviqSettings,
 } from '../../src/index.js';
-import type { ActoviqPermissionMode } from '../../src/types.js';
+import type { ActoviqPermissionMode, AgentRunResult } from '../../src/types.js';
+import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
+const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqPermissionMode;
 const maxToolIterations = Number(process.env.ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS ?? 24);
 
@@ -34,6 +36,7 @@ try {
       benchmarkRuntime: 'clean-sdk',
     },
   });
+  await writeTrajectory(result);
 
   await writeRunnerOutput(outputFile, {
     runtime: 'clean-sdk',
@@ -83,6 +86,113 @@ function buildPrompt(task: string, cwd: string): string {
 
 function sumDelegatedAgentCounts(agents: Array<{ count: number }> | undefined): number {
   return agents?.reduce((sum, agent) => sum + agent.count, 0) ?? 0;
+}
+
+async function writeTrajectory(result: AgentRunResult): Promise<void> {
+  for (const request of result.requests) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'llm_request',
+        name: request.model,
+        outputSummary: request.stopReason ?? undefined,
+        data: {
+          iteration: request.iteration,
+          inputTokens: request.usage?.input_tokens,
+          outputTokens: request.usage?.output_tokens,
+        },
+      },
+    });
+  }
+  for (const call of result.toolCalls) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'tool_call',
+        name: call.name,
+        inputSummary: summarizeText(JSON.stringify(call.input)),
+        outputSummary: summarizeText(call.outputText),
+        isError: call.isError,
+        durationMs: call.durationMs,
+      },
+    });
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      actor: { type: 'tool', name: call.name },
+      event: {
+        type: 'tool_result',
+        name: call.name,
+        outputSummary: summarizeText(call.outputText),
+        isError: call.isError,
+        durationMs: call.durationMs,
+      },
+    });
+  }
+  for (const agent of result.delegatedAgents ?? []) {
+    for (let i = 0; i < agent.count; i += 1) {
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'subagent_start',
+          name: agent.name,
+          inputSummary: summarizeText(agent.lastDescription),
+        },
+      });
+    }
+  }
+  for (const skill of result.invokedSkills ?? []) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'skill_load',
+        name: skill.name,
+        inputSummary: summarizeText(skill.args),
+        data: {
+          source: skill.source,
+          loadedFrom: skill.loadedFrom,
+        },
+      },
+    });
+  }
+  for (const decision of result.permissionDecisions ?? []) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      actor: { type: 'harness', name: 'permission' },
+      event: {
+        type: 'permission_decision',
+        name: decision.toolName,
+        outputSummary: decision.behavior,
+        isError: decision.behavior === 'deny',
+        data: {
+          publicName: decision.publicName,
+          source: decision.source,
+          reason: decision.reason,
+        },
+      },
+    });
+  }
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: 'clean-sdk',
+    caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+    actor: { type: 'main-agent' },
+    event: {
+      type: 'assistant_message',
+      outputSummary: summarizeText(result.text),
+      data: {
+        stopReason: result.stopReason,
+      },
+    },
+  });
 }
 
 async function writeRunnerOutput(filePath: string | undefined, data: unknown): Promise<void> {

@@ -7,10 +7,12 @@ import {
 } from '../../src/index.js';
 import { analyzeActoviqBridgeEvents } from '../../src/parity/actoviqBridgeEvents.js';
 import type { ActoviqBridgePermissionMode } from '../../src/types.js';
+import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
+const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqBridgePermissionMode;
 const maxTurns = Number(process.env.ACTOVIQ_BENCH_MAX_TURNS ?? 12);
 
@@ -36,6 +38,7 @@ try {
   const eventAnalysis = analyzeActoviqBridgeEvents(result.events);
   const erroredToolIds = new Set(eventAnalysis.toolResults.filter((toolResult) => toolResult.isError).map((toolResult) => toolResult.toolUseId));
   const skillRequests = eventAnalysis.toolRequests.filter((request) => request.name.toLowerCase().includes('skill'));
+  await writeTrajectory(result, eventAnalysis);
 
   await writeRunnerOutput(outputFile, {
     runtime: 'bridge-sdk',
@@ -89,6 +92,100 @@ function buildPrompt(task: string, cwd: string): string {
 
 function countPermissionDenials(events: Array<Record<string, unknown>>): number {
   return events.filter((event) => event.type === 'permission_denied').length;
+}
+
+async function writeTrajectory(
+  result: { text: string; numTurns?: number; assistantMessages: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> },
+  eventAnalysis: ReturnType<typeof analyzeActoviqBridgeEvents>,
+): Promise<void> {
+  const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
+  const numTurns = result.numTurns ?? result.assistantMessages.length;
+  for (let i = 0; i < numTurns; i += 1) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'llm_request',
+        name: 'bridge-turn',
+        data: { iteration: i + 1 },
+      },
+    });
+  }
+  for (const request of eventAnalysis.toolRequests) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'tool_call',
+        name: request.name,
+        inputSummary: summarizeText(JSON.stringify(request.input)),
+        data: {
+          provider: request.provider,
+          blockType: request.blockType,
+        },
+      },
+    });
+  }
+  for (const toolResult of eventAnalysis.toolResults) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'tool' },
+      event: {
+        type: 'tool_result',
+        name: toolResult.toolUseId,
+        outputSummary: summarizeText(JSON.stringify(toolResult.content)),
+        isError: toolResult.isError,
+      },
+    });
+  }
+  for (const task of eventAnalysis.taskInvocations) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'subagent_start',
+        name: task.subagentType ?? task.name,
+        inputSummary: summarizeText(task.description ?? task.prompt),
+      },
+    });
+  }
+  for (const request of eventAnalysis.toolRequests.filter((toolRequest) => toolRequest.name.toLowerCase().includes('skill'))) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'skill_load',
+        name: request.name,
+        inputSummary: summarizeText(JSON.stringify(request.input)),
+      },
+    });
+  }
+  for (const event of result.events.filter((item) => item.type === 'permission_denied')) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'bridge-sdk',
+      caseId,
+      actor: { type: 'harness', name: 'permission' },
+      event: {
+        type: 'permission_decision',
+        outputSummary: summarizeText(JSON.stringify(event)),
+        isError: true,
+      },
+    });
+  }
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: 'bridge-sdk',
+    caseId,
+    actor: { type: 'main-agent' },
+    event: {
+      type: 'assistant_message',
+      outputSummary: summarizeText(result.text),
+    },
+  });
 }
 
 async function writeRunnerOutput(filePath: string | undefined, data: unknown): Promise<void> {

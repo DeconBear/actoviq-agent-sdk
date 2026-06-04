@@ -2,10 +2,12 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
+const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions';
 const maxTurns = Number(process.env.ACTOVIQ_BENCH_MAX_TURNS ?? 12);
 
@@ -47,6 +49,7 @@ const skillRequests = toolCalls.filter((toolCall) => toolCall.name.toLowerCase()
 const resultRecord = isRecord(resultMessage) ? resultMessage : undefined;
 const usage = isRecord(resultRecord?.usage) ? resultRecord.usage : undefined;
 const outputText = getString(resultRecord, 'result') ?? extractLastAssistantText(messages) ?? '';
+await writeTrajectory(messages, toolCalls, toolResults, subagents, skillRequests, resultRecord);
 
 await writeRunnerOutput(outputFile, {
   runtime: 'official-claude-sdk',
@@ -182,6 +185,125 @@ function extractLastAssistantText(messagesToInspect: SDKMessage[]): string | und
     }
   }
   return undefined;
+}
+
+async function writeTrajectory(
+  messagesToInspect: SDKMessage[],
+  toolCallsToWrite: ToolCallSummary[],
+  toolResultsToWrite: ToolResultSummary[],
+  subagentsToWrite: Array<{ name?: string; description?: string; taskType?: string }>,
+  skillRequestsToWrite: ToolCallSummary[],
+  resultToWrite: Record<string, unknown> | undefined,
+): Promise<void> {
+  const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
+  const resultUsage = isRecord(resultToWrite?.usage) ? resultToWrite.usage : undefined;
+  const numTurns = getNumber(resultToWrite, 'num_turns') ?? messagesToInspect.filter((message) => message.type === 'assistant').length;
+  for (let i = 0; i < numTurns; i += 1) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'llm_request',
+        name: 'official-turn',
+        data: {
+          iteration: i + 1,
+          inputTokens: getNumber(resultUsage, 'input_tokens'),
+          outputTokens: getNumber(resultUsage, 'output_tokens'),
+        },
+      },
+    });
+  }
+  for (const message of messagesToInspect.filter((item) => item.type === 'assistant')) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: {
+        type: message.subagent_type ? 'subagent' : 'main-agent',
+        name: message.subagent_type,
+        parentToolUseId: message.parent_tool_use_id,
+      },
+      event: {
+        type: 'assistant_message',
+        outputSummary: summarizeText(extractAssistantText(message)),
+      },
+    });
+  }
+  for (const toolCall of toolCallsToWrite) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: { type: 'main-agent', parentToolUseId: toolCall.parentToolUseId },
+      event: {
+        type: 'tool_call',
+        name: toolCall.name,
+      },
+    });
+  }
+  for (const toolResult of toolResultsToWrite) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: { type: 'tool' },
+      event: {
+        type: 'tool_result',
+        name: toolResult.toolUseId,
+        isError: toolResult.isError,
+      },
+    });
+  }
+  for (const subagent of subagentsToWrite) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'subagent_start',
+        name: subagent.name,
+        inputSummary: summarizeText(subagent.description),
+        data: {
+          taskType: subagent.taskType,
+        },
+      },
+    });
+  }
+  for (const skillRequest of skillRequestsToWrite) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'official-claude-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'skill_load',
+        name: skillRequest.name,
+      },
+    });
+  }
+  if (Array.isArray(resultToWrite?.permission_denials)) {
+    for (const denial of resultToWrite.permission_denials) {
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'official-claude-sdk',
+        caseId,
+        actor: { type: 'harness', name: 'permission' },
+        event: {
+          type: 'permission_decision',
+          outputSummary: summarizeText(JSON.stringify(denial)),
+          isError: true,
+        },
+      });
+    }
+  }
+}
+
+function extractAssistantText(message: SDKMessage): string | undefined {
+  if (message.type !== 'assistant' || !isRecord(message.message) || !Array.isArray(message.message.content)) {
+    return undefined;
+  }
+  return message.message.content.flatMap((block) => {
+    if (!isRecord(block) || block.type !== 'text') {
+      return [];
+    }
+    return typeof block.text === 'string' ? [block.text] : [];
+  }).join('\n');
 }
 
 async function writeRunnerOutput(filePath: string | undefined, data: unknown): Promise<void> {
