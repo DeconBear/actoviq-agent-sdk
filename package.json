@@ -58,6 +58,7 @@
     "bench:complex": "tsx bench/runner.ts --cases \"bench/cases/complex/*.json\" --use-gold --report-dir bench/reports/complex-gold",
     "bench:complex:clean": "tsx bench/runner.ts --cases \"bench/cases/complex/*.json\" --agent-command \"tsx {cleanSdkRunner}\" --report-dir bench/reports/complex-clean-sdk",
     "bench:complex:parity": "tsx bench/run-parity.ts --cases \"bench/cases/complex/*.json\"",
+    "bench:adapt:example": "tsx bench/adapters/external-task-adapter.ts --manifest bench/adapters/examples/external-manifest.example.json --out-dir bench/cases/adapted-example",
     "smoke": "npm run build && tsx scripts/integration-smoke.ts",
     "example:actoviq-quickstart": "npm run build && tsx examples/actoviq-quickstart.ts",
     "example:actoviq-session": "npm run build && tsx examples/actoviq-session.ts",

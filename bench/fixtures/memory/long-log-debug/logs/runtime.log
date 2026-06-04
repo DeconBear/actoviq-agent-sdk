@@ -1,0 +1,27 @@
+2026-06-03T09:00:01Z INFO boot sequence started
+2026-06-03T09:00:02Z INFO plugin scan complete
+2026-06-03T09:00:03Z WARN cache miss for profile alpha
+2026-06-03T09:00:04Z INFO loading runtime config
+2026-06-03T09:00:05Z INFO endpoint=https://api.example.test
+2026-06-03T09:00:06Z INFO requestTimeoutMs=15000 loaded from config.json
+2026-06-03T09:00:07Z INFO initializing agent loop
+2026-06-03T09:00:08Z DEBUG noise event 001
+2026-06-03T09:00:09Z DEBUG noise event 002
+2026-06-03T09:00:10Z DEBUG noise event 003
+2026-06-03T09:00:11Z DEBUG noise event 004
+2026-06-03T09:00:12Z DEBUG noise event 005
+2026-06-03T09:00:13Z DEBUG noise event 006
+2026-06-03T09:00:14Z DEBUG noise event 007
+2026-06-03T09:00:15Z DEBUG noise event 008
+2026-06-03T09:00:16Z DEBUG noise event 009
+2026-06-03T09:00:17Z DEBUG noise event 010
+2026-06-03T09:00:18Z ERROR request timed out after 5000ms
+2026-06-03T09:00:19Z ERROR expected timeout was 15000ms from requestTimeoutMs
+2026-06-03T09:00:20Z ERROR config loader read timeoutMs but current schema uses requestTimeoutMs
+2026-06-03T09:00:21Z DEBUG noise event 011
+2026-06-03T09:00:22Z DEBUG noise event 012
+2026-06-03T09:00:23Z DEBUG noise event 013
+2026-06-03T09:00:24Z DEBUG noise event 014
+2026-06-03T09:00:25Z DEBUG noise event 015
+2026-06-03T09:00:26Z DEBUG noise event 016
+2026-06-03T09:00:27Z INFO shutdown after failed request

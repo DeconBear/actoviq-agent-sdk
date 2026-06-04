@@ -1,0 +1,24 @@
+{
+  "tasks": [
+    {
+      "id": "adapted.example.terminal",
+      "title": "Example adapted terminal task",
+      "source": "terminal-bench",
+      "category": "terminal",
+      "instruction": "Repair the fixture so the verification command passes.",
+      "fixture": "bench/fixtures/repos/build-pipeline",
+      "tags": ["example"],
+      "budget": {
+        "maxSeconds": 180,
+        "maxToolCalls": 50
+      },
+      "graders": [
+        {
+          "type": "command",
+          "command": "npm test",
+          "timeoutMs": 120000
+        }
+      ]
+    }
+  ]
+}

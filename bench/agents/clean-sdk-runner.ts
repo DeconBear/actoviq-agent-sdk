@@ -37,6 +37,7 @@ try {
     },
   });
   await writeTrajectory(result);
+  const skillNames = getSkillNames(result);
 
   await writeRunnerOutput(outputFile, {
     runtime: 'clean-sdk',
@@ -49,7 +50,7 @@ try {
       toolCallCount: result.toolCalls.length,
       toolErrorCount: result.toolCalls.filter((call) => call.isError).length,
       subagentCallCount: sumDelegatedAgentCounts(result.delegatedAgents),
-      skillUseCount: result.invokedSkills?.length ?? 0,
+      skillUseCount: skillNames.length,
       permissionDenialCount: result.permissionDecisions?.filter((decision) => decision.behavior === 'deny').length ?? 0,
       durationMs: Date.parse(result.completedAt) - Date.parse(result.startedAt),
       inputTokens: result.usage?.input_tokens,
@@ -66,7 +67,7 @@ try {
         name: agent.name,
         description: agent.lastDescription,
       })),
-      skills: result.invokedSkills?.map((skill) => skill.name),
+      skills: skillNames,
     },
   });
 
@@ -86,6 +87,14 @@ function buildPrompt(task: string, cwd: string): string {
 
 function sumDelegatedAgentCounts(agents: Array<{ count: number }> | undefined): number {
   return agents?.reduce((sum, agent) => sum + agent.count, 0) ?? 0;
+}
+
+function getSkillNames(result: AgentRunResult): string[] {
+  const invoked = result.invokedSkills?.map((skill) => skill.name) ?? [];
+  const toolBased = result.toolCalls
+    .filter((call) => call.name.toLowerCase().includes('skill'))
+    .map((call) => call.publicName || call.name);
+  return [...new Set([...invoked, ...toolBased])];
 }
 
 async function writeTrajectory(result: AgentRunResult): Promise<void> {
@@ -162,6 +171,21 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
         },
       },
     });
+  }
+  if (!result.invokedSkills?.length) {
+    for (const skillToolCall of result.toolCalls.filter((call) => call.name.toLowerCase().includes('skill'))) {
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'skill_load',
+          name: skillToolCall.publicName || skillToolCall.name,
+          inputSummary: summarizeText(JSON.stringify(skillToolCall.input)),
+          isError: skillToolCall.isError,
+        },
+      });
+    }
   }
   for (const decision of result.permissionDecisions ?? []) {
     await appendTrajectoryEvent(trajectoryFile, {

@@ -371,3 +371,30 @@ The first implementation batch should add these cases:
 5. `complex.safety.prompt-injection-file`
 
 These cover the biggest gap in the current smoke suite: they force real multi-step agent behavior while keeping evaluation deterministic.
+
+## Implementation Status
+
+Implemented local deterministic cases:
+
+- `complex.coding.multi-file-regression`
+- `complex.terminal.build-pipeline`
+- `complex.skills.release-checklist`
+- `complex.dialogue.policy-tool-api`
+- `complex.web.local-docs-synthesis`
+- `complex.memory.long-log-debug`
+- `complex.safety.prompt-injection-file`
+
+Implemented harness capabilities:
+
+- JSONL trajectory event schema and report archival.
+- Runtime wrapper trajectory emission for Clean SDK, Bridge SDK, and official Claude Agent SDK.
+- Complex benchmark scripts for gold, Clean SDK, and three-runtime parity runs.
+- External manifest adapter framework for SWE/Terminal/WebArena/OSWorld-style task conversion without vendoring external suites.
+
+Not implemented as bundled local infrastructure:
+
+- Full live WebArena/OSWorld environments.
+- Full SWE-bench Docker harness.
+- Interactive Tau-bench user simulator with live multi-turn tool API callbacks.
+
+Those are intentionally adapter-driven because they require heavier external environments and should stay opt-in.

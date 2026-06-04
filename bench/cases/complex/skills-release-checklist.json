@@ -20,19 +20,9 @@
       "timeoutMs": 120000
     },
     {
-      "type": "file_contains",
-      "path": "release-report.md",
-      "text": "Status: ready"
-    },
-    {
-      "type": "file_contains",
-      "path": "release-report.md",
-      "text": "Tests: pass"
-    },
-    {
-      "type": "file_contains",
-      "path": "release-report.md",
-      "text": "Changelog: updated"
+      "type": "command",
+      "command": "node check-release-report.mjs",
+      "timeoutMs": 120000
     }
   ],
   "notes": "Skills should be available, but graders evaluate the final report rather than forcing skill invocation."

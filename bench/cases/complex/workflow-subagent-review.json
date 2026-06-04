@@ -1,0 +1,24 @@
+{
+  "id": "complex.workflow.subagent-review",
+  "title": "Fix two validation paths with review-style decomposition",
+  "category": "workflow",
+  "runtimeTarget": "parity",
+  "instruction": "Two validation paths started failing after a schema change. Inspect the repository, fix both issues, and verify with npm test. This task is suitable for independent review or decomposition if your runtime supports it, but do not force a broad rewrite.",
+  "fixture": "bench/fixtures/workflow/subagent-review",
+  "tags": ["complex", "workflow", "subagent", "review"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 180,
+    "maxToolCalls": 60,
+    "maxTokens": 100000
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); fs.writeFileSync('src/validators.js', 'export function validateConfig(config) {\\n  return Boolean(config.runtime?.model && config.runtime?.timeoutMs >= 1000);\\n}\\n\\nexport function validateReport(report) {\\n  return report.status === \\'ready\\' && Array.isArray(report.checks) && report.checks.every((check) => check.passed === true);\\n}\\n');\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    }
+  ],
+  "notes": "Workflow case naturally supports review/decomposition; final graders stay end-state based."
+}

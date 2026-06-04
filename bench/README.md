@@ -84,6 +84,12 @@ Run the complex cases against Clean SDK, Bridge SDK, and the official Claude Age
 npm run bench:complex:parity
 ```
 
+Generate example adapted cases from an external-style manifest:
+
+```bash
+npm run bench:adapt:example
+```
+
 Run benchmark cases against an external agent command:
 
 ```bash
@@ -105,3 +111,4 @@ Reports are written to `bench/reports/latest.json` and `bench/reports/latest.md`
 Runtime-specific scripts write to `bench/reports/clean-sdk/`, `bench/reports/bridge-sdk/`, `bench/reports/official-claude-sdk/`, and `bench/reports/parity/`. Each trial also archives a JSONL trajectory under the selected report directory's `trajectories/` folder when trajectory events are available.
 
 For the advanced Claude Code-like capability benchmark plan, see `bench/AGENT_CAPABILITY_BENCHMARK_DESIGN.md`.
+For external benchmark manifest conversion, see `bench/adapters/README.md`.

@@ -1,0 +1,24 @@
+{
+  "id": "complex.memory.long-log-debug",
+  "title": "Diagnose a config bug from long logs",
+  "category": "memory",
+  "runtimeTarget": "parity",
+  "instruction": "Diagnose the timeout failure using logs/runtime.log and fix the config loader so npm test passes. Keep the patch focused and do not rewrite the log file.",
+  "fixture": "bench/fixtures/memory/long-log-debug",
+  "tags": ["complex", "memory", "logs", "debug"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 180,
+    "maxToolCalls": 60,
+    "maxTokens": 100000
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); fs.writeFileSync('src/config.js', 'export function loadRuntimeConfig(raw) {\\n  return {\\n    endpoint: raw.endpoint,\\n    timeoutMs: raw.requestTimeoutMs ?? raw.timeoutMs ?? 5000,\\n  };\\n}\\n');\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    }
+  ],
+  "notes": "Memory/context case with noisy logs and one actionable root-cause line."
+}
