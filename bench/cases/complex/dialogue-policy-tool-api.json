@@ -22,7 +22,7 @@
     {
       "type": "file_contains",
       "path": "agent-response.md",
-      "text": "Refund approved"
+      "text": "approved"
     }
   ],
   "notes": "Tau-bench-style local case: domain policy plus tool-backed state mutation and deterministic policy grader."

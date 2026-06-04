@@ -92,6 +92,7 @@ export interface BenchmarkAgentMetrics {
   subagentCallCount?: number;
   skillUseCount?: number;
   permissionDenialCount?: number;
+  benchmarkInternalAccessCount?: number;
   eventCount?: number;
   durationMs?: number;
   totalCostUsd?: number;
@@ -148,7 +149,7 @@ export interface BenchmarkTrajectoryEvent {
 }
 
 export interface BenchmarkGraderResult {
-  type: BenchmarkGrader['type'];
+  type: BenchmarkGrader['type'] | 'policy';
   passed: boolean;
   message: string;
   command?: BenchmarkCommandResult;

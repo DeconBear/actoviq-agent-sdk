@@ -188,11 +188,10 @@ async function runTrial(
 ): Promise<BenchmarkTrialResult> {
   const startedAt = Date.now();
   const workspace = await createWorkspace(repoRoot, benchmarkCase, trial, options);
-  const benchDir = path.join(workspace, '.actoviq-bench');
-  await mkdir(benchDir, { recursive: true });
-  const instructionFile = path.join(benchDir, 'instruction.txt');
-  const outputFile = path.join(benchDir, 'agent-output.txt');
-  const trajectoryFile = path.join(benchDir, 'trajectory.jsonl');
+  const internalDir = await createInternalDirectory(repoRoot, benchmarkCase, trial, options);
+  const instructionFile = path.join(internalDir, 'instruction.txt');
+  const outputFile = path.join(internalDir, 'agent-output.txt');
+  const trajectoryFile = path.join(internalDir, 'trajectory.jsonl');
   await writeFile(instructionFile, `${benchmarkCase.instruction}\n`, 'utf8');
 
   try {
@@ -204,6 +203,7 @@ async function runTrial(
       ACTOVIQ_BENCH_INSTRUCTION_FILE: instructionFile,
       ACTOVIQ_BENCH_OUTPUT_FILE: outputFile,
       ACTOVIQ_BENCH_TRAJECTORY_FILE: trajectoryFile,
+      ACTOVIQ_BENCH_INTERNAL_DIR: internalDir,
       ACTOVIQ_BENCH_RUNTIME_TARGET: benchmarkCase.runtimeTarget,
     };
 
@@ -227,6 +227,13 @@ async function runTrial(
       : undefined;
     await appendCommandEvent(trajectoryFile, benchmarkCase, trial, 'agent_command', agentCommand);
     const agentMetrics = await readAgentMetrics(outputFile);
+    const policyResult = await auditBenchmarkInternalAccess(repoRoot, workspace, trajectoryFile);
+    const auditedAgentMetrics = policyResult.accessCount > 0
+      ? {
+          ...agentMetrics,
+          benchmarkInternalAccessCount: policyResult.accessCount,
+        }
+      : agentMetrics;
 
     const graders: BenchmarkGraderResult[] = [];
     for (const grader of benchmarkCase.graders) {
@@ -234,13 +241,15 @@ async function runTrial(
       graders.push(graderResult);
       await appendGraderEvent(trajectoryFile, benchmarkCase, trial, graderResult);
     }
+    graders.push(policyResult.grader);
+    await appendGraderEvent(trajectoryFile, benchmarkCase, trial, policyResult.grader);
 
     const passed =
       (setupCommand?.exitCode ?? 0) === 0 &&
       (agentCommand?.exitCode ?? 0) === 0 &&
       graders.every((grader) => grader.passed);
     const durationMs = Date.now() - startedAt;
-    const score = scoreTrial(benchmarkCase, passed, agentMetrics, durationMs);
+    const score = scoreTrial(benchmarkCase, passed, auditedAgentMetrics, durationMs);
     const archivedTrajectory = await archiveTrajectory(repoRoot, options.reportDir, benchmarkCase, trial, trajectoryFile);
 
     return {
@@ -254,7 +263,7 @@ async function runTrial(
       setupCommand,
       agentCommand,
       graders,
-      agentMetrics,
+      agentMetrics: auditedAgentMetrics,
       trajectoryFile: archivedTrajectory?.relativePath,
       trajectoryEventCount: archivedTrajectory?.eventCount,
       score,
@@ -264,6 +273,7 @@ async function runTrial(
   } finally {
     if (!options.keepWorkspaces) {
       await removeWorkspace(workspace);
+      await removeWorkspace(internalDir);
     }
   }
 }
@@ -286,6 +296,19 @@ async function createWorkspace(
   }
 
   return workspace;
+}
+
+async function createInternalDirectory(
+  repoRoot: string,
+  benchmarkCase: BenchmarkCase,
+  trial: number,
+  options: CliOptions,
+): Promise<string> {
+  const parent = options.workspaceRoot
+    ? path.resolve(repoRoot, options.workspaceRoot)
+    : os.tmpdir();
+  await mkdir(parent, { recursive: true });
+  return await mkdtemp(path.join(parent, `actoviq-bench-internal-${benchmarkCase.id}-${trial}-`));
 }
 
 function renderCommand(
@@ -366,6 +389,97 @@ async function runGrader(
       };
     }
   }
+}
+
+async function auditBenchmarkInternalAccess(
+  repoRoot: string,
+  workspace: string,
+  trajectoryFile: string,
+): Promise<{ accessCount: number; grader: BenchmarkGraderResult }> {
+  if (!(await pathExists(trajectoryFile))) {
+    return {
+      accessCount: 0,
+      grader: {
+        type: 'policy',
+        passed: true,
+        message: 'No trajectory file was available for benchmark-internal access audit.',
+      },
+    };
+  }
+
+  const forbiddenHits: string[] = [];
+  const events = await readTrajectoryEvents(trajectoryFile);
+  for (const event of events) {
+    if (!['tool_call', 'tool_result'].includes(event.event.type)) {
+      continue;
+    }
+    const text = `${event.event.name ?? ''}\n${event.event.inputSummary ?? ''}\n${event.event.outputSummary ?? ''}`;
+    const hit = findForbiddenBenchmarkAccess(text, repoRoot, workspace);
+    if (hit) {
+      forbiddenHits.push(`${event.event.type}:${event.event.name ?? 'unknown'}:${hit}`);
+    }
+  }
+
+  if (forbiddenHits.length === 0) {
+    return {
+      accessCount: 0,
+      grader: {
+        type: 'policy',
+        passed: true,
+        message: 'No benchmark-internal access detected in tool trajectory.',
+      },
+    };
+  }
+
+  return {
+    accessCount: forbiddenHits.length,
+    grader: {
+      type: 'policy',
+      passed: false,
+      message: `Benchmark-internal access detected: ${forbiddenHits.slice(0, 5).join('; ')}`,
+    },
+  };
+}
+
+function findForbiddenBenchmarkAccess(text: string, repoRoot: string, workspace: string): string | undefined {
+  const normalizedText = normalizeForAudit(text);
+  const normalizedRepoRoot = normalizeForAudit(repoRoot);
+  const normalizedWorkspace = normalizeForAudit(workspace);
+  const forbiddenPatterns = [
+    '.actoviq-bench',
+    'actoviq-bench-internal',
+    'goldcommand',
+    'bench/cases',
+    'bench/reports',
+    'agent_runtime_benchmark_results',
+    'agent_capability_benchmark_design',
+    'clean-sdk-runner.ts',
+    'bridge-sdk-runner.ts',
+    'official-claude-sdk-runner.ts',
+    'actoviq_bench_output_file',
+    'actoviq_bench_trajectory_file',
+    'actoviq_bench_internal_dir',
+  ];
+
+  for (const pattern of forbiddenPatterns) {
+    if (normalizedText.includes(pattern)) {
+      return pattern;
+    }
+  }
+
+  if (
+    normalizedRepoRoot &&
+    normalizedText.includes(normalizedRepoRoot) &&
+    (!normalizedWorkspace || !normalizedText.includes(normalizedWorkspace))
+  ) {
+    return 'repo-root';
+  }
+
+  return undefined;
+}
+
+function normalizeForAudit(value: string): string {
+  return value.replace(/\\/g, '/').toLowerCase();
 }
 
 function resolveWorkspacePath(workspace: string, relativePath: string): string {
@@ -693,6 +807,9 @@ function scoreBehavior(metrics: BenchmarkAgentMetrics | undefined): number {
   }
   if (metrics.permissionDenialCount && metrics.permissionDenialCount > 0) {
     score -= Math.min(0.3, metrics.permissionDenialCount * 0.1);
+  }
+  if (metrics.benchmarkInternalAccessCount && metrics.benchmarkInternalAccessCount > 0) {
+    score -= Math.min(1, metrics.benchmarkInternalAccessCount * 0.25);
   }
   return Math.max(0, score);
 }

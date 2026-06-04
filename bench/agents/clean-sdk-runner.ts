@@ -11,16 +11,20 @@ import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
+const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
+const internalDir = process.env.ACTOVIQ_BENCH_INTERNAL_DIR ?? path.join(workspace, '.actoviq-bench');
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqPermissionMode;
 const maxToolIterations = Number(process.env.ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS ?? 24);
+
+clearBenchmarkEnv();
 
 await loadDefaultActoviqSettings();
 
 const sdk = await createAgentSdk({
   workDir: workspace,
-  sessionDirectory: path.join(workspace, '.actoviq-bench', 'clean-sdk-sessions'),
+  sessionDirectory: path.join(internalDir, 'clean-sdk-sessions'),
   tools: createActoviqCoreTools({ cwd: workspace }),
   permissionMode,
   maxToolIterations,
@@ -32,7 +36,7 @@ try {
     systemPrompt:
       'You are running inside an isolated benchmark workspace. Complete the user task by changing the workspace as needed. Keep changes focused and do not inspect benchmark internals under .actoviq-bench.',
     metadata: {
-      benchmarkCaseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      benchmarkCaseId: caseId,
       benchmarkRuntime: 'clean-sdk',
     },
   });
@@ -101,7 +105,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
   for (const request of result.requests) {
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
-      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      caseId,
       actor: { type: 'main-agent' },
       event: {
         type: 'llm_request',
@@ -118,7 +122,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
   for (const call of result.toolCalls) {
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
-      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      caseId,
       actor: { type: 'main-agent' },
       event: {
         type: 'tool_call',
@@ -131,7 +135,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
     });
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
-      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      caseId,
       actor: { type: 'tool', name: call.name },
       event: {
         type: 'tool_result',
@@ -146,7 +150,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
     for (let i = 0; i < agent.count; i += 1) {
       await appendTrajectoryEvent(trajectoryFile, {
         runtime: 'clean-sdk',
-        caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+        caseId,
         actor: { type: 'main-agent' },
         event: {
           type: 'subagent_start',
@@ -159,7 +163,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
   for (const skill of result.invokedSkills ?? []) {
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
-      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      caseId,
       actor: { type: 'main-agent' },
       event: {
         type: 'skill_load',
@@ -176,7 +180,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
     for (const skillToolCall of result.toolCalls.filter((call) => call.name.toLowerCase().includes('skill'))) {
       await appendTrajectoryEvent(trajectoryFile, {
         runtime: 'clean-sdk',
-        caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+        caseId,
         actor: { type: 'main-agent' },
         event: {
           type: 'skill_load',
@@ -190,7 +194,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
   for (const decision of result.permissionDecisions ?? []) {
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
-      caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+      caseId,
       actor: { type: 'harness', name: 'permission' },
       event: {
         type: 'permission_decision',
@@ -207,7 +211,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
   }
   await appendTrajectoryEvent(trajectoryFile, {
     runtime: 'clean-sdk',
-    caseId: process.env.ACTOVIQ_BENCH_CASE_ID,
+    caseId,
     actor: { type: 'main-agent' },
     event: {
       type: 'assistant_message',
@@ -231,4 +235,12 @@ function readRequiredEnv(name: string): string {
     throw new Error(`${name} is required.`);
   }
   return value;
+}
+
+function clearBenchmarkEnv(): void {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('ACTOVIQ_BENCH_')) {
+      delete process.env[key];
+    }
+  }
 }

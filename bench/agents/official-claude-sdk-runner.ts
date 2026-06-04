@@ -6,10 +6,13 @@ import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
+const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions';
 const maxTurns = Number(process.env.ACTOVIQ_BENCH_MAX_TURNS ?? 12);
+
+clearBenchmarkEnv();
 
 const messages: SDKMessage[] = [];
 for await (const message of query({
@@ -195,7 +198,6 @@ async function writeTrajectory(
   skillRequestsToWrite: ToolCallSummary[],
   resultToWrite: Record<string, unknown> | undefined,
 ): Promise<void> {
-  const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
   const resultUsage = isRecord(resultToWrite?.usage) ? resultToWrite.usage : undefined;
   const numTurns = getNumber(resultToWrite, 'num_turns') ?? messagesToInspect.filter((message) => message.type === 'assistant').length;
   for (let i = 0; i < numTurns; i += 1) {
@@ -318,6 +320,14 @@ function readRequiredEnv(name: string): string {
     throw new Error(`${name} is required.`);
   }
   return value;
+}
+
+function clearBenchmarkEnv(): void {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('ACTOVIQ_BENCH_')) {
+      delete process.env[key];
+    }
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

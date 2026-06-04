@@ -43,6 +43,8 @@ When changing runtime behavior, state explicitly whether the change targets Clea
 
 Benchmark work lives under `bench/`. Use isolated copied workspaces, deterministic end-state graders, and repeated trials where practical. The agent prompt should contain the user-style task and relevant workspace context, not the hidden grader, gold fix, or a forced implementation recipe.
 
+Keep harness internals out of the agent-visible workspace. Trial instruction, output, trajectory, and runner session files should live in a sibling temporary internal directory, and benchmark wrappers should clear `ACTOVIQ_BENCH_*` variables before starting the agent loop. Treat access to `.actoviq-bench`, `actoviq-bench-internal`, `goldCommand`, `bench/cases`, or `bench/reports` from agent tool calls as a benchmark policy failure.
+
 Do not over-constrain models in benchmark tasks. Avoid requiring a specific plan format, tool order, command sequence, or code structure unless that constraint is part of the real task being measured. Prefer grading final observable state: tests pass, files contain expected content, workflow events are correct, or unsafe actions are denied.
 
 Each benchmark case should declare a `runtimeTarget`: `clean-sdk`, `bridge-sdk`, `official-claude-sdk`, `parity`, or `external-agent`. Use `parity` when the purpose is to compare Clean SDK against Bridge SDK/Claude Code behavior. Keep reports and temporary workspaces generated-only; do not treat `bench/reports/` output as source.

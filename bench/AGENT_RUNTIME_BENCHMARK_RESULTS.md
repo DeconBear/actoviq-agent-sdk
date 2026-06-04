@@ -1,5 +1,20 @@
 # Agent Runtime Benchmark Results
 
+## Current Validity Note
+
+The original three-runtime result below is a historical run and should not be
+used alone as a final capability claim. A later leakage audit found harness
+weaknesses and added benchmark-internal access checks. See
+`bench/BENCHMARK_LEAKAGE_AUDIT.md` for the current interpretation.
+
+After the audit, Clean SDK no longer has a stable "full score" claim. It can
+pass all eight complex cases in a single run, but later full parity and targeted
+reruns showed run-to-run variability. The latest audited full parity run had
+zero benchmark-internal access for all runtimes, but produced mixed pass rates:
+Clean SDK 6/8, Bridge SDK 8/8, and Official Claude Agent SDK 7/8. Targeted
+reruns then passed the dialogue checker and Clean workflow cases after fixing an
+overly literal dialogue grader.
+
 This file records the three-runtime complex benchmark run for Actoviq agent
 runtime parity. The raw generated reports live under `bench/reports/`, which is
 ignored by Git; this checked-in summary keeps the comparable result visible.
