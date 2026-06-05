@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -1925,6 +1925,72 @@ describe('ActoviqAgentClient', () => {
       expect(result.maxToolIterationsExceeded).toBe(true);
       expect(result.incompleteReason).toContain('max_tool_iterations_exceeded');
       expect(result.toolCalls).toHaveLength(0);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('stores large tool outputs as artifacts before returning them to the model context', async () => {
+    const tempDir = await createSessionDirectory();
+    const workDir = path.join(tempDir, 'workspace');
+    await mkdir(workDir, { recursive: true });
+    const largeOutput = `large-result:${'A'.repeat(120)}`;
+    let followUpMessages = '';
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              {
+                type: 'tool_use',
+                id: 'toolu_large_lookup',
+                name: 'large_lookup',
+                input: {},
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        followUpMessages = JSON.stringify(request.messages);
+        return makeMessage([{ type: 'text', text: 'Large lookup reviewed.' }]);
+      },
+    });
+    const largeLookup = tool(
+      {
+        name: 'large_lookup',
+        description: 'Returns a large lookup payload.',
+        inputSchema: z.object({}),
+      },
+      async () => largeOutput,
+    );
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory: path.join(tempDir, 'sessions'),
+      workDir,
+      modelApi,
+      compact: {
+        toolResultArtifactMaxChars: 50,
+      },
+    });
+
+    try {
+      const result = await sdk.run('Run a large lookup.', { tools: [largeLookup] });
+      const outputText = result.toolCalls[0]?.outputText ?? '';
+      const artifactLine = outputText
+        .split('\n')
+        .find(line => line.startsWith('Full output saved to: '));
+      const artifactPath = artifactLine?.replace('Full output saved to: ', '');
+
+      expect(result.toolCalls[0]?.output).toBe(largeOutput);
+      expect(outputText).toContain('Tool output was large');
+      expect(outputText).toContain('Preview');
+      expect(outputText).not.toContain(largeOutput);
+      expect(followUpMessages).toContain('Tool output was large');
+      expect(followUpMessages).not.toContain(largeOutput);
+      expect(artifactPath).toBeTruthy();
+      expect(await readFile(artifactPath!, 'utf8')).toBe(largeOutput);
     } finally {
       await sdk.close();
     }

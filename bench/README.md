@@ -24,6 +24,7 @@ Each trial keeps `passed` as the deterministic end-state result and adds a separ
 - `total`: weighted score, currently `70% task + 20% efficiency + 10% behavior`.
 
 Runtime wrappers should write JSON to `ACTOVIQ_BENCH_OUTPUT_FILE` with a `metrics` object when possible. Supported metrics include `llmRequestCount`, `toolCallCount`, `toolErrorCount`, `subagentCallCount`, `skillUseCount`, `permissionDenialCount`, token usage, cost, and summarized tool/subagent lists.
+Long-running wrappers should also stream trajectory events while the run is active so interrupted runs still retain request, tool, permission, compaction, and error evidence.
 The harness also scans JSONL trajectories for benchmark-internal access such as `.actoviq-bench`, `actoviq-bench-internal`, `goldCommand`, `bench/cases`, and `bench/reports`; detected access is reported as a `policy` grader failure.
 
 Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, `requiredSkillNames`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.

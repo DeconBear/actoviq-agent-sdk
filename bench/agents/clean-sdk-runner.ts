@@ -6,7 +6,7 @@ import {
   createAgentSdk,
   loadDefaultActoviqSettings,
 } from '../../src/index.js';
-import type { ActoviqPermissionMode, AgentRunResult } from '../../src/types.js';
+import type { ActoviqPermissionMode, AgentEvent, AgentRunResult } from '../../src/types.js';
 import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
@@ -39,8 +39,10 @@ const sdk = await createAgentSdk({
   timeoutMs,
 });
 
+const runnerState = createRunnerState();
+
 try {
-  const result = await sdk.run(buildPrompt(instruction, workspace), {
+  const stream = sdk.stream(buildPrompt(instruction, workspace), {
     permissionMode,
     systemPrompt:
       'You are running inside an isolated benchmark workspace. Complete the user task by changing the workspace as needed. Keep changes focused and do not inspect benchmark internals under .actoviq-bench.',
@@ -49,7 +51,10 @@ try {
       benchmarkRuntime: 'clean-sdk',
     },
   });
-  await writeTrajectory(result);
+  for await (const event of stream) {
+    await recordAgentEvent(event, runnerState);
+  }
+  const result = runnerState.result ?? await stream.result;
   const skillNames = getSkillNames(result);
   const incompleteReason = getIncompleteReason(result);
   const toolCalls = result.toolCalls.map((call) => ({
@@ -57,45 +62,13 @@ try {
     isError: call.isError || hasNonZeroExitCode(call),
   }));
 
-  await writeRunnerOutput(outputFile, {
-    runtime: 'clean-sdk',
-    text: result.text,
-    stopReason: result.stopReason,
+  await writeRunnerOutput(outputFile, buildRunnerOutput({
+    result,
+    state: runnerState,
+    skillNames,
+    toolCalls,
     incompleteReason,
-    metrics: {
-      runtime: 'clean-sdk',
-      llmRequestCount: result.requests.length,
-      requestCount: result.requests.length,
-      turnCount: result.requests.length,
-      toolCallCount: toolCalls.length,
-      toolErrorCount: toolCalls.filter((call) => call.isError).length,
-      subagentCallCount: sumDelegatedAgentCounts(result.delegatedAgents),
-      skillUseCount: skillNames.length,
-      permissionDenialCount: result.permissionDecisions?.filter((decision) => decision.behavior === 'deny').length ?? 0,
-      durationMs: Date.parse(result.completedAt) - Date.parse(result.startedAt),
-      inputTokens: result.usage?.input_tokens,
-      outputTokens: result.usage?.output_tokens,
-      cacheReadInputTokens: result.usage?.cache_read_input_tokens ?? undefined,
-      cacheCreationInputTokens: result.usage?.cache_creation_input_tokens ?? undefined,
-      toolCalls: toolCalls.map((call) => ({
-        name: call.name,
-        publicName: call.publicName,
-        isError: call.isError,
-        durationMs: call.durationMs,
-      })),
-      subagents: result.delegatedAgents?.map((agent) => ({
-        name: agent.name,
-        description: agent.lastDescription,
-        status: agent.lastStatus,
-        runIds: agent.runIds,
-        sessionIds: agent.sessionIds,
-        taskIds: agent.taskIds,
-        toolCallCount: agent.totalToolCallCount,
-        toolErrorCount: agent.totalToolErrorCount,
-      })),
-      skills: skillNames,
-    },
-  });
+  }));
 
   console.log(result.text);
   if (incompleteReason) {
@@ -127,21 +100,7 @@ try {
       message: normalized.message,
       stack: normalized.stack,
     },
-    metrics: {
-      runtime: 'clean-sdk',
-      llmRequestCount: 0,
-      requestCount: 0,
-      turnCount: 0,
-      toolCallCount: 0,
-      toolErrorCount: 1,
-      subagentCallCount: 0,
-      skillUseCount: 0,
-      permissionDenialCount: 0,
-      durationMs: Date.now() - runnerStartedAt,
-      toolCalls: [],
-      subagents: [],
-      skills: [],
-    },
+    metrics: buildPartialMetrics(runnerState, normalized),
   });
   console.error(normalized.stack ?? normalized.message);
   process.exitCode = 1;
@@ -156,6 +115,265 @@ function buildPrompt(task: string, cwd: string): string {
     'Task:',
     task.trim(),
   ].join('\n');
+}
+
+interface RunnerState {
+  llmRequestCount: number;
+  toolCallCount: number;
+  toolErrorCount: number;
+  permissionDenialCount: number;
+  eventCount: number;
+  toolCalls: Array<{
+    name: string;
+    publicName?: string;
+    isError?: boolean;
+    durationMs?: number;
+  }>;
+  result?: AgentRunResult;
+}
+
+function createRunnerState(): RunnerState {
+  return {
+    llmRequestCount: 0,
+    toolCallCount: 0,
+    toolErrorCount: 0,
+    permissionDenialCount: 0,
+    eventCount: 0,
+    toolCalls: [],
+  };
+}
+
+async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<void> {
+  state.eventCount += 1;
+  switch (event.type) {
+    case 'request.started':
+      state.llmRequestCount += 1;
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'llm_request',
+          name: `iteration-${event.iteration}`,
+          data: {
+            iteration: event.iteration,
+            requestTokenEstimate: event.requestTokenEstimate,
+            requestByteLength: event.requestByteLength,
+            localMicrocompact: event.localMicrocompact,
+          },
+        },
+      });
+      return;
+    case 'response.message':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'assistant_message',
+          outputSummary: summarizeText(JSON.stringify(event.message.content)),
+          data: {
+            iteration: event.iteration,
+            stopReason: event.message.stop_reason,
+            inputTokens: event.message.usage?.input_tokens,
+            outputTokens: event.message.usage?.output_tokens,
+          },
+        },
+      });
+      return;
+    case 'tool.call':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'tool_call',
+          name: event.call.name,
+          inputSummary: summarizeText(JSON.stringify(event.call.input)),
+          data: {
+            publicName: event.call.publicName,
+            iteration: event.iteration,
+          },
+        },
+      });
+      return;
+    case 'tool.result': {
+      const isError = event.result.isError || hasNonZeroExitCode(event.result);
+      state.toolCallCount += 1;
+      if (isError) {
+        state.toolErrorCount += 1;
+      }
+      state.toolCalls.push({
+        name: event.result.name,
+        publicName: event.result.publicName,
+        isError,
+        durationMs: event.result.durationMs,
+      });
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'tool', name: event.result.name },
+        event: {
+          type: 'tool_result',
+          name: event.result.name,
+          outputSummary: summarizeText(event.result.outputText),
+          isError,
+          durationMs: event.result.durationMs,
+          data: {
+            publicName: event.result.publicName,
+            iteration: event.iteration,
+          },
+        },
+      });
+      return;
+    }
+    case 'tool.permission':
+      if (event.decision.behavior === 'deny') {
+        state.permissionDenialCount += 1;
+      }
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'harness', name: 'permission' },
+        event: {
+          type: 'permission_decision',
+          name: event.decision.toolName,
+          outputSummary: event.decision.behavior,
+          isError: event.decision.behavior === 'deny',
+          data: {
+            publicName: event.decision.publicName,
+            source: event.decision.source,
+            reason: event.decision.reason,
+            iteration: event.iteration,
+          },
+        },
+      });
+      return;
+    case 'session.compacted':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'compact',
+          name: event.trigger,
+          outputSummary: event.result.reason,
+          data: {
+            compacted: event.result.compacted,
+            tokenEstimateBefore: event.result.tokenEstimateBefore,
+            tokenEstimateAfter: event.result.tokenEstimateAfter,
+          },
+        },
+      });
+      return;
+    case 'response.completed':
+      state.result = event.result;
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'assistant_message',
+          outputSummary: summarizeText(event.result.text),
+          data: {
+            stopReason: event.result.stopReason,
+            completed: true,
+          },
+        },
+      });
+      return;
+    case 'error':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'error',
+          outputSummary: summarizeText(event.error.message),
+          isError: true,
+          data: {
+            code: event.error.code,
+            stack: event.error.stack,
+          },
+        },
+      });
+      return;
+    default:
+      return;
+  }
+}
+
+function buildRunnerOutput(params: {
+  result: AgentRunResult;
+  state: RunnerState;
+  skillNames: string[];
+  toolCalls: Array<AgentRunResult['toolCalls'][number]>;
+  incompleteReason?: string;
+}): unknown {
+  const { result, state, skillNames, toolCalls, incompleteReason } = params;
+  return {
+    runtime: 'clean-sdk',
+    text: result.text,
+    stopReason: result.stopReason,
+    incompleteReason,
+    metrics: {
+      runtime: 'clean-sdk',
+      llmRequestCount: result.requests.length,
+      requestCount: result.requests.length,
+      turnCount: result.requests.length,
+      toolCallCount: toolCalls.length,
+      toolErrorCount: toolCalls.filter((call) => call.isError).length,
+      subagentCallCount: sumDelegatedAgentCounts(result.delegatedAgents),
+      skillUseCount: skillNames.length,
+      permissionDenialCount: result.permissionDecisions?.filter((decision) => decision.behavior === 'deny').length ?? 0,
+      eventCount: state.eventCount,
+      durationMs: Date.parse(result.completedAt) - Date.parse(result.startedAt),
+      inputTokens: result.usage?.input_tokens,
+      outputTokens: result.usage?.output_tokens,
+      cacheReadInputTokens: result.usage?.cache_read_input_tokens ?? undefined,
+      cacheCreationInputTokens: result.usage?.cache_creation_input_tokens ?? undefined,
+      toolCalls: toolCalls.map((call) => ({
+        name: call.name,
+        publicName: call.publicName,
+        isError: call.isError,
+        durationMs: call.durationMs,
+      })),
+      subagents: result.delegatedAgents?.map((agent) => ({
+        name: agent.name,
+        description: agent.lastDescription,
+        status: agent.lastStatus,
+        runIds: agent.runIds,
+        sessionIds: agent.sessionIds,
+        taskIds: agent.taskIds,
+        toolCallCount: agent.totalToolCallCount,
+        toolErrorCount: agent.totalToolErrorCount,
+      })),
+      skills: skillNames,
+    },
+  };
+}
+
+function buildPartialMetrics(state: RunnerState, error: Error): unknown {
+  return {
+    runtime: 'clean-sdk',
+    llmRequestCount: state.llmRequestCount,
+    requestCount: state.llmRequestCount,
+    turnCount: state.llmRequestCount,
+    toolCallCount: state.toolCallCount,
+    toolErrorCount: state.toolErrorCount + 1,
+    subagentCallCount: 0,
+    skillUseCount: 0,
+    permissionDenialCount: state.permissionDenialCount,
+    eventCount: state.eventCount,
+    durationMs: Date.now() - runnerStartedAt,
+    toolCalls: state.toolCalls,
+    subagents: [],
+    skills: [],
+    error: {
+      name: error.name,
+      message: error.message,
+    },
+  };
 }
 
 function sumDelegatedAgentCounts(agents: Array<{ count: number }> | undefined): number {
@@ -204,150 +422,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-async function writeTrajectory(result: AgentRunResult): Promise<void> {
-  for (const request of result.requests) {
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'main-agent' },
-      event: {
-        type: 'llm_request',
-        name: request.model,
-        outputSummary: request.stopReason ?? undefined,
-        data: {
-          iteration: request.iteration,
-          inputTokens: request.usage?.input_tokens,
-          outputTokens: request.usage?.output_tokens,
-        },
-      },
-    });
-  }
-  for (const call of result.toolCalls) {
-    const isError = call.isError || hasNonZeroExitCode(call);
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'main-agent' },
-      event: {
-        type: 'tool_call',
-        name: call.name,
-        inputSummary: summarizeText(JSON.stringify(call.input)),
-        outputSummary: summarizeText(call.outputText),
-        isError,
-        durationMs: call.durationMs,
-      },
-    });
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'tool', name: call.name },
-      event: {
-        type: 'tool_result',
-        name: call.name,
-        outputSummary: summarizeText(call.outputText),
-        isError,
-        durationMs: call.durationMs,
-      },
-    });
-  }
-  for (const agent of result.delegatedAgents ?? []) {
-    for (let i = 0; i < agent.count; i += 1) {
-      await appendTrajectoryEvent(trajectoryFile, {
-        runtime: 'clean-sdk',
-        caseId,
-        actor: { type: 'main-agent' },
-        event: {
-          type: 'subagent_start',
-          name: agent.name,
-          inputSummary: summarizeText(agent.lastDescription),
-        },
-      });
-    }
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'subagent', name: agent.name },
-      event: {
-        type: 'subagent_result',
-        name: agent.name,
-        outputSummary: summarizeText(agent.lastTextSummary),
-        data: {
-          status: agent.lastStatus,
-          lastRunId: agent.lastRunId,
-          lastSessionId: agent.lastSessionId,
-          lastTaskId: agent.lastTaskId,
-          runIds: agent.runIds,
-          sessionIds: agent.sessionIds,
-          taskIds: agent.taskIds,
-          toolCallCount: agent.totalToolCallCount,
-          toolErrorCount: agent.totalToolErrorCount,
-        },
-      },
-    });
-  }
-  for (const skill of result.invokedSkills ?? []) {
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'main-agent' },
-      event: {
-        type: 'skill_load',
-        name: skill.name,
-        inputSummary: summarizeText(skill.args),
-        data: {
-          source: skill.source,
-          loadedFrom: skill.loadedFrom,
-        },
-      },
-    });
-  }
-  if (!result.invokedSkills?.length) {
-    for (const skillToolCall of result.toolCalls.filter((call) => call.name.toLowerCase().includes('skill'))) {
-      await appendTrajectoryEvent(trajectoryFile, {
-        runtime: 'clean-sdk',
-        caseId,
-        actor: { type: 'main-agent' },
-        event: {
-          type: 'skill_load',
-          name: skillToolCall.publicName || skillToolCall.name,
-          inputSummary: summarizeText(JSON.stringify(skillToolCall.input)),
-          isError: skillToolCall.isError,
-        },
-      });
-    }
-  }
-  for (const decision of result.permissionDecisions ?? []) {
-    await appendTrajectoryEvent(trajectoryFile, {
-      runtime: 'clean-sdk',
-      caseId,
-      actor: { type: 'harness', name: 'permission' },
-      event: {
-        type: 'permission_decision',
-        name: decision.toolName,
-        outputSummary: decision.behavior,
-        isError: decision.behavior === 'deny',
-        data: {
-          publicName: decision.publicName,
-          source: decision.source,
-          reason: decision.reason,
-        },
-      },
-    });
-  }
-  await appendTrajectoryEvent(trajectoryFile, {
-    runtime: 'clean-sdk',
-    caseId,
-    actor: { type: 'main-agent' },
-    event: {
-      type: 'assistant_message',
-      outputSummary: summarizeText(result.text),
-      data: {
-        stopReason: result.stopReason,
-      },
-    },
-  });
 }
 
 async function writeRunnerOutput(filePath: string | undefined, data: unknown): Promise<void> {

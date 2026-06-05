@@ -5,6 +5,9 @@
   ToolUseBlock,
 } from '../provider/types.js';
 
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import { ActoviqSdkError, RunAbortedError, ToolExecutionError } from '../errors.js';
 import type {
   AgentEvent,
@@ -19,6 +22,7 @@ import type {
   AgentToolDefinition,
   ModelApi,
   ModelRequest,
+  ResolvedToolExecutionResult,
   ResolvedRuntimeConfig,
   ToolCallProgress,
 } from '../types.js';
@@ -27,7 +31,7 @@ import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
 import {
   getActoviqApiContextManagement,
-  getActoviqProviderRequestMessages,
+  prepareActoviqProviderRequestMessages,
 } from './actoviqApiMicrocompact.js';
 import { decideActoviqToolPermission } from './actoviqPermissions.js';
 import {
@@ -108,20 +112,21 @@ export async function executeConversation(
     ensureNotAborted(options.signal);
     iteration += 1;
 
-    options.emit?.({
-      type: 'request.started',
-      runId: options.runId,
-      iteration,
-      timestamp: nowIso(),
-    });
-
     const useAnthropicContextManagement = isAnthropicAPI(options.config.baseURL);
-    const requestMessages = getActoviqProviderRequestMessages(
+    const preparedMessages = prepareActoviqProviderRequestMessages(
       conversation,
       options.config.compact,
       { localToolResultMicrocompact: !useAnthropicContextManagement },
     );
-    const request: ModelRequest = {
+    let localMicrocompact: AgentRequestSummary['localMicrocompact'] | undefined = preparedMessages.clearedToolResults > 0
+      ? {
+          enabled: true,
+          clearedToolResults: preparedMessages.clearedToolResults,
+          tokenEstimateBefore: preparedMessages.tokenEstimateBefore,
+          tokenEstimateAfter: preparedMessages.tokenEstimateAfter,
+        }
+      : undefined;
+    let request: ModelRequest = {
       model,
       max_tokens: options.maxTokens ?? options.config.maxTokens,
       system: options.systemPrompt ?? options.config.systemPrompt,
@@ -137,9 +142,46 @@ export async function executeConversation(
       context_management: useAnthropicContextManagement
         ? getActoviqApiContextManagement(conversation, options.config.compact)
         : undefined,
-      messages: deepClone(requestMessages),
+      messages: deepClone(preparedMessages.messages),
       signal: options.signal,
     };
+    let requestByteLength = getRequestByteLength(request);
+    const maxRequestBytes = options.config.compact.apiMicrocompactMaxRequestBytes;
+    if (
+      !useAnthropicContextManagement &&
+      maxRequestBytes &&
+      requestByteLength > maxRequestBytes
+    ) {
+      const forcedMessages = prepareActoviqProviderRequestMessages(
+        conversation,
+        options.config.compact,
+        { localToolResultMicrocompact: true, force: true },
+      );
+      const requestByteLengthBefore = requestByteLength;
+      request = {
+        ...request,
+        messages: deepClone(forcedMessages.messages),
+      };
+      requestByteLength = getRequestByteLength(request);
+      localMicrocompact = {
+        enabled: true,
+        clearedToolResults: forcedMessages.clearedToolResults,
+        tokenEstimateBefore: forcedMessages.tokenEstimateBefore,
+        tokenEstimateAfter: forcedMessages.tokenEstimateAfter,
+        requestByteLengthBefore,
+        requestByteLengthAfter: requestByteLength,
+      };
+    }
+
+    options.emit?.({
+      type: 'request.started',
+      runId: options.runId,
+      iteration,
+      requestTokenEstimate: localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+      requestByteLength,
+      localMicrocompact,
+      timestamp: nowIso(),
+    });
 
     const message = options.streaming
       ? await consumeStream(request, options.modelApi, iteration, options.emit, options.runId)
@@ -260,6 +302,9 @@ export async function executeConversation(
       usage: message.usage,
       text: extractTextFromContent(message.content),
       createdAt: nowIso(),
+      requestTokenEstimate: localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+      requestByteLength,
+      localMicrocompact,
     });
 
     const toolUses = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use');
@@ -421,10 +466,18 @@ export async function executeConversation(
           model,
           provider: options.config.provider,
         }, onProgress);
-        outputText = execution.text;
+        const modelFacingExecution = await artifactToolExecutionIfLarge(execution, {
+          runId: options.runId,
+          iteration,
+          toolUseId: toolUse.id,
+          toolName: toolUse.name,
+          workDir: options.config.workDir,
+          maxChars: options.config.compact.toolResultArtifactMaxChars ?? 80_000,
+        });
+        outputText = modelFacingExecution.text;
         output = execution.rawOutput;
         isError = execution.isError ?? false;
-        content = execution.content;
+        content = modelFacingExecution.content;
       } catch (error) {
         const normalized =
           error instanceof ToolExecutionError
@@ -514,6 +567,62 @@ export async function executeConversation(
     });
     toolResults = [];
   }
+}
+
+async function artifactToolExecutionIfLarge(
+  execution: ResolvedToolExecutionResult,
+  options: {
+    runId: string;
+    iteration: number;
+    toolUseId: string;
+    toolName: string;
+    workDir: string;
+    maxChars: number;
+  },
+): Promise<{ text: string; content: ToolResultBlockParam['content'] | undefined }> {
+  if (options.maxChars <= 0 || execution.text.length <= options.maxChars) {
+    return {
+      text: execution.text,
+      content: execution.content,
+    };
+  }
+
+  const artifactDir = path.join(
+    options.workDir,
+    '.actoviq-artifacts',
+    'tool-results',
+    sanitizeArtifactSegment(options.runId),
+  );
+  await mkdir(artifactDir, { recursive: true });
+  const artifactPath = path.join(
+    artifactDir,
+    `${String(options.iteration).padStart(3, '0')}-${sanitizeArtifactSegment(options.toolUseId)}-${sanitizeArtifactSegment(options.toolName)}.txt`,
+  );
+  await writeFile(artifactPath, execution.text, 'utf8');
+  const preview = execution.text.slice(0, Math.min(options.maxChars, 4_000));
+  const omittedChars = Math.max(execution.text.length - preview.length, 0);
+  const summary = [
+    `Tool output was large (${execution.text.length} characters).`,
+    `Full output saved to: ${artifactPath}`,
+    omittedChars > 0 ? `Preview (${preview.length} characters, ${omittedChars} omitted):` : 'Preview:',
+    preview,
+  ].join('\n');
+
+  return {
+    text: summary,
+    content: summary,
+  };
+}
+
+function sanitizeArtifactSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 80) || 'artifact';
+}
+
+function getRequestByteLength(request: ModelRequest): number {
+  return Buffer.byteLength(JSON.stringify({
+    ...request,
+    signal: undefined,
+  }), 'utf8');
 }
 
 async function consumeStream(

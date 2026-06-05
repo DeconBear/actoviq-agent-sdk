@@ -4,6 +4,13 @@ import { estimateActoviqConversationTokens } from '../memory/actoviqSessionMemor
 
 const LOCAL_TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]';
 
+export interface ActoviqProviderRequestMessagesResult {
+  messages: MessageParam[];
+  tokenEstimateBefore: number;
+  tokenEstimateAfter: number;
+  clearedToolResults: number;
+}
+
 function hasToolUseOrResult(messages: readonly MessageParam[]): boolean {
   return messages.some(
     message =>
@@ -69,19 +76,40 @@ export function getActoviqApiContextManagement(
 export function getActoviqProviderRequestMessages(
   messages: readonly MessageParam[],
   compact: ActoviqCompactConfig,
-  options: { localToolResultMicrocompact: boolean },
+  options: { localToolResultMicrocompact: boolean; force?: boolean },
 ): MessageParam[] {
+  return prepareActoviqProviderRequestMessages(messages, compact, options).messages;
+}
+
+export function prepareActoviqProviderRequestMessages(
+  messages: readonly MessageParam[],
+  compact: ActoviqCompactConfig,
+  options: { localToolResultMicrocompact: boolean; force?: boolean },
+): ActoviqProviderRequestMessagesResult {
+  const tokenEstimateBefore = estimateActoviqConversationTokens(messages);
   if (
     !options.localToolResultMicrocompact ||
     !compact.apiMicrocompactEnabled ||
     !compact.apiMicrocompactClearToolResults
   ) {
-    return [...messages];
+    const clonedMessages = [...messages];
+    return {
+      messages: clonedMessages,
+      tokenEstimateBefore,
+      tokenEstimateAfter: tokenEstimateBefore,
+      clearedToolResults: 0,
+    };
   }
 
   const trigger = compact.apiMicrocompactMaxInputTokens ?? 180_000;
-  if (estimateActoviqConversationTokens(messages) <= trigger) {
-    return [...messages];
+  if (!options.force && tokenEstimateBefore <= trigger) {
+    const clonedMessages = [...messages];
+    return {
+      messages: clonedMessages,
+      tokenEstimateBefore,
+      tokenEstimateAfter: tokenEstimateBefore,
+      clearedToolResults: 0,
+    };
   }
 
   const positions: Array<{ messageIndex: number; blockIndex: number }> = [];
@@ -105,7 +133,13 @@ export function getActoviqProviderRequestMessages(
   const keepRecent = Math.max(compact.microcompactKeepRecentToolResults, 0);
   const clearCount = Math.max(positions.length - keepRecent, 0);
   if (clearCount === 0) {
-    return [...messages];
+    const clonedMessages = [...messages];
+    return {
+      messages: clonedMessages,
+      tokenEstimateBefore,
+      tokenEstimateAfter: tokenEstimateBefore,
+      clearedToolResults: 0,
+    };
   }
 
   const toClear = new Set(
@@ -114,7 +148,7 @@ export function getActoviqProviderRequestMessages(
       .map(position => `${position.messageIndex}:${position.blockIndex}`),
   );
 
-  return messages.map((message, messageIndex) => {
+  const compactedMessages = messages.map((message, messageIndex) => {
     if (!Array.isArray(message.content)) {
       return { ...message };
     }
@@ -131,6 +165,12 @@ export function getActoviqProviderRequestMessages(
       }),
     };
   });
+  return {
+    messages: compactedMessages,
+    tokenEstimateBefore,
+    tokenEstimateAfter: estimateActoviqConversationTokens(compactedMessages),
+    clearedToolResults: clearCount,
+  };
 }
 
 function getToolResultTextLength(block: Record<string, unknown>): number {

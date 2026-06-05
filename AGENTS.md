@@ -63,6 +63,8 @@ The complex benchmark suite should cover the local deterministic capability fami
 
 Each trial may archive a JSONL trajectory under `bench/reports/<report>/trajectories/`. Trajectories should record observable events such as LLM requests, assistant messages, tool calls/results, subagent starts/results, skill loads, permission decisions, harness command verification, grader results, compaction, and errors. Do not store private chain-of-thought; keep trajectory entries to auditable summaries and structured metadata.
 
+Long-running benchmark wrappers should stream trajectory and metrics while the agent is active instead of waiting for the final SDK result. If a provider request fails after partial progress, the report should still preserve request count, tool calls/results, permission decisions, and the error event. Clean SDK requests must apply request-size budgeting before provider calls, locally compact old tool results for OpenAI-compatible providers when request bodies grow too large, and artifact very large tool outputs before feeding them back into model context.
+
 Use the existing commands when validating benchmark work:
 
 - `npm run bench:smoke`: gold-mode harness smoke validation.

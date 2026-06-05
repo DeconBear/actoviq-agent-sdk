@@ -687,8 +687,10 @@ export interface ActoviqCompactConfig {
   apiMicrocompactEnabled?: boolean;
   apiMicrocompactMaxInputTokens?: number;
   apiMicrocompactTargetInputTokens?: number;
+  apiMicrocompactMaxRequestBytes?: number;
   apiMicrocompactClearToolResults?: boolean;
   apiMicrocompactClearToolUses?: boolean;
+  toolResultArtifactMaxChars?: number;
 }
 
 export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
@@ -769,6 +771,16 @@ export interface AgentRequestSummary {
   usage?: Usage;
   text: string;
   createdAt: string;
+  requestTokenEstimate?: number;
+  requestByteLength?: number;
+  localMicrocompact?: {
+    enabled: boolean;
+    clearedToolResults: number;
+    tokenEstimateBefore: number;
+    tokenEstimateAfter: number;
+    requestByteLengthBefore?: number;
+    requestByteLengthAfter?: number;
+  };
 }
 
 export interface AgentToolCallEventPayload {
@@ -1093,6 +1105,9 @@ export type AgentEvent =
       type: 'request.started';
       runId: string;
       iteration: number;
+      requestTokenEstimate?: number;
+      requestByteLength?: number;
+      localMicrocompact?: AgentRequestSummary['localMicrocompact'];
       timestamp: string;
     }
   | {

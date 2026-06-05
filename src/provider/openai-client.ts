@@ -89,7 +89,44 @@ function shouldRetryStatus(status: number): boolean {
 }
 
 function shouldRetryError(error: unknown): boolean {
-  return error instanceof Error && error.name !== 'AbortError';
+  if (error instanceof ActoviqProviderApiError) {
+    return false;
+  }
+  if (!(error instanceof Error) || error.name === 'AbortError') {
+    return false;
+  }
+  return isTransientTransportError(error);
+}
+
+function isTransientTransportError(error: Error): boolean {
+  const cause = error.cause instanceof Error ? error.cause : undefined;
+  const text = `${error.name} ${error.message} ${cause?.name ?? ''} ${cause?.message ?? ''} ${
+    cause && 'code' in cause ? String((cause as { code?: unknown }).code) : ''
+  }`.toLowerCase();
+  return (
+    error instanceof TypeError ||
+    text.includes('terminated') ||
+    text.includes('econnreset') ||
+    text.includes('etimedout') ||
+    text.includes('und_err_socket') ||
+    text.includes('socket') ||
+    text.includes('fetch failed') ||
+    text.includes('network')
+  );
+}
+
+function normalizeTransportError(error: unknown, url: string): unknown {
+  if (!(error instanceof Error) || !isTransientTransportError(error)) {
+    return error;
+  }
+  return new ActoviqProviderApiError(
+    `Provider transport error after retries: ${error.message} [url: ${url}]`,
+    {
+      status: 0,
+      errorType: 'transport_error',
+      cause: error,
+    },
+  );
 }
 
 // ── SSE Stream ─────────────────────────────────────────────────
@@ -329,8 +366,9 @@ export default class OpenaiProviderClient {
         lastError = error;
       } catch (error) {
         lastError = error;
-        if (attempt === this.maxRetries || !shouldRetryError(error)) {
-          throw error;
+        const retryable = shouldRetryError(error);
+        if (attempt === this.maxRetries || !retryable) {
+          throw retryable ? normalizeTransportError(error, normalizeChatUrl(this.baseURL)) : error;
         }
       }
 

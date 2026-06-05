@@ -301,13 +301,18 @@ describe('Actoviq advanced parity features', () => {
     );
 
     try {
-      await sdk.run('Use the verbose tool.', { tools: [lookupLarge] });
+      const result = await sdk.run('Use the verbose tool.', { tools: [lookupLarge] });
       const followUpRequest = modelApi.createCalls[1];
       const followUpMessages = JSON.stringify(followUpRequest?.messages);
 
       expect(followUpRequest?.context_management).toBeUndefined();
       expect(followUpMessages).toContain('[Old tool result content cleared]');
       expect(followUpMessages).not.toContain(longPayload.slice(0, 80));
+      expect(result.requests[1]?.requestByteLength).toBeGreaterThan(0);
+      expect(result.requests[1]?.localMicrocompact).toMatchObject({
+        enabled: true,
+        clearedToolResults: 1,
+      });
     } finally {
       await sdk.close();
     }

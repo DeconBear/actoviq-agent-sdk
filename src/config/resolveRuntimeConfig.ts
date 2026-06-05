@@ -18,8 +18,10 @@ const DEFAULT_COMPACT_CONFIG = {
   apiMicrocompactEnabled: true,
   apiMicrocompactMaxInputTokens: 180_000,
   apiMicrocompactTargetInputTokens: 40_000,
+  apiMicrocompactMaxRequestBytes: 1_500_000,
   apiMicrocompactClearToolResults: true,
   apiMicrocompactClearToolUses: false,
+  toolResultArtifactMaxChars: 80_000,
 } as const;
 
 function getConfigValue(
