@@ -1,0 +1,29 @@
+{
+  "id": "complex.long.project.release-planner-tui-from-scratch",
+  "title": "Stress project: build a Release Train Planner CLI/TUI from scratch",
+  "category": "workflow",
+  "runtimeTarget": "parity",
+  "instruction": "请从零开始实现一个 Release Train Planner 工程。先阅读 requirements/PRODUCT_SPEC.md 和 requirements/ACCEPTANCE_CRITERIA.md，制定工程计划并写入 docs/engineering-plan.md，然后完成实现、测试、验证和文档。你可以自行选择合理的 Node.js/TypeScript 或 Node ESM 工程结构，但最终必须提供可运行的 CLI、稳定的 TUI snapshot、测试和文档。CLI 至少支持 plan --input <file> --output <file>、validate --input <file>、explain --input <file> --package <name>、tui --input <file> --snapshot。最终请运行测试和构建验证。",
+  "fixture": "bench/fixtures/stress/release-planner-tui-from-scratch",
+  "tags": ["complex", "long", "from-scratch", "project", "tui", "software-engineering", "stress"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 1800,
+    "maxTurns": 80,
+    "maxToolCalls": 450,
+    "maxTokens": 650000
+  },
+  "behaviorExpectations": {
+    "minSubagentCalls": 2,
+    "maxToolErrors": 10
+  },
+  "goldCommand": "node {newCaseGold} complex.long.project.release-planner-tui-from-scratch",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.long.project.release-planner-tui-from-scratch",
+      "timeoutMs": 180000
+    }
+  ],
+  "notes": "From-scratch software engineering stress task with hidden CLI/TUI and algorithm checks."
+}

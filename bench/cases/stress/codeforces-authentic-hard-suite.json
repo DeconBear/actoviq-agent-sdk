@@ -1,0 +1,31 @@
+{
+  "id": "complex.long.competitive.codeforces-authentic-hard-suite",
+  "title": "Authentic hard competitive-programming suite derived from recent high-rated Codeforces sources",
+  "category": "coding",
+  "runtimeTarget": "parity",
+  "instruction": "Solve the ten hard competitive-programming tasks in this workspace. The tasks are deliberately rewritten and do not expose their source contest metadata. Each task has exactly one public sample. Implement solutions/h01/solution.mjs through solutions/h10/solution.mjs. You may run public samples with npm run sample -- h01 or npm run sample:all, run custom input with npm run run -- h01, and query the black-box hidden judge with npm run judge -- h01 or npm run judge -- all. The black-box judge returns only PASS or FAIL and will not reveal failing tests. Iterate until your own samples/custom tests and the black-box judge pass as much as possible. Do not inspect benchmark internals outside this workspace.",
+  "fixture": "bench/fixtures/stress/codeforces-authentic-hard-suite",
+  "tags": ["complex", "long", "stress", "competitive-programming", "codeforces-authentic", "hard", "hidden-judge"],
+  "budget": {
+    "maxSeconds": 7200,
+    "maxTurns": 180,
+    "maxToolCalls": 1200,
+    "maxTokens": 1400000
+  },
+  "behaviorExpectations": {
+    "minSubagentCalls": 3,
+    "maxToolErrors": 30
+  },
+  "goldCommand": "node {competitiveHardGold}",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {competitiveHardJudge} final all",
+      "timeoutMs": 300000,
+      "scoreFromStdout": {
+        "pattern": "SOLVED\\s+(\\d+)\\/(\\d+)"
+      }
+    }
+  ],
+  "notes": "Hard-tier Codeforces-derived benchmark. Source metadata and hidden reference solutions live outside the trial workspace."
+}

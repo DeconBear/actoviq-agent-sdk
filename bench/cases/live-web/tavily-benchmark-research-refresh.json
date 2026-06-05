@@ -1,0 +1,30 @@
+{
+  "id": "complex.web.tavily-benchmark-research-refresh",
+  "title": "Live web research: use Tavily skill to refresh benchmark design",
+  "category": "web",
+  "runtimeTarget": "parity",
+  "instruction": "请联网调研当前主流 coding agent / general agent benchmark 的设计方式，重点关注 SWE-bench、Terminal-Bench、OSWorld、tau-bench、AgentBench，以及 Claude Code / Anthropic Agent SDK 相关评测实践。你需要使用可用的联网搜索或研究 skill，优先使用 Tavily 相关 skill 获取资料，并基于资料写出对 Actoviq benchmark 的改进建议。不要只依赖本地知识。最终写 research/benchmark-research.zh-CN.md、research/source-ledger.json 和 research/design-delta.md。",
+  "fixture": "bench/fixtures/live-web/tavily-benchmark-research-refresh",
+  "tags": ["complex", "live-web", "tavily", "research", "zh-CN", "skills"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 900,
+    "maxTurns": 40,
+    "maxToolCalls": 160,
+    "maxTokens": 250000
+  },
+  "behaviorExpectations": {
+    "minSkillUseCount": 1,
+    "requiredSkillNames": ["tavily"],
+    "maxToolErrors": 8
+  },
+  "goldCommand": "node {newCaseGold} complex.web.tavily-benchmark-research-refresh",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.web.tavily-benchmark-research-refresh",
+      "timeoutMs": 30000
+    }
+  ],
+  "notes": "Live-web task. Gold validation checks artifacts only; real agent runs should inspect behavior score for Tavily skill usage."
+}

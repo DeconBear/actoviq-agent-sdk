@@ -1,0 +1,25 @@
+{
+  "id": "complex.long.dialogue.multi-ticket-operations",
+  "title": "Long dialogue task: process multiple support tickets with policy tools",
+  "category": "dialogue",
+  "runtimeTarget": "parity",
+  "instruction": "Process all five support tickets using policy.md and the local ticket API if helpful. Some tickets can be approved, some must be denied, and some must be escalated to manual_review. Update tickets.json consistently and write agent-summary.md with one line per ticket explaining the outcome.",
+  "fixture": "bench/fixtures/long/multi-ticket-operations",
+  "tags": ["complex", "long", "dialogue", "tools", "policy"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 720,
+    "maxTurns": 40,
+    "maxToolCalls": 220,
+    "maxTokens": 300000
+  },
+  "goldCommand": "node {newCaseGold} complex.long.dialogue.multi-ticket-operations",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.long.dialogue.multi-ticket-operations",
+      "timeoutMs": 30000
+    }
+  ],
+  "notes": "Long tau-bench-style policy state mutation case with five tickets."
+}

@@ -1,0 +1,25 @@
+{
+  "id": "complex.zh.dialogue.refund-policy-toolchain",
+  "title": "中文售后政策：多订单退款工具链处理",
+  "category": "dialogue",
+  "runtimeTarget": "parity",
+  "instruction": "请根据 customer-request.txt 和 support-policy.md 处理客户的中文售后请求。你可以使用 tools/order-api.mjs 修改订单状态，也可以直接维护状态文件，但最终状态必须符合政策。处理完后写 customer-response.zh-CN.md，面向客户说明哪些订单已退款、哪些升级人工审核、哪些被拒绝以及原因。",
+  "fixture": "bench/fixtures/zh/refund-policy-toolchain",
+  "tags": ["complex", "zh-CN", "dialogue", "tools", "policy"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 420,
+    "maxTurns": 25,
+    "maxToolCalls": 120,
+    "maxTokens": 180000
+  },
+  "goldCommand": "node {newCaseGold} complex.zh.dialogue.refund-policy-toolchain",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.zh.dialogue.refund-policy-toolchain",
+      "timeoutMs": 30000
+    }
+  ],
+  "notes": "Tau-bench-style Chinese policy and tool-backed state mutation case."
+}

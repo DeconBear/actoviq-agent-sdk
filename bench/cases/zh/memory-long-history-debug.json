@@ -1,0 +1,30 @@
+{
+  "id": "complex.zh.memory.long-history-debug",
+  "title": "中文长历史：配置字段改名回归定位",
+  "category": "memory",
+  "runtimeTarget": "parity",
+  "instruction": "请阅读 logs/history.md、logs/recent-failure.log 和 config/current.json，定位运行时超时预算错误的根因。修复 src/configLoader.js，运行 npm test，并写 根因分析.zh-CN.md。报告要说明配置字段改名造成的回归，以及验证命令。",
+  "fixture": "bench/fixtures/zh/long-history-debug",
+  "tags": ["complex", "zh-CN", "memory", "long", "debug"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 720,
+    "maxTurns": 40,
+    "maxToolCalls": 200,
+    "maxTokens": 300000
+  },
+  "goldCommand": "node {newCaseGold} complex.zh.memory.long-history-debug",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    },
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.zh.memory.long-history-debug",
+      "timeoutMs": 30000
+    }
+  ],
+  "notes": "Chinese long-context debugging case focused on extracting the relevant config migration from noisy history."
+}

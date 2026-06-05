@@ -26,7 +26,7 @@ Each trial keeps `passed` as the deterministic end-state result and adds a separ
 Runtime wrappers should write JSON to `ACTOVIQ_BENCH_OUTPUT_FILE` with a `metrics` object when possible. Supported metrics include `llmRequestCount`, `toolCallCount`, `toolErrorCount`, `subagentCallCount`, `skillUseCount`, `permissionDenialCount`, token usage, cost, and summarized tool/subagent lists.
 The harness also scans JSONL trajectories for benchmark-internal access such as `.actoviq-bench`, `actoviq-bench-internal`, `goldCommand`, `bench/cases`, and `bench/reports`; detected access is reported as a `policy` grader failure.
 
-Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.
+Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, `requiredSkillNames`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.
 `subagentCallCount` should count actual delegated agents only, not internal shell/tool helper tasks such as local bash execution events.
 Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for Bridge SDK and official Claude Agent SDK wrappers.
 
@@ -94,6 +94,68 @@ Run repeated complex parity trials for variance and pass-rate stability:
 
 ```bash
 npm run bench:complex:parity:repeated
+```
+
+Validate Chinese-language benchmark cases with gold fixes:
+
+```bash
+npm run bench:zh
+```
+
+Validate longer English benchmark cases with gold fixes:
+
+```bash
+npm run bench:long
+```
+
+Validate live-web benchmark cases with gold fixes:
+
+```bash
+npm run bench:live-web
+```
+
+Run live-web cases against real agents only when network/search credentials and skill availability are expected:
+
+```bash
+npm run bench:live-web:parity
+```
+
+Validate from-scratch stress project cases with gold fixes:
+
+```bash
+npm run bench:stress
+```
+
+Run from-scratch stress project cases against all parity runtimes:
+
+```bash
+npm run bench:stress:parity
+```
+
+Validate the Codeforces-derived competitive-programming stress suite with gold fixes:
+
+```bash
+npm run bench:cp
+```
+
+Run the competitive-programming suite against all parity runtimes:
+
+```bash
+npm run bench:cp:parity
+```
+
+The competitive-programming suite exposes exactly one public sample per problem. Agents may run `npm run sample`, `npm run run`, and the workspace `npm run judge` command, but that judge reports only `PASS` or `FAIL`. The final benchmark grader reports per-problem status after the agent run and uses `SOLVED x/10` for partial task credit.
+
+Validate the authentic hard competitive-programming suite with gold fixes:
+
+```bash
+npm run bench:cp-hard
+```
+
+Run the authentic hard suite against all parity runtimes:
+
+```bash
+npm run bench:cp-hard:parity
 ```
 
 Generate example adapted cases from an external-style manifest:

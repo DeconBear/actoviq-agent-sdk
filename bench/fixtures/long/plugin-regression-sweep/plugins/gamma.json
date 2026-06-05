@@ -1,0 +1,7 @@
+{
+  "name": "gamma-tools",
+  "enabled": true,
+  "commands": [
+    { "name": "audit", "handler": "audit.js" }
+  ]
+}

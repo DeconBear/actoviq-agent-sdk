@@ -1,0 +1,7 @@
+{
+  "capacityPerWave": 2,
+  "packages": [
+    { "name": "alpha", "owner": "a", "risk": "low", "dependsOn": ["beta"], "blocked": false },
+    { "name": "beta", "owner": "b", "risk": "medium", "dependsOn": ["alpha"], "blocked": false }
+  ]
+}

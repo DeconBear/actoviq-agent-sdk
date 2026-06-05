@@ -1,0 +1,12 @@
+{
+  "p01": { "source": "2232F The Cake Is a Lie", "rating": 3000, "tags": ["greedy", "math", "number theory"] },
+  "p02": { "source": "2229G Roadworks", "rating": 2900, "tags": ["dp", "data structures", "two pointers"] },
+  "p03": { "source": "2231F Quadratic Jumps", "rating": 2600, "tags": ["constructive algorithms", "math", "number theory"] },
+  "p04": { "source": "2230F Game on Growing Tree", "rating": 2700, "tags": ["games", "trees", "dp"] },
+  "p05": { "source": "2228E2 Amanojaku and Sequence (Hard Version)", "rating": 2500, "tags": ["combinatorics", "data structures"] },
+  "p06": { "source": "2223D Zhily and Cycle", "rating": 2800, "tags": ["graphs", "greedy"] },
+  "p07": { "source": "2226G Stop Spot", "rating": 3000, "tags": ["strings", "trees"] },
+  "p08": { "source": "2225F String Cutting", "rating": 2600, "tags": ["hashing", "string suffix structures", "strings"] },
+  "p09": { "source": "2219D MEX Replacement on Tree", "rating": 2700, "tags": ["data structures", "trees"] },
+  "p10": { "source": "2204G Grid Path", "rating": 2700, "tags": ["dp", "graphs", "matrices"] }
+}

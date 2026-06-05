@@ -1,0 +1,7 @@
+{
+  "severityWeights": {
+    "critical": 5,
+    "warning": 1
+  },
+  "missingOwnerExtraRisk": 1
+}

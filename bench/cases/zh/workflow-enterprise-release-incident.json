@@ -1,0 +1,34 @@
+{
+  "id": "complex.zh.workflow.enterprise-release-incident",
+  "title": "中文发布事故：修复里程碑排序和风险审计",
+  "category": "workflow",
+  "runtimeTarget": "parity",
+  "instruction": "请处理这个中文发布事故 fixture。先阅读发布计划、事故日志和风险清单，定位导致发布审计失败的两个独立根因，然后修复代码。完成后运行 npm test，并写一份 修复说明.zh-CN.md，说明里程碑排序问题、风险汇总问题和验证命令。这个任务适合拆分：如果 runtime 支持 subagent，请委派一个独立调试或审查路径；如果不支持，就由主 agent 完成。",
+  "fixture": "bench/fixtures/zh/enterprise-release-incident",
+  "tags": ["complex", "zh-CN", "workflow", "long", "subagent", "release"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 600,
+    "maxTurns": 35,
+    "maxToolCalls": 180,
+    "maxTokens": 250000
+  },
+  "behaviorExpectations": {
+    "minSubagentCalls": 1,
+    "maxToolErrors": 6
+  },
+  "goldCommand": "node {newCaseGold} complex.zh.workflow.enterprise-release-incident",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    },
+    {
+      "type": "command",
+      "command": "node {newCaseGrader} complex.zh.workflow.enterprise-release-incident",
+      "timeoutMs": 30000
+    }
+  ],
+  "notes": "中文长 workflow case；hidden grader checks report content while npm test validates code behavior."
+}

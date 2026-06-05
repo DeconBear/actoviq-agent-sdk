@@ -1,0 +1,9 @@
+{
+  "releaseDate": "2026-07-01T00:00:00.000Z",
+  "milestones": [
+    { "id": "m-2", "title": "支付服务联调", "due": "2026-06-20", "status": "open" },
+    { "id": "m-4", "title": "废弃旧网关", "due": "2026-06-01", "status": "cancelled" },
+    { "id": "m-1", "title": "核心 SDK 发布", "due": "2026-06-10", "status": "open" },
+    { "id": "m-3", "title": "风控检查", "due": "2026-06-12", "status": "blocked" }
+  ]
+}

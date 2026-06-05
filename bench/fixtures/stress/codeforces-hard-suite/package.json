@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "scripts": {
+    "sample": "node scripts/run-sample.mjs",
+    "sample:all": "node scripts/run-sample.mjs all",
+    "run": "node scripts/run-custom.mjs",
+    "judge": "node scripts/judge.mjs"
+  }
+}

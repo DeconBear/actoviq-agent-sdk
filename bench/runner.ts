@@ -205,6 +205,8 @@ async function runTrial(
       ACTOVIQ_BENCH_TRAJECTORY_FILE: trajectoryFile,
       ACTOVIQ_BENCH_INTERNAL_DIR: internalDir,
       ACTOVIQ_BENCH_RUNTIME_TARGET: benchmarkCase.runtimeTarget,
+      ACTOVIQ_CP_JUDGE_SCRIPT: path.join(repoRoot, 'bench', 'competitive', 'judge.mjs'),
+      ACTOVIQ_CP_HARD_JUDGE_SCRIPT: path.join(repoRoot, 'bench', 'competitive', 'hard-judge.mjs'),
       ...(benchmarkCase.budget?.maxTurns
         ? { ACTOVIQ_BENCH_MAX_TURNS: String(benchmarkCase.budget.maxTurns) }
         : {}),
@@ -240,7 +242,7 @@ async function runTrial(
 
     const graders: BenchmarkGraderResult[] = [];
     for (const grader of benchmarkCase.graders) {
-      const graderResult = await runGrader(grader, workspace, env);
+      const graderResult = await runGrader(grader, repoRoot, benchmarkCase, workspace, instructionFile, outputFile, env);
       graders.push(graderResult);
       await appendGraderEvent(trajectoryFile, benchmarkCase, trial, graderResult);
     }
@@ -252,7 +254,7 @@ async function runTrial(
       (agentCommand?.exitCode ?? 0) === 0 &&
       graders.every((grader) => grader.passed);
     const durationMs = Date.now() - startedAt;
-    const score = scoreTrial(benchmarkCase, passed, auditedAgentMetrics, durationMs);
+    const score = scoreTrial(benchmarkCase, passed, auditedAgentMetrics, durationMs, graders);
     const archivedTrajectory = await archiveTrajectory(repoRoot, options.reportDir, benchmarkCase, trial, trajectoryFile);
 
     return {
@@ -327,6 +329,12 @@ function renderCommand(
     .replaceAll('{cleanSdkRunner}', shellQuote(path.join(repoRoot, 'bench', 'agents', 'clean-sdk-runner.ts')))
     .replaceAll('{bridgeSdkRunner}', shellQuote(path.join(repoRoot, 'bench', 'agents', 'bridge-sdk-runner.ts')))
     .replaceAll('{officialClaudeSdkRunner}', shellQuote(path.join(repoRoot, 'bench', 'agents', 'official-claude-sdk-runner.ts')))
+    .replaceAll('{newCaseGold}', shellQuote(path.join(repoRoot, 'bench', 'gold', 'apply-new-case-gold.mjs')))
+    .replaceAll('{newCaseGrader}', shellQuote(path.join(repoRoot, 'bench', 'graders', 'check-new-cases.mjs')))
+    .replaceAll('{competitiveGold}', shellQuote(path.join(repoRoot, 'bench', 'competitive', 'apply-gold.mjs')))
+    .replaceAll('{competitiveJudge}', shellQuote(path.join(repoRoot, 'bench', 'competitive', 'judge.mjs')))
+    .replaceAll('{competitiveHardGold}', shellQuote(path.join(repoRoot, 'bench', 'competitive', 'apply-hard-gold.mjs')))
+    .replaceAll('{competitiveHardJudge}', shellQuote(path.join(repoRoot, 'bench', 'competitive', 'hard-judge.mjs')))
     .replaceAll('{caseId}', shellQuote(benchmarkCase.id))
     .replaceAll('{workspace}', shellQuote(workspace))
     .replaceAll('{instructionFile}', shellQuote(instructionFile))
@@ -339,18 +347,29 @@ function shellQuote(value: string): string {
 
 async function runGrader(
   grader: BenchmarkGrader,
+  repoRoot: string,
+  benchmarkCase: BenchmarkCase,
   workspace: string,
+  instructionFile: string,
+  outputFile: string,
   env: NodeJS.ProcessEnv,
 ): Promise<BenchmarkGraderResult> {
   switch (grader.type) {
     case 'command': {
-      const command = await runCommand(grader.command, workspace, env, grader.timeoutMs);
+      const command = await runCommand(
+        renderCommand(grader.command, repoRoot, benchmarkCase, workspace, instructionFile, outputFile),
+        workspace,
+        env,
+        grader.timeoutMs,
+      );
       const expectedExitCode = grader.passExitCode ?? 0;
+      const score = extractScoreFromStdout(grader, command.stdout);
       return {
         type: grader.type,
         passed: command.exitCode === expectedExitCode,
-        message: `Expected exit ${expectedExitCode}; got ${command.exitCode ?? 'null'}.`,
+        message: `Expected exit ${expectedExitCode}; got ${command.exitCode ?? 'null'}.${score === undefined ? '' : ` Partial score ${roundScore(score).toFixed(3)}.`}`,
         command,
+        score,
       };
     }
     case 'file_contains': {
@@ -454,6 +473,14 @@ function findForbiddenBenchmarkAccess(text: string, repoRoot: string, workspace:
     'goldcommand',
     'bench/cases',
     'bench/reports',
+    'bench/graders',
+    'bench/gold',
+    'bench/competitive',
+    'codeforces-source-map',
+    'source-map.json',
+    'hidden-tests',
+    'oracles',
+    'generators',
     'agent_runtime_benchmark_results',
     'agent_capability_benchmark_design',
     'clean-sdk-runner.ts',
@@ -771,8 +798,9 @@ function scoreTrial(
   passed: boolean,
   metrics: BenchmarkAgentMetrics | undefined,
   durationMs: number,
+  graders: BenchmarkGraderResult[],
 ): BenchmarkScore {
-  const task = passed ? 1 : 0;
+  const task = scoreTask(passed, graders);
   const efficiency = scoreEfficiency(benchmarkCase, metrics, durationMs);
   const behavior = scoreBehavior(benchmarkCase, metrics);
   return {
@@ -781,6 +809,46 @@ function scoreTrial(
     efficiency: roundScore(efficiency),
     behavior: roundScore(behavior),
   };
+}
+
+function scoreTask(passed: boolean, graders: BenchmarkGraderResult[]): number {
+  if (passed) {
+    return 1;
+  }
+  const explicitScores = graders
+    .filter((grader) => grader.type !== 'policy' && typeof grader.score === 'number')
+    .map((grader) => clampScore(grader.score ?? 0));
+  if (explicitScores.length === 0) {
+    return 0;
+  }
+  return explicitScores.reduce((sum, score) => sum + score, 0) / explicitScores.length;
+}
+
+function extractScoreFromStdout(grader: BenchmarkGrader, stdout: string): number | undefined {
+  if (grader.type !== 'command' || !grader.scoreFromStdout) {
+    return undefined;
+  }
+  let match: RegExpMatchArray | null;
+  try {
+    match = stdout.match(new RegExp(grader.scoreFromStdout.pattern, 'm'));
+  } catch {
+    return undefined;
+  }
+  if (!match) {
+    return undefined;
+  }
+  const numeratorGroup = grader.scoreFromStdout.numeratorGroup ?? 1;
+  const denominatorGroup = grader.scoreFromStdout.denominatorGroup ?? 2;
+  const numerator = Number(match[numeratorGroup]);
+  const denominator = Number(match[denominatorGroup]);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return undefined;
+  }
+  return clampScore(numerator / denominator);
+}
+
+function clampScore(score: number): number {
+  return Math.max(0, Math.min(1, score));
 }
 
 function scoreEfficiency(
@@ -839,6 +907,16 @@ function scoreBehavior(benchmarkCase: BenchmarkCase, metrics: BenchmarkAgentMetr
     if (actual < expectations.minSkillUseCount) {
       const missingRatio = (expectations.minSkillUseCount - actual) / Math.max(expectations.minSkillUseCount, 1);
       score -= Math.min(0.4, missingRatio * 0.4);
+    }
+  }
+  if (expectations?.requiredSkillNames?.length) {
+    const actualSkillNames = (metrics.skills ?? []).map((skill) => skill.toLowerCase());
+    const missing = expectations.requiredSkillNames.filter((expected) => {
+      const normalizedExpected = expected.toLowerCase();
+      return !actualSkillNames.some((actual) => actual.includes(normalizedExpected));
+    });
+    if (missing.length > 0) {
+      score -= Math.min(0.4, (missing.length / expectations.requiredSkillNames.length) * 0.4);
     }
   }
   return Math.max(0, score);

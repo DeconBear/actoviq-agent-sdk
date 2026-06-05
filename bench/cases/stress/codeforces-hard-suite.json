@@ -1,0 +1,32 @@
+{
+  "id": "complex.long.competitive.codeforces-hard-suite",
+  "title": "Competitive programming stress suite derived from recent hard Codeforces problems",
+  "category": "coding",
+  "runtimeTarget": "parity",
+  "instruction": "Solve the ten competitive-programming problems in this workspace. Each problem has exactly one public sample. Implement solutions/p01/solution.mjs through solutions/p10/solution.mjs. You may run public samples with npm run sample -- p01 or npm run sample:all, run custom input with npm run run -- p01, and query the black-box hidden judge with npm run judge -- p01 or npm run judge -- all. The black-box judge returns only PASS or FAIL and will not reveal failing tests. Iterate until your own samples/custom tests and the black-box judge pass as much as possible. Do not inspect benchmark internals outside this workspace.",
+  "fixture": "bench/fixtures/stress/codeforces-hard-suite",
+  "tags": ["complex", "long", "stress", "competitive-programming", "codeforces-derived", "hidden-judge"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 7200,
+    "maxTurns": 160,
+    "maxToolCalls": 1000,
+    "maxTokens": 1200000
+  },
+  "behaviorExpectations": {
+    "minSubagentCalls": 3,
+    "maxToolErrors": 25
+  },
+  "goldCommand": "node {competitiveGold}",
+  "graders": [
+    {
+      "type": "command",
+      "command": "node {competitiveJudge} final all",
+      "timeoutMs": 300000,
+      "scoreFromStdout": {
+        "pattern": "SOLVED\\s+(\\d+)\\/(\\d+)"
+      }
+    }
+  ],
+  "notes": "Agent-visible judge returns only PASS/FAIL. The final grader reports per-problem status after the run."
+}

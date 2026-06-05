@@ -26,6 +26,7 @@ export interface BenchmarkBudget {
 export interface BenchmarkBehaviorExpectations {
   minSubagentCalls?: number;
   minSkillUseCount?: number;
+  requiredSkillNames?: string[];
   maxToolErrors?: number;
 }
 
@@ -52,6 +53,11 @@ export type BenchmarkGrader =
       command: string;
       timeoutMs?: number;
       passExitCode?: number;
+      scoreFromStdout?: {
+        pattern: string;
+        numeratorGroup?: number;
+        denominatorGroup?: number;
+      };
     }
   | {
       type: 'file_contains';
@@ -167,6 +173,7 @@ export interface BenchmarkGraderResult {
   passed: boolean;
   message: string;
   command?: BenchmarkCommandResult;
+  score?: number;
 }
 
 export interface BenchmarkTrialResult {

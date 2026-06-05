@@ -1,0 +1,10 @@
+{
+  "capacityPerWave": 2,
+  "packages": [
+    { "name": "web", "owner": "frontend", "risk": "high", "dependsOn": ["api"], "blocked": false },
+    { "name": "api", "owner": "backend", "risk": "medium", "dependsOn": ["core"], "blocked": false },
+    { "name": "core", "owner": "platform", "risk": "low", "dependsOn": [], "blocked": false },
+    { "name": "docs", "owner": "devrel", "risk": "low", "dependsOn": ["core"], "blocked": false },
+    { "name": "blocked-addon", "owner": "labs", "risk": "high", "dependsOn": ["core"], "blocked": true }
+  ]
+}

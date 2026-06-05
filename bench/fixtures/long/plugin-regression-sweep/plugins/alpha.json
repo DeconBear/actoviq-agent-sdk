@@ -1,0 +1,7 @@
+{
+  "name": "alpha-tools",
+  "enabled": true,
+  "commands": [
+    { "name": "scan", "handler": "scan.js" }
+  ]
+}
