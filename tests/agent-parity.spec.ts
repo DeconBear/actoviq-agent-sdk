@@ -259,6 +259,60 @@ describe('Actoviq advanced parity features', () => {
     }
   });
 
+  it('locally clears old tool results for OpenAI-compatible follow-up requests', async () => {
+    const sessionDirectory = await createTempDir('actoviq-openai-local-microcompact-');
+    const longPayload = 'lookup-result-'.repeat(200);
+    const modelApi = new MockModelApi({
+      create: async (_request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'I will use a verbose tool.' },
+              { type: 'tool_use', id: 'toolu_1', name: 'lookup_large', input: {} },
+            ],
+            'tool_use',
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'Done.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      provider: 'openai',
+      baseURL: 'https://example.test/v1',
+      compact: {
+        apiMicrocompactMaxInputTokens: 1,
+        apiMicrocompactClearToolResults: true,
+        microcompactKeepRecentToolResults: 0,
+        microcompactMinContentChars: 1,
+      },
+    });
+
+    const lookupLarge = tool(
+      {
+        name: 'lookup_large',
+        description: 'Returns a large lookup payload.',
+        inputSchema: z.object({}),
+      },
+      async () => ({ value: longPayload }),
+    );
+
+    try {
+      await sdk.run('Use the verbose tool.', { tools: [lookupLarge] });
+      const followUpRequest = modelApi.createCalls[1];
+      const followUpMessages = JSON.stringify(followUpRequest?.messages);
+
+      expect(followUpRequest?.context_management).toBeUndefined();
+      expect(followUpMessages).toContain('[Old tool result content cleared]');
+      expect(followUpMessages).not.toContain(longPayload.slice(0, 80));
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('supports swarm teammates, side sessions, and background completion mail', async () => {
     const sessionDirectory = await createTempDir('actoviq-swarm-');
     const seenPrompts: string[] = [];

@@ -798,6 +798,8 @@ export interface AgentRunResult {
   messages: MessageParam[];
   surfacedMemories?: ActoviqSurfacedMemory[];
   stopReason: StopReason | null;
+  incompleteReason?: string;
+  maxToolIterationsExceeded?: boolean;
   hookStopReason?: string;
   usage?: Usage;
   requests: AgentRequestSummary[];
@@ -975,6 +977,7 @@ export interface ActoviqBackgroundTaskRecord {
   model?: string;
   text?: string;
   toolCallCount?: number;
+  toolErrorCount?: number;
   error?: string;
 }
 

@@ -11,12 +11,19 @@ import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
 const instruction = readRequiredEnv('ACTOVIQ_BENCH_INSTRUCTION');
+const runnerStartedAt = Date.now();
 const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const internalDir = process.env.ACTOVIQ_BENCH_INTERNAL_DIR ?? path.join(workspace, '.actoviq-bench');
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqPermissionMode;
-const maxToolIterations = Number(process.env.ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS ?? 24);
+const maxToolIterations = Number(
+  process.env.ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS ??
+  process.env.ACTOVIQ_BENCH_MAX_TURNS ??
+  24,
+);
+const maxRetries = Number(process.env.ACTOVIQ_BENCH_MAX_RETRIES ?? 3);
+const timeoutMs = Number(process.env.ACTOVIQ_BENCH_REQUEST_TIMEOUT_MS ?? 300_000);
 
 clearBenchmarkEnv();
 
@@ -28,6 +35,8 @@ const sdk = await createAgentSdk({
   tools: createActoviqCoreTools({ cwd: workspace }),
   permissionMode,
   maxToolIterations,
+  maxRetries,
+  timeoutMs,
 });
 
 try {
@@ -42,17 +51,24 @@ try {
   });
   await writeTrajectory(result);
   const skillNames = getSkillNames(result);
+  const incompleteReason = getIncompleteReason(result);
+  const toolCalls = result.toolCalls.map((call) => ({
+    ...call,
+    isError: call.isError || hasNonZeroExitCode(call),
+  }));
 
   await writeRunnerOutput(outputFile, {
     runtime: 'clean-sdk',
     text: result.text,
+    stopReason: result.stopReason,
+    incompleteReason,
     metrics: {
       runtime: 'clean-sdk',
       llmRequestCount: result.requests.length,
       requestCount: result.requests.length,
       turnCount: result.requests.length,
-      toolCallCount: result.toolCalls.length,
-      toolErrorCount: result.toolCalls.filter((call) => call.isError).length,
+      toolCallCount: toolCalls.length,
+      toolErrorCount: toolCalls.filter((call) => call.isError).length,
       subagentCallCount: sumDelegatedAgentCounts(result.delegatedAgents),
       skillUseCount: skillNames.length,
       permissionDenialCount: result.permissionDecisions?.filter((decision) => decision.behavior === 'deny').length ?? 0,
@@ -61,7 +77,7 @@ try {
       outputTokens: result.usage?.output_tokens,
       cacheReadInputTokens: result.usage?.cache_read_input_tokens ?? undefined,
       cacheCreationInputTokens: result.usage?.cache_creation_input_tokens ?? undefined,
-      toolCalls: result.toolCalls.map((call) => ({
+      toolCalls: toolCalls.map((call) => ({
         name: call.name,
         publicName: call.publicName,
         isError: call.isError,
@@ -82,6 +98,53 @@ try {
   });
 
   console.log(result.text);
+  if (incompleteReason) {
+    process.exitCode = 1;
+  }
+} catch (error) {
+  const normalized = normalizeError(error);
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: 'clean-sdk',
+    caseId,
+    actor: { type: 'main-agent' },
+    event: {
+      type: 'error',
+      name: normalized.name,
+      outputSummary: summarizeText(normalized.message),
+      isError: true,
+      data: {
+        stack: normalized.stack,
+      },
+    },
+  });
+  await writeRunnerOutput(outputFile, {
+    runtime: 'clean-sdk',
+    text: '',
+    stopReason: null,
+    incompleteReason: `agent_error:${normalized.name}`,
+    error: {
+      name: normalized.name,
+      message: normalized.message,
+      stack: normalized.stack,
+    },
+    metrics: {
+      runtime: 'clean-sdk',
+      llmRequestCount: 0,
+      requestCount: 0,
+      turnCount: 0,
+      toolCallCount: 0,
+      toolErrorCount: 1,
+      subagentCallCount: 0,
+      skillUseCount: 0,
+      permissionDenialCount: 0,
+      durationMs: Date.now() - runnerStartedAt,
+      toolCalls: [],
+      subagents: [],
+      skills: [],
+    },
+  });
+  console.error(normalized.stack ?? normalized.message);
+  process.exitCode = 1;
 } finally {
   await sdk.close();
 }
@@ -107,6 +170,42 @@ function getSkillNames(result: AgentRunResult): string[] {
   return [...new Set([...invoked, ...toolBased])];
 }
 
+function getIncompleteReason(result: AgentRunResult): string | undefined {
+  if (result.incompleteReason) {
+    return result.incompleteReason;
+  }
+  if (result.maxToolIterationsExceeded) {
+    return 'max_tool_iterations_exceeded';
+  }
+  if (result.stopReason === 'tool_use') {
+    return 'pending_tool_use';
+  }
+  return undefined;
+}
+
+function hasNonZeroExitCode(call: AgentRunResult['toolCalls'][number]): boolean {
+  if (isRecord(call.output) && typeof call.output.exitCode === 'number') {
+    return call.output.exitCode !== 0;
+  }
+  if (typeof call.outputText !== 'string' || call.outputText.trim().length === 0) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(call.outputText) as unknown;
+    return isRecord(parsed) && typeof parsed.exitCode === 'number' && parsed.exitCode !== 0;
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 async function writeTrajectory(result: AgentRunResult): Promise<void> {
   for (const request of result.requests) {
     await appendTrajectoryEvent(trajectoryFile, {
@@ -126,6 +225,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
     });
   }
   for (const call of result.toolCalls) {
+    const isError = call.isError || hasNonZeroExitCode(call);
     await appendTrajectoryEvent(trajectoryFile, {
       runtime: 'clean-sdk',
       caseId,
@@ -135,7 +235,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
         name: call.name,
         inputSummary: summarizeText(JSON.stringify(call.input)),
         outputSummary: summarizeText(call.outputText),
-        isError: call.isError,
+        isError,
         durationMs: call.durationMs,
       },
     });
@@ -147,7 +247,7 @@ async function writeTrajectory(result: AgentRunResult): Promise<void> {
         type: 'tool_result',
         name: call.name,
         outputSummary: summarizeText(call.outputText),
-        isError: call.isError,
+        isError,
         durationMs: call.durationMs,
       },
     });

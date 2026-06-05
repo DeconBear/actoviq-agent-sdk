@@ -1,5 +1,7 @@
 ﻿import path from 'node:path';
 
+import { z } from 'zod';
+
 import type { MessageParam } from '../provider/types.js';
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
@@ -112,6 +114,7 @@ import { createOpenaiModelApi } from '../provider/openai-model-api.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { executeConversation } from './conversationEngine.js';
 import { asError, createId, deepClone, isRecord, nowIso, truncateText } from './helpers.js';
+import { tool } from './tools.js';
 import {
   buildInvokedSkillMessages,
   buildRelevantMemoryMessages,
@@ -647,6 +650,10 @@ export class ActoviqAgentClient {
     ) {
       this.defaultTools.unshift(this.createTaskTool());
     }
+    this.replaceDefaultTool(this.createBackgroundTaskListTool());
+    this.replaceDefaultTool(this.createBackgroundTaskGetTool());
+    this.replaceDefaultTool(this.createBackgroundTaskStopTool());
+    this.replaceDefaultTool(this.createBackgroundTaskOutputTool());
   }
 
   async listToolMetadata(
@@ -1027,6 +1034,129 @@ export class ActoviqAgentClient {
       launchBackgroundAgent: (agent, prompt, backgroundOptions, runOptions) =>
         this.launchBackgroundAgentTask(agent, prompt, backgroundOptions, runOptions),
     });
+  }
+
+  private replaceDefaultTool(replacement: AgentToolDefinition): void {
+    const existingIndex = this.defaultTools.findIndex(tool => tool.name === replacement.name);
+    if (existingIndex >= 0) {
+      this.defaultTools.splice(existingIndex, 1, replacement);
+      return;
+    }
+    this.defaultTools.push(replacement);
+  }
+
+  private createBackgroundTaskListTool(): AgentToolDefinition {
+    return tool(
+      {
+        name: 'TaskList',
+        description: 'List background subagent tasks for the current SDK runtime.',
+        inputSchema: z.strictObject({}),
+        isReadOnly: () => true,
+        serialize: (output) => {
+          if (output.tasks.length === 0) {
+            return 'No background tasks.';
+          }
+          return output.tasks
+            .map(task => [
+              `Task id: ${task.id}`,
+              `Status: ${task.status}`,
+              `Subagent: ${task.subagentType}`,
+              `Description: ${task.description}`,
+              task.runId ? `Run id: ${task.runId}` : undefined,
+              task.sessionId ? `Session id: ${task.sessionId}` : undefined,
+              task.completedAt ? `Completed at: ${task.completedAt}` : undefined,
+            ].filter(Boolean).join('\n'))
+            .join('\n\n');
+        },
+      },
+      async () => ({
+        tasks: await this.backgroundTaskManager.list(),
+      }),
+    );
+  }
+
+  private createBackgroundTaskGetTool(): AgentToolDefinition {
+    return tool(
+      {
+        name: 'TaskGet',
+        description: 'Retrieve background subagent task status by ID.',
+        inputSchema: z.strictObject({
+          taskId: z.string().optional().describe('The ID of the task to get'),
+          task_id: z.string().optional().describe('The ID of the task to get'),
+        }).superRefine((input, ctx) => {
+          if (!resolveTaskId(input)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['task_id'],
+              message: 'Provide `task_id` or `taskId`.',
+            });
+          }
+        }),
+        isReadOnly: () => true,
+        serialize: serializeBackgroundTaskOutput,
+      },
+      async (input) => {
+        const taskId = resolveTaskId(input);
+        if (!taskId) {
+          throw new Error('TaskGet requires `task_id` or `taskId`.');
+        }
+        const task = await this.backgroundTaskManager.get(taskId);
+        if (!task) {
+          throw new Error(`No background task with id "${taskId}" exists.`);
+        }
+        return task;
+      },
+    );
+  }
+
+  private createBackgroundTaskStopTool(): AgentToolDefinition {
+    return tool(
+      {
+        name: 'TaskStop',
+        description: 'Stop a running background subagent task.',
+        inputSchema: z.strictObject({
+          task_id: z.string().describe('The ID of the task to stop'),
+        }),
+        isConcurrencySafe: () => true,
+        serialize: serializeBackgroundTaskOutput,
+      },
+      async ({ task_id }) => {
+        const task = await this.backgroundTaskManager.cancel(task_id);
+        if (!task) {
+          throw new Error(`No background task with id "${task_id}" exists.`);
+        }
+        return task;
+      },
+    );
+  }
+
+  private createBackgroundTaskOutputTool(): AgentToolDefinition {
+    return tool(
+      {
+        name: 'TaskOutput',
+        description: 'Retrieve output from a completed or running background subagent task.',
+        inputSchema: z.strictObject({
+          task_id: z.string().describe('The ID of the task to get output for'),
+          block: z.boolean().optional().describe('Wait for task to complete before returning'),
+          timeout: z.number().int().positive().optional().describe('Max wait time in milliseconds'),
+        }),
+        isReadOnly: () => true,
+        serialize: serializeBackgroundTaskOutput,
+      },
+      async ({ task_id, block, timeout }, context) => {
+        if (block) {
+          return this.backgroundTaskManager.wait(task_id, {
+            timeoutMs: timeout,
+            signal: context.signal,
+          });
+        }
+        const task = await this.backgroundTaskManager.get(task_id);
+        if (!task) {
+          throw new Error(`No background task with id "${task_id}" exists.`);
+        }
+        return task;
+      },
+    );
   }
 
   private async prepareSkillExecution(
@@ -1957,6 +2087,7 @@ export class ActoviqAgentClient {
           model: result.model,
           text: result.text,
           toolCallCount: result.toolCalls.length,
+          toolErrorCount: result.toolCalls.filter(call => call.isError).length,
         };
       },
     });
@@ -2003,6 +2134,7 @@ export class ActoviqAgentClient {
           model: result.model,
           text: result.text,
           toolCallCount: result.toolCalls.length,
+          toolErrorCount: result.toolCalls.filter(call => call.isError).length,
         };
       },
     });
@@ -2548,6 +2680,27 @@ export async function createAgentSdk(
   options: CreateAgentSdkOptions = {},
 ): Promise<ActoviqAgentClient> {
   return ActoviqAgentClient.create(options);
+}
+
+function resolveTaskId(input: { task_id?: string; taskId?: string }): string | undefined {
+  return [input.task_id, input.taskId]
+    .map(value => value?.trim())
+    .find((value): value is string => Boolean(value));
+}
+
+function serializeBackgroundTaskOutput(task: ActoviqBackgroundTaskRecord): string {
+  return [
+    `Task id: ${task.id}`,
+    `Status: ${task.status}`,
+    `Subagent: ${task.subagentType}`,
+    task.runId ? `Run id: ${task.runId}` : undefined,
+    task.sessionId ? `Session id: ${task.sessionId}` : undefined,
+    task.model ? `Model: ${task.model}` : undefined,
+    typeof task.toolCallCount === 'number' ? `Tool calls: ${task.toolCallCount}` : undefined,
+    typeof task.toolErrorCount === 'number' ? `Tool errors: ${task.toolErrorCount}` : undefined,
+    task.error ? `Error:\n${task.error}` : undefined,
+    task.text ? `Output:\n${task.text}` : 'Output: <not available yet>',
+  ].filter(Boolean).join('\n');
 }
 
 function joinPromptParts(...parts: Array<string | undefined>): string | undefined {

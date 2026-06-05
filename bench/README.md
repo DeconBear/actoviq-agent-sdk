@@ -28,7 +28,7 @@ The harness also scans JSONL trajectories for benchmark-internal access such as 
 
 Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, `requiredSkillNames`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.
 `subagentCallCount` should count actual delegated agents only, not internal shell/tool helper tasks such as local bash execution events.
-Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for Bridge SDK and official Claude Agent SDK wrappers.
+Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for Bridge SDK and official Claude Agent SDK wrappers, and as `ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS` for the Clean SDK wrapper.
 
 ## Runtime Targets
 

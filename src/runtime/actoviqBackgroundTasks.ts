@@ -18,6 +18,7 @@ interface LaunchActoviqBackgroundTaskOptions {
     model: string;
     text: string;
     toolCallCount: number;
+    toolErrorCount?: number;
   }>;
 }
 
@@ -206,6 +207,7 @@ export class ActoviqBackgroundTaskManager {
         model: result.model,
         text: result.text,
         toolCallCount: result.toolCallCount,
+        toolErrorCount: result.toolErrorCount,
       };
       await this.store.save(completed);
       return completed;

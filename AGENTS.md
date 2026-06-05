@@ -55,6 +55,8 @@ Each benchmark case should declare a `runtimeTarget`: `clean-sdk`, `bridge-sdk`,
 
 Benchmark reports should preserve both deterministic scoring and behavior traces. Keep `passed` tied to final graders, and log metrics such as LLM request/turn count, tool call count, tool errors, subagent usage, skill usage, permission denials, token usage, cost, and event count whenever the runtime exposes them. Do not turn those metrics into prompt constraints; they are evidence for comparing general Claude Code-like agent capability.
 
+Benchmark runtime budgets must be applied consistently across compared agents. When a case declares `budget.maxTurns`, pass it to Bridge SDK and official Claude Agent SDK as their turn limit and to Clean SDK as `maxToolIterations` / `ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS`; otherwise Clean SDK can be unfairly truncated while other runtimes receive the full budget.
+
 Use `behaviorExpectations` for optional benchmark score signals such as minimum subagent calls, minimum skill use, or maximum tool errors. These expectations should affect the behavior score and comparison report only; they must not replace deterministic graders or force a prescribed ReAct script in the task prompt.
 
 The complex benchmark suite should cover the local deterministic capability families already represented under `bench/cases/complex/`: coding, terminal/devops, workflow/subagent-oriented decomposition, skills, dialogue/policy/tool API, local docs/web research, memory/log debugging, and safety/prompt-injection resistance. Add new cases to these families before adding broad new benchmark categories.

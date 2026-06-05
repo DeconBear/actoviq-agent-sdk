@@ -3,7 +3,7 @@ import type { ActoviqAgentDefinition } from '../types.js';
 const DEFAULT_AGENT_METADATA = {
   source: 'actoviq-default',
 } as const;
-const DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS = 6;
+const DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS = 24;
 
 const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
   {

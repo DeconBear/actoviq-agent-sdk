@@ -208,7 +208,10 @@ async function runTrial(
       ACTOVIQ_CP_JUDGE_SCRIPT: path.join(repoRoot, 'bench', 'competitive', 'judge.mjs'),
       ACTOVIQ_CP_HARD_JUDGE_SCRIPT: path.join(repoRoot, 'bench', 'competitive', 'hard-judge.mjs'),
       ...(benchmarkCase.budget?.maxTurns
-        ? { ACTOVIQ_BENCH_MAX_TURNS: String(benchmarkCase.budget.maxTurns) }
+        ? {
+            ACTOVIQ_BENCH_MAX_TURNS: String(benchmarkCase.budget.maxTurns),
+            ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS: String(benchmarkCase.budget.maxTurns),
+          }
         : {}),
     };
 

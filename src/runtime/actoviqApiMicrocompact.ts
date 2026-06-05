@@ -1,5 +1,8 @@
 import type { MessageParam } from '../provider/types.js';
 import type { ActoviqCompactConfig } from '../types.js';
+import { estimateActoviqConversationTokens } from '../memory/actoviqSessionMemoryState.js';
+
+const LOCAL_TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]';
 
 function hasToolUseOrResult(messages: readonly MessageParam[]): boolean {
   return messages.some(
@@ -61,4 +64,95 @@ export function getActoviqApiContextManagement(
   }
 
   return edits.length > 0 ? { edits } : undefined;
+}
+
+export function getActoviqProviderRequestMessages(
+  messages: readonly MessageParam[],
+  compact: ActoviqCompactConfig,
+  options: { localToolResultMicrocompact: boolean },
+): MessageParam[] {
+  if (
+    !options.localToolResultMicrocompact ||
+    !compact.apiMicrocompactEnabled ||
+    !compact.apiMicrocompactClearToolResults
+  ) {
+    return [...messages];
+  }
+
+  const trigger = compact.apiMicrocompactMaxInputTokens ?? 180_000;
+  if (estimateActoviqConversationTokens(messages) <= trigger) {
+    return [...messages];
+  }
+
+  const positions: Array<{ messageIndex: number; blockIndex: number }> = [];
+  messages.forEach((message, messageIndex) => {
+    if (!Array.isArray(message.content)) {
+      return;
+    }
+    message.content.forEach((block, blockIndex) => {
+      if (
+        typeof block === 'object' &&
+        block !== null &&
+        'type' in block &&
+        block.type === 'tool_result' &&
+        getToolResultTextLength(block) >= compact.microcompactMinContentChars
+      ) {
+        positions.push({ messageIndex, blockIndex });
+      }
+    });
+  });
+
+  const keepRecent = Math.max(compact.microcompactKeepRecentToolResults, 0);
+  const clearCount = Math.max(positions.length - keepRecent, 0);
+  if (clearCount === 0) {
+    return [...messages];
+  }
+
+  const toClear = new Set(
+    positions
+      .slice(0, clearCount)
+      .map(position => `${position.messageIndex}:${position.blockIndex}`),
+  );
+
+  return messages.map((message, messageIndex) => {
+    if (!Array.isArray(message.content)) {
+      return { ...message };
+    }
+    return {
+      ...message,
+      content: message.content.map((block, blockIndex) => {
+        if (!toClear.has(`${messageIndex}:${blockIndex}`)) {
+          return block;
+        }
+        return {
+          ...block,
+          content: LOCAL_TOOL_RESULT_CLEARED_MESSAGE,
+        };
+      }),
+    };
+  });
+}
+
+function getToolResultTextLength(block: Record<string, unknown>): number {
+  const content = block.content;
+  if (typeof content === 'string') {
+    return content.length;
+  }
+  if (!Array.isArray(content)) {
+    return 0;
+  }
+  return content.reduce((sum, entry) => {
+    if (typeof entry === 'string') {
+      return sum + entry.length;
+    }
+    if (
+      typeof entry === 'object' &&
+      entry !== null &&
+      'text' in entry &&
+      typeof entry.text === 'string'
+    ) {
+      return sum + entry.text.length;
+    }
+    return sum + JSON.stringify(entry).length;
+  }, 0);
 }

@@ -25,7 +25,10 @@ import type {
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
-import { getActoviqApiContextManagement } from './actoviqApiMicrocompact.js';
+import {
+  getActoviqApiContextManagement,
+  getActoviqProviderRequestMessages,
+} from './actoviqApiMicrocompact.js';
 import { decideActoviqToolPermission } from './actoviqPermissions.js';
 import {
   assistantMessageToParam,
@@ -112,6 +115,12 @@ export async function executeConversation(
       timestamp: nowIso(),
     });
 
+    const useAnthropicContextManagement = isAnthropicAPI(options.config.baseURL);
+    const requestMessages = getActoviqProviderRequestMessages(
+      conversation,
+      options.config.compact,
+      { localToolResultMicrocompact: !useAnthropicContextManagement },
+    );
     const request: ModelRequest = {
       model,
       max_tokens: options.maxTokens ?? options.config.maxTokens,
@@ -125,10 +134,10 @@ export async function executeConversation(
           : undefined,
       // Skip context_management for third-party providers — their APIs
       // may not support server-side message edits, causing undefined behavior.
-      context_management: isAnthropicAPI(options.config.baseURL)
+      context_management: useAnthropicContextManagement
         ? getActoviqApiContextManagement(conversation, options.config.compact)
         : undefined,
-      messages: deepClone(conversation),
+      messages: deepClone(requestMessages),
       signal: options.signal,
     };
 
@@ -299,6 +308,8 @@ export async function executeConversation(
           message: finalMessage,
           messages: conversation,
           stopReason: finalMessage.stop_reason ?? null,
+          incompleteReason: `max_tool_iterations_exceeded:${options.config.maxToolIterations}`,
+          maxToolIterationsExceeded: true,
           hookStopReason,
           usage: finalMessage.usage,
           requests: requestSummaries,

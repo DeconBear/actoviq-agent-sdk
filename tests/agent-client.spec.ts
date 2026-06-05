@@ -1325,7 +1325,7 @@ describe('ActoviqAgentClient', () => {
         expect.arrayContaining([
           expect.objectContaining({ name: 'general-purpose' }),
           expect.objectContaining({ name: 'code-reviewer' }),
-          expect.objectContaining({ name: 'debugger', maxToolIterations: 6 }),
+          expect.objectContaining({ name: 'debugger', maxToolIterations: 24 }),
         ]),
       );
     } finally {
@@ -1779,6 +1779,152 @@ describe('ActoviqAgentClient', () => {
           }),
         ]),
       );
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('exposes completed background subagent output through the default TaskOutput tool', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let backgroundTaskId: string | undefined;
+    const modelApi = new MockModelApi({
+      create: (request) => {
+        const isReviewer = request.system?.includes('Review code carefully and focus on risks.');
+        const messagesText = JSON.stringify(request.messages);
+        if (isReviewer) {
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'Background reviewer summary: no release-blocking issues.',
+            },
+          ]);
+        }
+
+        if (messagesText.includes('Read the background output')) {
+          if (!backgroundTaskId) {
+            throw new Error('Task id should be known before TaskOutput is requested.');
+          }
+          if (!messagesText.includes('tool_result')) {
+            return makeMessage(
+              [
+                {
+                  type: 'tool_use',
+                  id: 'toolu_task_output',
+                  name: 'TaskOutput',
+                  input: {
+                    task_id: backgroundTaskId,
+                    block: true,
+                    timeout: 10_000,
+                  },
+                },
+              ],
+              'tool_use',
+            );
+          }
+
+          return makeMessage([
+            {
+              type: 'text',
+              text: 'TaskOutput returned the background reviewer summary.',
+            },
+          ]);
+        }
+
+        if (!messagesText.includes('tool_result')) {
+          return makeMessage(
+            [
+              {
+                type: 'tool_use',
+                id: 'toolu_background_task',
+                name: 'Task',
+                input: {
+                  description: 'Review this release in the background.',
+                  subagent_type: 'reviewer',
+                  run_in_background: true,
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        return makeMessage([
+          {
+            type: 'text',
+            text: 'The reviewer is running in the background.',
+          },
+        ]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+        },
+      ],
+    });
+
+    try {
+      const launchResult = await sdk.run('Start a background review.');
+      const taskOutput = launchResult.toolCalls[0]?.output as Record<string, unknown> | undefined;
+      backgroundTaskId =
+        typeof taskOutput?.taskId === 'string' ? taskOutput.taskId : undefined;
+      expect(backgroundTaskId).toBeTruthy();
+
+      await sdk.tasks.wait(backgroundTaskId!);
+      const outputResult = await sdk.run('Read the background output.');
+      const outputCall = outputResult.toolCalls.find(call => call.name === 'TaskOutput');
+
+      expect(outputCall?.outputText).toContain('Background reviewer summary');
+      expect(outputCall?.output).toEqual(
+        expect.objectContaining({
+          id: backgroundTaskId,
+          status: 'completed',
+          text: expect.stringContaining('Background reviewer summary'),
+        }),
+      );
+      expect(outputResult.text).toContain('TaskOutput returned');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('marks runs incomplete when max tool iterations are reached before tool execution', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => makeMessage(
+        [
+          {
+            type: 'tool_use',
+            id: 'toolu_over_budget',
+            name: 'TaskList',
+            input: {},
+          },
+        ],
+        'tool_use',
+      ),
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      maxToolIterations: 1,
+    });
+
+    try {
+      const result = await sdk.run('Attempt one more tool call than the budget allows.');
+
+      expect(result.stopReason).toBe('tool_use');
+      expect(result.maxToolIterationsExceeded).toBe(true);
+      expect(result.incompleteReason).toContain('max_tool_iterations_exceeded');
+      expect(result.toolCalls).toHaveLength(0);
     } finally {
       await sdk.close();
     }
