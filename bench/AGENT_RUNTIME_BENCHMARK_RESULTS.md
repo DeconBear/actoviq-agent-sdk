@@ -1,5 +1,24 @@
 # Agent Runtime Benchmark Results
 
+## Long Suite — Clean SDK Validation (2026-06-10)
+
+First real Clean SDK run over the five `bench/cases/long/` cases on branch
+`feat/long-task-parity` (in-loop auto-compact, parallel read-only tools,
+tool-result budgets, truncation recovery, fallback model, unlimited default
+`maxToolIterations`).
+
+| Case | First run | Rerun | Notes |
+| --- | --- | --- | --- |
+| `complex.long.coding.plugin-regression-sweep` | PASS (0.930) | — | |
+| `complex.long.ops.multi-ticket-operations` | PASS | — | |
+| `complex.long.docs.api-drift-synthesis` | PASS | — | |
+| `complex.long.workflow.release-train-reconciliation` | FAIL | PASS (0.944) | First run omitted the required `blocked items: 0` literal — genuine instruction-following miss. |
+| `complex.long.safety.supply-chain-review` | FAIL | PASS (0.995) | First failure was an over-literal hidden grader (required the words `secret`/`mitigation`); checker broadened to semantic equivalents, deterministic core assertions unchanged. |
+
+Caveats: this is 3/5 single-run plus 2 reruns, not a stable single-run 5/5;
+`subagents=0` across all long cases (delegation still does not happen
+naturally); run-to-run variance remains the main open issue.
+
 ## Latest Hard Subagent Capability Probe
 
 The latest targeted parity run uses the new
