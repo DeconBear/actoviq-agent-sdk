@@ -121,6 +121,7 @@ export async function executeConversation(
   let maxTokensRecoveryCount = 0;
   let modelFallbackUsed = false;
   let iterationsSinceTodoWrite = 0;
+  let streamInterruptionRetries = 0;
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -235,6 +236,26 @@ export async function executeConversation(
         ? await consumeStream(request, options.modelApi, iteration, options.emit, options.runId)
         : await options.modelApi.createMessage(request);
     } catch (error) {
+      // Mid-stream interruptions (socket loss after response headers) never hit
+      // the provider-level retry loop; retry the whole iteration here.
+      if (
+        isRetryableStreamInterruption(error) &&
+        streamInterruptionRetries < MAX_STREAM_INTERRUPTION_RETRIES
+      ) {
+        streamInterruptionRetries += 1;
+        options.emit?.({
+          type: 'request.interrupted',
+          runId: options.runId,
+          iteration,
+          retry: streamInterruptionRetries,
+          maxRetries: MAX_STREAM_INTERRUPTION_RETRIES,
+          reason: asError(error).message,
+          timestamp: nowIso(),
+        });
+        await sleep(1000 * streamInterruptionRetries);
+        iteration -= 1;
+        continue;
+      }
       // Fallback model: after transport-level retries are exhausted, switch to
       // the configured fallback model once and retry this iteration.
       const fallbackModel = options.config.fallbackModel;
@@ -956,6 +977,49 @@ function isModelFallbackEligibleError(error: unknown): boolean {
     return status === 429 || status === 529 || (status >= 500 && status < 600);
   }
   return false;
+}
+
+const MAX_STREAM_INTERRUPTION_RETRIES = 3;
+
+const TRANSPORT_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+]);
+const TRANSPORT_ERROR_PATTERN =
+  /terminated|fetch failed|socket|other side closed|premature|network|connection (?:closed|reset|error)/i;
+
+/**
+ * Transport-level failures that occur after the provider accepted the request
+ * (mid-stream socket loss, abrupt connection close). HTTP-status errors are
+ * excluded — the provider client already retried those before throwing — and
+ * so are non-network errors, which must keep propagating.
+ */
+function isRetryableStreamInterruption(error: unknown): boolean {
+  if (
+    error instanceof ActoviqProviderApiError ||
+    error instanceof RunAbortedError ||
+    error instanceof ActoviqSdkError ||
+    error instanceof ToolExecutionError
+  ) {
+    return false;
+  }
+  if (!(error instanceof Error) || error.name === 'AbortError') {
+    return false;
+  }
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } }).cause;
+  const causeCode = typeof cause?.code === 'string' ? cause.code : '';
+  if (causeCode.startsWith('UND_ERR') || TRANSPORT_ERROR_CODES.has(causeCode)) {
+    return true;
+  }
+  const causeMessage = typeof cause?.message === 'string' ? cause.message : '';
+  return TRANSPORT_ERROR_PATTERN.test(`${error.message} ${causeMessage}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

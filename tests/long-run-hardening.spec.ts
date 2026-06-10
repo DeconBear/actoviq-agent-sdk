@@ -325,6 +325,61 @@ describe('tool result size budgets', () => {
   });
 });
 
+describe('stream interruption recovery', () => {
+  it('retries the iteration after a mid-stream transport failure', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let streamCallCount = 0;
+    const failingStream: ModelStreamHandle = {
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        yield {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'partial before the socket dropped' },
+        } as MessageStreamEvent;
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    };
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        streamCallCount += 1;
+        if (streamCallCount === 1) {
+          return failingStream;
+        }
+        return new MockStream([], makeMessage([{ type: 'text', text: 'Recovered cleanly.' }]));
+      },
+    };
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const stream = sdk.stream('Produce a long streamed answer.');
+      const eventTypes: string[] = [];
+      for await (const event of stream) {
+        eventTypes.push(event.type);
+      }
+      const result = await stream.result;
+
+      expect(streamCallCount).toBe(2);
+      expect(result.text).toBe('Recovered cleanly.');
+      expect(eventTypes).toContain('request.interrupted');
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
 describe('max_tokens truncation recovery', () => {
   it('nudges the model to resume after a truncated non-tool response', async () => {
     const sessionDirectory = await createSessionDirectory();

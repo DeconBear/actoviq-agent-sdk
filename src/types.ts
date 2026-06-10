@@ -1216,6 +1216,15 @@ export type AgentEvent =
       timestamp: string;
     }
   | {
+      type: 'request.interrupted';
+      runId: string;
+      iteration: number;
+      retry: number;
+      maxRetries: number;
+      reason: string;
+      timestamp: string;
+    }
+  | {
       type: 'response.completed';
       runId: string;
       result: AgentRunResult;

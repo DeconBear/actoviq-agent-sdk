@@ -147,6 +147,10 @@ export class OpenaiProviderMessageStream
       this.resolveFinal = resolve;
       this.rejectFinal = reject;
     });
+    // If the stream iterator throws (e.g. mid-stream socket loss), callers see
+    // the iterator error and usually never await finalMessage(); without this
+    // detached handler the rejection is unhandled and kills the process.
+    this.finalMessagePromise.catch(() => {});
   }
 
   async finalMessage(): Promise<OpenaiChatCompletion> {
