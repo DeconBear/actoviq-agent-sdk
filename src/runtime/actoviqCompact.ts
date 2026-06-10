@@ -319,12 +319,22 @@ function buildCompactSummaryPrompt(
     'CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.',
     'You already have all the context you need in the conversation above.',
     'Tool calls will be REJECTED — you will fail the task.',
-    'Your entire response must be plain text only.',
     '',
-    'Summarize the earlier portion of this engineering conversation for future continuation.',
-    'Return only the summary text.',
-    'Focus on concrete state, important decisions, active tasks, files, commands, errors, and next steps.',
-    `The most recent ${preservedMessagesCount} messages will be preserved verbatim outside the summary.`,
+    'Your task is to create a detailed summary of the earlier portion of this engineering conversation. The summary will replace those messages, so it must capture every technical detail, decision, and piece of state needed to continue the work without losing context.',
+    `The most recent ${preservedMessagesCount} messages will be kept verbatim after your summary; summarize only the earlier conversation shown below.`,
+    '',
+    'Before writing the summary, wrap a brief private analysis in <analysis> tags: walk through the conversation chronologically and check you have identified the user requests, your actions, file changes, errors, and open work. The analysis is a scratchpad and will be discarded.',
+    '',
+    'Then write the summary inside <summary> tags with these sections:',
+    '1. Primary Request and Intent: every explicit user request and the underlying goal, in detail.',
+    '2. Key Technical Concepts: technologies, frameworks, and architectural decisions in play.',
+    '3. Files and Code Sections: specific files examined, created, or modified; include the important code snippets or content fragments and why they matter.',
+    '4. Errors and Fixes: every error hit, how it was fixed, and any user feedback on the fix.',
+    '5. Problem Solving: problems solved so far and any ongoing troubleshooting state.',
+    '6. All User Messages: a list of every non-tool user message, so no instruction or feedback is lost.',
+    '7. Pending Tasks: work the user explicitly asked for that is not finished yet.',
+    '8. Current Work: precisely what was being worked on immediately before this summary, with file names and code where applicable.',
+    '9. Optional Next Step: the single next step that directly continues the most recent explicit request, with a supporting quote from the recent conversation; omit it if the last task was completed and nothing was queued.',
     customInstructions.trim(),
     '',
     '<conversation_to_summarize>',
@@ -333,6 +343,22 @@ function buildCompactSummaryPrompt(
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Strips the <analysis> scratchpad and unwraps <summary> tags from a compact
+ * summary response. The analysis improves summary quality while drafting but
+ * has no value once written; only the summary body re-enters the context.
+ */
+export function formatActoviqCompactSummary(raw: string): string {
+  let formatted = raw.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '');
+  const summaryMatch = formatted.match(/<summary>([\s\S]*?)<\/summary>/i);
+  if (summaryMatch?.[1]) {
+    formatted = summaryMatch[1];
+  } else {
+    formatted = formatted.replace(/<\/?summary>/gi, '');
+  }
+  return formatted.trim();
 }
 
 function buildPostCompactSummaryMessage(summary: string, trigger: ActoviqCompactTrigger): MessageParam {
@@ -728,7 +754,7 @@ export async function compactActoviqSession(
       retryCount += 1;
     }
   }
-  const summary = extractTextFromContent(response.content).trim();
+  const summary = formatActoviqCompactSummary(extractTextFromContent(response.content));
   const compactedAt = nowIso();
   const nextRuntimeState: ActoviqSessionMemoryRuntimeState = {
     ...context.runtimeState,
@@ -961,7 +987,7 @@ export async function compactActoviqConversationIfNeeded(
     }
   }
 
-  const summary = extractTextFromContent(response.content).trim();
+  const summary = formatActoviqCompactSummary(extractTextFromContent(response.content));
   if (!summary) {
     compactionFailureCounts.set(failureKey, consecutiveFailures + 1);
     return {

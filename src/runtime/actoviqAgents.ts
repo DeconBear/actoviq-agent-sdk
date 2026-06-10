@@ -193,19 +193,23 @@ export function createActoviqTaskTool(options: {
       name,
       description,
       inputSchema: z.object({
-        description: z.string().min(1).optional(),
-        prompt: z.string().min(1).optional(),
-        task: z.string().min(1).optional(),
-        subagent_type: z.string().min(1).optional(),
+        description: z.string().min(1).optional()
+          .describe('A short (3-5 word) label summarizing what the agent will do.'),
+        prompt: z.string().min(1).optional()
+          .describe('The full task for the agent to perform. The subagent starts with zero context: include background, what to do, and what to report back.'),
+        task: z.string().min(1).optional()
+          .describe('Alias of `prompt`.'),
+        subagent_type: z.string().min(1).optional()
+          .describe('The type of specialized agent to use for this task.'),
         agent: z.string().min(1).optional(),
         agent_type: z.string().min(1).optional(),
         run_in_background: z.boolean().optional(),
       }).superRefine((input, ctx) => {
-        if (!resolveTaskDescription(input)) {
+        if (!resolveTaskPrompt(input)) {
           ctx.addIssue({
             code: 'custom',
-            path: ['description'],
-            message: 'Provide `description`, `prompt`, or `task` for the delegated work.',
+            path: ['prompt'],
+            message: 'Provide `prompt` (full task briefing) and optionally a short `description` label for the delegated work.',
           });
         }
       }),
@@ -255,19 +259,22 @@ export function createActoviqTaskTool(options: {
               .join('\n'),
       examples: [
         {
-          description: 'Review the current release workflow and call out missing steps.',
+          description: 'Release workflow review',
+          prompt:
+            'Review the release workflow defined in scripts/release.mjs and .github/workflows/release.yml. Context: we just added a changelog generation step. Check for missing steps, ordering hazards, and untested failure paths. Report concrete findings with file references; do not change any files.',
           subagent_type: 'code-reviewer',
         },
       ],
       prompt: () => buildTaskToolPrompt(options.listAgentDefinitions?.() ?? []),
     },
     async (input, context) => {
-      const taskDescription = resolveTaskDescription(input);
-      if (!taskDescription) {
+      const taskPrompt = resolveTaskPrompt(input);
+      if (!taskPrompt) {
         throw new ConfigurationError(
-          'Task tool requires `description`, `prompt`, or `task` so the delegated work is explicit.',
+          'Task tool requires `prompt` (or `task`/`description`) so the delegated work is explicit.',
         );
       }
+      const taskLabel = resolveTaskLabel(input, taskPrompt);
       const resolvedSubagent = resolveSubagentType(input, options);
       if (!resolvedSubagent) {
         const available = formatAvailableSubagents(options.listAgentDefinitions?.() ?? []);
@@ -288,7 +295,7 @@ export function createActoviqTaskTool(options: {
       if (input.run_in_background) {
         const backgroundTask = await options.launchBackgroundAgent(
           resolvedSubagent,
-          taskDescription,
+          taskPrompt,
           {
             parentRunId: context.runId,
             parentSessionId: context.sessionId,
@@ -297,7 +304,7 @@ export function createActoviqTaskTool(options: {
         );
         options.onDelegated?.({
           subagentType: resolvedSubagent,
-          description: taskDescription,
+          description: taskLabel,
           parentRunId: context.runId,
           parentSessionId: context.sessionId,
           runId: backgroundTask.runId ?? backgroundTask.id,
@@ -312,15 +319,15 @@ export function createActoviqTaskTool(options: {
           sessionId: backgroundTask.sessionId,
           outputFile: backgroundTask.outputFile,
           canReadOutputFile: true,
-          description: taskDescription,
+          description: taskLabel,
         };
       }
 
-      const result = await options.runAgent(resolvedSubagent, taskDescription, inheritedOptions);
+      const result = await options.runAgent(resolvedSubagent, taskPrompt, inheritedOptions);
       const toolErrorCount = result.toolCalls.filter(call => call.isError).length;
       options.onDelegated?.({
         subagentType: resolvedSubagent,
-        description: taskDescription,
+        description: taskLabel,
         parentRunId: context.runId,
         parentSessionId: context.sessionId,
         runId: result.runId,
@@ -344,14 +351,31 @@ export function createActoviqTaskTool(options: {
   );
 }
 
-function resolveTaskDescription(input: {
+/**
+ * The detailed briefing wins: models following the Claude Code convention send
+ * a short `description` label plus a full `prompt`. Preferring `description`
+ * here would silently drop the actual task briefing.
+ */
+function resolveTaskPrompt(input: {
   description?: string;
   prompt?: string;
   task?: string;
 }): string | undefined {
-  return [input.description, input.prompt, input.task]
+  return [input.prompt, input.task, input.description]
     .map(value => value?.trim())
     .find((value): value is string => Boolean(value));
+}
+
+/** Short human-readable label for events and async task listings. */
+function resolveTaskLabel(
+  input: { description?: string },
+  taskPrompt: string,
+): string {
+  const label = input.description?.trim();
+  if (label) {
+    return label;
+  }
+  return taskPrompt.length > 80 ? `${taskPrompt.slice(0, 77)}...` : taskPrompt;
 }
 
 function resolveSubagentType(
@@ -374,19 +398,33 @@ function resolveSubagentType(
 }
 
 function buildTaskToolPrompt(agents: ActoviqAgentDefinitionSummary[]): string {
+  const shared = [
+    'Launch a subagent with the Task tool to handle complex, multi-step work autonomously. Delegate proactively whenever independent investigation, review, debugging, parallel exploration, or verification would materially help — do not wait for the user to ask for a subagent.',
+    '',
+    'When to use Task:',
+    '- Multi-file regressions, independent failure paths, audits/reviews, confusing test failures, and risky changes that need a second focused pass.',
+    '- Open-ended searches or research that may take several rounds of exploration and would otherwise fill your context with intermediate output.',
+    '- Independent subtasks that can run in parallel: launch multiple Task calls in a single message to run them concurrently.',
+    '',
+    'When NOT to use Task:',
+    '- Reading a specific known file path, or a simple 2-3 file lookup — do it directly; it is faster.',
+    '- Trivial single-file edits.',
+    '',
+    'Writing the prompt:',
+    '- The subagent starts with zero context. Brief it like a capable colleague who just walked in: explain the goal and why it matters, what you already learned or ruled out, exact file paths and commands, and what it should report back.',
+    '- Always pass a full `prompt` (the task briefing) plus a short 3-5 word `description` label. Terse command-style prompts produce shallow, generic work.',
+    '- Clearly say whether the agent should write code or only investigate and report.',
+    '- The agent returns a single final message; its work is otherwise invisible. Summarize the result for the user yourself.',
+  ];
+
   if (agents.length === 0) {
-    return [
-      'Use the Task tool to delegate focused work to a named subagent when independent investigation, review, debugging, or verification would materially help.',
-      'Pass a concise `description` and a `subagent_type`.',
-    ].join('\n');
+    return shared.join('\n');
   }
 
   return [
-    'Use the Task tool to delegate focused work to a named subagent when independent investigation, review, debugging, or verification would materially help.',
-    'Do not use Task for trivial single-file edits. Prefer it when a separate review, root-cause analysis, or parallel investigation can reduce risk.',
-    'Good delegation candidates include multi-file regressions, independent failure paths, audit/review requests, confusing test failures, and risky changes that need a second focused pass.',
-    'Choose `debugger` for failing tests or logs, `code-reviewer` for risk review after or before edits, and `general-purpose` for broad investigation when no specialist fits.',
-    'Pass a concise `description` plus one of the available `subagent_type` values. If omitted, `general-purpose` is used when available.',
+    ...shared,
+    '',
+    'If `subagent_type` is omitted, `general-purpose` is used when available. If an agent description says it should be used proactively, use it without being asked.',
     '',
     'Available subagents:',
     ...agents.map(agent => `- ${agent.name}: ${agent.description}`),

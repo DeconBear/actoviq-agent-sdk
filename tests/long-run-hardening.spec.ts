@@ -349,7 +349,7 @@ describe('max_tokens truncation recovery', () => {
       expect(modelApi.createCalls).toHaveLength(2);
       const recoveryMessage = modelApi.createCalls[1]?.messages.at(-1);
       expect(recoveryMessage?.role).toBe('user');
-      expect(String(recoveryMessage?.content)).toContain('Output token limit hit');
+      expect(JSON.stringify(recoveryMessage?.content)).toContain('Output token limit hit');
     } finally {
       await sdk.close();
     }

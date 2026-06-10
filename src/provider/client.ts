@@ -576,11 +576,14 @@ export function parseRetryAfterMs(response: Response): number | undefined {
 }
 
 export function computeRetryDelayMs(attempt: number, retryAfterMs?: number): number {
-  const backoff = Math.min(250 * 2 ** attempt, 2000);
+  // Exponential backoff capped at 30s with +/-25% jitter to avoid
+  // synchronized retry storms across parallel runs (Claude Code-style).
+  const backoff = Math.min(500 * 2 ** attempt, 30_000);
+  const jittered = Math.round(backoff * (0.75 + Math.random() * 0.5));
   if (retryAfterMs === undefined) {
-    return backoff;
+    return jittered;
   }
-  return Math.max(backoff, retryAfterMs);
+  return Math.max(jittered, retryAfterMs);
 }
 
 function shouldRetryError(error: unknown): boolean {

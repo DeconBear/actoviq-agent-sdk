@@ -28,6 +28,23 @@ async function createTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+/** Request content may be a plain string or text blocks (prompt caching). */
+function requestContentText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(block =>
+        typeof block === 'object' && block !== null && 'text' in block
+          ? String((block as { text?: unknown }).text ?? '')
+          : JSON.stringify(block),
+      )
+      .join('\n');
+  }
+  return '';
+}
+
 function makeMessage(content: unknown[], stopReason: 'end_turn' | 'tool_use' = 'end_turn'): Message {
   messageCounter += 1;
   return {
@@ -324,10 +341,7 @@ describe('Actoviq advanced parity features', () => {
     const modelApi = new MockModelApi({
       create: async (request) => {
         const lastUserMessage = request.messages.at(-1);
-        const prompt =
-          typeof lastUserMessage?.content === 'string'
-            ? lastUserMessage.content
-            : JSON.stringify(lastUserMessage?.content ?? '');
+        const prompt = requestContentText(lastUserMessage?.content);
         seenPrompts.push(prompt);
         if (prompt.includes('Background follow-up')) {
           await delay(150);
@@ -383,10 +397,7 @@ describe('Actoviq advanced parity features', () => {
     const modelApi = new MockModelApi({
       create: async (request) => {
         const lastUserMessage = request.messages.at(-1);
-        const prompt =
-          typeof lastUserMessage?.content === 'string'
-            ? lastUserMessage.content
-            : JSON.stringify(lastUserMessage?.content ?? '');
+        const prompt = requestContentText(lastUserMessage?.content);
         seenPrompts.push(prompt);
         if (prompt.includes('Force a failure') && !hasFailedOnce) {
           hasFailedOnce = true;

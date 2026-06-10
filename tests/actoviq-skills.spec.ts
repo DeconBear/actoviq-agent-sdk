@@ -20,6 +20,23 @@ async function createTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+/** Request content may be a plain string or text blocks (prompt caching). */
+function requestMessageText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(block =>
+        typeof block === 'object' && block !== null && 'text' in block
+          ? String((block as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .join('\n');
+  }
+  return '';
+}
+
 function makeMessage(content: unknown[], stopReason: 'end_turn' | 'tool_use' = 'end_turn'): Message {
   messageCounter += 1;
   return {
@@ -98,9 +115,7 @@ describe('clean SDK skills', () => {
         makeMessage([
           {
             type: 'text',
-            text: typeof request.messages.at(-1)?.content === 'string'
-              ? request.messages.at(-1)!.content
-              : 'no skill prompt found',
+            text: requestMessageText(request.messages.at(-1)?.content) || 'no skill prompt found',
           },
         ]),
     });
@@ -121,10 +136,11 @@ describe('clean SDK skills', () => {
           expect.objectContaining({ name: 'simplify', source: 'bundled' }),
         ]),
       );
-      expect(modelApi.createCalls[0]?.messages.at(-1)).toMatchObject({
-        role: 'user',
-        content: expect.stringContaining('You are executing the /debug skill.'),
-      });
+      const lastRequestMessage = modelApi.createCalls[0]?.messages.at(-1);
+      expect(lastRequestMessage?.role).toBe('user');
+      expect(requestMessageText(lastRequestMessage?.content)).toContain(
+        'You are executing the /debug skill.',
+      );
       expect(result.text).toContain('Investigate the release order mismatch.');
       expect(result.invokedSkills).toEqual(
         expect.arrayContaining([

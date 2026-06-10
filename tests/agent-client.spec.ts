@@ -957,7 +957,12 @@ describe('ActoviqAgentClient', () => {
     const modelApi = new MockModelApi({
       create: (request) => {
         const lastMessage = request.messages.at(-1);
-        if (typeof lastMessage?.content === 'string') {
+        const lastHasToolResult =
+          Array.isArray(lastMessage?.content) &&
+          lastMessage.content.some(
+            (block) => typeof block === 'object' && block !== null && (block as { type?: string }).type === 'tool_result',
+          );
+        if (!lastHasToolResult) {
           return makeMessage(
             [
               { type: 'text', text: 'Attempting a session-scoped write.' },
@@ -1198,6 +1203,74 @@ describe('ActoviqAgentClient', () => {
           }),
         ]),
       );
+      expect(result.delegatedAgents).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'reviewer' })]),
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('passes the detailed Task prompt to the subagent when both description and prompt are given', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const subagentInputs: string[] = [];
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        const isReviewer = request.system?.includes('Review code carefully and focus on risks.');
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'text', text: 'Delegating with the Claude Code calling convention.' },
+              {
+                type: 'tool_use',
+                id: 'toolu_task_prompt_priority',
+                name: 'Task',
+                input: {
+                  description: 'Release risk review',
+                  prompt:
+                    'Review scripts/release.mjs for ordering hazards. Context: changelog generation was just added. Report concrete findings; do not edit files.',
+                  subagent_type: 'reviewer',
+                },
+              },
+            ],
+            'tool_use',
+          );
+        }
+
+        if (isReviewer) {
+          const lastUser = [...request.messages].reverse().find(message => message.role === 'user');
+          subagentInputs.push(
+            typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content ?? ''),
+          );
+          return makeMessage([{ type: 'text', text: 'Reviewer summary: ordering looks safe.' }]);
+        }
+
+        return makeMessage([{ type: 'text', text: 'Wrapped the delegated result.' }]);
+      },
+    });
+
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      agents: [
+        {
+          name: 'reviewer',
+          description: 'Review changes and call out risks.',
+          systemPrompt: 'Review code carefully and focus on risks.',
+        },
+      ],
+    });
+
+    try {
+      const result = await sdk.run('Please delegate this review.', {
+        tools: [sdk.createTaskTool()],
+      });
+
+      // The detailed briefing must reach the subagent; the short label must not
+      // replace it (it is only used for events/labels).
+      expect(subagentInputs.join('\n')).toContain('Review scripts/release.mjs for ordering hazards');
+      expect(subagentInputs.join('\n')).not.toBe('Release risk review');
       expect(result.delegatedAgents).toEqual(
         expect.arrayContaining([expect.objectContaining({ name: 'reviewer' })]),
       );

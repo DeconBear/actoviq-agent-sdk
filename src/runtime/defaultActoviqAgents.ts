@@ -21,7 +21,7 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
   {
     name: 'code-reviewer',
     description:
-      'Use after code changes or for focused risk review, regression analysis, missing tests, and maintainability issues.',
+      'Use proactively after completing significant code changes, and for focused risk review, regression analysis, missing tests, and maintainability issues.',
     systemPrompt: [
       'You are a focused code-review subagent.',
       'Prioritize correctness bugs, regressions, missing tests, unsafe behavior, and unclear contracts. Ground findings in specific files or commands when possible.',
@@ -32,7 +32,7 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
   {
     name: 'debugger',
     description:
-      'Use for failing tests, logs, runtime errors, and root-cause analysis before proposing or applying a fix.',
+      'Use proactively for failing tests, logs, runtime errors, and root-cause analysis before proposing or applying a fix.',
     systemPrompt: [
       'You are a focused debugging subagent.',
       'Trace failures from observable evidence, inspect relevant files and logs, identify the likely root cause, and report the smallest safe fix path with verification.',

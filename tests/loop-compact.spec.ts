@@ -13,7 +13,10 @@ import {
   type ModelStreamHandle,
 } from '../src/index.js';
 import type { Message, MessageParam, MessageStreamEvent } from '../src/provider/types.js';
-import { compactActoviqConversationIfNeeded } from '../src/runtime/actoviqCompact.js';
+import {
+  compactActoviqConversationIfNeeded,
+  formatActoviqCompactSummary,
+} from '../src/runtime/actoviqCompact.js';
 import { createTodoWriteTool } from '../src/tools/todo/TodoWriteTool.js';
 import type { ActoviqCompactConfig } from '../src/types.js';
 
@@ -572,5 +575,34 @@ describe('TodoWrite state tracking', () => {
     } finally {
       await sdk.close();
     }
+  });
+});
+
+describe('formatActoviqCompactSummary', () => {
+  it('strips the analysis scratchpad and unwraps summary tags', () => {
+    const raw = [
+      '<analysis>',
+      'Walking through the conversation chronologically...',
+      '</analysis>',
+      '<summary>',
+      '1. Primary Request and Intent: fix the failing build.',
+      '2. Key Technical Concepts: vitest, tsc.',
+      '</summary>',
+    ].join('\n');
+
+    const formatted = formatActoviqCompactSummary(raw);
+    expect(formatted).not.toContain('<analysis>');
+    expect(formatted).not.toContain('chronologically');
+    expect(formatted).not.toContain('<summary>');
+    expect(formatted).toContain('Primary Request and Intent: fix the failing build.');
+  });
+
+  it('returns plain text untouched when no tags are present', () => {
+    expect(formatActoviqCompactSummary('Just a plain summary.')).toBe('Just a plain summary.');
+  });
+
+  it('drops stray summary tags when the closing tag is missing', () => {
+    const formatted = formatActoviqCompactSummary('<summary>Partial output without closing tag');
+    expect(formatted).toBe('Partial output without closing tag');
   });
 });

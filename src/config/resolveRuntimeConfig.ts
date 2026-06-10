@@ -105,7 +105,9 @@ export async function resolveRuntimeConfig(
     maxTokens: options.maxTokens ?? 32000,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs ?? 600000,
-    maxRetries: options.maxRetries ?? 4,
+    // Claude Code uses DEFAULT_MAX_RETRIES=10; long runs need to survive
+    // transient 429/5xx windows instead of failing the whole session.
+    maxRetries: options.maxRetries ?? 10,
     workDir: options.workDir ?? process.cwd(),
     sessionDirectory:
       options.sessionDirectory ?? path.join(homeDir, '.actoviq', 'actoviq-agent-sdk'),

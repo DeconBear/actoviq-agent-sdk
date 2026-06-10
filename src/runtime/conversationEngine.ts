@@ -962,12 +962,25 @@ function isModelFallbackEligibleError(error: unknown): boolean {
  * Mark the last content block of the last message with an ephemeral
  * cache_control breakpoint. One breakpoint caches the entire request prefix
  * (tools + system + conversation) on Anthropic API hosts. String-content
- * messages are left untouched to preserve their wire shape; block-content
- * messages (e.g. tool_result batches, which dominate long runs) are annotated.
+ * messages (e.g. the first user prompt) are converted to an equivalent single
+ * text block so the breakpoint still applies — otherwise the whole request
+ * goes uncached whenever the last message is a plain string.
  */
 function applyCacheControlToLastMessage(messages: MessageParam[]): void {
   const last = messages.at(-1);
-  if (!last || !Array.isArray(last.content) || last.content.length === 0) {
+  if (!last) {
+    return;
+  }
+  if (typeof last.content === 'string') {
+    if (last.content.length === 0) {
+      return;
+    }
+    last.content = [
+      { type: 'text', text: last.content, cache_control: { type: 'ephemeral' } },
+    ];
+    return;
+  }
+  if (!Array.isArray(last.content) || last.content.length === 0) {
     return;
   }
   const lastBlock = last.content[last.content.length - 1];
