@@ -1048,6 +1048,15 @@ function printTrialResult(result: BenchmarkTrialResult): void {
   for (const grader of result.graders) {
     console.log(`  - ${grader.passed ? 'pass' : 'fail'} ${grader.type}: ${grader.message}`);
   }
+  // Surface agent-side failures (e.g. provider 429/5xx) directly in the run
+  // log so infrastructure problems are visible without opening the report.
+  if (!result.passed && result.agentCommand && result.agentCommand.exitCode !== 0) {
+    const stderrTail = (result.agentCommand.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ');
+    const exitLabel = result.agentCommand.timedOut
+      ? 'timed out (killed)'
+      : `exit ${result.agentCommand.exitCode}`;
+    console.log(`  - agent command ${exitLabel}${stderrTail ? `: ${stderrTail.slice(0, 400)}` : ''}`);
+  }
 }
 
 function printSummary(report: BenchmarkReport): void {

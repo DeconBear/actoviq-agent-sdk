@@ -1,5 +1,30 @@
 # Agent Runtime Benchmark Results
 
+## Three-Runtime Parity Run (2026-06-10 evening) — partially invalidated by provider quota
+
+Full `bench:long:parity` + `bench:complex:parity` run on branch
+`feat/long-task-parity`. Mid-run, the shared DeepSeek endpoint began rejecting
+requests with `429 · Token Plan usage limit exceeded (2056)` (verified in
+`agentCommand.stderr` of the official-SDK report and reproduced live with a
+minimal Bridge SDK probe). All three runtimes share the same
+`~/.actoviq/settings.json` / `~/.claude/settings.json` DeepSeek credentials, so
+later phases were starved:
+
+| Phase (chronological) | Result | Validity |
+| --- | --- | --- |
+| Clean SDK long (5 cases) | **5/5, avg 0.975** | valid (pre-quota) |
+| Bridge SDK long | 4/5, avg 0.839 (release-train miss was genuine) | valid (pre-quota) |
+| Official SDK long | 1/5 — 4 cases died on `429 usage limit (2056)` | **invalid (quota)** |
+| Clean SDK complex (9 cases) | **9/9, avg 0.985** | valid (lean requests stayed under throttle) |
+| Bridge SDK complex | 0/9 — every case hung retrying 429s until the 180s budget killed it (`exit null`, `llmReq<=1`) | **invalid (quota)** |
+| Official SDK complex | aborted manually (same starvation pattern) | not run |
+
+Takeaways: Clean SDK swept 14/14 across both suites in this run; the only
+valid cross-runtime comparison is the long suite where Clean (5/5) edged
+Bridge (4/5). Official/Bridge complex numbers must be re-run after the quota
+window resets. The runner now prints the agent command's stderr tail on
+failures so provider-side 429/5xx causes are visible directly in the run log.
+
 ## Long Suite — Clean SDK Validation (2026-06-10)
 
 First real Clean SDK run over the five `bench/cases/long/` cases on branch
