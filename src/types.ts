@@ -327,6 +327,7 @@ export interface ResolvedRuntimeConfig {
   clientName: string;
   clientVersion: string;
   systemPrompt?: string;
+  /** ReAct loop turn cap. Defaults to Infinity (no cap) like Claude Code's main agent. */
   maxToolIterations: number;
   /** Model switched to after repeated overload/rate-limit failures. */
   fallbackModel?: string;
@@ -659,6 +660,7 @@ export interface CreateAgentSdkOptions {
   clientName?: string;
   clientVersion?: string;
   systemPrompt?: string;
+  /** Optional ReAct loop turn cap. Unset means unlimited. */
   maxToolIterations?: number;
   fallbackModel?: string;
   promptCachingEnabled?: boolean;

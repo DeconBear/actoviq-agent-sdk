@@ -1325,7 +1325,8 @@ describe('ActoviqAgentClient', () => {
         expect.arrayContaining([
           expect.objectContaining({ name: 'general-purpose' }),
           expect.objectContaining({ name: 'code-reviewer' }),
-          expect.objectContaining({ name: 'debugger', maxToolIterations: 24 }),
+          // Default agents declare no turn cap; they inherit the run config.
+          expect.objectContaining({ name: 'debugger', maxToolIterations: undefined }),
         ]),
       );
     } finally {

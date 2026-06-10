@@ -15,7 +15,6 @@ import * as readline from 'node:readline';
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
 const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
-const DEFAULT_MAX_TOOL_ITERATIONS = 24;
 
 let isGit = false;
 try { execSync('git rev-parse --is-inside-work-tree', { cwd: WORK_DIR, stdio: 'ignore' }); isGit = true; } catch {}
@@ -106,7 +105,6 @@ async function main() {
     workDir: WORK_DIR,
     tools,
     permissionMode: DEFAULT_PERMISSION_MODE,
-    maxToolIterations: DEFAULT_MAX_TOOL_ITERATIONS,
   });
   const toolMetadata = await sdk.listToolMetadata();
   const session = await sdk.createSession({ title: path.basename(WORK_DIR) });

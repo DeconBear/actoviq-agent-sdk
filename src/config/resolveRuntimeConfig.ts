@@ -112,7 +112,10 @@ export async function resolveRuntimeConfig(
     clientName: options.clientName ?? 'actoviq-agent-sdk',
     clientVersion: options.clientVersion ?? '0.1.7',
     systemPrompt: options.systemPrompt,
-    maxToolIterations: options.maxToolIterations ?? 50,
+    // Unlimited by default, matching Claude Code's main-agent maxTurns
+    // semantics: the loop ends when the model stops calling tools, on abort,
+    // or via an explicit caller-provided limit.
+    maxToolIterations: options.maxToolIterations ?? Number.POSITIVE_INFINITY,
     fallbackModel,
     promptCachingEnabled: options.promptCachingEnabled ?? true,
     userId: options.userId,

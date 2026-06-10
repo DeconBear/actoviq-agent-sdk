@@ -90,6 +90,25 @@ describe('config loading', () => {
     expect(config.sessionDirectory).toContain('.actoviq');
   });
 
+  it('defaults maxToolIterations to unlimited and honors an explicit cap', async () => {
+    const homeDir = await createTempHome();
+
+    const defaulted = await resolveRuntimeConfig({
+      homeDir,
+      model: 'demo-model',
+      authToken: 'test-token',
+    });
+    expect(defaulted.maxToolIterations).toBe(Number.POSITIVE_INFINITY);
+
+    const capped = await resolveRuntimeConfig({
+      homeDir,
+      model: 'demo-model',
+      authToken: 'test-token',
+      maxToolIterations: 24,
+    });
+    expect(capped.maxToolIterations).toBe(24);
+  });
+
   it('resolves runtime config from process environment variables', async () => {
     const homeDir = await createTempHome();
     const previous = {

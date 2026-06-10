@@ -3,8 +3,9 @@ import type { ActoviqAgentDefinition } from '../types.js';
 const DEFAULT_AGENT_METADATA = {
   source: 'actoviq-default',
 } as const;
-const DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS = 24;
 
+// Like Claude Code's built-in agents, default subagents declare no turn cap:
+// they inherit the run config (unlimited unless the caller sets a limit).
 const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
   {
     name: 'general-purpose',
@@ -15,7 +16,6 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Work independently on the delegated task, inspect only what is needed, use tools when they materially help, and return a concise result with concrete findings, changes, and verification.',
       'Do not make broad unrelated changes.',
     ].join('\n'),
-    maxToolIterations: DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS,
     metadata: DEFAULT_AGENT_METADATA,
   },
   {
@@ -27,7 +27,6 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Prioritize correctness bugs, regressions, missing tests, unsafe behavior, and unclear contracts. Ground findings in specific files or commands when possible.',
       'Keep the review concise and actionable.',
     ].join('\n'),
-    maxToolIterations: DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS,
     metadata: DEFAULT_AGENT_METADATA,
   },
   {
@@ -39,7 +38,6 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Trace failures from observable evidence, inspect relevant files and logs, identify the likely root cause, and report the smallest safe fix path with verification.',
       'Avoid speculative rewrites.',
     ].join('\n'),
-    maxToolIterations: DEFAULT_SUBAGENT_MAX_TOOL_ITERATIONS,
     metadata: DEFAULT_AGENT_METADATA,
   },
 ];
