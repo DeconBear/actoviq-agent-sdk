@@ -56,6 +56,21 @@ try {
   }
   const result = runnerState.result ?? await stream.result;
   const skillNames = getSkillNames(result);
+  for (const record of result.invokedSkills ?? []) {
+    await appendTrajectoryEvent(trajectoryFile, {
+      runtime: 'clean-sdk',
+      caseId,
+      actor: { type: 'main-agent' },
+      event: {
+        type: 'skill_load',
+        name: record.name,
+        data: {
+          context: record.context,
+          source: record.source,
+        },
+      },
+    });
+  }
   const incompleteReason = getIncompleteReason(result);
   const toolCalls = result.toolCalls.map((call) => ({
     ...call,
@@ -196,6 +211,25 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
           },
         },
       });
+      if (event.call.publicName === 'Task') {
+        await appendTrajectoryEvent(trajectoryFile, {
+          runtime: 'clean-sdk',
+          caseId,
+          actor: { type: 'main-agent' },
+          event: {
+            type: 'subagent_start',
+            name: readStringField(event.call.input, 'subagent_type') ?? 'unknown',
+            inputSummary: summarizeText(
+              readStringField(event.call.input, 'description') ??
+              readStringField(event.call.input, 'prompt'),
+            ),
+            data: {
+              toolUseId: event.call.id,
+              iteration: event.iteration,
+            },
+          },
+        });
+      }
       return;
     case 'tool.result': {
       const isError = event.result.isError || hasNonZeroExitCode(event.result);
@@ -225,6 +259,39 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
           },
         },
       });
+      if (event.result.publicName === 'Task') {
+        await appendTrajectoryEvent(trajectoryFile, {
+          runtime: 'clean-sdk',
+          caseId,
+          actor: { type: 'subagent', name: readStringField(event.result.input, 'subagent_type') },
+          event: {
+            type: 'subagent_result',
+            name: readStringField(event.result.input, 'subagent_type') ?? 'unknown',
+            outputSummary: summarizeText(event.result.outputText),
+            isError,
+            durationMs: event.result.durationMs,
+            data: {
+              toolUseId: event.result.id,
+              iteration: event.iteration,
+            },
+          },
+        });
+      }
+      if (event.result.publicName === 'Skill' && !isError) {
+        await appendTrajectoryEvent(trajectoryFile, {
+          runtime: 'clean-sdk',
+          caseId,
+          actor: { type: 'main-agent' },
+          event: {
+            type: 'skill_load',
+            name: readStringField(event.result.input, 'skill') ?? 'unknown',
+            data: {
+              toolUseId: event.result.id,
+              iteration: event.iteration,
+            },
+          },
+        });
+      }
       return;
     }
     case 'tool.permission':
@@ -262,6 +329,42 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
             compacted: event.result.compacted,
             tokenEstimateBefore: event.result.tokenEstimateBefore,
             tokenEstimateAfter: event.result.tokenEstimateAfter,
+          },
+        },
+      });
+      return;
+    case 'conversation.compacted':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'compact',
+          name: 'loop-auto',
+          data: {
+            iteration: event.iteration,
+            tokenEstimateBefore: event.tokenEstimateBefore,
+            tokenEstimateAfter: event.tokenEstimateAfter,
+            messagesSummarized: event.messagesSummarized,
+            preservedMessages: event.preservedMessages,
+            clearedToolResults: event.clearedToolResults,
+          },
+        },
+      });
+      return;
+    case 'model.fallback':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'llm_request',
+          name: 'model-fallback',
+          outputSummary: summarizeText(event.reason),
+          data: {
+            iteration: event.iteration,
+            fromModel: event.fromModel,
+            toModel: event.toModel,
           },
         },
       });
@@ -418,6 +521,13 @@ function hasNonZeroExitCode(call: AgentRunResult['toolCalls'][number]): boolean 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readStringField(input: unknown, field: string): string | undefined {
+  if (isRecord(input) && typeof input[field] === 'string') {
+    return input[field];
+  }
+  return undefined;
 }
 
 function normalizeError(error: unknown): Error {

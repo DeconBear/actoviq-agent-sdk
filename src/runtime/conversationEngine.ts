@@ -8,7 +8,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { ActoviqSdkError, RunAbortedError, ToolExecutionError } from '../errors.js';
+import { ActoviqProviderApiError, ActoviqSdkError, RunAbortedError, ToolExecutionError } from '../errors.js';
+import {
+  getActoviqTodoSnapshot,
+  formatActoviqTodoListLines,
+  TODO_WRITE_TOOL_NAME,
+} from '../tools/todo/TodoWriteTool.js';
 import type {
   AgentEvent,
   AgentMcpServerDefinition,
@@ -39,7 +44,12 @@ import {
   assistantMessageToParam,
   buildUserMessage,
   extractTextFromContent,
+  extractTextFromToolResultContent,
 } from './messageUtils.js';
+
+const MAX_CONCURRENT_TOOL_USES = 10;
+const TODO_REMINDER_INTERVAL = 10;
+const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
 export interface ExecuteConversationOptions {
   runId: string;
@@ -75,7 +85,7 @@ export async function executeConversation(
   options: ExecuteConversationOptions,
 ): Promise<AgentRunResult> {
   const startedAt = nowIso();
-  const model = options.model ?? options.config.model;
+  let model = options.model ?? options.config.model;
   const promptText =
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
   const postSamplingHooks = resolveActoviqPostSamplingHooks(options.hooks);
@@ -108,6 +118,9 @@ export async function executeConversation(
   let toolResults: ToolResultBlockParam[] = [];
   let consecutiveFailures = 0;
   let lastFailedTool = '';
+  let maxTokensRecoveryCount = 0;
+  let modelFallbackUsed = false;
+  let iterationsSinceTodoWrite = 0;
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -200,6 +213,12 @@ export async function executeConversation(
       };
     }
 
+    // Prompt caching: a single cache breakpoint on the last message caches the
+    // entire prefix (tools + system + conversation). Anthropic API hosts only.
+    if (useAnthropicContextManagement && options.config.promptCachingEnabled !== false) {
+      applyCacheControlToLastMessage(request.messages);
+    }
+
     options.emit?.({
       type: 'request.started',
       runId: options.runId,
@@ -210,9 +229,38 @@ export async function executeConversation(
       timestamp: nowIso(),
     });
 
-    const message = options.streaming
-      ? await consumeStream(request, options.modelApi, iteration, options.emit, options.runId)
-      : await options.modelApi.createMessage(request);
+    let message: Awaited<ReturnType<ModelApi['createMessage']>>;
+    try {
+      message = options.streaming
+        ? await consumeStream(request, options.modelApi, iteration, options.emit, options.runId)
+        : await options.modelApi.createMessage(request);
+    } catch (error) {
+      // Fallback model: after transport-level retries are exhausted, switch to
+      // the configured fallback model once and retry this iteration.
+      const fallbackModel = options.config.fallbackModel;
+      if (
+        fallbackModel &&
+        !modelFallbackUsed &&
+        fallbackModel !== model &&
+        isModelFallbackEligibleError(error)
+      ) {
+        modelFallbackUsed = true;
+        const fromModel = model;
+        model = fallbackModel;
+        options.emit?.({
+          type: 'model.fallback',
+          runId: options.runId,
+          iteration,
+          fromModel,
+          toModel: fallbackModel,
+          reason: asError(error).message,
+          timestamp: nowIso(),
+        });
+        iteration -= 1;
+        continue;
+      }
+      throw error;
+    }
 
     if (!options.streaming) {
       const text = extractTextFromContent(message.content);
@@ -335,6 +383,26 @@ export async function executeConversation(
     });
 
     const toolUses = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use');
+
+    // max_tokens recovery: when the response was truncated mid-thought with no
+    // tool calls, nudge the model to resume instead of ending the run on a
+    // half-finished answer. Mirrors Claude Code's recovery loop (limit 3).
+    if (
+      !preventContinuation &&
+      toolUses.length === 0 &&
+      message.stop_reason === 'max_tokens' &&
+      maxTokensRecoveryCount < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
+    ) {
+      maxTokensRecoveryCount += 1;
+      conversation.push({
+        role: 'user',
+        content:
+          'Output token limit hit. Resume directly — no apology, no recap of what you were doing. ' +
+          'Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
+      });
+      continue;
+    }
+
     if (preventContinuation || toolUses.length === 0) {
       const completedAt = nowIso();
       if (!finalMessage) {
@@ -396,7 +464,9 @@ export async function executeConversation(
       );
     }
 
-    for (const toolUse of toolUses) {
+    const runSingleToolUse = async (
+      toolUse: ToolUseBlock,
+    ): Promise<{ record: AgentToolCallRecord; resultBlock: ToolResultBlockParam }> => {
       ensureNotAborted(options.signal);
       const started = nowIso();
       const startedClock = Date.now();
@@ -493,13 +563,20 @@ export async function executeConversation(
           model,
           provider: options.config.provider,
         }, onProgress);
+        // Per-tool declared cap first (default 50k via tool factory), clamped
+        // by the global artifact ceiling. MCP tools without a declared cap use
+        // the global ceiling only.
+        const artifactMaxChars = Math.min(
+          adapter.maxResultSizeChars ?? Number.POSITIVE_INFINITY,
+          options.config.compact.toolResultArtifactMaxChars ?? 80_000,
+        );
         const modelFacingExecution = await artifactToolExecutionIfLarge(execution, {
           runId: options.runId,
           iteration,
           toolUseId: toolUse.id,
           toolName: toolUse.name,
           workDir: options.config.workDir,
-          maxChars: options.config.compact.toolResultArtifactMaxChars ?? 80_000,
+          maxChars: artifactMaxChars,
         });
         outputText = modelFacingExecution.text;
         output = execution.rawOutput;
@@ -529,21 +606,72 @@ export async function executeConversation(
         durationMs: Date.now() - startedClock,
       };
 
-      toolCalls.push(record);
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: toolUse.id,
-        content,
-        is_error: isError,
-      });
+      return {
+        record,
+        resultBlock: {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content,
+          is_error: isError,
+        },
+      };
+    };
 
-      options.emit?.({
-        type: 'tool.result',
-        runId: options.runId,
-        iteration,
-        result: record,
-        timestamp: record.completedAt,
-      });
+    // Execute tool batches: consecutive concurrency-safe (read-only) tools run
+    // in parallel (limit 10), everything else serially. Results are recorded
+    // in the original tool_use order regardless of completion order.
+    for (const batch of partitionToolUsesForConcurrency(toolUses, toolMap)) {
+      const outcomes =
+        batch.concurrent && batch.toolUses.length > 1
+          ? await runWithConcurrencyLimit(
+              batch.toolUses,
+              MAX_CONCURRENT_TOOL_USES,
+              runSingleToolUse,
+            )
+          : await runSequentially(batch.toolUses, runSingleToolUse);
+      for (const outcome of outcomes) {
+        toolCalls.push(outcome.record);
+        toolResults.push(outcome.resultBlock);
+        options.emit?.({
+          type: 'tool.result',
+          runId: options.runId,
+          iteration,
+          result: outcome.record,
+          timestamp: outcome.record.completedAt,
+        });
+      }
+    }
+
+    // Aggregate per-message budget: N parallel tools can each pass the
+    // per-tool cap yet collectively flood one user message. Artifact the
+    // largest results until the batch fits (mirrors Claude Code's 200k cap).
+    await enforceToolResultsAggregateBudget(toolResults, {
+      runId: options.runId,
+      iteration,
+      workDir: options.config.workDir,
+      maxTotalChars: options.config.compact.toolResultsPerMessageMaxChars ?? 200_000,
+      nameByToolUseId: new Map(
+        toolCalls.slice(-toolUses.length).map((record) => [record.id, record.publicName]),
+      ),
+    });
+
+    // Todo continuity reminder: when TodoWrite is available but unused for a
+    // stretch of iterations, re-inject the current todo state so long runs
+    // stay anchored to the plan (mirrors Claude Code's 10-turn reminder).
+    if (toolUses.some((toolUse) => toolUse.name === TODO_WRITE_TOOL_NAME)) {
+      iterationsSinceTodoWrite = 0;
+    } else {
+      iterationsSinceTodoWrite += 1;
+      if (toolMap.has(TODO_WRITE_TOOL_NAME) && iterationsSinceTodoWrite >= TODO_REMINDER_INTERVAL) {
+        const reminder = buildTodoReminderText(
+          getActoviqTodoSnapshot(options.sessionId ?? options.runId),
+        );
+        const lastResult = toolResults.at(-1);
+        if (lastResult) {
+          appendTextToToolResultContent(lastResult, reminder);
+          iterationsSinceTodoWrite = 0;
+        }
+      }
     }
 
     // Detect repeated tool failures to prevent retry loops
@@ -600,6 +728,41 @@ export async function executeConversation(
   }
 }
 
+const ARTIFACTED_OUTPUT_MARKER = 'Tool output was large (';
+
+async function writeToolResultArtifact(
+  text: string,
+  options: {
+    runId: string;
+    iteration: number;
+    toolUseId: string;
+    toolName: string;
+    workDir: string;
+    previewChars: number;
+  },
+): Promise<string> {
+  const artifactDir = path.join(
+    options.workDir,
+    '.actoviq-artifacts',
+    'tool-results',
+    sanitizeArtifactSegment(options.runId),
+  );
+  await mkdir(artifactDir, { recursive: true });
+  const artifactPath = path.join(
+    artifactDir,
+    `${String(options.iteration).padStart(3, '0')}-${sanitizeArtifactSegment(options.toolUseId)}-${sanitizeArtifactSegment(options.toolName)}.txt`,
+  );
+  await writeFile(artifactPath, text, 'utf8');
+  const preview = text.slice(0, Math.max(options.previewChars, 0));
+  const omittedChars = Math.max(text.length - preview.length, 0);
+  return [
+    `${ARTIFACTED_OUTPUT_MARKER}${text.length} characters).`,
+    `Full output saved to: ${artifactPath}`,
+    omittedChars > 0 ? `Preview (${preview.length} characters, ${omittedChars} omitted):` : 'Preview:',
+    preview,
+  ].join('\n');
+}
+
 async function artifactToolExecutionIfLarge(
   execution: ResolvedToolExecutionResult,
   options: {
@@ -618,31 +781,199 @@ async function artifactToolExecutionIfLarge(
     };
   }
 
-  const artifactDir = path.join(
-    options.workDir,
-    '.actoviq-artifacts',
-    'tool-results',
-    sanitizeArtifactSegment(options.runId),
-  );
-  await mkdir(artifactDir, { recursive: true });
-  const artifactPath = path.join(
-    artifactDir,
-    `${String(options.iteration).padStart(3, '0')}-${sanitizeArtifactSegment(options.toolUseId)}-${sanitizeArtifactSegment(options.toolName)}.txt`,
-  );
-  await writeFile(artifactPath, execution.text, 'utf8');
-  const preview = execution.text.slice(0, Math.min(options.maxChars, 4_000));
-  const omittedChars = Math.max(execution.text.length - preview.length, 0);
-  const summary = [
-    `Tool output was large (${execution.text.length} characters).`,
-    `Full output saved to: ${artifactPath}`,
-    omittedChars > 0 ? `Preview (${preview.length} characters, ${omittedChars} omitted):` : 'Preview:',
-    preview,
-  ].join('\n');
+  const summary = await writeToolResultArtifact(execution.text, {
+    runId: options.runId,
+    iteration: options.iteration,
+    toolUseId: options.toolUseId,
+    toolName: options.toolName,
+    workDir: options.workDir,
+    previewChars: Math.min(options.maxChars, 4_000),
+  });
 
   return {
     text: summary,
     content: summary,
   };
+}
+
+/**
+ * Enforce an aggregate character budget over all tool_result blocks produced
+ * in one iteration. The largest non-error, not-yet-artifacted results are
+ * persisted to disk (largest first) until the batch fits the budget.
+ */
+async function enforceToolResultsAggregateBudget(
+  toolResults: ToolResultBlockParam[],
+  options: {
+    runId: string;
+    iteration: number;
+    workDir: string;
+    maxTotalChars: number;
+    nameByToolUseId: Map<string, string>;
+  },
+): Promise<void> {
+  if (options.maxTotalChars <= 0 || toolResults.length === 0) {
+    return;
+  }
+
+  const measured = toolResults.map((block, index) => ({
+    block,
+    index,
+    length: extractTextFromToolResultContent(block.content).length,
+  }));
+  let totalChars = measured.reduce((sum, entry) => sum + entry.length, 0);
+  if (totalChars <= options.maxTotalChars) {
+    return;
+  }
+
+  const candidates = measured
+    .filter((entry) => {
+      if (entry.block.is_error) return false;
+      const text = extractTextFromToolResultContent(entry.block.content);
+      return !text.startsWith(ARTIFACTED_OUTPUT_MARKER);
+    })
+    .sort((a, b) => b.length - a.length);
+
+  for (const candidate of candidates) {
+    if (totalChars <= options.maxTotalChars) {
+      break;
+    }
+    const text = extractTextFromToolResultContent(candidate.block.content);
+    if (!text) {
+      continue;
+    }
+    const summary = await writeToolResultArtifact(text, {
+      runId: options.runId,
+      iteration: options.iteration,
+      toolUseId: candidate.block.tool_use_id,
+      toolName: options.nameByToolUseId.get(candidate.block.tool_use_id) ?? 'tool',
+      workDir: options.workDir,
+      previewChars: 2_000,
+    });
+    candidate.block.content = summary;
+    totalChars = totalChars - text.length + summary.length;
+  }
+}
+
+interface ToolUseBatch {
+  concurrent: boolean;
+  toolUses: ToolUseBlock[];
+}
+
+/**
+ * Partition tool calls into batches: consecutive concurrency-safe tools are
+ * grouped for parallel execution, everything else runs as a serial batch of
+ * one. Mirrors Claude Code's read-only batching behavior.
+ */
+function partitionToolUsesForConcurrency(
+  toolUses: ToolUseBlock[],
+  toolMap: Map<string, { isReadOnly?: (input?: unknown) => boolean; isConcurrencySafe?: () => boolean; requiresUserInteraction?: () => boolean }>,
+): ToolUseBatch[] {
+  const batches: ToolUseBatch[] = [];
+  for (const toolUse of toolUses) {
+    const adapter = toolMap.get(toolUse.name);
+    let safe = false;
+    if (adapter && adapter.requiresUserInteraction?.() !== true) {
+      try {
+        safe = adapter.isConcurrencySafe?.() ?? adapter.isReadOnly?.(toolUse.input) ?? false;
+      } catch {
+        safe = false;
+      }
+    }
+    const last = batches.at(-1);
+    if (safe && last?.concurrent) {
+      last.toolUses.push(toolUse);
+    } else {
+      batches.push({ concurrent: safe, toolUses: [toolUse] });
+    }
+  }
+  return batches;
+}
+
+async function runSequentially<T, R>(items: T[], run: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (const item of items) {
+    results.push(await run(item));
+  }
+  return results;
+}
+
+async function runWithConcurrencyLimit<T, R>(
+  items: T[],
+  limit: number,
+  run: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) {
+        return;
+      }
+      results[index] = await run(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function appendTextToToolResultContent(block: ToolResultBlockParam, text: string): void {
+  if (block.content === undefined || block.content === null) {
+    block.content = text;
+    return;
+  }
+  if (typeof block.content === 'string') {
+    block.content = `${block.content}\n\n${text}`;
+    return;
+  }
+  if (Array.isArray(block.content)) {
+    block.content.push({ type: 'text', text });
+  }
+}
+
+function buildTodoReminderText(todos: ReturnType<typeof getActoviqTodoSnapshot>): string {
+  if (todos.length === 0) {
+    return [
+      '<system-reminder>',
+      'The TodoWrite tool has not been used recently. If you are working on a multi-step task, use TodoWrite to track progress and keep exactly one item in_progress.',
+      'Do not mention this reminder to the user.',
+      '</system-reminder>',
+    ].join('\n');
+  }
+  return [
+    '<system-reminder>',
+    'Current todo list state (re-injected for continuity):',
+    formatActoviqTodoListLines(todos),
+    'Continue working through pending items, update statuses with TodoWrite as you progress, and do not mention this reminder to the user.',
+    '</system-reminder>',
+  ].join('\n');
+}
+
+function isModelFallbackEligibleError(error: unknown): boolean {
+  if (error instanceof ActoviqProviderApiError) {
+    const status = error.status ?? 0;
+    return status === 429 || status === 529 || (status >= 500 && status < 600);
+  }
+  return false;
+}
+
+/**
+ * Mark the last content block of the last message with an ephemeral
+ * cache_control breakpoint. One breakpoint caches the entire request prefix
+ * (tools + system + conversation) on Anthropic API hosts. String-content
+ * messages are left untouched to preserve their wire shape; block-content
+ * messages (e.g. tool_result batches, which dominate long runs) are annotated.
+ */
+function applyCacheControlToLastMessage(messages: MessageParam[]): void {
+  const last = messages.at(-1);
+  if (!last || !Array.isArray(last.content) || last.content.length === 0) {
+    return;
+  }
+  const lastBlock = last.content[last.content.length - 1];
+  if (lastBlock && typeof lastBlock === 'object') {
+    (lastBlock as Record<string, unknown>).cache_control = { type: 'ephemeral' };
+  }
 }
 
 function sanitizeArtifactSegment(value: string): string {

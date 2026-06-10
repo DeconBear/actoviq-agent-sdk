@@ -83,8 +83,12 @@ function formatTodoLine(todo: TodoItem): string {
   return `${marker} ${todo.content}${suffix}`;
 }
 
+export function formatActoviqTodoListLines(todos: TodoItem[]): string {
+  return todos.map(formatTodoLine).join('\n');
+}
+
 function buildTodoResultText(todos: TodoItem[]): string {
-  const lines = todos.map(formatTodoLine).join('\n');
+  const lines = formatActoviqTodoListLines(todos);
   return [
     'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable.',
     '',

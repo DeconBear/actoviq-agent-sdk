@@ -2,8 +2,13 @@
  * Actoviq Core Tools — unified factory for all tools.
  *
  * Provides Read, Write, Edit, Glob, Grep, Bash, TodoWrite, AskUserQuestion,
- * WebFetch, WebSearch, Task tools, NotebookEdit, PowerShell, Config,
- * ToolSearch, Skill, SendMessage, and RemoteTrigger.
+ * WebFetch, WebSearch, NotebookEdit, and PowerShell by default.
+ *
+ * The placeholder Task tools (TaskCreate/TaskUpdate/...) and misc tools
+ * (Config/ToolSearch/Skill/SendMessage/RemoteTrigger) are opt-in: the SDK
+ * client injects real Task, TaskList/TaskGet/TaskStop/TaskOutput, and Skill
+ * implementations at runtime, and exposing the no-op stubs alongside them
+ * confuses the model and wastes turns.
  *
  * All schemas, descriptions, and prompts match Claude Code exactly.
  */
@@ -40,10 +45,10 @@ export function createActoviqCoreTools(
   if (options.todoWrite !== false) tools.push(createTodoWriteTool());
   if (options.askUserQuestion !== false) tools.push(createAskUserQuestionTool());
   if (options.webTools !== false) tools.push(...createActoviqWebTools());
-  if (options.taskTools !== false) tools.push(...createActoviqTaskTools());
+  if (options.taskTools === true) tools.push(...createActoviqTaskTools());
   if (options.notebookEdit !== false) tools.push(createNotebookEditTool());
   if (options.powershell !== false) tools.push(createPowerShellTool());
-  if (options.miscTools !== false) tools.push(...createActoviqMiscTools());
+  if (options.miscTools === true) tools.push(...createActoviqMiscTools());
 
   return tools;
 }

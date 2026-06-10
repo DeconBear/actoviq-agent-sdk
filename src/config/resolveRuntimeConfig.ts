@@ -22,6 +22,7 @@ const DEFAULT_COMPACT_CONFIG = {
   apiMicrocompactClearToolResults: true,
   apiMicrocompactClearToolUses: false,
   toolResultArtifactMaxChars: 80_000,
+  toolResultsPerMessageMaxChars: 200_000,
   loopAutoCompactEnabled: true,
   contextWindowTokens: 200_000,
 } as const;
@@ -90,6 +91,10 @@ export async function resolveRuntimeConfig(
     options.baseURL ??
     getRuntimeConfigValue('ACTOVIQ_BASE_URL', ...envSources);
 
+  const fallbackModel =
+    options.fallbackModel ??
+    getRuntimeConfigValue('ACTOVIQ_FALLBACK_MODEL', ...envSources);
+
   return {
     homeDir,
     loadedConfigPath: loadedConfig?.path,
@@ -100,14 +105,16 @@ export async function resolveRuntimeConfig(
     maxTokens: options.maxTokens ?? 32000,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs ?? 600000,
-    maxRetries: options.maxRetries ?? 2,
+    maxRetries: options.maxRetries ?? 4,
     workDir: options.workDir ?? process.cwd(),
     sessionDirectory:
       options.sessionDirectory ?? path.join(homeDir, '.actoviq', 'actoviq-agent-sdk'),
     clientName: options.clientName ?? 'actoviq-agent-sdk',
     clientVersion: options.clientVersion ?? '0.1.7',
     systemPrompt: options.systemPrompt,
-    maxToolIterations: options.maxToolIterations ?? 20,
+    maxToolIterations: options.maxToolIterations ?? 50,
+    fallbackModel,
+    promptCachingEnabled: options.promptCachingEnabled ?? true,
     userId: options.userId,
     metadata: { ...(options.metadata ?? {}) },
     compact: {

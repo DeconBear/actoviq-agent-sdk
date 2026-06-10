@@ -304,6 +304,8 @@ export interface ResolvedToolAdapter {
   isDestructive?: (input?: unknown) => boolean;
   requiresUserInteraction?: () => boolean;
   isConcurrencySafe?: () => boolean;
+  /** Per-tool result size cap in chars before artifacting to disk. */
+  maxResultSizeChars?: number;
   checkPermissions?: (
     context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
@@ -326,6 +328,10 @@ export interface ResolvedRuntimeConfig {
   clientVersion: string;
   systemPrompt?: string;
   maxToolIterations: number;
+  /** Model switched to after repeated overload/rate-limit failures. */
+  fallbackModel?: string;
+  /** Add a prompt-cache breakpoint to Anthropic requests. Defaults to true. */
+  promptCachingEnabled: boolean;
   userId?: string;
   metadata: Record<string, unknown>;
   compact: ActoviqCompactConfig;
@@ -654,6 +660,8 @@ export interface CreateAgentSdkOptions {
   clientVersion?: string;
   systemPrompt?: string;
   maxToolIterations?: number;
+  fallbackModel?: string;
+  promptCachingEnabled?: boolean;
   userId?: string;
   metadata?: Record<string, unknown>;
   tools?: AgentToolDefinition[];
@@ -691,6 +699,12 @@ export interface ActoviqCompactConfig {
   apiMicrocompactClearToolResults?: boolean;
   apiMicrocompactClearToolUses?: boolean;
   toolResultArtifactMaxChars?: number;
+  /**
+   * Aggregate budget for all tool_result blocks produced in one iteration
+   * (one user message). Largest results are artifacted to disk until the
+   * batch fits. Mirrors Claude Code's per-message tool result budget.
+   */
+  toolResultsPerMessageMaxChars?: number;
   /**
    * In-loop auto-compact: summarize old conversation turns mid-run when the
    * estimated input tokens approach the model context window. Mirrors
@@ -1188,6 +1202,15 @@ export type AgentEvent =
       messagesSummarized: number;
       preservedMessages: number;
       clearedToolResults: number;
+      timestamp: string;
+    }
+  | {
+      type: 'model.fallback';
+      runId: string;
+      iteration: number;
+      fromModel: string;
+      toModel: string;
+      reason: string;
       timestamp: string;
     }
   | {

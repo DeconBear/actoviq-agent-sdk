@@ -99,7 +99,11 @@ import {
   getPersistedActoviqCompactHistory,
   getPersistedActoviqCompactState,
   isActoviqPromptTooLongError,
+  trackRecentFile,
+  trackRecentSkill,
 } from './actoviqCompact.js';
+
+const RECENT_FILE_TOOL_NAMES = new Set(['Read', 'Write', 'Edit', 'NotebookEdit']);
 import {
   ActoviqToolsApi,
   buildActoviqCleanToolCatalog,
@@ -654,6 +658,9 @@ export class ActoviqAgentClient {
     this.replaceDefaultTool(this.createBackgroundTaskGetTool());
     this.replaceDefaultTool(this.createBackgroundTaskStopTool());
     this.replaceDefaultTool(this.createBackgroundTaskOutputTool());
+    if (this.listSkillDefinitions().length > 0) {
+      this.replaceDefaultTool(this.createSkillRegistryTool());
+    }
   }
 
   async listToolMetadata(
@@ -1043,6 +1050,72 @@ export class ActoviqAgentClient {
       return;
     }
     this.defaultTools.push(replacement);
+  }
+
+  /**
+   * Model-facing Skill tool backed by the real skill registry. Loads the
+   * resolved skill content into the conversation as the tool result
+   * (progressive disclosure), instead of the former no-op stub.
+   */
+  private createSkillRegistryTool(): AgentToolDefinition {
+    return tool(
+      {
+        name: 'Skill',
+        description:
+          'Load a registered skill by name. The skill content (workflow, checklist, or domain knowledge) is returned so you can follow it for the current task.',
+        inputSchema: z.strictObject({
+          skill: z.string().describe('The name of the skill to load'),
+          args: z.string().optional().describe('Optional arguments for the skill'),
+        }),
+        isReadOnly: () => true,
+        prompt: () => {
+          const names = this.listSkillDefinitions()
+            .filter((definition) => definition.disableModelInvocation !== true)
+            .map((definition) =>
+              definition.description
+                ? `- ${definition.name}: ${definition.description}`
+                : `- ${definition.name}`,
+            );
+          if (names.length === 0) {
+            return '';
+          }
+          return [
+            'Use the Skill tool to load a registered skill when the task matches its description.',
+            'Available skills:',
+            ...names,
+          ].join('\n');
+        },
+      },
+      async ({ skill, args }, context) => {
+        const definition = this.getSkillDefinition(skill);
+        if (!definition || definition.disableModelInvocation === true) {
+          const available = this.listSkillDefinitions()
+            .filter((entry) => entry.disableModelInvocation !== true)
+            .map((entry) => entry.name)
+            .join(', ');
+          throw new Error(
+            `No skill named "${skill}" is registered.${available ? ` Available skills: ${available}.` : ''}`,
+          );
+        }
+        const resolved = await resolveActoviqSkillPrompt(definition, args ?? '', {
+          args: args ?? '',
+          workDir: this.config.workDir,
+          homeDir: this.config.homeDir,
+          sessionId: context.sessionId,
+          userId: this.config.userId,
+        });
+        const content = extractTextFromContent(resolved.content);
+        return [
+          `Loaded skill "${definition.name}".`,
+          '',
+          '<skill-content>',
+          content,
+          '</skill-content>',
+          '',
+          'Apply this skill to the current task now.',
+        ].join('\n');
+      },
+    );
   }
 
   private createBackgroundTaskListTool(): AgentToolDefinition {
@@ -2498,6 +2571,31 @@ export class ActoviqAgentClient {
     if (invokedSkills.length > 0) {
       next.metadata[INVOKED_SKILLS_STATE_KEY] = invokedSkills;
       result.invokedSkills = invokedSkills;
+    }
+    // Track recently touched files and skills so post-compact context
+    // reminders can point the model back to its working set.
+    for (const call of result.toolCalls) {
+      if (call.isError) {
+        continue;
+      }
+      const callInput = call.input as Record<string, unknown> | undefined;
+      if (RECENT_FILE_TOOL_NAMES.has(call.publicName)) {
+        const filePath =
+          typeof callInput?.file_path === 'string'
+            ? callInput.file_path
+            : typeof callInput?.notebook_path === 'string'
+              ? callInput.notebook_path
+              : undefined;
+        if (filePath) {
+          trackRecentFile(next, filePath);
+        }
+      }
+      if (call.publicName === 'Skill' && typeof callInput?.skill === 'string') {
+        trackRecentSkill(next, callInput.skill);
+      }
+    }
+    for (const record of result.invokedSkills ?? []) {
+      trackRecentSkill(next, record.name);
     }
     const previousRelevantMemoryState = getRelevantMemorySessionState(next.metadata);
     const surfacedPaths = new Set(previousRelevantMemoryState.surfacedPaths);

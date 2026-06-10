@@ -484,6 +484,7 @@ export default class ActoviqProviderClient {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       const requestSignal = makeTimeoutSignal(this.timeoutMs, options?.signal);
+      let retryAfterMs: number | undefined;
       try {
         const response = await this.fetchImpl(normalizeMessagesUrl(this.baseURL), {
           method: 'POST',
@@ -510,6 +511,7 @@ export default class ActoviqProviderClient {
         if (!shouldRetryStatus(response.status) || attempt === this.maxRetries) {
           throw error;
         }
+        retryAfterMs = parseRetryAfterMs(response);
         lastError = error;
       } catch (error) {
         lastError = error;
@@ -519,7 +521,7 @@ export default class ActoviqProviderClient {
         }
       }
 
-      await delay(Math.min(250 * 2 ** attempt, 2000));
+      await delay(computeRetryDelayMs(attempt, retryAfterMs));
     }
 
     throw lastError instanceof Error
@@ -546,6 +548,39 @@ export default class ActoviqProviderClient {
 
 function shouldRetryStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+const MAX_RETRY_AFTER_MS = 30_000;
+
+/** Honor server-provided Retry-After when rate limited or overloaded. */
+export function parseRetryAfterMs(response: Response): number | undefined {
+  const retryAfterMsHeader = response.headers.get('retry-after-ms');
+  if (retryAfterMsHeader) {
+    const parsed = Number.parseFloat(retryAfterMsHeader);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return Math.min(parsed, MAX_RETRY_AFTER_MS);
+    }
+  }
+  const retryAfterHeader = response.headers.get('retry-after');
+  if (retryAfterHeader) {
+    const seconds = Number.parseFloat(retryAfterHeader);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+    }
+    const dateMs = Date.parse(retryAfterHeader);
+    if (Number.isFinite(dateMs)) {
+      return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_AFTER_MS);
+    }
+  }
+  return undefined;
+}
+
+export function computeRetryDelayMs(attempt: number, retryAfterMs?: number): number {
+  const backoff = Math.min(250 * 2 ** attempt, 2000);
+  if (retryAfterMs === undefined) {
+    return backoff;
+  }
+  return Math.max(backoff, retryAfterMs);
 }
 
 function shouldRetryError(error: unknown): boolean {

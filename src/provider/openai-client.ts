@@ -4,6 +4,7 @@ import type {
   OpenaiChatCompletionRequest,
 } from './openai-types.js';
 import { ActoviqProviderApiError } from '../errors.js';
+import { computeRetryDelayMs, parseRetryAfterMs } from './client.js';
 
 export interface OpenaiProviderClientOptions {
   apiKey?: string | null;
@@ -341,6 +342,7 @@ export default class OpenaiProviderClient {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       const requestSignal = makeTimeoutSignal(this.timeoutMs, signal);
+      let retryAfterMs: number | undefined;
       try {
         const response = await this.fetchImpl(normalizeChatUrl(this.baseURL), {
           method: 'POST',
@@ -363,6 +365,7 @@ export default class OpenaiProviderClient {
         if (!shouldRetryStatus(response.status) || attempt === this.maxRetries) {
           throw error;
         }
+        retryAfterMs = parseRetryAfterMs(response);
         lastError = error;
       } catch (error) {
         lastError = error;
@@ -372,7 +375,7 @@ export default class OpenaiProviderClient {
         }
       }
 
-      await delay(Math.min(250 * 2 ** attempt, 2000));
+      await delay(computeRetryDelayMs(attempt, retryAfterMs));
     }
 
     throw lastError instanceof Error
