@@ -29,6 +29,7 @@ import type {
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
+import { compactActoviqConversationIfNeeded } from './actoviqCompact.js';
 import {
   getActoviqApiContextManagement,
   prepareActoviqProviderRequestMessages,
@@ -111,6 +112,32 @@ export async function executeConversation(
   while (true) {
     ensureNotAborted(options.signal);
     iteration += 1;
+
+    // In-loop auto-compact: keep a single long run within the context window
+    // by summarizing old turns before each provider request. Mirrors Claude
+    // Code's per-iteration autocompact and never throws.
+    const loopCompact = await compactActoviqConversationIfNeeded(conversation, {
+      model,
+      modelApi: options.modelApi,
+      compactConfig: options.config.compact,
+      maxTokens: options.maxTokens ?? options.config.maxTokens,
+      runKey: options.runId,
+      signal: options.signal,
+    });
+    if (loopCompact.compacted) {
+      conversation.splice(0, conversation.length, ...loopCompact.messages);
+      options.emit?.({
+        type: 'conversation.compacted',
+        runId: options.runId,
+        iteration,
+        tokenEstimateBefore: loopCompact.tokenEstimateBefore,
+        tokenEstimateAfter: loopCompact.tokenEstimateAfter,
+        messagesSummarized: loopCompact.messagesSummarized,
+        preservedMessages: loopCompact.preservedMessages,
+        clearedToolResults: loopCompact.clearedToolResults,
+        timestamp: nowIso(),
+      });
+    }
 
     const useAnthropicContextManagement = isAnthropicAPI(options.config.baseURL);
     const preparedMessages = prepareActoviqProviderRequestMessages(
@@ -536,6 +563,15 @@ export async function executeConversation(
       }
     }
 
+    // Always push tool results before any early return so the conversation
+    // never ends with dangling tool_use blocks (which would make a persisted
+    // session unusable: providers reject unpaired tool_use ids on resume).
+    conversation.push({
+      role: 'user',
+      content: toolResults,
+    });
+    toolResults = [];
+
     if (consecutiveFailures >= 3 && lastFailedTool) {
       const completedAt = nowIso();
       if (finalMessage) {
@@ -547,6 +583,7 @@ export async function executeConversation(
           message: finalMessage,
           messages: conversation,
           stopReason: finalMessage.stop_reason ?? null,
+          incompleteReason: `consecutive_tool_failures:${lastFailedTool}`,
           hookStopReason,
           usage: finalMessage.usage,
           requests: requestSummaries,
@@ -560,12 +597,6 @@ export async function executeConversation(
         `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
       );
     }
-
-    conversation.push({
-      role: 'user',
-      content: toolResults,
-    });
-    toolResults = [];
   }
 }
 

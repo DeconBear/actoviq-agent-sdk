@@ -342,14 +342,73 @@ function buildPostCompactSummaryMessage(summary: string, trigger: ActoviqCompact
   };
 }
 
+const SUMMARY_TOOL_RESULT_MAX_CHARS = 1_500;
+const SUMMARY_TOOL_INPUT_MAX_CHARS = 400;
+
+/**
+ * Serialize messages for the compact summary request. Unlike
+ * extractTextFromContent, this keeps tool_use names/inputs and truncated
+ * tool_result text so the summary can reference concrete commands, files,
+ * and errors from the session.
+ */
 function serializeMessagesForSummary(messages: readonly MessageParam[]): string {
   return messages
     .map(message => {
       const label = message.role === 'assistant' ? 'Assistant' : 'User';
-      return `${label}:\n${extractTextFromContent(message.content)}`;
+      const body = serializeContentForSummary(message.content);
+      return body ? `${label}:\n${body}` : '';
     })
     .filter(Boolean)
     .join('\n\n');
+}
+
+function serializeContentForSummary(content: MessageParam['content']): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map(block => {
+      if (!isRecord(block)) {
+        return '';
+      }
+      switch (block.type) {
+        case 'text':
+          return typeof block.text === 'string' ? block.text : '';
+        case 'thinking':
+          return '';
+        case 'tool_use': {
+          const name = typeof block.name === 'string' ? block.name : 'tool';
+          let input = '';
+          try {
+            input = JSON.stringify(block.input ?? {});
+          } catch {
+            input = '';
+          }
+          if (input.length > SUMMARY_TOOL_INPUT_MAX_CHARS) {
+            input = `${input.slice(0, SUMMARY_TOOL_INPUT_MAX_CHARS)}…`;
+          }
+          return `[tool_use ${name}] ${input}`;
+        }
+        case 'tool_result': {
+          const text = extractTextFromToolResultContent(block.content);
+          if (!text) {
+            return '[tool_result]';
+          }
+          const truncated =
+            text.length > SUMMARY_TOOL_RESULT_MAX_CHARS
+              ? `${text.slice(0, SUMMARY_TOOL_RESULT_MAX_CHARS)}… [truncated]`
+              : text;
+          return `[tool_result${block.is_error ? ' error' : ''}] ${truncated}`;
+        }
+        default:
+          return '';
+      }
+    })
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function trackRecentFile(session: StoredSession, filePath: string): void {
@@ -730,6 +789,203 @@ export async function compactActoviqSession(
       microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
       state: nextRuntimeState,
     },
+  };
+}
+
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+const LOOP_AUTOCOMPACT_BUFFER_TOKENS = 13_000;
+const LOOP_AUTOCOMPACT_MIN_THRESHOLD_TOKENS = 30_000;
+
+export interface ActoviqLoopCompactContext {
+  model: string;
+  modelApi: ModelApi;
+  compactConfig: ActoviqCompactConfig;
+  /** max_tokens reserved for the model response in regular requests. */
+  maxTokens: number;
+  /** Circuit-breaker key; use the runId so one bad run cannot poison others. */
+  runKey: string;
+  signal?: AbortSignal;
+}
+
+export interface ActoviqLoopCompactOutcome {
+  messages: MessageParam[];
+  compacted: boolean;
+  tokenEstimateBefore: number;
+  tokenEstimateAfter: number;
+  messagesSummarized: number;
+  preservedMessages: number;
+  clearedToolResults: number;
+  summary?: string;
+}
+
+/**
+ * Derive the in-loop auto-compact trigger from the configured context window,
+ * mirroring Claude Code's `effective window - output reserve - buffer` shape.
+ */
+export function getActoviqLoopAutoCompactThreshold(
+  config: ActoviqCompactConfig,
+  maxTokens: number,
+): number {
+  if (
+    typeof config.loopAutoCompactThresholdTokens === 'number' &&
+    config.loopAutoCompactThresholdTokens > 0
+  ) {
+    return config.loopAutoCompactThresholdTokens;
+  }
+  const contextWindow = config.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const derived = contextWindow - maxTokens - LOOP_AUTOCOMPACT_BUFFER_TOKENS;
+  return Math.max(derived, LOOP_AUTOCOMPACT_MIN_THRESHOLD_TOKENS);
+}
+
+/**
+ * In-loop (mid-run) auto-compact for a live conversation array.
+ *
+ * Unlike compactActoviqSession this operates on the in-flight ReAct loop
+ * conversation, so a single long run with many tool calls cannot grow past
+ * the context window. It never throws: on failure it records a circuit
+ * breaker strike and returns the conversation unchanged so the run can
+ * continue (the provider request may still succeed or trigger the
+ * reactive-compact path).
+ */
+export async function compactActoviqConversationIfNeeded(
+  messages: readonly MessageParam[],
+  context: ActoviqLoopCompactContext,
+): Promise<ActoviqLoopCompactOutcome> {
+  const config = context.compactConfig;
+  const tokenEstimateBefore = estimateActoviqConversationTokens(messages);
+  const unchanged: ActoviqLoopCompactOutcome = {
+    messages: [...messages],
+    compacted: false,
+    tokenEstimateBefore,
+    tokenEstimateAfter: tokenEstimateBefore,
+    messagesSummarized: 0,
+    preservedMessages: messages.length,
+    clearedToolResults: 0,
+  };
+
+  if (!config.enabled || config.loopAutoCompactEnabled === false) {
+    return unchanged;
+  }
+
+  const threshold = getActoviqLoopAutoCompactThreshold(config, context.maxTokens);
+  if (tokenEstimateBefore < threshold) {
+    return unchanged;
+  }
+
+  const failureKey = `loop:${context.runKey}`;
+  const consecutiveFailures = compactionFailureCounts.get(failureKey) ?? 0;
+  if (consecutiveFailures >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
+    return unchanged;
+  }
+
+  // Stage 1: clear old large tool results. This alone may bring the
+  // conversation back under the threshold without losing turn structure.
+  const microcompacted = compactToolResultContent(messages, config);
+  const afterMicrocompactTokens = estimateActoviqConversationTokens(microcompacted.messages);
+  if (afterMicrocompactTokens < threshold) {
+    return {
+      messages: microcompacted.messages,
+      compacted: microcompacted.clearedCount > 0,
+      tokenEstimateBefore,
+      tokenEstimateAfter: afterMicrocompactTokens,
+      messagesSummarized: 0,
+      preservedMessages: microcompacted.messages.length,
+      clearedToolResults: microcompacted.clearedCount,
+    };
+  }
+
+  // Stage 2: summarize older turns, preserving the recent tail and any
+  // tool_use blocks referenced by preserved tool_results.
+  const preserveRecentMessages = Math.max(config.preserveRecentMessages, 1);
+  let preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
+  preserveStart = extendPreserveToIncludeReferencedToolUses(
+    microcompacted.messages,
+    preserveStart,
+  );
+
+  const messagesToSummarize = microcompacted.messages.slice(0, preserveStart);
+  const messagesToKeep = microcompacted.messages.slice(preserveStart);
+  if (messagesToSummarize.length === 0 || messagesToKeep.length === 0) {
+    return {
+      ...unchanged,
+      messages: microcompacted.messages,
+      compacted: microcompacted.clearedCount > 0,
+      tokenEstimateAfter: afterMicrocompactTokens,
+      clearedToolResults: microcompacted.clearedCount,
+    };
+  }
+
+  let retryCount = 0;
+  let retryMessagesToSummarize = messagesToSummarize;
+  let response: Awaited<ReturnType<ModelApi['createMessage']>>;
+  while (true) {
+    try {
+      const rewritePrompt = buildCompactSummaryPrompt(
+        serializeMessagesForSummary(retryMessagesToSummarize),
+        messagesToKeep.length,
+      );
+      response = await context.modelApi.createMessage({
+        model: context.model,
+        max_tokens: config.maxSummaryTokens,
+        system:
+          'You are compacting a long-running engineering session. Produce a dense but concise continuation summary.',
+        metadata: {
+          actoviq_internal_task: 'loop_compact',
+          actoviq_compact_retry_count: retryCount,
+        },
+        messages: [{ role: 'user', content: rewritePrompt }],
+        signal: context.signal,
+      });
+      compactionFailureCounts.delete(failureKey);
+      break;
+    } catch (error) {
+      if (
+        retryCount < MAX_COMPACT_PROMPT_TOO_LONG_RETRIES &&
+        isActoviqPromptTooLongError(error)
+      ) {
+        const truncated = truncateMessagesForCompactRetry(retryMessagesToSummarize);
+        if (truncated) {
+          retryMessagesToSummarize = truncated;
+          retryCount += 1;
+          continue;
+        }
+      }
+      compactionFailureCounts.set(failureKey, consecutiveFailures + 1);
+      return {
+        ...unchanged,
+        messages: microcompacted.messages,
+        compacted: microcompacted.clearedCount > 0,
+        tokenEstimateAfter: afterMicrocompactTokens,
+        clearedToolResults: microcompacted.clearedCount,
+      };
+    }
+  }
+
+  const summary = extractTextFromContent(response.content).trim();
+  if (!summary) {
+    compactionFailureCounts.set(failureKey, consecutiveFailures + 1);
+    return {
+      ...unchanged,
+      messages: microcompacted.messages,
+      compacted: microcompacted.clearedCount > 0,
+      tokenEstimateAfter: afterMicrocompactTokens,
+      clearedToolResults: microcompacted.clearedCount,
+    };
+  }
+
+  const nextMessages = [
+    buildPostCompactSummaryMessage(summary, 'auto'),
+    ...messagesToKeep,
+  ];
+  return {
+    messages: nextMessages,
+    compacted: true,
+    tokenEstimateBefore,
+    tokenEstimateAfter: estimateActoviqConversationTokens(nextMessages),
+    messagesSummarized: messagesToSummarize.length,
+    preservedMessages: messagesToKeep.length,
+    clearedToolResults: microcompacted.clearedCount,
+    summary,
   };
 }
 

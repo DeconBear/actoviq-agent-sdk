@@ -691,6 +691,16 @@ export interface ActoviqCompactConfig {
   apiMicrocompactClearToolResults?: boolean;
   apiMicrocompactClearToolUses?: boolean;
   toolResultArtifactMaxChars?: number;
+  /**
+   * In-loop auto-compact: summarize old conversation turns mid-run when the
+   * estimated input tokens approach the model context window. Mirrors
+   * Claude Code's per-iteration autocompact. Defaults to true.
+   */
+  loopAutoCompactEnabled?: boolean;
+  /** Model context window in tokens used to derive the in-loop compact threshold. */
+  contextWindowTokens?: number;
+  /** Explicit in-loop compact trigger in estimated tokens. Overrides the derived threshold. */
+  loopAutoCompactThresholdTokens?: number;
 }
 
 export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
@@ -1167,6 +1177,17 @@ export type AgentEvent =
       sessionId: string;
       trigger: ActoviqCompactTrigger;
       result: ActoviqSessionCompactResult;
+      timestamp: string;
+    }
+  | {
+      type: 'conversation.compacted';
+      runId: string;
+      iteration: number;
+      tokenEstimateBefore: number;
+      tokenEstimateAfter: number;
+      messagesSummarized: number;
+      preservedMessages: number;
+      clearedToolResults: number;
       timestamp: string;
     }
   | {

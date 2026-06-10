@@ -22,6 +22,8 @@ const DEFAULT_COMPACT_CONFIG = {
   apiMicrocompactClearToolResults: true,
   apiMicrocompactClearToolUses: false,
   toolResultArtifactMaxChars: 80_000,
+  loopAutoCompactEnabled: true,
+  contextWindowTokens: 200_000,
 } as const;
 
 function getConfigValue(
