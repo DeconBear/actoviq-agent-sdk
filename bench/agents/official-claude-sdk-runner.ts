@@ -2,6 +2,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  getLoadedJsonConfig,
+  loadDefaultActoviqSettings,
+  mapActoviqEnvToAnthropicEnv,
+} from '../../src/index.js';
 import { appendTrajectoryEvent, summarizeText } from '../trajectory.js';
 
 const workspace = readRequiredEnv('ACTOVIQ_BENCH_WORKSPACE');
@@ -10,37 +15,46 @@ const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions';
-const maxTurns = Number(process.env.ACTOVIQ_BENCH_MAX_TURNS ?? 12);
+// No declared budget -> unlimited turns, consistent with the Clean SDK runner.
+const maxTurnsRaw = process.env.ACTOVIQ_BENCH_MAX_TURNS;
+const maxTurns = maxTurnsRaw ? Number(maxTurnsRaw) : undefined;
 
 clearBenchmarkEnv();
+await applyActoviqCredentialEnv();
 
 const messages: SDKMessage[] = [];
-for await (const message of query({
-  prompt: buildPrompt(instruction, workspace),
-  options: {
-    cwd: workspace,
-    maxTurns,
-    permissionMode: permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk',
-    allowDangerouslySkipPermissions: permissionMode === 'bypassPermissions',
-    tools: { type: 'preset', preset: 'claude_code' },
-    skills: 'all',
-    agents: {
-      'benchmark-generalist': {
-        description: 'Use for benchmark tasks that benefit from independent exploration, verification, or focused test triage.',
-        prompt:
-          'You are a focused coding subagent in an isolated benchmark workspace. Inspect only what is needed, make no broad refactors, and report concrete findings or changes.',
-        maxTurns: 6,
+let queryError: unknown;
+try {
+  for await (const message of query({
+    prompt: buildPrompt(instruction, workspace),
+    options: {
+      cwd: workspace,
+      ...(maxTurns ? { maxTurns } : {}),
+      permissionMode: permissionMode as 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk',
+      allowDangerouslySkipPermissions: permissionMode === 'bypassPermissions',
+      tools: { type: 'preset', preset: 'claude_code' },
+      skills: 'all',
+      agents: {
+        'benchmark-generalist': {
+          description: 'Use for benchmark tasks that benefit from independent exploration, verification, or focused test triage.',
+          prompt:
+            'You are a focused coding subagent in an isolated benchmark workspace. Inspect only what is needed, make no broad refactors, and report concrete findings or changes.',
+          maxTurns: 6,
+        },
+      },
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        append:
+          'You are running inside an isolated benchmark workspace. Complete the user task by changing the workspace as needed. Keep changes focused and do not inspect benchmark internals under .actoviq-bench.',
       },
     },
-    systemPrompt: {
-      type: 'preset',
-      preset: 'claude_code',
-      append:
-        'You are running inside an isolated benchmark workspace. Complete the user task by changing the workspace as needed. Keep changes focused and do not inspect benchmark internals under .actoviq-bench.',
-    },
-  },
-})) {
-  messages.push(message);
+  })) {
+    messages.push(message);
+  }
+} catch (error) {
+  // Preserve partial progress in the report even when the SDK stream fails.
+  queryError = error;
 }
 
 const resultMessage = [...messages].reverse().find((message) => message.type === 'result');
@@ -51,13 +65,28 @@ const subagents = extractSubagents(messages);
 const skillRequests = toolCalls.filter((toolCall) => toolCall.name.toLowerCase().includes('skill'));
 const resultRecord = isRecord(resultMessage) ? resultMessage : undefined;
 const usage = isRecord(resultRecord?.usage) ? resultRecord.usage : undefined;
+const queryErrorText = queryError ? (queryError instanceof Error ? queryError.message : String(queryError)) : undefined;
 const outputText = getString(resultRecord, 'result') ?? extractLastAssistantText(messages) ?? '';
 await writeTrajectory(messages, toolCalls, toolResults, subagents, skillRequests, resultRecord);
+if (queryErrorText) {
+  await appendTrajectoryEvent(trajectoryFile, {
+    runtime: 'official-claude-sdk',
+    caseId,
+    actor: { type: 'harness', name: 'runner' },
+    event: {
+      type: 'error',
+      name: 'query_failed',
+      outputSummary: summarizeText(queryErrorText),
+      isError: true,
+    },
+  });
+}
 
 await writeRunnerOutput(outputFile, {
   runtime: 'official-claude-sdk',
   text: outputText,
-  isError: resultRecord?.is_error === true,
+  isError: resultRecord?.is_error === true || queryError !== undefined,
+  error: queryErrorText,
   subtype: getString(resultRecord, 'subtype'),
   sessionId: getString(resultRecord, 'session_id'),
   metrics: {
@@ -88,7 +117,10 @@ await writeRunnerOutput(outputFile, {
 });
 
 console.log(outputText);
-if (resultRecord?.is_error === true) {
+if (queryErrorText) {
+  console.error(`official-claude-sdk runner query failed: ${queryErrorText}`);
+}
+if (resultRecord?.is_error === true || queryError !== undefined) {
   process.exitCode = 1;
 }
 
@@ -330,6 +362,29 @@ function clearBenchmarkEnv(): void {
     if (key.startsWith('ACTOVIQ_BENCH_')) {
       delete process.env[key];
     }
+  }
+}
+
+/**
+ * Route the official Claude Agent SDK through `~/.actoviq/settings.json`.
+ * The spawned Claude Code CLI inherits process.env, so injecting the mapped
+ * ANTHROPIC_* variables here keeps it off ~/.claude/settings.json credentials.
+ */
+async function applyActoviqCredentialEnv(): Promise<void> {
+  try {
+    await loadDefaultActoviqSettings();
+  } catch {
+    return;
+  }
+  const settingsEnv = getLoadedJsonConfig()?.env ?? {};
+  const injected: Record<string, string> = {
+    ...mapActoviqEnvToAnthropicEnv(settingsEnv),
+    ...Object.fromEntries(
+      Object.entries(settingsEnv).filter(([key, value]) => key.startsWith('ANTHROPIC_') && typeof value === 'string'),
+    ),
+  };
+  for (const [key, value] of Object.entries(injected)) {
+    process.env[key] = value;
   }
 }
 

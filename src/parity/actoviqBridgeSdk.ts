@@ -7,6 +7,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
+import { mapActoviqEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { ActoviqBridgeProcessError, RunAbortedError } from '../errors.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
@@ -597,11 +598,18 @@ function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[
 
 function buildChildEnvironment(envOverrides?: Record<string, string>): Record<string, string> {
   const loadedConfig = getLoadedJsonConfig();
+  // Actoviq settings are the single source of model/credential config: derive
+  // ANTHROPIC_* equivalents so the Claude Code-based child process does not
+  // silently fall back to ~/.claude/settings.json or keychain credentials.
+  // Derived values override inherited process.env ANTHROPIC_* entries, while
+  // explicit ANTHROPIC_* keys in the settings env block and caller overrides win.
+  const settingsEnv = loadedConfig?.env ?? {};
   const mergedEnv: Record<string, string> = {
     ...Object.fromEntries(
       Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
     ),
-    ...(loadedConfig?.env ?? {}),
+    ...mapActoviqEnvToAnthropicEnv(settingsEnv),
+    ...settingsEnv,
     ...(envOverrides ?? {}),
   };
 

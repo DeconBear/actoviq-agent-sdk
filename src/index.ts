@@ -3,6 +3,7 @@
   getLoadedJsonConfig,
   loadJsonConfigFile,
 } from './config/loadJsonConfigFile.js';
+export { mapActoviqEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
 export {
   ActoviqBuddyApi,
   createActoviqBuddyApi,
