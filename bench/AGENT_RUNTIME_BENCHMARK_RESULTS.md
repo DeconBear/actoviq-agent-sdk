@@ -25,6 +25,42 @@ Bridge (4/5). Official/Bridge complex numbers must be re-run after the quota
 window resets. The runner now prints the agent command's stderr tail on
 failures so provider-side 429/5xx causes are visible directly in the run log.
 
+## Bridge/Official Retest After Quota Reset + Credential Routing Fix (2026-06-10 ~23:30)
+
+Two fixes landed before the retest (commits `fe2f126`, `af99107`):
+
+1. Bridge child env and the official-SDK runner now derive `ANTHROPIC_*`
+   variables from `~/.actoviq/settings.json` (`mapActoviqEnvToAnthropicEnv`),
+   so neither runtime falls back to `~/.claude` credential sources. Actoviq
+   settings are now the single configuration source for all three runtimes.
+2. The official runner preserves partial progress and the error event when the
+   SDK stream throws, and a missing turn budget now means unlimited turns for
+   all three runners alike.
+
+Retest (single trial per case, quota restored):
+
+| Suite | Clean SDK | Bridge SDK | Official Claude SDK |
+| --- | --- | --- | --- |
+| complex (9 cases) | 9/9, avg 0.985 | **9/9, avg 0.996** | **9/9, avg 0.964** |
+| long (5 cases) | **5/5, avg 0.975** | 4/5, avg 0.838 | 4/5, avg 0.840 |
+
+Reports: `bench/reports/bridge-retest-{long,complex}`,
+`bench/reports/official-retest-{long,complex}`; Clean numbers are from the
+same-evening parity phases (pre-quota, valid).
+
+Observations:
+
+- Pass rates are now effectively at parity on the complex suite (9/9 for all
+  three). On the long suite Clean SDK is the only 5/5 runtime; Bridge and
+  official both failed `release-train-reconciliation` on the same hidden
+  `blocked items: 0` literal that Clean missed in its own first validation run
+  — a hard instruction-following case, not a grader artifact.
+- Delegation gap persists: official used subagents heavily
+  (multi-file-regression 11, parallel-audit 5); Bridge/Clean mostly 0.
+- Harness gap: trials killed at `budget.maxSeconds` (two ~180s official/bridge
+  trials) pass graders but lose metrics (`tools=-`); metrics should be flushed
+  periodically so budget kills keep partial metrics.
+
 ## Long Suite — Clean SDK Validation (2026-06-10)
 
 First real Clean SDK run over the five `bench/cases/long/` cases on branch
