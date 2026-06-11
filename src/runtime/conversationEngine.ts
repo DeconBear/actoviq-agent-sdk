@@ -121,6 +121,7 @@ export async function executeConversation(
   let maxTokensRecoveryCount = 0;
   let modelFallbackUsed = false;
   let iterationsSinceTodoWrite = 0;
+  let streamInterruptionRetryIteration = 0;
   let streamInterruptionRetries = 0;
 
   while (true) {
@@ -238,6 +239,10 @@ export async function executeConversation(
     } catch (error) {
       // Mid-stream interruptions (socket loss after response headers) never hit
       // the provider-level retry loop; retry the whole iteration here.
+      if (streamInterruptionRetryIteration !== iteration) {
+        streamInterruptionRetryIteration = iteration;
+        streamInterruptionRetries = 0;
+      }
       if (
         isRetryableStreamInterruption(error) &&
         streamInterruptionRetries < MAX_STREAM_INTERRUPTION_RETRIES
@@ -282,6 +287,8 @@ export async function executeConversation(
       }
       throw error;
     }
+    streamInterruptionRetryIteration = 0;
+    streamInterruptionRetries = 0;
 
     if (!options.streaming) {
       const text = extractTextFromContent(message.content);

@@ -371,6 +371,23 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
         },
       });
       return;
+    case 'request.interrupted':
+      await appendTrajectoryEvent(trajectoryFile, {
+        runtime: 'clean-sdk',
+        caseId,
+        actor: { type: 'main-agent' },
+        event: {
+          type: 'request_interrupted',
+          name: `iteration-${event.iteration}`,
+          outputSummary: summarizeText(event.reason),
+          data: {
+            iteration: event.iteration,
+            retry: event.retry,
+            maxRetries: event.maxRetries,
+          },
+        },
+      });
+      return;
     case 'response.completed':
       state.result = event.result;
       await appendTrajectoryEvent(trajectoryFile, {

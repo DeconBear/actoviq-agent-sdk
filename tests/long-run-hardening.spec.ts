@@ -378,6 +378,75 @@ describe('stream interruption recovery', () => {
       await sdk.close();
     }
   });
+
+  it('resets stream interruption retry counts after a successful iteration', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let streamCallCount = 0;
+    const makeFailingStream = (): ModelStreamHandle => ({
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    });
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        streamCallCount += 1;
+        if (streamCallCount === 1 || streamCallCount === 3) {
+          return makeFailingStream();
+        }
+        if (streamCallCount === 2) {
+          return new MockStream(
+            [],
+            makeMessage(
+              [{ type: 'tool_use', id: 'toolu_step', name: 'step_tool', input: {} }],
+              'tool_use',
+            ),
+          );
+        }
+        return new MockStream([], makeMessage([{ type: 'text', text: 'Recovered twice.' }]));
+      },
+    };
+    const stepTool = tool(
+      {
+        name: 'step_tool',
+        description: 'Advances the test run to a second model iteration.',
+        inputSchema: z.strictObject({}),
+      },
+      async () => 'step complete',
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const stream = sdk.stream('Recover across two streamed iterations.', { tools: [stepTool] });
+      const interruptions: Array<{ iteration: number; retry: number }> = [];
+      for await (const event of stream) {
+        if (event.type === 'request.interrupted') {
+          interruptions.push({ iteration: event.iteration, retry: event.retry });
+        }
+      }
+      const result = await stream.result;
+
+      expect(streamCallCount).toBe(4);
+      expect(result.text).toBe('Recovered twice.');
+      expect(interruptions).toEqual([
+        { iteration: 1, retry: 1 },
+        { iteration: 2, retry: 1 },
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 
 describe('max_tokens truncation recovery', () => {

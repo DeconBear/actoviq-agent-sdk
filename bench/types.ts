@@ -144,6 +144,7 @@ export type BenchmarkTrajectoryEventType =
   | 'command_verification'
   | 'grader_result'
   | 'compact'
+  | 'request_interrupted'
   | 'error';
 
 export interface BenchmarkTrajectoryEvent {
