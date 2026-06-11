@@ -109,9 +109,35 @@ npx actoviq-react [工作目录]
 - Tab 补全命令，↑↓ 浏览历史
 - Ctrl+C 一次中止当前请求，连按两次退出
 
-**注意：** `actoviq-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试，不适合作为完整的终端 UI 使用。
+**注意：** `actoviq-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试。完整终端 UI 请使用 `actoviq-tui`。
 
-## 5. 直接运行仓库示例
+## 5. 终端 UI（TUI）
+
+包内还包含完整的 Clean SDK 终端 UI：
+
+```bash
+npx actoviq-tui [工作目录] [选项]
+
+# 选项
+#   --config <path>            加载指定的 Actoviq settings JSON 配置
+#   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions（默认）
+#   --model <model>            覆盖配置中的模型
+```
+
+`actoviq-tui` 借鉴 Claude Code 的默认终端交互模式，但实现完全属于 Clean SDK：对话记录流式写入终端原生滚动缓冲区，底部可重绘区域承载状态行、Claude 风格 prompt bar、斜杠命令菜单和权限确认。
+
+适合需要更完整终端体验的场景：
+
+- 运行时状态：spinner、耗时、工具次数、上下文规模估计和当前工具。
+- 多行编辑：行尾输入 `\` 再按 Enter，或使用 Ctrl+J；支持历史浏览和内联光标渲染。
+- 斜杠命令菜单：`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`。
+- 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
+- 使用 `--permission-mode default` 时启用交互式权限确认。
+- Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
+
+`actoviq-react` 和 `actoviq-tui` 使用同样的 Clean SDK 默认值：`~/.actoviq/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。
+
+## 6. 直接运行仓库示例
 
 ```bash
 npm run example:actoviq-quickstart
@@ -121,7 +147,7 @@ npm run example:actoviq-quickstart
 
 - [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
 
-## 5. 一个最小可用的流式聊天机器人
+## 7. 一个最小可用的流式聊天机器人
 
 下面这段代码就是一个可以直接拿来改的最小聊天机器人。你只要把自己的 JSON 配置路径接上，就可以在终端里持续聊天，并且保留同一个 session 的上下文。
 
@@ -165,7 +191,7 @@ try {
 }
 ```
 
-## 6. 下一步
+## 8. 下一步
 
 继续阅读下一章，了解流式输出、会话和工具使用。
 

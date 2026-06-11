@@ -831,6 +831,13 @@ export interface ActoviqLoopCompactContext {
   /** Circuit-breaker key; use the runId so one bad run cannot poison others. */
   runKey: string;
   signal?: AbortSignal;
+  /**
+   * Reactive mode: the provider already rejected the request as too long, so
+   * token estimates are known to undercount. Skips threshold checks and goes
+   * all the way to summary compaction even when microcompact alone would
+   * appear sufficient. Only `compactConfig.enabled === false` still disables.
+   */
+  force?: boolean;
 }
 
 export interface ActoviqLoopCompactOutcome {
@@ -889,12 +896,12 @@ export async function compactActoviqConversationIfNeeded(
     clearedToolResults: 0,
   };
 
-  if (!config.enabled || config.loopAutoCompactEnabled === false) {
+  if (!config.enabled || (!context.force && config.loopAutoCompactEnabled === false)) {
     return unchanged;
   }
 
   const threshold = getActoviqLoopAutoCompactThreshold(config, context.maxTokens);
-  if (tokenEstimateBefore < threshold) {
+  if (!context.force && tokenEstimateBefore < threshold) {
     return unchanged;
   }
 
@@ -908,7 +915,7 @@ export async function compactActoviqConversationIfNeeded(
   // conversation back under the threshold without losing turn structure.
   const microcompacted = compactToolResultContent(messages, config);
   const afterMicrocompactTokens = estimateActoviqConversationTokens(microcompacted.messages);
-  if (afterMicrocompactTokens < threshold) {
+  if (!context.force && afterMicrocompactTokens < threshold) {
     return {
       messages: microcompacted.messages,
       compacted: microcompacted.clearedCount > 0,
@@ -922,7 +929,13 @@ export async function compactActoviqConversationIfNeeded(
 
   // Stage 2: summarize older turns, preserving the recent tail and any
   // tool_use blocks referenced by preserved tool_results.
-  const preserveRecentMessages = Math.max(config.preserveRecentMessages, 1);
+  let preserveRecentMessages = Math.max(config.preserveRecentMessages, 1);
+  if (context.force && microcompacted.messages.length <= preserveRecentMessages) {
+    // Reactive recovery on a short conversation: the default preserve window
+    // would leave nothing to summarize. Preserve only the last message so the
+    // forced compact can still shrink the request.
+    preserveRecentMessages = 1;
+  }
   let preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
   preserveStart = extendPreserveToIncludeReferencedToolUses(
     microcompacted.messages,
@@ -1000,7 +1013,7 @@ export async function compactActoviqConversationIfNeeded(
   }
 
   const nextMessages = [
-    buildPostCompactSummaryMessage(summary, 'auto'),
+    buildPostCompactSummaryMessage(summary, context.force ? 'reactive' : 'auto'),
     ...messagesToKeep,
   ];
   return {
@@ -1013,6 +1026,62 @@ export async function compactActoviqConversationIfNeeded(
     clearedToolResults: microcompacted.clearedCount,
     summary,
   };
+}
+
+/**
+ * Record in-loop conversation compactions (auto or reactive) on a persisted
+ * session so compact state and boundary history stay coherent with the
+ * summary boundaries that now live in the session messages.
+ */
+export function recordActoviqLoopCompactionsOnSession(
+  session: StoredSession,
+  compactions: readonly import('../types.js').AgentLoopCompactionRecord[],
+): void {
+  for (const compaction of compactions) {
+    const persisted = getPersistedActoviqCompactState(session.metadata);
+    const latestBoundary = getLatestPersistedCompactBoundary(session);
+    const timestamp = nowIso();
+    if (compaction.messagesSummarized > 0) {
+      const continuationDepth = getPersistedCompactContinuationDepth(session) + 1;
+      session.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
+        compactCount: persisted.compactCount + 1,
+        microcompactCount: persisted.microcompactCount + compaction.clearedToolResults,
+        lastCompactedAt: timestamp,
+        lastSummaryMessage: compaction.summary ?? persisted.lastSummaryMessage,
+        lastTrigger: compaction.trigger,
+      });
+      appendPersistedCompactHistory(session, {
+        kind: 'compact',
+        timestamp,
+        trigger: compaction.trigger,
+        logicalParentUuid: latestBoundary?.uuid,
+        metadata: {
+          trigger: compaction.trigger,
+          preTokens: compaction.tokenEstimateBefore,
+          messagesSummarized: compaction.messagesSummarized,
+          preservedMessages: compaction.preservedMessages,
+          continuationDepth,
+          userContext: compaction.summary,
+        },
+      });
+    } else if (compaction.clearedToolResults > 0) {
+      session.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
+        ...persisted,
+        microcompactCount: persisted.microcompactCount + compaction.clearedToolResults,
+      });
+      appendPersistedCompactHistory(session, {
+        kind: 'microcompact',
+        timestamp,
+        trigger: compaction.trigger,
+        logicalParentUuid: latestBoundary?.uuid,
+        metadata: {
+          trigger: compaction.trigger,
+          preTokens: compaction.tokenEstimateBefore,
+          tokensSaved: compaction.tokenEstimateBefore - compaction.tokenEstimateAfter,
+        },
+      });
+    }
+  }
 }
 
 export function isActoviqPromptTooLongError(error: unknown): boolean {

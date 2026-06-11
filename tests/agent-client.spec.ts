@@ -672,12 +672,14 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
-  it('reactively compacts and retries when the provider rejects an oversized prompt', async () => {
+  it('reactively compacts in-loop and retries when the provider rejects an oversized prompt', async () => {
     const sessionDirectory = await createSessionDirectory();
     let nonCompactCalls = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        const internalTask = (request.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task;
+        if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
               type: 'text',
@@ -725,17 +727,19 @@ describe('ActoviqAgentClient', () => {
       });
 
       expect(result.text).toContain('Recovered after reactive compact.');
-      expect(result.reactiveCompact).toMatchObject({
-        compacted: true,
-        trigger: 'reactive',
-      });
+      // The in-loop reactive compact handles the rejection without restarting
+      // the run, so the session-level wrapper never fires.
+      expect(result.reactiveCompact).toBeUndefined();
+      expect(result.loopCompactions).toHaveLength(1);
+      expect(result.loopCompactions?.[0]).toMatchObject({ trigger: 'reactive' });
       expect(
         modelApi.createCalls.filter(
           request =>
             (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
-            'compact',
+            'loop_compact',
         ),
       ).toHaveLength(1);
+      // The loop compaction is still recorded in persisted session state.
       expect(compactState.compactCount).toBe(1);
       expect(compactState.summaryMessage).toContain('Reactive compact summary');
       expect(compactState.pendingPostCompaction).toBe(false);
@@ -752,12 +756,14 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
-  it('retries reactive compaction across repeated prompt-too-long failures', async () => {
+  it('falls back to session-level reactive compaction when in-loop recovery is exhausted', async () => {
     const sessionDirectory = await createSessionDirectory();
     let nonCompactCalls = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        const internalTask = (request.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task;
+        if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
               type: 'text',
@@ -810,6 +816,10 @@ describe('ActoviqAgentClient', () => {
       });
 
       expect(result.text).toContain('Recovered after repeated reactive compact.');
+      // First prompt-too-long: in-loop reactive compact retries and fails
+      // again (single-shot guard). The error then propagates to the
+      // session-level wrapper, which compacts the session snapshot and
+      // restarts the run.
       expect(result.reactiveCompact).toMatchObject({
         compacted: true,
         trigger: 'reactive',
@@ -818,14 +828,18 @@ describe('ActoviqAgentClient', () => {
         modelApi.createCalls.filter(
           request =>
             (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            'loop_compact',
+        ),
+      ).toHaveLength(1);
+      expect(
+        modelApi.createCalls.filter(
+          request =>
+            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
             'compact',
         ),
-      ).toHaveLength(2);
-      expect(compactState.compactCount).toBe(2);
-      expect(compactState.latestBoundary?.logicalParentUuid).toBe(
-        compactState.boundaries?.[0]?.uuid,
-      );
-      expect(compactState.latestBoundarySummary).toContain('continuationDepth=2');
+      ).toHaveLength(1);
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.latestBoundarySummary).toContain('continuationDepth=1');
     } finally {
       await sdk.close();
     }

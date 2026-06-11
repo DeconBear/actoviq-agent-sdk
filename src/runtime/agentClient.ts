@@ -99,6 +99,7 @@ import {
   getPersistedActoviqCompactHistory,
   getPersistedActoviqCompactState,
   isActoviqPromptTooLongError,
+  recordActoviqLoopCompactionsOnSession,
   trackRecentFile,
   trackRecentSkill,
 } from './actoviqCompact.js';
@@ -1700,6 +1701,7 @@ export class ActoviqAgentClient {
       approver: options.approver ?? this.defaultApprover,
       canUseTool: options.canUseTool,
       hooks: augmentations?.hooks,
+      drainQueuedInputs: options.drainQueuedInputs,
       streaming,
       emit,
       skipRunStartedEvent,
@@ -2540,6 +2542,9 @@ export class ActoviqAgentClient {
       ...(options.metadata ?? {}),
       ...(hookOutcome.sessionMetadata ?? {}),
     };
+    if (result.loopCompactions?.length) {
+      recordActoviqLoopCompactionsOnSession(next, result.loopCompactions);
+    }
     const runtimeState = this.getSessionMemoryRuntimeState(next);
     if (runtimeState.pendingPostCompaction) {
       runtimeState.pendingPostCompaction = false;

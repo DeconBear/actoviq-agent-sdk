@@ -16,6 +16,7 @@ import {
 } from '../tools/todo/TodoWriteTool.js';
 import type {
   AgentEvent,
+  AgentLoopCompactionRecord,
   AgentMcpServerDefinition,
   AgentRequestSummary,
   AgentRunOptions,
@@ -34,7 +35,10 @@ import type {
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
-import { compactActoviqConversationIfNeeded } from './actoviqCompact.js';
+import {
+  compactActoviqConversationIfNeeded,
+  isActoviqPromptTooLongError,
+} from './actoviqCompact.js';
 import {
   getActoviqApiContextManagement,
   prepareActoviqProviderRequestMessages,
@@ -73,6 +77,7 @@ export interface ExecuteConversationOptions {
   approver?: AgentRunOptions['approver'];
   canUseTool?: AgentRunOptions['canUseTool'];
   hooks?: ActoviqHooks;
+  drainQueuedInputs?: () => string[];
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
   skipRunStartedEvent?: boolean;
@@ -112,6 +117,7 @@ export async function executeConversation(
   const requestSummaries: AgentRequestSummary[] = [];
   const toolCalls: AgentToolCallRecord[] = [];
   const permissionDecisions: ActoviqPermissionDecision[] = [];
+  const loopCompactions: AgentLoopCompactionRecord[] = [];
 
   let iteration = 0;
   let finalMessage: AgentRunResult['message'] | undefined;
@@ -123,6 +129,7 @@ export async function executeConversation(
   let iterationsSinceTodoWrite = 0;
   let streamInterruptionRetryIteration = 0;
   let streamInterruptionRetries = 0;
+  let reactiveCompactAttempted = false;
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -141,10 +148,21 @@ export async function executeConversation(
     });
     if (loopCompact.compacted) {
       conversation.splice(0, conversation.length, ...loopCompact.messages);
+      loopCompactions.push({
+        trigger: 'auto',
+        iteration,
+        tokenEstimateBefore: loopCompact.tokenEstimateBefore,
+        tokenEstimateAfter: loopCompact.tokenEstimateAfter,
+        messagesSummarized: loopCompact.messagesSummarized,
+        preservedMessages: loopCompact.preservedMessages,
+        clearedToolResults: loopCompact.clearedToolResults,
+        summary: loopCompact.summary,
+      });
       options.emit?.({
         type: 'conversation.compacted',
         runId: options.runId,
         iteration,
+        trigger: 'auto',
         tokenEstimateBefore: loopCompact.tokenEstimateBefore,
         tokenEstimateAfter: loopCompact.tokenEstimateAfter,
         messagesSummarized: loopCompact.messagesSummarized,
@@ -261,6 +279,51 @@ export async function executeConversation(
         iteration -= 1;
         continue;
       }
+      // Reactive compact: the provider rejected the request as too long even
+      // though proactive estimates approved it (estimate drift, smaller real
+      // context window, or oversized preserved tail). Force-compact the
+      // in-flight conversation and retry this iteration, preserving mid-run
+      // progress. One attempt per successful-response window, mirroring
+      // Claude Code's withheld-prompt-too-long reactive compact.
+      if (isActoviqPromptTooLongError(error) && !reactiveCompactAttempted) {
+        reactiveCompactAttempted = true;
+        const reactiveOutcome = await compactActoviqConversationIfNeeded(conversation, {
+          model,
+          modelApi: options.modelApi,
+          compactConfig: options.config.compact,
+          maxTokens: options.maxTokens ?? options.config.maxTokens,
+          runKey: options.runId,
+          signal: options.signal,
+          force: true,
+        });
+        if (reactiveOutcome.compacted) {
+          conversation.splice(0, conversation.length, ...reactiveOutcome.messages);
+          loopCompactions.push({
+            trigger: 'reactive',
+            iteration,
+            tokenEstimateBefore: reactiveOutcome.tokenEstimateBefore,
+            tokenEstimateAfter: reactiveOutcome.tokenEstimateAfter,
+            messagesSummarized: reactiveOutcome.messagesSummarized,
+            preservedMessages: reactiveOutcome.preservedMessages,
+            clearedToolResults: reactiveOutcome.clearedToolResults,
+            summary: reactiveOutcome.summary,
+          });
+          options.emit?.({
+            type: 'conversation.compacted',
+            runId: options.runId,
+            iteration,
+            trigger: 'reactive',
+            tokenEstimateBefore: reactiveOutcome.tokenEstimateBefore,
+            tokenEstimateAfter: reactiveOutcome.tokenEstimateAfter,
+            messagesSummarized: reactiveOutcome.messagesSummarized,
+            preservedMessages: reactiveOutcome.preservedMessages,
+            clearedToolResults: reactiveOutcome.clearedToolResults,
+            timestamp: nowIso(),
+          });
+          iteration -= 1;
+          continue;
+        }
+      }
       // Fallback model: after transport-level retries are exhausted, switch to
       // the configured fallback model once and retry this iteration.
       const fallbackModel = options.config.fallbackModel;
@@ -289,6 +352,7 @@ export async function executeConversation(
     }
     streamInterruptionRetryIteration = 0;
     streamInterruptionRetries = 0;
+    reactiveCompactAttempted = false;
 
     if (!options.streaming) {
       const text = extractTextFromContent(message.content);
@@ -449,6 +513,7 @@ export async function executeConversation(
         requests: requestSummaries,
         toolCalls,
         permissionDecisions,
+        ...(loopCompactions.length > 0 ? { loopCompactions } : {}),
         startedAt,
         completedAt,
       };
@@ -483,6 +548,7 @@ export async function executeConversation(
           requests: requestSummaries,
           toolCalls,
           permissionDecisions,
+          ...(loopCompactions.length > 0 ? { loopCompactions } : {}),
           startedAt,
           completedAt,
         };
@@ -719,12 +785,23 @@ export async function executeConversation(
       }
     }
 
+    // Mid-run steering: user messages queued while tools were running ride in
+    // the same user message as the tool results, so the model sees them on
+    // the very next request (mirrors Claude Code's queued-command attachments).
+    const queuedInputs = options.drainQueuedInputs?.() ?? [];
+
     // Always push tool results before any early return so the conversation
     // never ends with dangling tool_use blocks (which would make a persisted
     // session unusable: providers reject unpaired tool_use ids on resume).
     conversation.push({
       role: 'user',
-      content: toolResults,
+      content: [
+        ...toolResults,
+        ...queuedInputs.map((text) => ({
+          type: 'text' as const,
+          text: `[User message sent while you were working — factor it into your current task]\n${text}`,
+        })),
+      ],
     });
     toolResults = [];
 
@@ -745,6 +822,7 @@ export async function executeConversation(
           requests: requestSummaries,
           toolCalls,
           permissionDecisions,
+          ...(loopCompactions.length > 0 ? { loopCompactions } : {}),
           startedAt,
           completedAt,
         };

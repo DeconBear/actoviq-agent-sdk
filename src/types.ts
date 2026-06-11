@@ -771,6 +771,12 @@ export interface AgentRunOptions {
   approver?: ActoviqToolApprover;
   canUseTool?: ActoviqCanUseTool;
   signal?: AbortSignal;
+  /**
+   * Mid-run steering: called between tool iterations to collect user messages
+   * queued while the agent was working. Drained texts are appended to the
+   * next tool-result user message so the model sees them on its next request.
+   */
+  drainQueuedInputs?: () => string[];
 }
 
 export interface SessionCreateOptions {
@@ -848,7 +854,20 @@ export interface AgentRunResult {
   delegatedAgents?: ActoviqDelegatedAgentRecord[];
   invokedSkills?: ActoviqInvokedSkillRecord[];
   reactiveCompact?: ActoviqSessionCompactResult;
+  /** Mid-run conversation compactions performed inside the tool loop. */
+  loopCompactions?: AgentLoopCompactionRecord[];
   permissionDecisions?: ActoviqPermissionDecision[];
+}
+
+export interface AgentLoopCompactionRecord {
+  trigger: 'auto' | 'reactive';
+  iteration: number;
+  tokenEstimateBefore: number;
+  tokenEstimateAfter: number;
+  messagesSummarized: number;
+  preservedMessages: number;
+  clearedToolResults: number;
+  summary?: string;
 }
 
 export interface ActoviqDreamConfig {
@@ -1199,6 +1218,8 @@ export type AgentEvent =
       type: 'conversation.compacted';
       runId: string;
       iteration: number;
+      /** 'auto' = proactive threshold compact; 'reactive' = provider rejected the request as too long. */
+      trigger?: 'auto' | 'reactive';
       tokenEstimateBefore: number;
       tokenEstimateAfter: number;
       messagesSummarized: number;

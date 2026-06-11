@@ -186,6 +186,7 @@ Reports are written to `bench/reports/latest.json` and `bench/reports/latest.md`
 Runtime-specific scripts write to `bench/reports/clean-sdk/`, `bench/reports/bridge-sdk/`, `bench/reports/official-claude-sdk/`, and `bench/reports/parity/`. Each trial also archives a JSONL trajectory under the selected report directory's `trajectories/` folder when trajectory events are available.
 
 For the advanced Claude Code-like capability benchmark plan, see `bench/AGENT_CAPABILITY_BENCHMARK_DESIGN.md`.
+For contributor-facing benchmark harness rules, see `bench/BENCHMARK_HARNESS_GUIDELINES.md`.
 For the benchmark leakage and validity audit, see `bench/BENCHMARK_LEAKAGE_AUDIT.md`.
 For the checked-in three-runtime complex benchmark result summary, see `bench/AGENT_RUNTIME_BENCHMARK_RESULTS.md`.
 For external benchmark manifest conversion, see `bench/adapters/README.md`.
