@@ -4,6 +4,7 @@ coverage
 *.tsbuildinfo
 .DS_Store
 .codegraph/
+.deepseek/
 .actoviq-artifacts/
 *.tgz
 examples/*.local.json
