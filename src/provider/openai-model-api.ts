@@ -409,6 +409,10 @@ export class OpenaiModelApi implements ModelApi {
       tools: providerToolsToOpenai(request.tools),
       tool_choice: mapToolChoice(request.tool_choice),
       stop: request.stop_sequences,
+      reasoning_effort:
+        request.effort === 'max'
+          ? 'high'
+          : request.effort,
     };
 
     if (tc?.disable_parallel_tool_use !== undefined) {

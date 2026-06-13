@@ -16,15 +16,28 @@ import {
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
 } from '../index.js';
+import {
+  persistActoviqSettingsStore,
+  resolveActoviqSettingsStore,
+} from '../config/actoviqSettingsStore.js';
 import type {
+  ActoviqEffort,
+  ActoviqRunEffort,
   ActoviqCanUseTool,
   ActoviqPermissionMode,
   ActoviqToolApprover,
   AgentEvent,
 } from '../types.js';
+import { isRecord } from '../runtime/helpers.js';
 import { A, stringWidth, truncateToWidth } from './ansi.js';
 import { InputEditor } from './editor.js';
+import { discoverActoviqPlugins } from './pluginCatalog.js';
 import { TuiScreen } from './screen.js';
+import {
+  filterTuiSelectionItems,
+  moveTuiSelection,
+  type TuiSelectionItem,
+} from './selection.js';
 import {
   StreamFlusher,
   formatBanner,
@@ -43,6 +56,8 @@ const CTRL_C_EXIT_WINDOW_MS = 600;
 const DYNAMIC_FRAME_MS = 33;
 const MENU_MAX_ROWS = 12;
 const PROMPT_GLYPH = '❯';
+const SESSION_EFFORT_KEY = '__actoviqEffort';
+const EFFORT_LEVELS: readonly ActoviqEffort[] = ['low', 'medium', 'high', 'max'];
 
 /** Core tools that mutate state and require approval in 'default' mode. */
 const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
@@ -59,12 +74,17 @@ export const TUI_SLASH_COMMANDS: Record<string, string> = {
   clear: 'Clear the screen',
   compact: 'Compact the current session',
   memory: 'Show memory/compact state',
-  model: 'Show or set the session model',
+  model: 'Select a model or configure its provider',
+  effort: 'Select the reasoning effort',
   permissions: 'Show or set the permission mode',
   sessions: 'List stored sessions',
   resume: 'Resume a stored session',
   tools: 'List available tools',
-  dream: 'Trigger memory consolidation',
+  skills: 'Browse available skills',
+  agents: 'Browse available subagents',
+  mcp: 'Inspect MCP servers and tools',
+  plugins: 'Browse discovered Clean plugins',
+  dream: 'Inspect or run memory consolidation',
   exit: 'Quit',
 };
 
@@ -90,6 +110,25 @@ interface PermissionDialogState {
   summary: string;
   selected: number; // 0 = yes, 1 = always, 2 = no
   resolve: (outcome: 'allow' | 'always' | 'deny') => void;
+}
+
+interface SelectionDialogState {
+  title: string;
+  subtitle?: string;
+  items: TuiSelectionItem[];
+  selected: number;
+  query: string;
+  searchable: boolean;
+  resolve: (itemId: string | undefined) => void;
+}
+
+interface TextInputDialogState {
+  title: string;
+  label: string;
+  description?: string;
+  editor: InputEditor;
+  secret: boolean;
+  resolve: (value: string | undefined) => void;
 }
 
 interface Key {
@@ -146,13 +185,15 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   const tools = createActoviqCoreTools({ cwd: workDir });
-  const sdk = await createAgentSdk({
-    workDir,
-    tools,
-    permissionMode,
-    ...(options.model ? { model: options.model } : {}),
-  });
-  const toolMetadata = await sdk.listToolMetadata();
+  const createCleanSdk = () =>
+    createAgentSdk({
+      workDir,
+      tools,
+      permissionMode,
+      ...(options.model ? { model: options.model } : {}),
+    });
+  let sdk = await createCleanSdk();
+  let toolMetadata = await sdk.listToolMetadata();
   let session = options.resumeSessionId
     ? await sdk.resumeSession(options.resumeSessionId, {
         model: options.model,
@@ -178,6 +219,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let shuttingDown = false;
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
+  let selectionDialog: SelectionDialogState | null = null;
+  let textInputDialog: TextInputDialogState | null = null;
   let menuSelected = 0;
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | null = null;
@@ -192,6 +235,76 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   const queuedInputs: string[] = [];
   const currentPermissionMode = (): ActoviqPermissionMode =>
     session.permissionContext.mode ?? permissionMode;
+  const currentEffort = (): ActoviqRunEffort | undefined => {
+    const stored = session.metadata[SESSION_EFFORT_KEY];
+    if (stored === 'auto') return 'auto';
+    return isActoviqEffort(stored) ? stored : sdk.config.effort;
+  };
+
+  function isActoviqEffort(value: unknown): value is ActoviqEffort {
+    return typeof value === 'string' && EFFORT_LEVELS.includes(value as ActoviqEffort);
+  }
+
+  function selectItem(options: {
+    title: string;
+    subtitle?: string;
+    items: TuiSelectionItem[];
+    searchable?: boolean;
+  }): Promise<string | undefined> {
+    if (options.items.length === 0) {
+      return Promise.resolve(undefined);
+    }
+    return new Promise(resolve => {
+      selectionDialog = {
+        title: options.title,
+        subtitle: options.subtitle,
+        items: options.items,
+        selected: 0,
+        query: '',
+        searchable: options.searchable !== false,
+        resolve,
+      };
+      renderDynamic();
+    });
+  }
+
+  function promptText(options: {
+    title: string;
+    label: string;
+    description?: string;
+    initial?: string;
+    secret?: boolean;
+  }): Promise<string | undefined> {
+    return new Promise(resolve => {
+      const inputEditor = new InputEditor();
+      if (options.initial) inputEditor.setText(options.initial);
+      textInputDialog = {
+        title: options.title,
+        label: options.label,
+        description: options.description,
+        editor: inputEditor,
+        secret: options.secret === true,
+        resolve,
+      };
+      renderDynamic();
+    });
+  }
+
+  async function reloadCleanSdk(): Promise<void> {
+    const previousSdk = sdk;
+    const nextSdk = await createCleanSdk();
+    try {
+      const nextSession = await nextSdk.resumeSession(session.id);
+      const nextToolMetadata = await nextSdk.listToolMetadata();
+      sdk = nextSdk;
+      session = nextSession;
+      toolMetadata = nextToolMetadata;
+    } catch (error) {
+      await nextSdk.close().catch(() => undefined);
+      throw error;
+    }
+    await previousSdk.close().catch(() => undefined);
+  }
 
   const approver: ActoviqToolApprover = async (context) => {
     const outcome = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
@@ -344,6 +457,80 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return lines;
   }
 
+  function buildSelectionDialog(): string[] {
+    if (!selectionDialog) return [];
+    const filtered = filterTuiSelectionItems(
+      selectionDialog.items,
+      selectionDialog.query,
+    );
+    if (selectionDialog.selected >= filtered.length) {
+      selectionDialog.selected = Math.max(filtered.length - 1, 0);
+    }
+    const lines = [
+      boxTop(A.cyan),
+      boxRow(`${A.bold}${selectionDialog.title}${A.reset}`, A.cyan),
+    ];
+    if (selectionDialog.subtitle) {
+      lines.push(boxRow(`${A.dim}${selectionDialog.subtitle}${A.reset}`, A.cyan));
+    }
+    if (selectionDialog.searchable) {
+      const query = selectionDialog.query || 'type to filter';
+      lines.push(
+        boxRow(
+          `${A.magenta}›${A.reset} ${selectionDialog.query ? query : `${A.dim}${query}${A.reset}`}`,
+          A.cyan,
+        ),
+      );
+    }
+    if (filtered.length === 0) {
+      lines.push(boxRow(`${A.dim}No matching items${A.reset}`, A.cyan));
+    } else {
+      const visibleRows = Math.min(10, Math.max((process.stdout.rows ?? 24) - 10, 4));
+      const start = Math.max(
+        0,
+        Math.min(
+          selectionDialog.selected - Math.floor(visibleRows / 2),
+          filtered.length - visibleRows,
+        ),
+      );
+      for (let index = start; index < Math.min(start + visibleRows, filtered.length); index += 1) {
+        const item = filtered[index]!;
+        const description = item.description ? ` · ${item.description}` : '';
+        const label = truncateToWidth(`${item.label}${description}`, Math.max(screen.width - 8, 8));
+        lines.push(
+          boxRow(
+            index === selectionDialog.selected
+              ? `${A.inverse} ${label} ${A.reset}`
+              : `  ${label}`,
+            A.cyan,
+          ),
+        );
+      }
+    }
+    lines.push(boxBottom(A.cyan));
+    lines.push(`${A.dim}  ↑↓ select · enter confirm · esc cancel${selectionDialog.searchable ? ' · type to filter' : ''}${A.reset}`);
+    return lines;
+  }
+
+  function buildTextInputDialog(): string[] {
+    if (!textInputDialog) return [];
+    const value = textInputDialog.secret
+      ? '•'.repeat(textInputDialog.editor.text.length)
+      : textInputDialog.editor.text;
+    const displayed = withCaret(value, textInputDialog.editor.cursor);
+    const lines = [
+      boxTop(A.cyan),
+      boxRow(`${A.bold}${textInputDialog.title}${A.reset}`, A.cyan),
+    ];
+    if (textInputDialog.description) {
+      lines.push(boxRow(`${A.dim}${textInputDialog.description}${A.reset}`, A.cyan));
+    }
+    lines.push(boxRow(`${textInputDialog.label}: ${displayed}`, A.cyan));
+    lines.push(boxBottom(A.cyan));
+    lines.push(`${A.dim}  enter confirm · esc cancel${textInputDialog.secret ? ' · value hidden' : ''}${A.reset}`);
+    return lines;
+  }
+
   function buildStatusLine(): string[] {
     if (!running) return [];
     const elapsed = Math.max(Math.round((Date.now() - runStartedAt) / 1000), 0);
@@ -375,6 +562,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
     if (dialog) {
       lines.push(...buildDialog());
+    } else if (selectionDialog) {
+      lines.push(...buildSelectionDialog());
+    } else if (textInputDialog) {
+      lines.push(...buildTextInputDialog());
     } else {
       lines.push(...buildPromptBar());
       const menu = buildMenu();
@@ -424,6 +615,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         systemPrompt,
         signal: abortCtrl.signal,
         permissionMode: currentPermissionMode(),
+        effort: currentEffort(),
         approver,
         ...(canUseTool ? { canUseTool } : {}),
         drainQueuedInputs: () => {
@@ -554,19 +746,436 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
 
   // ── Slash commands ─────────────────────────────────────────────────
 
+  function commandUsage(name: string): string {
+    const usage: Record<string, string> = {
+      help: '/help',
+      clear: '/clear',
+      compact: '/compact [summary instructions]',
+      memory: '/memory',
+      model: '/model [model|min|medium|max|default|config]',
+      effort: '/effort [low|medium|high|max|auto]',
+      permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
+      sessions: '/sessions',
+      resume: '/resume [session-id]',
+      tools: '/tools',
+      skills: '/skills',
+      agents: '/agents',
+      mcp: '/mcp',
+      plugins: '/plugins',
+      dream: '/dream [run|status]',
+      exit: '/exit',
+    };
+    return usage[name] ?? `/${name}`;
+  }
+
+  async function resumeSession(sessionId: string): Promise<void> {
+    session = await sdk.resumeSession(sessionId);
+    appendStatic([
+      ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
+      '',
+    ]);
+  }
+
+  async function chooseSessionToResume(): Promise<void> {
+    const sessions = (await sdk.sessions.list()).filter(item => item.id !== session.id);
+    if (sessions.length === 0) {
+      appendStatic([...formatInfoLine('no other project sessions to resume'), '']);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'Resume a project session',
+      subtitle: sdk.config.sessionDirectory,
+      items: sessions.map(item => ({
+        id: item.id,
+        label: item.title,
+        description: [
+          item.model,
+          item.status,
+          new Date(item.lastRunAt ?? item.updatedAt).toLocaleString(),
+        ].join(' · '),
+        detail: item.preview,
+      })),
+    });
+    if (selected) await resumeSession(selected);
+  }
+
+  async function chooseModel(): Promise<void> {
+    const items: TuiSelectionItem[] = [
+      {
+        id: 'default',
+        label: 'Configured default',
+        description: sdk.config.model,
+      },
+      ...(['min', 'medium', 'max'] as const)
+        .filter(tier => Boolean(sdk.config.modelTiers[tier]))
+        .map(tier => ({
+          id: `tier:${tier}`,
+          label: tier,
+          description: sdk.config.modelTiers[tier],
+        })),
+      {
+        id: 'custom',
+        label: 'Enter a model ID',
+        description: 'Session override',
+      },
+      {
+        id: 'configure',
+        label: 'Configure provider, API key, and models',
+        description: 'Updates the active Actoviq settings file',
+      },
+    ];
+    const selected = await selectItem({
+      title: 'Select model',
+      subtitle: `Current: ${session.model}`,
+      items,
+      searchable: false,
+    });
+    if (!selected) return;
+    if (selected === 'configure') {
+      await configureModelSettings();
+      return;
+    }
+    if (selected === 'custom') {
+      const model = await promptText({
+        title: 'Custom model',
+        label: 'Model ID',
+        initial: session.model,
+      });
+      if (!model?.trim()) return;
+      await session.setModel(model.trim());
+    } else if (selected === 'default') {
+      await session.setModel(sdk.config.model);
+    } else {
+      await session.setModel(selected.slice('tier:'.length));
+    }
+    appendStatic([...formatInfoLine(`model set to: ${session.model}`), '']);
+  }
+
+  async function configureModelSettings(): Promise<void> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const raw = structuredClone(store.raw);
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (/^[A-Z0-9_]+$/.test(key) && typeof value === 'string') env[key] = value;
+    }
+    if (isRecord(raw.env)) {
+      for (const [key, value] of Object.entries(raw.env)) {
+        if (typeof value === 'string') env[key] = value;
+      }
+    }
+    raw.env = env;
+    let dirty = false;
+
+    while (true) {
+      const selected = await selectItem({
+        title: 'Model and provider settings',
+        subtitle: store.configPath,
+        searchable: false,
+        items: [
+          {
+            id: 'provider',
+            label: 'Provider',
+            description: env.ACTOVIQ_PROVIDER ?? sdk.config.provider,
+          },
+          {
+            id: 'api-key',
+            label: 'API key',
+            description:
+              env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN ? 'configured' : 'not configured',
+          },
+          {
+            id: 'base-url',
+            label: 'Base URL',
+            description: env.ACTOVIQ_BASE_URL || 'provider default',
+          },
+          ...(['min', 'medium', 'max'] as const).map(tier => ({
+            id: `tier:${tier}`,
+            label: `${tier} model`,
+            description: env[`ACTOVIQ_DEFAULT_${tier.toUpperCase()}_MODEL`] || 'not configured',
+          })),
+          {
+            id: 'save',
+            label: 'Save and apply',
+            description: dirty ? 'Unsaved changes' : 'No changes',
+          },
+          { id: 'cancel', label: 'Cancel' },
+        ],
+      });
+      if (!selected || selected === 'cancel') return;
+      if (selected === 'save') {
+        if (!dirty) {
+          appendStatic([...formatInfoLine('model settings unchanged'), '']);
+          return;
+        }
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        await reloadCleanSdk();
+        appendStatic([
+          ...formatInfoLine(`model settings saved: ${store.configPath}`),
+          '',
+        ]);
+        return;
+      }
+      if (selected === 'provider') {
+        const provider = await selectItem({
+          title: 'Select provider protocol',
+          searchable: false,
+          items: [
+            { id: 'anthropic', label: 'Anthropic-compatible' },
+            { id: 'openai', label: 'OpenAI-compatible' },
+          ],
+        });
+        if (provider) {
+          env.ACTOVIQ_PROVIDER = provider;
+          dirty = true;
+        }
+        continue;
+      }
+      if (selected === 'api-key') {
+        const apiKey = await promptText({
+          title: 'Configure API key',
+          label: 'API key',
+          description: 'The value is masked and will not be written to the transcript.',
+          secret: true,
+        });
+        if (apiKey?.trim()) {
+          env.ACTOVIQ_API_KEY = apiKey.trim();
+          delete env.ACTOVIQ_AUTH_TOKEN;
+          dirty = true;
+        }
+        continue;
+      }
+      if (selected === 'base-url') {
+        const baseUrl = await promptText({
+          title: 'Configure base URL',
+          label: 'Base URL',
+          description: 'Leave empty to use the provider default.',
+          initial: env.ACTOVIQ_BASE_URL ?? '',
+        });
+        if (baseUrl !== undefined) {
+          if (baseUrl.trim()) env.ACTOVIQ_BASE_URL = baseUrl.trim();
+          else delete env.ACTOVIQ_BASE_URL;
+          dirty = true;
+        }
+        continue;
+      }
+      if (selected.startsWith('tier:')) {
+        const tier = selected.slice('tier:'.length).toUpperCase();
+        const key = `ACTOVIQ_DEFAULT_${tier}_MODEL`;
+        const model = await promptText({
+          title: `Configure ${tier.toLowerCase()} model`,
+          label: 'Model ID',
+          initial: env[key] ?? '',
+        });
+        if (model !== undefined) {
+          if (model.trim()) env[key] = model.trim();
+          else delete env[key];
+          dirty = true;
+        }
+      }
+    }
+  }
+
+  async function chooseEffort(): Promise<void> {
+    const selected = await selectItem({
+      title: 'Select reasoning effort',
+      subtitle: `Current: ${currentEffort() ?? 'auto'}`,
+      searchable: false,
+      items: [
+        { id: 'auto', label: 'auto', description: 'Use the runtime default' },
+        { id: 'low', label: 'low', description: 'Fast, direct reasoning' },
+        { id: 'medium', label: 'medium', description: 'Balanced reasoning' },
+        { id: 'high', label: 'high', description: 'Deeper reasoning and verification' },
+        { id: 'max', label: 'max', description: 'Maximum supported reasoning effort' },
+      ],
+    });
+    if (selected) await setEffort(selected);
+  }
+
+  async function setEffort(value: string): Promise<void> {
+    if (value !== 'auto' && !isActoviqEffort(value)) {
+      appendStatic([...formatErrorLine(`unknown effort: ${value}`), '']);
+      return;
+    }
+    await session.mergeMetadata({
+      [SESSION_EFFORT_KEY]: value,
+    });
+    appendStatic([...formatInfoLine(`effort set to: ${currentEffort() ?? 'auto'}`), '']);
+  }
+
+  async function showSkills(): Promise<void> {
+    const skills = sdk.skills.listMetadata();
+    if (skills.length === 0) {
+      appendStatic([...formatInfoLine('no skills are registered'), '']);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'Skills',
+      items: skills.map(skill => ({
+        id: skill.name,
+        label: skill.name,
+        description: `${skill.source} · ${skill.context}`,
+        detail: `${skill.description} ${skill.whenToUse ?? ''}`,
+      })),
+    });
+    const skill = skills.find(item => item.name === selected);
+    if (skill) {
+      appendStatic([
+        `${A.cyan}/${skill.name}${A.reset} ${skill.description}`,
+        `${A.dim}${skill.whenToUse ?? `source: ${skill.source} · context: ${skill.context}`}${A.reset}`,
+        '',
+      ]);
+    }
+  }
+
+  async function showAgents(): Promise<void> {
+    const agents = sdk.agents.list();
+    if (agents.length === 0) {
+      appendStatic([...formatInfoLine('no subagents are registered'), '']);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'Subagents',
+      items: agents.map(agent => ({
+        id: agent.name,
+        label: agent.name,
+        description: agent.model ?? 'inherits model',
+        detail: agent.description,
+      })),
+    });
+    const agent = agents.find(item => item.name === selected);
+    if (agent) {
+      appendStatic([
+        `${A.cyan}${agent.name}${A.reset} ${agent.description}`,
+        `${A.dim}model: ${agent.model ?? 'inherit'} · tools: ${agent.inheritDefaultTools ? 'inherit' : agent.toolNames.join(', ') || 'none'}${A.reset}`,
+        '',
+      ]);
+    }
+  }
+
+  async function showMcp(): Promise<void> {
+    const byServer = new Map<string, typeof toolMetadata>();
+    for (const tool of toolMetadata.filter(item => item.provider === 'mcp')) {
+      const server = tool.server ?? 'mcp';
+      const tools = byServer.get(server) ?? [];
+      tools.push(tool);
+      byServer.set(server, tools);
+    }
+    if (byServer.size === 0) {
+      appendStatic([...formatInfoLine('no MCP servers are active'), '']);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'MCP servers',
+      items: [...byServer.entries()].map(([server, tools]) => ({
+        id: server,
+        label: server,
+        description: `${tools.length} tool${tools.length === 1 ? '' : 's'}`,
+        detail: tools.map(tool => tool.name).join(', '),
+      })),
+    });
+    if (selected) {
+      appendStatic([
+        `${A.cyan}${selected}${A.reset}`,
+        `${A.dim}${(byServer.get(selected) ?? []).map(tool => tool.name).join(', ')}${A.reset}`,
+        '',
+      ]);
+    }
+  }
+
+  async function showPlugins(): Promise<void> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const configuredDirs = Array.isArray(store.raw.pluginDirs)
+      ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
+      : [];
+    const plugins = await discoverActoviqPlugins({
+      workDir,
+      homeDir: store.homeDir,
+      configuredDirs,
+    });
+    if (plugins.length === 0) {
+      appendStatic([
+        ...formatInfoLine('no Clean plugins discovered in user, project, or configured plugin directories'),
+        '',
+      ]);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'Clean plugins',
+      items: plugins.map(plugin => ({
+        id: plugin.path,
+        label: plugin.name,
+        description: [plugin.version, plugin.capabilities.join(', ')].filter(Boolean).join(' · '),
+        detail: `${plugin.description ?? ''} ${plugin.path}`,
+      })),
+    });
+    const plugin = plugins.find(item => item.path === selected);
+    if (plugin) {
+      appendStatic([
+        `${A.cyan}${plugin.name}${A.reset}${plugin.version ? ` ${plugin.version}` : ''}`,
+        `${A.dim}${plugin.path} · ${plugin.capabilities.join(', ') || 'manifest only'}${A.reset}`,
+        '',
+      ]);
+    }
+  }
+
+  async function showDreamMenu(): Promise<void> {
+    const selected = await selectItem({
+      title: 'Dream memory consolidation',
+      searchable: false,
+      items: [
+        { id: 'status', label: 'Show dream state' },
+        { id: 'run', label: 'Run consolidation now' },
+      ],
+    });
+    if (selected) await runDreamCommand(selected);
+  }
+
+  async function runDreamCommand(action: string): Promise<void> {
+    if (action === 'status') {
+      const state = await session.dreamState();
+      appendStatic([`${A.dim}${JSON.stringify(state, null, 2)}${A.reset}`, '']);
+      return;
+    }
+    if (action !== 'run') {
+      appendStatic([...formatErrorLine('usage: /dream [run|status]'), '']);
+      return;
+    }
+    const result = await session.dream({ force: true });
+    appendStatic([
+      ...formatInfoLine(
+        result.reason ?? (result.skipped ? 'dream skipped' : result.success ? 'dream completed' : 'dream failed'),
+      ),
+      '',
+    ]);
+  }
+
   async function runSlashCommand(raw: string): Promise<void> {
     const spaceIndex = raw.indexOf(' ');
     const name = (spaceIndex === -1 ? raw.slice(1) : raw.slice(1, spaceIndex)).toLowerCase();
+    const args = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
     appendStatic(formatUserPrompt(raw));
     commandBusy = true;
     renderDynamic();
     try {
       switch (name) {
         case 'help': {
-          const lines = Object.entries(TUI_SLASH_COMMANDS).map(
-            ([command, description]) => `  ${A.cyan}/${command.padEnd(10)}${A.reset} ${A.dim}${description}${A.reset}`,
-          );
-          appendStatic([...lines, '']);
+          const selected = await selectItem({
+            title: 'Help',
+            items: Object.entries(TUI_SLASH_COMMANDS).map(([command, description]) => ({
+              id: command,
+              label: `/${command}`,
+              description,
+              detail: commandUsage(command),
+            })),
+          });
+          if (selected) {
+            appendStatic([
+              `${A.cyan}${commandUsage(selected)}${A.reset}`,
+              `${A.dim}${TUI_SLASH_COMMANDS[selected]}${A.reset}`,
+              '',
+            ]);
+          }
           return;
         }
         case 'clear':
@@ -578,17 +1187,24 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           await shutdown(0);
           return;
         case 'model': {
-          const requested = raw.slice(spaceIndex + 1).trim();
-          if (spaceIndex === -1 || !requested) {
-            appendStatic([...formatInfoLine(`model: ${session.model}`), '']);
+          if (!args) {
+            await chooseModel();
             return;
           }
-          await session.setModel(requested === 'default' ? sdk.config.model : requested);
+          if (args === 'config') {
+            await configureModelSettings();
+            return;
+          }
+          await session.setModel(args === 'default' ? sdk.config.model : args);
           appendStatic([...formatInfoLine(`model set to: ${session.model}`), '']);
           return;
         }
+        case 'effort':
+          if (!args) await chooseEffort();
+          else await setEffort(args.toLowerCase());
+          return;
         case 'permissions': {
-          const requested = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
+          const requested = args;
           if (!requested) {
             const state = session.permissionContext;
             appendStatic([
@@ -624,16 +1240,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         case 'resume': {
-          const sessionId = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
-          if (!sessionId) {
-            appendStatic([...formatErrorLine('usage: /resume <session-id>'), '']);
-            return;
-          }
-          session = await sdk.resumeSession(sessionId);
-          appendStatic([
-            ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
-            '',
-          ]);
+          if (!args) await chooseSessionToResume();
+          else await resumeSession(args);
           return;
         }
         case 'tools':
@@ -654,7 +1262,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'compact': {
           try {
             const summaryInstructions =
-              spaceIndex === -1 ? undefined : raw.slice(spaceIndex + 1).trim() || undefined;
+              args || undefined;
             const result = await session.compact({ force: true, summaryInstructions });
             if (!result.compacted) {
               appendStatic([
@@ -674,13 +1282,25 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         case 'dream': {
           try {
-            await session.dream({ force: true });
-            appendStatic([`${A.green}✓ dream triggered${A.reset}`, '']);
+            if (!args) await showDreamMenu();
+            else await runDreamCommand(args.toLowerCase());
           } catch (error) {
             appendStatic([...formatErrorLine((error as Error).message), '']);
           }
           return;
         }
+        case 'skills':
+          await showSkills();
+          return;
+        case 'agents':
+          await showAgents();
+          return;
+        case 'mcp':
+          await showMcp();
+          return;
+        case 'plugins':
+          await showPlugins();
+          return;
         default:
           appendStatic([...formatErrorLine(`unknown command: /${name} — type /help`), '']);
           return;
@@ -762,6 +1382,108 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     renderDynamic();
   }
 
+  function finishSelection(value: string | undefined): void {
+    const active = selectionDialog;
+    if (!active) return;
+    selectionDialog = null;
+    renderDynamic();
+    active.resolve(value);
+  }
+
+  function handleSelectionKey(char: string | undefined, key: Key): void {
+    if (!selectionDialog) return;
+    const name = key.name ?? '';
+    const filtered = filterTuiSelectionItems(
+      selectionDialog.items,
+      selectionDialog.query,
+    );
+    if (name === 'up') {
+      selectionDialog.selected = moveTuiSelection(
+        selectionDialog.selected,
+        filtered.length,
+        -1,
+      );
+    } else if (name === 'down' || name === 'tab') {
+      selectionDialog.selected = moveTuiSelection(
+        selectionDialog.selected,
+        filtered.length,
+        1,
+      );
+    } else if (name === 'pageup') {
+      selectionDialog.selected = Math.max(selectionDialog.selected - 8, 0);
+    } else if (name === 'pagedown') {
+      selectionDialog.selected = Math.max(
+        Math.min(selectionDialog.selected + 8, filtered.length - 1),
+        0,
+      );
+    } else if (name === 'return' || name === 'enter') {
+      finishSelection(filtered[selectionDialog.selected]?.id);
+      return;
+    } else if (name === 'escape' || (name === 'c' && key.ctrl)) {
+      finishSelection(undefined);
+      return;
+    } else if (selectionDialog.searchable && name === 'backspace') {
+      selectionDialog.query = selectionDialog.query.slice(0, -1);
+      selectionDialog.selected = 0;
+    } else if (selectionDialog.searchable && name === 'u' && key.ctrl) {
+      selectionDialog.query = '';
+      selectionDialog.selected = 0;
+    } else if (selectionDialog.searchable && !key.ctrl && !key.meta) {
+      const sequence = key.sequence ?? char ?? '';
+      const cleaned = sequence.replace(/[\x00-\x1f\x7f]/g, '');
+      if (cleaned) {
+        selectionDialog.query += cleaned;
+        selectionDialog.selected = 0;
+      }
+    }
+    renderDynamic();
+  }
+
+  function finishTextInput(value: string | undefined): void {
+    const active = textInputDialog;
+    if (!active) return;
+    textInputDialog = null;
+    renderDynamic();
+    active.resolve(value);
+  }
+
+  function handleTextInputKey(char: string | undefined, key: Key): void {
+    if (!textInputDialog) return;
+    const name = key.name ?? '';
+    const inputEditor = textInputDialog.editor;
+    if (name === 'return' || name === 'enter') {
+      finishTextInput(inputEditor.text);
+      return;
+    }
+    if (name === 'escape' || (name === 'c' && key.ctrl)) {
+      finishTextInput(undefined);
+      return;
+    }
+    if (key.ctrl) {
+      if (name === 'a') inputEditor.moveHome();
+      else if (name === 'e') inputEditor.moveEnd();
+      else if (name === 'u') inputEditor.clear();
+      else if (name === 'w') inputEditor.deleteWordLeft();
+    } else if (name === 'backspace') {
+      inputEditor.backspace();
+    } else if (name === 'delete') {
+      inputEditor.deleteForward();
+    } else if (name === 'left') {
+      inputEditor.moveLeft();
+    } else if (name === 'right') {
+      inputEditor.moveRight();
+    } else if (name === 'home') {
+      inputEditor.moveHome();
+    } else if (name === 'end') {
+      inputEditor.moveEnd();
+    } else {
+      const sequence = key.sequence ?? char ?? '';
+      const cleaned = sequence.replace(/[\x00-\x1f\x7f]/g, '');
+      if (cleaned) inputEditor.insert(cleaned);
+    }
+    renderDynamic();
+  }
+
   function handleKey(char: string | undefined, key: Key): void {
     if (shuttingDown) return;
     const name = key.name ?? '';
@@ -772,6 +1494,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
 
     if (dialog) {
       handleDialogKey(key);
+      return;
+    }
+    if (selectionDialog) {
+      handleSelectionKey(char, key);
+      return;
+    }
+    if (textInputDialog) {
+      handleTextInputKey(char, key);
       return;
     }
 

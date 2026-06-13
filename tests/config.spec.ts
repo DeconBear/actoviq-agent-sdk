@@ -1,11 +1,14 @@
 ﻿import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   clearLoadedJsonConfig,
+  encodeActoviqProjectPath,
+  getActoviqProjectSessionDirectory,
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
   resolveRuntimeConfig,
@@ -85,9 +88,86 @@ describe('config loading', () => {
     expect(config.authToken).toBe('settings-token');
     expect(config.baseURL).toBe('https://example.test/actoviq');
     expect(config.model).toBe('explicit-model');
-    expect(config.workDir).toBe('E:/demo');
+    expect(config.workDir).toBe(path.resolve('E:/demo'));
     expect(config.loadedConfigPath).toBe(settingsPath);
-    expect(config.sessionDirectory).toContain('.actoviq');
+    expect(config.sessionDirectory).toBe(
+      getActoviqProjectSessionDirectory('E:/demo', homeDir),
+    );
+  });
+
+  it('uses a stable Claude-style project key for default session isolation', async () => {
+    const homeDir = await createTempHome();
+    const workDir = path.join(homeDir, 'workspace', 'demo');
+    const config = await resolveRuntimeConfig({
+      homeDir,
+      workDir,
+      model: 'demo-model',
+      authToken: 'test-token',
+    });
+
+    expect(config.sessionDirectory).toBe(
+      path.join(homeDir, '.actoviq', 'projects', encodeActoviqProjectPath(workDir)),
+    );
+    expect(encodeActoviqProjectPath('E:\\repo\\demo')).toBe('E--repo-demo');
+  });
+
+  it('migrates only matching legacy project sessions into the project store', async () => {
+    const homeDir = await createTempHome();
+    const workDir = path.join(homeDir, 'workspace');
+    const legacySessions = path.join(
+      homeDir,
+      '.actoviq',
+      'actoviq-agent-sdk',
+      'sessions',
+    );
+    await mkdir(legacySessions, { recursive: true });
+    await writeFile(
+      path.join(legacySessions, 'matching.json'),
+      JSON.stringify({ id: 'matching', metadata: { __actoviqWorkDir: workDir } }),
+    );
+    await writeFile(
+      path.join(legacySessions, 'other.json'),
+      JSON.stringify({
+        id: 'other',
+        metadata: { __actoviqWorkDir: path.join(homeDir, 'other') },
+      }),
+    );
+
+    const config = await resolveRuntimeConfig({
+      homeDir,
+      workDir,
+      model: 'demo-model',
+      authToken: 'test-token',
+    });
+
+    expect(
+      JSON.parse(
+        await readFile(path.join(config.sessionDirectory, 'sessions', 'matching.json'), 'utf8'),
+      ),
+    ).toMatchObject({ id: 'matching' });
+    await expect(
+      readFile(path.join(config.sessionDirectory, 'sessions', 'other.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('resolves and validates the default reasoning effort', async () => {
+    const homeDir = await createTempHome();
+    const config = await resolveRuntimeConfig({
+      homeDir,
+      model: 'demo-model',
+      authToken: 'test-token',
+      effort: 'high',
+    });
+    expect(config.effort).toBe('high');
+
+    await expect(
+      resolveRuntimeConfig({
+        homeDir,
+        model: 'demo-model',
+        authToken: 'test-token',
+        effort: 'invalid' as never,
+      }),
+    ).rejects.toThrow('Invalid effort');
   });
 
   it('resolves neutral model tiers and defaults to medium', async () => {

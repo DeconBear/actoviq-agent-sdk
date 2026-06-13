@@ -71,7 +71,7 @@ const BRIDGE_OPTION_MATRIX: ActoviqCleanBridgeParityMatrixEntry[] = [
   { option: 'workDir', status: 'mapped', cleanTarget: 'CreateAgentSdkOptions.workDir', notes: 'Mapped at client creation; per-run changes are reported as unsupported.' },
   { option: 'model', status: 'exact', cleanTarget: 'AgentRunOptions.model', notes: 'Passed through to clean runs.' },
   { option: 'fallbackModel', status: 'unsupported', notes: 'Clean model API does not expose fallback model selection.' },
-  { option: 'effort', status: 'unsupported', notes: 'Clean model API has no reasoning-effort field.' },
+  { option: 'effort', status: 'exact', cleanTarget: 'AgentRunOptions.effort', notes: 'Passed through to clean runs.' },
   { option: 'systemPrompt', status: 'exact', cleanTarget: 'AgentRunOptions.systemPrompt', notes: 'Passed through to clean runs.' },
   { option: 'appendSystemPrompt', status: 'mapped', cleanTarget: 'AgentRunOptions.systemPrompt', notes: 'Appended to systemPrompt text before the clean run.' },
   { option: 'permissionMode', status: 'mapped', cleanTarget: 'AgentRunOptions.permissionMode', notes: 'Bridge modes are translated to the closest clean permission mode.' },
@@ -110,7 +110,6 @@ const BRIDGE_ONLY_OPTIONS = new Set([
   'executable',
   'cliPath',
   'fallbackModel',
-  'effort',
   'maxBudgetUsd',
   'agents',
   'addDirs',
@@ -630,6 +629,8 @@ export class ActoviqCleanBridgeSdkClient {
     } = options;
     const resolvedCleanOptions = {
       ...cleanOptions,
+      effort:
+        cleanOptions.effort ?? bridgeDefaults.effort,
       maxToolIterations:
         cleanOptions.maxToolIterations ?? bridgeDefaults.maxTurns,
       permissionMode:
@@ -1198,6 +1199,10 @@ export class ActoviqCleanBridgeSdkClient {
     }
     if (bridgeOptions.model) {
       report.mapped.push({ option: 'model', cleanTarget: 'model', status: 'exact' });
+    }
+    if (bridgeOptions.effort) {
+      cleanOptions.effort = bridgeOptions.effort;
+      report.mapped.push({ option: 'effort', cleanTarget: 'effort', status: 'exact' });
     }
 
     cleanOptions.permissionMode = mapBridgePermissionMode(bridgeOptions.permissionMode, bridgeOptions);

@@ -138,12 +138,16 @@ Use it when you want a richer terminal experience:
 
 - Live status with spinner, elapsed time, tool count, context estimate, and current tool.
 - Multi-line editing with `\` + Enter or Ctrl+J, history navigation, and inline cursor rendering.
-- Slash-command menu with `/compact [instructions]`, `/model [model|min|medium|max|default]`, `/permissions [mode]`, `/sessions`, and `/resume <session-id>`.
+- Searchable slash-command menu. `/resume` opens a project-session picker, while `/resume <session-id>` resumes directly.
+- `/model` selects a model; `/model config` edits the provider, masked API key, base URL, and model tiers. `/effort` selects the provider reasoning effort.
+- `/skills`, `/agents`, `/mcp`, and `/plugins` browse Clean SDK capability catalogs; `/help` searches command usage and `/dream` controls dream runs.
 - Mid-run steering: type while the agent is working and press Enter to queue guidance into the next model request.
 - Interactive permission prompts when launched with `--permission-mode default`; always-allow rules persist with the session.
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
 Both `actoviq-react` and `actoviq-tui` use the same Clean SDK defaults: `~/.actoviq/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
+
+When `sessionDirectory` is not set explicitly, sessions are isolated by workspace under `~/.actoviq/projects/<workspace-key>`.
 
 ## 6. Run the repository quickstart
 

@@ -101,6 +101,29 @@ class MockModelApi implements ModelApi {
 }
 
 describe('ActoviqAgentClient', () => {
+  it('lets a run select automatic effort over a configured default', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Effort test complete.' }]),
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      effort: 'high',
+    });
+
+    try {
+      await sdk.run('use default effort');
+      await sdk.run('use provider automatic effort', { effort: 'auto' });
+
+      expect(modelApi.createCalls[0]?.effort).toBe('high');
+      expect(modelApi.createCalls[1]?.effort).toBeUndefined();
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('clears session manager timers when the client closes', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({

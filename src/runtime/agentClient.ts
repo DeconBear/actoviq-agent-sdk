@@ -1814,6 +1814,7 @@ export class ActoviqAgentClient {
       model: this.resolveModel(options.model ?? session?.model),
       maxTokens: options.maxTokens,
       temperature: options.temperature,
+      effort: options.effort,
       toolChoice: options.toolChoice,
       userId: options.userId ?? this.config.userId,
       metadata,

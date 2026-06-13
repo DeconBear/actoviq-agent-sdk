@@ -442,6 +442,7 @@ function extractInheritedDelegationOptions(
     classifier?: AgentRunOptions['classifier'];
     approver?: AgentRunOptions['approver'];
     hooks?: AgentRunOptions['hooks'];
+    effort?: AgentRunOptions['effort'];
   },
 ): AgentRunOptions | undefined {
   if (
@@ -449,7 +450,8 @@ function extractInheritedDelegationOptions(
     !context.permissions &&
     !context.classifier &&
     !context.approver &&
-    !context.hooks
+    !context.hooks &&
+    !context.effort
   ) {
     return undefined;
   }
@@ -460,5 +462,6 @@ function extractInheritedDelegationOptions(
     classifier: context.classifier,
     approver: context.approver,
     hooks: context.hooks,
+    effort: context.effort,
   };
 }

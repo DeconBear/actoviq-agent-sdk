@@ -10,6 +10,10 @@ import {
   summarizeToolInput,
 } from '../src/tui/transcript.js';
 import { filterSlashCommands } from '../src/tui/actoviqTui.js';
+import {
+  filterTuiSelectionItems,
+  moveTuiSelection,
+} from '../src/tui/selection.js';
 
 describe('ansi helpers', () => {
   it('measures display width with CJK and ANSI codes', () => {
@@ -262,5 +266,24 @@ describe('slash command filtering', () => {
     expect(filterSlashCommands('/help')).toEqual(['help']);
     expect(filterSlashCommands('plain text')).toEqual([]);
     expect(filterSlashCommands('/unknown')).toEqual([]);
+  });
+});
+
+describe('TUI selection helpers', () => {
+  const items = [
+    { id: 'one', label: 'First session', description: 'medium model' },
+    { id: 'two', label: 'Release work', detail: 'fix packaging' },
+  ];
+
+  it('filters across labels, descriptions, details, and ids', () => {
+    expect(filterTuiSelectionItems(items, 'release').map(item => item.id)).toEqual(['two']);
+    expect(filterTuiSelectionItems(items, 'medium').map(item => item.id)).toEqual(['one']);
+    expect(filterTuiSelectionItems(items, '')).toEqual(items);
+  });
+
+  it('wraps keyboard selection and handles an empty list', () => {
+    expect(moveTuiSelection(0, 2, -1)).toBe(1);
+    expect(moveTuiSelection(1, 2, 1)).toBe(0);
+    expect(moveTuiSelection(0, 0, 1)).toBe(0);
   });
 });

@@ -57,6 +57,11 @@ export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
+  encodeActoviqProjectPath,
+  getActoviqProjectSessionDirectory,
+  migrateLegacyActoviqProjectSessions,
+} from './config/projectSessionDirectory.js';
+export {
   ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS,
   createActoviqComputerUseMcpServer,
   createActoviqComputerUseToolkit,

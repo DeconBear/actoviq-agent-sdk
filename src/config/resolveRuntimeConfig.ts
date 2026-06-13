@@ -12,6 +12,10 @@ import {
   resolveActoviqModelReference,
   selectDefaultActoviqModel,
 } from './modelTiers.js';
+import {
+  getActoviqProjectSessionDirectory,
+  migrateLegacyActoviqProjectSessions,
+} from './projectSessionDirectory.js';
 
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 const DEFAULT_COMPACT_CONFIG = {
@@ -58,6 +62,7 @@ export async function resolveRuntimeConfig(
   options: CreateAgentSdkOptions = {},
 ): Promise<ResolvedRuntimeConfig> {
   const homeDir = options.homeDir ?? os.homedir();
+  const workDir = path.resolve(options.workDir ?? process.cwd());
   const loadedConfig = getLoadedJsonConfig();
 
   const envFromLoadedConfig = loadedConfig?.env ?? {};
@@ -112,6 +117,26 @@ export async function resolveRuntimeConfig(
   const fallbackModel = requestedFallbackModel
     ? resolveActoviqModelReference(requestedFallbackModel, modelTiers).model
     : undefined;
+  const requestedEffort =
+    options.effort ??
+    getRuntimeConfigValue('ACTOVIQ_EFFORT', ...envSources);
+  if (
+    requestedEffort !== undefined &&
+    !['low', 'medium', 'high', 'max'].includes(requestedEffort)
+  ) {
+    throw new ConfigurationError(
+      `Invalid effort "${requestedEffort}". Expected low, medium, high, or max.`,
+    );
+  }
+  const sessionDirectory =
+    options.sessionDirectory ?? getActoviqProjectSessionDirectory(workDir, homeDir);
+  if (!options.sessionDirectory) {
+    await migrateLegacyActoviqProjectSessions({
+      homeDir,
+      workDir,
+      targetDirectory: sessionDirectory,
+    });
+  }
 
   return {
     homeDir,
@@ -128,9 +153,8 @@ export async function resolveRuntimeConfig(
     // Claude Code uses DEFAULT_MAX_RETRIES=10; long runs need to survive
     // transient 429/5xx windows instead of failing the whole session.
     maxRetries: options.maxRetries ?? 10,
-    workDir: options.workDir ?? process.cwd(),
-    sessionDirectory:
-      options.sessionDirectory ?? path.join(homeDir, '.actoviq', 'actoviq-agent-sdk'),
+    workDir,
+    sessionDirectory,
     clientName: options.clientName ?? 'actoviq-agent-sdk',
     clientVersion: options.clientVersion ?? '0.1.7',
     systemPrompt: options.systemPrompt,
@@ -147,5 +171,6 @@ export async function resolveRuntimeConfig(
       ...(options.compact ?? {}),
     },
     provider,
+    effort: requestedEffort as ResolvedRuntimeConfig['effort'],
   };
 }

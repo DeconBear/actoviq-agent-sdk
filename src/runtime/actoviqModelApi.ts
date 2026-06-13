@@ -6,13 +6,35 @@ export class ActoviqModelApi implements ModelApi {
   constructor(private readonly client: ActoviqProviderClient) {}
 
   async createMessage(request: ModelRequest) {
-    const { signal, ...body } = request;
-    return this.client.messages.create(body, signal ? { signal } : undefined);
+    const { signal, effort, ...body } = request;
+    return this.client.messages.create(
+      {
+        ...body,
+        ...(effort ? { output_config: { effort } } : {}),
+      },
+      signal || effort
+        ? {
+            signal,
+            ...(effort ? { betas: ['effort-2025-11-24'] } : {}),
+          }
+        : undefined,
+    );
   }
 
   streamMessage(request: ModelRequest): ModelStreamHandle {
-    const { signal, ...body } = request;
-    return this.client.messages.stream(body, signal ? { signal } : undefined);
+    const { signal, effort, ...body } = request;
+    return this.client.messages.stream(
+      {
+        ...body,
+        ...(effort ? { output_config: { effort } } : {}),
+      },
+      signal || effort
+        ? {
+            signal,
+            ...(effort ? { betas: ['effort-2025-11-24'] } : {}),
+          }
+        : undefined,
+    );
   }
 }
 

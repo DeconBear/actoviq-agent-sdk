@@ -70,6 +70,7 @@ export interface ExecuteConversationOptions {
   toolChoice?: AgentRunOptions['toolChoice'];
   userId?: string;
   metadata?: Record<string, unknown>;
+  effort?: AgentRunOptions['effort'];
   signal?: AbortSignal;
   permissionMode?: AgentRunOptions['permissionMode'];
   permissions?: AgentRunOptions['permissions'];
@@ -91,6 +92,10 @@ export async function executeConversation(
 ): Promise<AgentRunResult> {
   const startedAt = nowIso();
   let model = options.model ?? options.config.model;
+  const effort =
+    options.effort === 'auto'
+      ? undefined
+      : options.effort ?? options.config.effort;
   const promptText =
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
   const postSamplingHooks = resolveActoviqPostSamplingHooks(options.hooks);
@@ -191,6 +196,7 @@ export async function executeConversation(
       max_tokens: options.maxTokens ?? options.config.maxTokens,
       system: options.systemPrompt ?? options.config.systemPrompt,
       temperature: options.temperature ?? options.config.temperature,
+      effort,
       tools: resolvedTools.length > 0 ? resolvedTools.map((tool) => tool.providerTool) : undefined,
       tool_choice: options.toolChoice,
       metadata:
@@ -386,6 +392,7 @@ export async function executeConversation(
           model: options.model,
           maxTokens: options.maxTokens,
           temperature: options.temperature,
+          effort: options.effort,
           toolChoice: options.toolChoice,
           userId: options.userId,
           metadata: options.metadata,
@@ -657,6 +664,7 @@ export async function executeConversation(
           modelApi: options.modelApi,
           model,
           provider: options.config.provider,
+          effort,
         }, onProgress);
         // Per-tool declared cap first (default 50k via tool factory), clamped
         // by the global artifact ceiling. MCP tools without a declared cap use

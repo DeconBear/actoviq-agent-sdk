@@ -38,6 +38,7 @@ export interface ToolExecutionContext {
   modelApi?: ModelApi;
   model?: string;
   provider?: string;
+  effort?: ActoviqEffort;
 }
 
 export type ActoviqPermissionMode =
@@ -48,6 +49,8 @@ export type ActoviqPermissionMode =
   | 'auto';
 
 export type ActoviqModelTier = 'min' | 'medium' | 'max';
+export type ActoviqEffort = 'low' | 'medium' | 'high' | 'max';
+export type ActoviqRunEffort = ActoviqEffort | 'auto';
 
 export interface ActoviqModelTierConfig {
   min?: string;
@@ -287,6 +290,7 @@ export interface ModelRequest {
   context_management?: Record<string, unknown>;
   stop_sequences?: string[];
   extra_tool_schemas?: Record<string, unknown>[];
+  effort?: ActoviqEffort;
   signal?: AbortSignal;
 }
 
@@ -352,6 +356,7 @@ export interface ResolvedRuntimeConfig {
   metadata: Record<string, unknown>;
   compact: ActoviqCompactConfig;
   provider: 'anthropic' | 'openai';
+  effort?: ActoviqEffort;
 }
 
 export interface ActoviqSessionStartHookContext {
@@ -698,6 +703,7 @@ export interface CreateAgentSdkOptions {
   approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
   provider?: 'anthropic' | 'openai';
+  effort?: ActoviqEffort;
   modelApi?: ModelApi;
   sessionManager?: SessionManagerConfig;
 }
@@ -780,6 +786,7 @@ export interface AgentRunOptions {
   toolChoice?: ToolChoice;
   userId?: string;
   metadata?: Record<string, unknown>;
+  effort?: ActoviqRunEffort;
   hooks?: ActoviqHooks;
   permissionMode?: ActoviqPermissionMode;
   permissions?: ActoviqPermissionRule[];
