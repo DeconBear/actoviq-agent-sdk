@@ -145,7 +145,9 @@ describe('TuiScreen', () => {
     const screen = new TuiScreen(out);
     screen.start();
     screen.setDynamic(['[input]']);
+    out.chunks = [];
     screen.appendStatic(['hello world']);
+    expect(out.chunks).toHaveLength(1);
     expect(out.output).toContain('hello world\n');
     // Dynamic content painted after the static line.
     expect(out.output.lastIndexOf('[input]')).toBeGreaterThan(out.output.lastIndexOf('hello world'));
@@ -169,6 +171,48 @@ describe('TuiScreen', () => {
     screen.start();
     screen.setDynamic(['abcdefghijklmnop']);
     expect(out.output).toContain('abcdefghij\nklmnop');
+    screen.stop();
+  });
+
+  it('does not repaint an unchanged dynamic region', () => {
+    const out = new FakeOutput();
+    const screen = new TuiScreen(out);
+    screen.start();
+    screen.setDynamic(['status', 'prompt']);
+    const chunkCount = out.chunks.length;
+    screen.setDynamic(['status', 'prompt']);
+    expect(out.chunks).toHaveLength(chunkCount);
+    screen.stop();
+  });
+
+  it('updates changed rows without clearing the full dynamic region', () => {
+    const out = new FakeOutput();
+    const screen = new TuiScreen(out);
+    screen.start();
+    screen.setDynamic(['working 1s', 'prompt']);
+    out.chunks = [];
+
+    screen.setDynamic(['working 2s', 'prompt']);
+
+    expect(out.output).toContain('working 2s');
+    expect(out.output).not.toContain('\x1b[0J');
+    expect(out.output).not.toContain('prompt');
+    expect(out.output).toContain('\x1b[s');
+    expect(out.output).toContain('\x1b[u');
+    screen.stop();
+  });
+
+  it('clears and repaints when the dynamic region changes height', () => {
+    const out = new FakeOutput();
+    const screen = new TuiScreen(out);
+    screen.start();
+    screen.setDynamic(['status', 'prompt']);
+    out.chunks = [];
+
+    screen.setDynamic(['prompt']);
+
+    expect(out.output).toContain('\x1b[0J');
+    expect(out.output).toContain('prompt');
     screen.stop();
   });
 });

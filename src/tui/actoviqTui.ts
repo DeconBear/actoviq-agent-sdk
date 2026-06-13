@@ -40,6 +40,7 @@ import {
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const CTRL_C_EXIT_WINDOW_MS = 600;
+const DYNAMIC_FRAME_MS = 33;
 const MENU_MAX_ROWS = 12;
 const PROMPT_GLYPH = '❯';
 
@@ -154,6 +155,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let menuSelected = 0;
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  let dynamicRenderTimer: ReturnType<typeof setTimeout> | null = null;
   let runStartedAt = 0;
   let runToolCount = 0;
   let lastTokenEstimate: number | undefined;
@@ -347,6 +349,20 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     screen.setDynamic(lines);
   }
 
+  function scheduleDynamicRender(): void {
+    if (dynamicRenderTimer) return;
+    dynamicRenderTimer = setTimeout(() => {
+      dynamicRenderTimer = null;
+      renderDynamic();
+    }, DYNAMIC_FRAME_MS);
+  }
+
+  function cancelScheduledDynamicRender(): void {
+    if (!dynamicRenderTimer) return;
+    clearTimeout(dynamicRenderTimer);
+    dynamicRenderTimer = null;
+  }
+
   function appendStatic(lines: readonly string[]): void {
     screen.appendStatic(lines);
   }
@@ -410,6 +426,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         clearInterval(spinnerTimer);
         spinnerTimer = null;
       }
+      cancelScheduledDynamicRender();
       renderDynamic();
     }
 
@@ -439,7 +456,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         streamedTextSeen = true;
         const flushed = flusher.push(delta);
         if (flushed.length > 0) appendStatic(flushed);
-        renderDynamic();
+        scheduleDynamicRender();
         return;
       }
       case 'response.content':
@@ -462,7 +479,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         const data = event.data as { message?: string } | undefined;
         if (data?.message) {
           statusNote = data.message;
-          renderDynamic();
+          scheduleDynamicRender();
         }
         return;
       }
@@ -817,6 +834,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     if (shuttingDown) return;
     shuttingDown = true;
     if (spinnerTimer) clearInterval(spinnerTimer);
+    cancelScheduledDynamicRender();
     abortCtrl?.abort();
     screen.stop();
     process.stdout.write(`${A.dim}Goodbye.${A.reset}\n`);
