@@ -172,7 +172,7 @@ export class ActoviqSwarmTeam {
   async session(name: string): Promise<AgentSession> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
-    this.applyRuntimeContext(session);
+    await this.applyRuntimeContext(session);
     await this.teammateStore.save({
       ...teammate,
       lastResumedAt: nowIso(),
@@ -317,7 +317,7 @@ export class ActoviqSwarmTeam {
   ): Promise<ActoviqBackgroundTaskRecord> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
-    this.applyRuntimeContext(session);
+    await this.applyRuntimeContext(session);
     const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
     const task = await this.bindings.launchBackgroundOnSession(
       session,
@@ -358,7 +358,7 @@ export class ActoviqSwarmTeam {
   ): Promise<ActoviqSwarmRunResult> {
     const teammate = await this.requireTeammate(name);
     const session = await this.bindings.resumeSession(teammate.sessionId);
-    this.applyRuntimeContext(session);
+    await this.applyRuntimeContext(session);
     const injectedMessages = await this.drainMailboxMessagesForTeammate(name);
     const processedMailboxMessages = injectedMessages.length;
     const running = {
@@ -568,9 +568,9 @@ export class ActoviqSwarmTeam {
     return drained;
   }
 
-  private applyRuntimeContext(session: AgentSession): void {
+  private async applyRuntimeContext(session: AgentSession): Promise<void> {
     session.clearHooks();
-    session.clearPermissionContext();
+    await session.clearPermissionContext();
 
     if (this.runtimeContext.hooks) {
       session.setHooks(this.runtimeContext.hooks);
@@ -582,7 +582,7 @@ export class ActoviqSwarmTeam {
       this.runtimeContext.classifier ||
       this.runtimeContext.approver
     ) {
-      session.setPermissionContext({
+      await session.setPermissionContext({
         mode: this.runtimeContext.permissionMode,
         permissions: this.runtimeContext.permissions,
         classifier: this.runtimeContext.classifier,

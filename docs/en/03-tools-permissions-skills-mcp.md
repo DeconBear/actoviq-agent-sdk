@@ -195,6 +195,25 @@ const sdk = await createAgentSdk({
 });
 ```
 
+Session-specific permission state is persisted and restored:
+
+```ts
+await session.setPermissionContext({
+  mode: 'default',
+  permissions: [{ toolName: 'Bash', behavior: 'ask' }],
+  approver,
+});
+
+const restored = await sdk.resumeSession(session.id);
+console.log(restored.permissionContext);
+```
+
+Only serializable mode/rules are stored. Classifier and approver callbacks must
+be attached again by the current process. `bypassPermissions` still enforces
+hard safety checks; `acceptEdits` allows file-edit tools but not arbitrary shell
+commands; `plan` blocks mutating tools unless a higher-priority explicit rule or
+classifier allows them.
+
 ## 8. MCP
 
 The SDK supports:

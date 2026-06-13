@@ -214,6 +214,21 @@ clean SDK 当前支持：
 2. 压缩后尽量保持推理连续性
 3. 让 session-memory 和 compact 一起工作
 
+手动 compact 可以附加摘要要求，并以结构化结果返回失败状态：
+
+```ts
+const result = await session.compact({
+  force: true,
+  summaryInstructions: '保留未解决的测试失败和精确文件路径。',
+});
+
+if (!result.compacted) {
+  console.error(result.reason, result.error, result.consecutiveFailures);
+}
+```
+
+compact 历史与连续三次失败后的断路器状态都会随会话保存，因此 `resumeSession()` 不会重置恢复状态。
+
 下一章：
 
 - [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)

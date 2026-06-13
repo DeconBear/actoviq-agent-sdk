@@ -71,7 +71,7 @@ npx actoviq-react [工作目录]
 
 这是一个基于 readline 的交互式 Agent，特点：
 - 主终端缓冲区实时流式输出（支持原生滚动回看）
-- Tab 补全斜杠命令（`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`）
+- Tab 补全斜杠命令，包括会话模型、权限、压缩与恢复控制
 - ↑↓ 方向键浏览历史命令
 - Ctrl+C 中止当前请求，连按两次退出
 
@@ -88,6 +88,8 @@ npx actoviq-tui [工作目录] [选项]
 #   --config <path>            加载指定的 Actoviq settings JSON 配置
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions（默认）
 #   --model <model>            覆盖配置中的模型
+#   --resume <session-id>      恢复已保存的 Clean SDK 会话
+#   --continue                 继续最近更新的会话
 ```
 
 功能特性：
@@ -95,13 +97,15 @@ npx actoviq-tui [工作目录] [选项]
 - **原生滚动条流式转录** —— 助手文本、`⏺ 工具(参数)` 调用行和 `⎿ ✓/✗` 结果行直接写入终端缓冲区，滚动回看和复制粘贴照常可用。
 - **实时状态行** —— 运行中显示 spinner、耗时、工具次数、上下文规模估计和当前工具名。
 - **Claude 风格 prompt bar** —— 行尾输入 `\` 再按 `Enter`（或 `Ctrl+J`）换行；`↑`/`↓` 浏览历史；光标内联渲染。
-- **斜杠命令菜单** —— 输入 `/` 弹出过滤菜单（`↑↓` 选择、`Tab` 补全、`Enter` 执行）：`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`。
+- **斜杠命令菜单** —— 输入 `/` 弹出过滤菜单（`↑↓` 选择、`Tab` 补全、`Enter` 执行）。运行时控制包括 `/compact [附加要求]`、`/model [模型|min|medium|max|default]`、`/permissions [模式]`、`/sessions` 和 `/resume <session-id>`。
 - **运行中追加指令（steering）** —— Agent 工作时可以继续输入并按 `Enter`：消息进入队列（显示 `⧗ queued`），并在下一次模型请求时注入。
-- **权限对话框** —— 使用 `--permission-mode default` 时，写操作工具（`Bash`、`Write`、`Edit`、`NotebookEdit`）会暂停并弹出 批准 / 始终允许 / 拒绝 对话框。
+- **权限对话框** —— 使用 `--permission-mode default` 时，变更型工具会暂停并弹出 批准 / 始终允许 / 拒绝 对话框。“始终允许”规则会随会话保存并在恢复时继续生效。
 - **中断控制** —— `Esc` 中止当前运行；`Ctrl+C` 清空输入（连按两次退出）；空输入时 `Ctrl+D` 退出。
 - **内置上下文管理** —— Clean SDK 会在长会话中自动压缩上下文，并在服务端拒绝超长请求时反应式压缩恢复；压缩以 `∿ context compacted` 提示呈现。
 
 两个 CLI 共享同样的 Clean SDK 运行时默认值（`~/.actoviq/settings.json` 配置、核心工具、`bypassPermissions`、不限工具迭代次数），可对接任何 Anthropic 兼容或 OpenAI 兼容的模型服务。
+
+模型分级使用与提供商无关的别名。通过 `ACTOVIQ_DEFAULT_MIN_MODEL`、`ACTOVIQ_DEFAULT_MEDIUM_MODEL` 和 `ACTOVIQ_DEFAULT_MAX_MODEL` 配置后，可以在任何模型选择位置使用 `min`、`medium` 或 `max`。
 
 ## 教程入口
 

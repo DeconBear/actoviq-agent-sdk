@@ -18,6 +18,8 @@ function parseArgs(argv: string[]): {
   configPath?: string;
   permissionMode?: ActoviqPermissionMode;
   model?: string;
+  resumeSessionId?: string;
+  continueMostRecent?: boolean;
   help?: boolean;
 } {
   const result: ReturnType<typeof parseArgs> = {};
@@ -36,6 +38,10 @@ function parseArgs(argv: string[]): {
       result.permissionMode = mode as ActoviqPermissionMode;
     } else if (arg === '--model' && argv[index + 1]) {
       result.model = argv[++index];
+    } else if (arg === '--resume' && argv[index + 1]) {
+      result.resumeSessionId = argv[++index];
+    } else if (arg === '--continue') {
+      result.continueMostRecent = true;
     } else if (!arg.startsWith('-') && !result.workDir) {
       result.workDir = arg;
     } else {
@@ -59,6 +65,8 @@ if (args.help) {
       '  --config <path>            Load a specific Actoviq settings JSON file',
       '  --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)',
       '  --model <model>            Override the configured model',
+      '  --resume <session-id>      Resume a stored Clean SDK session',
+      '  --continue                 Resume the most recent stored session',
       '  -h, --help                 Show this help',
       '',
     ].join('\n'),

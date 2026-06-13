@@ -146,6 +146,11 @@ export {
   decideActoviqToolPermission,
 } from './runtime/actoviqPermissions.js';
 export {
+  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
+  getPersistedActoviqSessionPermissionState,
+  serializeActoviqSessionPermissionState,
+} from './runtime/actoviqSessionPermissions.js';
+export {
   ActoviqToolsApi,
   buildActoviqCleanToolCatalog,
   resolveActoviqCleanToolMetadata,
@@ -163,6 +168,12 @@ export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
 export { OpenaiModelApi, createOpenaiModelApi } from './provider/openai-model-api.js';
+export {
+  ACTOVIQ_MODEL_TIERS,
+  isActoviqModelTier,
+  resolveActoviqModelReference,
+  selectDefaultActoviqModel,
+} from './config/modelTiers.js';
 export {
   ActoviqSwarmApi,
   ActoviqSwarmTeam,

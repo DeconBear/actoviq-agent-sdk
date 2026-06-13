@@ -193,6 +193,23 @@ The clean SDK supports:
 
 This matters most in long-running sessions and multi-turn task flows.
 
+Manual compact accepts optional summary guidance and returns structured failure
+state instead of losing continuity:
+
+```ts
+const result = await session.compact({
+  force: true,
+  summaryInstructions: 'Preserve unresolved test failures and exact file paths.',
+});
+
+if (!result.compacted) {
+  console.error(result.reason, result.error, result.consecutiveFailures);
+}
+```
+
+Compact history and the three-failure circuit breaker are stored with the
+session, so `resumeSession()` does not reset recovery state.
+
 Next chapter:
 
 - [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)

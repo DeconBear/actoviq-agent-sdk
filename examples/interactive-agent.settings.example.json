@@ -3,9 +3,9 @@
   "env": {
     "ACTOVIQ_BASE_URL": "https://your-actoviq-compatible-endpoint.example.com",
     "ACTOVIQ_AUTH_TOKEN": "replace-with-your-token",
-    "ACTOVIQ_DEFAULT_max_MODEL": "replace-with-your-max-model",
-    "ACTOVIQ_DEFAULT_medium_MODEL": "replace-with-your-medium-model",
-    "ACTOVIQ_DEFAULT_min_MODEL": "replace-with-your-min-model"
+    "ACTOVIQ_DEFAULT_MIN_MODEL": "replace-with-your-small-model",
+    "ACTOVIQ_DEFAULT_MEDIUM_MODEL": "replace-with-your-balanced-model",
+    "ACTOVIQ_DEFAULT_MAX_MODEL": "replace-with-your-large-model"
   },
   "permissions": {
     "allow": [

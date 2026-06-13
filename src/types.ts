@@ -47,6 +47,14 @@ export type ActoviqPermissionMode =
   | 'plan'
   | 'auto';
 
+export type ActoviqModelTier = 'min' | 'medium' | 'max';
+
+export interface ActoviqModelTierConfig {
+  min?: string;
+  medium?: string;
+  max?: string;
+}
+
 export type ActoviqPermissionBehavior = 'allow' | 'deny' | 'ask';
 
 export interface ActoviqPermissionRule {
@@ -54,6 +62,11 @@ export interface ActoviqPermissionRule {
   behavior: ActoviqPermissionBehavior;
   matcher?: string;
   source?: string;
+}
+
+export interface ActoviqSessionPermissionState {
+  mode?: ActoviqPermissionMode;
+  permissions: ActoviqPermissionRule[];
 }
 
 export interface ActoviqPermissionDecision {
@@ -318,6 +331,8 @@ export interface ResolvedRuntimeConfig {
   authToken?: string;
   baseURL?: string;
   model: string;
+  modelTier?: ActoviqModelTier;
+  modelTiers: ActoviqModelTierConfig;
   maxTokens: number;
   temperature?: number;
   timeoutMs: number;
@@ -650,6 +665,7 @@ export interface CreateAgentSdkOptions {
   apiKey?: string;
   authToken?: string;
   baseURL?: string;
+  /** A full model ID or one of the configured min/medium/max tiers. */
   model?: string;
   maxTokens?: number;
   temperature?: number;
@@ -784,6 +800,8 @@ export interface SessionCreateOptions {
   title?: string;
   systemPrompt?: string;
   model?: string;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
   tags?: string[];
   metadata?: Record<string, unknown>;
   initialMessages?: MessageParam[];
@@ -793,6 +811,18 @@ export interface SessionForkOptions {
   title?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+}
+
+export interface SessionResumeOptions {
+  /** Resume into a new session while preserving the source transcript and runtime state. */
+  fork?: boolean;
+  title?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  /** A full model ID or configured min/medium/max tier. */
+  model?: string;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
 }
 
 export interface AgentRequestSummary {
@@ -942,6 +972,7 @@ export interface ActoviqSessionCompactResult {
     | 'no_messages'
     | 'microcompact'
     | 'compacted'
+    | 'failed'
     | 'circuit_breaker_open';
   tokenEstimateBefore: number;
   tokenEstimateAfter?: number;
@@ -949,6 +980,8 @@ export interface ActoviqSessionCompactResult {
   messagesRemoved?: number;
   compactCount: number;
   microcompactCount: number;
+  consecutiveFailures?: number;
+  error?: string;
   state: ActoviqSessionMemoryRuntimeState;
 }
 
@@ -1547,6 +1580,9 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   latestBoundary?: ActoviqTranscriptBoundary;
   compactCount: number;
   microcompactCount: number;
+  consecutiveCompactFailures?: number;
+  lastCompactFailureAt?: string;
+  lastCompactError?: string;
   hasCompacted: boolean;
   pendingPostCompaction?: boolean;
   lastSummarizedMessageUuid?: string;

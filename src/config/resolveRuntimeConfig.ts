@@ -2,16 +2,23 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { ConfigurationError } from '../errors.js';
-import type { CreateAgentSdkOptions, ResolvedRuntimeConfig } from '../types.js';
+import type {
+  ActoviqModelTierConfig,
+  CreateAgentSdkOptions,
+  ResolvedRuntimeConfig,
+} from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
+import {
+  resolveActoviqModelReference,
+  selectDefaultActoviqModel,
+} from './modelTiers.js';
 
-const FALLBACK_MODEL = 'claude-medium-4-5-20250929';
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 const DEFAULT_COMPACT_CONFIG = {
   enabled: true,
-  autoCompactThresholdTokens: 20_000,
+  autoCompactThresholdTokens: 155_000,
   preserveRecentMessages: 8,
-  maxSummaryTokens: 1_024,
+  maxSummaryTokens: 20_000,
   microcompactEnabled: true,
   microcompactKeepRecentToolResults: 3,
   microcompactMinContentChars: 1_000,
@@ -76,24 +83,35 @@ export async function resolveRuntimeConfig(
     (getRuntimeConfigValue('ACTOVIQ_PROVIDER', ...envSources) as 'anthropic' | 'openai' | undefined) ??
     'anthropic';
 
-  const model =
+  const modelTiers: ActoviqModelTierConfig = {
+    min: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MIN_MODEL', ...envSources),
+    medium: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MEDIUM_MODEL', ...envSources),
+    max: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MAX_MODEL', ...envSources),
+  };
+  const requestedModel =
     options.model ??
-    getRuntimeConfigValue('ACTOVIQ_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MAX_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_max_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MEDIUM_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_medium_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_MIN_MODEL', ...envSources) ??
-    getRuntimeConfigValue('ACTOVIQ_DEFAULT_min_MODEL', ...envSources) ??
-    (provider === 'openai' ? OPENAI_FALLBACK_MODEL : FALLBACK_MODEL);
+    getRuntimeConfigValue('ACTOVIQ_MODEL', ...envSources);
+  const selectedModel = requestedModel
+    ? resolveActoviqModelReference(requestedModel, modelTiers)
+    : provider === 'openai'
+      ? selectDefaultActoviqModel(modelTiers, OPENAI_FALLBACK_MODEL)
+      : selectDefaultActoviqModel(modelTiers, '');
+  if (!selectedModel.model) {
+    throw new ConfigurationError(
+      'No model was configured. Set ACTOVIQ_MODEL, configure a min/medium/max model tier, or pass model to createAgentSdk().',
+    );
+  }
 
   const baseURL =
     options.baseURL ??
     getRuntimeConfigValue('ACTOVIQ_BASE_URL', ...envSources);
 
-  const fallbackModel =
+  const requestedFallbackModel =
     options.fallbackModel ??
     getRuntimeConfigValue('ACTOVIQ_FALLBACK_MODEL', ...envSources);
+  const fallbackModel = requestedFallbackModel
+    ? resolveActoviqModelReference(requestedFallbackModel, modelTiers).model
+    : undefined;
 
   return {
     homeDir,
@@ -101,7 +119,9 @@ export async function resolveRuntimeConfig(
     apiKey,
     authToken,
     baseURL,
-    model,
+    model: selectedModel.model,
+    modelTier: selectedModel.tier,
+    modelTiers,
     maxTokens: options.maxTokens ?? 32000,
     temperature: options.temperature,
     timeoutMs: options.timeoutMs ?? 600000,

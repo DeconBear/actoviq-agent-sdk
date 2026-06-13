@@ -604,6 +604,7 @@ export async function executeConversation(
           canUseTool: options.canUseTool,
           adapter: {
             isReadOnly: adapter.isReadOnly as ((input?: unknown) => boolean) | undefined,
+            isDestructive: adapter.isDestructive as ((input?: unknown) => boolean) | undefined,
             requiresUserInteraction: adapter.requiresUserInteraction,
             checkPermissions: adapter.checkPermissions,
           },

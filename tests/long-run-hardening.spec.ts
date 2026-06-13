@@ -205,6 +205,7 @@ describe('concurrent read-only tool execution', () => {
       model: 'test-model',
       sessionDirectory,
       modelApi,
+      permissionMode: 'bypassPermissions',
     });
 
     try {

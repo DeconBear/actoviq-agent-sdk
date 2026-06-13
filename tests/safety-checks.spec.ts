@@ -45,3 +45,87 @@ describe('safety checks', () => {
     expect(result.reason).toContain('.git');
   });
 });
+
+describe('permission modes', () => {
+  const destructiveAdapter = {
+    isDestructive: () => true,
+  };
+
+  it('requires approval for destructive tools in default mode', async () => {
+    let approvalCalls = 0;
+    const result = await decideActoviqToolPermission({
+      mode: 'default',
+      rules: [],
+      adapter: destructiveAdapter,
+      approver: () => {
+        approvalCalls += 1;
+        return { behavior: 'allow', reason: 'Approved for this test.' };
+      },
+      runId: 'run-default-approval',
+      workDir: process.cwd(),
+      toolName: 'Bash',
+      publicName: 'Bash',
+      prompt: 'run a command',
+      toolInput: { command: 'npm test' },
+      iteration: 1,
+    });
+
+    expect(approvalCalls).toBe(1);
+    expect(result).toMatchObject({
+      behavior: 'allow',
+      source: 'approver',
+    });
+  });
+
+  it('does not silently allow destructive tools without an approver', async () => {
+    const result = await decideActoviqToolPermission({
+      mode: 'default',
+      rules: [],
+      adapter: destructiveAdapter,
+      runId: 'run-default-no-approval',
+      workDir: process.cwd(),
+      toolName: 'Bash',
+      publicName: 'Bash',
+      prompt: 'run a command',
+      toolInput: { command: 'npm test' },
+      iteration: 1,
+    });
+
+    expect(result).toMatchObject({
+      behavior: 'deny',
+      source: 'mode',
+    });
+    expect(result.reason).toContain('no approver');
+  });
+
+  it('acceptEdits allows file edits but still requires approval for shell commands', async () => {
+    const edit = await decideActoviqToolPermission({
+      mode: 'acceptEdits',
+      rules: [],
+      adapter: destructiveAdapter,
+      runId: 'run-accept-edits',
+      workDir: process.cwd(),
+      toolName: 'Write',
+      publicName: 'Write',
+      prompt: 'write a file',
+      toolInput: { file_path: 'README.md', content: 'test' },
+      iteration: 1,
+    });
+    const shell = await decideActoviqToolPermission({
+      mode: 'acceptEdits',
+      rules: [],
+      adapter: destructiveAdapter,
+      runId: 'run-accept-edits',
+      workDir: process.cwd(),
+      toolName: 'Bash',
+      publicName: 'Bash',
+      prompt: 'run a command',
+      toolInput: { command: 'npm test' },
+      iteration: 1,
+    });
+
+    expect(edit.behavior).toBe('allow');
+    expect(shell.behavior).toBe('deny');
+    expect(shell.reason).toContain('no approver');
+  });
+});

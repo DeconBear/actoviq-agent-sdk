@@ -31,7 +31,9 @@ npm install
   "env": {
     "ACTOVIQ_AUTH_TOKEN": "your-token",
     "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-    "ACTOVIQ_DEFAULT_medium_MODEL": "your-model"
+    "ACTOVIQ_DEFAULT_MIN_MODEL": "your-fast-model",
+    "ACTOVIQ_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
+    "ACTOVIQ_DEFAULT_MAX_MODEL": "your-capable-model"
   }
 }
 ```
@@ -49,7 +51,7 @@ const sdk = await createAgentSdk({
   // provider: 'anthropic' 为默认值
   baseURL: 'https://api.anthropic.com',
   apiKey: 'sk-ant-xxx',
-  model: 'claude-medium-4-6',
+  model: 'medium',
 });
 ```
 
@@ -121,7 +123,9 @@ npx actoviq-tui [工作目录] [选项]
 # 选项
 #   --config <path>            加载指定的 Actoviq settings JSON 配置
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions（默认）
-#   --model <model>            覆盖配置中的模型
+#   --model <model>            覆盖配置中的模型或分级别名
+#   --resume <session-id>      恢复已保存的 Clean SDK 会话
+#   --continue                 继续最近更新的会话
 ```
 
 `actoviq-tui` 借鉴 Claude Code 的默认终端交互模式，但实现完全属于 Clean SDK：对话记录流式写入终端原生滚动缓冲区，底部可重绘区域承载状态行、Claude 风格 prompt bar、斜杠命令菜单和权限确认。
@@ -130,9 +134,9 @@ npx actoviq-tui [工作目录] [选项]
 
 - 运行时状态：spinner、耗时、工具次数、上下文规模估计和当前工具。
 - 多行编辑：行尾输入 `\` 再按 Enter，或使用 Ctrl+J；支持历史浏览和内联光标渲染。
-- 斜杠命令菜单：`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`。
+- 斜杠命令菜单包括 `/compact [附加要求]`、`/model [模型|min|medium|max|default]`、`/permissions [模式]`、`/sessions` 和 `/resume <session-id>`。
 - 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
-- 使用 `--permission-mode default` 时启用交互式权限确认。
+- 使用 `--permission-mode default` 时启用交互式权限确认；“始终允许”规则会随会话保存。
 - Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
 
 `actoviq-react` 和 `actoviq-tui` 使用同样的 Clean SDK 默认值：`~/.actoviq/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。

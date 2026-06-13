@@ -10,6 +10,7 @@ import {
   createActoviqComputerUseTools,
 } from '../computer/actoviqComputerUse.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
+import { resolveActoviqModelReference } from '../config/modelTiers.js';
 import {
   mergeActoviqHooks,
   normalizeActoviqHookMessages,
@@ -69,6 +70,7 @@ import type {
   CreateAgentSdkOptions,
   CreateActoviqComputerUseOptions,
   SessionCreateOptions,
+  SessionResumeOptions,
   SessionSummary,
   StoredSession,
 } from '../types.js';
@@ -103,6 +105,11 @@ import {
   trackRecentFile,
   trackRecentSkill,
 } from './actoviqCompact.js';
+import {
+  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
+  getPersistedActoviqSessionPermissionState,
+  serializeActoviqSessionPermissionState,
+} from './actoviqSessionPermissions.js';
 
 const RECENT_FILE_TOOL_NAMES = new Set(['Read', 'Write', 'Edit', 'NotebookEdit']);
 import {
@@ -258,7 +265,10 @@ function cloneSkillDefinition(definition: ActoviqSkillDefinition): ActoviqSkillD
 export class AgentSessionsApi {
   constructor(
     private readonly store: SessionStore,
-    private readonly resumeSession: (sessionId: string) => Promise<AgentSession>,
+    private readonly resumeSession: (
+      sessionId: string,
+      options?: SessionResumeOptions,
+    ) => Promise<AgentSession>,
     private readonly manager?: import('./sessionManager.js').SessionManager,
   ) {}
 
@@ -268,6 +278,19 @@ export class AgentSessionsApi {
 
   get(sessionId: string): Promise<AgentSession> {
     return this.resumeSession(sessionId);
+  }
+
+  resume(sessionId: string, options: SessionResumeOptions = {}): Promise<AgentSession> {
+    return this.resumeSession(sessionId, options);
+  }
+
+  async continueMostRecent(options: SessionResumeOptions = {}): Promise<AgentSession> {
+    const sessions = await this.store.list();
+    const mostRecent = sessions.find(session => session.status !== 'closed') ?? sessions[0];
+    if (!mostRecent) {
+      throw new Error('No stored sessions are available to resume.');
+    }
+    return this.resumeSession(mostRecent.id, options);
   }
 
   delete(sessionId: string): Promise<void> {
@@ -563,7 +586,7 @@ export class ActoviqAgentClient {
     this.sessionManager = new SessionManager(this.store, sessionManagerConfig);
     this.sessions = new AgentSessionsApi(
       this.store,
-      (sessionId) => this.resumeSession(sessionId),
+      (sessionId, options) => this.resumeSession(sessionId, options),
       this.sessionManager,
     );
     this.agentDefinitions = new Map(
@@ -866,24 +889,81 @@ export class ActoviqAgentClient {
   }
 
   async createSession(options: SessionCreateOptions = {}): Promise<AgentSession> {
+    const model = this.resolveModel(options.model);
     const stored = await this.store.create({
       id: options.id,
       title: options.title,
       systemPrompt: options.systemPrompt ?? this.config.systemPrompt,
-      model: options.model ?? this.config.model,
+      model,
       tags: options.tags,
       metadata: {
-        __actoviqWorkDir: this.config.workDir,
         ...(options.metadata ?? {}),
+        __actoviqWorkDir: this.config.workDir,
+        ...(options.permissionMode || options.permissions
+          ? {
+              [ACTOVIQ_SESSION_PERMISSION_STATE_KEY]:
+                serializeActoviqSessionPermissionState({
+                  mode: options.permissionMode,
+                  permissions: clonePermissionRules(options.permissions) ?? [],
+                }),
+            }
+          : {}),
       },
       initialMessages: options.initialMessages,
     });
     return this.hydrateSession(stored);
   }
 
-  async resumeSession(sessionId: string): Promise<AgentSession> {
-    const stored = await this.store.load(sessionId);
+  async resumeSession(
+    sessionId: string,
+    options: SessionResumeOptions = {},
+  ): Promise<AgentSession> {
+    const loaded = options.fork
+      ? await this.store.fork(sessionId, {
+          title: options.title,
+          tags: options.tags,
+          metadata: options.metadata,
+        })
+      : await this.store.load(sessionId);
+    const stored = deepClone(loaded);
+    if (options.model) {
+      stored.model = this.resolveModel(options.model);
+    }
+    if (options.permissionMode !== undefined || options.permissions !== undefined) {
+      const currentPermissionState =
+        getPersistedActoviqSessionPermissionState(stored.metadata);
+      stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
+        serializeActoviqSessionPermissionState({
+          mode: options.permissionMode ?? currentPermissionState.mode,
+          permissions:
+            options.permissions !== undefined
+              ? clonePermissionRules(options.permissions) ?? []
+              : currentPermissionState.permissions,
+        });
+    }
+    if (!options.fork) {
+      if (options.title?.trim()) {
+        stored.title = options.title.trim();
+        stored.titleSource = 'manual';
+      }
+      if (options.tags) {
+        stored.tags = [...options.tags];
+      }
+      if (options.metadata) {
+        stored.metadata = { ...stored.metadata, ...options.metadata };
+      }
+    }
+    stored.status = 'active';
+    stored.lastActiveAt = nowIso();
+    stored.updatedAt = stored.lastActiveAt;
+    await this.store.save(stored);
     return this.hydrateSession(stored);
+  }
+
+  resolveModel(model?: string): string {
+    return model
+      ? resolveActoviqModelReference(model, this.config.modelTiers).model
+      : this.config.model;
   }
 
   async compactSessionById(
@@ -1366,22 +1446,28 @@ export class ActoviqAgentClient {
     this.sessionRuntimeOverrides.set(sessionId, next);
   }
 
-  private setSessionRuntimePermissionContext(
-    sessionId: string,
+  private async setSessionRuntimePermissionContext(
+    session: AgentSession,
     context: {
       mode?: AgentRunOptions['permissionMode'];
       permissions?: AgentRunOptions['permissions'];
       classifier?: ActoviqToolClassifier;
       approver?: ActoviqToolApprover;
     },
-  ): void {
+  ): Promise<StoredSession> {
+    const sessionId = session.id;
     const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
+    const stored = session.snapshot();
+    const persisted = getPersistedActoviqSessionPermissionState(stored.metadata);
     const next: SessionRuntimeOverrides = {
       ...current,
-      permissionMode: context.mode,
-      permissions: clonePermissionRules(context.permissions),
-      classifier: context.classifier,
-      approver: context.approver,
+      permissionMode: context.mode ?? current.permissionMode ?? persisted.mode,
+      permissions:
+        context.permissions !== undefined
+          ? clonePermissionRules(context.permissions)
+          : current.permissions ?? persisted.permissions,
+      classifier: context.classifier ?? current.classifier,
+      approver: context.approver ?? current.approver,
     };
 
     if (
@@ -1392,30 +1478,45 @@ export class ActoviqAgentClient {
       !next.approver
     ) {
       this.sessionRuntimeOverrides.delete(sessionId);
-      return;
+    } else {
+      this.sessionRuntimeOverrides.set(sessionId, next);
     }
 
-    this.sessionRuntimeOverrides.set(sessionId, next);
+    stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
+      serializeActoviqSessionPermissionState({
+        mode: next.permissionMode,
+        permissions: clonePermissionRules(next.permissions) ?? [],
+      });
+    stored.updatedAt = nowIso();
+    await this.store.save(stored);
+    return stored;
   }
 
-  private clearSessionRuntimePermissionContext(sessionId: string): void {
+  private async clearSessionRuntimePermissionContext(
+    session: AgentSession,
+  ): Promise<StoredSession> {
+    const sessionId = session.id;
     const current = this.sessionRuntimeOverrides.get(sessionId);
-    if (!current) {
-      return;
+    if (current) {
+      const next: SessionRuntimeOverrides = {
+        ...current,
+        permissionMode: undefined,
+        permissions: undefined,
+        classifier: undefined,
+        approver: undefined,
+      };
+      if (isHooksEmpty(next.hooks)) {
+        this.sessionRuntimeOverrides.delete(sessionId);
+      } else {
+        this.sessionRuntimeOverrides.set(sessionId, next);
+      }
     }
 
-    const next: SessionRuntimeOverrides = {
-      ...current,
-      permissionMode: undefined,
-      permissions: undefined,
-      classifier: undefined,
-      approver: undefined,
-    };
-    if (isHooksEmpty(next.hooks)) {
-      this.sessionRuntimeOverrides.delete(sessionId);
-      return;
-    }
-    this.sessionRuntimeOverrides.set(sessionId, next);
+    const stored = session.snapshot();
+    delete stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY];
+    stored.updatedAt = nowIso();
+    await this.store.save(stored);
+    return stored;
   }
 
   private applySessionRuntimeOverrides(
@@ -1438,6 +1539,19 @@ export class ActoviqAgentClient {
   }
 
   private hydrateSession(stored: StoredSession): AgentSession {
+    const persistedPermissionState =
+      getPersistedActoviqSessionPermissionState(stored.metadata);
+    if (
+      persistedPermissionState.mode ||
+      persistedPermissionState.permissions.length > 0
+    ) {
+      const current = this.sessionRuntimeOverrides.get(stored.id) ?? {};
+      this.sessionRuntimeOverrides.set(stored.id, {
+        ...current,
+        permissionMode: current.permissionMode ?? persistedPermissionState.mode,
+        permissions: current.permissions ?? persistedPermissionState.permissions,
+      });
+    }
     return new AgentSession(
       {
         runSession: (session, input, options) => this.runOnSession(session, input, options),
@@ -1461,10 +1575,11 @@ export class ActoviqAgentClient {
         getAgentContinuity: (session) => this.getAgentContinuityForSession(session),
         setRuntimeHooks: (session, hooks) => this.setSessionRuntimeHooks(session.id, hooks),
         clearRuntimeHooks: (session) => this.clearSessionRuntimeHooks(session.id),
+        setModel: (session, model) => this.setSessionModel(session, model),
         setRuntimePermissionContext: (session, context) =>
-          this.setSessionRuntimePermissionContext(session.id, context),
+          this.setSessionRuntimePermissionContext(session, context),
         clearRuntimePermissionContext: (session) =>
-          this.clearSessionRuntimePermissionContext(session.id),
+          this.clearSessionRuntimePermissionContext(session),
         hydrate: (next) => this.hydrateSession(next),
         saveCheckpoint: (_session, label) => this.store.saveCheckpoint(stored.id, label),
         restoreCheckpoint: (session, checkpointId) =>
@@ -1476,6 +1591,14 @@ export class ActoviqAgentClient {
       this.store,
       stored,
     );
+  }
+
+  private async setSessionModel(session: AgentSession, model: string): Promise<StoredSession> {
+    const next = session.snapshot();
+    next.model = this.resolveModel(model);
+    next.updatedAt = nowIso();
+    await this.store.save(next);
+    return next;
   }
 
   private async restoreCheckpointToSession(
@@ -1688,7 +1811,7 @@ export class ActoviqAgentClient {
         options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
         options.mcpServers ?? [],
       ),
-      model: options.model ?? session?.model ?? this.config.model,
+      model: this.resolveModel(options.model ?? session?.model),
       maxTokens: options.maxTokens,
       temperature: options.temperature,
       toolChoice: options.toolChoice,
@@ -2045,6 +2168,9 @@ export class ActoviqAgentClient {
         compactState.microcompactCount,
         persistedCompactState.microcompactCount,
       ),
+      consecutiveCompactFailures: persistedCompactState.consecutiveFailures,
+      lastCompactFailureAt: persistedCompactState.lastFailureAt,
+      lastCompactError: persistedCompactState.lastError,
       hasCompacted:
         compactState.hasCompacted ||
         persistedCompactState.compactCount + persistedCompactState.microcompactCount > 0,
@@ -2088,14 +2214,18 @@ export class ActoviqAgentClient {
       {
         workDir: this.config.workDir,
         systemPrompt: snapshot.systemPrompt ?? this.config.systemPrompt,
-        model: options.model ?? snapshot.model ?? this.config.model,
+        model: this.resolveModel(options.model ?? snapshot.model),
         modelApi: this.modelApi,
         compactConfig: this.config.compact,
         runtimeState: this.getSessionMemoryRuntimeState(snapshot),
       },
     );
 
-    if (reactive.session === snapshot) {
+    if (!reactive.result.compacted) {
+      if (reactive.session !== snapshot) {
+        await this.store.save(reactive.session);
+        session.replace(reactive.session);
+      }
       return undefined;
     }
 
@@ -2141,7 +2271,7 @@ export class ActoviqAgentClient {
       runOptions.classifier ||
       runOptions.approver
     ) {
-      session.setPermissionContext({
+      await session.setPermissionContext({
         mode: runOptions.permissionMode,
         permissions: runOptions.permissions,
         classifier: runOptions.classifier,
@@ -2188,7 +2318,7 @@ export class ActoviqAgentClient {
       runOptions.classifier ||
       runOptions.approver
     ) {
-      session.setPermissionContext({
+      await session.setPermissionContext({
         mode: runOptions.permissionMode,
         permissions: runOptions.permissions,
         classifier: runOptions.classifier,
@@ -2224,13 +2354,14 @@ export class ActoviqAgentClient {
       snapshot,
       {
         ...options,
+        model: options.model ? this.resolveModel(options.model) : undefined,
         force: options.force ?? true,
         trigger: 'manual',
       },
       {
         workDir: this.config.workDir,
         systemPrompt: snapshot.systemPrompt ?? this.config.systemPrompt,
-        model: snapshot.model ?? this.config.model,
+        model: this.resolveModel(snapshot.model),
         modelApi: this.modelApi,
         compactConfig: this.config.compact,
         runtimeState: this.getSessionMemoryRuntimeState(snapshot),
@@ -2258,7 +2389,7 @@ export class ActoviqAgentClient {
         systemPrompt: await this.buildDreamSystemPrompt(),
         tools: createActoviqFileTools({ cwd: this.config.workDir }),
         mcpServers: [],
-        model: request.model ?? this.config.model,
+        model: this.resolveModel(request.model),
         maxTokens: request.maxTokens ?? DEFAULT_DREAM_MAX_TOKENS,
         userId: this.config.userId,
         metadata: {
@@ -2511,7 +2642,7 @@ export class ActoviqAgentClient {
     const stored = session.snapshot();
     const extraction = await this.performSessionMemoryExtraction(stored, {
       force: options.force ?? true,
-      model: options.model ?? stored.model ?? this.config.model,
+      model: this.resolveModel(options.model ?? stored.model),
       systemPrompt: stored.systemPrompt ?? this.config.systemPrompt,
       trigger: 'manual',
       maxTokens: options.maxTokens,
@@ -2659,7 +2790,7 @@ export class ActoviqAgentClient {
     }
 
     const extraction = await this.performSessionMemoryExtraction(next, {
-      model: options.model ?? next.model ?? this.config.model,
+      model: this.resolveModel(options.model ?? next.model),
       systemPrompt: next.systemPrompt ?? this.config.systemPrompt,
       trigger: 'auto',
       maxTokens: Math.min(options.maxTokens ?? this.config.maxTokens, DEFAULT_SESSION_MEMORY_MAX_TOKENS),
@@ -2670,7 +2801,7 @@ export class ActoviqAgentClient {
     const compacted = await compactActoviqSession(next, { trigger: 'auto' }, {
       workDir: this.config.workDir,
       systemPrompt: next.systemPrompt ?? this.config.systemPrompt,
-      model: options.model ?? next.model ?? this.config.model,
+      model: this.resolveModel(options.model ?? next.model),
       modelApi: this.modelApi,
       compactConfig: this.config.compact,
       runtimeState: extraction.state,

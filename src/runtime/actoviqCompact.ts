@@ -32,9 +32,12 @@ const MAX_RECENT_SKILLS = 5;
 interface PersistedCompactState {
   compactCount: number;
   microcompactCount: number;
+  consecutiveFailures: number;
   lastCompactedAt?: string;
   lastSummaryMessage?: string;
   lastTrigger?: ActoviqCompactTrigger;
+  lastFailureAt?: string;
+  lastError?: string;
 }
 
 interface PersistedCompactHistoryEntry {
@@ -79,6 +82,7 @@ export function getPersistedActoviqCompactState(
     return {
       compactCount: 0,
       microcompactCount: 0,
+      consecutiveFailures: 0,
     };
   }
 
@@ -86,6 +90,8 @@ export function getPersistedActoviqCompactState(
   return {
     compactCount: typeof state.compactCount === 'number' ? state.compactCount : 0,
     microcompactCount: typeof state.microcompactCount === 'number' ? state.microcompactCount : 0,
+    consecutiveFailures:
+      typeof state.consecutiveFailures === 'number' ? state.consecutiveFailures : 0,
     lastCompactedAt:
       typeof state.lastCompactedAt === 'string' ? state.lastCompactedAt : undefined,
     lastSummaryMessage:
@@ -96,6 +102,9 @@ export function getPersistedActoviqCompactState(
       state.lastTrigger === 'reactive'
         ? state.lastTrigger
         : undefined,
+    lastFailureAt:
+      typeof state.lastFailureAt === 'string' ? state.lastFailureAt : undefined,
+    lastError: typeof state.lastError === 'string' ? state.lastError : undefined,
   };
 }
 
@@ -103,9 +112,12 @@ export function serializeActoviqCompactState(state: PersistedCompactState): Reco
   return {
     compactCount: state.compactCount,
     microcompactCount: state.microcompactCount,
+    consecutiveFailures: state.consecutiveFailures,
     lastCompactedAt: state.lastCompactedAt,
     lastSummaryMessage: state.lastSummaryMessage,
     lastTrigger: state.lastTrigger,
+    lastFailureAt: state.lastFailureAt,
+    lastError: state.lastError,
   };
 }
 
@@ -280,6 +292,45 @@ function truncateMessagesForCompactRetry(
 
   const dropCount = Math.min(Math.max(1, Math.floor(messages.length * 0.2)), messages.length - 1);
   return messages.slice(dropCount);
+}
+
+function buildFailedCompactResult(
+  session: StoredSession,
+  persistedState: PersistedCompactState,
+  trigger: ActoviqCompactTrigger,
+  tokenEstimateBefore: number,
+  runtimeState: ActoviqSessionMemoryRuntimeState,
+  error: unknown,
+): {
+  session: StoredSession;
+  result: ActoviqSessionCompactResult;
+} {
+  const failedAt = nowIso();
+  const failedSession = structuredClone(session);
+  const message = error instanceof Error ? error.message : String(error);
+  const consecutiveFailures = persistedState.consecutiveFailures + 1;
+  failedSession.updatedAt = failedAt;
+  failedSession.metadata[ACTOVIQ_COMPACT_STATE_KEY] =
+    serializeActoviqCompactState({
+      ...persistedState,
+      consecutiveFailures,
+      lastFailureAt: failedAt,
+      lastError: message,
+    });
+  return {
+    session: failedSession,
+    result: {
+      compacted: false,
+      trigger,
+      reason: 'failed',
+      tokenEstimateBefore,
+      compactCount: persistedState.compactCount,
+      microcompactCount: persistedState.microcompactCount,
+      consecutiveFailures,
+      error: message,
+      state: runtimeState,
+    },
+  };
 }
 
 function extractTextFromToolResultContent(content: unknown): string {
@@ -554,7 +605,8 @@ export async function compactActoviqSession(
   session: StoredSession;
   result: ActoviqSessionCompactResult;
 }> {
-  const consecutiveFailures = compactionFailureCounts.get(session.id) ?? 0;
+  const persistedState = getPersistedActoviqCompactState(session.metadata);
+  const consecutiveFailures = persistedState.consecutiveFailures;
   if (consecutiveFailures >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
     return {
       session,
@@ -563,14 +615,15 @@ export async function compactActoviqSession(
         trigger: options.trigger,
         reason: 'circuit_breaker_open',
         tokenEstimateBefore: estimateActoviqConversationTokens(session.messages),
-        compactCount: getPersistedActoviqCompactState(session.metadata).compactCount,
-        microcompactCount: getPersistedActoviqCompactState(session.metadata).microcompactCount,
+        compactCount: persistedState.compactCount,
+        microcompactCount: persistedState.microcompactCount,
+        consecutiveFailures,
+        error: persistedState.lastError,
         state: context.runtimeState,
       },
     };
   }
 
-  const persistedState = getPersistedActoviqCompactState(session.metadata);
   const filteredMessages = filterActoviqMessagesForSessionMemory(session.messages);
   const compactableMessages =
     options.trigger === 'reactive' &&
@@ -733,20 +786,32 @@ export async function compactActoviqSession(
         signal: options.signal,
       };
       response = await context.modelApi.createMessage(request);
-      compactionFailureCounts.delete(session.id);
       break;
     } catch (error) {
       if (
         retryCount >= MAX_COMPACT_PROMPT_TOO_LONG_RETRIES ||
         !isActoviqPromptTooLongError(error)
       ) {
-        compactionFailureCounts.set(session.id, consecutiveFailures + 1);
-        throw error;
+        return buildFailedCompactResult(
+          session,
+          persistedState,
+          options.trigger,
+          tokenEstimateBefore,
+          context.runtimeState,
+          error,
+        );
       }
 
       const truncated = truncateMessagesForCompactRetry(retryMessagesToSummarize);
       if (!truncated) {
-        throw error;
+        return buildFailedCompactResult(
+          session,
+          persistedState,
+          options.trigger,
+          tokenEstimateBefore,
+          context.runtimeState,
+          error,
+        );
       }
 
       droppedMessages += retryMessagesToSummarize.length - truncated.length;
@@ -755,6 +820,16 @@ export async function compactActoviqSession(
     }
   }
   const summary = formatActoviqCompactSummary(extractTextFromContent(response.content));
+  if (!summary) {
+    return buildFailedCompactResult(
+      session,
+      persistedState,
+      options.trigger,
+      tokenEstimateBefore,
+      context.runtimeState,
+      new Error('Compaction returned an empty summary.'),
+    );
+  }
   const compactedAt = nowIso();
   const nextRuntimeState: ActoviqSessionMemoryRuntimeState = {
     ...context.runtimeState,
@@ -775,6 +850,7 @@ export async function compactActoviqSession(
   nextSession.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
     compactCount: persistedState.compactCount + 1,
     microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
+    consecutiveFailures: 0,
     lastCompactedAt: compactedAt,
     lastSummaryMessage: summary,
     lastTrigger: options.trigger,
@@ -1044,8 +1120,9 @@ export function recordActoviqLoopCompactionsOnSession(
     if (compaction.messagesSummarized > 0) {
       const continuationDepth = getPersistedCompactContinuationDepth(session) + 1;
       session.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
-        compactCount: persisted.compactCount + 1,
-        microcompactCount: persisted.microcompactCount + compaction.clearedToolResults,
+      compactCount: persisted.compactCount + 1,
+      microcompactCount: persisted.microcompactCount + compaction.clearedToolResults,
+      consecutiveFailures: 0,
         lastCompactedAt: timestamp,
         lastSummaryMessage: compaction.summary ?? persisted.lastSummaryMessage,
         lastTrigger: compaction.trigger,

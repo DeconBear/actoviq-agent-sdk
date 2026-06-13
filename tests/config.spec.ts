@@ -37,7 +37,7 @@ describe('config loading', () => {
           env: {
             ACTOVIQ_AUTH_TOKEN: 'test-token',
             ACTOVIQ_BASE_URL: 'https://example.test/actoviq',
-            ACTOVIQ_DEFAULT_medium_MODEL: 'demo-model',
+            ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'demo-model',
           },
         },
         null,
@@ -50,7 +50,7 @@ describe('config loading', () => {
 
     expect(settings.exists).toBe(true);
     expect(settings.env.ACTOVIQ_AUTH_TOKEN).toBe('test-token');
-    expect(settings.env.ACTOVIQ_DEFAULT_medium_MODEL).toBe('demo-model');
+    expect(settings.env.ACTOVIQ_DEFAULT_MEDIUM_MODEL).toBe('demo-model');
     expect(settings.path).toBe(settingsPath);
   });
 
@@ -65,7 +65,7 @@ describe('config loading', () => {
           env: {
             ACTOVIQ_AUTH_TOKEN: 'settings-token',
             ACTOVIQ_BASE_URL: 'https://example.test/actoviq',
-            ACTOVIQ_DEFAULT_medium_MODEL: 'settings-model',
+            ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'settings-model',
           },
         },
         null,
@@ -90,6 +90,37 @@ describe('config loading', () => {
     expect(config.sessionDirectory).toContain('.actoviq');
   });
 
+  it('resolves neutral model tiers and defaults to medium', async () => {
+    const homeDir = await createTempHome();
+    const settingsPath = path.join(homeDir, 'tier-config.json');
+    await writeFile(
+      settingsPath,
+      JSON.stringify({
+        env: {
+          ACTOVIQ_AUTH_TOKEN: 'settings-token',
+          ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
+          ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'balanced-model',
+          ACTOVIQ_DEFAULT_MAX_MODEL: 'large-model',
+        },
+      }),
+      'utf8',
+    );
+    await loadJsonConfigFile(settingsPath);
+
+    const defaulted = await resolveRuntimeConfig({ homeDir });
+    const explicitTier = await resolveRuntimeConfig({ homeDir, model: 'max' });
+
+    expect(defaulted.model).toBe('balanced-model');
+    expect(defaulted.modelTier).toBe('medium');
+    expect(explicitTier.model).toBe('large-model');
+    expect(explicitTier.modelTier).toBe('max');
+    expect(defaulted.modelTiers).toEqual({
+      min: 'small-model',
+      medium: 'balanced-model',
+      max: 'large-model',
+    });
+  });
+
   it('defaults maxToolIterations to unlimited and honors an explicit cap', async () => {
     const homeDir = await createTempHome();
 
@@ -107,6 +138,17 @@ describe('config loading', () => {
       maxToolIterations: 24,
     });
     expect(capped.maxToolIterations).toBe(24);
+  });
+
+  it('requires an explicit or tiered model for the anthropic protocol', async () => {
+    const homeDir = await createTempHome();
+
+    await expect(
+      resolveRuntimeConfig({
+        homeDir,
+        authToken: 'test-token',
+      }),
+    ).rejects.toThrow('No model was configured');
   });
 
   it('resolves runtime config from process environment variables', async () => {

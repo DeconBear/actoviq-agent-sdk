@@ -46,13 +46,23 @@ const PROMPT_GLYPH = '❯';
 
 /** Core tools that mutate state and require approval in 'default' mode. */
 const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
+const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'auto',
+]);
 
 export const TUI_SLASH_COMMANDS: Record<string, string> = {
   help: 'Show available commands',
   clear: 'Clear the screen',
   compact: 'Compact the current session',
   memory: 'Show memory/compact state',
-  model: 'Show current model',
+  model: 'Show or set the session model',
+  permissions: 'Show or set the permission mode',
+  sessions: 'List stored sessions',
+  resume: 'Resume a stored session',
   tools: 'List available tools',
   dream: 'Trigger memory consolidation',
   exit: 'Quit',
@@ -71,6 +81,8 @@ export interface ActoviqTuiOptions {
   configPath?: string;
   permissionMode?: ActoviqPermissionMode;
   model?: string;
+  resumeSessionId?: string;
+  continueMostRecent?: boolean;
 }
 
 interface PermissionDialogState {
@@ -141,7 +153,21 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     ...(options.model ? { model: options.model } : {}),
   });
   const toolMetadata = await sdk.listToolMetadata();
-  const session = await sdk.createSession({ title: path.basename(workDir) });
+  let session = options.resumeSessionId
+    ? await sdk.resumeSession(options.resumeSessionId, {
+        model: options.model,
+        permissionMode: options.permissionMode,
+      })
+    : options.continueMostRecent
+      ? await sdk.sessions.continueMostRecent({
+          model: options.model,
+          permissionMode: options.permissionMode,
+        })
+      : await sdk.createSession({
+          title: path.basename(workDir),
+          model: options.model,
+          permissionMode,
+        });
 
   const screen = new TuiScreen(process.stdout);
   const editor = new InputEditor();
@@ -164,12 +190,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
   const queuedInputs: string[] = [];
-  const alwaysAllowedTools = new Set<string>();
+  const currentPermissionMode = (): ActoviqPermissionMode =>
+    session.permissionContext.mode ?? permissionMode;
 
   const approver: ActoviqToolApprover = async (context) => {
-    if (alwaysAllowedTools.has(context.publicName)) {
-      return { behavior: 'allow', reason: 'Always-allowed for this TUI session.' };
-    }
     const outcome = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
       dialog = {
         toolName: context.publicName,
@@ -182,7 +206,20 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     dialog = null;
     renderDynamic();
     if (outcome === 'always') {
-      alwaysAllowedTools.add(context.publicName);
+      const state = session.permissionContext;
+      const permissions = state.permissions.filter(
+        rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
+      );
+      permissions.push({
+        toolName: context.publicName,
+        behavior: 'allow',
+        source: 'tui-session',
+      });
+      await session.setPermissionContext({
+        mode: state.mode ?? permissionMode,
+        permissions,
+        approver,
+      });
       return { behavior: 'allow', reason: 'Approved (always) in TUI.' };
     }
     return outcome === 'allow'
@@ -193,9 +230,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   const canUseTool: ActoviqCanUseTool | undefined =
     permissionMode === 'default'
       ? (context) => {
-          if (alwaysAllowedTools.has(context.publicName)) {
-            return { behavior: 'allow', reason: 'Always-allowed for this TUI session.' };
-          }
           if (MUTATING_TOOLS.has(context.publicName)) {
             return { behavior: 'ask', reason: `${context.publicName} mutates the workspace.` };
           }
@@ -389,7 +423,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       const stream = session.stream(text, {
         systemPrompt,
         signal: abortCtrl.signal,
-        permissionMode,
+        permissionMode: currentPermissionMode(),
         approver,
         ...(canUseTool ? { canUseTool } : {}),
         drainQueuedInputs: () => {
@@ -543,9 +577,65 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'quit':
           await shutdown(0);
           return;
-        case 'model':
-          appendStatic([...formatInfoLine(`model: ${sdk.config.model}`), '']);
+        case 'model': {
+          const requested = raw.slice(spaceIndex + 1).trim();
+          if (spaceIndex === -1 || !requested) {
+            appendStatic([...formatInfoLine(`model: ${session.model}`), '']);
+            return;
+          }
+          await session.setModel(requested === 'default' ? sdk.config.model : requested);
+          appendStatic([...formatInfoLine(`model set to: ${session.model}`), '']);
           return;
+        }
+        case 'permissions': {
+          const requested = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
+          if (!requested) {
+            const state = session.permissionContext;
+            appendStatic([
+              ...formatInfoLine(
+                `permissions: ${state.mode ?? permissionMode} · ${state.permissions.length} session rules`,
+              ),
+              '',
+            ]);
+            return;
+          }
+          if (!PERMISSION_MODES.has(requested as ActoviqPermissionMode)) {
+            appendStatic([...formatErrorLine(`unknown permission mode: ${requested}`), '']);
+            return;
+          }
+          await session.setPermissionContext({
+            mode: requested as ActoviqPermissionMode,
+            permissions: session.permissionContext.permissions,
+            approver,
+          });
+          appendStatic([...formatInfoLine(`permissions set to: ${requested}`), '']);
+          return;
+        }
+        case 'sessions': {
+          const sessions = await sdk.sessions.list();
+          appendStatic([
+            ...(sessions.length > 0
+              ? sessions.map(item =>
+                  `${item.id === session.id ? A.green : A.dim}${item.id}${A.reset} ${item.title} · ${item.model} · ${item.status}`,
+                )
+              : formatInfoLine('no stored sessions')),
+            '',
+          ]);
+          return;
+        }
+        case 'resume': {
+          const sessionId = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
+          if (!sessionId) {
+            appendStatic([...formatErrorLine('usage: /resume <session-id>'), '']);
+            return;
+          }
+          session = await sdk.resumeSession(sessionId);
+          appendStatic([
+            ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
+            '',
+          ]);
+          return;
+        }
         case 'tools':
           appendStatic([
             ...formatInfoLine(toolMetadata.map((tool) => tool.name).join(', ')),
@@ -563,7 +653,16 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         case 'compact': {
           try {
-            const result = (await session.compact({ force: true })) as { messagesRemoved?: number };
+            const summaryInstructions =
+              spaceIndex === -1 ? undefined : raw.slice(spaceIndex + 1).trim() || undefined;
+            const result = await session.compact({ force: true, summaryInstructions });
+            if (!result.compacted) {
+              appendStatic([
+                ...formatErrorLine(result.error ?? `compact skipped: ${result.reason}`),
+                '',
+              ]);
+              return;
+            }
             appendStatic([
               `${A.green}✓ compacted${A.reset}${A.dim} · ${result.messagesRemoved ?? '?'} messages summarized${A.reset}`,
               '',
@@ -852,9 +951,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   appendStatic(
     formatBanner({
       workDir,
-      model: sdk.config.model,
+      model: session.model,
       toolCount: toolMetadata.length,
-      permissionMode,
+      permissionMode: currentPermissionMode(),
       width: screen.width,
     }),
   );
