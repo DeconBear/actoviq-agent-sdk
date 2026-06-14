@@ -39,7 +39,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `model` | `string \| null` | 否 | 模型 ID，如 `'claude-medium-4-6'`。传 `null` 清除全局设置。 |
+| `model` | `string \| null` | 否 | 模型 ID 或等级，如 `'medium'`。传 `null` 清除全局设置。 |
 
 **`systemPrompt(prompt: string): this`**
 
@@ -214,7 +214,7 @@ const sdk = await createAgentSdk({
 **第三步：`.model(model)` 和 `.systemPrompt(prompt)` — 全局兜底**
 
 ```ts
-.model('claude-medium-4-6')
+.model('medium')
 .systemPrompt('你是一个 DevOps 工程师。只报告检查结果，不闲聊。语言：中文。')
 ```
 
@@ -273,7 +273,7 @@ const sdk = await createAgentSdk({
   2. typecheck 失败时 lint 自动跳过
   3. `$steps.typecheck.text` 只有在 typecheck 成功时才有有效值
 - **没传 `allowedTools`** — 不限制，继承 SDK 默认权限。
-- **没传 `model`** — 自动使用全局 `.model('claude-medium-4-6')`。
+- **没传 `model`** — 自动使用全局 `.model('medium')`。
 
 **步骤 3：report（生成报告）**
 
@@ -286,7 +286,7 @@ const sdk = await createAgentSdk({
     + 'Lint 检查：$steps.lint.text',
   {
     dependsOn: ['typecheck', 'lint'],  // 依赖两个步骤
-    model: 'claude-min-4-5',          // 覆盖全局模型
+    model: 'min',                       // 覆盖全局模型
     systemPrompt: '你是一个技术报告生成器。只输出 markdown 格式的报告，不要对话。',
     mode: 'single',                     // 单次回答，报告生成不需要工具调用
   },
@@ -296,7 +296,7 @@ const sdk = await createAgentSdk({
 与前两步的区别：
 
 - **`dependsOn: ['typecheck', 'lint']`** — 同时依赖两个步骤。引擎会等待两者都完成（lint 又依赖 typecheck，所以实际执行顺序是 typecheck → lint → report）。**同层步骤并行——如果还有另一个步骤也只依赖 typecheck，它会和 lint 同时执行。**
-- **`model: 'claude-min-4-5'`** — 覆盖全局模型。报告汇总不需要深度推理，用更快的模型节省时间和成本。
+- **`model: 'min'`** — 覆盖全局模型。报告汇总不需要深度推理，用更快的模型节省时间和成本。
 - **`systemPrompt`** — 覆盖全局系统提示词。报告步骤需要 markdown 格式输出，与前两步的"DevOps 工程师"角色要求不同。
 - **`mode: 'single'`** — 报告步骤只生成文本，不需要工具。`'single'` 模式设置 `toolChoice: { type: 'none' }`，直接返回单次回答而不进入 ReAct 工具循环。默认是 `'react'`。
 
@@ -472,8 +472,8 @@ console.log(results[2]?.text);
 ```ts
 const fastest = await sdk.race(
   [
-    () => sdk.run('2+2 等于几？', { model: 'claude-min-4-5' }),
-    () => sdk.run('2+2 等于几？', { model: 'claude-medium-4-6' }),
+    () => sdk.run('2+2 等于几？', { model: 'min' }),
+    () => sdk.run('2+2 等于几？', { model: 'medium' }),
   ],
   { timeoutMs: 30_000 },
 );

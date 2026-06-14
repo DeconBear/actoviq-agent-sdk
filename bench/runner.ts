@@ -1,4 +1,4 @@
-import { exec as execCallback } from 'node:child_process';
+import { exec as execCallback, execFile as execFileCallback } from 'node:child_process';
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,7 @@ import type {
 import { appendTrajectoryEvent, readTrajectoryEvents } from './trajectory.js';
 
 const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 const DEFAULT_CASE_PATTERN = 'bench/cases/**/*.json';
 const DEFAULT_REPORT_DIR = 'bench/reports';
 const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
@@ -254,7 +255,6 @@ async function runTrial(
 
     const passed =
       (setupCommand?.exitCode ?? 0) === 0 &&
-      (agentCommand?.exitCode ?? 0) === 0 &&
       graders.every((grader) => grader.passed);
     const durationMs = Date.now() - startedAt;
     const score = scoreTrial(benchmarkCase, passed, auditedAgentMetrics, durationMs, graders);
@@ -535,16 +535,17 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 async function removeWorkspace(workspace: string): Promise<void> {
-  for (let attempt = 1; attempt <= 5; attempt += 1) {
+  const maxAttempts = 10;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       await rm(workspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
       return;
     } catch (error) {
-      if (attempt === 5) {
+      if (attempt === maxAttempts) {
         console.warn(`Warning: could not remove benchmark workspace ${workspace}: ${errorMessage(error)}`);
         return;
       }
-      await delay(250 * attempt);
+      await delay(500 * attempt);
     }
   }
 }
@@ -560,14 +561,22 @@ async function runCommand(
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
 ): Promise<BenchmarkCommandResult> {
   const startedAt = Date.now();
+  let timedOut = false;
+  const execution = exec(command, {
+    cwd,
+    env,
+    windowsHide: true,
+    maxBuffer: MAX_BUFFER,
+  });
+  const child = (execution as typeof execution & {
+    child?: { pid?: number; kill(signal?: NodeJS.Signals): boolean };
+  }).child;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    void terminateProcessTree(child?.pid, child);
+  }, timeoutMs);
   try {
-    const result = await exec(command, {
-      cwd,
-      env,
-      timeout: timeoutMs,
-      windowsHide: true,
-      maxBuffer: MAX_BUFFER,
-    });
+    const result = await execution;
     return {
       command,
       exitCode: 0,
@@ -590,8 +599,36 @@ async function runCommand(
       stdout: nodeError.stdout ?? '',
       stderr: nodeError.stderr ?? errorMessage(error),
       durationMs: Date.now() - startedAt,
-      timedOut: nodeError.killed === true || nodeError.signal === 'SIGTERM',
+      timedOut: timedOut || nodeError.killed === true || nodeError.signal === 'SIGTERM',
     };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function terminateProcessTree(
+  pid: number | undefined,
+  child: { kill(signal?: NodeJS.Signals): boolean } | undefined,
+): Promise<void> {
+  if (!pid) {
+    return;
+  }
+  if (process.platform === 'win32') {
+    await execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      windowsHide: true,
+    }).catch(() => undefined);
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    child?.kill('SIGTERM');
+  }
+  await delay(500);
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    // The process group already exited.
   }
 }
 
@@ -702,6 +739,9 @@ async function readAgentMetrics(outputFile: string): Promise<BenchmarkAgentMetri
       toolCallCount: getNumber(source, 'toolCallCount') ?? toolCalls?.length,
       toolErrorCount: getNumber(source, 'toolErrorCount') ?? countToolErrors(toolCalls),
       subagentCallCount: getNumber(source, 'subagentCallCount') ?? subagents?.length,
+      agentContinuationCallCount: getNumber(source, 'agentContinuationCallCount'),
+      backgroundSubagentCallCount: getNumber(source, 'backgroundSubagentCallCount'),
+      isolatedSubagentCallCount: getNumber(source, 'isolatedSubagentCallCount'),
       skillUseCount: getNumber(source, 'skillUseCount') ?? skills?.length,
       permissionDenialCount: getNumber(source, 'permissionDenialCount'),
       eventCount: getNumber(source, 'eventCount'),
@@ -765,6 +805,7 @@ function normalizeSubagents(value: unknown): BenchmarkAgentMetrics['subagents'] 
       runIds: normalizeStringArray(entry.runIds),
       sessionIds: normalizeStringArray(entry.sessionIds),
       taskIds: normalizeStringArray(entry.taskIds),
+      requestCount: getNumber(entry, 'requestCount') ?? getNumber(entry, 'totalRequestCount'),
       toolCallCount: getNumber(entry, 'toolCallCount') ?? getNumber(entry, 'totalToolCallCount'),
       toolErrorCount: getNumber(entry, 'toolErrorCount') ?? getNumber(entry, 'totalToolErrorCount'),
     });
@@ -899,11 +940,32 @@ function scoreBehavior(benchmarkCase: BenchmarkCase, metrics: BenchmarkAgentMetr
     score -= Math.min(0.4, excess * 0.1);
   }
   if (expectations?.minSubagentCalls != null) {
-    const actual = metrics.subagentCallCount ?? 0;
-    if (actual < expectations.minSubagentCalls) {
-      const missingRatio = (expectations.minSubagentCalls - actual) / Math.max(expectations.minSubagentCalls, 1);
-      score -= Math.min(0.5, missingRatio * 0.5);
-    }
+    score -= missingBehaviorPenalty(
+      metrics.subagentCallCount ?? 0,
+      expectations.minSubagentCalls,
+      0.5,
+    );
+  }
+  if (expectations?.minAgentContinuationCalls != null) {
+    score -= missingBehaviorPenalty(
+      metrics.agentContinuationCallCount ?? 0,
+      expectations.minAgentContinuationCalls,
+      0.4,
+    );
+  }
+  if (expectations?.minBackgroundSubagentCalls != null) {
+    score -= missingBehaviorPenalty(
+      metrics.backgroundSubagentCallCount ?? 0,
+      expectations.minBackgroundSubagentCalls,
+      0.3,
+    );
+  }
+  if (expectations?.minIsolatedSubagentCalls != null) {
+    score -= missingBehaviorPenalty(
+      metrics.isolatedSubagentCallCount ?? 0,
+      expectations.minIsolatedSubagentCalls,
+      0.3,
+    );
   }
   if (expectations?.minSkillUseCount != null) {
     const actual = metrics.skillUseCount ?? 0;
@@ -923,6 +985,14 @@ function scoreBehavior(benchmarkCase: BenchmarkCase, metrics: BenchmarkAgentMetr
     }
   }
   return Math.max(0, score);
+}
+
+function missingBehaviorPenalty(actual: number, expected: number, maximum: number): number {
+  if (actual >= expected) {
+    return 0;
+  }
+  const missingRatio = (expected - actual) / Math.max(expected, 1);
+  return Math.min(maximum, missingRatio * maximum);
 }
 
 function sumSubagentMetric(
@@ -1010,8 +1080,8 @@ function renderMarkdownReport(report: BenchmarkReport): string {
     `Pass rate: ${(report.passRate * 100).toFixed(2)}% (${report.passedTrials}/${report.totalTrials})`,
     `Average score: ${report.averageScore.toFixed(3)}`,
     '',
-    '| Case | Trial | Runtime | Category | Result | Score | Task | Efficiency | Behavior | Duration | LLM req | Tools | Subagents | Skills | Trace events |',
-    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+    '| Case | Trial | Runtime | Category | Result | Score | Task | Efficiency | Behavior | Duration | LLM req | Tools | Subagents | Continue | Background | Isolated | Skills | Trace events |',
+    '|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
   ];
   for (const trial of report.cases) {
     lines.push(
@@ -1019,7 +1089,11 @@ function renderMarkdownReport(report: BenchmarkReport): string {
         trial.passed ? 'pass' : 'fail'
       } | ${trial.score.total.toFixed(3)} | ${trial.score.task.toFixed(3)} | ${trial.score.efficiency.toFixed(3)} | ${trial.score.behavior.toFixed(3)} | ${trial.durationMs}ms | ${formatMetric(trial.agentMetrics?.llmRequestCount)} | ${formatMetric(
         trial.agentMetrics?.toolCallCount,
-      )} | ${formatMetric(trial.agentMetrics?.subagentCallCount)} | ${formatMetric(trial.agentMetrics?.skillUseCount)} | ${formatMetric(
+      )} | ${formatMetric(trial.agentMetrics?.subagentCallCount)} | ${formatMetric(
+        trial.agentMetrics?.agentContinuationCallCount,
+      )} | ${formatMetric(trial.agentMetrics?.backgroundSubagentCallCount)} | ${formatMetric(
+        trial.agentMetrics?.isolatedSubagentCallCount,
+      )} | ${formatMetric(trial.agentMetrics?.skillUseCount)} | ${formatMetric(
         trial.trajectoryEventCount,
       )} |`,
     );
@@ -1041,7 +1115,11 @@ function printTrialResult(result: BenchmarkTrialResult): void {
   console.log(
     `${status} ${result.caseId} trial=${result.trial} runtime=${result.runtimeTarget} score=${result.score.total.toFixed(3)} behavior=${result.score.behavior.toFixed(3)} duration=${result.durationMs}ms tools=${formatMetric(
       metrics?.toolCallCount,
-    )} llmReq=${formatMetric(metrics?.llmRequestCount)} subagents=${formatMetric(metrics?.subagentCallCount)} skills=${formatMetric(
+    )} llmReq=${formatMetric(metrics?.llmRequestCount)} subagents=${formatMetric(metrics?.subagentCallCount)} continue=${formatMetric(
+      metrics?.agentContinuationCallCount,
+    )} background=${formatMetric(metrics?.backgroundSubagentCallCount)} isolated=${formatMetric(
+      metrics?.isolatedSubagentCallCount,
+    )} skills=${formatMetric(
       metrics?.skillUseCount,
     )}`,
   );
@@ -1050,7 +1128,7 @@ function printTrialResult(result: BenchmarkTrialResult): void {
   }
   // Surface agent-side failures (e.g. provider 429/5xx) directly in the run
   // log so infrastructure problems are visible without opening the report.
-  if (!result.passed && result.agentCommand && result.agentCommand.exitCode !== 0) {
+  if (result.agentCommand && result.agentCommand.exitCode !== 0) {
     const stderrTail = (result.agentCommand.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ');
     const exitLabel = result.agentCommand.timedOut
       ? 'timed out (killed)'

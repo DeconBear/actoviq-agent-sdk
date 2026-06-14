@@ -50,11 +50,24 @@ export function summarizeActoviqAgentDefinition(
     name: definition.name,
     description: definition.description,
     model: definition.model,
+    effort: definition.effort,
+    permissionMode: definition.permissionMode,
     maxToolIterations: definition.maxToolIterations,
+    maxTurns: definition.maxTurns,
     toolNames: (definition.tools ?? []).map(toolDefinition => toolDefinition.name),
+    allowedTools: [...(definition.allowedTools ?? [])],
+    disallowedTools: [...(definition.disallowedTools ?? [])],
+    allowedAgents: [...(definition.allowedAgents ?? [])],
+    skills: [...(definition.skills ?? [])],
     mcpServerNames: (definition.mcpServers ?? []).map(server => server.name),
+    requiredMcpServers: [...(definition.requiredMcpServers ?? [])],
     inheritDefaultTools: definition.inheritDefaultTools !== false,
     inheritDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+    background: definition.background === true,
+    isolation: definition.isolation,
+    memory: definition.memory,
+    source: definition.source,
+    sourcePath: definition.sourcePath,
     metadataKeys: Object.keys(definition.metadata ?? {}),
     hasSystemPrompt:
       typeof definition.systemPrompt === 'string' && definition.systemPrompt.trim().length > 0,
@@ -157,7 +170,18 @@ export function createActoviqTaskTool(options: {
     agent: string,
     prompt: string,
     options?: AgentRunOptions,
-  ) => Promise<AgentRunResult>;
+    delegation?: {
+      description: string;
+      name?: string;
+      isolation?: 'worktree';
+      cwd?: string;
+    },
+  ) => Promise<{
+    result: AgentRunResult;
+    sessionId?: string;
+    worktreePath?: string;
+    worktreeBranch?: string;
+  }>;
   launchBackgroundAgent: (
     agent: string,
     prompt: string,
@@ -166,6 +190,12 @@ export function createActoviqTaskTool(options: {
       parentSessionId?: string;
     },
     runOptions?: AgentRunOptions,
+    delegation?: {
+      description: string;
+      name?: string;
+      isolation?: 'worktree';
+      cwd?: string;
+    },
   ) => Promise<ActoviqBackgroundTaskRecord>;
   onDelegated?: (event: {
     subagentType: string;
@@ -176,14 +206,18 @@ export function createActoviqTaskTool(options: {
     sessionId?: string;
     status: 'completed' | 'async_launched';
     taskId?: string;
+    requestCount?: number;
     toolCallCount?: number;
     toolErrorCount?: number;
     textSummary?: string;
   }) => void;
   name?: string;
   description?: string;
+  maxDepth?: number;
+  maxFanout?: number;
 }): AgentToolDefinition<ActoviqTaskToolInput, ActoviqTaskToolResult> {
-  const name = options.name ?? 'Task';
+  const name = options.name ?? 'Agent';
+  const fanoutByRun = new Map<string, number>();
   const description =
     options.description ??
     'Delegate a focused task to a named subagent and return its final response.';
@@ -192,6 +226,7 @@ export function createActoviqTaskTool(options: {
     {
       name,
       description,
+      aliases: name === 'Agent' ? ['Task'] : name === 'Task' ? ['Agent'] : undefined,
       inputSchema: z.object({
         description: z.string().min(1).optional()
           .describe('A short (3-5 word) label summarizing what the agent will do.'),
@@ -203,13 +238,24 @@ export function createActoviqTaskTool(options: {
           .describe('The type of specialized agent to use for this task.'),
         agent: z.string().min(1).optional(),
         agent_type: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
         run_in_background: z.boolean().optional(),
+        name: z.string().min(1).optional(),
+        isolation: z.literal('worktree').optional(),
+        cwd: z.string().min(1).optional(),
       }).superRefine((input, ctx) => {
         if (!resolveTaskPrompt(input)) {
           ctx.addIssue({
             code: 'custom',
             path: ['prompt'],
             message: 'Provide `prompt` (full task briefing) and optionally a short `description` label for the delegated work.',
+          });
+        }
+        if (input.cwd && input.isolation) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['cwd'],
+            message: '`cwd` and `isolation` are mutually exclusive.',
           });
         }
       }),
@@ -219,19 +265,25 @@ export function createActoviqTaskTool(options: {
           subagentType: z.string(),
           runId: z.string(),
           sessionId: z.string().optional(),
+          agentId: z.string().optional(),
           model: z.string(),
           text: z.string(),
           toolCallCount: z.number().int().nonnegative(),
           toolErrorCount: z.number().int().nonnegative(),
+          worktreePath: z.string().optional(),
+          worktreeBranch: z.string().optional(),
         }),
         z.object({
           status: z.literal('async_launched'),
           taskId: z.string(),
           subagentType: z.string(),
           sessionId: z.string().optional(),
+          agentId: z.string().optional(),
           outputFile: z.string(),
           canReadOutputFile: z.boolean(),
           description: z.string(),
+          worktreePath: z.string().optional(),
+          worktreeBranch: z.string().optional(),
         }),
       ]),
       serialize: (output) =>
@@ -240,9 +292,12 @@ export function createActoviqTaskTool(options: {
               `Delegated to ${output.subagentType}.`,
               `Run id: ${output.runId}`,
               output.sessionId ? `Session id: ${output.sessionId}` : undefined,
+              output.agentId ? `Agent id: ${output.agentId}` : undefined,
               `Model: ${output.model}`,
               `Tool calls: ${output.toolCallCount}`,
               `Tool errors: ${output.toolErrorCount}`,
+              output.worktreePath ? `Worktree: ${output.worktreePath}` : undefined,
+              output.worktreeBranch ? `Branch: ${output.worktreeBranch}` : undefined,
               '',
               output.text,
             ]
@@ -252,8 +307,11 @@ export function createActoviqTaskTool(options: {
               `Background task launched for ${output.subagentType}.`,
               `Task id: ${output.taskId}`,
               output.sessionId ? `Session id: ${output.sessionId}` : undefined,
-              'Use TaskOutput with this task id to read the result; do not inspect runtime session files directly.',
+              output.agentId ? `Agent id: ${output.agentId}` : undefined,
+              'You will be notified automatically when this agent completes. Use TaskOutput only for explicit manual inspection; do not poll it.',
               `Description: ${output.description}`,
+              output.worktreePath ? `Worktree: ${output.worktreePath}` : undefined,
+              output.worktreeBranch ? `Branch: ${output.worktreeBranch}` : undefined,
             ]
               .filter(Boolean)
               .join('\n'),
@@ -290,9 +348,39 @@ export function createActoviqTaskTool(options: {
         );
       }
 
-      const inheritedOptions = extractInheritedDelegationOptions(context);
+      const parentDepth = readNonNegativeInteger(context.metadata.__actoviqAgentDepth) ?? 0;
+      const maxDepth = options.maxDepth ?? 1;
+      if (parentDepth >= maxDepth) {
+        throw new ConfigurationError(
+          `Subagent depth limit reached (${maxDepth}). Complete this task without another delegation.`,
+        );
+      }
+      const allowedAgents = readStringArray(context.metadata.__actoviqAllowedAgents);
+      if (allowedAgents && !allowedAgents.includes(resolvedSubagent)) {
+        throw new ConfigurationError(
+          `Subagent "${resolvedSubagent}" is not allowed in this delegated context.`,
+        );
+      }
+      const currentFanout = fanoutByRun.get(context.runId) ?? 0;
+      const maxFanout = options.maxFanout ?? 8;
+      if (currentFanout >= maxFanout) {
+        throw new ConfigurationError(`Subagent fanout limit reached (${maxFanout}).`);
+      }
+      fanoutByRun.set(context.runId, currentFanout + 1);
 
-      if (input.run_in_background) {
+      const inheritedOptions = extractInheritedDelegationOptions(context, {
+        depth: parentDepth + 1,
+        allowedAgents: definition.allowedAgents,
+        model: input.model,
+      });
+      const delegation = {
+        description: taskLabel,
+        name: input.name,
+        isolation: input.isolation ?? definition.isolation,
+        cwd: input.cwd ?? definition.cwd,
+      };
+
+      if (input.run_in_background ?? definition.background ?? false) {
         const backgroundTask = await options.launchBackgroundAgent(
           resolvedSubagent,
           taskPrompt,
@@ -301,6 +389,7 @@ export function createActoviqTaskTool(options: {
             parentSessionId: context.sessionId,
           },
           inheritedOptions,
+          delegation,
         );
         options.onDelegated?.({
           subagentType: resolvedSubagent,
@@ -317,13 +406,22 @@ export function createActoviqTaskTool(options: {
           taskId: backgroundTask.id,
           subagentType: resolvedSubagent,
           sessionId: backgroundTask.sessionId,
+          agentId: backgroundTask.sessionId,
           outputFile: backgroundTask.outputFile,
           canReadOutputFile: true,
           description: taskLabel,
+          worktreePath: backgroundTask.worktreePath,
+          worktreeBranch: backgroundTask.worktreeBranch,
         };
       }
 
-      const result = await options.runAgent(resolvedSubagent, taskPrompt, inheritedOptions);
+      const delegated = await options.runAgent(
+        resolvedSubagent,
+        taskPrompt,
+        inheritedOptions,
+        delegation,
+      );
+      const result = delegated.result;
       const toolErrorCount = result.toolCalls.filter(call => call.isError).length;
       options.onDelegated?.({
         subagentType: resolvedSubagent,
@@ -331,8 +429,9 @@ export function createActoviqTaskTool(options: {
         parentRunId: context.runId,
         parentSessionId: context.sessionId,
         runId: result.runId,
-        sessionId: result.sessionId,
+        sessionId: delegated.sessionId ?? result.sessionId,
         status: 'completed',
+        requestCount: result.requests.length,
         toolCallCount: result.toolCalls.length,
         toolErrorCount,
         textSummary: result.text,
@@ -341,11 +440,14 @@ export function createActoviqTaskTool(options: {
         status: 'completed',
         subagentType: resolvedSubagent,
         runId: result.runId,
-        sessionId: result.sessionId,
+        sessionId: delegated.sessionId ?? result.sessionId,
+        agentId: delegated.sessionId ?? result.sessionId,
         model: result.model,
         text: result.text,
         toolCallCount: result.toolCalls.length,
         toolErrorCount,
+        worktreePath: delegated.worktreePath,
+        worktreeBranch: delegated.worktreeBranch,
       };
     },
   );
@@ -399,22 +501,53 @@ function resolveSubagentType(
 
 function buildTaskToolPrompt(agents: ActoviqAgentDefinitionSummary[]): string {
   const shared = [
-    'Launch a subagent with the Task tool to handle complex, multi-step work autonomously. Delegate proactively whenever independent investigation, review, debugging, parallel exploration, or verification would materially help — do not wait for the user to ask for a subagent.',
+    'Launch a new agent to handle complex, multi-step tasks autonomously.',
     '',
-    'When to use Task:',
+    'The Agent tool launches specialized agents that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it. Delegate proactively whenever independent investigation, review, debugging, parallel exploration, or verification would materially help — do not wait for the user to ask you to use an agent.',
+    '',
+    '## When to use Agent',
     '- Multi-file regressions, independent failure paths, audits/reviews, confusing test failures, and risky changes that need a second focused pass.',
-    '- Open-ended searches or research that may take several rounds of exploration and would otherwise fill your context with intermediate output.',
-    '- Independent subtasks that can run in parallel: launch multiple Task calls in a single message to run them concurrently.',
+    '- Open-ended searches or research that may take several rounds of exploration and would otherwise fill your context with intermediate output. If research can be broken into independent questions, launch parallel agents in a single message.',
+    '- Implementation work that requires several edits across multiple files — an agent can stay focused on the task while you continue with other work.',
+    '- Verification of non-trivial changes (3+ file edits, backend/API changes) — spawn an agent to independently confirm correctness before reporting completion.',
+    '- Any task where you find yourself thinking "it would help to have someone else look at this" or "this would benefit from focused attention without distractions."',
     '',
-    'When NOT to use Task:',
-    '- Reading a specific known file path, or a simple 2-3 file lookup — do it directly; it is faster.',
-    '- Trivial single-file edits.',
+    '## When NOT to use Agent',
+    '- Reading a specific known file path or doing a simple 2-3 file lookup — use Read/Glob/Grep directly; they are faster.',
+    '- Trivial single-file edits or one-line fixes.',
+    '- Tasks that take less than 2 trivial steps to complete.',
+    '- If you already have a running or recently completed agent for the same work, use SendMessage to continue it instead of spawning a new one.',
     '',
-    'Writing the prompt:',
-    '- The subagent starts with zero context. Brief it like a capable colleague who just walked in: explain the goal and why it matters, what you already learned or ruled out, exact file paths and commands, and what it should report back.',
-    '- Always pass a full `prompt` (the task briefing) plus a short 3-5 word `description` label. Terse command-style prompts produce shallow, generic work.',
-    '- Clearly say whether the agent should write code or only investigate and report.',
-    '- The agent returns a single final message; its work is otherwise invisible. Summarize the result for the user yourself.',
+    '## Writing the prompt',
+    'The agent starts with zero context. Brief it like a smart colleague who just walked into the room — it hasn\'t seen this conversation, doesn\'t know what you\'ve tried, doesn\'t understand why this task matters.',
+    '- Explain what you\'re trying to accomplish and why.',
+    '- Describe what you\'ve already learned or ruled out.',
+    '- Give enough context about the surrounding problem that the agent can make judgment calls rather than just following a narrow instruction.',
+    '- If you need a short response, say so explicitly.',
+    '- Lookups: hand over the exact command. Investigations: hand over the question — prescribed steps become dead weight when the premise is wrong.',
+    '- Terse command-style prompts produce shallow, generic work.',
+    '',
+    '**Never delegate understanding.** Don\'t write prompts like "based on your findings, fix the bug" or "based on the research, implement it." Those phrases push synthesis onto the agent instead of doing it yourself. Write prompts that prove you understood: include file paths, line numbers, what specifically to change.',
+    '',
+    '## Foreground vs background',
+    '- Use foreground (default) when you need the agent\'s results before you can proceed — e.g., research agents whose findings inform your next steps.',
+    '- Use background (`run_in_background: true`) when you have genuinely independent work to do in parallel. You will be automatically notified when a background agent completes — do not sleep, poll, or proactively check on its progress. Continue with other work or respond to the user instead.',
+    '',
+    '## Parallel agents',
+    'Launch multiple agents concurrently by sending a single message with multiple Agent tool calls. This maximizes throughput for independent subtasks. When the user asks you to run things "in parallel," send a single message with multiple Agent tool use blocks.',
+    '',
+    '## Continuing agents',
+    '- Use SendMessage with the agent\'s id or assigned name to continue a previously spawned agent. The agent resumes with its full context preserved.',
+    '- Each fresh Agent invocation starts without context — provide a complete task description.',
+    '',
+    '## Isolation',
+    'Use `isolation: "worktree"` when parallel agents may edit overlapping repository files. A worktree gives the agent an isolated copy of the repo. Changed worktrees are retained; unchanged ones are removed automatically.',
+    '',
+    '## After the agent finishes',
+    '- The agent returns a single final message. Its intermediate work is invisible to you.',
+    '- Trust the agent\'s output but verify critical claims.',
+    '- Summarize the agent\'s result for the user — don\'t just relay raw output.',
+    '- Do not duplicate work the agent already did. If you delegated research to an agent, don\'t perform the same searches yourself.',
   ];
 
   if (agents.length === 0) {
@@ -442,23 +575,42 @@ function extractInheritedDelegationOptions(
     classifier?: AgentRunOptions['classifier'];
     approver?: AgentRunOptions['approver'];
     hooks?: AgentRunOptions['hooks'];
+    effort?: AgentRunOptions['effort'];
+    metadata?: Record<string, unknown>;
+  },
+  delegation: {
+    depth: number;
+    allowedAgents?: string[];
+    model?: string;
   },
 ): AgentRunOptions | undefined {
-  if (
-    !context.permissionMode &&
-    !context.permissions &&
-    !context.classifier &&
-    !context.approver &&
-    !context.hooks
-  ) {
-    return undefined;
-  }
-
   return {
     permissionMode: context.permissionMode,
     permissions: context.permissions,
     classifier: context.classifier,
     approver: context.approver,
     hooks: context.hooks,
+    effort: context.effort,
+    model: delegation.model,
+    metadata: {
+      ...(context.metadata ?? {}),
+      __actoviqAgentDepth: delegation.depth,
+      ...(delegation.allowedAgents
+        ? { __actoviqAllowedAgents: [...delegation.allowedAgents] }
+        : {}),
+    },
   };
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every(entry => typeof entry === 'string')) {
+    return undefined;
+  }
+  return [...value];
 }

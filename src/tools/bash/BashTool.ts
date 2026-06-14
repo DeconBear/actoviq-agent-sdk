@@ -1,10 +1,14 @@
 import { z } from 'zod';
-import { execSync, spawn } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { tool } from '../../runtime/tools.js';
 import type { AgentToolDefinition } from '../../types.js';
 import { BASH_DESCRIPTION } from './prompt.js';
 
 export const BASH_TOOL_NAME = 'Bash';
+const execFile = promisify(execFileCallback);
 
 const inputSchema = z.strictObject({
   command: z.string().describe('The command to execute'),
@@ -37,34 +41,67 @@ export function createBashTool(): AgentToolDefinition {
     },
     async (input: BashInput, context) => {
       const timeoutMs = Math.min(Math.max(1, input.timeout ?? 120_000), 600_000);
+      const shell = resolveBashShell();
       try {
         if (input.run_in_background) {
-          // For background execution, spawn detached and return immediately
-          const child = spawn(input.command, {
+          const child = spawn(shell.executable, [...shell.args, input.command], {
             cwd: context.cwd,
-            shell: true,
             stdio: 'ignore',
             detached: true,
+            windowsHide: true,
           });
           child.unref();
           return { stdout: '', stderr: '', exitCode: 0, backgroundTaskId: child.pid?.toString() };
         }
 
-        const output = execSync(input.command, {
+        const output = await execFile(shell.executable, [...shell.args, input.command], {
           cwd: context.cwd,
           encoding: 'utf-8',
           timeout: timeoutMs,
           maxBuffer: 10 * 1024 * 1024, // 10MB
-          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
         });
-        return { stdout: output.trim(), stderr: '', exitCode: 0 };
+        return {
+          stdout: output.stdout.trim(),
+          stderr: output.stderr.trim(),
+          exitCode: 0,
+        };
       } catch (e: any) {
         return {
-          stdout: (e.stdout ?? '').trim(),
-          stderr: (e.stderr ?? e.message ?? String(e)).trim(),
-          exitCode: e.status ?? 1,
+          stdout: String(e.stdout ?? '').trim(),
+          stderr: String(e.stderr ?? e.message ?? e).trim(),
+          exitCode: typeof e.code === 'number' ? e.code : 1,
         };
       }
     },
   );
+}
+
+function resolveBashShell(): { executable: string; args: string[] } {
+  if (process.platform !== 'win32') {
+    return {
+      executable: process.env.SHELL || '/bin/bash',
+      args: ['-lc'],
+    };
+  }
+
+  const candidates = [
+    process.env.ACTOVIQ_BASH_PATH,
+    process.env.ProgramFiles
+      ? path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe')
+      : undefined,
+    process.env['ProgramFiles(x86)']
+      ? path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe')
+      : undefined,
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe')
+      : undefined,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const executable = candidates.find(candidate => existsSync(candidate));
+  if (!executable) {
+    throw new Error(
+      'Bash requires Git for Windows. Install Git Bash or set ACTOVIQ_BASH_PATH.',
+    );
+  }
+  return { executable, args: ['-lc'] };
 }

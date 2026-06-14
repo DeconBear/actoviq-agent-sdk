@@ -7,18 +7,15 @@ describe('mapActoviqEnvToAnthropicEnv', () => {
     const mapped = mapActoviqEnvToAnthropicEnv({
       ACTOVIQ_AUTH_TOKEN: 'token-1',
       ACTOVIQ_BASE_URL: 'https://example.test/anthropic',
-      ACTOVIQ_DEFAULT_medium_MODEL: 'medium-model',
-      ACTOVIQ_DEFAULT_max_MODEL: 'max-model',
-      ACTOVIQ_DEFAULT_min_MODEL: 'min-model',
+      ACTOVIQ_MODEL: 'balanced-model',
+      ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
     });
 
     expect(mapped).toEqual({
       ANTHROPIC_AUTH_TOKEN: 'token-1',
       ANTHROPIC_BASE_URL: 'https://example.test/anthropic',
-      ANTHROPIC_DEFAULT_medium_MODEL: 'medium-model',
-      ANTHROPIC_DEFAULT_max_MODEL: 'max-model',
-      ANTHROPIC_DEFAULT_min_MODEL: 'min-model',
-      ANTHROPIC_SMALL_FAST_MODEL: 'min-model',
+      ANTHROPIC_MODEL: 'balanced-model',
+      ANTHROPIC_SMALL_FAST_MODEL: 'small-model',
     });
   });
 
@@ -26,19 +23,43 @@ describe('mapActoviqEnvToAnthropicEnv', () => {
     const mapped = mapActoviqEnvToAnthropicEnv({
       ACTOVIQ_AUTH_TOKEN: 'actoviq-token',
       ANTHROPIC_AUTH_TOKEN: 'explicit-token',
-      ACTOVIQ_DEFAULT_min_MODEL: 'min-model',
+      ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
       ANTHROPIC_SMALL_FAST_MODEL: 'explicit-fast-model',
     });
 
-    // Explicit ANTHROPIC_AUTH_TOKEN and ANTHROPIC_SMALL_FAST_MODEL win; the
-    // min alias key itself is still derived because it was not set explicitly.
     expect(mapped).toEqual({
-      ANTHROPIC_DEFAULT_min_MODEL: 'min-model',
+      ANTHROPIC_MODEL: 'small-model',
     });
   });
 
   it('ignores missing and empty values', () => {
     expect(mapActoviqEnvToAnthropicEnv({})).toEqual({});
     expect(mapActoviqEnvToAnthropicEnv({ ACTOVIQ_AUTH_TOKEN: '' })).toEqual({});
+  });
+
+  it('resolves neutral model aliases before mapping provider environment variables', () => {
+    expect(
+      mapActoviqEnvToAnthropicEnv({
+        ACTOVIQ_MODEL: 'medium',
+        ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
+        ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'balanced-model',
+        ACTOVIQ_DEFAULT_MAX_MODEL: 'large-model',
+      }),
+    ).toEqual({
+      ANTHROPIC_MODEL: 'balanced-model',
+      ANTHROPIC_SMALL_FAST_MODEL: 'small-model',
+    });
+  });
+
+  it('uses the configured neutral default tier when ACTOVIQ_MODEL is omitted', () => {
+    expect(
+      mapActoviqEnvToAnthropicEnv({
+        ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
+        ACTOVIQ_DEFAULT_MAX_MODEL: 'large-model',
+      }),
+    ).toEqual({
+      ANTHROPIC_MODEL: 'large-model',
+      ANTHROPIC_SMALL_FAST_MODEL: 'small-model',
+    });
   });
 });

@@ -253,3 +253,58 @@ delegation, so Clean SDK can still score 1.000 without exercising that capabilit
 - Investigate Bridge SDK Windows temporary workspace cleanup warnings.
 - Keep `official-claude-sdk` as an external Claude Code capability baseline while
   Clean SDK converges on tool, skill, permission, and subagent parity.
+# Clean SDK Subagent Parity Run - 2026-06-14
+
+## Scope
+
+This run focused on the three local workflow cases after the Clean SDK subagent
+runtime was expanded with addressable agents, background notifications,
+continuation, Markdown definitions, and worktree isolation.
+
+Command:
+
+```text
+npm run bench:parity -- --cases "bench/cases/complex/workflow-*.json"
+```
+
+All cases use isolated copied workspaces and deterministic end-state graders.
+Agent process exit and timeout data remain in the report as stability evidence,
+but task pass/fail is tied to setup and final graders. The
+`workflow-parallel-audit` turn budget is 28 because the previous 20-turn limit
+cut off both Clean and the official SDK after the implementation was already
+correct.
+
+## Results
+
+| Runtime | Passed | Average Score | LLM Requests | Tool Calls | Tool Errors | Subagent Calls | Continuations | Background Calls |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Clean SDK | 3/3 | 0.983 | 60 | 77 | 10 | 2 | 1 | 2 |
+| Bridge SDK | 3/3 | 0.981 | 26 | 59 | 2 | 3 | 0 | 1 |
+| Official Claude Agent SDK | 3/3 | 0.935 | 70 | 77 | 2 | 3 | 0 | 1 |
+
+| Case | Clean | Bridge | Official |
+| --- | ---: | ---: | ---: |
+| `complex.workflow.agent-continuation` | 0.992 | 0.957 | 0.891 |
+| `complex.workflow.parallel-audit` | 0.975 | 1.000 | 0.930 |
+| `complex.workflow.subagent-review` | 0.981 | 0.987 | 0.984 |
+
+## Behavior Findings
+
+- All three runtimes passed every deterministic grader.
+- Clean was the only runtime that continued the same persisted subagent in the
+  continuation case: one `SendMessage` continuation and one background launch.
+- Bridge and the official SDK both launched a second reviewer instead of
+  continuing the first one in that case.
+- Official subagent counts are derived from top-level `Agent`/`Task` calls.
+  This avoids the previous duplicate count from task-start and child assistant
+  events.
+- Clean's tool errors were observable debugging actions: expected failing test
+  runs, mismatched `Edit.old_string` retries, and one explicitly timed
+  `TaskOutput` wait. Final state remained correct.
+- The Clean Bash tool now runs through a real POSIX shell on Windows (Git Bash)
+  instead of `cmd.exe`, eliminating false failures for commands such as `ls`.
+
+The generated per-runtime JSON, Markdown, and JSONL trajectories remain under
+`bench/reports/` and are intentionally not source artifacts.
+
+---

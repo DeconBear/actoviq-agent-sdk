@@ -44,10 +44,34 @@ const sdk = await createAgentSdk({
 const runnerState = createRunnerState();
 
 try {
-  const stream = sdk.stream(buildPrompt(instruction, workspace), {
+  const session = await sdk.createSession({
+    title: caseId ? `benchmark: ${caseId}` : 'benchmark',
+    metadata: {
+      benchmarkCaseId: caseId,
+      benchmarkRuntime: 'clean-sdk',
+    },
+  });
+  const stream = session.stream(buildPrompt(instruction, workspace), {
     permissionMode,
-    systemPrompt:
-      'You are running inside an isolated benchmark workspace. Complete the user task by changing the workspace as needed. Keep changes focused and do not inspect benchmark internals under .actoviq-bench.',
+    systemPrompt: [
+      'You are a pragmatic software engineer running inside an isolated benchmark workspace.',
+      'Complete the user task by changing the workspace as needed. Keep changes focused.',
+      '',
+      '## Working style',
+      '- Verify your changes work before reporting completion — run tests, builds, or the relevant command.',
+      '- When a task is large or multi-faceted, break it down with TodoWrite and track progress.',
+      '- If you encounter an error, diagnose the root cause before making blind fixes.',
+      '- Do not inspect benchmark internals under .actoviq-bench.',
+      '',
+      '## Using agents',
+      '- You have access to the Agent tool for spawning subagents. Use it proactively when:',
+      '  * The task involves multiple independent changes across files',
+      '  * You need focused investigation or debugging that would clutter your context',
+      '  * You can parallelize independent subtasks',
+      '  * You need a second pair of eyes on a complex change',
+      '- When you delegate, write the agent a self-contained prompt with file paths and expected outcomes.',
+      '- Use background agents for genuinely independent work — you will be notified when they finish.',
+    ].join('\n'),
     metadata: {
       benchmarkCaseId: caseId,
       benchmarkRuntime: 'clean-sdk',
@@ -143,6 +167,7 @@ interface RunnerState {
   toolCalls: Array<{
     name: string;
     publicName?: string;
+    input?: unknown;
     isError?: boolean;
     durationMs?: number;
   }>;
@@ -213,14 +238,14 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
           },
         },
       });
-      if (event.call.publicName === 'Task') {
+      if (isAgentToolName(event.call.publicName ?? event.call.name)) {
         await appendTrajectoryEvent(trajectoryFile, {
           runtime: 'clean-sdk',
           caseId,
           actor: { type: 'main-agent' },
           event: {
             type: 'subagent_start',
-            name: readStringField(event.call.input, 'subagent_type') ?? 'unknown',
+            name: readAgentName(event.call.input),
             inputSummary: summarizeText(
               readStringField(event.call.input, 'description') ??
               readStringField(event.call.input, 'prompt'),
@@ -242,6 +267,7 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
       state.toolCalls.push({
         name: event.result.name,
         publicName: event.result.publicName,
+        input: event.result.input,
         isError,
         durationMs: event.result.durationMs,
       });
@@ -261,14 +287,14 @@ async function recordAgentEvent(event: AgentEvent, state: RunnerState): Promise<
           },
         },
       });
-      if (event.result.publicName === 'Task') {
+      if (isAgentToolName(event.result.publicName ?? event.result.name)) {
         await appendTrajectoryEvent(trajectoryFile, {
           runtime: 'clean-sdk',
           caseId,
-          actor: { type: 'subagent', name: readStringField(event.result.input, 'subagent_type') },
+          actor: { type: 'subagent', name: readAgentName(event.result.input) },
           event: {
             type: 'subagent_result',
-            name: readStringField(event.result.input, 'subagent_type') ?? 'unknown',
+            name: readAgentName(event.result.input),
             outputSummary: summarizeText(event.result.outputText),
             isError,
             durationMs: event.result.durationMs,
@@ -446,6 +472,9 @@ function buildRunnerOutput(params: {
       toolCallCount: toolCalls.length,
       toolErrorCount: toolCalls.filter((call) => call.isError).length,
       subagentCallCount: sumDelegatedAgentCounts(result.delegatedAgents),
+      agentContinuationCallCount: countAgentContinuations(toolCalls),
+      backgroundSubagentCallCount: countAgentCalls(toolCalls, 'background'),
+      isolatedSubagentCallCount: countAgentCalls(toolCalls, 'isolated'),
       skillUseCount: skillNames.length,
       permissionDenialCount: result.permissionDecisions?.filter((decision) => decision.behavior === 'deny').length ?? 0,
       eventCount: state.eventCount,
@@ -467,6 +496,7 @@ function buildRunnerOutput(params: {
         runIds: agent.runIds,
         sessionIds: agent.sessionIds,
         taskIds: agent.taskIds,
+        requestCount: agent.totalRequestCount,
         toolCallCount: agent.totalToolCallCount,
         toolErrorCount: agent.totalToolErrorCount,
       })),
@@ -484,6 +514,9 @@ function buildPartialMetrics(state: RunnerState, error: Error): unknown {
     toolCallCount: state.toolCallCount,
     toolErrorCount: state.toolErrorCount + 1,
     subagentCallCount: 0,
+    agentContinuationCallCount: countAgentContinuations(state.toolCalls),
+    backgroundSubagentCallCount: countAgentCalls(state.toolCalls, 'background'),
+    isolatedSubagentCallCount: countAgentCalls(state.toolCalls, 'isolated'),
     skillUseCount: 0,
     permissionDenialCount: state.permissionDenialCount,
     eventCount: state.eventCount,
@@ -500,6 +533,51 @@ function buildPartialMetrics(state: RunnerState, error: Error): unknown {
 
 function sumDelegatedAgentCounts(agents: Array<{ count: number }> | undefined): number {
   return agents?.reduce((sum, agent) => sum + agent.count, 0) ?? 0;
+}
+
+function isAgentToolName(name: string | undefined): boolean {
+  return name === 'Agent' || name === 'Task';
+}
+
+function readAgentName(input: unknown): string {
+  return readStringField(input, 'subagent_type') ??
+    readStringField(input, 'agent') ??
+    readStringField(input, 'agent_type') ??
+    'unknown';
+}
+
+function countAgentContinuations(
+  calls: Array<{ name: string; publicName?: string; input?: unknown }>,
+): number {
+  return calls.filter(call => {
+    const toolName = call.publicName ?? call.name;
+    if (toolName === 'SendMessage') {
+      return true;
+    }
+    const input = asRecord(call.input);
+    return isAgentToolName(toolName) && typeof input?.resume === 'string' && input.resume.length > 0;
+  }).length;
+}
+
+function countAgentCalls(
+  calls: Array<{ name: string; publicName?: string; input?: unknown }>,
+  kind: 'background' | 'isolated',
+): number {
+  return calls.filter(call => {
+    if (!isAgentToolName(call.publicName ?? call.name)) {
+      return false;
+    }
+    const input = asRecord(call.input);
+    return kind === 'background'
+      ? input?.run_in_background === true
+      : input?.isolation === 'worktree';
+  }).length;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function getSkillNames(result: AgentRunResult): string[] {

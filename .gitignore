@@ -14,3 +14,5 @@ plan/
 AGENTS.md
 CLAUDE.md
 vendor/actoviq-runtime/runtime.bundle.br
+vendor/actoviq-runtime/runtime.bundle.mjs
+vendor/actoviq-runtime/SYNC_SUMMARY.json

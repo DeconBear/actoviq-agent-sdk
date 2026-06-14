@@ -71,11 +71,46 @@ npx actoviq-react [工作目录]
 
 这是一个基于 readline 的交互式 Agent，特点：
 - 主终端缓冲区实时流式输出（支持原生滚动回看）
-- Tab 补全斜杠命令（`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`）
+- Tab 补全斜杠命令，包括会话模型、权限、压缩与恢复控制
 - ↑↓ 方向键浏览历史命令
 - Ctrl+C 中止当前请求，连按两次退出
 
-**注意：** `actoviq-react` 是一个轻量级滚动 REPL，**不是功能完整的 TUI**。它不使用 alternate screen buffer，不支持 ScrollBox 或富文本终端渲染。适合快速交互和调试，而非替代完整的终端 UI。
+**注意：** `actoviq-react` 是一个轻量级滚动 REPL，**不是功能完整的 TUI**。它不使用 alternate screen buffer，不支持 ScrollBox 或富文本终端渲染。适合快速交互和调试。完整终端 UI 请使用下面的 `actoviq-tui`。
+
+## 终端 UI（TUI）
+
+`actoviq-tui` 是 Clean SDK 的完整终端 UI，借鉴 Claude Code REPL 的设计：对话记录直接打印进终端原生滚动缓冲区，底部动态区域承载状态行、Claude 风格 prompt bar、斜杠命令菜单和权限确认对话框。
+
+```bash
+npx actoviq-tui [工作目录] [选项]
+
+# 选项
+#   --config <path>            加载指定的 Actoviq settings JSON 配置
+#   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions（默认）
+#   --model <model>            覆盖配置中的模型
+#   --resume <session-id>      恢复已保存的 Clean SDK 会话
+#   --continue                 继续最近更新的会话
+```
+
+功能特性：
+
+- **原生滚动条流式转录** —— 助手文本、`⏺ 工具(参数)` 调用行和 `⎿ ✓/✗` 结果行直接写入终端缓冲区，滚动回看和复制粘贴照常可用。
+- **实时状态行** —— 运行中显示 spinner、耗时、工具次数、上下文规模估计和当前工具名。
+- **Claude 风格 prompt bar** —— 行尾输入 `\` 再按 `Enter`（或 `Ctrl+J`）换行；`↑`/`↓` 浏览历史；光标内联渲染。
+- **斜杠命令菜单** —— 输入 `/` 弹出过滤菜单（`↑↓` 选择、`Tab` 补全、`Enter` 执行）。直接运行 `/resume` 会打开可搜索的项目会话选择器，`/resume <session-id>` 仍可按 ID 直接恢复。
+- **运行时能力目录** —— `/skills`、`/agents`、`/mcp` 和 `/plugins` 用于浏览当前工作区可见的 Clean SDK 能力；`/help` 提供可搜索的命令说明。
+- **模型与推理强度** —— `/model` 打开模型选择器，`/model config` 可配置提供商、隐藏显示的 API key、base URL 和 `min`/`medium`/`max` 模型分级；`/effort` 可选择 `low`、`medium`、`high`、`max` 或交给提供商自动决定。
+- **Dream 控制** —— `/dream` 打开运行/状态选择器，也可以直接使用 `/dream run` 和 `/dream status`。
+- **运行中追加指令（steering）** —— Agent 工作时可以继续输入并按 `Enter`：消息进入队列（显示 `⧗ queued`），并在下一次模型请求时注入。
+- **权限对话框** —— 使用 `--permission-mode default` 时，变更型工具会暂停并弹出 批准 / 始终允许 / 拒绝 对话框。“始终允许”规则会随会话保存并在恢复时继续生效。
+- **中断控制** —— `Esc` 中止当前运行；`Ctrl+C` 清空输入（连按两次退出）；空输入时 `Ctrl+D` 退出。
+- **内置上下文管理** —— Clean SDK 会在长会话中自动压缩上下文，并在服务端拒绝超长请求时反应式压缩恢复；压缩以 `∿ context compacted` 提示呈现。
+
+两个 CLI 共享同样的 Clean SDK 运行时默认值（`~/.actoviq/settings.json` 配置、核心工具、`bypassPermissions`、不限工具迭代次数），可对接任何 Anthropic 兼容或 OpenAI 兼容的模型服务。
+
+默认情况下，Clean SDK 会话按当前工作区隔离保存在 `~/.actoviq/projects/<workspace-key>`。显式设置的 `sessionDirectory` 仍具有最高优先级。
+
+模型分级使用与提供商无关的别名。通过 `ACTOVIQ_DEFAULT_MIN_MODEL`、`ACTOVIQ_DEFAULT_MEDIUM_MODEL` 和 `ACTOVIQ_DEFAULT_MAX_MODEL` 配置后，可以在任何模型选择位置使用 `min`、`medium` 或 `max`。
 
 ## 教程入口
 

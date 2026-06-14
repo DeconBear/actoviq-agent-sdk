@@ -8,21 +8,22 @@
  * fall back to `~/.claude/settings.json` or keychain OAuth credentials.
  */
 
+import {
+  isActoviqModelTier,
+  selectDefaultActoviqModel,
+} from './modelTiers.js';
+
 const DIRECT_KEY_MAPPING: ReadonlyArray<readonly [actoviqKey: string, anthropicKey: string]> = [
   ['ACTOVIQ_API_KEY', 'ANTHROPIC_API_KEY'],
   ['ACTOVIQ_AUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN'],
   ['ACTOVIQ_BASE_URL', 'ANTHROPIC_BASE_URL'],
-  ['ACTOVIQ_MODEL', 'ANTHROPIC_MODEL'],
-  ['ACTOVIQ_DEFAULT_medium_MODEL', 'ANTHROPIC_DEFAULT_medium_MODEL'],
-  ['ACTOVIQ_DEFAULT_max_MODEL', 'ANTHROPIC_DEFAULT_max_MODEL'],
-  ['ACTOVIQ_DEFAULT_min_MODEL', 'ANTHROPIC_DEFAULT_min_MODEL'],
 ];
 
 /**
  * Derive `ANTHROPIC_*` variables from Actoviq-style env entries.
  *
  * Explicit `ANTHROPIC_*` keys in the source env always win over derived values.
- * `ACTOVIQ_DEFAULT_min_MODEL` additionally feeds `ANTHROPIC_SMALL_FAST_MODEL`
+ * `ACTOVIQ_DEFAULT_MIN_MODEL` additionally feeds `ANTHROPIC_SMALL_FAST_MODEL`
  * so background/fast-path requests stay on the configured provider.
  */
 export function mapActoviqEnvToAnthropicEnv(
@@ -37,9 +38,23 @@ export function mapActoviqEnvToAnthropicEnv(
     }
   }
 
-  const haikuModel = sourceEnv.ACTOVIQ_DEFAULT_min_MODEL;
-  if (haikuModel && !sourceEnv.ANTHROPIC_SMALL_FAST_MODEL) {
-    mapped.ANTHROPIC_SMALL_FAST_MODEL = haikuModel;
+  const modelTiers = {
+    min: sourceEnv.ACTOVIQ_DEFAULT_MIN_MODEL,
+    medium: sourceEnv.ACTOVIQ_DEFAULT_MEDIUM_MODEL,
+    max: sourceEnv.ACTOVIQ_DEFAULT_MAX_MODEL,
+  };
+  const requestedModel = sourceEnv.ACTOVIQ_MODEL?.trim();
+  const mappedModel =
+    requestedModel && isActoviqModelTier(requestedModel)
+      ? modelTiers[requestedModel.toLowerCase() as keyof typeof modelTiers]
+      : requestedModel || selectDefaultActoviqModel(modelTiers, '').model;
+  if (mappedModel && !sourceEnv.ANTHROPIC_MODEL) {
+    mapped.ANTHROPIC_MODEL = mappedModel;
+  }
+
+  const minModel = sourceEnv.ACTOVIQ_DEFAULT_MIN_MODEL;
+  if (minModel && !sourceEnv.ANTHROPIC_SMALL_FAST_MODEL) {
+    mapped.ANTHROPIC_SMALL_FAST_MODEL = minModel;
   }
 
   return mapped;

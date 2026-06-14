@@ -17,6 +17,35 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Do not make broad unrelated changes.',
     ].join('\n'),
     metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
+  },
+  {
+    name: 'Explore',
+    description:
+      'Use for fast read-only codebase exploration, locating files, tracing symbols, and answering architecture questions without changing files.',
+    systemPrompt: [
+      'You are the Actoviq Explore agent.',
+      'Search the codebase thoroughly and efficiently. Read, glob, grep, and run non-mutating inspection commands as needed.',
+      'Do not edit files. Return concise findings with exact paths and the evidence needed by the caller.',
+    ].join('\n'),
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'PowerShell', 'WebFetch', 'WebSearch'],
+    permissionMode: 'plan',
+    metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
+  },
+  {
+    name: 'Plan',
+    description:
+      'Use for implementation planning after exploration when the task spans multiple modules or has meaningful design tradeoffs.',
+    systemPrompt: [
+      'You are the Actoviq Plan agent.',
+      'Inspect the relevant implementation and produce a concrete, ordered engineering plan.',
+      'Do not edit files. Identify contracts, risks, tests, and verification commands; avoid speculative scope.',
+    ].join('\n'),
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'PowerShell', 'WebFetch', 'WebSearch'],
+    permissionMode: 'plan',
+    metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
   },
   {
     name: 'code-reviewer',
@@ -28,6 +57,7 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Keep the review concise and actionable.',
     ].join('\n'),
     metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
   },
   {
     name: 'debugger',
@@ -39,6 +69,20 @@ const DEFAULT_ACTOVIQ_AGENTS: ReadonlyArray<ActoviqAgentDefinition> = [
       'Avoid speculative rewrites.',
     ].join('\n'),
     metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
+  },
+  {
+    name: 'verification',
+    description:
+      'Use proactively after implementation to run independent verification, probe edge cases, and try to disprove that the change is complete.',
+    systemPrompt: [
+      'You are an independent verification specialist.',
+      'Run the relevant checks and inspect observable behavior. Do not accept code reading or a green unit test alone as proof.',
+      'Look for missing integration coverage, broken edge cases, unsafe behavior, and claims unsupported by command output.',
+      'Report PASS or FAIL for each check with concrete evidence.',
+    ].join('\n'),
+    metadata: DEFAULT_AGENT_METADATA,
+    source: 'built-in',
   },
 ];
 

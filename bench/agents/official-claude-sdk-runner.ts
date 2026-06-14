@@ -61,7 +61,7 @@ const resultMessage = [...messages].reverse().find((message) => message.type ===
 const toolCalls = extractToolCalls(messages);
 const toolResults = extractToolResults(messages);
 const erroredToolIds = new Set(toolResults.filter((toolResult) => toolResult.isError).map((toolResult) => toolResult.toolUseId));
-const subagents = extractSubagents(messages);
+const subagents = extractSubagents(toolCalls, messages);
 const skillRequests = toolCalls.filter((toolCall) => toolCall.name.toLowerCase().includes('skill'));
 const resultRecord = isRecord(resultMessage) ? resultMessage : undefined;
 const usage = isRecord(resultRecord?.usage) ? resultRecord.usage : undefined;
@@ -97,6 +97,9 @@ await writeRunnerOutput(outputFile, {
     toolCallCount: toolCalls.length,
     toolErrorCount: toolResults.filter((toolResult) => toolResult.isError).length,
     subagentCallCount: subagents.length,
+    agentContinuationCallCount: countAgentContinuations(toolCalls),
+    backgroundSubagentCallCount: countAgentCalls(toolCalls, 'background'),
+    isolatedSubagentCallCount: countAgentCalls(toolCalls, 'isolated'),
     skillUseCount: skillRequests.length,
     permissionDenialCount: Array.isArray(resultRecord?.permission_denials) ? resultRecord.permission_denials.length : undefined,
     eventCount: messages.length,
@@ -136,6 +139,7 @@ function buildPrompt(task: string, cwd: string): string {
 interface ToolCallSummary {
   id?: string;
   name: string;
+  input?: unknown;
   parentToolUseId?: string | null;
 }
 
@@ -160,10 +164,42 @@ function extractToolCalls(messagesToInspect: SDKMessage[]): ToolCallSummary[] {
       return [{
         id: getString(block, 'id'),
         name,
+        input: block.input,
         parentToolUseId: message.parent_tool_use_id,
       }];
     });
   });
+}
+
+function isAgentToolName(name: string): boolean {
+  return name === 'Agent' || name === 'Task';
+}
+
+function countAgentContinuations(toolCallsToInspect: ToolCallSummary[]): number {
+  return toolCallsToInspect.filter(toolCall => {
+    if (toolCall.name === 'SendMessage') {
+      return true;
+    }
+    const input = isRecord(toolCall.input) ? toolCall.input : undefined;
+    return isAgentToolName(toolCall.name) &&
+      typeof input?.resume === 'string' &&
+      input.resume.length > 0;
+  }).length;
+}
+
+function countAgentCalls(
+  toolCallsToInspect: ToolCallSummary[],
+  kind: 'background' | 'isolated',
+): number {
+  return toolCallsToInspect.filter(toolCall => {
+    if (!isAgentToolName(toolCall.name)) {
+      return false;
+    }
+    const input = isRecord(toolCall.input) ? toolCall.input : undefined;
+    return kind === 'background'
+      ? input?.run_in_background === true
+      : input?.isolation === 'worktree';
+  }).length;
 }
 
 function extractToolResults(messagesToInspect: SDKMessage[]): ToolResultSummary[] {
@@ -183,28 +219,54 @@ function extractToolResults(messagesToInspect: SDKMessage[]): ToolResultSummary[
   });
 }
 
-function extractSubagents(messagesToInspect: SDKMessage[]): Array<{ name?: string; description?: string; taskType?: string }> {
-  const subagents: Array<{ name?: string; description?: string; taskType?: string }> = [];
+function extractSubagents(
+  toolCallsToInspect: ToolCallSummary[],
+  messagesToInspect: SDKMessage[],
+): Array<{ name?: string; description?: string; taskType?: string }> {
+  const topLevelCalls = toolCallsToInspect.filter(toolCall =>
+    isAgentToolName(toolCall.name) && !toolCall.parentToolUseId,
+  );
+  if (topLevelCalls.length > 0) {
+    return topLevelCalls.map(toolCall => {
+      const input = isRecord(toolCall.input) ? toolCall.input : undefined;
+      return {
+        name:
+          getString(input, 'subagent_type') ??
+          getString(input, 'agent') ??
+          getString(input, 'agent_type') ??
+          'agent',
+        description:
+          getString(input, 'description') ??
+          getString(input, 'prompt') ??
+          getString(input, 'task'),
+        taskType: getString(input, 'task_type'),
+      };
+    });
+  }
+
+  const unique = new Map<string, { name?: string; description?: string; taskType?: string }>();
   for (const message of messagesToInspect) {
     if (message.type === 'system' && message.subtype === 'task_started') {
       if (!message.subagent_type) {
         continue;
       }
-      subagents.push({
+      const subagent = {
         name: message.subagent_type,
         description: message.description,
         taskType: message.task_type,
-      });
+      };
+      unique.set(`${subagent.name}:${subagent.description ?? ''}`, subagent);
       continue;
     }
     if (message.type === 'assistant' && message.subagent_type) {
-      subagents.push({
+      const subagent = {
         name: message.subagent_type,
         description: message.task_description,
-      });
+      };
+      unique.set(`${subagent.name}:${subagent.description ?? ''}`, subagent);
     }
   }
-  return subagents;
+  return [...unique.values()];
 }
 
 function extractLastAssistantText(messagesToInspect: SDKMessage[]): string | undefined {

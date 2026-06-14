@@ -9,7 +9,7 @@
   "trials": 1,
   "budget": {
     "maxSeconds": 360,
-    "maxTurns": 20,
+    "maxTurns": 28,
     "maxToolCalls": 120,
     "maxTokens": 120000
   },

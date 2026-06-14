@@ -18,4 +18,6 @@ If you only want to get moving quickly:
 
 1. Read [01-setup-and-quickstart.md](./01-setup-and-quickstart.md).
 2. Run `npm run example:actoviq-quickstart`.
-3. Or start the CLI REPL: `npx actoviq-react [work-dir]` (scrollback-mode, not a full TUI).
+3. Or start an interactive terminal surface:
+   - `npx actoviq-react [work-dir]` for the lightweight scrollback REPL.
+   - `npx actoviq-tui [work-dir]` for the full Clean SDK terminal UI.

@@ -57,6 +57,11 @@ export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.
 export { loadActoviqSettings } from './config/loadActoviqSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
+  encodeActoviqProjectPath,
+  getActoviqProjectSessionDirectory,
+  migrateLegacyActoviqProjectSessions,
+} from './config/projectSessionDirectory.js';
+export {
   ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS,
   createActoviqComputerUseMcpServer,
   createActoviqComputerUseToolkit,
@@ -120,6 +125,7 @@ export {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
+export { loadActoviqAgentDefinitions } from './runtime/actoviqAgentDefinitions.js';
 export { getDefaultActoviqAgents } from './runtime/defaultActoviqAgents.js';
 export {
   ActoviqContextApi,
@@ -146,6 +152,11 @@ export {
   decideActoviqToolPermission,
 } from './runtime/actoviqPermissions.js';
 export {
+  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
+  getPersistedActoviqSessionPermissionState,
+  serializeActoviqSessionPermissionState,
+} from './runtime/actoviqSessionPermissions.js';
+export {
   ActoviqToolsApi,
   buildActoviqCleanToolCatalog,
   resolveActoviqCleanToolMetadata,
@@ -163,6 +174,12 @@ export { AgentSession } from './runtime/agentSession.js';
 export { AgentRunStream } from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
 export { OpenaiModelApi, createOpenaiModelApi } from './provider/openai-model-api.js';
+export {
+  ACTOVIQ_MODEL_TIERS,
+  isActoviqModelTier,
+  resolveActoviqModelReference,
+  selectDefaultActoviqModel,
+} from './config/modelTiers.js';
 export {
   ActoviqSwarmApi,
   ActoviqSwarmTeam,

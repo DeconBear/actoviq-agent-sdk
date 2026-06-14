@@ -38,6 +38,7 @@ export interface ToolExecutionContext {
   modelApi?: ModelApi;
   model?: string;
   provider?: string;
+  effort?: ActoviqEffort;
 }
 
 export type ActoviqPermissionMode =
@@ -47,6 +48,16 @@ export type ActoviqPermissionMode =
   | 'plan'
   | 'auto';
 
+export type ActoviqModelTier = 'min' | 'medium' | 'max';
+export type ActoviqEffort = 'low' | 'medium' | 'high' | 'max';
+export type ActoviqRunEffort = ActoviqEffort | 'auto';
+
+export interface ActoviqModelTierConfig {
+  min?: string;
+  medium?: string;
+  max?: string;
+}
+
 export type ActoviqPermissionBehavior = 'allow' | 'deny' | 'ask';
 
 export interface ActoviqPermissionRule {
@@ -54,6 +65,11 @@ export interface ActoviqPermissionRule {
   behavior: ActoviqPermissionBehavior;
   matcher?: string;
   source?: string;
+}
+
+export interface ActoviqSessionPermissionState {
+  mode?: ActoviqPermissionMode;
+  permissions: ActoviqPermissionRule[];
 }
 
 export interface ActoviqPermissionDecision {
@@ -274,6 +290,7 @@ export interface ModelRequest {
   context_management?: Record<string, unknown>;
   stop_sequences?: string[];
   extra_tool_schemas?: Record<string, unknown>[];
+  effort?: ActoviqEffort;
   signal?: AbortSignal;
 }
 
@@ -318,6 +335,8 @@ export interface ResolvedRuntimeConfig {
   authToken?: string;
   baseURL?: string;
   model: string;
+  modelTier?: ActoviqModelTier;
+  modelTiers: ActoviqModelTierConfig;
   maxTokens: number;
   temperature?: number;
   timeoutMs: number;
@@ -337,6 +356,7 @@ export interface ResolvedRuntimeConfig {
   metadata: Record<string, unknown>;
   compact: ActoviqCompactConfig;
   provider: 'anthropic' | 'openai';
+  effort?: ActoviqEffort;
 }
 
 export interface ActoviqSessionStartHookContext {
@@ -436,24 +456,53 @@ export interface ActoviqAgentDefinition {
   description: string;
   systemPrompt?: string;
   model?: string;
+  effort?: ActoviqRunEffort;
+  permissionMode?: ActoviqPermissionMode;
   maxToolIterations?: number;
+  maxTurns?: number;
   metadata?: Record<string, unknown>;
   hooks?: ActoviqHooks;
   tools?: AgentToolDefinition[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  allowedAgents?: string[];
+  skills?: string[];
   mcpServers?: AgentMcpServerDefinition[];
+  requiredMcpServers?: string[];
   inheritDefaultTools?: boolean;
   inheritDefaultMcpServers?: boolean;
+  initialPrompt?: string;
+  memory?: 'user' | 'project' | 'local';
+  background?: boolean;
+  isolation?: 'worktree';
+  cwd?: string;
+  allowNestedAgents?: boolean;
+  source?: 'built-in' | 'user' | 'project' | 'custom';
+  sourcePath?: string;
 }
 
 export interface ActoviqAgentDefinitionSummary {
   name: string;
   description: string;
   model?: string;
+  effort?: ActoviqRunEffort;
+  permissionMode?: ActoviqPermissionMode;
   maxToolIterations?: number;
+  maxTurns?: number;
   toolNames: string[];
+  allowedTools: string[];
+  disallowedTools: string[];
+  allowedAgents: string[];
+  skills: string[];
   mcpServerNames: string[];
+  requiredMcpServers: string[];
   inheritDefaultTools: boolean;
   inheritDefaultMcpServers: boolean;
+  background: boolean;
+  isolation?: 'worktree';
+  memory?: 'user' | 'project' | 'local';
+  source?: 'built-in' | 'user' | 'project' | 'custom';
+  sourcePath?: string;
   metadataKeys: string[];
   hasSystemPrompt: boolean;
   hasHooks: boolean;
@@ -650,6 +699,7 @@ export interface CreateAgentSdkOptions {
   apiKey?: string;
   authToken?: string;
   baseURL?: string;
+  /** A full model ID or one of the configured min/medium/max tiers. */
   model?: string;
   maxTokens?: number;
   temperature?: number;
@@ -669,7 +719,11 @@ export interface CreateAgentSdkOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   agents?: ActoviqAgentDefinition[];
+  agentDirectories?: string[];
+  loadDefaultAgentDirectories?: boolean;
   disableDefaultAgents?: boolean;
+  maxSubagentDepth?: number;
+  maxSubagentFanout?: number;
   skills?: ActoviqSkillDefinition[];
   skillDirectories?: string[];
   disableDefaultSkills?: boolean;
@@ -682,6 +736,7 @@ export interface CreateAgentSdkOptions {
   approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
   provider?: 'anthropic' | 'openai';
+  effort?: ActoviqEffort;
   modelApi?: ModelApi;
   sessionManager?: SessionManagerConfig;
 }
@@ -764,6 +819,7 @@ export interface AgentRunOptions {
   toolChoice?: ToolChoice;
   userId?: string;
   metadata?: Record<string, unknown>;
+  effort?: ActoviqRunEffort;
   hooks?: ActoviqHooks;
   permissionMode?: ActoviqPermissionMode;
   permissions?: ActoviqPermissionRule[];
@@ -771,6 +827,14 @@ export interface AgentRunOptions {
   approver?: ActoviqToolApprover;
   canUseTool?: ActoviqCanUseTool;
   signal?: AbortSignal;
+  /**
+   * Mid-run steering: called between tool iterations to collect user messages
+   * queued while the agent was working. Drained texts are appended to the
+   * next tool-result user message so the model sees them on its next request.
+   */
+  drainQueuedInputs?: () => string[];
+  /** Override the runtime working directory for this run. */
+  workDir?: string;
 }
 
 export interface SessionCreateOptions {
@@ -778,6 +842,8 @@ export interface SessionCreateOptions {
   title?: string;
   systemPrompt?: string;
   model?: string;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
   tags?: string[];
   metadata?: Record<string, unknown>;
   initialMessages?: MessageParam[];
@@ -787,6 +853,18 @@ export interface SessionForkOptions {
   title?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+}
+
+export interface SessionResumeOptions {
+  /** Resume into a new session while preserving the source transcript and runtime state. */
+  fork?: boolean;
+  title?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  /** A full model ID or configured min/medium/max tier. */
+  model?: string;
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
 }
 
 export interface AgentRequestSummary {
@@ -848,7 +926,20 @@ export interface AgentRunResult {
   delegatedAgents?: ActoviqDelegatedAgentRecord[];
   invokedSkills?: ActoviqInvokedSkillRecord[];
   reactiveCompact?: ActoviqSessionCompactResult;
+  /** Mid-run conversation compactions performed inside the tool loop. */
+  loopCompactions?: AgentLoopCompactionRecord[];
   permissionDecisions?: ActoviqPermissionDecision[];
+}
+
+export interface AgentLoopCompactionRecord {
+  trigger: 'auto' | 'reactive';
+  iteration: number;
+  tokenEstimateBefore: number;
+  tokenEstimateAfter: number;
+  messagesSummarized: number;
+  preservedMessages: number;
+  clearedToolResults: number;
+  summary?: string;
 }
 
 export interface ActoviqDreamConfig {
@@ -923,6 +1014,7 @@ export interface ActoviqSessionCompactResult {
     | 'no_messages'
     | 'microcompact'
     | 'compacted'
+    | 'failed'
     | 'circuit_breaker_open';
   tokenEstimateBefore: number;
   tokenEstimateAfter?: number;
@@ -930,6 +1022,8 @@ export interface ActoviqSessionCompactResult {
   messagesRemoved?: number;
   compactCount: number;
   microcompactCount: number;
+  consecutiveFailures?: number;
+  error?: string;
   state: ActoviqSessionMemoryRuntimeState;
 }
 
@@ -940,7 +1034,11 @@ export interface ActoviqTaskToolInput {
   subagent_type?: string;
   agent?: string;
   agent_type?: string;
+  model?: string;
   run_in_background?: boolean;
+  name?: string;
+  isolation?: 'worktree';
+  cwd?: string;
 }
 
 export interface ActoviqTaskToolSyncResult {
@@ -948,10 +1046,13 @@ export interface ActoviqTaskToolSyncResult {
   subagentType: string;
   runId: string;
   sessionId?: string;
+  agentId?: string;
   model: string;
   text: string;
   toolCallCount: number;
   toolErrorCount: number;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }
 
 export interface ActoviqTaskToolAsyncResult {
@@ -959,9 +1060,12 @@ export interface ActoviqTaskToolAsyncResult {
   taskId: string;
   subagentType: string;
   sessionId?: string;
+  agentId?: string;
   outputFile: string;
   canReadOutputFile: boolean;
   description: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }
 
 export type ActoviqTaskToolResult =
@@ -975,12 +1079,13 @@ export interface ActoviqDelegatedAgentRecord {
   lastDescription?: string;
   lastRunId?: string;
   lastSessionId?: string;
-  lastStatus?: 'completed' | 'async_launched';
+  lastStatus?: 'completed' | 'async_launched' | 'failed' | 'cancelled';
   lastTaskId?: string;
   lastTextSummary?: string;
   runIds?: string[];
   sessionIds?: string[];
   taskIds?: string[];
+  totalRequestCount?: number;
   totalToolCallCount?: number;
   totalToolErrorCount?: number;
 }
@@ -1010,12 +1115,24 @@ export interface ActoviqBackgroundTaskRecord {
   completedAt?: string;
   parentRunId?: string;
   parentSessionId?: string;
+  agentName?: string;
   sessionId?: string;
   runId?: string;
   model?: string;
   text?: string;
+  partialText?: string;
   toolCallCount?: number;
   toolErrorCount?: number;
+  requestCount?: number;
+  currentIteration?: number;
+  currentToolName?: string;
+  progressSummary?: string;
+  queuedMessageCount?: number;
+  resumedFromTaskId?: string;
+  notificationDeliveredAt?: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  retainedWorktree?: boolean;
   error?: string;
 }
 
@@ -1199,6 +1316,8 @@ export type AgentEvent =
       type: 'conversation.compacted';
       runId: string;
       iteration: number;
+      /** 'auto' = proactive threshold compact; 'reactive' = provider rejected the request as too long. */
+      trigger?: 'auto' | 'reactive';
       tokenEstimateBefore: number;
       tokenEstimateAfter: number;
       messagesSummarized: number;
@@ -1526,6 +1645,9 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   latestBoundary?: ActoviqTranscriptBoundary;
   compactCount: number;
   microcompactCount: number;
+  consecutiveCompactFailures?: number;
+  lastCompactFailureAt?: string;
+  lastCompactError?: string;
   hasCompacted: boolean;
   pendingPostCompaction?: boolean;
   lastSummarizedMessageUuid?: string;
