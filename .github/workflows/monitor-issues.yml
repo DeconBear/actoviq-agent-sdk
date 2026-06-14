@@ -1,0 +1,49 @@
+name: Monitor Issues and PRs
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: read
+  pull-requests: read
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Snapshot open issues and PRs
+        id: monitor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          echo "=== $(date -u +'%Y-%m-%dT%H:%M:%SZ') ==="
+
+          ISSUES=$(gh issue list --state open --json number,title,labels,createdAt,updatedAt --limit 20)
+          echo "Open issues: $(echo "$ISSUES" | jq -r '.[] | "#\(.number) \(.title) (\(.createdAt))"')"
+
+          PRS=$(gh pr list --state open --json number,title,labels,createdAt,updatedAt,headRefName --limit 20)
+          echo "Open PRs: $(echo "$PRS" | jq -r '.[] | "#\(.number) \(.title) [\(.headRefName)]"')"
+
+          # Count new items since last check
+          ISSUE_COUNT=$(echo "$ISSUES" | jq '. | length')
+          PR_COUNT=$(echo "$PRS" | jq '. | length')
+          echo "issue_count=$ISSUE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "Summary: $ISSUE_COUNT open issue(s), $PR_COUNT open PR(s)"
+
+          # Exit non-zero if items exist to make the run more visible
+          if [[ "$ISSUE_COUNT" -gt 0 || "$PR_COUNT" -gt 0 ]]; then
+            echo "⚠ Open items found — review recommended."
+            exit 0
+          fi
