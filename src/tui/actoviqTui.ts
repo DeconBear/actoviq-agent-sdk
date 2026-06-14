@@ -148,7 +148,7 @@ function buildSystemPrompt(workDir: string): string {
     // not a git repo
   }
   return (
-    `You are Actoviq, an interactive CLI agent. Working directory: ${workDir}\n\n` +
+    `You are Hadamard Agent, an interactive CLI agent. Working directory: ${workDir}\n\n` +
     `<env>\nWorking directory: ${workDir}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
     `# Tone and style\n` +
     `- Only use emojis if the user explicitly requests it.\n` +
@@ -821,7 +821,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       {
         id: 'configure',
         label: 'Configure provider, API key, and models',
-        description: 'Updates the active Actoviq settings file',
+        description: 'Updates the active Hadamard Agent settings file',
       },
     ];
     const selected = await selectItem({

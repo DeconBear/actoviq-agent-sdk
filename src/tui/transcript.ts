@@ -113,7 +113,7 @@ export function formatBanner(options: {
   width?: number;
 }): string[] {
   const width = Math.max(options.width ?? 80, 20);
-  const title = `Actoviq TUI${options.version ? ` v${options.version}` : ''}`;
+  const title = `Hadamard Agent${options.version ? ` v${options.version}` : ''}`;
   const workDir = truncateToWidth(options.workDir, Math.max(width - 10, 20));
   return [
     `${A.cyan}${A.bold}✻ ${title}${A.reset}`,
