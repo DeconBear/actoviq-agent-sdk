@@ -4,15 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
-## v0.4.0 - 2026-06-14
+## v0.4.0 - 2026-06-15
 
-### What's Changed
+### Features
 
-* feat: complete Clean SDK subagent parity with bug fixes and multi-module benchmark by @DeconBear in https://github.com/DeconBear/actoviq-agent-sdk/pull/1
+- **Subagent infrastructure**: `Agent`/`Task` tool with Task compatibility alias, persistent sessions, and `SendMessage` continuation
+- **Background agents**: automatic completion notifications, progress tracking, cancellation, and lifecycle reconciliation
+- **Markdown agent definitions**: user-level (`~/.actoviq/agents/`) and project-level (`.actoviq/agents/`) `.md` files with tool/skill/permission/MCP/effort controls
+- **Worktree isolation**: `isolation: "worktree"` for parallel agents editing overlapping files; dirty worktrees retained, clean ones auto-removed
+- **Nested delegation controls**: configurable depth limit (`maxSubagentDepth`), fanout limit (`maxSubagentFanout`), and per-definition allowed agents
+- **Built-in agent definitions**: Explore, Plan, and general-purpose agents with Claude Code-compatible profiles
+- **Windows Bash tool**: now uses Git Bash for POSIX commands on Windows
+- **TUI**: full-screen terminal UI (`actoviq-tui`) with session management, permission mode switching, and provider configuration
+- **Model tiers**: `min`/`medium`/`max` tier resolution with `ACTVIQ_DEFAULT_{TIER}_MODEL` env vars
+- **Enhanced Agent tool prompt**: Claude Code-level subagent guidance (foreground/background, parallel delegation, "never delegate understanding")
 
-### New Contributors
+### Bug Fixes
 
-* @DeconBear made their first contribution in https://github.com/DeconBear/actoviq-agent-sdk/pull/1
+- `close()` now tolerates individual cleanup failures instead of bailing on first error
+- `isGitWorkspaceDirty`: added 10s timeout, returns false on error to prevent worktree leaks
+- Background task `cancel()`: re-reads store after abort to prevent TOCTOU race with terminal state
+- `forwardStreamResult`: captures both pump and result errors instead of silently losing one
+- Agent definition loader: logs a warning for malformed `.md` files instead of silently skipping them
+- `encodeActoviqProjectPath` test made platform-aware (was hardcoded to Windows paths)
+
+### Benchmark
+
+- New cases: `workflow-agent-continuation` (SendMessage + background), `workflow-multi-module-parallel` (3-way parallel subagents)
+- Complex suite: 10/10 all three runtimes pass (Clean 0.993, Bridge 0.992, Official 0.960)
+- Long suite: 4/5 Clean and Bridge, 5/5 Official (`release-train-reconciliation` remains systemic weak point)
+- Multi-module-parallel: Clean 1.000 (3 parallel background subagents), Bridge 0.996, Official 0.953
+
+### TUI Branding
+
+- Display name changed from `Actoviq TUI` to `Hadamard Agent` (3 visible strings; all internal names, env vars, and config paths unchanged)
 
 **Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.3.1...v0.4.0
 
