@@ -108,7 +108,12 @@ describe('config loading', () => {
     expect(config.sessionDirectory).toBe(
       path.join(homeDir, '.actoviq', 'projects', encodeActoviqProjectPath(workDir)),
     );
-    expect(encodeActoviqProjectPath('E:\\repo\\demo')).toBe('E--repo-demo');
+    // Encoding replaces all non-alphanumeric characters with hyphens.
+    // On Windows, drive letters produce patterns like E--repo-demo.
+    // On Unix, absolute paths produce patterns like -home-repo-demo.
+    const samplePath = process.platform === 'win32' ? 'E:\\repo\\demo' : '/home/repo/demo';
+    const sampleExpected = process.platform === 'win32' ? 'E--repo-demo' : '-home-repo-demo';
+    expect(encodeActoviqProjectPath(samplePath)).toBe(sampleExpected);
   });
 
   it('migrates only matching legacy project sessions into the project store', async () => {
