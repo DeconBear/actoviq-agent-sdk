@@ -113,10 +113,29 @@ async function main() {
   process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR.slice(0, 45)}${C.r}\n`);
 
   const tools = createActoviqCoreTools({ cwd: WORK_DIR });
+  const userSuppliedConfig = Boolean(process.argv[3]);
   try {
-    if (process.argv[3]) await loadJsonConfigFile(CONFIG_PATH);
+    if (userSuppliedConfig) await loadJsonConfigFile(CONFIG_PATH);
     else await loadDefaultActoviqSettings();
-  } catch {}
+  } catch (e) {
+    if (userSuppliedConfig) {
+      // User explicitly pointed at a config — fail loud, don't silently fall
+      // back to defaults (that's the bug this fixes). Empty REPL startup
+      // would let the user believe their config was loaded.
+      process.stderr.write(
+        `${C.R}✕ Failed to load config "${process.argv[3]}":${C.r}\n` +
+        `  ${(e as Error).message}\n\n` +
+        `${C.d}Actoviq refused to start with a bad explicit config. Fix the file or omit the path to use defaults.${C.r}\n`,
+      );
+      process.exit(2);
+    }
+    // Default-settings path: tolerate and warn. A missing ~/.actoviq/settings.json
+    // is normal on first run; surface other errors so users can diagnose.
+    const msg = (e as Error).message || String(e);
+    if (!/not found|ENOENT/i.test(msg)) {
+      process.stderr.write(`${C.y}⚠ Default settings load failed: ${msg}${C.r}\n`);
+    }
+  }
   const sdk = await createAgentSdk({
     workDir: WORK_DIR,
     tools,
