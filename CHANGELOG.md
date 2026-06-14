@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## v0.4.0 - 2026-06-14
+
+### What's Changed
+
+* feat: complete Clean SDK subagent parity with bug fixes and multi-module benchmark by @DeconBear in https://github.com/DeconBear/actoviq-agent-sdk/pull/1
+
+### New Contributors
+
+* @DeconBear made their first contribution in https://github.com/DeconBear/actoviq-agent-sdk/pull/1
+
+**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.3.1...v0.4.0
+
 ## v0.3.1 - 2026-06-11
 
 **Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.3.0...v0.3.1
