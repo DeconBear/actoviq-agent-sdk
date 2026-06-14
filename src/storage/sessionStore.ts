@@ -85,9 +85,23 @@ export class SessionStore {
       if (!file.endsWith('.json')) {
         continue;
       }
-      const raw = await readFile(path.join(this.sessionsDirectory(), file), 'utf8');
-      const session = JSON.parse(raw) as StoredSession;
-      sessions.push(this.toSummary(session));
+      const filePath = path.join(this.sessionsDirectory(), file);
+      try {
+        const raw = await readFile(filePath, 'utf8');
+        const session = JSON.parse(raw) as StoredSession;
+        sessions.push(this.toSummary(session));
+      } catch (error) {
+        // A single corrupt or unreadable session file should not hide the
+        // rest of the user's session history. Warn and continue. This
+        // matters in real-world failure modes: power loss mid-write, disk
+        // full, concurrent writes from another process, or a manually
+        // edited file with malformed JSON. Without isolation, one bad
+        // file makes `list()` throw and the user sees an empty session
+        // list — losing access to N-1 perfectly good sessions.
+        console.warn(
+          `[SessionStore] Skipping unreadable session ${file}: ${(error as Error).message}`,
+        );
+      }
     }
 
     return sessions.sort((left, right) =>
