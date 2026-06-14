@@ -19,6 +19,7 @@
   "types": "./dist/src/index.d.ts",
   "bin": {
     "actoviq-react": "./bin/actoviq-react.js",
+    "actoviq-tui": "./bin/actoviq-tui.js",
     "actoviq-interactive-agent": "./bin/actoviq-interactive-agent.js",
     "actoviq-link-runtime": "./bin/actoviq-link-runtime.js"
   },

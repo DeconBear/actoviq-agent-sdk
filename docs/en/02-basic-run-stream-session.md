@@ -139,6 +139,19 @@ const reply = await previous.send('Continue from the previous context.');
 console.log(reply.text);
 ```
 
+Resume restores the transcript, compact metadata, selected model, and persisted
+permission mode/rules. You can also continue the newest session or fork a
+session without modifying the original:
+
+```ts
+const latest = await sdk.sessions.continueMostRecent();
+const fork = await sdk.sessions.resume(latest.id, {
+  fork: true,
+  model: 'max',
+  permissionMode: 'default',
+});
+```
+
 ## 10. Session management example
 
 ```ts
@@ -174,8 +187,8 @@ Use `sdk.race()` to return the first completed result:
 
 ```ts
 const fastest = await sdk.race([
-  () => sdk.run('Quick answer', { model: 'claude-min-4-5' }),
-  () => sdk.run('Detailed answer', { model: 'claude-medium-4-6' }),
+  () => sdk.run('Quick answer', { model: 'min' }),
+  () => sdk.run('Detailed answer', { model: 'medium' }),
 ]);
 ```
 

@@ -71,11 +71,46 @@ npx actoviq-react [work-dir]
 
 This launches a readline-based interactive agent with:
 - Real-time streaming output in the main terminal buffer (native scrollback)
-- Tab completion for slash commands (`/help`, `/clear`, `/compact`, `/memory`, `/model`, `/tools`, `/dream`, `/exit`)
+- Tab completion for slash commands, including session model, permission, compact, and resume controls
 - Command history via ↑↓ arrow keys
 - Ctrl+C to abort the current request, press twice to exit
 
-**Note:** `actoviq-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging, not as a replacement for a complete terminal UI.
+**Note:** `actoviq-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging. For the full terminal UI, use `actoviq-tui` below.
+
+## Terminal UI (TUI)
+
+`actoviq-tui` is the full terminal UI for the Clean SDK, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
+
+```bash
+npx actoviq-tui [work-dir] [options]
+
+# Options
+#   --config <path>            Load a specific Actoviq settings JSON file
+#   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
+#   --model <model>            Override the configured model
+#   --resume <session-id>      Resume a stored Clean SDK session
+#   --continue                 Continue the most recently updated session
+```
+
+Features:
+
+- **Streaming transcript in native scrollback** — assistant text, `⏺ Tool(args)` calls, and `⎿ ✓/✗` result lines flush into the normal terminal buffer; scrollback and copy/paste work as usual.
+- **Live status line** — spinner, elapsed time, tool count, context-size estimate, and the current tool while the agent works.
+- **Claude-style prompt bar** — type `\` then `Enter` (or `Ctrl+J`) for a newline; `↑`/`↓` walk input history; the caret renders inline.
+- **Slash-command menu** — type `/` to open a filtered menu (`↑↓` select, `Tab` complete, `Enter` run). `/resume` opens a searchable project-session picker, while `/resume <session-id>` still resumes directly.
+- **Runtime catalogs** — `/skills`, `/agents`, `/mcp`, and `/plugins` browse the Clean SDK capabilities visible to the current workspace; `/help` provides a searchable command reference.
+- **Model and effort controls** — `/model` opens a model picker, `/model config` edits the provider, masked API key, base URL, and `min`/`medium`/`max` model tiers, and `/effort` selects `low`, `medium`, `high`, `max`, or automatic provider behavior.
+- **Dream controls** — `/dream` opens a run/status picker; `/dream run` and `/dream status` remain available for direct use.
+- **Mid-run steering** — keep typing while the agent works and press `Enter`: the message is queued and injected into the very next model request (shown as `⧗ queued`).
+- **Permission dialogs** — with `--permission-mode default`, mutating tools pause for an approve / always-allow / deny dialog. Always-allow choices are stored with the session and restored on resume.
+- **Interrupts** — `Esc` aborts the current run; `Ctrl+C` clears the input (twice quickly exits); `Ctrl+D` exits on an empty prompt.
+- **Context management built in** — the Clean SDK auto-compacts long sessions mid-run and reactively recovers when a provider rejects an oversized prompt; compactions surface as `∿ context compacted` notices.
+
+Both CLIs share the same Clean SDK runtime defaults (Actoviq settings from `~/.actoviq/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and run against any Anthropic-compatible or OpenAI-compatible provider.
+
+By default, Clean SDK sessions are scoped to the current workspace under `~/.actoviq/projects/<workspace-key>`. Explicit `sessionDirectory` settings still take precedence.
+
+Model tiers are provider-neutral aliases. Configure them with `ACTOVIQ_DEFAULT_MIN_MODEL`, `ACTOVIQ_DEFAULT_MEDIUM_MODEL`, and `ACTOVIQ_DEFAULT_MAX_MODEL`, then use `min`, `medium`, or `max` anywhere a model can be selected.
 
 ## Tutorials
 

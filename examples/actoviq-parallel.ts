@@ -50,8 +50,8 @@ console.log('\n=== race() example ===');
 
 const fastestReply = await sdk.race(
   [
-    () => sdk.run('What is 2 + 2?', { model: 'claude-min-4-5' }),
-    () => sdk.run('What is 2 + 2?', { model: 'claude-medium-4-6' }),
+    () => sdk.run('What is 2 + 2?', { model: 'min' }),
+    () => sdk.run('What is 2 + 2?', { model: 'medium' }),
   ],
   { timeoutMs: 30_000 }, // 30 second timeout
 );

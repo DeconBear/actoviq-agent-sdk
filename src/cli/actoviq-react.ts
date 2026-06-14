@@ -6,7 +6,13 @@
  * and real-time streaming output. Uses the main terminal buffer for
  * native scrollback.
  */
-import { createAgentSdk, loadJsonConfigFile, loadDefaultActoviqSettings, createActoviqCoreTools } from 'actoviq-agent-sdk';
+import {
+  createAgentSdk,
+  loadJsonConfigFile,
+  loadDefaultActoviqSettings,
+  createActoviqCoreTools,
+  type ActoviqPermissionMode,
+} from 'actoviq-agent-sdk';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +21,13 @@ import * as readline from 'node:readline';
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
 const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
+const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'auto',
+]);
 
 let isGit = false;
 try { execSync('git rev-parse --is-inside-work-tree', { cwd: WORK_DIR, stdio: 'ignore' }); isGit = true; } catch {}
@@ -60,7 +73,10 @@ const CMDS: Record<string, string> = {
   exit:    'Quit',
   compact: 'Compact the current session',
   memory:  'Show memory/compact state',
-  model:   'Show current model',
+  model:   'Show or set the session model',
+  permissions: 'Show or set the permission mode',
+  sessions: 'List stored sessions',
+  resume:  'Resume a stored session',
   tools:   'List available tools',
   dream:   'Trigger memory consolidation',
 };
@@ -107,9 +123,12 @@ async function main() {
     permissionMode: DEFAULT_PERMISSION_MODE,
   });
   const toolMetadata = await sdk.listToolMetadata();
-  const session = await sdk.createSession({ title: path.basename(WORK_DIR) });
+  let session = await sdk.createSession({
+    title: path.basename(WORK_DIR),
+    permissionMode: DEFAULT_PERMISSION_MODE,
+  });
 
-  process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${sdk.config.model}${C.r}\n`);
+  process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${session.model}${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  tools   : ${C.y}${toolMetadata.length} tools loaded${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  keys    : Tab=complete  ↑↓=history  Ctrl+C=abort${C.r}\n`);
   process.stdout.write(`${C.c}├${'─'.repeat(Math.min(w - 2, 60))}┤${C.r}\n\n`);
@@ -135,7 +154,66 @@ async function main() {
             process.stdout.write(`  ${C.y}/${k.padEnd(10)}${C.r} ${C.d}${v}${C.r}\n`);
           process.stdout.write(`\n`);
           return;
-        case 'model': process.stdout.write(`${C.d}Model: ${C.y}${sdk.config.model}${C.r}\n\n`); return;
+        case 'model': {
+          const requested = sp === -1 ? '' : t.slice(sp + 1).trim();
+          if (!requested) {
+            process.stdout.write(`${C.d}Model: ${C.y}${session.model}${C.r}\n\n`);
+            return;
+          }
+          await session.setModel(requested === 'default' ? sdk.config.model : requested);
+          process.stdout.write(`${C.g}Model set to ${C.y}${session.model}${C.r}\n\n`);
+          return;
+        }
+        case 'permissions': {
+          const requested = sp === -1 ? '' : t.slice(sp + 1).trim();
+          const state = session.permissionContext;
+          if (!requested) {
+            process.stdout.write(
+              `${C.d}Permissions: ${C.y}${state.mode ?? DEFAULT_PERMISSION_MODE}${C.r}` +
+              `${C.d} (${state.permissions.length} session rules)${C.r}\n\n`,
+            );
+            return;
+          }
+          if (!PERMISSION_MODES.has(requested as ActoviqPermissionMode)) {
+            process.stdout.write(
+              `${C.R}Invalid mode. Use: ${[...PERMISSION_MODES].join(', ')}${C.r}\n\n`,
+            );
+            return;
+          }
+          await session.setPermissionContext({
+            mode: requested as ActoviqPermissionMode,
+            permissions: state.permissions,
+          });
+          process.stdout.write(`${C.g}Permission mode set to ${C.y}${requested}${C.r}\n\n`);
+          return;
+        }
+        case 'sessions': {
+          const sessions = await sdk.sessions.list();
+          if (sessions.length === 0) {
+            process.stdout.write(`${C.d}No stored sessions.${C.r}\n\n`);
+            return;
+          }
+          for (const stored of sessions) {
+            const current = stored.id === session.id ? '*' : ' ';
+            process.stdout.write(
+              `${C.d}${current} ${stored.id}  ${stored.title}  ${stored.model}${C.r}\n`,
+            );
+          }
+          process.stdout.write('\n');
+          return;
+        }
+        case 'resume': {
+          const sessionId = sp === -1 ? '' : t.slice(sp + 1).trim();
+          if (!sessionId) {
+            process.stdout.write(`${C.R}Usage: /resume <session-id>${C.r}\n\n`);
+            return;
+          }
+          session = await sdk.resumeSession(sessionId);
+          process.stdout.write(
+            `${C.g}Resumed ${session.id}: ${session.title} (${session.model})${C.r}\n\n`,
+          );
+          return;
+        }
         case 'tools':
           process.stdout.write(`${C.d}${toolMetadata.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.r}\n\n`);
           return;
@@ -145,9 +223,20 @@ async function main() {
           catch { process.stdout.write(`${C.d}N/A${C.r}\n\n`); }
           return;
         case 'compact':
-          try { const r = await session.compact({ force: true });
-            process.stdout.write(`${C.g}✓ Compacted: ${(r as any).messagesRemoved ?? '?'} msgs removed${C.r}\n\n`); }
-          catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
+          try {
+            const summaryInstructions = sp === -1 ? undefined : t.slice(sp + 1).trim() || undefined;
+            const r = await session.compact({ force: true, summaryInstructions });
+            if (!r.compacted) {
+              process.stdout.write(
+                `${C.R}Compact failed: ${r.error ?? r.reason}${C.r}` +
+                `${C.d}${r.consecutiveFailures ? ` (${r.consecutiveFailures} failures)` : ''}${C.r}\n\n`,
+              );
+              return;
+            }
+            process.stdout.write(`${C.g}✓ Compacted: ${r.messagesRemoved ?? '?'} msgs removed${C.r}\n\n`);
+          } catch (e: any) {
+            process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`);
+          }
           return;
         case 'dream':
           try { await session.dream({ force: true });
@@ -162,7 +251,10 @@ async function main() {
 
     abortCtrl = new AbortController();
     const stream = session.stream(t, {
-      systemPrompt: SYSTEM_PROMPT, signal: abortCtrl.signal, model: sdk.config.model, permissionMode: DEFAULT_PERMISSION_MODE,
+      systemPrompt: SYSTEM_PROMPT,
+      signal: abortCtrl.signal,
+      model: session.model,
+      permissionMode: session.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
     });
     let iteration = 0;
     let hasText = false;

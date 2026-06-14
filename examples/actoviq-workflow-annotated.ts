@@ -64,7 +64,7 @@ const result = await sdk.workflow
   // ═══════════════════════════════════════════════════════════
   // .model(model) — 所有步骤的默认模型，单步可通过 opts.model 覆盖
   // ═══════════════════════════════════════════════════════════
-  .model('claude-medium-4-6')
+  .model('medium')
 
   // ═══════════════════════════════════════════════════════════
   // .systemPrompt(prompt) — 所有步骤的默认系统提示词，单步可覆盖
@@ -109,7 +109,7 @@ const result = await sdk.workflow
     {
       dependsOn: ['typecheck'],  // 依赖步骤 1，等它完成才执行
       // 没有 allowedTools → 继承 SDK 默认权限
-      // 没有 model → 继承全局 model('claude-medium-4-6')
+      // 没有 model → 继承全局 model('medium')
     },
   )
 
@@ -122,7 +122,7 @@ const result = await sdk.workflow
       + 'Lint 检查：$steps.lint.text',
     {
       dependsOn: ['typecheck', 'lint'],  // 等前两步都完成
-      model: 'claude-min-4-5',         // 覆盖全局模型——报告用更快模型
+      model: 'min',                      // 覆盖全局模型——报告用更快模型
       systemPrompt: '你是一个技术报告生成器。只输出 markdown 格式的报告，不要对话。',
       // 也可以在此传入 mcpServers、tools、skillDirectories 等
     },

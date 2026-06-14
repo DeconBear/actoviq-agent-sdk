@@ -64,6 +64,7 @@ export interface OpenaiChatCompletionRequest {
   stream_options?: { include_usage?: boolean };
   metadata?: Record<string, unknown>;
   parallel_tool_calls?: boolean;
+  reasoning_effort?: 'low' | 'medium' | 'high';
 }
 
 export interface OpenaiUsage {

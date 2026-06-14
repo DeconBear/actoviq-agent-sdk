@@ -15,6 +15,7 @@ import type {
   ActoviqHooks,
   ActoviqPermissionMode,
   ActoviqPermissionRule,
+  ActoviqSessionPermissionState,
   ActoviqSessionMemoryExtractionResult,
   ActoviqToolApprover,
   ActoviqToolClassifier,
@@ -23,6 +24,7 @@ import type {
   SessionForkOptions,
   StoredSession,
 } from '../types.js';
+import { getPersistedActoviqSessionPermissionState } from './actoviqSessionPermissions.js';
 import type { SessionStore } from '../storage/sessionStore.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { deepClone } from './helpers.js';
@@ -74,6 +76,7 @@ interface AgentSessionBindings {
   getAgentContinuity: (session: AgentSession) => Promise<ActoviqAgentContinuityState>;
   setRuntimeHooks: (session: AgentSession, hooks?: ActoviqHooks) => void;
   clearRuntimeHooks: (session: AgentSession) => void;
+  setModel: (session: AgentSession, model: string) => Promise<StoredSession>;
   setRuntimePermissionContext: (
     session: AgentSession,
     context: {
@@ -82,8 +85,8 @@ interface AgentSessionBindings {
       classifier?: ActoviqToolClassifier;
       approver?: ActoviqToolApprover;
     },
-  ) => void;
-  clearRuntimePermissionContext: (session: AgentSession) => void;
+  ) => Promise<StoredSession>;
+  clearRuntimePermissionContext: (session: AgentSession) => Promise<StoredSession>;
   hydrate: (stored: StoredSession) => AgentSession;
   saveCheckpoint: (session: AgentSession, label: string) => Promise<SessionCheckpoint>;
   restoreCheckpoint: (session: AgentSession, checkpointId: string) => Promise<void>;
@@ -120,6 +123,10 @@ export class AgentSession {
 
   get tags(): string[] {
     return [...this.stored.tags];
+  }
+
+  get permissionContext(): ActoviqSessionPermissionState {
+    return getPersistedActoviqSessionPermissionState(this.stored.metadata);
   }
 
   snapshot(): StoredSession {
@@ -198,17 +205,21 @@ export class AgentSession {
     this.bindings.clearRuntimeHooks(this);
   }
 
-  setPermissionContext(context: {
-    mode?: ActoviqPermissionMode;
-      permissions?: ActoviqPermissionRule[];
-      classifier?: ActoviqToolClassifier;
-      approver?: ActoviqToolApprover;
-  }): void {
-    this.bindings.setRuntimePermissionContext(this, context);
+  async setModel(model: string): Promise<void> {
+    this.stored = await this.bindings.setModel(this, model);
   }
 
-  clearPermissionContext(): void {
-    this.bindings.clearRuntimePermissionContext(this);
+  async setPermissionContext(context: {
+    mode?: ActoviqPermissionMode;
+    permissions?: ActoviqPermissionRule[];
+    classifier?: ActoviqToolClassifier;
+    approver?: ActoviqToolApprover;
+  }): Promise<void> {
+    this.stored = await this.bindings.setRuntimePermissionContext(this, context);
+  }
+
+  async clearPermissionContext(): Promise<void> {
+    this.stored = await this.bindings.clearRuntimePermissionContext(this);
   }
 
   async rename(title: string): Promise<void> {

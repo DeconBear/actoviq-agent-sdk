@@ -201,6 +201,21 @@ const sdk = await createAgentSdk({
 });
 ```
 
+会话级权限模式和规则会持久化，并在恢复会话时继续生效：
+
+```ts
+await session.setPermissionContext({
+  mode: 'default',
+  permissions: [{ toolName: 'Bash', behavior: 'ask' }],
+  approver,
+});
+
+const restored = await sdk.resumeSession(session.id);
+console.log(restored.permissionContext);
+```
+
+只有可序列化的模式和规则会写入会话；classifier 与 approver 回调需要由当前进程重新绑定。`bypassPermissions` 仍会执行硬安全检查，`acceptEdits` 只自动允许文件编辑工具，不会自动允许任意 shell 命令；`plan` 会阻止未被更高优先级规则或 classifier 明确允许的变更型工具。
+
 ## 8. MCP 是干嘛的
 
 MCP 的作用是把“外部工具服务器”接进 SDK。

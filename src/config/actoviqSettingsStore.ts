@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 
 import { getLoadedJsonConfig, loadJsonConfigFile } from './loadJsonConfigFile.js';
 import { ConfigurationError } from '../errors.js';
@@ -44,7 +44,13 @@ export async function persistActoviqSettingsStore(
   raw: Record<string, unknown>,
 ): Promise<void> {
   await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+  await writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  if (process.platform !== 'win32') {
+    await chmod(configPath, 0o600);
+  }
 
   const loaded = getLoadedJsonConfig();
   if (loaded?.path === configPath) {

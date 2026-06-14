@@ -1,0 +1,40 @@
+{
+  "id": "complex.workflow.multi-module-parallel",
+  "title": "Fix three independent module regressions with parallel subagents",
+  "category": "workflow",
+  "runtimeTarget": "parity",
+  "instruction": "Three independent modules have regressions that broke their tests. Each module has exactly one bug and the modules do not depend on each other. Fix every module so that npm test passes, and write a repair-notes.md that lists each module's root cause. Because the modules are independent, delegate each module's investigation and fix to a separate subagent running in parallel — launch all three subagents in a single message. Synthesize the subagent findings into repair-notes.md after they complete.",
+  "fixture": "bench/fixtures/workflow/multi-module-regression",
+  "tags": ["complex", "workflow", "subagent", "parallel", "multi-module", "regression"],
+  "trials": 1,
+  "budget": {
+    "maxSeconds": 360,
+    "maxTurns": 28,
+    "maxToolCalls": 120,
+    "maxTokens": 120000
+  },
+  "behaviorExpectations": {
+    "minSubagentCalls": 3,
+    "minBackgroundSubagentCalls": 2,
+    "maxToolErrors": 6
+  },
+  "goldCommand": "node -e \"const fs=require('fs'); const d='modules'; fs.mkdirSync(d+'/math',{recursive:true}); fs.mkdirSync(d+'/string',{recursive:true}); fs.mkdirSync(d+'/data',{recursive:true}); fs.writeFileSync(d+'/math/calc.js','export function addTax(price, rate) {\\n  return price * (1 + rate);\\n}\\n'); fs.writeFileSync(d+'/string/format.js','export function normalizeId(id) {\\n  return id.trim().toLowerCase();\\n}\\n'); fs.writeFileSync(d+'/data/parse.js','export function parseQuantity(value, fallback) {\\n  const parsed = Number.parseInt(value, 10);\\n  if (!Number.isFinite(parsed)) {\\n    return fallback;\\n  }\\n  return parsed;\\n}\\n'); fs.writeFileSync('repair-notes.md','Root causes:\\n- math/calc.js: used division (/) instead of multiplication (*) for tax calculation.\\n- string/format.js: used toUpperCase() instead of toLowerCase() for ID normalization.\\n- data/parse.js: returned hardcoded 0 instead of the fallback parameter for invalid input.\\n\\nVerification: npm test\\n');\"",
+  "graders": [
+    {
+      "type": "command",
+      "command": "npm test",
+      "timeoutMs": 120000
+    },
+    {
+      "type": "file_contains",
+      "path": "repair-notes.md",
+      "text": "math"
+    },
+    {
+      "type": "file_contains",
+      "path": "repair-notes.md",
+      "text": "string"
+    }
+  ],
+  "notes": "This case tests parallel subagent delegation. The three modules are independent — the optimal strategy is to spawn three subagents concurrently. behaviorExpectations penalize missing subagent and background calls, but task pass/fail depends only on test and repair-notes correctness."
+}

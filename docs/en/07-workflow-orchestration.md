@@ -39,7 +39,7 @@ Set a default model for all steps. Individual steps can override via `opts.model
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `model` | `string \| null` | No | Model ID, e.g. `'claude-medium-4-6'`. Pass `null` to clear. |
+| `model` | `string \| null` | No | Model ID or tier, e.g. `'medium'`. Pass `null` to clear. |
 
 **`systemPrompt(prompt: string): this`**
 
@@ -214,7 +214,7 @@ Field-by-field:
 **Step 3: `.model(model)` and `.systemPrompt(prompt)` — global defaults**
 
 ```ts
-.model('claude-medium-4-6')
+.model('medium')
 .systemPrompt('You are a DevOps engineer. Report results only, no conversation. Language: English.')
 ```
 
@@ -273,7 +273,7 @@ Key differences from step A:
   2. If typecheck fails, lint is automatically skipped
   3. `$steps.typecheck.text` is only valid when typecheck succeeds
 - **No `allowedTools`** — inherits SDK default permissions.
-- **No `model`** — inherits the global `.model('claude-medium-4-6')`.
+- **No `model`** — inherits the global `.model('medium')`.
 
 **Step C: report**
 
@@ -286,7 +286,7 @@ Key differences from step A:
     + 'Lint: $steps.lint.text',
   {
     dependsOn: ['typecheck', 'lint'],  // depends on two steps
-    model: 'claude-min-4-5',          // overrides global model
+    model: 'min',                       // overrides global model
     systemPrompt: 'You are a report generator. Output only markdown, no conversation.',
     mode: 'single',                     // one-shot answer, no tool calls needed for report gen
   },
@@ -296,7 +296,7 @@ Key differences from step A:
 What's different:
 
 - **`dependsOn: ['typecheck', 'lint']`** — waits for both. Since lint already depends on typecheck, the actual execution order is: typecheck → lint → report. **Same-level steps run in parallel — if another step also only depended on typecheck, it would run concurrently with lint.**
-- **`model: 'claude-min-4-5'`** — overrides the global model. Report summarization doesn't need deep reasoning; a faster model saves time and cost.
+- **`model: 'min'`** — overrides the global model. Report summarization doesn't need deep reasoning; a faster model saves time and cost.
 - **`systemPrompt`** — overrides the global prompt. The report step needs markdown formatting, unlike the "DevOps engineer" role required by earlier steps.
 - **`mode: 'single'`** — the report step only generates text, no tools needed. `'single'` mode sets `toolChoice: { type: 'none' }`, producing a single answer without the ReAct tool loop. Default is `'react'`.
 
@@ -472,8 +472,8 @@ Run tasks and return the first to complete:
 ```ts
 const fastest = await sdk.race(
   [
-    () => sdk.run('What is 2+2?', { model: 'claude-min-4-5' }),
-    () => sdk.run('What is 2+2?', { model: 'claude-medium-4-6' }),
+    () => sdk.run('What is 2+2?', { model: 'min' }),
+    () => sdk.run('What is 2+2?', { model: 'medium' }),
   ],
   { timeoutMs: 30_000 },
 );

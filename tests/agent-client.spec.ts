@@ -101,6 +101,29 @@ class MockModelApi implements ModelApi {
 }
 
 describe('ActoviqAgentClient', () => {
+  it('lets a run select automatic effort over a configured default', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Effort test complete.' }]),
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      effort: 'high',
+    });
+
+    try {
+      await sdk.run('use default effort');
+      await sdk.run('use provider automatic effort', { effort: 'auto' });
+
+      expect(modelApi.createCalls[0]?.effort).toBe('high');
+      expect(modelApi.createCalls[1]?.effort).toBeUndefined();
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('clears session manager timers when the client closes', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -250,6 +273,118 @@ describe('ActoviqAgentClient', () => {
       expect(session.title.length).toBeGreaterThan(0);
     } finally {
       await sdk.close();
+    }
+  });
+
+  it('persists session model and permission state across SDK restarts', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const firstSdk = await createAgentSdk({
+      model: 'initial-model',
+      sessionDirectory,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'unused' }]),
+      }),
+    });
+
+    const session = await firstSdk.createSession({ title: 'Persistent runtime state' });
+    await session.setModel('session-model');
+    await session.setPermissionContext({
+      mode: 'plan',
+      permissions: [{ toolName: 'write_note', behavior: 'deny', source: 'session' }],
+    });
+    const sessionId = session.id;
+    await firstSdk.close();
+
+    const secondModelApi = new MockModelApi({
+      create: (request) => {
+        const lastContent = request.messages.at(-1)?.content;
+        const hasToolResult =
+          Array.isArray(lastContent) &&
+          lastContent.some(
+            block =>
+              typeof block === 'object' &&
+              block !== null &&
+              (block as { type?: string }).type === 'tool_result',
+          );
+        return hasToolResult
+          ? makeMessage([{ type: 'text', text: 'Permission state restored.' }])
+          : makeMessage(
+              [{
+                type: 'tool_use',
+                id: 'toolu_persisted_permission',
+                name: 'write_note',
+                input: { text: 'blocked' },
+              }],
+              'tool_use',
+            );
+      },
+    });
+    const secondSdk = await createAgentSdk({
+      model: 'different-default',
+      sessionDirectory,
+      modelApi: secondModelApi,
+    });
+    const writeNote = tool(
+      {
+        name: 'write_note',
+        description: 'Write a note.',
+        inputSchema: z.object({ text: z.string() }),
+      },
+      async ({ text }) => ({ text }),
+    );
+
+    try {
+      const resumed = await secondSdk.resumeSession(sessionId);
+      const continued = await secondSdk.sessions.continueMostRecent();
+      const result = await resumed.send('Try the persisted write.', { tools: [writeNote] });
+
+      expect(resumed.model).toBe('session-model');
+      expect(resumed.permissionContext).toEqual({
+        mode: 'plan',
+        permissions: [
+          { toolName: 'write_note', behavior: 'deny', source: 'session' },
+        ],
+      });
+      expect(continued.id).toBe(sessionId);
+      expect(secondModelApi.createCalls[0]?.model).toBe('session-model');
+      expect(result.permissionDecisions?.[0]).toMatchObject({
+        behavior: 'deny',
+        source: 'rule',
+      });
+
+      const forked = await secondSdk.sessions.resume(sessionId, {
+        fork: true,
+        model: 'fork-model',
+        permissionMode: 'bypassPermissions',
+        permissions: [],
+      });
+      expect(forked.id).not.toBe(sessionId);
+      expect(forked.model).toBe('fork-model');
+      expect(forked.messages).toEqual(resumed.messages);
+      expect(forked.permissionContext.mode).toBe('bypassPermissions');
+
+      const modeOnlyFork = await secondSdk.sessions.resume(sessionId, {
+        fork: true,
+        permissionMode: 'default',
+      });
+      expect(modeOnlyFork.permissionContext).toEqual({
+        mode: 'default',
+        permissions: [
+          { toolName: 'write_note', behavior: 'deny', source: 'session' },
+        ],
+      });
+
+      await modeOnlyFork.setPermissionContext({
+        permissions: [{ toolName: 'Bash', behavior: 'ask', source: 'session-update' }],
+      });
+      expect(modeOnlyFork.permissionContext).toEqual({
+        mode: 'default',
+        permissions: [
+          { toolName: 'Bash', behavior: 'ask', source: 'session-update' },
+        ],
+      });
+    } finally {
+      await secondSdk.close();
     }
   });
 
@@ -552,6 +687,101 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
+  it('persists the compact failure circuit breaker across SDK restarts', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const firstModelApi = new MockModelApi({
+      create: (request) => {
+        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+          throw new Error('summary provider unavailable');
+        }
+        return makeMessage([{ type: 'text', text: 'Seed response for compact failure.' }]);
+      },
+    });
+    const firstSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi: firstModelApi,
+    });
+    const session = await firstSdk.createSession();
+    await session.send('Seed this session.');
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await session.compact({ force: true, preserveRecentMessages: 1 });
+      expect(result).toMatchObject({
+        compacted: false,
+        reason: 'failed',
+        consecutiveFailures: attempt,
+      });
+    }
+    const sessionId = session.id;
+    await firstSdk.close();
+
+    const secondModelApi = new MockModelApi({
+      create: () => {
+        throw new Error('circuit breaker should prevent this request');
+      },
+    });
+    const secondSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi: secondModelApi,
+    });
+    try {
+      const resumed = await secondSdk.resumeSession(sessionId);
+      const result = await resumed.compact({ force: true });
+      expect(result).toMatchObject({
+        compacted: false,
+        reason: 'circuit_breaker_open',
+        consecutiveFailures: 3,
+        error: 'summary provider unavailable',
+      });
+      expect(secondModelApi.createCalls).toHaveLength(0);
+    } finally {
+      await secondSdk.close();
+    }
+  });
+
+  it('records a compact failure when a single summary message cannot be truncated', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => {
+        throw new Error('prompt is too long');
+      },
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const session = await sdk.createSession({
+        initialMessages: [
+          { role: 'user', content: 'Earlier context that must be summarized.' },
+          { role: 'assistant', content: 'Most recent response that should be preserved.' },
+        ],
+      });
+      const result = await session.compact({
+        force: true,
+        preserveRecentMessages: 1,
+      });
+
+      expect(result).toMatchObject({
+        compacted: false,
+        reason: 'failed',
+        consecutiveFailures: 1,
+        error: 'prompt is too long',
+      });
+      expect(await session.compactState()).toMatchObject({
+        compactCount: 0,
+        consecutiveCompactFailures: 1,
+        lastCompactError: 'prompt is too long',
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('automatically compacts sessions when the compact threshold is exceeded', async () => {
     const sessionDirectory = await createSessionDirectory();
     const longPrompt = 'release-checklist '.repeat(40);
@@ -672,12 +902,14 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
-  it('reactively compacts and retries when the provider rejects an oversized prompt', async () => {
+  it('reactively compacts in-loop and retries when the provider rejects an oversized prompt', async () => {
     const sessionDirectory = await createSessionDirectory();
     let nonCompactCalls = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        const internalTask = (request.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task;
+        if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
               type: 'text',
@@ -725,17 +957,19 @@ describe('ActoviqAgentClient', () => {
       });
 
       expect(result.text).toContain('Recovered after reactive compact.');
-      expect(result.reactiveCompact).toMatchObject({
-        compacted: true,
-        trigger: 'reactive',
-      });
+      // The in-loop reactive compact handles the rejection without restarting
+      // the run, so the session-level wrapper never fires.
+      expect(result.reactiveCompact).toBeUndefined();
+      expect(result.loopCompactions).toHaveLength(1);
+      expect(result.loopCompactions?.[0]).toMatchObject({ trigger: 'reactive' });
       expect(
         modelApi.createCalls.filter(
           request =>
             (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
-            'compact',
+            'loop_compact',
         ),
       ).toHaveLength(1);
+      // The loop compaction is still recorded in persisted session state.
       expect(compactState.compactCount).toBe(1);
       expect(compactState.summaryMessage).toContain('Reactive compact summary');
       expect(compactState.pendingPostCompaction).toBe(false);
@@ -752,12 +986,14 @@ describe('ActoviqAgentClient', () => {
     }
   });
 
-  it('retries reactive compaction across repeated prompt-too-long failures', async () => {
+  it('falls back to session-level reactive compaction when in-loop recovery is exhausted', async () => {
     const sessionDirectory = await createSessionDirectory();
     let nonCompactCalls = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        const internalTask = (request.metadata as Record<string, unknown> | undefined)
+          ?.actoviq_internal_task;
+        if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
               type: 'text',
@@ -810,6 +1046,10 @@ describe('ActoviqAgentClient', () => {
       });
 
       expect(result.text).toContain('Recovered after repeated reactive compact.');
+      // First prompt-too-long: in-loop reactive compact retries and fails
+      // again (single-shot guard). The error then propagates to the
+      // session-level wrapper, which compacts the session snapshot and
+      // restarts the run.
       expect(result.reactiveCompact).toMatchObject({
         compacted: true,
         trigger: 'reactive',
@@ -818,14 +1058,18 @@ describe('ActoviqAgentClient', () => {
         modelApi.createCalls.filter(
           request =>
             (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            'loop_compact',
+        ),
+      ).toHaveLength(1);
+      expect(
+        modelApi.createCalls.filter(
+          request =>
+            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
             'compact',
         ),
-      ).toHaveLength(2);
-      expect(compactState.compactCount).toBe(2);
-      expect(compactState.latestBoundary?.logicalParentUuid).toBe(
-        compactState.boundaries?.[0]?.uuid,
-      );
-      expect(compactState.latestBoundarySummary).toContain('continuationDepth=2');
+      ).toHaveLength(1);
+      expect(compactState.compactCount).toBe(1);
+      expect(compactState.latestBoundarySummary).toContain('continuationDepth=1');
     } finally {
       await sdk.close();
     }
@@ -1031,7 +1275,7 @@ describe('ActoviqAgentClient', () => {
           }),
         ],
       });
-      session.setPermissionContext({
+      await session.setPermissionContext({
         classifier: ({ publicName }) =>
           publicName === 'write_note'
             ? { behavior: 'allow', reason: 'Session runtime classifier approved the write.' }
@@ -1060,7 +1304,7 @@ describe('ActoviqAgentClient', () => {
       expect(modelApi.createCalls[0]?.system).toContain('Session runtime system prompt');
 
       session.clearHooks();
-      session.clearPermissionContext();
+      await session.clearPermissionContext();
 
       const callCountBeforeSecondRun = modelApi.createCalls.length;
       const secondResult = await session.send('Second write attempt.', { tools: [writeNote] });
@@ -1181,7 +1425,7 @@ describe('ActoviqAgentClient', () => {
           }),
         ],
       });
-      session.setPermissionContext({
+      await session.setPermissionContext({
         permissions: [{ toolName: 'write_note', behavior: 'ask' }],
         approver: ({ publicName }) =>
           publicName === 'write_note'

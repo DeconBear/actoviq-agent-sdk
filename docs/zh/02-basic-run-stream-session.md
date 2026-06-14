@@ -139,6 +139,17 @@ const reply = await restored.send('继续刚才的话题。');
 console.log(reply.text);
 ```
 
+恢复会话时会同时恢复对话记录、compact 元数据、当前模型以及持久化的权限模式与规则。也可以继续最近会话，或创建不修改原会话的分支：
+
+```ts
+const latest = await sdk.sessions.continueMostRecent();
+const fork = await sdk.sessions.resume(latest.id, {
+  fork: true,
+  model: 'max',
+  permissionMode: 'default',
+});
+```
+
 ## 10. 一个完整的 session 管理示例
 
 ```ts
@@ -174,8 +185,8 @@ const results = await sdk.parallel([
 
 ```ts
 const fastest = await sdk.race([
-  () => sdk.run('快速回答', { model: 'claude-min-4-5' }),
-  () => sdk.run('详细回答', { model: 'claude-medium-4-6' }),
+  () => sdk.run('快速回答', { model: 'min' }),
+  () => sdk.run('详细回答', { model: 'medium' }),
 ]);
 ```
 

@@ -28,21 +28,45 @@ const result = await sdk.runWithAgent(
 );
 ```
 
-## 2. Task 委派
+## 2. Agent 委派
 
-定义了 named agents 之后，就可以把子任务委派给特定 agent。
+定义 named agents 后，Clean SDK 会向模型提供主工具 `Agent`，并保留
+`Task` 作为兼容别名。
 
 常用入口：
 
 1. `sdk.createTaskTool()`
 2. `sdk.runWithAgent(...)`
 3. `sdk.createAgentSession(...)`
+4. `sdk.tasks.list()`、`sdk.tasks.wait(...)` 与 `sdk.tasks.stop(...)`
 
-这很适合做：
+`Agent` 支持前台与后台执行、具名 agent 实例、单次模型选择、显式工作目录
+以及 `isolation: "worktree"`。后台任务结束后，结果会作为结构化通知注入父
+会话；`SendMessage` 可以在下一个工具边界向运行中的 agent 追加指令，也可以
+续接已经完成并持久化的 agent 会话。
 
-1. reviewer 子流程
-2. release-check 子流程
-3. 某个专门 agent 的后台分析任务
+Agent 也可以通过 Markdown 定义：
+
+```md
+---
+name: reviewer
+description: Review code without editing it
+tools: Read, Grep, Glob
+disallowedTools: Write, Edit
+skills: release-checklist
+effort: high
+permissionMode: plan
+memory: project
+background: true
+---
+Prioritize correctness, regressions, and verification gaps.
+```
+
+项目定义放在 `.actoviq/agents/*.md`，用户定义放在
+`~/.actoviq/agents/*.md`。优先级为：代码传入的定义、项目定义、用户定义。
+定义还可以限制嵌套 agent、声明必需 MCP server、预加载 skill，以及启用
+worktree 隔离。产生修改的 worktree 会保留并返回路径；没有修改的 worktree
+会自动清理。
 
 ## 3. Swarm、Teammate 与 Side Session
 
@@ -213,6 +237,21 @@ clean SDK 当前支持：
 1. 长对话时控制上下文长度
 2. 压缩后尽量保持推理连续性
 3. 让 session-memory 和 compact 一起工作
+
+手动 compact 可以附加摘要要求，并以结构化结果返回失败状态：
+
+```ts
+const result = await session.compact({
+  force: true,
+  summaryInstructions: '保留未解决的测试失败和精确文件路径。',
+});
+
+if (!result.compacted) {
+  console.error(result.reason, result.error, result.consecutiveFailures);
+}
+```
+
+compact 历史与连续三次失败后的断路器状态都会随会话保存，因此 `resumeSession()` 不会重置恢复状态。
 
 下一章：
 

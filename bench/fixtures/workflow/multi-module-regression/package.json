@@ -1,0 +1,8 @@
+{
+  "name": "multi-module-regression",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs"
+  }
+}

@@ -28,15 +28,47 @@ const result = await sdk.runWithAgent(
 );
 ```
 
-## 2. Task delegation
+## 2. Agent delegation
 
-If named agents are registered, the clean SDK can delegate work through `Task` and the agent helpers.
+If named agents are registered, the clean SDK exposes the model-facing `Agent`
+tool. `Task` remains an alias for compatibility.
 
 Useful entry points:
 
 1. `sdk.createTaskTool()`
 2. `sdk.runWithAgent(...)`
 3. `sdk.createAgentSession(...)`
+4. `sdk.tasks.list()`, `sdk.tasks.wait(...)`, and `sdk.tasks.stop(...)`
+
+The `Agent` tool supports foreground and background execution, named agent
+instances, per-call model selection, explicit working directories, and
+`isolation: "worktree"`. Background completion is injected into the parent
+session as a structured notification. `SendMessage` can steer a running agent
+at its next tool boundary or continue a completed persisted agent session.
+
+Agent definitions can also be loaded from Markdown:
+
+```md
+---
+name: reviewer
+description: Review code without editing it
+tools: Read, Grep, Glob
+disallowedTools: Write, Edit
+skills: release-checklist
+effort: high
+permissionMode: plan
+memory: project
+background: true
+---
+Prioritize correctness, regressions, and verification gaps.
+```
+
+Place project definitions in `.actoviq/agents/*.md` and user definitions in
+`~/.actoviq/agents/*.md`. Programmatic definitions override project
+definitions, which override user definitions. Definitions can also constrain
+nested agents, require MCP servers, preload skills, and opt into worktree
+isolation. A dirty delegated worktree is retained and its path is returned;
+an unchanged worktree is removed automatically.
 
 ## 3. Swarm teammates and side sessions
 
@@ -192,6 +224,23 @@ The clean SDK supports:
 4. persisted compact history and continuity metadata
 
 This matters most in long-running sessions and multi-turn task flows.
+
+Manual compact accepts optional summary guidance and returns structured failure
+state instead of losing continuity:
+
+```ts
+const result = await session.compact({
+  force: true,
+  summaryInstructions: 'Preserve unresolved test failures and exact file paths.',
+});
+
+if (!result.compacted) {
+  console.error(result.reason, result.error, result.consecutiveFailures);
+}
+```
+
+Compact history and the three-failure circuit breaker are stored with the
+session, so `resumeSession()` does not reset recovery state.
 
 Next chapter:
 

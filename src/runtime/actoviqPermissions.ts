@@ -9,6 +9,8 @@ import type {
 import { nowIso } from './helpers.js';
 import { checkSafety } from './safetyChecks.js';
 
+const FILE_EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -34,7 +36,7 @@ function matchesRule(
   return wildcardToRegExp(rule.matcher).test(JSON.stringify(input ?? {}));
 }
 
-export async function decideActoviqToolPermission(input: {
+interface PermissionInput {
   mode: ActoviqPermissionMode;
   rules: ActoviqPermissionRule[];
   classifier?: ActoviqToolClassifier;
@@ -42,6 +44,7 @@ export async function decideActoviqToolPermission(input: {
   canUseTool?: ActoviqCanUseTool;
   adapter?: {
     isReadOnly?: (input?: unknown) => boolean;
+    isDestructive?: (input?: unknown) => boolean;
     requiresUserInteraction?: () => boolean;
     checkPermissions?: (
       context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
@@ -55,26 +58,48 @@ export async function decideActoviqToolPermission(input: {
   prompt: string;
   toolInput: unknown;
   iteration: number;
-}): Promise<ActoviqPermissionDecision> {
+}
+
+function decision(
+  input: PermissionInput,
+  behavior: 'allow' | 'deny',
+  reason: string,
+  source: ActoviqPermissionDecision['source'],
+  timestamp: string,
+  matchedRule?: string,
+): ActoviqPermissionDecision {
+  return {
+    toolName: input.toolName,
+    publicName: input.publicName,
+    behavior,
+    reason,
+    source,
+    matchedRule,
+    timestamp,
+  };
+}
+
+export async function decideActoviqToolPermission(
+  input: PermissionInput,
+): Promise<ActoviqPermissionDecision> {
   const timestamp = nowIso();
 
-  // ── Step 1: Deny rules (highest priority) ─────────────────────
   const denyRule = input.rules.find(
-    (rule) => rule.behavior === 'deny' && matchesRule(rule, input.publicName, input.toolInput),
+    rule =>
+      rule.behavior === 'deny' &&
+      matchesRule(rule, input.publicName, input.toolInput),
   );
   if (denyRule) {
-    return {
-      toolName: input.toolName,
-      publicName: input.publicName,
-      behavior: 'deny',
-      reason: `Denied by permission rule ${denyRule.toolName}.`,
-      source: 'rule',
-      matchedRule: denyRule.toolName,
+    return decision(
+      input,
+      'deny',
+      `Denied by permission rule ${denyRule.toolName}.`,
+      'rule',
       timestamp,
-    };
+      denyRule.toolName,
+    );
   }
 
-  // ── Step 2: Safety checks ─────────────────────────────────────
   const safetyResult = checkSafety({
     toolName: input.toolName,
     publicName: input.publicName,
@@ -82,80 +107,135 @@ export async function decideActoviqToolPermission(input: {
     workDir: input.workDir,
   });
   if (safetyResult.blocked) {
-    return {
-      toolName: input.toolName,
-      publicName: input.publicName,
-      behavior: 'deny',
-      reason: safetyResult.reason ?? 'Blocked by safety check.',
-      source: 'mode',
+    return decision(
+      input,
+      'deny',
+      safetyResult.reason ?? 'Blocked by safety check.',
+      'mode',
       timestamp,
-    };
+    );
   }
 
-  // ── Step 3: Tool-specific checkPermissions ────────────────────
   if (input.adapter?.checkPermissions) {
-    const result = await input.adapter.checkPermissions({
+    const toolDecision = await input.adapter.checkPermissions({
       mode: input.mode,
       runId: input.runId,
       sessionId: input.sessionId,
     });
-    if (result === 'deny') {
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'deny',
-        reason: `Tool ${input.publicName} denied via checkPermissions.`,
-        source: 'mode',
+    if (toolDecision === 'deny') {
+      return decision(
+        input,
+        'deny',
+        `Tool ${input.publicName} denied via checkPermissions.`,
+        'mode',
         timestamp,
-      };
+      );
     }
-    if (result === 'allow') {
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'allow',
-        reason: `Tool ${input.publicName} allowed via checkPermissions.`,
-        source: 'mode',
+    if (toolDecision === 'allow') {
+      return decision(
+        input,
+        'allow',
+        `Tool ${input.publicName} allowed via checkPermissions.`,
+        'mode',
         timestamp,
-      };
+      );
     }
-    if (result === 'ask') {
+    if (toolDecision === 'ask') {
       return resolveActoviqAskPermission(
         input,
-        {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'deny',
-          reason: `Tool ${input.publicName} requires approval via checkPermissions.`,
-          source: 'mode',
+        decision(
+          input,
+          'deny',
+          `Tool ${input.publicName} requires approval via checkPermissions.`,
+          'mode',
           timestamp,
-        },
+        ),
         timestamp,
       );
     }
   }
 
-  // ── Step 4: Ask rules ─────────────────────────────────────────
   const askRule = input.rules.find(
-    (rule) => rule.behavior === 'ask' && matchesRule(rule, input.publicName, input.toolInput),
+    rule =>
+      rule.behavior === 'ask' &&
+      matchesRule(rule, input.publicName, input.toolInput),
   );
   if (askRule) {
     return resolveActoviqAskPermission(
       input,
-      {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'deny',
-        reason: `Tool ${input.publicName} requires approval before execution.`,
-        source: 'rule',
-        matchedRule: askRule.toolName,
+      decision(
+        input,
+        'deny',
+        `Tool ${input.publicName} requires approval before execution.`,
+        'rule',
         timestamp,
-      },
+        askRule.toolName,
+      ),
       timestamp,
     );
   }
 
-  // ── Step 5: Classifier ────────────────────────────────────────
+  if (input.adapter?.requiresUserInteraction?.()) {
+    return resolveActoviqAskPermission(
+      input,
+      decision(
+        input,
+        'deny',
+        `Tool ${input.publicName} requires interactive approval.`,
+        'mode',
+        timestamp,
+      ),
+      timestamp,
+    );
+  }
+
+  if (input.mode === 'bypassPermissions') {
+    return decision(
+      input,
+      'allow',
+      'Bypass-permissions mode allows tool execution.',
+      'mode',
+      timestamp,
+    );
+  }
+
+  const allowRule = input.rules.find(
+    rule =>
+      rule.behavior === 'allow' &&
+      matchesRule(rule, input.publicName, input.toolInput),
+  );
+  if (allowRule) {
+    return decision(
+      input,
+      'allow',
+      `Allowed by permission rule ${allowRule.toolName}.`,
+      'rule',
+      timestamp,
+      allowRule.toolName,
+    );
+  }
+
+  const readOnly = input.adapter?.isReadOnly?.(input.toolInput) ?? false;
+  if (readOnly) {
+    return decision(
+      input,
+      'allow',
+      `${input.mode} mode allows read-only tool execution.`,
+      'mode',
+      timestamp,
+    );
+  }
+
+  if (input.mode === 'acceptEdits' && FILE_EDIT_TOOLS.has(input.publicName)) {
+    return decision(
+      input,
+      'allow',
+      'acceptEdits mode allows workspace file edits.',
+      'mode',
+      timestamp,
+    );
+  }
+
   if (input.classifier) {
     const outcome = await input.classifier({
       runId: input.runId,
@@ -167,45 +247,21 @@ export async function decideActoviqToolPermission(input: {
       prompt: input.prompt,
       iteration: input.iteration,
     });
-    if (outcome) {
-      if (outcome.behavior === 'deny') {
-        return {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'deny',
-          reason: outcome.reason,
-          source: 'classifier',
-          timestamp,
-        };
-      }
-      if (outcome.behavior === 'ask') {
-        return resolveActoviqAskPermission(
-          input,
-          {
-            toolName: input.toolName,
-            publicName: input.publicName,
-            behavior: 'deny',
-            reason: outcome.reason,
-            source: 'classifier',
-            timestamp,
-          },
-          timestamp,
-        );
-      }
-      if (outcome.behavior === 'allow') {
-        return {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'allow',
-          reason: outcome.reason,
-          source: 'classifier',
-          timestamp,
-        };
-      }
+    if (outcome?.behavior === 'allow') {
+      return decision(input, 'allow', outcome.reason, 'classifier', timestamp);
+    }
+    if (outcome?.behavior === 'deny') {
+      return decision(input, 'deny', outcome.reason, 'classifier', timestamp);
+    }
+    if (outcome?.behavior === 'ask') {
+      return resolveActoviqAskPermission(
+        input,
+        decision(input, 'deny', outcome.reason, 'classifier', timestamp),
+        timestamp,
+      );
     }
   }
 
-  // ── Step 6: canUseTool callback ────────────────────────────────
   if (input.canUseTool) {
     const outcome = await input.canUseTool({
       runId: input.runId,
@@ -217,122 +273,121 @@ export async function decideActoviqToolPermission(input: {
       prompt: input.prompt,
       iteration: input.iteration,
     });
-    if (outcome) {
-      if (outcome.behavior === 'deny') {
-        return {
-          toolName: input.toolName,
-          publicName: input.publicName,
-          behavior: 'deny',
-          reason: outcome.reason ?? `Denied by canUseTool.`,
-          source: 'canUseTool',
-          timestamp,
-        };
-      }
-      if (outcome.behavior === 'ask') {
-        return resolveActoviqAskPermission(
+    if (outcome?.behavior === 'allow') {
+      return decision(
+        input,
+        'allow',
+        outcome.reason ?? 'Allowed by canUseTool.',
+        'canUseTool',
+        timestamp,
+      );
+    }
+    if (outcome?.behavior === 'deny') {
+      return decision(
+        input,
+        'deny',
+        outcome.reason ?? 'Denied by canUseTool.',
+        'canUseTool',
+        timestamp,
+      );
+    }
+    if (outcome?.behavior === 'ask') {
+      return resolveActoviqAskPermission(
+        input,
+        decision(
           input,
-          {
-            toolName: input.toolName,
-            publicName: input.publicName,
-            behavior: 'deny',
-            reason: outcome.reason ?? `Tool ${input.publicName} requires approval.`,
-            source: 'canUseTool',
-            timestamp,
-          },
+          'deny',
+          outcome.reason ?? `Tool ${input.publicName} requires approval.`,
+          'canUseTool',
           timestamp,
-        );
-      }
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'allow',
-        reason: outcome.reason ?? `Allowed by canUseTool.`,
-        source: 'canUseTool',
+        ),
         timestamp,
-      };
+      );
     }
   }
 
-  // ── Step 7: Always-allow rules ───────────────────────────────
-  const allowRule = input.rules.find(
-    (rule) => rule.behavior === 'allow' && matchesRule(rule, input.publicName, input.toolInput),
-  );
-  if (allowRule) {
-    return {
-      toolName: input.toolName,
-      publicName: input.publicName,
-      behavior: 'allow',
-      reason: `Allowed by permission rule ${allowRule.toolName}.`,
-      source: 'rule',
-      matchedRule: allowRule.toolName,
+  const destructive =
+    input.adapter?.isDestructive?.(input.toolInput) ??
+    (input.adapter?.isReadOnly ? !readOnly : false);
+
+  if (input.mode === 'plan' && destructive) {
+    return decision(
+      input,
+      'deny',
+      'Plan mode blocks mutating tools until the plan is approved.',
+      'mode',
       timestamp,
-    };
+    );
   }
 
-  // ── Step 8: Mode-based fallback ─────────────────────────────
-  switch (input.mode) {
-    case 'bypassPermissions':
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'allow',
-        reason: 'Bypass-permissions mode allows tool execution.',
-        source: 'mode',
+  if (destructive) {
+    if (!input.approver) {
+      return decision(
+        input,
+        'deny',
+        `${input.mode} mode requires approval for mutating tools, but no approver is available.`,
+        'mode',
         timestamp,
-      };
-    case 'plan': {
-      const readOnly = input.adapter?.isReadOnly?.(input.toolInput) ?? false;
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: readOnly ? 'allow' : 'deny',
-        reason: readOnly
-          ? 'Plan mode allows read-only tool execution.'
-          : 'Plan mode blocks mutating tools until the plan is approved.',
-        source: 'mode',
-        timestamp,
-      };
+      );
     }
-    case 'acceptEdits': {
-      const classified = input.adapter?.isReadOnly !== undefined;
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: classified ? 'allow' : 'deny',
-        reason: classified
-          ? 'acceptEdits mode allows classified tools.'
-          : 'acceptEdits mode blocks unsupported high-risk tools.',
-        source: 'mode',
+    return resolveActoviqAskPermission(
+      input,
+      decision(
+        input,
+        'deny',
+        `${input.mode} mode requires approval for mutating tools.`,
+        'mode',
         timestamp,
-      };
-    }
-    case 'auto':
-    case 'default':
-    default:
-      return {
-        toolName: input.toolName,
-        publicName: input.publicName,
-        behavior: 'allow',
-        reason: `${input.mode} mode allows tool execution by default.`,
-        source: 'mode',
-        timestamp,
-      };
+      ),
+      timestamp,
+    );
   }
+
+  if (input.mode !== 'plan' && input.adapter?.isReadOnly === undefined) {
+    return decision(
+      input,
+      'allow',
+      `${input.mode} mode allows tools that do not declare a mutation classification.`,
+      'mode',
+      timestamp,
+    );
+  }
+
+  if (input.mode === 'plan') {
+    return decision(
+      input,
+      'deny',
+      'Plan mode blocks mutating tools until the plan is approved.',
+      'mode',
+      timestamp,
+    );
+  }
+
+  if (!input.approver) {
+    return decision(
+      input,
+      'allow',
+      `${input.mode} mode allows unclassified tools when no interactive approver is configured.`,
+      'mode',
+      timestamp,
+    );
+  }
+
+  return resolveActoviqAskPermission(
+    input,
+    decision(
+      input,
+      'deny',
+      `${input.mode} mode requires approval for mutating or unclassified tools.`,
+      'mode',
+      timestamp,
+    ),
+    timestamp,
+  );
 }
 
 async function resolveActoviqAskPermission(
-  input: {
-    mode: ActoviqPermissionMode;
-    approver?: ActoviqToolApprover;
-    runId: string;
-    sessionId?: string;
-    workDir: string;
-    toolName: string;
-    publicName: string;
-    prompt: string;
-    toolInput: unknown;
-    iteration: number;
-  },
+  input: PermissionInput,
   baseDecision: ActoviqPermissionDecision,
   timestamp: string,
 ): Promise<ActoviqPermissionDecision> {
@@ -340,7 +395,7 @@ async function resolveActoviqAskPermission(
     return {
       ...baseDecision,
       behavior: 'deny',
-      reason: `${baseDecision.reason} Approval is required, but interactive approval is unavailable in the clean SDK path.`,
+      reason: `${baseDecision.reason} Approval is required, but no approver is available.`,
       timestamp,
     };
   }
@@ -361,17 +416,15 @@ async function resolveActoviqAskPermission(
     matchedRule: baseDecision.matchedRule,
   });
 
-  return {
-    toolName: baseDecision.toolName,
-    publicName: baseDecision.publicName,
-    behavior: approval?.behavior === 'allow' ? 'allow' : 'deny',
-    reason:
-      approval?.reason ??
+  return decision(
+    input,
+    approval?.behavior === 'allow' ? 'allow' : 'deny',
+    approval?.reason ??
       (approval?.behavior === 'allow'
         ? `Approved ${baseDecision.publicName} for execution.`
         : `${baseDecision.reason} Approval was denied.`),
-    source: 'approver',
-    matchedRule: baseDecision.matchedRule,
+    'approver',
     timestamp,
-  };
+    baseDecision.matchedRule,
+  );
 }

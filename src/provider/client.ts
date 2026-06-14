@@ -35,10 +35,12 @@ export interface ActoviqCreateMessageRequest {
   metadata?: Metadata;
   stop_sequences?: string[];
   extra_tool_schemas?: Record<string, unknown>[];
+  output_config?: Record<string, unknown>;
 }
 
 export interface ActoviqRequestOptions {
   signal?: AbortSignal;
+  betas?: string[];
 }
 
 interface ApiErrorShape {
@@ -492,7 +494,7 @@ export default class ActoviqProviderClient {
       try {
         const response = await this.fetchImpl(normalizeMessagesUrl(this.baseURL), {
           method: 'POST',
-          headers: this.buildHeaders(body.stream === true),
+          headers: this.buildHeaders(body.stream === true, options?.betas),
           body: JSON.stringify(body),
           signal: requestSignal,
         });
@@ -533,7 +535,7 @@ export default class ActoviqProviderClient {
       : new Error('The provider request failed unexpectedly.');
   }
 
-  private buildHeaders(streaming: boolean): HeadersInit {
+  private buildHeaders(streaming: boolean, betas?: string[]): HeadersInit {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: streaming ? 'text/event-stream' : 'application/json',
@@ -544,6 +546,9 @@ export default class ActoviqProviderClient {
       headers.authorization = `Bearer ${this.authToken}`;
     } else if (this.apiKey) {
       headers['x-api-key'] = this.apiKey;
+    }
+    if (betas && betas.length > 0) {
+      headers['anthropic-beta'] = [...new Set(betas)].join(',');
     }
 
     return headers;

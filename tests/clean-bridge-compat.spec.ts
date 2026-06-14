@@ -115,6 +115,7 @@ describe('clean bridge compatibility facade', () => {
       'signal',
     ]));
     expect(matrix.find(entry => entry.option === 'fallbackModel')?.status).toBe('unsupported');
+    expect(matrix.find(entry => entry.option === 'effort')?.status).toBe('exact');
     expect(matrix.find(entry => entry.option === 'tools')?.status).toBe('mapped');
   });
 
@@ -153,6 +154,7 @@ describe('clean bridge compatibility facade', () => {
     try {
       const report = sdk.explainOptions({
         model: 'override-model',
+        effort: 'high',
         systemPrompt: 'Base prompt.',
         appendSystemPrompt: 'Append prompt.',
         permissionMode: 'dontAsk',
@@ -165,6 +167,7 @@ describe('clean bridge compatibility facade', () => {
 
       expect(report.mapped.map(entry => entry.option)).toEqual(expect.arrayContaining([
         'model',
+        'effort',
         'systemPrompt',
         'appendSystemPrompt',
         'permissionMode',
@@ -178,6 +181,7 @@ describe('clean bridge compatibility facade', () => {
 
       const result = await sdk.run('hello', {
         model: 'override-model',
+        effort: 'high',
         systemPrompt: 'Base prompt.',
         appendSystemPrompt: 'Append prompt.',
         tools: ['Echo'],
@@ -187,6 +191,7 @@ describe('clean bridge compatibility facade', () => {
       expect(result.exitCode).toBe(0);
       expect(result.resultEvent?.type).toBe('result');
       expect(modelApi.createCalls[0]?.model).toBe('override-model');
+      expect(modelApi.createCalls[0]?.effort).toBe('high');
       expect(modelApi.createCalls[0]?.system).toContain('Base prompt.\n\nAppend prompt.');
       expect(modelApi.createCalls[0]?.tools?.map(providerTool => providerTool.name)).toEqual(['Echo']);
     } finally {

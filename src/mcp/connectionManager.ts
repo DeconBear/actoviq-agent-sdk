@@ -38,7 +38,13 @@ export class McpConnectionManager {
     localTools: AgentToolDefinition[] = [],
     servers: AgentMcpServerDefinition[] = [],
   ): Promise<ResolvedToolAdapter[]> {
-    const adapters: ResolvedToolAdapter[] = localTools.map((tool) => createLocalToolAdapter(tool));
+    const adapters: ResolvedToolAdapter[] = [];
+    for (const localTool of localTools) {
+      adapters.push(createLocalToolAdapter(localTool));
+      for (const alias of localTool.aliases ?? []) {
+        adapters.push(createLocalToolAdapter(localTool, alias, localTool.name));
+      }
+    }
 
     for (const server of servers) {
       if (server.kind === 'local') {
@@ -52,6 +58,16 @@ export class McpConnectionManager {
               server.name,
             ),
           );
+          for (const alias of localTool.aliases ?? []) {
+            adapters.push(
+              createLocalToolAdapter(
+                localTool,
+                qualifyToolName(prefix, alias),
+                localTool.name,
+                server.name,
+              ),
+            );
+          }
         }
         continue;
       }
