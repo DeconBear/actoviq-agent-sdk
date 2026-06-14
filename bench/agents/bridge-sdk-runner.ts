@@ -62,6 +62,9 @@ try {
       toolCallCount: eventAnalysis.toolRequests.length,
       toolErrorCount: eventAnalysis.toolResults.filter((toolResult) => toolResult.isError).length,
       subagentCallCount: eventAnalysis.taskInvocations.length,
+      agentContinuationCallCount: countAgentContinuations(eventAnalysis.toolRequests),
+      backgroundSubagentCallCount: countAgentCalls(eventAnalysis.toolRequests, 'background'),
+      isolatedSubagentCallCount: countAgentCalls(eventAnalysis.toolRequests, 'isolated'),
       skillUseCount: skillRequests.length,
       permissionDenialCount: countPermissionDenials(result.events),
       eventCount: result.events.length,
@@ -94,6 +97,45 @@ function buildPrompt(task: string, cwd: string): string {
     'Task:',
     task.trim(),
   ].join('\n');
+}
+
+function isAgentToolName(name: string): boolean {
+  return name === 'Agent' || name === 'Task';
+}
+
+function countAgentContinuations(
+  requests: Array<{ name: string; input?: unknown }>,
+): number {
+  return requests.filter(request => {
+    if (request.name === 'SendMessage') {
+      return true;
+    }
+    const input = asRecord(request.input);
+    return isAgentToolName(request.name) &&
+      typeof input?.resume === 'string' &&
+      input.resume.length > 0;
+  }).length;
+}
+
+function countAgentCalls(
+  requests: Array<{ name: string; input?: unknown }>,
+  kind: 'background' | 'isolated',
+): number {
+  return requests.filter(request => {
+    if (!isAgentToolName(request.name)) {
+      return false;
+    }
+    const input = asRecord(request.input);
+    return kind === 'background'
+      ? input?.run_in_background === true
+      : input?.isolation === 'worktree';
+  }).length;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function countPermissionDenials(events: Array<Record<string, unknown>>): number {

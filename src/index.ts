@@ -125,6 +125,7 @@ export {
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './runtime/actoviqAgents.js';
+export { loadActoviqAgentDefinitions } from './runtime/actoviqAgentDefinitions.js';
 export { getDefaultActoviqAgents } from './runtime/defaultActoviqAgents.js';
 export {
   ActoviqContextApi,

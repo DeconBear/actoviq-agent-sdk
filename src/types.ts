@@ -456,24 +456,53 @@ export interface ActoviqAgentDefinition {
   description: string;
   systemPrompt?: string;
   model?: string;
+  effort?: ActoviqRunEffort;
+  permissionMode?: ActoviqPermissionMode;
   maxToolIterations?: number;
+  maxTurns?: number;
   metadata?: Record<string, unknown>;
   hooks?: ActoviqHooks;
   tools?: AgentToolDefinition[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  allowedAgents?: string[];
+  skills?: string[];
   mcpServers?: AgentMcpServerDefinition[];
+  requiredMcpServers?: string[];
   inheritDefaultTools?: boolean;
   inheritDefaultMcpServers?: boolean;
+  initialPrompt?: string;
+  memory?: 'user' | 'project' | 'local';
+  background?: boolean;
+  isolation?: 'worktree';
+  cwd?: string;
+  allowNestedAgents?: boolean;
+  source?: 'built-in' | 'user' | 'project' | 'custom';
+  sourcePath?: string;
 }
 
 export interface ActoviqAgentDefinitionSummary {
   name: string;
   description: string;
   model?: string;
+  effort?: ActoviqRunEffort;
+  permissionMode?: ActoviqPermissionMode;
   maxToolIterations?: number;
+  maxTurns?: number;
   toolNames: string[];
+  allowedTools: string[];
+  disallowedTools: string[];
+  allowedAgents: string[];
+  skills: string[];
   mcpServerNames: string[];
+  requiredMcpServers: string[];
   inheritDefaultTools: boolean;
   inheritDefaultMcpServers: boolean;
+  background: boolean;
+  isolation?: 'worktree';
+  memory?: 'user' | 'project' | 'local';
+  source?: 'built-in' | 'user' | 'project' | 'custom';
+  sourcePath?: string;
   metadataKeys: string[];
   hasSystemPrompt: boolean;
   hasHooks: boolean;
@@ -690,7 +719,11 @@ export interface CreateAgentSdkOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   agents?: ActoviqAgentDefinition[];
+  agentDirectories?: string[];
+  loadDefaultAgentDirectories?: boolean;
   disableDefaultAgents?: boolean;
+  maxSubagentDepth?: number;
+  maxSubagentFanout?: number;
   skills?: ActoviqSkillDefinition[];
   skillDirectories?: string[];
   disableDefaultSkills?: boolean;
@@ -800,6 +833,8 @@ export interface AgentRunOptions {
    * next tool-result user message so the model sees them on its next request.
    */
   drainQueuedInputs?: () => string[];
+  /** Override the runtime working directory for this run. */
+  workDir?: string;
 }
 
 export interface SessionCreateOptions {
@@ -999,7 +1034,11 @@ export interface ActoviqTaskToolInput {
   subagent_type?: string;
   agent?: string;
   agent_type?: string;
+  model?: string;
   run_in_background?: boolean;
+  name?: string;
+  isolation?: 'worktree';
+  cwd?: string;
 }
 
 export interface ActoviqTaskToolSyncResult {
@@ -1007,10 +1046,13 @@ export interface ActoviqTaskToolSyncResult {
   subagentType: string;
   runId: string;
   sessionId?: string;
+  agentId?: string;
   model: string;
   text: string;
   toolCallCount: number;
   toolErrorCount: number;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }
 
 export interface ActoviqTaskToolAsyncResult {
@@ -1018,9 +1060,12 @@ export interface ActoviqTaskToolAsyncResult {
   taskId: string;
   subagentType: string;
   sessionId?: string;
+  agentId?: string;
   outputFile: string;
   canReadOutputFile: boolean;
   description: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }
 
 export type ActoviqTaskToolResult =
@@ -1034,12 +1079,13 @@ export interface ActoviqDelegatedAgentRecord {
   lastDescription?: string;
   lastRunId?: string;
   lastSessionId?: string;
-  lastStatus?: 'completed' | 'async_launched';
+  lastStatus?: 'completed' | 'async_launched' | 'failed' | 'cancelled';
   lastTaskId?: string;
   lastTextSummary?: string;
   runIds?: string[];
   sessionIds?: string[];
   taskIds?: string[];
+  totalRequestCount?: number;
   totalToolCallCount?: number;
   totalToolErrorCount?: number;
 }
@@ -1069,12 +1115,24 @@ export interface ActoviqBackgroundTaskRecord {
   completedAt?: string;
   parentRunId?: string;
   parentSessionId?: string;
+  agentName?: string;
   sessionId?: string;
   runId?: string;
   model?: string;
   text?: string;
+  partialText?: string;
   toolCallCount?: number;
   toolErrorCount?: number;
+  requestCount?: number;
+  currentIteration?: number;
+  currentToolName?: string;
+  progressSummary?: string;
+  queuedMessageCount?: number;
+  resumedFromTaskId?: string;
+  notificationDeliveredAt?: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  retainedWorktree?: boolean;
   error?: string;
 }
 

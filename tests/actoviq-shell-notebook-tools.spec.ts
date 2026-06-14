@@ -62,6 +62,18 @@ describe('Bash tool', () => {
     expect(result.exitCode).toBe(0);
     expect(path.normalize(result.stdout.trim())).toBe(path.normalize(cwd));
   });
+
+  it('provides POSIX shell commands on Windows', async () => {
+    const cwd = await createTempDir('actoviq-bash-posix-');
+    await writeFile(path.join(cwd, 'visible.txt'), 'ok\n', 'utf8');
+    const result = await createBashTool().execute(
+      { command: 'ls -1' },
+      createContext(cwd),
+    ) as { stdout: string; stderr: string; exitCode: number };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('visible.txt');
+  });
 });
 
 describe('NotebookEdit tool', () => {

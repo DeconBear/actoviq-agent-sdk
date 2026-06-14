@@ -25,6 +25,9 @@ export interface BenchmarkBudget {
 
 export interface BenchmarkBehaviorExpectations {
   minSubagentCalls?: number;
+  minAgentContinuationCalls?: number;
+  minBackgroundSubagentCalls?: number;
+  minIsolatedSubagentCalls?: number;
   minSkillUseCount?: number;
   requiredSkillNames?: string[];
   maxToolErrors?: number;
@@ -98,6 +101,7 @@ export interface BenchmarkSubagentMetric {
   runIds?: string[];
   sessionIds?: string[];
   taskIds?: string[];
+  requestCount?: number;
   toolCallCount?: number;
   toolErrorCount?: number;
 }
@@ -110,6 +114,9 @@ export interface BenchmarkAgentMetrics {
   toolCallCount?: number;
   toolErrorCount?: number;
   subagentCallCount?: number;
+  agentContinuationCallCount?: number;
+  backgroundSubagentCallCount?: number;
+  isolatedSubagentCallCount?: number;
   skillUseCount?: number;
   permissionDenialCount?: number;
   benchmarkInternalAccessCount?: number;
