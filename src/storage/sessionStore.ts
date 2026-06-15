@@ -207,9 +207,16 @@ export class SessionStore {
     const summaries: SessionCheckpointSummary[] = [];
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
-      const raw = await readFile(path.join(dir, file), 'utf8');
-      const cp = JSON.parse(raw) as SessionCheckpoint;
-      summaries.push({ id: cp.id, label: cp.label, createdAt: cp.createdAt });
+      const filePath = path.join(dir, file);
+      try {
+        const raw = await readFile(filePath, 'utf8');
+        const cp = JSON.parse(raw) as SessionCheckpoint;
+        summaries.push({ id: cp.id, label: cp.label, createdAt: cp.createdAt });
+      } catch (error) {
+        console.warn(
+          `[SessionStore] Skipping unreadable checkpoint ${file}: ${(error as Error).message}`,
+        );
+      }
     }
     return summaries.sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
