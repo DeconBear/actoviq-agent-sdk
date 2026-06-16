@@ -119,7 +119,7 @@ This launches a readline-based agent in the main terminal buffer:
 
 ## 5. Terminal UI (TUI)
 
-The package also includes the full Clean SDK terminal UI:
+The package also includes the full Hadamard SDK terminal UI:
 
 ```bash
 npx actoviq-tui [work-dir] [options]
@@ -128,11 +128,11 @@ npx actoviq-tui [work-dir] [options]
 #   --config <path>            Load a specific Actoviq settings JSON file
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
 #   --model <model>            Override the configured model or tier alias
-#   --resume <session-id>      Resume a stored Clean SDK session
+#   --resume <session-id>      Resume a stored Hadamard SDK session
 #   --continue                 Continue the most recently updated session
 ```
 
-`actoviq-tui` mirrors Claude Code's default terminal interaction pattern while staying fully Clean SDK-owned: transcript output streams into native scrollback, and a redrawable bottom region hosts the status line, a Claude-style prompt bar, slash-command menu, and permission prompts.
+`actoviq-tui` mirrors Claude Code's default terminal interaction pattern while staying fully Hadamard SDK-owned: transcript output streams into native scrollback, and a redrawable bottom region hosts the status line, a Claude-style prompt bar, slash-command menu, and permission prompts.
 
 Use it when you want a richer terminal experience:
 
@@ -140,12 +140,12 @@ Use it when you want a richer terminal experience:
 - Multi-line editing with `\` + Enter or Ctrl+J, history navigation, and inline cursor rendering.
 - Searchable slash-command menu. `/resume` opens a project-session picker, while `/resume <session-id>` resumes directly.
 - `/model` selects a model; `/model config` edits the provider, masked API key, base URL, and model tiers. `/effort` selects the provider reasoning effort.
-- `/skills`, `/agents`, `/mcp`, and `/plugins` browse Clean SDK capability catalogs; `/help` searches command usage and `/dream` controls dream runs.
+- `/skills`, `/agents`, `/mcp`, and `/plugins` browse Hadamard SDK capability catalogs; `/help` searches command usage and `/dream` controls dream runs.
 - Mid-run steering: type while the agent is working and press Enter to queue guidance into the next model request.
 - Interactive permission prompts when launched with `--permission-mode default`; always-allow rules persist with the session.
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
-Both `actoviq-react` and `actoviq-tui` use the same Clean SDK defaults: `~/.actoviq/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
+Both `actoviq-react` and `actoviq-tui` use the same Hadamard SDK defaults: `~/.actoviq/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
 
 When `sessionDirectory` is not set explicitly, sessions are isolated by workspace under `~/.actoviq/projects/<workspace-key>`.
 

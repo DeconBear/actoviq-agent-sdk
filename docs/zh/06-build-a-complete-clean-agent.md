@@ -1,6 +1,6 @@
-﻿# 从 0 到 1：用 clean SDK 做一个完整可用的 Agent 项目
+﻿# 从 0 到 1：用 Hadamard SDK 做一个完整可用的 Agent 项目
 
-这篇教程的目标不是只让你跑一个 demo，而是手把手带你做出一个“能持续对话、能调用工具、能使用 skills、能保留会话”的 clean SDK 项目。整篇教程只使用 `createAgentSdk()`。
+这篇教程的目标不是只让你跑一个 demo，而是手把手带你做出一个“能持续对话、能调用工具、能使用 skills、能保留会话”的 Hadamard SDK 项目。整篇教程只使用 `createAgentSdk()`。
 
 ## 你最终会得到什么
 
@@ -220,7 +220,7 @@ const addNumbers = tool(...)
 const releaseCheck = skill(...)
 ```
 
-这表示你给 clean SDK 提供了一个可以重复使用的 skill。之后你可以：
+这表示你给 Hadamard SDK 提供了一个可以重复使用的 skill。之后你可以：
 
 1. 用 `sdk.runSkill(...)`
 2. 用 `session.runSkill(...)`
@@ -306,7 +306,7 @@ await oldSession.send('继续刚才的话题');
 
 ## 九、这些历史会话保存在哪里
 
-默认情况下，clean SDK 会把 session 数据保存到：
+默认情况下，Hadamard SDK 会把 session 数据保存到：
 
 ```text
 ~/.actoviq/actoviq-agent-sdk
@@ -404,4 +404,4 @@ const sdk = await createAgentSdk({
 3. 确认 session、stream、tool 调用都通了
 4. 再逐步加 MCP、memory、swarm、workspace
 
-这样你会更容易定位问题，也更容易把 clean SDK 用成自己的产品底座。
+这样你会更容易定位问题，也更容易把 Hadamard SDK 用成自己的产品底座。

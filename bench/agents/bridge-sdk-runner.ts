@@ -15,7 +15,7 @@ const caseId = process.env.ACTOVIQ_BENCH_CASE_ID;
 const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqBridgePermissionMode;
-// No declared budget -> unlimited turns, consistent with the Clean SDK runner.
+// No declared budget -> unlimited turns, consistent with the Hadamard SDK runner.
 const maxTurnsRaw = process.env.ACTOVIQ_BENCH_MAX_TURNS;
 const maxTurns = maxTurnsRaw ? Number(maxTurnsRaw) : undefined;
 const bridgeCliPath = process.env.ACTOVIQ_BENCH_BRIDGE_CLI_PATH;

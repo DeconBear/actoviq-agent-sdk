@@ -20,4 +20,4 @@ If you only want to get moving quickly:
 2. Run `npm run example:actoviq-quickstart`.
 3. Or start an interactive terminal surface:
    - `npx actoviq-react [work-dir]` for the lightweight scrollback REPL.
-   - `npx actoviq-tui [work-dir]` for the full Clean SDK terminal UI.
+   - `npx actoviq-tui [work-dir]` for the full Hadamard SDK terminal UI.

@@ -15,6 +15,12 @@ import {
   createAgentSdk,
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
+  listWorkflows,
+  loadWorkflow,
+  listTeamDefinitions,
+  loadTeamDefinition,
+  createModelTeam,
+  WorktreeService,
 } from '../index.js';
 import {
   persistActoviqSettingsStore,
@@ -85,6 +91,9 @@ export const TUI_SLASH_COMMANDS: Record<string, string> = {
   mcp: 'Inspect MCP servers and tools',
   plugins: 'Browse discovered Clean plugins',
   dream: 'Inspect or run memory consolidation',
+  workflows: 'Browse saved dynamic workflows',
+  worktree: 'Enter, exit, or list git worktrees',
+  team: 'List or run Model Team definitions',
   exit: 'Quit',
 };
 
@@ -763,6 +772,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       mcp: '/mcp',
       plugins: '/plugins',
       dream: '/dream [run|status]',
+      workflows: '/workflows [run <name>|list]',
+      worktree: '/worktree [enter <name>|exit|list]',
+      team: '/team [ask <name> <prompt>|list]',
       exit: '/exit',
     };
     return usage[name] ?? `/${name}`;
@@ -1301,6 +1313,157 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'plugins':
           await showPlugins();
           return;
+        // ── v0.5.0: Dynamic Workflows ────────────────────────────
+        case 'workflows': {
+          if (args === 'list' || !args) {
+            const workflows = listWorkflows(sdk.config.workDir);
+            if (workflows.length === 0) {
+              appendStatic([...formatInfoLine('no saved workflows'), '']);
+            } else {
+              appendStatic([
+                ...workflows.map((w) =>
+                  `${A.cyan}/${w.name}${A.reset}${A.dim} · ${w.source} · ${w.description.slice(0, 60)}${A.reset}`,
+                ),
+                '',
+              ]);
+            }
+            return;
+          }
+          if (args.startsWith('run ')) {
+            const wfName = args.slice(4).trim();
+            const wf = loadWorkflow(wfName, sdk.config.workDir);
+            if (!wf) {
+              appendStatic([...formatErrorLine(`workflow not found: ${wfName}`), '']);
+              return;
+            }
+            appendStatic([
+              ...formatInfoLine(`running workflow: ${wfName}`),
+              ...formatInfoLine(`phases: ${wf.meta?.phases?.map((p) => p.title).join(', ') ?? 'none'}`),
+              '',
+            ]);
+            // Execute workflow script
+            try {
+              const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
+              const runtime = new WorkflowScriptRuntime({
+                sdk: sdk as any,
+                onEvent: (e: any) => {
+                  if (e.type === 'workflow.log') {
+                    appendStatic([`${A.dim}  │ ${e.message}${A.reset}`]);
+                  } else if (e.type === 'workflow.script.done') {
+                    appendStatic([
+                      `${A.green}✓ workflow done${A.reset}${A.dim} · ${e.agentCount} agents · ${e.totalTokens} tokens${A.reset}`,
+                      '',
+                    ]);
+                  }
+                },
+              });
+              const output = await runtime.execute(wf.script);
+              if (output.state.errors.length > 0) {
+                appendStatic([
+                  ...formatErrorLine(`${output.state.errors.length} errors during workflow execution`),
+                  '',
+                ]);
+              }
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(`workflow error: ${error.message}`), '']);
+            }
+            return;
+          }
+          appendStatic([...formatInfoLine('usage: /workflows [list|run <name>]'), '']);
+          return;
+        }
+        // ── v0.5.0: Worktrees ────────────────────────────────────
+        case 'worktree': {
+          const ws = new WorktreeService(sdk.config.workDir);
+          if (args === 'list') {
+            await ws.init();
+            const trees = await ws.listWorktrees();
+            if (trees.length === 0) {
+              appendStatic([...formatInfoLine('no worktrees'), '']);
+            } else {
+              appendStatic([
+                ...trees.map((t) =>
+                  `${A.dim}${t.path}${A.reset} · ${t.isDirty ? `${A.yellow}dirty${A.reset}` : `${A.green}clean${A.reset}`}`,
+                ),
+                '',
+              ]);
+            }
+            return;
+          }
+          if (args === 'exit') {
+            try {
+              ws.exitWorktree();
+              appendStatic([...formatInfoLine(`exited worktree, cwd: ${ws.currentWorkDir}`), '']);
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(error.message), '']);
+            }
+            return;
+          }
+          if (args.startsWith('enter ')) {
+            const wfName = args.slice(6).trim();
+            try {
+              await ws.init();
+              await ws.createAndEnterWorktree({ name: wfName });
+              appendStatic([...formatInfoLine(`entered worktree: ${wfName} (${ws.currentWorkDir})`), '']);
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(error.message), '']);
+            }
+            return;
+          }
+          appendStatic([...formatInfoLine('usage: /worktree [enter <name>|exit|list]'), '']);
+          return;
+        }
+        // ── v0.5.0: Model Team ───────────────────────────────────
+        case 'team': {
+          if (args === 'list' || !args) {
+            const teams = listTeamDefinitions(sdk.config.workDir);
+            if (teams.length === 0) {
+              appendStatic([...formatInfoLine('no saved team definitions'), '']);
+            } else {
+              appendStatic([
+                ...teams.map((t) =>
+                  `${A.cyan}${t.name}${A.reset}${A.dim} · ${t.definition.mode} · ${t.source} · ${t.definition.members?.length ?? 0} members${A.reset}`,
+                ),
+                '',
+              ]);
+            }
+            return;
+          }
+          if (args.startsWith('ask ')) {
+            const rest = args.slice(4).trim();
+            const spaceIdx = rest.indexOf(' ');
+            if (spaceIdx === -1) {
+              appendStatic([...formatErrorLine('usage: /team ask <name> <prompt>'), '']);
+              return;
+            }
+            const teamName = rest.slice(0, spaceIdx);
+            const prompt = rest.slice(spaceIdx + 1).trim();
+
+            const loaded = loadTeamDefinition(teamName, sdk.config.workDir);
+            if (!loaded) {
+              appendStatic([...formatErrorLine(`team not found: ${teamName}`), '']);
+              return;
+            }
+
+            appendStatic([...formatInfoLine(`asking team "${teamName}" (${loaded.definition.mode} mode)...`), '']);
+            try {
+              const team = createModelTeam(loaded.definition);
+              const result = await team.ask(prompt);
+              appendStatic([
+                `${A.green}✓ team response${A.reset}${A.dim} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s${A.reset}`,
+                `${A.dim}cost: ${result.cost.estimatedCost !== null ? `$${result.cost.estimatedCost.toFixed(4)}` : 'N/A'} · ${result.cost.totalInputTokens + result.cost.totalOutputTokens} tokens${A.reset}`,
+                '',
+                result.answer.slice(0, 500),
+                '',
+              ]);
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(`team error: ${error.message}`), '']);
+            }
+            return;
+          }
+          appendStatic([...formatInfoLine('usage: /team [list|ask <name> <prompt>]'), '']);
+          return;
+        }
         default:
           appendStatic([...formatErrorLine(`unknown command: /${name} — type /help`), '']);
           return;

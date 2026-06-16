@@ -1,6 +1,6 @@
 # 04. Agents、Swarm、Memory 与 Workspace
 
-这一章讲的是 clean SDK 里更高层的能力：不只是单轮对话，而是把 agent 组织成可以长期协作、持续运行、保留记忆的系统。
+这一章讲的是 Hadamard SDK 里更高层的能力：不只是单轮对话，而是把 agent 组织成可以长期协作、持续运行、保留记忆的系统。
 
 ## 1. Named agents
 
@@ -30,7 +30,7 @@ const result = await sdk.runWithAgent(
 
 ## 2. Agent 委派
 
-定义 named agents 后，Clean SDK 会向模型提供主工具 `Agent`，并保留
+定义 named agents 后，Hadamard SDK 会向模型提供主工具 `Agent`，并保留
 `Task` 作为兼容别名。
 
 常用入口：
@@ -129,7 +129,7 @@ const sdk = await createAgentSdk({
 
 ## 5. Buddy
 
-Buddy 不是单独的导航页，而是 clean SDK 里的一种“陪伴式上下文能力”。它适合给 agent 注入固定风格、提示语气和持续性的 companion context。
+Buddy 不是单独的导航页，而是 Hadamard SDK 里的一种“陪伴式上下文能力”。它适合给 agent 注入固定风格、提示语气和持续性的 companion context。
 
 常用入口：
 
@@ -150,11 +150,11 @@ await sdk.buddy.hatch({
 console.log(await sdk.buddy.state());
 ```
 
-Buddy 的内容会通过 prompt context 进入 clean SDK 主链，所以它更像“长期陪伴配置”，而不是一次性工具。
+Buddy 的内容会通过 prompt context 进入 Hadamard SDK 主链，所以它更像“长期陪伴配置”，而不是一次性工具。
 
 ## 6. Memory、Session-Memory 与 Relevant Memories
 
-clean SDK 当前已经提供：
+Hadamard SDK 当前已经提供：
 
 1. relevant memories 选择
 2. session-memory prompt / summary helper
@@ -185,7 +185,7 @@ const state = await session.compactState({
 
 ## 7. Dream：长期记忆整理
 
-Dream 可以理解成一次“对最近若干会话做记忆整理和巩固”的 clean SDK 过程。它不会单独占据教程导航，而是作为 memory 系统的一部分来理解。
+Dream 可以理解成一次“对最近若干会话做记忆整理和巩固”的 Hadamard SDK 过程。它不会单独占据教程导航，而是作为 memory 系统的一部分来理解。
 
 ### 查看当前 dream 状态
 
@@ -225,7 +225,7 @@ console.log(autoResult.task?.id);
 
 ## 8. Compact
 
-clean SDK 当前支持：
+Hadamard SDK 当前支持：
 
 1. 自动 compact
 2. reactive compact

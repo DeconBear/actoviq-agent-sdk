@@ -1,0 +1,32 @@
+{
+  "$schema": "../benchmark-case.schema.json",
+  "name": "worktree-isolation",
+  "description": "Worktree: create isolated worktree, make changes, verify isolation, exit and cleanup",
+  "version": "0.5.0",
+  "category": "complex",
+  "features": ["worktrees"],
+  "setup": {
+    "toolFilter": ["EnterWorktree", "ExitWorktree", "Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+    "requireGit": true
+  },
+  "prompt": "Use the EnterWorktree tool to create an isolated git worktree named 'bench-test'.\nInside the worktree, create a file called 'worktree-test.txt' with content 'isolated-work'.\nVerify the file exists inside the worktree.\nThen use ExitWorktree to return to the original directory.\nVerify that 'worktree-test.txt' does NOT exist in the original directory (confirming isolation).\nReport the results.",
+  "scorers": [
+    {
+      "type": "command_output",
+      "command": "node -e \"const fs=require('fs');const exists=fs.existsSync('worktree-test.txt');console.log(exists ? 'leaked' : 'isolated')\"",
+      "matches": "isolated"
+    },
+    {
+      "type": "no_file_exists",
+      "path": "worktree-test.txt"
+    }
+  ],
+  "behavior": {
+    "minSubagentCalls": 0,
+    "maxToolErrors": 1
+  },
+  "budget": {
+    "maxTurns": 15
+  },
+  "tags": ["worktrees", "isolation", "git"]
+}

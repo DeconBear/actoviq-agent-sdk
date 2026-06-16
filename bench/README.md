@@ -29,17 +29,17 @@ The harness also scans JSONL trajectories for benchmark-internal access such as 
 
 Cases may declare `behaviorExpectations` such as `minSubagentCalls`, `minSkillUseCount`, `requiredSkillNames`, or `maxToolErrors`. These expectations affect the behavior score only; they do not turn a natural task prompt into a required ReAct script and do not replace deterministic end-state graders.
 `subagentCallCount` should count actual delegated agents only, not internal shell/tool helper tasks such as local bash execution events.
-Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for Bridge SDK and official Claude Agent SDK wrappers, and as `ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS` for the Clean SDK wrapper.
+Cases may also set `budget.maxTurns`; the parity runner passes it as `ACTOVIQ_BENCH_MAX_TURNS` for actoviq-bridge-sdk and official Claude Agent SDK wrappers, and as `ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS` for the Hadamard SDK wrapper.
 
 ## Runtime Targets
 
 Actoviq has two agent runtime surfaces:
 
-- `clean-sdk`: the in-process public SDK built around `createAgentSdk()`.
-- `bridge-sdk`: the compatibility/runtime path that wraps Claude Code behavior.
+- `clean-sdk`: the in-process Hadamard SDK built around `createAgentSdk()`.
+- `bridge-sdk`: the compatibility/runtime path (actoviq-bridge-sdk) that wraps Claude Code behavior.
 - `official-claude-sdk`: Anthropic's official Claude Agent SDK / Claude Code SDK baseline.
 
-The Clean SDK is expected to converge toward Claude Code capability parity. Benchmark cases that compare the two should use `runtimeTarget: "parity"` and run both wrappers against the same fixture and grader.
+The Hadamard SDK is expected to converge toward Claude Code capability parity. Benchmark cases that compare the two should use `runtimeTarget: "parity"` and run both wrappers against the same fixture and grader.
 
 ## Commands
 
@@ -49,13 +49,13 @@ Validate the harness with gold fixes:
 npm run bench:smoke
 ```
 
-Run the smoke cases against the Clean SDK:
+Run the smoke cases against Hadamard SDK:
 
 ```bash
 npm run bench:clean
 ```
 
-Run the smoke cases against the Bridge SDK:
+Run the smoke cases against actoviq-bridge-sdk:
 
 ```bash
 npm run bench:bridge
@@ -67,7 +67,7 @@ Run the smoke cases against the official Claude Agent SDK baseline:
 npm run bench:official
 ```
 
-Run the same smoke cases against Clean SDK, Bridge SDK, and the official Claude Agent SDK baseline, then write a parity report:
+Run the same smoke cases against Hadamard SDK, actoviq-bridge-sdk, and the official Claude Agent SDK baseline, then write a parity report:
 
 ```bash
 npm run bench:parity
@@ -79,13 +79,13 @@ Validate the complex local cases with gold fixes:
 npm run bench:complex
 ```
 
-Run the complex cases against the Clean SDK:
+Run the complex cases against Hadamard SDK:
 
 ```bash
 npm run bench:complex:clean
 ```
 
-Run the complex cases against Clean SDK, Bridge SDK, and the official Claude Agent SDK baseline:
+Run the complex cases against Hadamard SDK, actoviq-bridge-sdk, and the official Claude Agent SDK baseline:
 
 ```bash
 npm run bench:complex:parity

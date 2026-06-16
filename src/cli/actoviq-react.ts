@@ -12,6 +12,12 @@ import {
   loadDefaultActoviqSettings,
   createActoviqCoreTools,
   type ActoviqPermissionMode,
+  listWorkflows,
+  loadWorkflow,
+  listTeamDefinitions,
+  loadTeamDefinition,
+  createModelTeam,
+  WorktreeService,
 } from 'actoviq-agent-sdk';
 import { execSync } from 'node:child_process';
 import os from 'node:os';
@@ -79,6 +85,9 @@ const CMDS: Record<string, string> = {
   resume:  'Resume a stored session',
   tools:   'List available tools',
   dream:   'Trigger memory consolidation',
+  workflows: 'List or run dynamic workflows',
+  worktree: 'Enter, exit, or list git worktrees',
+  team:    'List or query Model Teams',
 };
 
 function completer(line: string): [string[], string] {
@@ -262,6 +271,144 @@ async function main() {
             process.stdout.write(`${C.g}✓ Dream triggered${C.r}\n\n`); }
           catch (e: any) { process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`); }
           return;
+        // ── v0.5.0: Dynamic Workflows ──────────────────────────────
+        case 'workflows': {
+          const sub = t.slice(sp + 1).trim();
+          if (!sub || sub === 'list') {
+            const workflows = listWorkflows(sdk.config.workDir);
+            if (workflows.length === 0) {
+              process.stdout.write(`${C.d}No saved workflows. Save scripts to .actoviq/workflows/${C.r}\n\n`);
+            } else {
+              for (const w of workflows) {
+                process.stdout.write(`${C.c}/${w.name}${C.r}${C.d} · ${w.source} · ${w.description.slice(0, 60)}${C.r}\n`);
+              }
+              process.stdout.write('\n');
+            }
+            return;
+          }
+          if (sub.startsWith('run ')) {
+            const wfName = sub.slice(4).trim();
+            const wf = loadWorkflow(wfName, sdk.config.workDir);
+            if (!wf) {
+              process.stdout.write(`${C.R}Workflow not found: ${wfName}${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(`${C.d}Running workflow: ${wfName}...${C.r}\n`);
+            try {
+              const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
+              const runtime = new WorkflowScriptRuntime({
+                sdk: sdk as any,
+                onEvent: (e: any) => {
+                  if (e.type === 'workflow.log') process.stdout.write(`${C.d}  │ ${e.message}${C.r}\n`);
+                  else if (e.type === 'workflow.agent.start') process.stdout.write(`${C.d}  ⚡ agent: ${e.label ?? e.agentId}${C.r}\n`);
+                  else if (e.type === 'workflow.script.done') process.stdout.write(`${C.g}✓ Workflow done · ${e.agentCount} agents · ${e.totalTokens} tokens${C.r}\n\n`);
+                },
+              });
+              const output = await runtime.execute(wf.script);
+              if (output.state.errors.length > 0) {
+                process.stdout.write(`${C.R}  ${output.state.errors.length} errors${C.r}\n`);
+                for (const err of output.state.errors.slice(0, 3)) {
+                  process.stdout.write(`${C.d}    - ${err.error}${C.r}\n`);
+                }
+                process.stdout.write('\n');
+              }
+            } catch (err: any) {
+              process.stdout.write(`${C.R}✕ Workflow failed: ${err.message}${C.r}\n\n`);
+            }
+            return;
+          }
+          process.stdout.write(`${C.d}Usage: /workflows [list|run <name>]${C.r}\n\n`);
+          return;
+        }
+        // ── v0.5.0: Worktrees ──────────────────────────────────────
+        case 'worktree': {
+          const sub = t.slice(sp + 1).trim();
+          const ws = new WorktreeService(sdk.config.workDir);
+          if (!sub || sub === 'list') {
+            await ws.init();
+            const trees = await ws.listWorktrees();
+            if (trees.length === 0) {
+              process.stdout.write(`${C.d}No worktrees found.${C.r}\n\n`);
+            } else {
+              for (const t of trees) {
+                const status = t.isDirty ? `${C.y}dirty${C.r}` : `${C.g}clean${C.r}`;
+                process.stdout.write(`${C.d}${t.path}${C.r} · ${status}\n`);
+              }
+              process.stdout.write('\n');
+            }
+            return;
+          }
+          if (sub === 'exit') {
+            try {
+              ws.exitWorktree();
+              process.stdout.write(`${C.g}Exited worktree. cwd: ${ws.currentWorkDir}${C.r}\n\n`);
+            } catch (e: any) {
+              process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`);
+            }
+            return;
+          }
+          if (sub.startsWith('enter ')) {
+            const wfName = sub.slice(6).trim();
+            try {
+              await ws.init();
+              await ws.createAndEnterWorktree({ name: wfName });
+              process.stdout.write(`${C.g}Entered worktree: ${wfName}${C.r}\n`);
+              process.stdout.write(`${C.d}  cwd: ${ws.currentWorkDir}${C.r}\n`);
+              process.stdout.write(`${C.d}  branch: ${ws.worktreeBranch}${C.r}\n\n`);
+            } catch (e: any) {
+              process.stdout.write(`${C.R}✕ ${e.message}${C.r}\n\n`);
+            }
+            return;
+          }
+          process.stdout.write(`${C.d}Usage: /worktree [enter <name>|exit|list]${C.r}\n\n`);
+          return;
+        }
+        // ── v0.5.0: Model Team ─────────────────────────────────────
+        case 'team': {
+          const sub = t.slice(sp + 1).trim();
+          if (!sub || sub === 'list') {
+            const teams = listTeamDefinitions(sdk.config.workDir);
+            if (teams.length === 0) {
+              process.stdout.write(`${C.d}No saved team definitions. Save JSON files to .actoviq/teams/${C.r}\n\n`);
+            } else {
+              for (const t of teams) {
+                process.stdout.write(`${C.c}${t.name}${C.r}${C.d} · ${t.definition.mode} · ${t.source} · ${t.definition.members?.length ?? 0} members${C.r}\n`);
+              }
+              process.stdout.write('\n');
+            }
+            return;
+          }
+          if (sub.startsWith('ask ')) {
+            const rest = sub.slice(4).trim();
+            const spaceIdx = rest.indexOf(' ');
+            if (spaceIdx === -1) {
+              process.stdout.write(`${C.R}Usage: /team ask <name> <prompt>${C.r}\n\n`);
+              return;
+            }
+            const teamName = rest.slice(0, spaceIdx);
+            const prompt = rest.slice(spaceIdx + 1).trim();
+            const loaded = loadTeamDefinition(teamName, sdk.config.workDir);
+            if (!loaded) {
+              process.stdout.write(`${C.R}Team not found: ${teamName}${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(`${C.d}Asking team "${teamName}" (${loaded.definition.mode})...${C.r}\n`);
+            try {
+              const team = createModelTeam(loaded.definition);
+              const result = await team.ask(prompt);
+              process.stdout.write(`${C.g}✓ Response${C.r}${C.d} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s${C.r}\n`);
+              if (result.cost.estimatedCost !== null) {
+                process.stdout.write(`${C.d}  cost: $${result.cost.estimatedCost.toFixed(4)} · ${result.cost.totalInputTokens + result.cost.totalOutputTokens} tokens${C.r}\n`);
+              }
+              process.stdout.write(`${C.r}${result.answer.slice(0, 500)}${result.answer.length > 500 ? '...' : ''}${C.r}\n\n`);
+            } catch (e: any) {
+              process.stdout.write(`${C.R}✕ Team error: ${e.message}${C.r}\n\n`);
+            }
+            return;
+          }
+          process.stdout.write(`${C.d}Usage: /team [list|ask <name> <prompt>]${C.r}\n\n`);
+          return;
+        }
         default:
           process.stdout.write(`${C.R}Unknown: /${cmd}${C.r}  ${C.d}Type /help${C.r}\n\n`);
           return;

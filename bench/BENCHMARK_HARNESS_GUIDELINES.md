@@ -25,14 +25,14 @@ Benchmark cases should declare one `runtimeTarget`:
 
 | Runtime target | Purpose |
 | --- | --- |
-| `clean-sdk` | Primary in-process Actoviq SDK runtime under evaluation. |
-| `bridge-sdk` | Compatibility/runtime reference path for Claude Code-like behavior. |
+| `clean-sdk` | Primary in-process Hadamard SDK runtime under evaluation. |
+| `bridge-sdk` | Compatibility/runtime reference path (actoviq-bridge-sdk) for Claude Code-like behavior. |
 | `official-claude-sdk` | External baseline using Anthropic's official Claude Agent SDK. |
-| `parity` | Compare Clean SDK against Bridge SDK and/or the official SDK baseline. |
+| `parity` | Compare Hadamard SDK against actoviq-bridge-sdk and/or the official SDK baseline. |
 | `external-agent` | Run a third-party wrapper through the harness adapter contract. |
 
-Clean SDK parity work should treat Bridge SDK and the official Claude Agent SDK
-as behavioral baselines, not as dependencies. Clean SDK code must remain
+Hadamard SDK parity work should treat actoviq-bridge-sdk and the official Claude Agent SDK
+as behavioral baselines, not as dependencies. Hadamard SDK code must remain
 independent and open-sourceable.
 
 ## Scoring

@@ -8,7 +8,7 @@ This chapter explains the three most important usage patterns:
 
 ## 1. `createAgentSdk()`
 
-The clean SDK entry point is:
+The Hadamard SDK entry point is:
 
 ```ts
 import { createAgentSdk } from 'actoviq-agent-sdk';
@@ -87,7 +87,7 @@ console.log(sessions);
 
 ## 6. Where history is stored
 
-The clean SDK session store is local and file-based.
+The Hadamard SDK session store is local and file-based.
 
 Default location:
 
@@ -115,7 +115,7 @@ const sdk = await createAgentSdk({
 });
 ```
 
-That changes where clean SDK session files are written.
+That changes where Hadamard SDK session files are written.
 
 ## 8. Can the session ID be customized?
 

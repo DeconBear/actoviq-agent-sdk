@@ -1055,6 +1055,19 @@ export class ActoviqAgentClient {
     return this.dream.maybeAutoDream(options);
   }
 
+  // ── v0.5.0: Model Team ──────────────────────────────────────────
+
+  /**
+   * Create a multi-model team for collaborative deliberation.
+   * Supports panel, router, discussion, and executor-reviewer modes.
+   */
+  async createTeam(
+    definition: import('../types.js').TeamDefinition,
+  ): Promise<import('../team/modelTeam.js').ModelTeam> {
+    const { createModelTeam } = await import('../team/modelTeam.js');
+    return createModelTeam(definition);
+  }
+
   async close(): Promise<void> {
     const errors: unknown[] = [];
     try {
@@ -1926,7 +1939,12 @@ export class ActoviqAgentClient {
       ...(options.metadata ?? {}),
     };
 
-    const workDir = options.__actoviqWorkDir ?? options.workDir ?? this.config.workDir;
+    // Resolve working directory: sessionWorkDir (from worktree) takes priority
+    // unless inheritWorktree is explicitly false.
+    const inheritWorktree = options.inheritWorktree !== false;
+    const workDir = inheritWorktree
+      ? (options.__actoviqWorkDir ?? options.sessionWorkDir ?? options.workDir ?? this.config.workDir)
+      : (options.__actoviqWorkDir ?? options.workDir ?? this.config.workDir);
     const mergedTools = filterAgentTools(
       mergeUniqueByName(
       options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,

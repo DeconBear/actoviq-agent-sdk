@@ -15,6 +15,7 @@
 import type { AgentToolDefinition } from '../types.js';
 import { createActoviqFileTools, type ActoviqFileToolsOptions } from './actoviqFileTools.js';
 import { createActoviqWebTools } from './actoviqWebTools.js';
+import { createTavilySearchTool } from './tavilySearch.js';
 import { createBashTool } from './bash/BashTool.js';
 import { createTodoWriteTool } from './todo/TodoWriteTool.js';
 import { createAskUserQuestionTool } from './askUserQuestion/AskUserQuestionTool.js';
@@ -44,7 +45,11 @@ export function createActoviqCoreTools(
   if (options.bash !== false) tools.push(createBashTool());
   if (options.todoWrite !== false) tools.push(createTodoWriteTool());
   if (options.askUserQuestion !== false) tools.push(createAskUserQuestionTool());
-  if (options.webTools !== false) tools.push(...createActoviqWebTools());
+  if (options.webTools !== false) {
+    tools.push(...createActoviqWebTools());
+    // Tavily: enabled when TAVILY_API_KEY is set (no Python dependency)
+    if (process.env.TAVILY_API_KEY) tools.push(createTavilySearchTool());
+  }
   if (options.taskTools === true) tools.push(...createActoviqTaskTools());
   if (options.notebookEdit !== false) tools.push(createNotebookEditTool());
   if (options.powershell !== false) tools.push(createPowerShellTool());

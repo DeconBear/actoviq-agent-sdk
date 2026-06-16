@@ -9,7 +9,7 @@
 
 文档站地址：https://deconbear.github.io/actoviq-agent-sdk/
 
-Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 clean SDK 作为唯一公开主路径。
+Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 Hadamard SDK 作为唯一公开主路径。
 
 这个项目参考并借鉴了 Claude Code、Codex、Deepagents 等优秀项目和运行时设计，但 Actoviq 仍然是一个独立维护的公开 SDK 项目，拥有自己的 API 表面和文档体系。
 

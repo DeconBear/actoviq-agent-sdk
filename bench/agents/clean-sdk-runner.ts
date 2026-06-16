@@ -17,7 +17,7 @@ const outputFile = process.env.ACTOVIQ_BENCH_OUTPUT_FILE;
 const trajectoryFile = process.env.ACTOVIQ_BENCH_TRAJECTORY_FILE;
 const internalDir = process.env.ACTOVIQ_BENCH_INTERNAL_DIR ?? path.join(workspace, '.actoviq-bench');
 const permissionMode = (process.env.ACTOVIQ_BENCH_PERMISSION_MODE ?? 'bypassPermissions') as ActoviqPermissionMode;
-// No declared budget means unlimited turns, matching how Bridge SDK and the
+// No declared budget means unlimited turns, matching how actoviq-bridge-sdk and the
 // official Claude Agent SDK behave when a case has no maxTurns budget.
 const maxToolIterationsRaw =
   process.env.ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS ?? process.env.ACTOVIQ_BENCH_MAX_TURNS;

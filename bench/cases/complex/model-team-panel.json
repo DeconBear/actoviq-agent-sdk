@@ -1,0 +1,27 @@
+{
+  "$schema": "../benchmark-case.schema.json",
+  "name": "model-team-panel-analysis",
+  "description": "Model Team: multi-perspective analysis using panel mode with 3 models and primary synthesis",
+  "version": "0.5.0",
+  "category": "complex",
+  "features": ["model-team"],
+  "setup": {
+    "toolFilter": ["Read", "Write", "Glob", "Grep"]
+  },
+  "prompt": "Create a ModelTeam in panel mode with 3 members (configure them creatively as different expert perspectives) and a primary model.\n\nAsk the team to analyze this question from multiple angles:\n'What are the top 3 design patterns that would improve code maintainability in a large TypeScript monorepo, and what are the trade-offs of each?'\n\nAfter receiving the team's response, evaluate:\n1. How many distinct perspectives were covered\n2. Whether the primary model successfully synthesized the responses\n3. Whether any blind spots remain\n\nWrite the analysis to 'team-analysis-result.json' as JSON with fields: perspectives_covered, synthesis_quality, blind_spots, final_answer.",
+  "scorers": [
+    {
+      "type": "file_contains",
+      "path": "team-analysis-result.json",
+      "contains": ["perspectives_covered", "synthesis_quality", "final_answer"]
+    }
+  ],
+  "behavior": {
+    "minSubagentCalls": 1,
+    "maxToolErrors": 2
+  },
+  "budget": {
+    "maxTurns": 20
+  },
+  "tags": ["model-team", "panel", "multi-model", "analysis"]
+}

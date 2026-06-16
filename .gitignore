@@ -16,3 +16,12 @@ CLAUDE.md
 vendor/actoviq-runtime/runtime.bundle.br
 vendor/actoviq-runtime/runtime.bundle.mjs
 vendor/actoviq-runtime/SYNC_SUMMARY.json
+bench/dashboard.html
+bench/results/
+bench/.bench-keys.json
+bench/AGENT_RUNTIME_BENCHMARK_RESULTS.md
+bench/AGENT_CAPABILITY_BENCHMARK_DESIGN.md
+bench/BENCHMARK_LEAKAGE_AUDIT.md
+temp_*
+tmp_*
+quantum-computing-research-report.md
