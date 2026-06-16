@@ -4,7 +4,7 @@ This chapter explains the compatibility bridge path and when it is still useful.
 
 ## 1. Prerequisites — linking a runtime bundle
 
-The bridge SDK requires a runtime bundle from a third-party agent runtime (e.g. Claude Code). This file is **not included** in the actoviq-agent-sdk package.
+The actoviq-bridge-sdk requires a runtime bundle from a third-party agent runtime (e.g. Claude Code). This file is **not included** in the actoviq-agent-sdk package.
 
 If you have Claude Code installed, link its runtime bundle:
 
@@ -30,11 +30,11 @@ Alternatively, set the environment variable:
 export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 ```
 
-Without this bundle, bridge SDK features will not work.
+Without this bundle, actoviq-bridge-sdk features will not work.
 
 ## 2. What bridge means
 
-The bridge SDK is a compatibility layer that exposes a runtime-oriented execution path from the current package.
+The actoviq-bridge-sdk is a compatibility layer that exposes a runtime-oriented execution path from the current package.
 
 Use:
 
@@ -52,7 +52,7 @@ Bridge is most useful when you want:
 4. runtime introspection
 5. native runtime sessions and event streams
 
-If you are building a new application, prefer the clean SDK first. Treat bridge as compatibility and runtime-integration guidance.
+If you are building a new application, prefer the Hadamard SDK first. Treat bridge as compatibility and runtime-integration guidance.
 
 ## 4. Basic bridge example
 

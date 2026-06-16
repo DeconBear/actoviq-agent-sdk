@@ -1,6 +1,6 @@
 # Actoviq Agent SDK 中文教程
 
-这是一套面向当前 SDK 的中文上手教程，目标是让你从零开始，逐步掌握 clean SDK、skills、tools、session、memory 和 MCP 的使用方式。
+这是一套面向当前 SDK 的中文上手教程，目标是让你从零开始，逐步掌握 Hadamard SDK、skills、tools、session、memory 和 MCP 的使用方式。
 
 推荐阅读顺序：
 1. [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
@@ -15,7 +15,7 @@
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
 2. 运行 `npm run example:actoviq-quickstart`
 
-如果你想完整做一个真正可用的 clean SDK 项目，推荐直接阅读：
+如果你想完整做一个真正可用的 Hadamard SDK 项目，推荐直接阅读：
 - [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)
 
 如果你特别关心 advanced 能力：

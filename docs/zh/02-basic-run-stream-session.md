@@ -8,7 +8,7 @@
 
 ## 1. `createAgentSdk()`
 
-clean SDK 的入口是：
+Hadamard SDK 的入口是：
 
 ```ts
 import { createAgentSdk } from 'actoviq-agent-sdk';
@@ -87,7 +87,7 @@ console.log(sessions);
 
 ## 6. 历史对话保存在哪里？
 
-clean SDK 的 session 历史是本地文件存储。
+Hadamard SDK 的 session 历史是本地文件存储。
 
 默认目录：
 
@@ -115,7 +115,7 @@ const sdk = await createAgentSdk({
 });
 ```
 
-这样 clean SDK 的 session 文件就会写到你指定的位置。
+这样 Hadamard SDK 的 session 文件就会写到你指定的位置。
 
 ## 8. session ID 可以自定义吗？
 

@@ -1,6 +1,6 @@
 # 03. 工具、权限、Skills 与 MCP
 
-这一章会把 clean SDK 里“真正干活”的能力讲清楚：工具怎么接、权限怎么管、skills 怎么用、MCP 又处在什么位置。
+这一章会把 Hadamard SDK 里“真正干活”的能力讲清楚：工具怎么接、权限怎么管、skills 怎么用、MCP 又处在什么位置。
 
 ## 1. 先分清：工具和 Skill 不是一回事
 
@@ -12,9 +12,9 @@
 1. 工具决定“能做什么”
 2. Skill 决定“怎么做这件事更稳、更像一个固定工作流”
 
-## 2. clean SDK 里有哪些工具
+## 2. Hadamard SDK 里有哪些工具
 
-clean SDK 当前可以组合这些工具来源：
+Hadamard SDK 当前可以组合这些工具来源：
 
 1. 你自己用 `tool(...)` 定义的本地工具
 2. `createActoviqFileTools(...)` 生成的文件工具
@@ -80,9 +80,9 @@ const sdk = await createAgentSdk({
 });
 ```
 
-## 5. Skills：clean SDK 现在已经可以直接用
+## 5. Skills：Hadamard SDK 现在已经可以直接用
 
-当前 clean SDK 已经支持：
+当前 Hadamard SDK 已经支持：
 
 1. bundled skills
 2. 自定义 skills
@@ -128,7 +128,7 @@ const sdk = await createAgentSdk({
 
 ## 6. Dream：长期记忆整合
 
-clean SDK 现在也已经有独立的 `dream` 能力，用来对最近若干会话做一次记忆整合。
+Hadamard SDK 现在也已经有独立的 `dream` 能力，用来对最近若干会话做一次记忆整合。
 
 常用入口：
 
@@ -241,7 +241,7 @@ const sdk = await createAgentSdk({
 
 ## 9. clean 命令式 helper
 
-clean SDK 也提供命令式 helper：
+Hadamard SDK 也提供命令式 helper：
 
 ```ts
 console.log(sdk.slashCommands.listMetadata());

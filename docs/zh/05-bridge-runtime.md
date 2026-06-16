@@ -4,7 +4,7 @@
 
 ## 1. 前置条件 — 链接运行时 bundle
 
-Bridge SDK 依赖第三方 agent runtime 的运行时 bundle（例如 Claude Code）。该文件**不包含**在 actoviq-agent-sdk 包中。
+actoviq-bridge-sdk 依赖第三方 agent runtime 的运行时 bundle（例如 Claude Code）。该文件**不包含**在 actoviq-agent-sdk 包中。
 
 如果你已安装 Claude Code，可以链接它的 bundle：
 
@@ -30,7 +30,7 @@ npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 ```
 
-没有这个 bundle，bridge SDK 功能将不可用。
+没有这个 bundle，actoviq-bridge-sdk 功能将不可用。
 
 ## 2. bridge 是什么
 
@@ -51,7 +51,7 @@ import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
 3. 你要分析 runtime 事件流
 4. 你要做兼容层、迁移层或对照测试
 
-如果你是在开发一个新的业务项目，通常优先使用 clean SDK：
+如果你是在开发一个新的业务项目，通常优先使用 Hadamard SDK：
 
 ```ts
 createAgentSdk()

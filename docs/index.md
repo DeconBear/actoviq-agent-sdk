@@ -17,7 +17,7 @@ hero:
       link: https://github.com/DeconBear/actoviq-agent-sdk
 
 features:
-  - title: Clean SDK First
+  - title: Hadamard SDK First
     details: Learn the public Actoviq SDK path for sessions, tools, skills, memory, swarm, and workspace flows.
   - title: Bilingual Tutorials
     details: Read full guides in English and Chinese, including step-by-step practical project walkthroughs.

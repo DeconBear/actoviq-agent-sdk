@@ -835,6 +835,10 @@ export interface AgentRunOptions {
   drainQueuedInputs?: () => string[];
   /** Override the runtime working directory for this run. */
   workDir?: string;
+  /** When parent is in a worktree, inherit the worktree directory. Default: true. */
+  inheritWorktree?: boolean;
+  /** Override the working directory at the session level (used by worktrees). */
+  sessionWorkDir?: string;
 }
 
 export interface SessionCreateOptions {
@@ -1391,6 +1395,57 @@ export type AgentEvent =
       durationMs: number;
       timestamp: string;
       errors?: Array<{ stepId: string; error: string }>;
+    }
+  // ── v0.5.0 Dynamic Workflow events ────────────────────────────
+  | {
+      type: 'workflow.script.start';
+      runId: string;
+      workflowName: string;
+      phases: WorkflowMeta['phases'];
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.phase.start';
+      runId: string;
+      phase: string;
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.agent.start';
+      runId: string;
+      agentId: string;
+      label?: string;
+      phase?: string;
+      cached: boolean;
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.agent.done';
+      runId: string;
+      agentId: string;
+      phase?: string;
+      cached: boolean;
+      durationMs: number;
+      tokens?: { input: number; output: number };
+      error?: string;
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.log';
+      runId: string;
+      message: string;
+      timestamp: string;
+    }
+  | {
+      type: 'workflow.script.done';
+      runId: string;
+      workflowName: string;
+      status: 'completed' | 'failed' | 'stopped';
+      durationMs: number;
+      agentCount: number;
+      totalTokens: number;
+      errors?: WorkflowRunState['errors'];
+      timestamp: string;
     };
 
 export interface StoredRunSummary {
@@ -1422,6 +1477,12 @@ export interface StoredSession {
   status: SessionStatus;
   messages: MessageParam[];
   runs: StoredRunSummary[];
+  // ── v0.5.0 worktree fields ────────────────────────────────────
+  kind?: 'main' | 'worktree';
+  worktreePath?: string;
+  worktreeBranch?: string;
+  parentSessionId?: string;
+  originalWorkDir?: string;
 }
 
 export interface SessionSummary {
@@ -2181,4 +2242,247 @@ export interface ActoviqBridgeEventAnalysis {
   taskInvocations: ActoviqBridgeTaskInvocation[];
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  v0.5.0: Dynamic Workflows types
+// ═══════════════════════════════════════════════════════════════════════
 
+export interface WorkflowMeta {
+  name: string;
+  description: string;
+  phases?: Array<{ title: string; detail?: string; model?: string }>;
+  whenToUse?: string;
+}
+
+export interface WorkflowAgentOptions {
+  label?: string;
+  phase?: string;
+  schema?: Record<string, unknown>;
+  model?: string;
+  isolation?: 'worktree';
+  agentType?: string;
+  tools?: string[];
+}
+
+export interface WorkflowBudget {
+  total: number | null;
+  spent: () => number;
+  remaining: () => number;
+}
+
+export interface WorkflowScriptContext {
+  agent: (prompt: string, opts?: WorkflowAgentOptions) => Promise<any>;
+  parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<(T | null)[]>;
+  pipeline: <T, R>(
+    items: T[],
+    ...stages: Array<(prev: any, item: T, index: number) => Promise<R | null>>
+  ) => Promise<(R | null)[]>;
+  phase: (title: string) => void;
+  log: (message: string) => void;
+  budget: WorkflowBudget;
+  args: any;
+  meta: WorkflowMeta;
+}
+
+export interface WorkflowAgentCallRecord {
+  id: string;
+  prompt: string;
+  opts: WorkflowAgentOptions;
+  phase?: string;
+  result?: unknown;
+  error?: string;
+  tokens?: { input: number; output: number };
+  durationMs?: number;
+  startedAt: string;
+  completedAt?: string;
+  cached: boolean;
+}
+
+export interface WorkflowPhaseProgress {
+  title: string;
+  agentCount: number;
+  completedCount: number;
+  failedCount: number;
+  totalTokens: number;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface WorkflowRunState {
+  runId: string;
+  meta: WorkflowMeta;
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'stopped';
+  phases: WorkflowPhaseProgress[];
+  agentCalls: WorkflowAgentCallRecord[];
+  errors: Array<{ agentId: string; phase?: string; error: string; itemIndex?: number; stageIndex?: number }>;
+  startedAt: string;
+  completedAt?: string;
+  totalTokens: number;
+  estimatedCost: number | null;
+}
+
+export interface WorkflowCacheEntry {
+  key: string;
+  result: unknown;
+  tokens?: { input: number; output: number };
+  durationMs: number;
+  cachedAt: string;
+}
+
+export interface WorkflowResumeState {
+  runId: string;
+  cache: Map<string, WorkflowCacheEntry>;
+  agentCallIds: string[];
+  completedAgentIds: Set<string>;
+  phases: WorkflowPhaseProgress[];
+  errors: WorkflowRunState['errors'];
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  v0.5.0: Worktree types
+// ═══════════════════════════════════════════════════════════════════════
+
+export interface WorktreeStackEntry {
+  workDir: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
+  sessionKind: 'main' | 'worktree';
+}
+
+export interface WorktreeSessionFields {
+  kind: 'main' | 'worktree';
+  worktreePath?: string;
+  worktreeBranch?: string;
+  parentSessionId?: string;
+  originalWorkDir: string;
+}
+
+export interface WorktreeSettings {
+  baseRef: 'fresh' | 'head';
+  cleanupPeriodDays: number;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch?: string;
+  ref?: string;
+  pr?: string;
+  createdAt: string;
+  isDirty: boolean;
+  sessionId?: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  v0.5.0: Model Team types
+// ═══════════════════════════════════════════════════════════════════════
+
+export type ModelTeamMode = 'panel' | 'router' | 'discussion' | 'executor-reviewer';
+
+export interface TeamMember {
+  model: string;
+  provider?: 'anthropic' | 'openai';
+  baseURL?: string;
+  apiKey?: string;
+  systemPrompt?: string;
+  maxTokens?: number;
+  description?: string;
+}
+
+export interface TeamDefinition {
+  name: string;
+  description?: string;
+  mode: ModelTeamMode;
+  members: TeamMember[];
+  primary?: TeamMember;
+  facilitator?: TeamMember;
+  router?: TeamMember;
+  specialists?: Record<string, RouterSpecialist>;
+  executor?: TeamMember;
+  reviewer?: TeamMember;
+  fallback?: TeamMember;
+  maxParallel?: number;
+  timeoutMs?: number;
+  classificationPrompt?: string;
+}
+
+export interface RouterSpecialist {
+  model: string;
+  provider?: 'anthropic' | 'openai';
+  baseURL?: string;
+  apiKey?: string;
+  systemPrompt?: string;
+  description?: string;
+}
+
+export interface TeamPanelResponse {
+  round: number;
+  model: string;
+  content: string;
+  tokens: { input: number; output: number };
+  durationMs: number;
+}
+
+export interface TeamCost {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  estimatedCost: number | null;
+  breakdown: Array<{ model: string; cost: number }>;
+  costWarning?: boolean;
+}
+
+export interface TeamResult {
+  answer: string;
+  mode: ModelTeamMode;
+  cost: TeamCost;
+  durationMs: number;
+}
+
+export interface PanelResult extends TeamResult {
+  mode: 'panel';
+  rounds: number;
+  panelResponses: TeamPanelResponse[];
+}
+
+export interface RouterResult extends TeamResult {
+  mode: 'router';
+  specialist: string;
+  classification: string;
+}
+
+export interface DiscussionResult extends TeamResult {
+  mode: 'discussion';
+  rounds: number;
+  facilitatorVerdicts: Array<{
+    round: number;
+    summary: string;
+    verdict: 'continue' | 'finalize';
+  }>;
+}
+
+export interface ExecutorReviewerDecision {
+  iteration: number;
+  action: 'accept' | 'reject' | 'partial' | 'finalize';
+  explanation: string;
+}
+
+export interface ExecutorReviewerResult extends TeamResult {
+  mode: 'executor-reviewer';
+  iterations: number;
+  decisions: ExecutorReviewerDecision[];
+  reviews: Array<{ iteration: number; feedback: string }>;
+}
+
+export type ModelTeamResult =
+  | PanelResult
+  | RouterResult
+  | DiscussionResult
+  | ExecutorReviewerResult;
+
+export interface ModelPricing {
+  input: number;
+  output: number;
+}
+
+export interface AgentPoolSlot {
+  id: number;
+  release: () => void;
+}

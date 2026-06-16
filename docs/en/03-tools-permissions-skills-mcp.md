@@ -1,15 +1,15 @@
 # 03. Tools, Permissions, Skills, and MCP
 
-This chapter is where the clean SDK starts to feel like a full agent system.
+This chapter is where the Hadamard SDK starts to feel like a full agent system.
 
 ## 1. Tools vs. skills
 
 - **Tools** perform direct actions: read files, edit files, search, take screenshots, or delegate tasks.
 - **Skills** package a working style: debug methodically, verify a result, or run a reviewer-style pass.
 
-## 2. Tool categories in the clean SDK
+## 2. Tool categories in the Hadamard SDK
 
-The clean SDK can combine several tool sources in one run:
+The Hadamard SDK can combine several tool sources in one run:
 
 1. custom local tools created with `tool(...)`
 2. file tools from `createActoviqFileTools(...)`
@@ -19,7 +19,7 @@ The clean SDK can combine several tool sources in one run:
 
 ## 3. Inspect the clean tool surface
 
-The clean SDK now has a dedicated tool catalog API:
+The Hadamard SDK now has a dedicated tool catalog API:
 
 ```ts
 const tools = await sdk.tools.listMetadata();
@@ -91,7 +91,7 @@ const sdk = await createAgentSdk({
 
 ## 5. Clean dream support
 
-The clean SDK now has a first-class dream API for durable memory consolidation:
+The Hadamard SDK now has a first-class dream API for durable memory consolidation:
 
 ```ts
 const state = await sdk.dreamState();
@@ -121,7 +121,7 @@ Repository example:
 
 ## 6. Clean slash-command replacements
 
-The clean SDK exposes command-style helpers:
+The Hadamard SDK exposes command-style helpers:
 
 ```ts
 console.log(sdk.slashCommands.listMetadata());

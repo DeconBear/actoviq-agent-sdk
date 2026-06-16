@@ -92,6 +92,7 @@ export { createActoviqWebTools } from './tools/actoviqWebTools.js';
 export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
 export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
 export { createBashTool, BASH_TOOL_NAME } from './tools/bash/BashTool.js';
+export { createTavilySearchTool, TAVILY_SEARCH_TOOL_NAME } from './tools/tavilySearch.js';
 export type { BashInput } from './tools/bash/BashTool.js';
 export { createTodoWriteTool, TODO_WRITE_TOOL_NAME } from './tools/todo/TodoWriteTool.js';
 export { createAskUserQuestionTool, ASK_USER_QUESTION_TOOL_NAME } from './tools/askUserQuestion/AskUserQuestionTool.js';
@@ -195,6 +196,72 @@ export {
   createTempWorkspace,
   createWorkspace,
 } from './workspace/actoviqWorkspace.js';
+
+// ── v0.5.0: Dynamic Workflows ─────────────────────────────────────────
+export {
+  WorkflowScriptRuntime,
+} from './workflow/workflowScriptRuntime.js';
+export {
+  loadWorkflow,
+  saveWorkflow,
+  listWorkflows,
+  deleteWorkflow,
+  isWorkflowsDisabled,
+} from './workflow/workflowPersistence.js';
+export type { SavedWorkflow } from './workflow/workflowPersistence.js';
+
+// ── v0.5.0: Worktrees ─────────────────────────────────────────────────
+export {
+  WorktreeService,
+  generateWorktreeName,
+} from './worktree/worktreeService.js';
+export {
+  parseWorktreeInclude,
+  matchesPattern as matchesWorktreeIncludePattern,
+} from './worktree/worktreeInclude.js';
+export {
+  ENTER_WORKTREE_TOOL_NAME,
+  createEnterWorktreeTool,
+} from './tools/enterWorktree.js';
+export {
+  EXIT_WORKTREE_TOOL_NAME,
+  createExitWorktreeTool,
+} from './tools/exitWorktree.js';
+export {
+  executeWorktreeCreateHook,
+  executeWorktreeRemoveHook,
+  resolveWorktreeHooks,
+  hasWorktreeHooks,
+} from './worktree/worktreeHooks.js';
+export type {
+  WorktreeCreateHookInput,
+  WorktreeRemoveHookInput,
+  WorktreeHookResult,
+} from './worktree/worktreeHooks.js';
+
+// ── v0.5.0: Model Team ────────────────────────────────────────────────
+export {
+  ModelTeam,
+  createModelTeam,
+  createTeamTool,
+} from './team/modelTeam.js';
+export {
+  AgentPool,
+  getGlobalAgentPool,
+  resetGlobalAgentPool,
+} from './team/agentPool.js';
+export {
+  getModelPricing,
+  estimateCost,
+  clearPricingCache,
+} from './team/pricing.js';
+export {
+  loadTeamDefinition,
+  saveTeamDefinition,
+  listTeamDefinitions,
+  deleteTeamDefinition,
+} from './team/teamDefinitions.js';
+export type { LoadedTeamDefinition } from './team/teamDefinitions.js';
 
 // ── Bridge SDK ────────────────────────────────────────────────────────
 export {

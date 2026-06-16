@@ -160,6 +160,31 @@ const DEFAULT_BUNDLED_SKILLS: ReadonlyArray<ActoviqSkillDefinition> = [
     source: 'bundled',
     loadedFrom: 'bundled',
   },
+  {
+    name: 'tavily',
+    description: 'AI-optimized web search via Tavily API. Use for research, fact-checking, current events, and gathering authoritative sources.',
+    whenToUse:
+      'Use when you need comprehensive web research, current events lookup, domain-specific search, or AI-generated answer summaries. Best for research tasks, news queries, fact-checking, and gathering authoritative sources.',
+    prompt: [
+      'You are executing the /tavily skill for web research.',
+      '',
+      'Research protocol:',
+      '1. Use TavilySearch tool to find authoritative sources.',
+      '2. Start with depth="basic" for most queries (faster, cheaper).',
+      '3. Use depth="advanced" for complex or nuanced topics.',
+      '4. Use topic="news" ONLY for current events (last 7 days).',
+      '5. Filter domains when you know trusted sources for the topic.',
+      '6. Start with max_results=5, increase only if needed.',
+      '',
+      'Always cite sources in your response with markdown hyperlinks.',
+      '',
+      'Task:',
+      '$ARGUMENTS',
+    ].join('\n'),
+    source: 'bundled',
+    loadedFrom: 'bundled',
+    tools: [], // will use globally available TavilySearch tool
+  },
 ];
 
 interface LoadedSkillFile {

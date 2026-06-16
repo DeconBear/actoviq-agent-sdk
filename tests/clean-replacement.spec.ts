@@ -103,7 +103,7 @@ class MockModelApi implements ModelApi {
   }
 }
 
-describe('clean SDK replacement parity', () => {
+describe('Hadamard SDK replacement parity', () => {
   it('exposes clean tool discovery, context helpers, and slash-style replacements', async () => {
     const sessionDirectory = await createTempDir('actoviq-clean-tools-');
     const workDir = await createTempDir('actoviq-clean-tools-workdir-');

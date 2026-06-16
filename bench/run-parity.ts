@@ -154,11 +154,11 @@ function renderMarkdown(summary: ParitySummary): string {
     '',
     '| Runtime | Passed | Total | Pass Rate |',
     '|---|---:|---:|---:|',
-    `| Clean SDK | ${summary.clean.passedTrials} | ${summary.clean.totalTrials} | ${(summary.clean.passRate * 100).toFixed(2)}% |`,
-    `| Bridge SDK | ${summary.bridge.passedTrials} | ${summary.bridge.totalTrials} | ${(summary.bridge.passRate * 100).toFixed(2)}% |`,
+    `| Hadamard SDK | ${summary.clean.passedTrials} | ${summary.clean.totalTrials} | ${(summary.clean.passRate * 100).toFixed(2)}% |`,
+    `| actoviq-bridge-sdk | ${summary.bridge.passedTrials} | ${summary.bridge.totalTrials} | ${(summary.bridge.passRate * 100).toFixed(2)}% |`,
     `| Official Claude Agent SDK | ${summary.official.passedTrials} | ${summary.official.totalTrials} | ${(summary.official.passRate * 100).toFixed(2)}% |`,
     '',
-    '| Case | Clean | Bridge | Official | Clean Score | Bridge Score | Official Score |',
+    '| Case | Hadamard | Bridge | Official | Hadamard Score | Bridge Score | Official Score |',
     '|---|---|---|---|---:|---:|---:|',
   ];
   for (const item of summary.caseComparison) {

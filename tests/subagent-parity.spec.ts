@@ -94,7 +94,7 @@ function requestText(request: ModelRequest): string {
 
 const isCI = process.env.CI === 'true';
 
-describe('Clean SDK subagent parity', () => {
+describe('Hadamard SDK subagent parity', () => {
   it.skipIf(isCI)('exposes Agent with Task compatibility and injects background completion notifications', async () => {
     const sessionDirectory = await tempDirectory('actoviq-subagent-notify-');
     const modelApi = new RecordingModelApi(request => {

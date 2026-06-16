@@ -85,12 +85,15 @@ export interface ExecuteConversationOptions {
   modelApi: ModelApi;
   config: ResolvedRuntimeConfig;
   mcpManager: McpConnectionManager;
+  /** Override the working directory for this execution (used by worktrees). */
+  sessionWorkDir?: string;
 }
 
 export async function executeConversation(
   options: ExecuteConversationOptions,
 ): Promise<AgentRunResult> {
   const startedAt = nowIso();
+  const workDir = options.sessionWorkDir ?? options.config.workDir;
   let model = options.model ?? options.config.model;
   const effort =
     options.effort === 'auto'
@@ -381,7 +384,7 @@ export async function executeConversation(
       await hook({
         runId: options.runId,
         sessionId: options.sessionId,
-        workDir: options.config.workDir,
+        workDir: workDir,
         iteration,
         input: options.input,
         promptText,
@@ -617,7 +620,7 @@ export async function executeConversation(
           },
           runId: options.runId,
           sessionId: options.sessionId,
-          workDir: options.config.workDir,
+          workDir: workDir,
           toolName: adapter.sourceName,
           publicName: toolUse.name,
           prompt: promptText,
@@ -652,7 +655,7 @@ export async function executeConversation(
           signal: options.signal,
           runId: options.runId,
           sessionId: options.sessionId,
-          cwd: options.config.workDir,
+          cwd: workDir,
           metadata: { ...(options.metadata ?? {}) },
           prompt: promptText,
           iteration,
@@ -678,7 +681,7 @@ export async function executeConversation(
           iteration,
           toolUseId: toolUse.id,
           toolName: toolUse.name,
-          workDir: options.config.workDir,
+          workDir: workDir,
           maxChars: artifactMaxChars,
         });
         outputText = modelFacingExecution.text;
@@ -751,7 +754,7 @@ export async function executeConversation(
     await enforceToolResultsAggregateBudget(toolResults, {
       runId: options.runId,
       iteration,
-      workDir: options.config.workDir,
+      workDir: workDir,
       maxTotalChars: options.config.compact.toolResultsPerMessageMaxChars ?? 200_000,
       nameByToolUseId: new Map(
         toolCalls.slice(-toolUses.length).map((record) => [record.id, record.publicName]),

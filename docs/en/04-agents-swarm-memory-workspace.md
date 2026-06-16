@@ -1,6 +1,6 @@
 # 04. Agents, Swarm, Memory, and Workspace
 
-This chapter covers the higher-level workflow features in the clean SDK.
+This chapter covers the higher-level workflow features in the Hadamard SDK.
 
 ## 1. Named agents
 
@@ -30,7 +30,7 @@ const result = await sdk.runWithAgent(
 
 ## 2. Agent delegation
 
-If named agents are registered, the clean SDK exposes the model-facing `Agent`
+If named agents are registered, the Hadamard SDK exposes the model-facing `Agent`
 tool. `Task` remains an alias for compatibility.
 
 Useful entry points:
@@ -185,7 +185,7 @@ console.log(await sdk.buddy.state());
 
 ## 7. Dream
 
-Dream is the clean SDK's reflective memory-consolidation pass over recent sessions.
+Dream is the Hadamard SDK's reflective memory-consolidation pass over recent sessions.
 
 ```ts
 const state = await sdk.dreamState();
@@ -216,7 +216,7 @@ Repository example:
 
 ## 8. Compact
 
-The clean SDK supports:
+The Hadamard SDK supports:
 
 1. automatic compact
 2. reactive compact
