@@ -1,0 +1,7 @@
+{
+  "id": "coding-multi-file-regression",
+  "title": "Multi-File Bug Regression Fix",
+  "category": "coding",
+  "prompt": "You are debugging a regression in a TypeScript project. A recent refactor of the authentication module introduced a bug where user sessions are not properly invalidated on logout. The issue spans across 3 files: auth/session.ts (session management), middleware/auth-guard.ts (request validation), and api/logout.ts (logout handler).\n\nDiagnose the likely root cause considering: stale token references, middleware execution order, session store consistency. Propose a fix strategy and explain how you would verify it.",
+  "expectedCoverage": ["root cause diagnosis", "cross-file dependency analysis", "fix strategy", "verification plan", "token lifecycle", "middleware ordering"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "analysis-security-review",
+  "title": "Security Architecture Review",
+  "category": "analysis",
+  "prompt": "Review this multi-tenant SaaS auth architecture for vulnerabilities:\n\nJWT auth (24h access + 7d refresh), RBAC with 5 roles, tenant isolation via tenant_id JWT claim, API gateway JWT validation, mTLS between services, Postgres RLS, SHA-256 hashed API keys.\n\nAnalyze: token lifecycle, privilege escalation, cross-tenant access, internal service risks, API key management, supply chain attack surface.\nFor each vulnerability: severity (Critical/High/Medium/Low), attack scenario, recommended fix.",
+  "expectedCoverage": ["token lifecycle", "privilege escalation", "cross-tenant access", "internal service", "API key", "supply chain", "severity ratings"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "analysis-architecture-decision",
+  "title": "Architecture Decision Analysis",
+  "category": "analysis",
+  "prompt": "Evaluate three approaches for shared code reuse in a TypeScript monorepo with 50+ packages, 200+ developers, and 2M+ lines of code:\n\nA) Single @company/shared package\nB) Domain-scoped packages (@company/shared-ui, @company/shared-utils, etc.)\nC) Source-level sharing via path aliases with build-time composition\n\nAnalyze each across: build performance, developer experience, versioning, dead code elimination, CI/CD complexity, and onboarding.\nProvide a concrete recommendation with trade-offs.",
+  "expectedCoverage": ["build performance", "developer experience", "versioning", "dead code elimination", "CI/CD", "onboarding", "recommendation"]
+}
