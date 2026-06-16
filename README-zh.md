@@ -11,6 +11,15 @@
 
 Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 Hadamard SDK 作为唯一公开主路径。
 
+## v0.5.0 亮点
+
+- **Model Team** — 4 种多模型协作模式（Panel/Router/Discussion/Executor-Reviewer），每成员独立 provider 配置，$ENV_VAR apiKey 解析，全局 AgentPool
+- **Dynamic Workflows** — JS 脚本多 agent 编排，`agent()`/`parallel()`/`pipeline()` 原语，沙箱运行时，Schema 强制
+- **Worktree 工具** — `EnterWorktree`/`ExitWorktree`，栈式 cwd，`.worktreeinclude`，PR checkout，非 Git VCS hooks
+- **TavilySearch** — AI 优化网络搜索，纯 TypeScript，自动 key 检测
+- **标准 Benchmark** — 自包含跑分框架，DeepSeek judge，HTML 看板，4 agent 对比
+- **TUI/REPL**: `/workflows`、`/worktree`、`/team` 斜杠命令
+
 这个项目参考并借鉴了 Claude Code、Codex、Deepagents 等优秀项目和运行时设计，但 Actoviq 仍然是一个独立维护的公开 SDK 项目，拥有自己的 API 表面和文档体系。
 
 项目仍在持续开发中，API 和运行行为后续还会继续打磨。欢迎提交 Issue 和 PR。

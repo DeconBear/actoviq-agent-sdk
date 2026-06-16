@@ -13,6 +13,15 @@ Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, mul
 
 This project is inspired by excellent agent projects and runtimes including Claude Code, Codex, Deepagents, and similar work in the ecosystem. Actoviq remains an independent project with its own public SDK surface and documentation.
 
+## v0.5.0 Highlights
+
+- **Model Team** — 4 multi-model cooperation modes (Panel/Router/Discussion/Executor-Reviewer), per-member independent provider config, $ENV_VAR apiKey resolution, global AgentPool
+- **Dynamic Workflows** — JS script-based multi-agent orchestration with `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement
+- **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout, hooks for non-git VCS
+- **TavilySearch** — AI-optimized web search, pure TypeScript, auto key detection
+- **Standard Benchmark** — Self-contained framework with DeepSeek judge, HTML dashboard, 4-agent comparison (Hadamard/Bridge/Official)
+- **TUI/REPL**: `/workflows`, `/worktree`, `/team` slash commands
+
 This repository is still under active development. APIs and runtime behavior may continue to evolve. Issues and pull requests are very welcome.
 
 ## Install

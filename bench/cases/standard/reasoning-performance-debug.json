@@ -1,0 +1,7 @@
+{
+  "id": "reasoning-performance-debug",
+  "title": "Complex Performance Debugging",
+  "category": "reasoning",
+  "prompt": "A TypeScript monorepo (Node.js 22, PostgreSQL+pgBouncer, Redis 7, K8s HPA) experiences intermittent 5-30s response time spikes (~2% of requests). Spikes correlate with GC pauses and cluster around specific package deployments. DB/Redis latencies normal. No CPU throttling. Memory stable.\n\nFormulate 3-5 root cause hypotheses. For each: additional telemetry needed, investigation priority. Propose quick wins that could mitigate without full root cause.",
+  "expectedCoverage": ["hypotheses", "telemetry", "investigation steps", "quick wins", "Node.js event loop", "monorepo specifics"]
+}

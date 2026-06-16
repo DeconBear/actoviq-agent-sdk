@@ -10,7 +10,7 @@
  */
 import { createAgentSdk, loadDefaultActoviqSettings, createTavilySearchTool, createTeamTool } from '../../src/index.js';
 import type { TeamDefinition } from '../../src/types.js';
-import type { AgentConfig, BenchmarkTask, RunMetrics } from './types.js';
+import type { AgentConfig, BenchmarkTask, RunMetrics, ToolCallRecord } from './types.js';
 
 const MINIMAX_KEY = process.env.MINIMAX_API_KEY || '';
 
@@ -71,11 +71,20 @@ export async function runHadamardAgent(
 
   await sdk.close();
 
+  // Build tool trajectory
+  const toolCalls: ToolCallRecord[] = result.toolCalls.map((tc: any) => ({
+    name: tc.name,
+    durationMs: tc.durationMs ?? 0,
+    isError: tc.isError ?? false,
+    inputSummary: typeof tc.input === 'string' ? tc.input.slice(0, 100) : JSON.stringify(tc.input ?? {}).slice(0, 100),
+  }));
+
   return {
     answer: result.text,
     metrics: {
       durationMs: Date.now() - start,
       toolCallCount: result.toolCalls.length,
+      toolCalls,
       inputTokens: totalIn,
       outputTokens: totalOut,
       iterationCount: result.requests.length,

@@ -18,7 +18,11 @@ Also provide a 1-2 sentence COMMENT on best quality and worst flaw.
 
 {"factual":N,"breadth":N,"structure":N,"citation":N,"efficiency":N,"comment":"..."}`;
 
-export async function scoreAnswer(answer: string, question: string): Promise<StandardScore> {
+export async function scoreAnswer(
+  answer: string,
+  question: string,
+  expectedCoverage?: string[],
+): Promise<StandardScore> {
   const config = await resolveRuntimeConfig({ workDir: process.cwd(), model: 'deepseek-v4-pro' });
   const api = createActoviqModelApi(config);
 
@@ -32,6 +36,7 @@ export async function scoreAnswer(answer: string, question: string): Promise<Sta
           role: 'user' as const,
           content: [
             `QUESTION:\n${question.slice(0, 2000)}`,
+            expectedCoverage?.length ? `\nEXPECTED COVERAGE: ${expectedCoverage.join(', ')}` : '',
             `\nANSWER:\n${answer.slice(0, 12000)}`,
             `\n${JUDGE_RUBRIC}`,
           ].join('\n'),

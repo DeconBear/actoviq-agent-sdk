@@ -22,9 +22,17 @@ export interface AgentConfig {
   hasTeamTool: boolean;
 }
 
+export interface ToolCallRecord {
+  name: string;
+  durationMs: number;
+  isError: boolean;
+  inputSummary: string;
+}
+
 export interface RunMetrics {
   durationMs: number;
   toolCallCount: number;
+  toolCalls: ToolCallRecord[];
   inputTokens: number;
   outputTokens: number;
   iterationCount: number;

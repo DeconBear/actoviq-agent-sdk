@@ -1,0 +1,7 @@
+{
+  "id": "reasoning-dialogue-policy",
+  "title": "Dialogue Policy Tool API Design",
+  "category": "reasoning",
+  "prompt": "Design a dialogue policy engine for a customer service AI that handles refund requests. The engine must support: intent classification, entity extraction, policy rule matching, escalation triggers, and multi-turn context tracking.\n\nPropose the tool API surface (function signatures, input/output schemas). Explain the policy evaluation order, conflict resolution strategy, and how the system handles ambiguous or edge-case requests. Consider audit trail requirements.",
+  "expectedCoverage": ["intent classification", "entity extraction", "policy matching", "escalation", "multi-turn context", "API design", "edge cases", "audit trail"]
+}
