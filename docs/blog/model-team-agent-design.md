@@ -60,9 +60,12 @@ Read · Glob · Grep · TavilySearch · WebFetch
 No `Write`, `Edit`, `Bash`, or delegation tools — members can investigate the
 project and the web over multiple rounds, but they cannot change anything, and
 (because they have no delegation tools) they cannot recurse. Each member returns
-a **findings report**; the tool returns the labeled reports. There is no internal
-synthesizer and no convergence loop: **the calling agent stays in control and
-decides what, if anything, to incorporate.**
+a **findings report**; the tool returns the labeled reports. By default (no
+`primary`) there is no internal synthesizer and no convergence loop: **the
+calling agent stays in control and decides what, if anything, to incorporate.**
+Adding a `primary` turns on an optional convergence loop — the primary
+synthesizes the findings and decides `FINALIZE`/`CONTINUE` across rounds (the
+Harness safety cap `maxRounds` still applies).
 
 Exposed as a tool with `createTeamTool`, this becomes an `expert-panel` that a
 main agent may call when a second set of eyes genuinely helps:
@@ -70,7 +73,7 @@ main agent may call when a second set of eyes genuinely helps:
 ```ts
 const expertPanel = sdk.createTeamTool({
   name: 'expert-panel',
-  mode: 'analysis',
+  mode: 'panel-analysis', // advisory; add a `primary` for multi-round convergence
   members: [
     { model: 'deepseek-v4-pro',
       systemPrompt: 'Expert researcher. Deep, source-grounded analysis.' },
