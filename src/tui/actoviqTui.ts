@@ -1102,15 +1102,17 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       title: 'Skills',
       items: skills.map(skill => ({
         id: skill.name,
-        label: skill.name,
-        description: `${skill.source} · ${skill.context}`,
+        label: skill.displayName ? `${skill.displayName} (${skill.name})` : skill.name,
+        description: `${skill.source} · ${skill.context}${skill.version ? ` · v${skill.version}` : ''}`,
         detail: `${skill.description} ${skill.whenToUse ?? ''}`,
       })),
     });
     const skill = skills.find(item => item.name === selected);
     if (skill) {
+      const heading = skill.displayName ? `${skill.displayName} (/${skill.name})` : `/${skill.name}`;
+      const ver = skill.version ? ` v${skill.version}` : '';
       appendStatic([
-        `${A.cyan}/${skill.name}${A.reset} ${skill.description}`,
+        `${A.cyan}${heading}${A.reset}${A.dim}${ver}${A.reset} ${skill.description}`,
         `${A.dim}${skill.whenToUse ?? `source: ${skill.source} · context: ${skill.context}`}${A.reset}`,
         '',
       ]);
