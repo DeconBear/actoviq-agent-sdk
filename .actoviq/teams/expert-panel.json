@@ -1,7 +1,7 @@
 {
   "name": "expert-panel",
-  "description": "Read-only multi-model expert panel — advisory analysis (each member is an independent ReAct agent with read + web-search tools).",
-  "mode": "analysis",
+  "description": "Read-only multi-model expert panel — advisory analysis (each member is an independent ReAct agent with read + web-search tools). Add a \"primary\" to enable multi-round convergence.",
+  "mode": "panel-analysis",
   "members": [
     {
       "model": "deepseek-v4-pro",

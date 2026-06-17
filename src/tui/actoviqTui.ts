@@ -1721,6 +1721,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           const member = (sp: string) => ({ model: session.model, systemPrompt: sp });
           const buildDefault = (mode: string): TeamDefinition | undefined => {
             switch (mode) {
+              case 'panel-analysis':
+                return { name: 'panel-analysis', mode: 'panel-analysis', members: [member('Expert researcher. Investigate with read-only tools; cite sources.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], primary: member('Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.'), timeoutMs: 300000, maxIterations: 12 };
               case 'analysis':
                 return { name: 'analysis-panel', mode: 'analysis', members: [member('Expert researcher. Deep, source-grounded analysis.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], timeoutMs: 300000, maxIterations: 12 };
               case 'panel':
@@ -1738,7 +1740,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           const items = [
             { id: '__none__', label: activeTeamTool ? `No team — remove "${activeTeamName}"` : 'No team (individual) — current', description: 'the agent works solo, no team tool attached' },
             ...saved.map((t) => ({ id: `saved:${t.name}`, label: t.name, description: `saved · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members` })),
-            ...['analysis', 'panel', 'discussion', 'executor-reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
+            ...['panel-analysis', 'analysis', 'panel', 'discussion', 'executor-reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
           ];
           const choice = await selectItem({ title: 'Team', subtitle: 'attach a team the agent can call as a tool, or remove it', items });
           if (!choice) return;

@@ -2383,7 +2383,13 @@ export interface WorktreeInfo {
 //  v0.5.0: Model Team types
 // ═══════════════════════════════════════════════════════════════════════
 
-export type ModelTeamMode = 'panel' | 'router' | 'discussion' | 'executor-reviewer' | 'analysis';
+/**
+ * `panel-analysis` is the unified expert-panel mode: read-only ReAct members
+ * (the `analysis` foundation) with optional primary-driven multi-round
+ * convergence (the `panel` capability). `panel` and `analysis` are retained as
+ * backward-compatible aliases that route to the same engine.
+ */
+export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'router' | 'discussion' | 'executor-reviewer';
 
 export interface TeamMember {
   model: string;
@@ -2485,22 +2491,28 @@ export interface ExecutorReviewerResult extends TeamResult {
   reviews: Array<{ iteration: number; feedback: string }>;
 }
 
-/** One panel member's findings in `analysis` mode. */
+/** One panel member's findings in `panel-analysis`/`analysis` mode. */
 export interface ExpertPanelReport {
   model: string;
   report: string;
   toolCalls: number;
   durationMs: number;
+  /** Investigation round (1-based); >1 only in convergent panel-analysis. */
+  round?: number;
 }
 
 /**
- * `analysis` mode result: each member is an independent read-only ReAct agent
- * that investigates and reports back. No synthesis/convergence — the caller
- * (the main agent) decides what to do with the reports.
+ * `panel-analysis` (and its `analysis` alias) result. Members are independent
+ * read-only ReAct agents that investigate and report back. With no `primary`
+ * it is single-pass advisory — the caller (the main agent) decides what to do
+ * with the reports. With a `primary`, the primary synthesizes and decides
+ * convergence across multiple rounds (harness: the model decides; `maxRounds`
+ * is only a safety cap).
  */
 export interface AnalysisResult extends TeamResult {
-  mode: 'analysis';
+  mode: 'analysis' | 'panel-analysis';
   reports: ExpertPanelReport[];
+  rounds: number;
 }
 
 export type ModelTeamResult =

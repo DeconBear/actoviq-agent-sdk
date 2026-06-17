@@ -1,6 +1,8 @@
 /**
  * ModelTeam — multi-model cooperation core.
- * Supports Panel, Router, Discussion, and Executor-Reviewer modes.
+ * Modes: Panel-Analysis (unified read-only expert panel + optional convergence),
+ * Panel, Router, Discussion, Executor-Reviewer. (`panel`/`analysis` are retained
+ * as aliases that route to the Panel-Analysis engine.)
  * All modes follow the Hadamard Agent Harness principle: provide
  * scaffolding, not constraints. Models decide when to converge.
  */
@@ -811,18 +813,26 @@ async function runExecutorReviewerMode(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Analysis Mode — read-only ReAct expert panel (advisory)
+//  Panel-Analysis Mode — read-only ReAct expert panel + optional convergence
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Each member is an independent, read-only ReAct agent (Read/Glob/Grep +
- * TavilySearch/WebFetch — no write/edit/bash/delegation) that investigates the
- * task and the project in parallel and returns a findings report. No synthesis,
- * no convergence: the caller (the main agent) decides what to do with the
- * reports. This is the autonomous "expert panel" the main model invokes as a
- * tool to assist analysis on large/complex tasks; it only analyzes and reports.
+ * Unified expert panel. Each member is an independent, read-only ReAct agent
+ * (Read/Glob/Grep + TavilySearch/WebFetch — no write/edit/bash/delegation) that
+ * investigates the task in parallel and returns a findings report.
+ *
+ * - No `primary` → single-pass advisory: the caller (the main agent) decides
+ *   what to do with the concatenated reports (the original `analysis` behavior).
+ * - With a `primary` → multi-round convergence: after each round the primary
+ *   synthesizes the findings and decides FINALIZE or CONTINUE; on CONTINUE the
+ *   panel re-investigates a refined question with prior findings as context.
+ *   Harness principle preserved: the primary decides convergence; `maxRounds`
+ *   (default 100) is only a safety cap.
+ *
+ * `analysis` and `panel-analysis` both route here; the result `mode` echoes the
+ * requested alias.
  */
-async function runAnalysisMode(
+async function runPanelAnalysisMode(
   prompt: string,
   definition: TeamDefinition,
   signal?: AbortSignal,
@@ -858,68 +868,165 @@ async function runAnalysisMode(
     'verify. Be specific and decision-useful.',
   ].join(' ');
 
-  const reports = await mapWithConcurrency(
-    definition.members,
-    definition.maxParallel ?? definition.members.length,
-    async (member): Promise<ExpertPanelReport> => {
-      const start = Date.now();
-      let slot: AgentPoolSlot | undefined;
-      let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
-      try {
-        slot = await pool.acquire();
-        sdk = await createAgentSdk({
-          model: member.model,
-          provider: member.provider,
-          baseURL: member.baseURL,
-          authToken: resolveApiKey(member.apiKey),
-          maxTokens: member.maxTokens ?? 32000,
-          workDir: cwd,
-          tools: buildReadOnlyTools(),
-          permissionMode: 'bypassPermissions',
-          maxToolIterations: memberMaxIterations,
-          systemPrompt: member.systemPrompt
-            ? `${analysisFraming}\n\n${member.systemPrompt}`
-            : analysisFraming,
-        });
-        const result = await sdk.run(prompt, {
-          signal: memberSignal(signal, definition.timeoutMs),
-        });
-        const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
-        const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
-        const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
-        ex.input += input;
-        ex.output += output;
-        perModelTokens.set(member.model, ex);
-        totalInput += input;
-        totalOutput += output;
-        return {
-          model: member.model,
-          report: result.text,
-          toolCalls: result.toolCalls.length,
-          durationMs: Date.now() - start,
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          model: member.model,
-          report: `[ERROR: ${member.model} analysis failed — ${message}]`,
-          toolCalls: 0,
-          durationMs: Date.now() - start,
-        };
-      } finally {
-        if (sdk) await sdk.close();
-        slot?.release();
-      }
-    },
-  );
+  // One investigation round: every member investigates `question` in parallel as
+  // a read-only ReAct agent. `priorContext` (earlier rounds' findings) lets
+  // members build on the deliberation instead of starting cold.
+  const investigate = async (
+    round: number,
+    question: string,
+    priorContext?: string,
+  ): Promise<ExpertPanelReport[]> => {
+    const memberPrompt = priorContext
+      ? `${question}\n\n## Prior panel findings (build on these; don't repeat established points)\n${priorContext}`
+      : question;
+    return mapWithConcurrency(
+      definition.members,
+      definition.maxParallel ?? definition.members.length,
+      async (member): Promise<ExpertPanelReport> => {
+        const start = Date.now();
+        let slot: AgentPoolSlot | undefined;
+        let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
+        try {
+          slot = await pool.acquire();
+          sdk = await createAgentSdk({
+            model: member.model,
+            provider: member.provider,
+            baseURL: member.baseURL,
+            authToken: resolveApiKey(member.apiKey),
+            maxTokens: member.maxTokens ?? 32000,
+            workDir: cwd,
+            tools: buildReadOnlyTools(),
+            permissionMode: 'bypassPermissions',
+            maxToolIterations: memberMaxIterations,
+            systemPrompt: member.systemPrompt
+              ? `${analysisFraming}\n\n${member.systemPrompt}`
+              : analysisFraming,
+          });
+          const result = await sdk.run(memberPrompt, {
+            signal: memberSignal(signal, definition.timeoutMs),
+          });
+          const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
+          const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
+          const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
+          ex.input += input;
+          ex.output += output;
+          perModelTokens.set(member.model, ex);
+          totalInput += input;
+          totalOutput += output;
+          return {
+            model: member.model,
+            report: result.text,
+            toolCalls: result.toolCalls.length,
+            durationMs: Date.now() - start,
+            round,
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            model: member.model,
+            report: `[ERROR: ${member.model} analysis failed — ${message}]`,
+            toolCalls: 0,
+            durationMs: Date.now() - start,
+            round,
+          };
+        } finally {
+          if (sdk) await sdk.close();
+          slot?.release();
+        }
+      },
+    );
+  };
 
-  const answer = reports.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
+  const labelReports = (reports: ExpertPanelReport[]): string =>
+    reports.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
+
+  const resultMode: 'analysis' | 'panel-analysis' =
+    definition.mode === 'analysis' ? 'analysis' : 'panel-analysis';
+
+  const allReports: ExpertPanelReport[] = [];
+  let rounds = 1;
+  let currentReports = await investigate(1, prompt);
+  allReports.push(...currentReports);
+
+  // No primary → single-pass advisory (original `analysis` behavior).
+  if (!definition.primary) {
+    const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
+    return {
+      answer: labelReports(currentReports),
+      mode: resultMode,
+      reports: allReports,
+      rounds,
+      cost,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  // Primary present → it synthesizes the findings and decides convergence.
+  const primaryApi = await createMemberApi(definition.primary);
+  const primaryModel = definition.primary.model;
+  const maxRounds = definition.maxRounds ?? 100;
+  const deliberationLog: string[] = [`## Round 1 — Panel findings\n${labelReports(currentReports)}`];
+  let finalAnswer = '';
+  let converged = false;
+
+  while (!converged) {
+    const decisionPrompt = [
+      'You are the primary synthesizer over a panel of expert analysts; each investigated the task with read-only tools and reported findings.',
+      'Review the full panel findings, then decide whether they are sufficient to answer the task.',
+      '',
+      'Original task:',
+      prompt,
+      '',
+      'Full panel findings so far:',
+      deliberationLog.join('\n\n---\n\n'),
+      '',
+      'Respond in one of these formats:',
+      '',
+      'To FINALIZE (findings are sufficient):',
+      'FINALIZE',
+      '<your comprehensive synthesized answer, grounded in the findings>',
+      '',
+      'To CONTINUE (deeper investigation needed):',
+      'CONTINUE',
+      '<a refined question and the specific aspects the panel should investigate next>',
+    ].join('\n');
+
+    const decision = await singleModelCall(
+      primaryApi,
+      decisionPrompt,
+      definition.primary.systemPrompt,
+      memberSignal(signal, definition.timeoutMs),
+    );
+    totalInput += decision.inputTokens;
+    totalOutput += decision.outputTokens;
+    const pex = perModelTokens.get(primaryModel) ?? { input: 0, output: 0 };
+    pex.input += decision.inputTokens;
+    pex.output += decision.outputTokens;
+    perModelTokens.set(primaryModel, pex);
+
+    const wantsContinue = decision.content.trim().toUpperCase().startsWith('CONTINUE');
+    if (wantsContinue && rounds < maxRounds) {
+      const refined = decision.content.replace(/^CONTINUE\s*/i, '').trim() || prompt;
+      deliberationLog.push(`## Round ${rounds} — Primary decision\nCONTINUE: ${refined}`);
+      rounds++;
+      currentReports = await investigate(rounds, refined, labelReports(currentReports));
+      allReports.push(...currentReports);
+      deliberationLog.push(`## Round ${rounds} — Panel findings\n${labelReports(currentReports)}`);
+    } else {
+      // FINALIZE, or the safety cap was reached mid-deliberation.
+      finalAnswer = wantsContinue
+        ? labelReports(currentReports) // cap hit: hand back the findings unsynthesized
+        : decision.content.replace(/^FINALIZE\s*/i, '').trim() || labelReports(currentReports);
+      converged = true;
+    }
+  }
+
   const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
-
   return {
-    answer,
-    mode: 'analysis',
-    reports,
+    answer: finalAnswer,
+    mode: resultMode,
+    reports: allReports,
+    rounds,
     cost,
     durationMs: Date.now() - startedAt,
   };
@@ -955,7 +1062,8 @@ export class ModelTeam {
       case 'executor-reviewer':
         return runExecutorReviewerMode(prompt, this.definition, signal);
       case 'analysis':
-        return runAnalysisMode(prompt, this.definition, signal);
+      case 'panel-analysis':
+        return runPanelAnalysisMode(prompt, this.definition, signal);
       default:
         throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
     }
@@ -996,7 +1104,9 @@ function validateTeamDefinition(def: TeamDefinition): void {
       if (!def.reviewer) throw new Error('Executor-Reviewer mode requires a reviewer.');
       break;
     case 'analysis':
-      if (!def.members || def.members.length === 0) throw new Error('Analysis mode requires at least one panel member.');
+    case 'panel-analysis':
+      if (!def.members || def.members.length === 0) throw new Error('Panel-analysis mode requires at least one panel member.');
+      if (def.members.length > 8) throw new Error('Panel-analysis mode supports at most 8 members.');
       break;
   }
 }
@@ -1015,8 +1125,8 @@ export function createTeamTool(
     name: definition.name,
     description:
       definition.description ??
-      (definition.mode === 'analysis'
-        ? 'Expert panel: independent read-only multi-model analysis (advisory). You decide what to do with the findings.'
+      (definition.mode === 'analysis' || definition.mode === 'panel-analysis'
+        ? 'Expert panel: independent read-only multi-model analysis (advisory; optional primary-driven convergence). You decide what to do with the findings.'
         : `Multi-model team (${definition.mode} mode)`),
     inputSchema: {
       parse: (input: unknown) => input as { prompt: string },
@@ -1057,8 +1167,8 @@ export function createTeamTool(
       `## ${definition.name} (Model Team: ${definition.mode})`,
       definition.description ?? '',
       '',
-      definition.mode === 'analysis'
-        ? 'Call this tool with a { prompt } to have an expert panel of independent read-only agents investigate (read local code + search the web) and each return a findings report. They only analyze and advise — you keep full control and decide what to do with their input. Use it to assist analysis on large or complex tasks.'
+      definition.mode === 'analysis' || definition.mode === 'panel-analysis'
+        ? 'Call this tool with a { prompt } to have an expert panel of independent read-only agents investigate (read local code + search the web) and each return a findings report. They only analyze and advise — you keep full control and decide what to do with their input. With a configured primary the panel also converges over multiple rounds into a synthesized answer. Use it to assist analysis on large or complex tasks.'
         : 'Call this tool with a { prompt } to get a multi-model synthesized answer.',
       `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
     ].join('\n'),

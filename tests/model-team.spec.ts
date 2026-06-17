@@ -225,6 +225,48 @@ describe('ModelTeam validation', () => {
     const team = createModelTeam(def);
     expect(team.definition.mode).toBe('router');
   });
+
+  it('validates panel-analysis requires at least one member', () => {
+    const def: TeamDefinition = {
+      name: 'pa',
+      mode: 'panel-analysis',
+      members: [],
+    };
+    expect(() => createModelTeam(def)).toThrow('at least one panel member');
+  });
+
+  it('creates a valid panel-analysis team (advisory, no primary)', () => {
+    const def: TeamDefinition = {
+      name: 'pa-advisory',
+      mode: 'panel-analysis',
+      members: [{ model: 'claude-sonnet-4-6' }, { model: 'deepseek-v4-pro' }],
+    };
+    const team = createModelTeam(def);
+    expect(team.definition.mode).toBe('panel-analysis');
+    expect(team.definition.primary).toBeUndefined();
+  });
+
+  it('creates a valid panel-analysis team with a primary (convergent)', () => {
+    const def: TeamDefinition = {
+      name: 'pa-convergent',
+      mode: 'panel-analysis',
+      members: [{ model: 'claude-sonnet-4-6' }, { model: 'deepseek-v4-pro' }],
+      primary: { model: 'claude-opus-4-8' },
+    };
+    const team = createModelTeam(def);
+    expect(team.definition.mode).toBe('panel-analysis');
+    expect(team.definition.primary?.model).toBe('claude-opus-4-8');
+  });
+
+  it('still accepts analysis as a backward-compatible alias', () => {
+    const def: TeamDefinition = {
+      name: 'legacy-analysis',
+      mode: 'analysis',
+      members: [{ model: 'deepseek-v4-pro' }],
+    };
+    const team = createModelTeam(def);
+    expect(team.definition.mode).toBe('analysis');
+  });
 });
 
 describe('createTeamTool', () => {
