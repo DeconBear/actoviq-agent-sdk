@@ -1352,16 +1352,21 @@ export class ActoviqAgentClient {
                 (!definition.paths?.length ||
                   this.activatedConditionalSkills.has(definition.name)),
             )
-            .map((definition) =>
-              definition.description
-                ? `- ${definition.name}: ${definition.description}`
-                : `- ${definition.name}`,
-            );
+            .map((definition) => {
+              const parts = [`- ${definition.name}`];
+              if (definition.description) parts.push(`: ${definition.description}`);
+              if (definition.whenToUse) parts.push(` (use when: ${definition.whenToUse})`);
+              if (definition.argumentHint) parts.push(` [args: ${definition.argumentHint}]`);
+              return parts.join('');
+            });
           if (names.length === 0) {
             return '';
           }
           return [
-            'Use the Skill tool to load a registered skill when the task matches its description.',
+            'You can autonomously load a registered skill with the Skill tool whenever the current task',
+            'matches its purpose — decide for yourself from each skill\'s description and "use when" guidance',
+            'below, then call Skill({ skill, args? }) without waiting to be asked. Prefer a matching skill over',
+            'improvising when one applies.',
             'Available skills:',
             ...names,
           ].join('\n');
