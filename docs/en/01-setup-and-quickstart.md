@@ -136,13 +136,15 @@ npx actoviq-tui [work-dir] [options]
 
 Use it when you want a richer terminal experience:
 
-- Live status with spinner, elapsed time, tool count, context estimate, and current tool.
+- Live status with spinner, elapsed time, tool count, and current tool, plus an always-visible mode line (model · permission preset · effort · active team) that shows context usage as a percentage of the window.
 - Multi-line editing with `\` + Enter or Ctrl+J, history navigation, and inline cursor rendering.
 - Searchable slash-command menu. `/resume` opens a project-session picker, while `/resume <session-id>` resumes directly.
+- `@` file completion: type `@` for a git-aware workspace file picker; `↑↓` select, `Tab`/`Enter` insert the path.
+- `/team`, `/workflows`, and `/worktree` open selection pickers — activate a saved Model Team (or "no team") as a callable tool, run a saved dynamic workflow, or enter/exit/list git worktrees; the direct `list`/`ask`/`run`/`enter` forms still work.
 - `/model` selects a model; `/model config` edits the provider, masked API key, base URL, and model tiers. `/effort` selects the provider reasoning effort.
 - `/skills`, `/agents`, `/mcp`, and `/plugins` browse Hadamard SDK capability catalogs; `/help` searches command usage and `/dream` controls dream runs.
 - Mid-run steering: type while the agent is working and press Enter to queue guidance into the next model request.
-- Interactive permission prompts when launched with `--permission-mode default`; always-allow rules persist with the session.
+- `/permissions` switches between read-only, workspace-access, and full-access presets; with `--permission-mode default`, mutating tools prompt for approve / always-allow / deny, and always-allow rules persist with the session.
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
 Both `actoviq-react` and `actoviq-tui` use the same Hadamard SDK defaults: `~/.actoviq/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
