@@ -40,6 +40,12 @@ export class InputEditor {
     this.cursor = text.length;
   }
 
+  /** Replace the buffer and place the cursor at an explicit offset (clamped). */
+  setTextWithCursor(text: string, cursor: number): void {
+    this.text = text;
+    this.cursor = Math.max(0, Math.min(cursor, text.length));
+  }
+
   insert(value: string): void {
     if (!value) return;
     this.text = this.text.slice(0, this.cursor) + value + this.text.slice(this.cursor);

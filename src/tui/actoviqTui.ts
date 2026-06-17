@@ -6,6 +6,7 @@
  * rendering (no React/Ink).
  */
 import { execSync } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as readline from 'node:readline';
@@ -108,6 +109,29 @@ export function filterSlashCommands(input: string): string[] {
   if (input.includes(' ') && head.length > 0) return [];
   const partial = head.toLowerCase();
   return Object.keys(TUI_SLASH_COMMANDS).filter((name) => name.startsWith(partial));
+}
+
+/**
+ * Detect an active "@file" mention at the cursor for path completion. Returns
+ * the partial token typed after the '@' plus the '@' offset, or null when the
+ * cursor is not inside a mention. The '@' only opens a mention at the start of
+ * input or after whitespace, and the token ends at the first whitespace.
+ */
+export function activeAtToken(
+  text: string,
+  cursor: number,
+): { token: string; start: number } | null {
+  for (let i = cursor - 1; i >= 0; i -= 1) {
+    const ch = text[i]!;
+    if (/\s/.test(ch)) return null;
+    if (ch === '@') {
+      if (i === 0 || /\s/.test(text[i - 1]!)) {
+        return { token: text.slice(i + 1, cursor), start: i };
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 export interface ActoviqTuiOptions {
@@ -269,6 +293,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let selectionDialog: SelectionDialogState | null = null;
   let textInputDialog: TextInputDialogState | null = null;
   let menuSelected = 0;
+  // @-mention file completion: highlighted candidate + lazily-cached file list.
+  let atSelected = 0;
+  let workspaceFiles: string[] | null = null;
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | null = null;
   let dynamicRenderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -471,6 +498,111 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return lines;
   }
 
+  // ── @-mention file completion ──────────────────────────────────────
+  // Prefer git's view (tracked + untracked, honoring .gitignore) so the list
+  // matches what the agent actually sees; fall back to a bounded fs walk for
+  // non-git workspaces. Cached for the session and invalidated after each run.
+  function loadWorkspaceFiles(): string[] {
+    if (workspaceFiles) return workspaceFiles;
+    try {
+      const out = execSync('git ls-files --cached --others --exclude-standard', {
+        cwd: workDir,
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      workspaceFiles = out.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 8000);
+    } catch {
+      workspaceFiles = walkWorkspaceFiles(workDir, 8000);
+    }
+    return workspaceFiles;
+  }
+
+  function walkWorkspaceFiles(root: string, limit: number): string[] {
+    const skip = new Set(['node_modules', '.git', 'dist', '.codegraph', '.next', 'coverage']);
+    const out: string[] = [];
+    const stack = [root];
+    while (stack.length > 0 && out.length < limit) {
+      const dir = stack.pop()!;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (!skip.has(entry.name) && !entry.name.startsWith('.')) stack.push(path.join(dir, entry.name));
+        } else if (entry.isFile()) {
+          out.push(path.relative(root, path.join(dir, entry.name)).split(path.sep).join('/'));
+          if (out.length >= limit) break;
+        }
+      }
+    }
+    return out;
+  }
+
+  function atCompletions(token: string): string[] {
+    const files = loadWorkspaceFiles();
+    const query = token.toLowerCase();
+    if (!query) return files.slice(0, 200);
+    const matches = files.filter((file) => file.toLowerCase().includes(query));
+    matches.sort((a, b) => {
+      const aBase = a.slice(a.lastIndexOf('/') + 1).toLowerCase();
+      const bBase = b.slice(b.lastIndexOf('/') + 1).toLowerCase();
+      const aScore = aBase.startsWith(query) ? 0 : aBase.includes(query) ? 1 : 2;
+      const bScore = bBase.startsWith(query) ? 0 : bBase.includes(query) ? 1 : 2;
+      if (aScore !== bScore) return aScore - bScore;
+      return a.length - b.length;
+    });
+    return matches.slice(0, 200);
+  }
+
+  function buildAtMenu(): string[] {
+    const active = activeAtToken(editor.text, editor.cursor);
+    if (!active) return [];
+    const matches = atCompletions(active.token);
+    if (matches.length === 0) {
+      return [`${A.dim}  @${active.token} — no matching files${A.reset}`];
+    }
+    if (atSelected >= matches.length) atSelected = matches.length - 1;
+    if (atSelected < 0) atSelected = 0;
+    const windowStart = Math.max(
+      0,
+      Math.min(atSelected - MENU_MAX_ROWS + 1, matches.length - MENU_MAX_ROWS),
+    );
+    const visible = matches.slice(windowStart, windowStart + MENU_MAX_ROWS);
+    const lines = visible.map((file, i) => {
+      const index = windowStart + i;
+      const display = truncateToWidth(file, Math.max(screen.width - 6, 12));
+      return index === atSelected ? `${A.inverse} @${display} ${A.reset}` : `  ${A.cyan}@${display}${A.reset}`;
+    });
+    const hiddenAbove = windowStart;
+    const hiddenBelow = matches.length - (windowStart + visible.length);
+    if (hiddenAbove > 0 || hiddenBelow > 0) {
+      const parts: string[] = [];
+      if (hiddenAbove > 0) parts.push(`↑${hiddenAbove}`);
+      if (hiddenBelow > 0) parts.push(`↓${hiddenBelow}`);
+      lines.push(`${A.dim}  ${parts.join('  ')} more · ${atSelected + 1}/${matches.length} (↑/↓ · Tab/Enter to insert)${A.reset}`);
+    }
+    return lines;
+  }
+
+  /** Replace the active @-token with the highlighted file path. */
+  function applyAtCompletion(): boolean {
+    const active = activeAtToken(editor.text, editor.cursor);
+    if (!active) return false;
+    const matches = atCompletions(active.token);
+    if (matches.length === 0) return false;
+    const file = matches[Math.min(atSelected, matches.length - 1)]!;
+    const before = editor.text.slice(0, active.start);
+    const after = editor.text.slice(editor.cursor);
+    const mention = `@${file} `;
+    editor.setTextWithCursor(`${before}${mention}${after}`, before.length + mention.length);
+    atSelected = 0;
+    return true;
+  }
+
   function buildMenu(): string[] {
     const matches = filterSlashCommands(editor.text);
     if (matches.length === 0) return [];
@@ -635,7 +767,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     if (running) {
       return [`${A.dim}  enter to queue a steering message · esc interrupt · ctrl+c twice to exit${A.reset}`];
     }
-    return [`${A.dim}  ? for shortcuts · / for commands · \\↵ newline · ↑↓ history · ctrl+c clear/exit${A.reset}`];
+    return [`${A.dim}  ? shortcuts · / commands · @ files · \\↵ newline · ↑↓ history · ctrl+c clear/exit${A.reset}`];
   }
 
   function renderDynamic(): void {
@@ -653,8 +785,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       lines.push(...buildTextInputDialog());
     } else {
       lines.push(...buildPromptBar());
-      const menu = buildMenu();
-      lines.push(...(menu.length > 0 ? menu : buildHintLine()));
+      const atMenu = buildAtMenu();
+      if (atMenu.length > 0) {
+        lines.push(...atMenu);
+      } else {
+        const menu = buildMenu();
+        lines.push(...(menu.length > 0 ? menu : buildHintLine()));
+      }
     }
     screen.setDynamic(lines);
   }
@@ -734,6 +871,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     } finally {
       running = false;
       abortCtrl = null;
+      workspaceFiles = null; // the agent may have created/removed files — refresh @-completion
       if (spinnerTimer) {
         clearInterval(spinnerTimer);
         spinnerTimer = null;
@@ -1639,6 +1777,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // ── Submit / key handling ──────────────────────────────────────────
 
   async function submit(): Promise<void> {
+    if (!running && applyAtCompletion()) {
+      renderDynamic();
+      return;
+    }
     const matches = filterSlashCommands(editor.text);
     if (matches.length > 0 && !running) {
       const selected = matches[Math.min(menuSelected, matches.length - 1)]!;
@@ -1916,6 +2058,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       case 'backspace':
         editor.backspace();
         menuSelected = 0;
+        atSelected = 0;
         break;
       case 'delete':
         editor.deleteForward();
@@ -1935,8 +2078,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         editor.moveEnd();
         break;
       case 'up': {
+        const atToken = activeAtToken(editor.text, editor.cursor);
+        const atCount = atToken ? atCompletions(atToken.token).length : 0;
         const menu = filterSlashCommands(editor.text);
-        if (menu.length > 0) {
+        if (atCount > 0) {
+          atSelected = (atSelected + atCount - 1) % atCount;
+        } else if (menu.length > 0) {
           menuSelected = (menuSelected + menu.length - 1) % menu.length;
         } else if (!editor.onFirstLine()) {
           editor.moveUp();
@@ -1946,8 +2093,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         break;
       }
       case 'down': {
+        const atToken = activeAtToken(editor.text, editor.cursor);
+        const atCount = atToken ? atCompletions(atToken.token).length : 0;
         const menu = filterSlashCommands(editor.text);
-        if (menu.length > 0) {
+        if (atCount > 0) {
+          atSelected = (atSelected + 1) % atCount;
+        } else if (menu.length > 0) {
           menuSelected = (menuSelected + 1) % menu.length;
         } else if (!editor.onLastLine()) {
           editor.moveDown();
@@ -1957,6 +2108,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         break;
       }
       case 'tab': {
+        if (applyAtCompletion()) break;
         const menu = filterSlashCommands(editor.text);
         if (menu.length > 0) {
           const selected = menu[Math.min(menuSelected, menu.length - 1)]!;
@@ -1974,6 +2126,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           if (cleaned) {
             editor.insert(cleaned);
             menuSelected = 0;
+            atSelected = 0;
           }
         }
         break;

@@ -9,7 +9,7 @@ import {
   formatToolResult,
   summarizeToolInput,
 } from '../src/tui/transcript.js';
-import { filterSlashCommands } from '../src/tui/actoviqTui.js';
+import { filterSlashCommands, activeAtToken } from '../src/tui/actoviqTui.js';
 import {
   filterTuiSelectionItems,
   moveTuiSelection,
@@ -122,6 +122,15 @@ describe('InputEditor', () => {
     expect(visual.lines).toEqual(['abcd', 'efgh', 'ij']);
     expect(visual.cursorRow).toBe(2);
     expect(visual.cursorCol).toBe(2);
+  });
+
+  it('places the cursor at an explicit offset and clamps out-of-range', () => {
+    const editor = new InputEditor();
+    editor.setTextWithCursor('see @src/app.ts now', 12);
+    expect(editor.text).toBe('see @src/app.ts now');
+    expect(editor.cursor).toBe(12);
+    editor.setTextWithCursor('short', 99);
+    expect(editor.cursor).toBe(5);
   });
 });
 
@@ -266,6 +275,25 @@ describe('slash command filtering', () => {
     expect(filterSlashCommands('/help')).toEqual(['help']);
     expect(filterSlashCommands('plain text')).toEqual([]);
     expect(filterSlashCommands('/unknown')).toEqual([]);
+  });
+});
+
+describe('@-mention detection', () => {
+  it('detects the partial token after @ at the cursor', () => {
+    expect(activeAtToken('@src', 4)).toEqual({ token: 'src', start: 0 });
+    expect(activeAtToken('fix @src/app', 12)).toEqual({ token: 'src/app', start: 4 });
+    expect(activeAtToken('@', 1)).toEqual({ token: '', start: 0 });
+  });
+
+  it('reports the token relative to the cursor, not the end of the buffer', () => {
+    // cursor sits right after "@sr" while "c" trails — only the typed prefix counts
+    expect(activeAtToken('@src', 3)).toEqual({ token: 'sr', start: 0 });
+  });
+
+  it('returns null when not inside a mention', () => {
+    expect(activeAtToken('plain text', 5)).toBeNull();
+    expect(activeAtToken('user@host', 9)).toBeNull(); // @ not preceded by whitespace
+    expect(activeAtToken('@src file', 9)).toBeNull(); // whitespace ended the token
   });
 });
 
