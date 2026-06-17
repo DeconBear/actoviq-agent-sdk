@@ -13,7 +13,7 @@ Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, mul
 
 This project is inspired by excellent agent projects and runtimes including Claude Code, Codex, Deepagents, and similar work in the ecosystem. Actoviq remains an independent project with its own public SDK surface and documentation.
 
-## v0.5.0 Highlights
+## Highlights
 
 - **Model Team** — 4 multi-model cooperation modes (Panel/Router/Discussion/Executor-Reviewer), per-member independent provider config, $ENV_VAR apiKey resolution, global AgentPool
 - **Dynamic Workflows** — JS script-based multi-agent orchestration with `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement

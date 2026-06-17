@@ -11,7 +11,7 @@
 
 Actoviq Agent SDK 是一个实验性的 TypeScript Agent SDK，面向多工具、多会话、多代理工作流。当前项目以 Hadamard SDK 作为唯一公开主路径。
 
-## v0.5.0 亮点
+## 亮点
 
 - **Model Team** — 4 种多模型协作模式（Panel/Router/Discussion/Executor-Reviewer），每成员独立 provider 配置，$ENV_VAR apiKey 解析，全局 AgentPool
 - **Dynamic Workflows** — JS 脚本多 agent 编排，`agent()`/`parallel()`/`pipeline()` 原语，沙箱运行时，Schema 强制
