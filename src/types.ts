@@ -551,6 +551,10 @@ export interface ActoviqSkillDefinition {
   buildPrompt?: ActoviqSkillPromptBuilder;
   model?: string;
   effort?: ActoviqEffort;
+  /** Optional version string from frontmatter (display/telemetry only). */
+  version?: string;
+  /** Friendly display label from frontmatter `name:`; the invocation name still comes from the directory. */
+  displayName?: string;
   disableModelInvocation?: boolean;
   userInvocable?: boolean;
   source?: ActoviqSkillSource;
@@ -576,6 +580,8 @@ export interface ActoviqSkillDefinitionSummary {
   argNames: string[];
   model?: string;
   effort?: ActoviqEffort;
+  version?: string;
+  displayName?: string;
   source: ActoviqSkillSource;
   loadedFrom: ActoviqSkillLoadedFrom;
   context: ActoviqSkillContextMode;

@@ -236,6 +236,8 @@ export function summarizeActoviqSkillDefinition(
     argNames: [...(normalized.argNames ?? [])],
     model: normalized.model,
     effort: normalized.effort,
+    version: normalized.version,
+    displayName: normalized.displayName,
     source: normalized.source ?? 'custom',
     loadedFrom: normalized.loadedFrom ?? 'custom',
     context: normalized.context ?? 'inline',
@@ -760,6 +762,8 @@ function createDiskSkillDefinition(input: {
     prompt,
     model: input.frontmatter.model?.trim() || undefined,
     effort: parseEffortField(input.frontmatter.effort),
+    version: input.frontmatter.version?.trim() || undefined,
+    displayName: input.frontmatter.name?.trim() || undefined,
     disableModelInvocation: parseBooleanField(input.frontmatter['disable-model-invocation']),
     userInvocable:
       input.frontmatter['user-invocable'] == null
