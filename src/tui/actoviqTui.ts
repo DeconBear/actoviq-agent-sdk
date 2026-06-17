@@ -20,6 +20,7 @@ import {
   listTeamDefinitions,
   loadTeamDefinition,
   createModelTeam,
+  createTeamTool,
   WorktreeService,
 } from '../index.js';
 import {
@@ -31,8 +32,11 @@ import type {
   ActoviqRunEffort,
   ActoviqCanUseTool,
   ActoviqPermissionMode,
+  ActoviqPermissionRule,
   ActoviqToolApprover,
   AgentEvent,
+  AgentToolDefinition,
+  TeamDefinition,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
 import { pathToFileURL } from 'node:url';
@@ -257,6 +261,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let running = false;
   let commandBusy = false;
   let shuttingDown = false;
+  // Active team tool the main agent may call (toggled via /team). null = no team.
+  let activeTeamTool: AgentToolDefinition | null = null;
+  let activeTeamName: string | null = null;
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
@@ -449,8 +456,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const lines: string[] = [];
     lines.push(promptDivider());
     if (editor.isEmpty()) {
-      const placeholder = truncateToWidth('Try "write a test for <filepath>"', editorWidth - 2);
-      lines.push(`${A.magenta}${PROMPT_GLYPH}${A.reset} ${A.dim}${placeholder}${A.reset}`);
+      // Always-visible block caret on the empty input so the box reads as active.
+      const placeholder = truncateToWidth('Try "write a test for <filepath>"', editorWidth - 4);
+      lines.push(`${A.magenta}${PROMPT_GLYPH}${A.reset} ${A.inverse} ${A.reset} ${A.dim}${placeholder}${A.reset}`);
     } else {
       const visual = editor.visualLines(editorWidth - 1);
       visual.lines.forEach((line, row) => {
@@ -590,18 +598,36 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return lines;
   }
 
+  /** Friendly permission label matching the /permissions presets. */
+  function permissionLabel(): string {
+    const m = currentPermissionMode();
+    if (m === 'bypassPermissions') return 'full-access';
+    if (m === 'acceptEdits') return 'workspace';
+    if (m === 'default' && session.permissionContext.permissions.some((p) => p.behavior === 'deny')) return 'read-only';
+    return m;
+  }
+
+  /** Always-visible mode + live context-usage line (usage shown as % of the window). */
+  function buildModeLine(): string {
+    const used = lastTokenEstimate ?? 0;
+    const window = sdk.config.compact?.contextWindowTokens ?? 200_000;
+    const pct = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
+    const usedK = used >= 1000 ? `${(used / 1000).toFixed(used >= 100_000 ? 0 : 1)}k` : `${used}`;
+    const ctxColor = pct >= 90 ? A.red : pct >= 70 ? A.yellow : A.dim;
+    const left = `${session.model} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'} · `;
+    return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
+  }
+
   function buildStatusLine(): string[] {
-    if (!running) return [];
+    const modeLine = buildModeLine();
+    if (!running) return [modeLine];
     const elapsed = Math.max(Math.round((Date.now() - runStartedAt) / 1000), 0);
     const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
-    const context =
-      lastTokenEstimate && lastTokenEstimate >= 1000
-        ? ` · ~${Math.round(lastTokenEstimate / 1000)}k ctx`
-        : '';
     const note = statusNote ? ` · ${statusNote}` : '';
     const queued = queuedInputs.length > 0 ? ` · ${queuedInputs.length} queued` : '';
     return [
-      `${A.cyan}${frame}${A.reset} ${A.bold}Working…${A.reset}${A.dim} (${elapsed}s · ${runToolCount} tool${runToolCount === 1 ? '' : 's'}${context}${note}${queued} · esc to interrupt)${A.reset}`,
+      `${A.cyan}${frame}${A.reset} ${A.bold}Working…${A.reset}${A.dim} (${elapsed}s · ${runToolCount} tool${runToolCount === 1 ? '' : 's'}${note}${queued} · esc to interrupt)${A.reset}`,
+      modeLine,
     ];
   }
 
@@ -676,6 +702,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         permissionMode: currentPermissionMode(),
         effort: currentEffort(),
         approver,
+        ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
         ...(canUseTool ? { canUseTool } : {}),
         drainQueuedInputs: () => {
           const drained = queuedInputs.splice(0);
@@ -1266,27 +1293,44 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           else await setEffort(args.toLowerCase());
           return;
         case 'permissions': {
-          const requested = args;
-          if (!requested) {
-            const state = session.permissionContext;
-            appendStatic([
-              ...formatInfoLine(
-                `permissions: ${state.mode ?? permissionMode} · ${state.permissions.length} session rules`,
-              ),
-              '',
-            ]);
+          // Three presets, selectable or named directly:
+          //   read-only  → deny mutating tools (read / search / web only)
+          //   workspace  → acceptEdits (auto-accept edits in the workspace)
+          //   full       → bypassPermissions (no prompts)
+          const READONLY_DENY = ['Bash', 'Write', 'Edit', 'NotebookEdit', 'PowerShell'];
+          const presets: Record<string, { mode: ActoviqPermissionMode; rules: ActoviqPermissionRule[]; label: string }> = {
+            'read-only': {
+              mode: 'default',
+              rules: READONLY_DENY.map((t) => ({ toolName: t, behavior: 'deny', source: 'permissions-preset' })),
+              label: 'Read-only',
+            },
+            workspace: { mode: 'acceptEdits', rules: [], label: 'Workspace access' },
+            full: { mode: 'bypassPermissions', rules: [], label: 'Full access' },
+          };
+          let key = args.trim().toLowerCase().replace(/[ _]/g, '-');
+          if (!key) {
+            const choice = await selectItem({
+              title: 'Permission mode',
+              subtitle: `current: ${session.permissionContext.mode ?? permissionMode}`,
+              items: [
+                { id: 'read-only', label: 'Read-only', description: 'Read, search, and web only — deny Write/Edit/Bash/NotebookEdit/PowerShell' },
+                { id: 'workspace', label: 'Workspace access', description: 'Auto-accept edits in the workspace (acceptEdits)' },
+                { id: 'full', label: 'Full access', description: 'No prompts — run any tool (bypassPermissions)' },
+              ],
+            });
+            if (!choice) return;
+            key = choice;
+          }
+          const preset = presets[key];
+          if (!preset) {
+            appendStatic([...formatErrorLine(`unknown permission preset: ${key} (read-only | workspace | full)`), '']);
             return;
           }
-          if (!PERMISSION_MODES.has(requested as ActoviqPermissionMode)) {
-            appendStatic([...formatErrorLine(`unknown permission mode: ${requested}`), '']);
-            return;
-          }
-          await session.setPermissionContext({
-            mode: requested as ActoviqPermissionMode,
-            permissions: session.permissionContext.permissions,
-            approver,
-          });
-          appendStatic([...formatInfoLine(`permissions set to: ${requested}`), '']);
+          await session.setPermissionContext({ mode: preset.mode, permissions: preset.rules, approver });
+          appendStatic([
+            ...formatInfoLine(`permissions: ${preset.label} — ${preset.mode}${preset.rules.length ? ` · ${preset.rules.length} deny rules` : ''}`),
+            '',
+          ]);
           return;
         }
         case 'sessions': {
@@ -1365,25 +1409,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         // ── v0.5.0: Dynamic Workflows ────────────────────────────
         case 'workflows': {
-          if (args === 'list' || !args) {
-            const workflows = listWorkflows(sdk.config.workDir);
-            if (workflows.length === 0) {
-              appendStatic([...formatInfoLine('no saved workflows'), '']);
-            } else {
-              appendStatic([
-                ...workflows.map((w) =>
-                  `${A.cyan}/${w.name}${A.reset}${A.dim} · ${w.source} · ${w.description.slice(0, 60)}${A.reset}`,
-                ),
-                '',
-              ]);
-            }
-            return;
-          }
-          if (args.startsWith('run ')) {
-            const runRest = args.slice(4).trim();
-            const runSpace = runRest.indexOf(' ');
-            const wfName = runSpace === -1 ? runRest : runRest.slice(0, runSpace);
-            const wfTask = runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim();
+          const runSavedWorkflow = async (wfName: string, wfTask?: string): Promise<void> => {
             const wf = loadWorkflow(wfName, sdk.config.workDir);
             if (!wf) {
               appendStatic([...formatErrorLine(`workflow not found: ${wfName}`), '']);
@@ -1394,7 +1420,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               ...formatInfoLine(`phases: ${wf.meta?.phases?.map((p) => p.title).join(', ') ?? 'none'}`),
               '',
             ]);
-            // Execute workflow script
             try {
               const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
               const runtime = new WorkflowScriptRuntime({
@@ -1424,17 +1449,54 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
                 appendStatic([...formatInfoLine('workflow result:'), ...renderRichText(output.result, screen.width), '']);
               }
               if (output.state.errors.length > 0) {
-                appendStatic([
-                  ...formatErrorLine(`${output.state.errors.length} errors during workflow execution`),
-                  '',
-                ]);
+                appendStatic([...formatErrorLine(`${output.state.errors.length} errors during workflow execution`), '']);
               }
             } catch (error: any) {
               appendStatic([...formatErrorLine(`workflow error: ${error.message}`), '']);
             }
+          };
+
+          if (args.startsWith('run ')) {
+            const runRest = args.slice(4).trim();
+            const runSpace = runRest.indexOf(' ');
+            await runSavedWorkflow(
+              runSpace === -1 ? runRest : runRest.slice(0, runSpace),
+              runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim(),
+            );
             return;
           }
-          appendStatic([...formatInfoLine('usage: /workflows [list|run <name>]'), '']);
+
+          // No sub-command → selection picker.
+          const saved = listWorkflows(sdk.config.workDir);
+          const items = [
+            ...saved.map((w) => ({
+              id: `run:${w.name}`,
+              label: w.name,
+              description: `${w.source} · ${w.description}`.slice(0, 80),
+            })),
+            {
+              id: '__orchestrate__',
+              label: '+ ask the agent to orchestrate a new workflow',
+              description: 'describe a task in the prompt box; the agent designs & runs a workflow, then you can save it',
+            },
+          ];
+          const choice = await selectItem({
+            title: 'Workflows',
+            subtitle: 'run a saved workflow, or have the agent build a new one',
+            items,
+          });
+          if (!choice) return;
+          if (choice.startsWith('run:')) {
+            const name = choice.slice('run:'.length);
+            const task = await promptText({ title: `Run /${name}`, label: 'Task / input (optional — Enter to skip)' });
+            await runSavedWorkflow(name, task && task.trim() ? task.trim() : undefined);
+          } else if (choice === '__orchestrate__') {
+            appendStatic([
+              ...formatInfoLine('Type your task in the prompt box and ask: "orchestrate a workflow to <task>".'),
+              `${A.dim}After it runs and works, ask me to save it as a reusable workflow.${A.reset}`,
+              '',
+            ]);
+          }
           return;
         }
         // ── v0.5.0: Worktrees ────────────────────────────────────
@@ -1480,20 +1542,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         // ── v0.5.0: Model Team ───────────────────────────────────
         case 'team': {
-          if (args === 'list' || !args) {
-            const teams = listTeamDefinitions(sdk.config.workDir);
-            if (teams.length === 0) {
-              appendStatic([...formatInfoLine('no saved team definitions'), '']);
-            } else {
-              appendStatic([
-                ...teams.map((t) =>
-                  `${A.cyan}${t.name}${A.reset}${A.dim} · ${t.definition.mode} · ${t.source} · ${t.definition.members?.length ?? 0} members${A.reset}`,
-                ),
-                '',
-              ]);
-            }
-            return;
-          }
           if (args.startsWith('ask ')) {
             const rest = args.slice(4).trim();
             const spaceIdx = rest.indexOf(' ');
@@ -1503,17 +1551,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             }
             const teamName = rest.slice(0, spaceIdx);
             const prompt = rest.slice(spaceIdx + 1).trim();
-
             const loaded = loadTeamDefinition(teamName, sdk.config.workDir);
             if (!loaded) {
               appendStatic([...formatErrorLine(`team not found: ${teamName}`), '']);
               return;
             }
-
-            const members = loaded.definition.members?.map((m) => m.model).join(', ') ?? 'configured members';
             appendStatic([
               ...formatInfoLine(`asking team "${teamName}" (${loaded.definition.mode} mode)`),
-              `${A.dim}convening: ${members}${A.reset}`,
+              `${A.dim}convening: ${loaded.definition.members?.map((m) => m.model).join(', ') ?? 'configured members'}${A.reset}`,
               '',
             ]);
             try {
@@ -1531,7 +1576,52 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             }
             return;
           }
-          appendStatic([...formatInfoLine('usage: /team [list|ask <name> <prompt>]'), '']);
+
+          // No sub-command → picker that toggles which team the agent may call.
+          const member = (sp: string) => ({ model: session.model, systemPrompt: sp });
+          const buildDefault = (mode: string): TeamDefinition | undefined => {
+            switch (mode) {
+              case 'analysis':
+                return { name: 'analysis-panel', mode: 'analysis', members: [member('Expert researcher. Deep, source-grounded analysis.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], timeoutMs: 300000, maxIterations: 12 };
+              case 'panel':
+                return { name: 'panel', mode: 'panel', members: [member('Thorough analyst.'), member('Creative problem-solver.')], primary: member('Synthesizer. Reconcile views into the best answer.'), timeoutMs: 300000 };
+              case 'discussion':
+                return { name: 'discussion', mode: 'discussion', members: [member('Systems thinker.'), member('Pragmatist who weighs trade-offs.')], primary: member('Convener and final decision-maker.'), timeoutMs: 300000 };
+              case 'executor-reviewer':
+                return { name: 'executor-reviewer', mode: 'executor-reviewer', members: [], executor: member('Executor. Own the output; you decide what to accept.'), reviewer: member('Reviewer. Advise; never command.'), timeoutMs: 300000 };
+              default:
+                return undefined;
+            }
+          };
+
+          const saved = listTeamDefinitions(sdk.config.workDir);
+          const items = [
+            { id: '__none__', label: activeTeamTool ? `No team — remove "${activeTeamName}"` : 'No team (individual) — current', description: 'the agent works solo, no team tool attached' },
+            ...saved.map((t) => ({ id: `saved:${t.name}`, label: t.name, description: `saved · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members` })),
+            ...['analysis', 'panel', 'discussion', 'executor-reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
+          ];
+          const choice = await selectItem({ title: 'Team', subtitle: 'attach a team the agent can call as a tool, or remove it', items });
+          if (!choice) return;
+          if (choice === '__none__') {
+            activeTeamTool = null;
+            activeTeamName = null;
+            appendStatic([...formatInfoLine('team: none — the agent works individually'), '']);
+            return;
+          }
+          let def: TeamDefinition | undefined;
+          if (choice.startsWith('saved:')) def = loadTeamDefinition(choice.slice('saved:'.length), sdk.config.workDir)?.definition;
+          else if (choice.startsWith('mode:')) def = buildDefault(choice.slice('mode:'.length));
+          if (!def) {
+            appendStatic([...formatErrorLine('could not load team definition'), '']);
+            return;
+          }
+          try {
+            activeTeamTool = createTeamTool(def);
+            activeTeamName = def.name;
+            appendStatic([...formatInfoLine(`team active: ${def.name} (${def.mode}) — the agent can now call "${def.name}" as a tool when it helps`), '']);
+          } catch (error: any) {
+            appendStatic([...formatErrorLine(`team error: ${error.message}`), '']);
+          }
           return;
         }
         default:
