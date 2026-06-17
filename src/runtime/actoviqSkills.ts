@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { MessageParam } from '../provider/types.js';
 import type {
+  ActoviqEffort,
   ActoviqSkillContextMode,
   ActoviqSkillDefinition,
   ActoviqSkillDefinitionSummary,
@@ -234,6 +235,7 @@ export function summarizeActoviqSkillDefinition(
     argumentHint: normalized.argumentHint,
     argNames: [...(normalized.argNames ?? [])],
     model: normalized.model,
+    effort: normalized.effort,
     source: normalized.source ?? 'custom',
     loadedFrom: normalized.loadedFrom ?? 'custom',
     context: normalized.context ?? 'inline',
@@ -757,6 +759,7 @@ function createDiskSkillDefinition(input: {
     argNames: argNames.length > 0 ? argNames : undefined,
     prompt,
     model: input.frontmatter.model?.trim() || undefined,
+    effort: parseEffortField(input.frontmatter.effort),
     disableModelInvocation: parseBooleanField(input.frontmatter['disable-model-invocation']),
     userInvocable:
       input.frontmatter['user-invocable'] == null
@@ -824,6 +827,45 @@ function parseBooleanField(value: string | undefined): boolean {
     return false;
   }
   return /^(1|true|yes|on)$/iu.test(value.trim());
+}
+
+const EFFORT_VALUES: ReadonlyArray<ActoviqEffort> = ['low', 'medium', 'high', 'max'];
+
+function parseEffortField(value: string | undefined): ActoviqEffort | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  return EFFORT_VALUES.includes(normalized as ActoviqEffort)
+    ? (normalized as ActoviqEffort)
+    : undefined;
+}
+
+/**
+ * Returns true if `relativePath` (cwd-relative, forward slashes) matches any of
+ * the gitignore-style `patterns`. Supports `dir/**` prefixes and `*` / `**`
+ * globs — enough for skill `paths:` frontmatter without a new dependency.
+ */
+export function skillPathsMatch(patterns: string[], relativePath: string): boolean {
+  const target = relativePath.replace(/\\/gu, '/');
+  for (const raw of patterns) {
+    const pattern = raw.replace(/\\/gu, '/').replace(/\/\*\*$/u, '');
+    if (!pattern || pattern === '**') {
+      continue;
+    }
+    if (target === pattern || target.startsWith(`${pattern}/`)) {
+      return true;
+    }
+    const body = pattern
+      .replace(/[.+^${}()|[\]\\]/gu, '\\$&')
+      .replace(/\*\*/gu, ' ')
+      .replace(/\*/gu, '[^/]*')
+      .replace(/ /gu, '.*');
+    if (new RegExp(`^${body}$`, 'u').test(target)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractDescriptionFromMarkdown(content: string): string | undefined {
