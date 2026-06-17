@@ -20,7 +20,7 @@ This project is inspired by excellent agent projects and runtimes including Clau
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout, hooks for non-git VCS
 - **TavilySearch** — AI-optimized web search, pure TypeScript, auto key detection
 - **Standard Benchmark** — Self-contained framework with DeepSeek judge, HTML dashboard, 4-agent comparison (Hadamard/Bridge/Official)
-- **TUI/REPL**: `/workflows`, `/worktree`, `/team` slash commands
+- **TUI/REPL**: selection pickers for `/team`, `/workflows`, `/worktree`; `/permissions` presets (read-only / workspace / full); `@` file completion; and a live context-usage + active-mode status line
 
 This repository is still under active development. APIs and runtime behavior may continue to evolve. Issues and pull requests are very welcome.
 
@@ -104,9 +104,12 @@ npx actoviq-tui [work-dir] [options]
 Features:
 
 - **Streaming transcript in native scrollback** — assistant text, `⏺ Tool(args)` calls, and `⎿ ✓/✗` result lines flush into the normal terminal buffer; scrollback and copy/paste work as usual.
-- **Live status line** — spinner, elapsed time, tool count, context-size estimate, and the current tool while the agent works.
+- **Live status line** — spinner, elapsed time, tool count, and the active tool while the agent works, over an always-visible mode line (model · permission preset · effort · active team) that shows **context usage as a percentage of the window** and turns yellow then red as it fills.
 - **Claude-style prompt bar** — type `\` then `Enter` (or `Ctrl+J`) for a newline; `↑`/`↓` walk input history; the caret renders inline.
 - **Slash-command menu** — type `/` to open a filtered menu (`↑↓` select, `Tab` complete, `Enter` run). `/resume` opens a searchable project-session picker, while `/resume <session-id>` still resumes directly.
+- **`@` file completion** — type `@` to open a workspace file picker filtered by the partial path; `↑↓` select, `Tab`/`Enter` insert it. The list is git-aware (tracked + untracked, `.gitignore`-honoring) and refreshes after each run.
+- **Team / workflow / worktree pickers** — `/team` activates a saved Model Team (or "no team") as a tool the agent may call; `/workflows` runs a saved dynamic workflow; `/worktree` enters, exits, or lists git worktrees. Direct forms still work (`/team ask <name> <prompt>`, `/workflows run <name>`, `/worktree enter <name>`).
+- **Permission presets** — `/permissions` switches between **read-only**, **workspace-access** (auto-approve edits inside the workspace), and **full-access** (bypass) presets without restarting.
 - **Runtime catalogs** — `/skills`, `/agents`, `/mcp`, and `/plugins` browse the Hadamard SDK capabilities visible to the current workspace; `/help` provides a searchable command reference.
 - **Model and effort controls** — `/model` opens a model picker, `/model config` edits the provider, masked API key, base URL, and `min`/`medium`/`max` model tiers, and `/effort` selects `low`, `medium`, `high`, `max`, or automatic provider behavior.
 - **Dream controls** — `/dream` opens a run/status picker; `/dream run` and `/dream status` remain available for direct use.

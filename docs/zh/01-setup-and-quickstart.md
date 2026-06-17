@@ -132,13 +132,15 @@ npx actoviq-tui [工作目录] [选项]
 
 适合需要更完整终端体验的场景：
 
-- 运行时状态：spinner、耗时、工具次数、上下文规模估计和当前工具。
+- 运行时状态：spinner、耗时、工具次数和当前工具，并在常驻模式行上展示「模型 · 权限预设 · 推理强度 · 当前团队」以及以窗口百分比表示的上下文用量。
 - 多行编辑：行尾输入 `\` 再按 Enter，或使用 Ctrl+J；支持历史浏览和内联光标渲染。
 - 斜杠命令菜单支持搜索。直接运行 `/resume` 会打开项目会话选择器，`/resume <session-id>` 可按 ID 直接恢复。
+- `@` 文件补全：输入 `@` 弹出基于 git 的工作区文件选择器；`↑↓` 选择、`Tab`/`Enter` 插入路径。
+- `/team`、`/workflows`、`/worktree` 会打开选择面板——将已保存的 Model Team（或「无团队」）激活为可调用工具、运行已保存的动态工作流，或进入/退出/列出 git worktree；直接的 `list`/`ask`/`run`/`enter` 形式同样可用。
 - `/model` 用于选择模型；`/model config` 可配置提供商、隐藏显示的 API key、base URL 和模型分级；`/effort` 用于选择推理强度。
 - `/skills`、`/agents`、`/mcp` 和 `/plugins` 用于浏览 Hadamard SDK 能力目录；`/help` 搜索命令用法，`/dream` 控制 dream 运行。
 - 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
-- 使用 `--permission-mode default` 时启用交互式权限确认；“始终允许”规则会随会话保存。
+- `/permissions` 可在只读、工作区访问、完全访问预设之间切换；使用 `--permission-mode default` 时，变更型工具会弹出 批准 / 始终允许 / 拒绝 确认，且「始终允许」规则会随会话保存。
 - Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
 
 `actoviq-react` 和 `actoviq-tui` 使用同样的 Hadamard SDK 默认值：`~/.actoviq/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。
