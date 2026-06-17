@@ -26,6 +26,17 @@ const enSidebar = [
       { text: '04 Agents, Swarm, Memory, and Workspace', link: '/en/04-agents-swarm-memory-workspace' },
       { text: '05 Testing, Troubleshooting, and Cheatsheet', link: '/en/05-testing-troubleshooting-cheatsheet' },
       { text: '06 Build a Complete Clean Agent', link: '/en/06-build-a-complete-clean-agent' },
+      { text: '07 Workflow Orchestration', link: '/en/07-workflow-orchestration' },
+    ],
+  },
+];
+
+const blogSidebar = [
+  {
+    text: 'Blog',
+    items: [
+      { text: 'Overview', link: '/blog/' },
+      { text: 'Model Team & Agent Design Research', link: '/blog/model-team-agent-design' },
     ],
   },
 ];
@@ -42,6 +53,7 @@ export default defineConfig({
       { text: 'Home', link: '/' },
       { text: 'English', link: '/en/README' },
       { text: '中文', link: '/zh/README' },
+      { text: 'Blog', link: '/blog/' },
       { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
       { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
     ],
@@ -49,6 +61,7 @@ export default defineConfig({
     sidebar: {
       '/en/': enSidebar,
       '/zh/': zhSidebar,
+      '/blog/': blogSidebar,
     },
     footer: {
       message: 'Released under the MIT License.',
@@ -64,11 +77,13 @@ export default defineConfig({
           { text: 'Home', link: '/' },
           { text: 'English Guide', link: '/en/README' },
           { text: '中文教程', link: '/zh/README' },
+          { text: 'Blog', link: '/blog/' },
           { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
           { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
         ],
         sidebar: {
           '/en/': enSidebar,
+          '/blog/': blogSidebar,
         },
       },
     },

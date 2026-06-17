@@ -1,9 +1,0 @@
-{
-  "tickets": [
-    { "id": "ticket-001", "type": "refund", "daysOpen": 2, "entitlement": "active", "amount": 40, "status": "open" },
-    { "id": "ticket-002", "type": "refund", "daysOpen": 1, "entitlement": "blocked", "amount": 20, "status": "open" },
-    { "id": "ticket-003", "type": "access", "daysOpen": 4, "entitlement": "conflicting", "amount": 0, "status": "open" },
-    { "id": "ticket-004", "type": "replacement", "daysOpen": 3, "entitlement": "active", "amount": 65, "status": "open", "damageReported": true },
-    { "id": "ticket-005", "type": "refund", "daysOpen": 10, "entitlement": "active", "amount": 900, "status": "open" }
-  ]
-}

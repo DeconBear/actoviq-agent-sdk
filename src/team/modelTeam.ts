@@ -15,8 +15,11 @@ import type {
   TeamPanelResponse,
   TeamCost,
   ExecutorReviewerDecision,
+  AnalysisResult,
+  ExpertPanelReport,
   ModelTeamResult,
   AgentToolDefinition,
+  AgentPoolSlot,
   ModelApi,
 } from '../types.js';
 import { getGlobalAgentPool } from './agentPool.js';
@@ -46,14 +49,13 @@ interface MemberApi {
   maxTokens: number;
 }
 
-async function createMemberApi(member: TeamMember, homeDir?: string): Promise<MemberApi> {
+async function createMemberApi(member: TeamMember): Promise<MemberApi> {
   const resolved = await resolveRuntimeConfig({
     model: member.model,
     provider: member.provider,
     baseURL: member.baseURL,
     authToken: resolveApiKey(member.apiKey),
     maxTokens: member.maxTokens ?? 32000,
-    homeDir,
     workDir: process.cwd(),
   });
 
@@ -130,6 +132,39 @@ function computeCost(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Concurrency + timeout helpers
+// ═══════════════════════════════════════════════════════════════════
+
+/** Combine the caller's abort signal with a per-call timeout (if set). */
+function memberSignal(signal: AbortSignal | undefined, timeoutMs?: number): AbortSignal | undefined {
+  if (!timeoutMs || timeoutMs <= 0) return signal;
+  const signals = [signal, AbortSignal.timeout(timeoutMs)].filter((s): s is AbortSignal => s != null);
+  return AbortSignal.any(signals);
+}
+
+/** Run fn over items with at most `limit` in flight; preserves input order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]!, i);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Panel Mode — multi-round autonomous deliberation
 // ═══════════════════════════════════════════════════════════════════
 
@@ -139,7 +174,7 @@ async function runPanelMode(
   signal?: AbortSignal,
 ): Promise<PanelResult> {
   const startedAt = Date.now();
-  const primaryApi: MemberApi = await createMemberApi(definition.primary!, definition.members[0]?.baseURL);
+  const primaryApi: MemberApi = await createMemberApi(definition.primary!);
   const memberApis: MemberApi[] = await Promise.all(definition.members.map((m) => createMemberApi(m)));
 
   let rounds = 0;
@@ -156,19 +191,18 @@ async function runPanelMode(
   const round1Start = Date.now();
   const pool = getGlobalAgentPool();
 
-  const panelResults = await Promise.all(
-    definition.members.map(async (member, i) => {
-      const slot = await pool.acquire(definition.timeoutMs);
+  const panelResults = await mapWithConcurrency(
+    definition.members,
+    definition.maxParallel ?? definition.members.length,
+    async (member, i) => {
+      let slot: AgentPoolSlot | undefined;
       try {
-        const localSignal = definition.timeoutMs
-          ? AbortSignal.any([signal, AbortSignal.timeout(definition.timeoutMs)].filter((s): s is AbortSignal => s != null))
-          : signal;
-
+        slot = await pool.acquire(definition.timeoutMs);
         const result = await singleModelCall(
           memberApis[i]!,
           prompt,
           member.systemPrompt,
-          localSignal,
+          memberSignal(signal, definition.timeoutMs),
         );
 
         const resp: TeamPanelResponse = {
@@ -198,9 +232,9 @@ async function runPanelMode(
           durationMs: Date.now() - round1Start,
         } satisfies TeamPanelResponse;
       } finally {
-        slot.release();
+        slot?.release();
       }
-    }),
+    },
   );
 
   allResponses.push(...panelResults);
@@ -238,7 +272,7 @@ async function runPanelMode(
     '<specific aspects to explore>',
   ].join('\n');
 
-  const primaryResult = await singleModelCall(primaryApi, analysisPrompt, definition.primary?.systemPrompt, signal);
+  const primaryResult = await singleModelCall(primaryApi, analysisPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
   totalInput += primaryResult.inputTokens;
   totalOutput += primaryResult.outputTokens;
 
@@ -257,20 +291,33 @@ async function runPanelMode(
     const refinedQuestion = primaryResult.content.replace(/^CONTINUE\s*/i, '').trim();
     let currentQuestion = refinedQuestion || prompt;
     let converged = false;
+    // Carry the most recent round's responses forward for panel members.
+    let previousContext = panelSummary;
+    // Full deliberation history visible to the primary every round: all prior
+    // panel responses AND the primary's own prior analyses (plan: the primary
+    // accumulates full context across rounds to deliberate, not just round 1).
+    const deliberationLog: string[] = [
+      `## Round 1 — Panel responses\n${panelSummary}`,
+      `## Round 1 — Primary analysis\n${primaryResult.content}`,
+    ];
+    const maxRounds = definition.maxRounds ?? 100;
 
-    while (!converged && rounds < 100) { // Safety cap, but primary decides convergence
+    while (!converged && rounds < maxRounds) { // Safety cap, but primary decides convergence
       rounds++;
       const roundStart = Date.now();
 
-      const roundResults = await Promise.all(
-        definition.members.map(async (member, i) => {
-          const slot = await pool.acquire(definition.timeoutMs);
+      const roundResults = await mapWithConcurrency(
+        definition.members,
+        definition.maxParallel ?? definition.members.length,
+        async (member, i) => {
+          let slot: AgentPoolSlot | undefined;
           try {
+            slot = await pool.acquire(definition.timeoutMs);
             const result = await singleModelCall(
               memberApis[i]!,
-              `[Round ${rounds}] ${currentQuestion}\n\nPrevious round context:\n${panelSummary}`,
+              `[Round ${rounds}] ${currentQuestion}\n\nPrevious round context:\n${previousContext}`,
               member.systemPrompt,
-              signal,
+              memberSignal(signal, definition.timeoutMs),
             );
 
             const resp: TeamPanelResponse = {
@@ -298,9 +345,9 @@ async function runPanelMode(
               durationMs: Date.now() - roundStart,
             } satisfies TeamPanelResponse;
           } finally {
-            slot.release();
+            slot?.release();
           }
-        }),
+        },
       );
 
       allResponses.push(...roundResults);
@@ -308,16 +355,25 @@ async function runPanelMode(
       const roundSummary = roundResults
         .map((r) => `### ${r.model}\n${r.content}`)
         .join('\n\n---\n\n');
+      previousContext = roundSummary;
 
       const followUpPrompt = [
-        `Round ${rounds} panel responses to: "${currentQuestion}"`,
+        'You are the primary decision-maker in a multi-model panel.',
+        `This is round ${rounds}. Use the full deliberation history below (all prior rounds' panel responses and your own prior analyses), then weigh this round's new responses.`,
         '',
+        'Original question:',
+        prompt,
+        '',
+        'Full deliberation history:',
+        deliberationLog.join('\n\n---\n\n'),
+        '',
+        `Round ${rounds} new panel responses to "${currentQuestion}":`,
         roundSummary,
         '',
-        'Decision: FINALIZE (synthesize answer) or CONTINUE (refine question)?',
+        'Decide: FINALIZE (then give the comprehensive synthesized answer) or CONTINUE (then give a refined question and the specific aspects to explore).',
       ].join('\n');
 
-      const followUpResult = await singleModelCall(primaryApi, followUpPrompt, definition.primary?.systemPrompt, signal);
+      const followUpResult = await singleModelCall(primaryApi, followUpPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
       totalInput += followUpResult.inputTokens;
       totalOutput += followUpResult.outputTokens;
 
@@ -332,6 +388,9 @@ async function runPanelMode(
       } else {
         currentQuestion = followUpResult.content.replace(/^CONTINUE\s*/i, '').trim() || currentQuestion;
       }
+
+      deliberationLog.push(`## Round ${rounds} — Panel responses\n${roundSummary}`);
+      deliberationLog.push(`## Round ${rounds} — Primary decision\n${followUpResult.content}`);
     }
 
     if (!converged) {
@@ -363,7 +422,7 @@ async function runRouterMode(
   signal?: AbortSignal,
 ): Promise<RouterResult> {
   const startedAt = Date.now();
-  const routerApi: MemberApi = await createMemberApi(definition.router!, definition.members[0]?.baseURL);
+  const routerApi: MemberApi = await createMemberApi(definition.router!);
   const specialistApis = new Map<string, MemberApi>();
   for (const [key, spec] of Object.entries(definition.specialists ?? {})) {
     specialistApis.set(key, await createMemberApi(spec));
@@ -388,7 +447,7 @@ async function runRouterMode(
     'Return ONLY the specialist name (one word, lowercase).',
   ].filter(Boolean).join('\n');
 
-  const classifyResult = await singleModelCall(routerApi, classificationPrompt, definition.router?.systemPrompt, signal);
+  const classifyResult = await singleModelCall(routerApi, classificationPrompt, definition.router?.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
   const specialistKey = classifyResult.content.trim().toLowerCase();
   const validKeys = Object.keys(definition.specialists ?? {});
@@ -412,7 +471,7 @@ async function runRouterMode(
     chosenMember = definition.specialists![chosenKey]!;
   }
 
-  const result = await singleModelCall(chosenApi, prompt, chosenMember.systemPrompt, signal);
+  const result = await singleModelCall(chosenApi, prompt, chosenMember.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
   const modelSet = new Set<string>();
   modelSet.add(definition.router!.model);
@@ -449,7 +508,7 @@ async function runDiscussionMode(
   signal?: AbortSignal,
 ): Promise<DiscussionResult> {
   const startedAt = Date.now();
-  const primaryApi: MemberApi = await createMemberApi(definition.primary!, definition.members[0]?.baseURL);
+  const primaryApi: MemberApi = await createMemberApi(definition.primary!);
   const memberApis: MemberApi[] = await Promise.all(definition.members.map((m) => createMemberApi(m)));
   const facilitatorApi = definition.facilitator
     ? await createMemberApi(definition.facilitator)
@@ -469,8 +528,9 @@ async function runDiscussionMode(
   let totalOutput = 0;
 
   let discussionTranscript = `# Discussion Topic\n${prompt}\n\n`;
+  const maxRounds = definition.maxRounds ?? 100;
 
-  while (!converged && rounds < 100) {
+  while (!converged && rounds < maxRounds) {
     rounds++;
 
     // Sequential speaking: each member sees prior speakers
@@ -488,7 +548,7 @@ async function runDiscussionMode(
         'Consider what previous speakers have said. Build on agreements, address disagreements.',
       ].join('\n');
 
-      const result = await singleModelCall(memberApis[i]!, speakPrompt, member.systemPrompt, signal);
+      const result = await singleModelCall(memberApis[i]!, speakPrompt, member.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
       discussionTranscript += `\n### ${member.model} (Round ${rounds})\n${result.content}\n`;
 
@@ -522,7 +582,7 @@ async function runDiscussionMode(
       discussionTranscript,
     ].join('\n');
 
-    const facilitatorResult = await singleModelCall(facilitatorApi, facilitatorPrompt, definition.facilitator?.systemPrompt, signal);
+    const facilitatorResult = await singleModelCall(facilitatorApi, facilitatorPrompt, definition.facilitator?.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
     if (definition.facilitator) {
       const fex = perModelTokens.get(definition.facilitator.model) ?? { input: 0, output: 0 };
@@ -562,7 +622,7 @@ async function runDiscussionMode(
       'Respond with FINALIZE or CONTINUE followed by your reasoning/output.',
     ].join('\n');
 
-    const primaryResult = await singleModelCall(primaryApi, primaryDecisionPrompt, definition.primary?.systemPrompt, signal);
+    const primaryResult = await singleModelCall(primaryApi, primaryDecisionPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
     const pex = perModelTokens.get(definition.primary!.model) ?? { input: 0, output: 0 };
     pex.input += primaryResult.inputTokens;
@@ -606,8 +666,8 @@ async function runExecutorReviewerMode(
   signal?: AbortSignal,
 ): Promise<ExecutorReviewerResult> {
   const startedAt = Date.now();
-  const executorApi = await createMemberApi(definition.executor!, definition.members[0]?.baseURL);
-  const reviewerApi = await createMemberApi(definition.reviewer!, definition.members[0]?.baseURL);
+  const executorApi = await createMemberApi(definition.executor!);
+  const reviewerApi = await createMemberApi(definition.reviewer!);
 
   const decisions: ExecutorReviewerDecision[] = [];
   const reviews: Array<{ iteration: number; feedback: string }> = [];
@@ -619,32 +679,41 @@ async function runExecutorReviewerMode(
   let converged = false;
   let finalAnswer = '';
   let currentOutput = '';
+  const maxIterations = definition.maxIterations ?? 100;
+  // Full history visible to both roles each iteration (plan: prevents the
+  // reviewer from repeating already-addressed or rejected suggestions).
+  const transcript: string[] = [];
 
   // Iteration 1: Executor produces initial output
   iterations++;
-  const execResult = await singleModelCall(executorApi, prompt, definition.executor?.systemPrompt, signal);
+  const execResult = await singleModelCall(executorApi, prompt, definition.executor?.systemPrompt, memberSignal(signal, definition.timeoutMs));
   currentOutput = execResult.content;
+  transcript.push(`## Iteration 1 — Executor output\n${currentOutput}`);
   perModelTokens.set(definition.executor!.model, { input: execResult.inputTokens, output: execResult.outputTokens });
   totalInput += execResult.inputTokens;
   totalOutput += execResult.outputTokens;
 
-  while (!converged && iterations < 100) {
+  while (!converged && iterations < maxIterations) {
     // Reviewer critiques
     const reviewPrompt = [
       'You are an experienced reviewer providing constructive feedback.',
-      'Review the following output and suggest improvements.',
+      'The history below shows prior outputs, your earlier reviews, and the executor\'s decisions (including which suggestions were rejected and why). Do NOT repeat suggestions already addressed or explicitly rejected — focus on new, unaddressed improvements.',
       '',
       'Original request:',
       prompt,
       '',
-      'Current output:',
+      'History so far:',
+      transcript.join('\n\n---\n\n'),
+      '',
+      'Latest output to review:',
       currentOutput,
       '',
       'Provide specific, actionable feedback. You are an advisor — the executor makes final decisions.',
     ].join('\n');
 
-    const reviewResult = await singleModelCall(reviewerApi, reviewPrompt, definition.reviewer?.systemPrompt, signal);
+    const reviewResult = await singleModelCall(reviewerApi, reviewPrompt, definition.reviewer?.systemPrompt, memberSignal(signal, definition.timeoutMs));
     reviews.push({ iteration: iterations, feedback: reviewResult.content });
+    transcript.push(`## Iteration ${iterations} — Reviewer feedback\n${reviewResult.content}`);
 
     const rex = perModelTokens.get(definition.reviewer!.model) ?? { input: 0, output: 0 };
     rex.input += reviewResult.inputTokens;
@@ -660,10 +729,13 @@ async function runExecutorReviewerMode(
       'Original request:',
       prompt,
       '',
+      'History so far (prior outputs, reviews, and your past decisions):',
+      transcript.join('\n\n---\n\n'),
+      '',
       'Your current output:',
       currentOutput,
       '',
-      'Reviewer feedback:',
+      'Latest reviewer feedback:',
       reviewResult.content,
       '',
       'Decide (respond with exactly one action keyword followed by explanation/output):',
@@ -676,7 +748,7 @@ async function runExecutorReviewerMode(
       '<explanation or revised output>',
     ].join('\n');
 
-    const decisionResult = await singleModelCall(executorApi, decisionPrompt, definition.executor?.systemPrompt, signal);
+    const decisionResult = await singleModelCall(executorApi, decisionPrompt, definition.executor?.systemPrompt, memberSignal(signal, definition.timeoutMs));
 
     const dex = perModelTokens.get(definition.executor!.model) ?? { input: 0, output: 0 };
     dex.input += decisionResult.inputTokens;
@@ -716,6 +788,7 @@ async function runExecutorReviewerMode(
       action,
       explanation: explanation || decisionResult.content,
     });
+    transcript.push(`## Iteration ${iterations} — Executor decision (${action})\n${explanation || decisionResult.content}`);
 
     iterations++;
   }
@@ -738,18 +811,131 @@ async function runExecutorReviewerMode(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Analysis Mode — read-only ReAct expert panel (advisory)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Each member is an independent, read-only ReAct agent (Read/Glob/Grep +
+ * TavilySearch/WebFetch — no write/edit/bash/delegation) that investigates the
+ * task and the project in parallel and returns a findings report. No synthesis,
+ * no convergence: the caller (the main agent) decides what to do with the
+ * reports. This is the autonomous "expert panel" the main model invokes as a
+ * tool to assist analysis on large/complex tasks; it only analyzes and reports.
+ */
+async function runAnalysisMode(
+  prompt: string,
+  definition: TeamDefinition,
+  signal?: AbortSignal,
+): Promise<AnalysisResult> {
+  const startedAt = Date.now();
+  // Lazy imports avoid a circular dependency (agentClient imports modelTeam).
+  const { createAgentSdk } = await import('../runtime/agentClient.js');
+  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
+  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
+  const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
+
+  const cwd = process.cwd();
+  const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+  const buildReadOnlyTools = (): AgentToolDefinition[] => [
+    ...createActoviqFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
+    ...createActoviqWebTools().filter((t) => t.name === 'WebFetch'),
+    createTavilySearchTool(),
+  ];
+
+  // Bounded ReAct depth per member so a panel can't run away (configurable).
+  const memberMaxIterations = definition.maxIterations ?? 16;
+  const pool = getGlobalAgentPool();
+  const perModelTokens = new Map<string, { input: number; output: number }>();
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  const analysisFraming = [
+    'You are an analyst on a multi-model expert panel.',
+    'Investigate the task using ONLY your read-only tools: read local files (Read/Glob/Grep)',
+    'and research the web (TavilySearch/WebFetch). You cannot modify files, write code, or run',
+    'commands — you only analyze and advise. Produce a focused findings report: key facts (with',
+    'sources), risks, blind spots, concrete recommendations, and anything the main agent should',
+    'verify. Be specific and decision-useful.',
+  ].join(' ');
+
+  const reports = await mapWithConcurrency(
+    definition.members,
+    definition.maxParallel ?? definition.members.length,
+    async (member): Promise<ExpertPanelReport> => {
+      const start = Date.now();
+      let slot: AgentPoolSlot | undefined;
+      let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
+      try {
+        slot = await pool.acquire();
+        sdk = await createAgentSdk({
+          model: member.model,
+          provider: member.provider,
+          baseURL: member.baseURL,
+          authToken: resolveApiKey(member.apiKey),
+          maxTokens: member.maxTokens ?? 32000,
+          workDir: cwd,
+          tools: buildReadOnlyTools(),
+          permissionMode: 'bypassPermissions',
+          maxToolIterations: memberMaxIterations,
+          systemPrompt: member.systemPrompt
+            ? `${analysisFraming}\n\n${member.systemPrompt}`
+            : analysisFraming,
+        });
+        const result = await sdk.run(prompt, {
+          signal: memberSignal(signal, definition.timeoutMs),
+        });
+        const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
+        const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
+        const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
+        ex.input += input;
+        ex.output += output;
+        perModelTokens.set(member.model, ex);
+        totalInput += input;
+        totalOutput += output;
+        return {
+          model: member.model,
+          report: result.text,
+          toolCalls: result.toolCalls.length,
+          durationMs: Date.now() - start,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          model: member.model,
+          report: `[ERROR: ${member.model} analysis failed — ${message}]`,
+          toolCalls: 0,
+          durationMs: Date.now() - start,
+        };
+      } finally {
+        if (sdk) await sdk.close();
+        slot?.release();
+      }
+    },
+  );
+
+  const answer = reports.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
+  const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
+
+  return {
+    answer,
+    mode: 'analysis',
+    reports,
+    cost,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  ModelTeam class
 // ═══════════════════════════════════════════════════════════════════
 
 export class ModelTeam {
   readonly name: string;
   readonly definition: TeamDefinition;
-  private depth = 0;
 
-  constructor(definition: TeamDefinition, depth?: number) {
+  constructor(definition: TeamDefinition) {
     this.name = definition.name;
     this.definition = definition;
-    this.depth = depth ?? 0;
   }
 
   /**
@@ -768,14 +954,11 @@ export class ModelTeam {
         return runDiscussionMode(prompt, this.definition, signal);
       case 'executor-reviewer':
         return runExecutorReviewerMode(prompt, this.definition, signal);
+      case 'analysis':
+        return runAnalysisMode(prompt, this.definition, signal);
       default:
         throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
     }
-  }
-
-  /** Get the team's recursion depth (for protection). */
-  get currentDepth(): number {
-    return this.depth;
   }
 }
 
@@ -784,11 +967,10 @@ export class ModelTeam {
  */
 export function createModelTeam(
   definition: TeamDefinition,
-  depth?: number,
 ): ModelTeam {
   // Validate
   validateTeamDefinition(definition);
-  return new ModelTeam(definition, depth);
+  return new ModelTeam(definition);
 }
 
 function validateTeamDefinition(def: TeamDefinition): void {
@@ -813,6 +995,9 @@ function validateTeamDefinition(def: TeamDefinition): void {
       if (!def.executor) throw new Error('Executor-Reviewer mode requires an executor.');
       if (!def.reviewer) throw new Error('Executor-Reviewer mode requires a reviewer.');
       break;
+    case 'analysis':
+      if (!def.members || def.members.length === 0) throw new Error('Analysis mode requires at least one panel member.');
+      break;
   }
 }
 
@@ -828,7 +1013,11 @@ export function createTeamTool(
   return {
     kind: 'local',
     name: definition.name,
-    description: definition.description ?? `Multi-model team (${definition.mode} mode)`,
+    description:
+      definition.description ??
+      (definition.mode === 'analysis'
+        ? 'Expert panel: independent read-only multi-model analysis (advisory). You decide what to do with the findings.'
+        : `Multi-model team (${definition.mode} mode)`),
     inputSchema: {
       parse: (input: unknown) => input as { prompt: string },
       _type: undefined,
@@ -839,10 +1028,22 @@ export function createTeamTool(
         prompt: { type: 'string', description: 'The question or task for the team' },
       },
       required: ['prompt'],
-      additionalProperties: false,
+      // Tolerate extra fields the model may add — a strict schema here caused
+      // intermittent "schema error" rejections that silently skipped the panel.
+      additionalProperties: true,
     },
     async execute(input: unknown) {
-      const { prompt } = input as { prompt: string };
+      // Accept the prompt however the model phrases the call (bare string or any
+      // of a few common keys) so a formatting quirk never drops the panel.
+      const obj = (input ?? {}) as Record<string, unknown>;
+      const candidate =
+        typeof input === 'string'
+          ? input
+          : obj.prompt ?? obj.query ?? obj.question ?? obj.task ?? obj.input;
+      const prompt = typeof candidate === 'string' ? candidate.trim() : '';
+      if (!prompt) {
+        throw new Error(`Team "${definition.name}" requires a non-empty "prompt" string.`);
+      }
       const result = await team.ask(prompt);
       return JSON.stringify({
         answer: result.answer,
@@ -856,7 +1057,9 @@ export function createTeamTool(
       `## ${definition.name} (Model Team: ${definition.mode})`,
       definition.description ?? '',
       '',
-      'Call this tool with a { prompt } to get a multi-model synthesized answer.',
+      definition.mode === 'analysis'
+        ? 'Call this tool with a { prompt } to have an expert panel of independent read-only agents investigate (read local code + search the web) and each return a findings report. They only analyze and advise — you keep full control and decide what to do with their input. Use it to assist analysis on large or complex tasks.'
+        : 'Call this tool with a { prompt } to get a multi-model synthesized answer.',
       `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
     ].join('\n'),
   };

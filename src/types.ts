@@ -2375,7 +2375,7 @@ export interface WorktreeInfo {
 //  v0.5.0: Model Team types
 // ═══════════════════════════════════════════════════════════════════════
 
-export type ModelTeamMode = 'panel' | 'router' | 'discussion' | 'executor-reviewer';
+export type ModelTeamMode = 'panel' | 'router' | 'discussion' | 'executor-reviewer' | 'analysis';
 
 export interface TeamMember {
   model: string;
@@ -2399,8 +2399,14 @@ export interface TeamDefinition {
   executor?: TeamMember;
   reviewer?: TeamMember;
   fallback?: TeamMember;
+  /** Max panel members dispatched concurrently within this team (still bounded by the global AgentPool). Default: all members. */
   maxParallel?: number;
+  /** Per-member, per-call timeout in ms (applied across all modes/rounds). */
   timeoutMs?: number;
+  /** Safety cap on deliberation rounds (panel/discussion). Default 100; raise/lower per cost budget. */
+  maxRounds?: number;
+  /** Safety cap on executor-reviewer iterations. Default 100. */
+  maxIterations?: number;
   classificationPrompt?: string;
 }
 
@@ -2471,11 +2477,30 @@ export interface ExecutorReviewerResult extends TeamResult {
   reviews: Array<{ iteration: number; feedback: string }>;
 }
 
+/** One panel member's findings in `analysis` mode. */
+export interface ExpertPanelReport {
+  model: string;
+  report: string;
+  toolCalls: number;
+  durationMs: number;
+}
+
+/**
+ * `analysis` mode result: each member is an independent read-only ReAct agent
+ * that investigates and reports back. No synthesis/convergence — the caller
+ * (the main agent) decides what to do with the reports.
+ */
+export interface AnalysisResult extends TeamResult {
+  mode: 'analysis';
+  reports: ExpertPanelReport[];
+}
+
 export type ModelTeamResult =
   | PanelResult
   | RouterResult
   | DiscussionResult
-  | ExecutorReviewerResult;
+  | ExecutorReviewerResult
+  | AnalysisResult;
 
 export interface ModelPricing {
   input: number;

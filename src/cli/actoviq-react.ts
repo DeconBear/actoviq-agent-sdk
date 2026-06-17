@@ -287,7 +287,10 @@ async function main() {
             return;
           }
           if (sub.startsWith('run ')) {
-            const wfName = sub.slice(4).trim();
+            const runRest = sub.slice(4).trim();
+            const runSpace = runRest.indexOf(' ');
+            const wfName = runSpace === -1 ? runRest : runRest.slice(0, runSpace);
+            const wfTask = runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim();
             const wf = loadWorkflow(wfName, sdk.config.workDir);
             if (!wf) {
               process.stdout.write(`${C.R}Workflow not found: ${wfName}${C.r}\n\n`);
@@ -298,6 +301,7 @@ async function main() {
               const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
               const runtime = new WorkflowScriptRuntime({
                 sdk: sdk as any,
+                args: wfTask,
                 onEvent: (e: any) => {
                   if (e.type === 'workflow.log') process.stdout.write(`${C.d}  │ ${e.message}${C.r}\n`);
                   else if (e.type === 'workflow.agent.start') process.stdout.write(`${C.d}  ⚡ agent: ${e.label ?? e.agentId}${C.r}\n`);
@@ -305,6 +309,9 @@ async function main() {
                 },
               });
               const output = await runtime.execute(wf.script);
+              if (typeof output.result === 'string' && output.result.trim()) {
+                process.stdout.write(`\n${output.result}\n\n`);
+              }
               if (output.state.errors.length > 0) {
                 process.stdout.write(`${C.R}  ${output.state.errors.length} errors${C.r}\n`);
                 for (const err of output.state.errors.slice(0, 3)) {

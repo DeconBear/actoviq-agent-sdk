@@ -1,9 +1,0 @@
-{
-  "ORDER-100": {
-    "customer": "Mina",
-    "status": "delivered",
-    "daysSinceDelivery": 6,
-    "refundApproved": false,
-    "planTier": "pro"
-  }
-}

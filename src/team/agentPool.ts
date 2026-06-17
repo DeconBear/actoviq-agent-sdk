@@ -18,6 +18,7 @@ export class AgentPool {
   private active = 0;
   private nextId = 1;
   private queue: QueuedWaiter[] = [];
+  private liveSlots = new Set<number>();
   private _maxConcurrent: number;
 
   constructor(maxConcurrent?: number) {
@@ -42,9 +43,7 @@ export class AgentPool {
    */
   async acquire(timeoutMs?: number): Promise<AgentPoolSlot> {
     if (this.active < this._maxConcurrent) {
-      this.active++;
-      const id = this.nextId++;
-      return { id, release: () => this.release(id) };
+      return this.grantSlot();
     }
 
     return new Promise<AgentPoolSlot>((resolve, reject) => {
@@ -62,16 +61,26 @@ export class AgentPool {
     });
   }
 
-  private release(_id: number): void {
+  private grantSlot(): AgentPoolSlot {
+    this.active++;
+    const id = this.nextId++;
+    this.liveSlots.add(id);
+    return { id, release: () => this.release(id) };
+  }
+
+  private release(id: number): void {
+    // Idempotent: a stale or repeated release must not decrement active twice
+    // (which would admit an extra waiter past maxConcurrent).
+    if (!this.liveSlots.delete(id)) {
+      return;
+    }
     this.active = Math.max(0, this.active - 1);
 
     // Wake next waiter
     const next = this.queue.shift();
     if (next) {
       if (next.timeout) clearTimeout(next.timeout);
-      this.active++;
-      const id = this.nextId++;
-      next.resolve({ id, release: () => this.release(id) });
+      next.resolve(this.grantSlot());
     }
   }
 
@@ -88,6 +97,7 @@ export class AgentPool {
   reset(): void {
     this.drain('AgentPool reset');
     this.active = 0;
+    this.liveSlots.clear();
   }
 }
 

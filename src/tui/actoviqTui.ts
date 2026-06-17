@@ -35,7 +35,8 @@ import type {
   AgentEvent,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
-import { A, stringWidth, truncateToWidth } from './ansi.js';
+import { pathToFileURL } from 'node:url';
+import { A, stringWidth, truncateToWidth, wrapToWidth } from './ansi.js';
 import { InputEditor } from './editor.js';
 import { discoverActoviqPlugins } from './pluginCatalog.js';
 import { TuiScreen } from './screen.js';
@@ -146,6 +147,36 @@ interface Key {
   meta?: boolean;
   shift?: boolean;
   sequence?: string;
+}
+
+/**
+ * Render free-form text for the scrollback: width-aware word wrapping with
+ * markdown-lite heading highlighting. Used for workflow/team results and the
+ * expert-panel member reports so long output reads cleanly instead of dumping
+ * raw lines. Optionally caps very long output with a "… (N more lines)" note.
+ */
+function renderRichText(text: string, width: number, opts: { maxLines?: number } = {}): string[] {
+  const cols = Math.max(20, width - 2);
+  const out: string[] = [];
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(raw);
+    if (heading) {
+      out.push(`${A.bold}${A.cyan}${heading[2]}${A.reset}`);
+      continue;
+    }
+    if (raw.trim() === '') {
+      out.push('');
+      continue;
+    }
+    for (const line of wrapToWidth(raw, cols)) out.push(line);
+  }
+  const maxLines = opts.maxLines ?? 0;
+  if (maxLines > 0 && out.length > maxLines) {
+    const kept = out.slice(0, maxLines);
+    kept.push(`${A.dim}… (${out.length - maxLines} more lines)${A.reset}`);
+    return kept;
+  }
+  return out;
 }
 
 function buildSystemPrompt(workDir: string): string {
@@ -436,15 +467,34 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const matches = filterSlashCommands(editor.text);
     if (matches.length === 0) return [];
     if (menuSelected >= matches.length) menuSelected = matches.length - 1;
+    if (menuSelected < 0) menuSelected = 0;
     const commandWidth = Math.min(28, Math.max(14, Math.floor(screen.width * 0.28)));
     const descriptionWidth = Math.max(screen.width - commandWidth - 4, 12);
-    return matches.slice(0, MENU_MAX_ROWS).map((name, index) => {
+    // Scroll a window of MENU_MAX_ROWS so the highlighted item stays visible and
+    // commands past the cap (e.g. /workflows, /worktree, /team) are reachable
+    // with the arrow keys instead of being clipped off the bottom.
+    const windowStart = Math.max(
+      0,
+      Math.min(menuSelected - MENU_MAX_ROWS + 1, matches.length - MENU_MAX_ROWS),
+    );
+    const visible = matches.slice(windowStart, windowStart + MENU_MAX_ROWS);
+    const lines = visible.map((name, i) => {
+      const index = windowStart + i;
       const selected = index === menuSelected;
       const command = `/${name}`.padEnd(commandWidth);
       const label = selected ? `${A.inverse}${command}${A.reset}` : command;
       const description = truncateToWidth(TUI_SLASH_COMMANDS[name] ?? '', descriptionWidth);
       return `${label} ${A.dim}${description}${A.reset}`;
     });
+    const hiddenAbove = windowStart;
+    const hiddenBelow = matches.length - (windowStart + visible.length);
+    if (hiddenAbove > 0 || hiddenBelow > 0) {
+      const parts: string[] = [];
+      if (hiddenAbove > 0) parts.push(`↑${hiddenAbove}`);
+      if (hiddenBelow > 0) parts.push(`↓${hiddenBelow}`);
+      lines.push(`${A.dim}  ${parts.join('  ')} more · ${menuSelected + 1}/${matches.length} (↑/↓ to scroll)${A.reset}`);
+    }
+    return lines;
   }
 
   function buildDialog(): string[] {
@@ -1330,7 +1380,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             return;
           }
           if (args.startsWith('run ')) {
-            const wfName = args.slice(4).trim();
+            const runRest = args.slice(4).trim();
+            const runSpace = runRest.indexOf(' ');
+            const wfName = runSpace === -1 ? runRest : runRest.slice(0, runSpace);
+            const wfTask = runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim();
             const wf = loadWorkflow(wfName, sdk.config.workDir);
             if (!wf) {
               appendStatic([...formatErrorLine(`workflow not found: ${wfName}`), '']);
@@ -1346,18 +1399,30 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
               const runtime = new WorkflowScriptRuntime({
                 sdk: sdk as any,
+                args: wfTask,
                 onEvent: (e: any) => {
-                  if (e.type === 'workflow.log') {
+                  if (e.type === 'workflow.phase.start') {
+                    appendStatic([`${A.bold}${A.magenta}▶ ${e.title}${A.reset}`]);
+                  } else if (e.type === 'workflow.agent.start') {
+                    appendStatic([`${A.dim}  ⚡ ${e.label ?? e.agentId}${e.cached ? ' (cached)' : ''}${A.reset}`]);
+                  } else if (e.type === 'workflow.agent.done') {
+                    const secs = e.durationMs ? ` · ${Math.round(e.durationMs / 1000)}s` : '';
+                    appendStatic([`${A.dim}  ✓ ${e.label ?? e.agentId}${secs}${A.reset}`]);
+                  } else if (e.type === 'workflow.log') {
                     appendStatic([`${A.dim}  │ ${e.message}${A.reset}`]);
                   } else if (e.type === 'workflow.script.done') {
+                    const secs = e.durationMs ? ` · ${Math.round(e.durationMs / 1000)}s` : '';
                     appendStatic([
-                      `${A.green}✓ workflow done${A.reset}${A.dim} · ${e.agentCount} agents · ${e.totalTokens} tokens${A.reset}`,
+                      `${A.green}✓ workflow done${A.reset}${A.dim} · ${e.agentCount} agents · ${e.totalTokens} tokens${secs}${A.reset}`,
                       '',
                     ]);
                   }
                 },
               });
               const output = await runtime.execute(wf.script);
+              if (typeof output.result === 'string' && output.result.trim()) {
+                appendStatic([...formatInfoLine('workflow result:'), ...renderRichText(output.result, screen.width), '']);
+              }
               if (output.state.errors.length > 0) {
                 appendStatic([
                   ...formatErrorLine(`${output.state.errors.length} errors during workflow execution`),
@@ -1445,7 +1510,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               return;
             }
 
-            appendStatic([...formatInfoLine(`asking team "${teamName}" (${loaded.definition.mode} mode)...`), '']);
+            const members = loaded.definition.members?.map((m) => m.model).join(', ') ?? 'configured members';
+            appendStatic([
+              ...formatInfoLine(`asking team "${teamName}" (${loaded.definition.mode} mode)`),
+              `${A.dim}convening: ${members}${A.reset}`,
+              '',
+            ]);
             try {
               const team = createModelTeam(loaded.definition);
               const result = await team.ask(prompt);
@@ -1453,7 +1523,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
                 `${A.green}✓ team response${A.reset}${A.dim} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s${A.reset}`,
                 `${A.dim}cost: ${result.cost.estimatedCost !== null ? `$${result.cost.estimatedCost.toFixed(4)}` : 'N/A'} · ${result.cost.totalInputTokens + result.cost.totalOutputTokens} tokens${A.reset}`,
                 '',
-                result.answer.slice(0, 500),
+                ...renderRichText(result.answer, screen.width),
                 '',
               ]);
             } catch (error: any) {
@@ -1868,4 +1938,19 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
 
   // Keep the process alive until shutdown() exits it.
   await new Promise(() => {});
+}
+
+// Allow running this module directly (`npx tsx src/tui/actoviqTui.ts`), not only
+// via the cli/ wrapper. Requires an interactive terminal.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write(
+      'actoviq TUI requires an interactive terminal (TTY). Run it directly in your terminal — not piped or through another tool.\n',
+    );
+    process.exit(1);
+  }
+  runActoviqTui().catch((error: unknown) => {
+    process.stderr.write(`Fatal: ${(error as Error).stack ?? (error as Error).message}\n`);
+    process.exit(1);
+  });
 }

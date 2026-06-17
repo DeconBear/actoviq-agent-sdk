@@ -1,7 +1,0 @@
-{
-  "name": "beta-tools",
-  "enabled": false,
-  "commands": [
-    { "name": "build", "handler": "build.js" }
-  ]
-}

@@ -1,5 +1,0 @@
-{
-  "service": "benchmark-fixture",
-  "network": "disabled",
-  "secrets": "stored outside reports"
-}

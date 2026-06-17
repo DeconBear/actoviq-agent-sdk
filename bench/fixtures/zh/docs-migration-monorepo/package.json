@@ -1,7 +1,0 @@
-{
-  "type": "module",
-  "scripts": {
-    "test": "node test.mjs",
-    "typecheck": "node scripts/typecheck.mjs"
-  }
-}

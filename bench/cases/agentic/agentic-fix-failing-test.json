@@ -1,0 +1,9 @@
+{
+  "id": "agentic-fix-failing-test",
+  "title": "Fix failing unit tests",
+  "category": "coding",
+  "prompt": "This Node.js project has failing unit tests. Run `node --test test/calc.test.mjs` to see the failures, diagnose the bug(s) in the source under src/, and fix the source so all tests pass. Do NOT modify any files under test/. The work is complete only when `node --test test/calc.test.mjs` exits successfully.",
+  "fixture": "fix-failing-test",
+  "verify": "node --test test/calc.test.mjs",
+  "expectedCoverage": []
+}
