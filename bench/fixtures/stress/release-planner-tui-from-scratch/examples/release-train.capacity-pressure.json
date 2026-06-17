@@ -1,9 +1,0 @@
-{
-  "capacityPerWave": 1,
-  "packages": [
-    { "name": "core", "owner": "platform", "risk": "low", "dependsOn": [], "blocked": false },
-    { "name": "api", "owner": "backend", "risk": "medium", "dependsOn": ["core"], "blocked": false },
-    { "name": "docs", "owner": "devrel", "risk": "low", "dependsOn": ["core"], "blocked": false },
-    { "name": "web", "owner": "frontend", "risk": "high", "dependsOn": ["api"], "blocked": false }
-  ]
-}

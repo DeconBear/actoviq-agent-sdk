@@ -1,8 +1,0 @@
-{
-  "orders": [
-    { "id": "ord-1001", "type": "physical", "daysSinceDelivery": 5, "amount": 120, "status": "open", "damageReported": false },
-    { "id": "ord-1002", "type": "physical", "daysSinceDelivery": 45, "amount": 80, "status": "open", "damageReported": false },
-    { "id": "ord-1003", "type": "digital", "daysSinceDelivery": 2, "amount": 30, "status": "open", "activated": true },
-    { "id": "ord-1004", "type": "physical", "daysSinceDelivery": 18, "amount": 240, "status": "open", "damageReported": true }
-  ]
-}

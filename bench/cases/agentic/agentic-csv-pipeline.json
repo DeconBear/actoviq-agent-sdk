@@ -1,0 +1,9 @@
+{
+  "id": "agentic-csv-pipeline",
+  "title": "Implement a multi-module CSV pipeline",
+  "category": "coding",
+  "prompt": "This project has three stub modules under src/ (parse.mjs, aggregate.mjs, format.mjs) that currently throw 'not implemented', plus a test suite at test/pipeline.test.mjs that specifies their exact required behavior. Implement all three modules so the entire suite passes. Read the tests carefully to understand the contracts — in particular, CSV parsing must handle quoted fields that contain commas and escaped double-quotes (\"\" -> \"). Do NOT modify any files under test/. The work is complete only when `node --test test/pipeline.test.mjs` exits successfully.",
+  "fixture": "csv-pipeline",
+  "verify": "node --test test/pipeline.test.mjs",
+  "expectedCoverage": []
+}

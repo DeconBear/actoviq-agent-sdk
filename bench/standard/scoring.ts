@@ -4,6 +4,7 @@
  */
 import { resolveRuntimeConfig } from '../../src/config/resolveRuntimeConfig.js';
 import { createActoviqModelApi } from '../../src/runtime/actoviqModelApi.js';
+import { robustJsonParse } from '../../src/provider/json-parse.js';
 import type { StandardScore } from './types.js';
 
 const JUDGE_RUBRIC = `Score this answer on 5 dimensions (1-10 scale). Output ONLY a JSON object.
@@ -31,13 +32,14 @@ export async function scoreAnswer(
     const resp = await api.createMessage({
       model: config.model,
       max_tokens: 2000,
+      temperature: 0,
       messages: [
         {
           role: 'user' as const,
           content: [
-            `QUESTION:\n${question.slice(0, 2000)}`,
+            `QUESTION:\n${question}`,
             expectedCoverage?.length ? `\nEXPECTED COVERAGE: ${expectedCoverage.join(', ')}` : '',
-            `\nANSWER:\n${answer.slice(0, 12000)}`,
+            `\nANSWER:\n${answer}`,
             `\n${JUDGE_RUBRIC}`,
           ].join('\n'),
         },
@@ -54,10 +56,10 @@ export async function scoreAnswer(
   }
 
   const match = text.match(/\{[\s\S]*\}/);
-  if (!match) return { factual: 0, breadth: 0, structure: 0, citation: 0, efficiency: 0, overall: 0 };
+  if (!match) return { factual: 0, breadth: 0, structure: 0, citation: 0, efficiency: 0, overall: 0, judgeFailed: true };
 
   try {
-    const parsed = JSON.parse(match[0]);
+    const parsed = robustJsonParse(match[0]);
     const f = clamp(Number(parsed.factual) || 0);
     const b = clamp(Number(parsed.breadth) || 0);
     const s = clamp(Number(parsed.structure) || 0);
@@ -66,9 +68,12 @@ export async function scoreAnswer(
     return {
       factual: f, breadth: b, structure: s, citation: c, efficiency: e,
       overall: Math.round((f * 0.30 + b * 0.25 + s * 0.20 + c * 0.15 + e * 0.10) * 10) / 10,
+      comment: typeof parsed.comment === 'string' ? parsed.comment : undefined,
     };
   } catch {
-    return { factual: 0, breadth: 0, structure: 0, citation: 0, efficiency: 0, overall: 0 };
+    // Judge produced unparseable output — flag it so it can be excluded from
+    // averages rather than silently scored as a (false) 0.
+    return { factual: 0, breadth: 0, structure: 0, citation: 0, efficiency: 0, overall: 0, judgeFailed: true };
   }
 }
 

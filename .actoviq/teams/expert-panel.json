@@ -1,0 +1,17 @@
+{
+  "name": "expert-panel",
+  "description": "Read-only multi-model expert panel — advisory analysis (each member is an independent ReAct agent with read + web-search tools).",
+  "mode": "analysis",
+  "members": [
+    {
+      "model": "deepseek-v4-pro",
+      "systemPrompt": "You are an expert researcher. Investigate deeply and give comprehensive, source-grounded analysis. Do not fabricate references."
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "systemPrompt": "You are a rigorous skeptic. Verify claims against sources, surface risks and blind spots, and challenge assumptions."
+    }
+  ],
+  "timeoutMs": 300000,
+  "maxIterations": 12
+}

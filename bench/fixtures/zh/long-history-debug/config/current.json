@@ -1,5 +1,0 @@
-{
-  "modelProvider": "actoviq-openai-compatible",
-  "requestTimeoutMs": 4500,
-  "retryBudget": 3
-}

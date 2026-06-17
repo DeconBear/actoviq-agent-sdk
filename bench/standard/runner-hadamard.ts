@@ -11,19 +11,23 @@
 import { createAgentSdk, loadDefaultActoviqSettings, createTavilySearchTool, createTeamTool } from '../../src/index.js';
 import type { TeamDefinition } from '../../src/types.js';
 import type { AgentConfig, BenchmarkTask, RunMetrics, ToolCallRecord } from './types.js';
+import { buildBenchmarkPrompt } from './prompt.js';
 
 const MINIMAX_KEY = process.env.MINIMAX_API_KEY || '';
 
-const TEAM_DEF: TeamDefinition = {
-  name: 'expert-panel', mode: 'panel',
+// Read-only expert panel: each member is an independent ReAct agent (read code
+// + web search) that returns a findings report. Advisory only — the main agent
+// stays in control and decides what to do with the reports.
+export const TEAM_DEF: TeamDefinition = {
+  name: 'expert-panel', mode: 'analysis',
   members: [
     { model: 'MiniMax-M3', provider: 'anthropic', baseURL: 'https://api.minimaxi.com/anthropic/v1', apiKey: MINIMAX_KEY, maxTokens: 131072,
-      systemPrompt: 'Rigorous analyst. Verify claims. Identify blind spots. Challenge assumptions.' },
+      systemPrompt: 'Rigorous analyst. Verify claims with sources. Identify blind spots. Challenge assumptions.' },
     { model: 'deepseek-v4-pro', provider: 'anthropic', baseURL: 'https://api.deepseek.com/anthropic/v1', maxTokens: 384000,
-      systemPrompt: 'Expert researcher. Deep thinking. Comprehensive analysis.' },
+      systemPrompt: 'Expert researcher. Deep thinking. Comprehensive, source-grounded analysis.' },
   ],
-  primary: { model: 'deepseek-v4-pro', systemPrompt: 'Synthesize panel. Flag agreements/contradictions. Fill gaps.' },
   timeoutMs: 300000,
+  maxIterations: 12, // per-member ReAct depth cap
 };
 
 export async function runHadamardAgent(
@@ -43,24 +47,7 @@ export async function runHadamardAgent(
     // No maxToolIterations → Infinity. Harness principle.
   });
 
-  const prompt = [
-    'Research and answer the question comprehensively.',
-    'Use TavilySearch (depth="advanced", max_results=5) to find authoritative sources.',
-    'Be efficient with searches — quality over quantity.',
-    '',
-    'Your answer MUST:',
-    '- Cover all key aspects of the question thoroughly',
-    '- Include specific data, numbers, and concrete examples',
-    '- Use tables and structured formatting where helpful',
-    '- Include a "Sources:" section with markdown hyperlinks',
-    '- Be COMPLETE — do not cut off mid-sentence',
-    '',
-    agent.hasTeamTool
-      ? 'After research, call `expert-panel` with {"prompt":"<the question>"} for multi-model verification before finalizing.'
-      : '',
-    '',
-    `QUESTION:\n${task.prompt}`,
-  ].join('\n');
+  const prompt = buildBenchmarkPrompt(task, { hasTeamTool: agent.hasTeamTool });
 
   const start = Date.now();
   const session = await sdk.createSession({ title: `bench-${task.id}` });

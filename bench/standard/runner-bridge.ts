@@ -7,6 +7,7 @@
  */
 import { createActoviqBridgeSdk } from '../../src/index.js';
 import type { AgentConfig, BenchmarkTask, RunMetrics } from './types.js';
+import { buildBenchmarkPrompt } from './prompt.js';
 
 export async function runBridgeAgent(
   task: BenchmarkTask,
@@ -20,7 +21,7 @@ export async function runBridgeAgent(
     model: agent.model,
   });
 
-  const result = await sdk.run(task.prompt);
+  const result = await sdk.run(buildBenchmarkPrompt(task, { hasTeamTool: false }));
 
   // Count tool call events
   const toolCallCount = result.events?.filter((e: any) =>

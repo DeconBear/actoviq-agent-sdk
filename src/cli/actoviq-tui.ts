@@ -4,8 +4,8 @@
  *
  * Usage: actoviq-tui [work-dir] [--config <path>] [--permission-mode <mode>] [--model <model>]
  *
- * Runtime defaults mirror bench/agents/clean-sdk-runner.ts: default Actoviq
- * settings loading, createActoviqCoreTools({ cwd }), bypassPermissions, and
+ * Runtime defaults: default Actoviq settings loading,
+ * createActoviqCoreTools({ cwd }), bypassPermissions, and
  * uncapped tool iterations.
  */
 import { runActoviqTui } from '../tui/actoviqTui.js';

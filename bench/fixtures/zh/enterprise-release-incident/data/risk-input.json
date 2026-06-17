@@ -1,8 +1,0 @@
-{
-  "checks": [
-    { "id": "chk-db", "severity": "critical", "passed": false, "owner": "database" },
-    { "id": "chk-e2e", "severity": "warning", "passed": false, "owner": null },
-    { "id": "chk-copy", "severity": "warning", "passed": false, "owner": "docs" },
-    { "id": "chk-smoke", "severity": "critical", "passed": true, "owner": "qa" }
-  ]
-}
