@@ -609,7 +609,9 @@ async function loadActoviqSkillsDirectory(
 
   const loaded = await Promise.all(
     entries.map(async entry => {
-      if (!entry.isDirectory()) {
+      // Accept real directories AND symlinks to directories — skill managers
+      // commonly install skills via symlink. readFile() below follows the link.
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) {
         return null;
       }
       const skillRoot = path.join(rootDir, entry.name);
