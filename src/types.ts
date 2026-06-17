@@ -550,6 +550,7 @@ export interface ActoviqSkillDefinition {
   prompt?: string;
   buildPrompt?: ActoviqSkillPromptBuilder;
   model?: string;
+  effort?: ActoviqEffort;
   disableModelInvocation?: boolean;
   userInvocable?: boolean;
   source?: ActoviqSkillSource;
@@ -574,6 +575,7 @@ export interface ActoviqSkillDefinitionSummary {
   argumentHint?: string;
   argNames: string[];
   model?: string;
+  effort?: ActoviqEffort;
   source: ActoviqSkillSource;
   loadedFrom: ActoviqSkillLoadedFrom;
   context: ActoviqSkillContextMode;

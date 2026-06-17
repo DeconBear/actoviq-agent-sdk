@@ -55,6 +55,7 @@ import type {
   ActoviqDelegatedAgentRecord,
   ActoviqHooks,
   ActoviqSessionCompactResult,
+  AgentEvent,
   AgentMcpServerDefinition,
   AgentRunOptions,
   AgentRunResult,
@@ -95,6 +96,7 @@ import {
   ActoviqSkillsApi,
   loadActoviqSkillDefinitions,
   resolveActoviqSkillPrompt,
+  skillPathsMatch,
   summarizeActoviqSkillDefinition,
 } from './actoviqSkills.js';
 import {
@@ -588,6 +590,8 @@ export class ActoviqAgentClient {
   private readonly sessionManager: SessionManager;
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
+  /** Names of `paths:`-conditional skills activated by touching matching files. */
+  private readonly activatedConditionalSkills = new Set<string>();
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
   private readonly pendingRuntimeNotifications = new Map<
     string,
@@ -1136,6 +1140,51 @@ export class ActoviqAgentClient {
     return [...this.skillDefinitions.values()].map(summarizeActoviqSkillDefinition);
   }
 
+  /**
+   * Activate `paths:`-conditional skills whose patterns match any of the given
+   * (cwd-relative or absolute) file paths. Activated skills become visible to
+   * the model on the next request — matching claude-code's conditional skills.
+   */
+  private activateConditionalSkillsForPaths(filePaths: string[]): void {
+    if (filePaths.length === 0) {
+      return;
+    }
+    for (const definition of this.skillDefinitions.values()) {
+      if (!definition.paths?.length || this.activatedConditionalSkills.has(definition.name)) {
+        continue;
+      }
+      for (const filePath of filePaths) {
+        const rel = path.isAbsolute(filePath)
+          ? path.relative(this.config.workDir, filePath)
+          : filePath;
+        const normalized = rel.replace(/\\/gu, '/');
+        if (!normalized || normalized.startsWith('..')) {
+          continue;
+        }
+        if (skillPathsMatch(definition.paths, normalized)) {
+          this.activatedConditionalSkills.add(definition.name);
+          break;
+        }
+      }
+    }
+  }
+
+  private activateConditionalSkillsFromEvent(event: AgentEvent): void {
+    if (event.type !== 'tool.call') {
+      return;
+    }
+    const input = (event as { call?: { input?: unknown } }).call?.input;
+    if (!isRecord(input)) {
+      return;
+    }
+    const candidates = [input.file_path, input.path, input.notebook_path].filter(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    );
+    if (candidates.length > 0) {
+      this.activateConditionalSkillsForPaths(candidates);
+    }
+  }
+
   getSkillDefinition(skillName: string): ActoviqSkillDefinition | undefined {
     const definition = this.skillDefinitions.get(skillName);
     return definition ? cloneSkillDefinition(definition) : undefined;
@@ -1295,7 +1344,14 @@ export class ActoviqAgentClient {
         isReadOnly: () => true,
         prompt: () => {
           const names = this.listSkillDefinitions()
-            .filter((definition) => definition.disableModelInvocation !== true)
+            .filter(
+              (definition) =>
+                definition.disableModelInvocation !== true &&
+                // Conditional (paths-gated) skills stay hidden until a matching
+                // file is touched, then appear on the next request.
+                (!definition.paths?.length ||
+                  this.activatedConditionalSkills.has(definition.name)),
+            )
             .map((definition) =>
               definition.description
                 ? `- ${definition.name}: ${definition.description}`
@@ -2012,7 +2068,11 @@ export class ActoviqAgentClient {
       hooks: augmentations?.hooks,
       drainQueuedInputs,
       streaming,
-      emit,
+      // Activate paths-conditional skills when the agent touches matching files.
+      emit: (event: AgentEvent) => {
+        this.activateConditionalSkillsFromEvent(event);
+        emit?.(event);
+      },
       skipRunStartedEvent,
       modelApi: this.modelApi,
       config: runtimeConfig,
@@ -3589,6 +3649,7 @@ export class ActoviqAgentClient {
     return {
       ...options,
       model: options.model ?? definition.model,
+      effort: options.effort ?? definition.effort,
       metadata: {
         ...(definition.metadata ?? {}),
         ...(options.metadata ?? {}),
