@@ -15,7 +15,8 @@ This project is inspired by excellent agent projects and runtimes including Clau
 
 ## Highlights
 
-- **Model Team** — 4 multi-model cooperation modes (Panel/Router/Discussion/Executor-Reviewer), per-member independent provider config, $ENV_VAR apiKey resolution, global AgentPool
+- **Model Team** — read-only advisory teams the agent invokes: `panel-analysis` (parallel investigation + optional primary-driven convergence) and `reviewer` (reports only verifiable issues); per-member independent provider config, $ENV_VAR apiKey resolution, global AgentPool
+- **Model Router** — a `/model` layer (not a team): classify each turn and route it to a different model/provider, then run normally; profiles in `~/.actoviq/routers/`
 - **Dynamic Workflows** — JS script-based multi-agent orchestration with `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout, hooks for non-git VCS
 - **TavilySearch** — AI-optimized web search, pure TypeScript, auto key detection
