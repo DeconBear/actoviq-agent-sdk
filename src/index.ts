@@ -263,6 +263,19 @@ export {
 } from './team/teamDefinitions.js';
 export type { LoadedTeamDefinition } from './team/teamDefinitions.js';
 
+// ── Model Router (a /model routing layer) ─────────────────────────────
+export {
+  classifyRoute,
+  resolveRoutedRun,
+  buildRouteModelApi,
+  parseRouteSelection,
+  loadRouterProfile,
+  saveRouterProfile,
+  listRouterProfiles,
+  deleteRouterProfile,
+} from './router/modelRouter.js';
+export type { LoadedRouterProfile, RoutedModel } from './router/modelRouter.js';
+
 // ── Bridge SDK ────────────────────────────────────────────────────────
 export {
   ActoviqBridgeAgentHandle,

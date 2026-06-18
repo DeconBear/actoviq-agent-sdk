@@ -2080,7 +2080,9 @@ export class ActoviqAgentClient {
         emit?.(event);
       },
       skipRunStartedEvent,
-      modelApi: this.modelApi,
+      // Per-run model client override (the /model router uses this to route a
+      // turn to a different model/provider); falls back to the SDK default.
+      modelApi: options.modelApi ?? this.modelApi,
       config: runtimeConfig,
       mcpManager: this.mcpManager,
     }).then(result => ({
