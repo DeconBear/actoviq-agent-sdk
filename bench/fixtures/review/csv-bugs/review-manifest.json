@@ -1,0 +1,29 @@
+{
+  "title": "CSV parser bug review",
+  "task": "Review csv.js for correctness bugs before I ship it. List each real bug with its location and why it's wrong.",
+  "context": "I implemented a small CSV reader in csv.js. parse() returns an array of row objects keyed by the header row. I just added quoted-field support so values like \"a,\\\"b,c\\\",d\" stay intact. I tested it on a simple file (`name,age\\nAda,36`) and it returned [{name:'Ada', age:'36'}], so the happy path works and I think it's ready.",
+  "bugs": [
+    {
+      "id": "quotes",
+      "location": "csv.js: parseLine",
+      "description": "parseLine splits on every comma and ignores quotes, so a quoted field containing a comma (e.g. a,\"b,c\",d) is split into 4 fields instead of 3. The claimed quoted-field support is not actually implemented."
+    },
+    {
+      "id": "crlf",
+      "location": "csv.js: parse (text.split('\\n'))",
+      "description": "parse splits on '\\n' only. With Windows CRLF input, every line keeps a trailing '\\r', so header keys and the last field on each row are polluted with a carriage return."
+    },
+    {
+      "id": "trailing-newline",
+      "location": "csv.js: parse (loop over lines)",
+      "description": "When the input ends with a trailing newline, the final empty line becomes a bogus row of empty/undefined cells instead of being skipped."
+    }
+  ],
+  "traps": [
+    {
+      "id": "tonumber-guard",
+      "location": "csv.js: toNumber",
+      "description": "The empty-string/null guard returning null is intentional and correct (it avoids Number('') === 0). Reporting it as redundant or buggy is a false positive."
+    }
+  ]
+}
