@@ -120,13 +120,16 @@ describe('Pricing', () => {
 });
 
 describe('ModelTeam validation', () => {
-  it('validates panel mode requires primary', () => {
+  it('treats panel as a retired alias of panel-analysis (no primary required)', () => {
+    // The pure-text panel mode was retired; `panel` now routes to the unified
+    // panel-analysis engine, where a primary is optional. This used to throw.
     const def: TeamDefinition = {
-      name: 'test-panel',
+      name: 'legacy-panel',
       mode: 'panel',
       members: [{ model: 'claude-sonnet-4-6' }],
     };
-    expect(() => createModelTeam(def)).toThrow('primary');
+    const team = createModelTeam(def);
+    expect(team.definition.mode).toBe('panel');
   });
 
   it('validates panel mode requires at least one member', () => {

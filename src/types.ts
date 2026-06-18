@@ -2433,14 +2433,6 @@ export interface RouterSpecialist {
   description?: string;
 }
 
-export interface TeamPanelResponse {
-  round: number;
-  model: string;
-  content: string;
-  tokens: { input: number; output: number };
-  durationMs: number;
-}
-
 export interface TeamCost {
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -2454,12 +2446,6 @@ export interface TeamResult {
   mode: ModelTeamMode;
   cost: TeamCost;
   durationMs: number;
-}
-
-export interface PanelResult extends TeamResult {
-  mode: 'panel';
-  rounds: number;
-  panelResponses: TeamPanelResponse[];
 }
 
 export interface RouterResult extends TeamResult {
@@ -2516,7 +2502,6 @@ export interface AnalysisResult extends TeamResult {
 }
 
 export type ModelTeamResult =
-  | PanelResult
   | RouterResult
   | DiscussionResult
   | ExecutorReviewerResult
