@@ -1063,7 +1063,8 @@ export class ActoviqAgentClient {
 
   /**
    * Create a multi-model team for collaborative deliberation.
-   * Supports panel, router, discussion, and executor-reviewer modes.
+   * Supports panel-analysis, reviewer, router, and discussion modes
+   * (`panel`/`analysis`/`executor-reviewer` are backward-compatible aliases).
    */
   async createTeam(
     definition: import('../types.js').TeamDefinition,

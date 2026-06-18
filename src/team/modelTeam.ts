@@ -13,9 +13,8 @@ import type {
   TeamResult,
   RouterResult,
   DiscussionResult,
-  ExecutorReviewerResult,
+  ReviewerResult,
   TeamCost,
-  ExecutorReviewerDecision,
   AnalysisResult,
   ExpertPanelReport,
   ModelTeamResult,
@@ -410,154 +409,105 @@ async function runDiscussionMode(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Executor-Reviewer Mode — advisory critique loop
+//  Reviewer Mode — single read-only ReAct reviewer the main agent invokes
 // ═══════════════════════════════════════════════════════════════════
 
-async function runExecutorReviewerMode(
-  prompt: string,
+/** Read-only tool set for expert/reviewer agents (no write/edit/bash/delegation). */
+async function buildReadOnlyExpertTools(cwd: string): Promise<AgentToolDefinition[]> {
+  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
+  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
+  const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
+  const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+  return [
+    ...createActoviqFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
+    ...createActoviqWebTools().filter((t) => t.name === 'WebFetch'),
+    createTavilySearchTool(),
+  ];
+}
+
+/**
+ * A single read-only ReAct agent (Read/Glob/Grep + TavilySearch/WebFetch) that
+ * inspects the project and returns confirmed issues. The main agent (the
+ * "executor") invokes it as a tool, decides what `context` to inject — what it
+ * did and the results it obtained, placed in the reviewer's system prompt — and
+ * keeps final authority over the findings. The reviewer is told to scrutinize
+ * hard but confirm ONLY issues it can actually verify: no speculation, no
+ * fabricated or padded findings.
+ */
+async function runReviewerMode(
+  task: string,
   definition: TeamDefinition,
   signal?: AbortSignal,
-): Promise<ExecutorReviewerResult> {
+  context?: string,
+): Promise<ReviewerResult> {
   const startedAt = Date.now();
-  const executorApi = await createMemberApi(definition.executor!);
-  const reviewerApi = await createMemberApi(definition.reviewer!);
+  const reviewer = definition.reviewer!;
+  // Lazy import avoids a circular dependency (agentClient imports modelTeam).
+  const { createAgentSdk } = await import('../runtime/agentClient.js');
+  const cwd = process.cwd();
 
-  const decisions: ExecutorReviewerDecision[] = [];
-  const reviews: Array<{ iteration: number; feedback: string }> = [];
-  const modelSet = new Set([definition.executor!.model, definition.reviewer!.model]);
+  const reviewerFraming = [
+    'You are a meticulous reviewer on a multi-model team.',
+    'Inspect the project using ONLY your read-only tools (Read/Glob/Grep) and the web',
+    '(TavilySearch/WebFetch). You cannot modify files, write code, or run commands.',
+    'Scrutinize as thoroughly as you can and surface every genuine problem — bugs, broken',
+    'logic, security holes, missed edge cases, violated requirements — each with concrete',
+    'file:line evidence. Critically: confirm ONLY issues you can actually verify from the',
+    'code or files. Do not speculate, invent, or pad the list; if something is uncertain,',
+    'say so explicitly instead of asserting it. If you find no real issues, say so plainly.',
+  ].join(' ');
+
+  const systemPrompt = [
+    reviewerFraming,
+    context ? `\n## Context from the requesting agent (what it did and obtained)\n${context}` : '',
+    reviewer.systemPrompt ? `\n${reviewer.systemPrompt}` : '',
+  ].filter(Boolean).join('\n');
+
   const perModelTokens = new Map<string, { input: number; output: number }>();
   let totalInput = 0;
   let totalOutput = 0;
-  let iterations = 0;
-  let converged = false;
-  let finalAnswer = '';
-  let currentOutput = '';
-  const maxIterations = definition.maxIterations ?? 100;
-  // Full history visible to both roles each iteration (plan: prevents the
-  // reviewer from repeating already-addressed or rejected suggestions).
-  const transcript: string[] = [];
+  let report: string;
+  let toolCalls = 0;
+  const pool = getGlobalAgentPool();
+  let slot: AgentPoolSlot | undefined;
+  let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
 
-  // Iteration 1: Executor produces initial output
-  iterations++;
-  const execResult = await singleModelCall(executorApi, prompt, definition.executor?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-  currentOutput = execResult.content;
-  transcript.push(`## Iteration 1 — Executor output\n${currentOutput}`);
-  perModelTokens.set(definition.executor!.model, { input: execResult.inputTokens, output: execResult.outputTokens });
-  totalInput += execResult.inputTokens;
-  totalOutput += execResult.outputTokens;
-
-  while (!converged && iterations < maxIterations) {
-    // Reviewer critiques
-    const reviewPrompt = [
-      'You are an experienced reviewer providing constructive feedback.',
-      'The history below shows prior outputs, your earlier reviews, and the executor\'s decisions (including which suggestions were rejected and why). Do NOT repeat suggestions already addressed or explicitly rejected — focus on new, unaddressed improvements.',
-      '',
-      'Original request:',
-      prompt,
-      '',
-      'History so far:',
-      transcript.join('\n\n---\n\n'),
-      '',
-      'Latest output to review:',
-      currentOutput,
-      '',
-      'Provide specific, actionable feedback. You are an advisor — the executor makes final decisions.',
-    ].join('\n');
-
-    const reviewResult = await singleModelCall(reviewerApi, reviewPrompt, definition.reviewer?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-    reviews.push({ iteration: iterations, feedback: reviewResult.content });
-    transcript.push(`## Iteration ${iterations} — Reviewer feedback\n${reviewResult.content}`);
-
-    const rex = perModelTokens.get(definition.reviewer!.model) ?? { input: 0, output: 0 };
-    rex.input += reviewResult.inputTokens;
-    rex.output += reviewResult.outputTokens;
-    perModelTokens.set(definition.reviewer!.model, rex);
-    totalInput += reviewResult.inputTokens;
-    totalOutput += reviewResult.outputTokens;
-
-    // Executor decides: accept/reject/partial/finalize
-    const decisionPrompt = [
-      'You are the executor with final authority. Review the feedback and decide.',
-      '',
-      'Original request:',
-      prompt,
-      '',
-      'History so far (prior outputs, reviews, and your past decisions):',
-      transcript.join('\n\n---\n\n'),
-      '',
-      'Your current output:',
-      currentOutput,
-      '',
-      'Latest reviewer feedback:',
-      reviewResult.content,
-      '',
-      'Decide (respond with exactly one action keyword followed by explanation/output):',
-      '- ACCEPT: incorporate the feedback and provide revised output',
-      '- REJECT: explain why the suggestion is not accepted',
-      '- PARTIAL: accept some suggestions, reject others, provide revised output',
-      '- FINALIZE: the work is done, deliver final output',
-      '',
-      'Format: ACTION_KEYWORD',
-      '<explanation or revised output>',
-    ].join('\n');
-
-    const decisionResult = await singleModelCall(executorApi, decisionPrompt, definition.executor?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-    const dex = perModelTokens.get(definition.executor!.model) ?? { input: 0, output: 0 };
-    dex.input += decisionResult.inputTokens;
-    dex.output += decisionResult.outputTokens;
-    perModelTokens.set(definition.executor!.model, dex);
-    totalInput += decisionResult.inputTokens;
-    totalOutput += decisionResult.outputTokens;
-
-    // Parse decision
-    const lines = decisionResult.content.trim().split('\n');
-    const actionLine = lines[0]?.trim().toUpperCase() ?? '';
-    const explanation = lines.slice(1).join('\n').trim();
-
-    let action: ExecutorReviewerDecision['action'];
-    if (actionLine.startsWith('FINALIZE')) {
-      action = 'finalize';
-      finalAnswer = explanation || currentOutput;
-      converged = true;
-    } else if (actionLine.startsWith('ACCEPT')) {
-      action = 'accept';
-      currentOutput = explanation || decisionResult.content;
-    } else if (actionLine.startsWith('REJECT')) {
-      action = 'reject';
-      // Keep current output, note rejection
-    } else if (actionLine.startsWith('PARTIAL')) {
-      action = 'partial';
-      currentOutput = explanation || decisionResult.content;
-    } else {
-      // Default: treat as finalize
-      action = 'finalize';
-      finalAnswer = decisionResult.content;
-      converged = true;
-    }
-
-    decisions.push({
-      iteration: iterations,
-      action,
-      explanation: explanation || decisionResult.content,
+  try {
+    slot = await pool.acquire(definition.timeoutMs);
+    sdk = await createAgentSdk({
+      model: reviewer.model,
+      provider: reviewer.provider,
+      baseURL: reviewer.baseURL,
+      authToken: resolveApiKey(reviewer.apiKey),
+      maxTokens: reviewer.maxTokens ?? 32000,
+      workDir: cwd,
+      tools: await buildReadOnlyExpertTools(cwd),
+      permissionMode: 'bypassPermissions',
+      maxToolIterations: definition.maxIterations ?? 16,
+      systemPrompt,
     });
-    transcript.push(`## Iteration ${iterations} — Executor decision (${action})\n${explanation || decisionResult.content}`);
-
-    iterations++;
+    const result = await sdk.run(task, { signal: memberSignal(signal, definition.timeoutMs) });
+    report = result.text;
+    toolCalls = result.toolCalls.length;
+    const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
+    const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
+    perModelTokens.set(reviewer.model, { input, output });
+    totalInput = input;
+    totalOutput = output;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    report = `[ERROR: reviewer ${reviewer.model} failed — ${message}]`;
+  } finally {
+    if (sdk) await sdk.close();
+    slot?.release();
   }
 
-  if (!converged) {
-    finalAnswer = currentOutput;
-  }
-
-  const cost = computeCost([...modelSet], totalInput, totalOutput, perModelTokens);
-
+  const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
   return {
-    answer: finalAnswer,
-    mode: 'executor-reviewer',
-    iterations,
-    decisions,
-    reviews,
+    answer: report,
+    mode: 'reviewer',
+    report,
+    toolCalls,
     cost,
     durationMs: Date.now() - startedAt,
   };
@@ -591,17 +541,8 @@ async function runPanelAnalysisMode(
   const startedAt = Date.now();
   // Lazy imports avoid a circular dependency (agentClient imports modelTeam).
   const { createAgentSdk } = await import('../runtime/agentClient.js');
-  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
-  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
-  const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
-
   const cwd = process.cwd();
-  const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
-  const buildReadOnlyTools = (): AgentToolDefinition[] => [
-    ...createActoviqFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
-    ...createActoviqWebTools().filter((t) => t.name === 'WebFetch'),
-    createTavilySearchTool(),
-  ];
+  const readOnlyTools = await buildReadOnlyExpertTools(cwd);
 
   // Bounded ReAct depth per member so a panel can't run away (configurable).
   const memberMaxIterations = definition.maxIterations ?? 16;
@@ -646,7 +587,7 @@ async function runPanelAnalysisMode(
             authToken: resolveApiKey(member.apiKey),
             maxTokens: member.maxTokens ?? 32000,
             workDir: cwd,
-            tools: buildReadOnlyTools(),
+            tools: readOnlyTools,
             permissionMode: 'bypassPermissions',
             maxToolIterations: memberMaxIterations,
             systemPrompt: member.systemPrompt
@@ -814,19 +755,19 @@ export class ModelTeam {
   }
 
   /**
-   * Ask the team a question. Returns the synthesized answer.
-   * Panel/Discussion: primary model decides when to converge.
-   * Router: classifies and dispatches.
-   * Executor-Reviewer: executor decides when done.
+   * Ask the team. `opts.context` is injected into the reviewer's system prompt
+   * (reviewer mode only — what the main agent did and obtained). Returns the
+   * mode-specific result.
    */
-  async ask(prompt: string, signal?: AbortSignal): Promise<ModelTeamResult> {
+  async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string }): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
       case 'router':
         return runRouterMode(prompt, this.definition, signal);
       case 'discussion':
         return runDiscussionMode(prompt, this.definition, signal);
-      case 'executor-reviewer':
-        return runExecutorReviewerMode(prompt, this.definition, signal);
+      case 'reviewer':
+      case 'executor-reviewer': // alias: the retired executor loop now runs the single reviewer
+        return runReviewerMode(prompt, this.definition, signal, opts?.context);
       case 'panel': // alias: retired pure-text panel now runs the unified engine
       case 'analysis':
       case 'panel-analysis':
@@ -861,9 +802,9 @@ function validateTeamDefinition(def: TeamDefinition): void {
       if (!def.primary) throw new Error('Discussion mode requires a primary member.');
       if (!def.members || def.members.length < 2) throw new Error('Discussion mode requires at least 2 members.');
       break;
-    case 'executor-reviewer':
-      if (!def.executor) throw new Error('Executor-Reviewer mode requires an executor.');
-      if (!def.reviewer) throw new Error('Executor-Reviewer mode requires a reviewer.');
+    case 'reviewer':
+    case 'executor-reviewer': // retired alias: needs only a reviewer now
+      if (!def.reviewer) throw new Error('Reviewer mode requires a reviewer member.');
       break;
     case 'panel': // retired alias of panel-analysis (primary now optional)
     case 'analysis':
@@ -882,33 +823,57 @@ export function createTeamTool(
   definition: TeamDefinition,
 ): AgentToolDefinition {
   const team = createModelTeam(definition);
+  const isReviewer = definition.mode === 'reviewer' || definition.mode === 'executor-reviewer';
+  const isPanel = definition.mode === 'analysis' || definition.mode === 'panel-analysis';
 
   return {
     kind: 'local',
     name: definition.name,
     description:
       definition.description ??
-      (definition.mode === 'analysis' || definition.mode === 'panel-analysis'
-        ? 'Expert panel: independent read-only multi-model analysis (advisory; optional primary-driven convergence). You decide what to do with the findings.'
-        : `Multi-model team (${definition.mode} mode)`),
+      (isReviewer
+        ? 'Reviewer: a single read-only agent inspects the project and reports only genuine, verifiable issues. Pass { task } (what to check) and optional { context } (what you did + the results). It advises; you decide.'
+        : isPanel
+          ? 'Expert panel: independent read-only multi-model analysis (advisory; optional primary-driven convergence). You decide what to do with the findings.'
+          : `Multi-model team (${definition.mode} mode)`),
     inputSchema: {
       parse: (input: unknown) => input as { prompt: string },
       _type: undefined,
     } as any,
-    inputJsonSchema: {
-      type: 'object',
-      properties: {
-        prompt: { type: 'string', description: 'The question or task for the team' },
-      },
-      required: ['prompt'],
-      // Tolerate extra fields the model may add — a strict schema here caused
-      // intermittent "schema error" rejections that silently skipped the panel.
-      additionalProperties: true,
-    },
+    inputJsonSchema: isReviewer
+      ? {
+          type: 'object',
+          properties: {
+            task: { type: 'string', description: 'What the reviewer should scrutinize' },
+            context: { type: 'string', description: 'What you did and the results you obtained (injected into the reviewer system prompt)' },
+          },
+          required: ['task'],
+          additionalProperties: true,
+        }
+      : {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string', description: 'The question or task for the team' },
+          },
+          required: ['prompt'],
+          // Tolerate extra fields the model may add — a strict schema here caused
+          // intermittent "schema error" rejections that silently skipped the panel.
+          additionalProperties: true,
+        },
     async execute(input: unknown) {
-      // Accept the prompt however the model phrases the call (bare string or any
-      // of a few common keys) so a formatting quirk never drops the panel.
+      // Accept the call however the model phrases it (bare string or any of a few
+      // common keys) so a formatting quirk never drops the invocation.
       const obj = (input ?? {}) as Record<string, unknown>;
+      if (isReviewer) {
+        const taskCandidate = typeof input === 'string' ? input : obj.task ?? obj.prompt ?? obj.question ?? obj.input;
+        const task = typeof taskCandidate === 'string' ? taskCandidate.trim() : '';
+        if (!task) {
+          throw new Error(`Reviewer "${definition.name}" requires a non-empty "task" string.`);
+        }
+        const context = typeof obj.context === 'string' ? obj.context : undefined;
+        const result = await team.ask(task, undefined, { context });
+        return JSON.stringify({ answer: result.answer, mode: result.mode, cost: result.cost });
+      }
       const candidate =
         typeof input === 'string'
           ? input
@@ -930,10 +895,14 @@ export function createTeamTool(
       `## ${definition.name} (Model Team: ${definition.mode})`,
       definition.description ?? '',
       '',
-      definition.mode === 'analysis' || definition.mode === 'panel-analysis'
-        ? 'Call this tool with a { prompt } to have an expert panel of independent read-only agents investigate (read local code + search the web) and each return a findings report. They only analyze and advise — you keep full control and decide what to do with their input. With a configured primary the panel also converges over multiple rounds into a synthesized answer. Use it to assist analysis on large or complex tasks.'
-        : 'Call this tool with a { prompt } to get a multi-model synthesized answer.',
-      `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
+      isReviewer
+        ? 'Call this tool with { task } (what to scrutinize) and optional { context } (what you did and the results you got). A single read-only agent inspects the code/web and reports only issues it can verify — no speculation. You keep final authority; re-invoke after changes to re-check.'
+        : isPanel
+          ? 'Call this tool with a { prompt } to have an expert panel of independent read-only agents investigate (read local code + search the web) and each return a findings report. They only analyze and advise — you keep full control and decide what to do with their input. With a configured primary the panel also converges over multiple rounds into a synthesized answer. Use it to assist analysis on large or complex tasks.'
+          : 'Call this tool with a { prompt } to get a multi-model synthesized answer.',
+      isReviewer
+        ? `Reviewer: ${definition.reviewer?.model ?? 'configured via definition'}`
+        : `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
     ].join('\n'),
   };
 }
