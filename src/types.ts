@@ -822,6 +822,8 @@ export interface AgentRunOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
   model?: string;
+  /** Override the model client for this run — used by the /model router for cross-provider routing. */
+  modelApi?: CreateAgentSdkOptions['modelApi'];
   maxTokens?: number;
   temperature?: number;
   toolChoice?: ToolChoice;
@@ -2498,6 +2500,55 @@ export type ModelTeamResult =
   | DiscussionResult
   | ReviewerResult
   | AnalysisResult;
+
+// ── Model Router (a /model routing layer, not a team) ────────────────
+
+/** A model target: a model id plus optional per-target provider config. */
+export interface RouterModelRef {
+  model: string;
+  provider?: 'anthropic' | 'openai';
+  baseURL?: string;
+  /** Literal key or `$ENV_VAR` reference resolved at runtime. */
+  apiKey?: string;
+  maxTokens?: number;
+}
+
+/** One route: a model target plus a natural-language trigger description. */
+export interface RouterRoute extends RouterModelRef {
+  /** When the classifier should pick this route. */
+  when: string;
+  /** Optional display label (defaults to the model id). */
+  name?: string;
+}
+
+/**
+ * A router profile, configured under `/model`. On each user input the
+ * `routerModel` classifies the request and selects a route; the turn then runs
+ * normally on the chosen model (which may be on a different provider). Routing
+ * re-evaluates on the next user input.
+ */
+export interface RouterProfile {
+  name: string;
+  description?: string;
+  routerModel: RouterModelRef;
+  routes: RouterRoute[];
+  /** Used when the classifier matches no route. Defaults to the first route. */
+  fallback?: RouterModelRef;
+  /** Optional custom classification-prompt prefix. */
+  classificationPrompt?: string;
+}
+
+/** The outcome of classifying one user input against a router profile. */
+export interface RouterDecision {
+  /** The chosen model target (route, fallback, or first route). */
+  target: RouterModelRef;
+  /** Display label for the chosen target. */
+  label: string;
+  /** Raw classifier output (for telemetry/debug). */
+  classification: string;
+  /** Whether the classifier matched a configured route (vs fell back). */
+  matched: boolean;
+}
 
 export interface ModelPricing {
   input: number;
