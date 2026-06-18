@@ -1,0 +1,21 @@
+{
+  "name": "fast-strong",
+  "description": "Route quick tasks to a fast model and hard reasoning to a strong model. Demonstrates cross-provider routing (a route can point at a different provider/baseURL/key).",
+  "routerModel": { "model": "deepseek-v4-pro" },
+  "routes": [
+    {
+      "name": "fast",
+      "when": "simple, quick, or short tasks: small edits, lookups, quick questions, formatting",
+      "model": "MiniMax-M3",
+      "provider": "anthropic",
+      "baseURL": "https://api.minimaxi.com/anthropic/v1",
+      "apiKey": "$MINIMAX_API_KEY"
+    },
+    {
+      "name": "strong",
+      "when": "hard reasoning, planning, multi-step refactors, debugging, or anything requiring deep analysis",
+      "model": "deepseek-v4-pro"
+    }
+  ],
+  "fallback": { "model": "deepseek-v4-pro" }
+}

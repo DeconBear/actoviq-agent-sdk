@@ -22,6 +22,9 @@ import {
   loadTeamDefinition,
   createModelTeam,
   createTeamTool,
+  listRouterProfiles,
+  loadRouterProfile,
+  resolveRoutedRun,
   WorktreeService,
 } from '../index.js';
 import {
@@ -38,6 +41,7 @@ import type {
   AgentEvent,
   AgentToolDefinition,
   TeamDefinition,
+  RouterProfile,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
 import { pathToFileURL } from 'node:url';
@@ -288,6 +292,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // Active team tool the main agent may call (toggled via /team). null = no team.
   let activeTeamTool: AgentToolDefinition | null = null;
   let activeTeamName: string | null = null;
+  // /model router: when set, each user turn is classified and routed to a model.
+  let activeRouter: RouterProfile | null = null;
+  let routedModelLabel: string | null = null;
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
@@ -746,7 +753,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const pct = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
     const usedK = used >= 1000 ? `${(used / 1000).toFixed(used >= 100_000 ? 0 : 1)}k` : `${used}`;
     const ctxColor = pct >= 90 ? A.red : pct >= 70 ? A.yellow : A.dim;
-    const left = `${session.model} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'} · `;
+    const modelLabel = activeRouter
+      ? `router:${activeRouter.name}${routedModelLabel ? ` → ${routedModelLabel}` : ''}`
+      : session.model;
+    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'} · `;
     return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
   }
 
@@ -816,6 +826,51 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
 
   // ── Agent run ──────────────────────────────────────────────────────
 
+  // /model router: pick a saved router profile (or turn routing off). When
+  // active, each user turn is classified and routed to a model in startRun().
+  async function chooseRouter(arg: string): Promise<void> {
+    const turnOff = () => {
+      activeRouter = null;
+      routedModelLabel = null;
+      appendStatic([...formatInfoLine('router off — using the fixed model'), '']);
+    };
+    if (arg === 'off' || arg === 'none') { turnOff(); return; }
+
+    if (arg) {
+      const found = loadRouterProfile(arg, sdk.config.workDir);
+      if (!found) {
+        appendStatic([...formatErrorLine(`router profile not found: ${arg}`), '']);
+        return;
+      }
+      activeRouter = found.profile;
+      routedModelLabel = null;
+      appendStatic([...formatInfoLine(`router active: ${found.profile.name} — each turn is classified by ${found.profile.routerModel.model} and routed`), '']);
+      return;
+    }
+
+    const profiles = listRouterProfiles(sdk.config.workDir);
+    if (profiles.length === 0) {
+      appendStatic([
+        ...formatInfoLine('no router profiles found. Create one at ~/.actoviq/routers/<name>.json (routerModel + routes:[{ when, model, provider?, baseURL?, apiKey? }] + fallback).'),
+        '',
+      ]);
+      return;
+    }
+    const items = [
+      { id: '__off__', label: activeRouter ? `Turn router off (active: ${activeRouter.name})` : 'Router off (current)', description: 'use the fixed model for every turn' },
+      ...profiles.map((p) => ({ id: `profile:${p.name}`, label: p.name, description: `${p.profile.routes.length} routes · classifier ${p.profile.routerModel.model} · ${p.source}` })),
+    ];
+    const choice = await selectItem({ title: 'Model router', subtitle: 'classify each turn and route to a model (may be cross-provider)', items });
+    if (!choice) return;
+    if (choice === '__off__') { turnOff(); return; }
+    const found = loadRouterProfile(choice.slice('profile:'.length), sdk.config.workDir);
+    if (found) {
+      activeRouter = found.profile;
+      routedModelLabel = null;
+      appendStatic([...formatInfoLine(`router active: ${found.profile.name} — turns routed by ${found.profile.routerModel.model}`), '']);
+    }
+  }
+
   async function startRun(text: string): Promise<void> {
     running = true;
     runStartedAt = Date.now();
@@ -832,6 +887,20 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     appendStatic(formatUserPrompt(text));
     renderDynamic();
 
+    // /model router: classify this turn and route it to the chosen model
+    // (possibly on a different provider). The turn then runs normally.
+    let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
+    if (activeRouter) {
+      try {
+        const decision = await resolveRoutedRun(activeRouter, text, abortCtrl.signal);
+        routed = { model: decision.model, modelApi: decision.modelApi };
+        routedModelLabel = `${decision.label} (${decision.model})`;
+        appendStatic(formatInfoLine(`router → ${routedModelLabel}`));
+      } catch (error: any) {
+        appendStatic(formatInfoLine(`router classification failed (${error.message}); using ${session.model}`));
+      }
+    }
+
     try {
       const stream = session.stream(text, {
         systemPrompt,
@@ -839,6 +908,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         permissionMode: currentPermissionMode(),
         effort: currentEffort(),
         approver,
+        ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
         ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
         ...(canUseTool ? { canUseTool } : {}),
         drainQueuedInputs: () => {
@@ -976,7 +1046,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       clear: '/clear',
       compact: '/compact [summary instructions]',
       memory: '/memory',
-      model: '/model [model|min|medium|max|default|config]',
+      model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
       sessions: '/sessions',
@@ -1422,6 +1492,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           }
           if (args === 'config') {
             await configureModelSettings();
+            return;
+          }
+          if (args === 'router' || args.startsWith('router ')) {
+            await chooseRouter(args.slice('router'.length).trim());
             return;
           }
           await session.setModel(args === 'default' ? sdk.config.model : args);
