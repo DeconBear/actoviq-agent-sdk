@@ -2,10 +2,10 @@
  * Model Team feature tests — v0.5.0
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createModelTeam, createTeamTool, ModelTeam } from '../src/team/modelTeam.js';
+import { createModelTeam, createTeamTool, ModelTeam, orchestratePanel } from '../src/team/modelTeam.js';
 import { AgentPool, getGlobalAgentPool, resetGlobalAgentPool } from '../src/team/agentPool.js';
 import { getModelPricing, estimateCost, clearPricingCache } from '../src/team/pricing.js';
-import type { TeamDefinition } from '../src/types.js';
+import type { TeamDefinition, ExpertPanelReport } from '../src/types.js';
 
 describe('AgentPool', () => {
   beforeEach(() => {
@@ -304,5 +304,108 @@ describe('API key resolution', () => {
   it('passes through literal keys', () => {
     const literalKey = 'sk-literal-key-456';
     expect(literalKey.startsWith('$')).toBe(false);
+  });
+});
+
+describe('panel-analysis convergence loop (orchestratePanel)', () => {
+  // Each "round" produces one labeled report; the fakes stand in for the model
+  // APIs so the loop logic is exercised deterministically, no network involved.
+  const reportFor = (round: number): ExpertPanelReport[] => [
+    { model: 'expert', report: `findings-${round}`, toolCalls: 1, durationMs: 1, round },
+  ];
+
+  it('is single-pass advisory when no decide callback (no primary)', async () => {
+    const investigated: number[] = [];
+    const res = await orchestratePanel({
+      prompt: 'task',
+      maxRounds: 100,
+      investigate: async (round) => {
+        investigated.push(round);
+        return reportFor(round);
+      },
+    });
+    expect(investigated).toEqual([1]); // round 1 only
+    expect(res.rounds).toBe(1);
+    expect(res.reports).toHaveLength(1);
+    expect(res.answer).toContain('findings-1');
+  });
+
+  it('finalizes on the first primary decision', async () => {
+    const investigated: number[] = [];
+    let decideCalls = 0;
+    const res = await orchestratePanel({
+      prompt: 'task',
+      maxRounds: 100,
+      investigate: async (round) => {
+        investigated.push(round);
+        return reportFor(round);
+      },
+      decide: async () => {
+        decideCalls += 1;
+        return 'FINALIZE\nThe synthesized answer.';
+      },
+    });
+    expect(investigated).toEqual([1]);
+    expect(decideCalls).toBe(1);
+    expect(res.rounds).toBe(1);
+    expect(res.answer).toBe('The synthesized answer.');
+  });
+
+  it('runs multiple rounds until the primary finalizes, threading refined question + prior context', async () => {
+    const investigated: Array<{ round: number; question: string; prior?: string }> = [];
+    const script = ['CONTINUE dig into auth', 'CONTINUE check sessions', 'FINALIZE\nDone.'];
+    let d = 0;
+    const res = await orchestratePanel({
+      prompt: 'is it safe?',
+      maxRounds: 100,
+      investigate: async (round, question, prior) => {
+        investigated.push({ round, question, prior });
+        return reportFor(round);
+      },
+      decide: async () => script[d++]!,
+    });
+    expect(res.rounds).toBe(3);
+    expect(investigated.map((i) => i.round)).toEqual([1, 2, 3]);
+    expect(investigated[1]!.question).toBe('dig into auth'); // refined question threaded
+    expect(investigated[1]!.prior).toContain('findings-1'); // prior findings threaded
+    expect(investigated[2]!.question).toBe('check sessions');
+    expect(res.reports).toHaveLength(3);
+    expect(res.answer).toBe('Done.');
+  });
+
+  it('stops at maxRounds and returns the findings unsynthesized when never finalized', async () => {
+    const investigated: number[] = [];
+    const res = await orchestratePanel({
+      prompt: 'task',
+      maxRounds: 2,
+      investigate: async (round) => {
+        investigated.push(round);
+        return reportFor(round);
+      },
+      decide: async () => 'CONTINUE keep digging', // primary never finalizes
+    });
+    expect(investigated).toEqual([1, 2]); // capped
+    expect(res.rounds).toBe(2);
+    expect(res.answer).toContain('findings-2'); // fallback: labeled findings, not synthesized
+  });
+
+  it('treats a non-CONTINUE decision as finalize (case-insensitive, graceful default)', async () => {
+    const lower = await orchestratePanel({
+      prompt: 't',
+      maxRounds: 100,
+      investigate: async (round) => reportFor(round),
+      decide: async () => 'finalize\nlower-case answer',
+    });
+    expect(lower.rounds).toBe(1);
+    expect(lower.answer).toBe('lower-case answer');
+
+    const noKeyword = await orchestratePanel({
+      prompt: 't',
+      maxRounds: 100,
+      investigate: async (round) => reportFor(round),
+      decide: async () => 'Here is my answer with no keyword',
+    });
+    expect(noKeyword.rounds).toBe(1);
+    expect(noKeyword.answer).toBe('Here is my answer with no keyword');
   });
 });
