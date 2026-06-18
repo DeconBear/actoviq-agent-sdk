@@ -88,18 +88,17 @@ describe('Team definitions from disk', () => {
 
   it('lists all team definitions', async () => {
     await saveTeamDefinition(panelDef, { projectDir: tmpDir });
-    const routerDef: TeamDefinition = {
-      name: 'test-router',
-      mode: 'router',
+    const reviewerDef: TeamDefinition = {
+      name: 'test-reviewer',
+      mode: 'reviewer',
       members: [],
-      router: { model: 'haiku' },
-      specialists: { code: { model: 'sonnet' } },
+      reviewer: { model: 'opus' },
     };
-    await saveTeamDefinition(routerDef, { projectDir: tmpDir });
+    await saveTeamDefinition(reviewerDef, { projectDir: tmpDir });
 
     const teams = listTeamDefinitions(tmpDir);
     expect(teams.length).toBe(2);
-    expect(teams.map((t) => t.name).sort()).toEqual(['test-panel', 'test-router']);
+    expect(teams.map((t) => t.name).sort()).toEqual(['test-panel', 'test-reviewer']);
   });
 
   it('deletes a team definition', async () => {
