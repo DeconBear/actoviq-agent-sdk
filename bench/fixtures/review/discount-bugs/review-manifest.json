@@ -1,0 +1,29 @@
+{
+  "title": "Cart pricing bug review",
+  "task": "Review discount.js for correctness bugs before I ship it. List each real bug with its location and why it's wrong.",
+  "context": "I fixed the cart pricing in discount.js. applyDiscount takes a percent off, lineTotal multiplies by quantity, and cartTotal sums the lines and rounds to cents. I clamped negative inputs and tested applyDiscount(100, 10) === 90 and a 2-item cart, and the numbers looked right, so I think it's ready.",
+  "bugs": [
+    {
+      "id": "cart-off-by-one",
+      "location": "discount.js: cartTotal loop",
+      "description": "The loop starts at i = 1, so the first cart item (items[0]) is never added to the total — a classic off-by-one. cartTotal undercounts every cart."
+    },
+    {
+      "id": "percent-not-clamped",
+      "location": "discount.js: applyDiscount",
+      "description": "percentOff is not clamped to 0..100 despite the author's claim. percentOff > 100 yields a negative price and percentOff < 0 silently marks the price up."
+    },
+    {
+      "id": "negative-quantity",
+      "location": "discount.js: lineTotal",
+      "description": "Negative quantity is not rejected, so a negative quantity produces a negative line total (and can cancel out other items)."
+    }
+  ],
+  "traps": [
+    {
+      "id": "cents-rounding",
+      "location": "discount.js: cartTotal (Math.round(total * 100) / 100)",
+      "description": "Rounding to cents with Math.round(total * 100) / 100 is the standard correct approach here; reporting it as a precision bug is a false positive."
+    }
+  ]
+}

@@ -193,12 +193,13 @@ async function runReviewerMode(
   definition: TeamDefinition,
   signal?: AbortSignal,
   context?: string,
+  workDir?: string,
 ): Promise<ReviewerResult> {
   const startedAt = Date.now();
   const reviewer = definition.reviewer!;
   // Lazy import avoids a circular dependency (agentClient imports modelTeam).
   const { createAgentSdk } = await import('../runtime/agentClient.js');
-  const cwd = process.cwd();
+  const cwd = workDir ?? process.cwd();
 
   const reviewerFraming = [
     'You are a meticulous reviewer on a multi-model team.',
@@ -291,11 +292,12 @@ async function runPanelAnalysisMode(
   prompt: string,
   definition: TeamDefinition,
   signal?: AbortSignal,
+  workDir?: string,
 ): Promise<AnalysisResult> {
   const startedAt = Date.now();
   // Lazy imports avoid a circular dependency (agentClient imports modelTeam).
   const { createAgentSdk } = await import('../runtime/agentClient.js');
-  const cwd = process.cwd();
+  const cwd = workDir ?? process.cwd();
   const readOnlyTools = await buildReadOnlyExpertTools(cwd);
 
   // Bounded ReAct depth per member so a panel can't run away (configurable).
@@ -513,15 +515,15 @@ export class ModelTeam {
    * (reviewer mode only — what the main agent did and obtained). Returns the
    * mode-specific result.
    */
-  async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string }): Promise<ModelTeamResult> {
+  async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string; workDir?: string }): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
       case 'reviewer':
       case 'executor-reviewer': // alias: the retired executor loop now runs the single reviewer
-        return runReviewerMode(prompt, this.definition, signal, opts?.context);
+        return runReviewerMode(prompt, this.definition, signal, opts?.context, opts?.workDir);
       case 'panel': // alias: retired pure-text panel now runs the unified engine
       case 'analysis':
       case 'panel-analysis':
-        return runPanelAnalysisMode(prompt, this.definition, signal);
+        return runPanelAnalysisMode(prompt, this.definition, signal, opts?.workDir);
       default:
         throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
     }
