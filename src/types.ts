@@ -2389,7 +2389,7 @@ export interface WorktreeInfo {
  * convergence (the `panel` capability). `panel` and `analysis` are retained as
  * backward-compatible aliases that route to the same engine.
  */
-export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'router' | 'discussion' | 'executor-reviewer';
+export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'router' | 'discussion' | 'executor-reviewer';
 
 export interface TeamMember {
   model: string;
@@ -2419,7 +2419,7 @@ export interface TeamDefinition {
   timeoutMs?: number;
   /** Safety cap on deliberation rounds (panel/discussion). Default 100; raise/lower per cost budget. */
   maxRounds?: number;
-  /** Safety cap on executor-reviewer iterations. Default 100. */
+  /** Per-member ReAct tool-iteration cap for panel-analysis/reviewer members. Default 16. */
   maxIterations?: number;
   classificationPrompt?: string;
 }
@@ -2464,17 +2464,16 @@ export interface DiscussionResult extends TeamResult {
   }>;
 }
 
-export interface ExecutorReviewerDecision {
-  iteration: number;
-  action: 'accept' | 'reject' | 'partial' | 'finalize';
-  explanation: string;
-}
-
-export interface ExecutorReviewerResult extends TeamResult {
-  mode: 'executor-reviewer';
-  iterations: number;
-  decisions: ExecutorReviewerDecision[];
-  reviews: Array<{ iteration: number; feedback: string }>;
+/**
+ * `reviewer` result. A single read-only ReAct agent inspects the project and
+ * returns confirmed issues. The main agent (the "executor") invokes it as a
+ * tool, supplies the context to review, and keeps final authority over the
+ * findings. It only confirms issues it can verify — no speculation.
+ */
+export interface ReviewerResult extends TeamResult {
+  mode: 'reviewer';
+  report: string;
+  toolCalls: number;
 }
 
 /** One panel member's findings in `panel-analysis`/`analysis` mode. */
@@ -2504,7 +2503,7 @@ export interface AnalysisResult extends TeamResult {
 export type ModelTeamResult =
   | RouterResult
   | DiscussionResult
-  | ExecutorReviewerResult
+  | ReviewerResult
   | AnalysisResult;
 
 export interface ModelPricing {

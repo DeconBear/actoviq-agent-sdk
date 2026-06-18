@@ -182,21 +182,32 @@ describe('ModelTeam validation', () => {
     expect(() => createModelTeam(def)).toThrow('at least 2');
   });
 
-  it('validates executor-reviewer requires executor and reviewer', () => {
+  it('validates reviewer mode requires a reviewer member', () => {
     const def: TeamDefinition = {
-      name: 'test-er',
-      mode: 'executor-reviewer',
+      name: 'test-reviewer',
+      mode: 'reviewer',
       members: [],
     };
-    expect(() => createModelTeam(def)).toThrow('executor');
+    expect(() => createModelTeam(def)).toThrow('reviewer');
+  });
 
-    const def2: TeamDefinition = {
-      name: 'test-er',
+  it('creates a valid reviewer team and accepts executor-reviewer as an alias', () => {
+    const reviewer = createModelTeam({
+      name: 'reviewer',
+      mode: 'reviewer',
+      members: [],
+      reviewer: { model: 'claude-opus-4-8' },
+    });
+    expect(reviewer.definition.mode).toBe('reviewer');
+
+    // The retired executor-reviewer alias now needs only a reviewer (no executor).
+    const legacy = createModelTeam({
+      name: 'legacy-er',
       mode: 'executor-reviewer',
       members: [],
-      executor: { model: 'claude-sonnet-4-6' },
-    };
-    expect(() => createModelTeam(def2)).toThrow('reviewer');
+      reviewer: { model: 'claude-opus-4-8' },
+    });
+    expect(legacy.definition.mode).toBe('executor-reviewer');
   });
 
   it('creates a valid panel team', () => {
