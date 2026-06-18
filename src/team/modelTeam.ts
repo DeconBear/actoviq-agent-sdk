@@ -11,7 +11,6 @@ import type {
   TeamDefinition,
   TeamMember,
   TeamResult,
-  RouterResult,
   DiscussionResult,
   ReviewerResult,
   TeamCost,
@@ -162,92 +161,6 @@ async function mapWithConcurrency<T, R>(
   );
   await Promise.all(workers);
   return results;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Router Mode — user-configured dispatch
-// ═══════════════════════════════════════════════════════════════════
-
-async function runRouterMode(
-  prompt: string,
-  definition: TeamDefinition,
-  signal?: AbortSignal,
-): Promise<RouterResult> {
-  const startedAt = Date.now();
-  const routerApi: MemberApi = await createMemberApi(definition.router!);
-  const specialistApis = new Map<string, MemberApi>();
-  for (const [key, spec] of Object.entries(definition.specialists ?? {})) {
-    specialistApis.set(key, await createMemberApi(spec));
-  }
-  const fallbackApi: MemberApi | null = definition.fallback ? await createMemberApi(definition.fallback) : null;
-
-  // Build classification prompt
-  const specialistDescriptions = Object.entries(definition.specialists ?? {})
-    .map(([key, spec]) => `- ${key}: ${spec.description ?? 'General tasks'}`)
-    .join('\n');
-
-  const classificationPrompt = definition.classificationPrompt ?? [
-    'You are a task classifier. Based on the user\'s request, determine which specialist should handle it.',
-    '',
-    'Available specialists:',
-    specialistDescriptions,
-    definition.fallback ? `- fallback: ${definition.fallback.description ?? 'General assistance'}` : null,
-    '',
-    'User request:',
-    prompt,
-    '',
-    'Return ONLY the specialist name (one word, lowercase).',
-  ].filter(Boolean).join('\n');
-
-  const classifyResult = await singleModelCall(routerApi, classificationPrompt, definition.router?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-  const specialistKey = classifyResult.content.trim().toLowerCase();
-  const validKeys = Object.keys(definition.specialists ?? {});
-
-  let chosenApi: MemberApi;
-  let chosenKey: string;
-  let chosenMember: TeamMember;
-
-  if (validKeys.includes(specialistKey)) {
-    chosenApi = specialistApis.get(specialistKey)!;
-    chosenKey = specialistKey;
-    chosenMember = definition.specialists![specialistKey]!;
-  } else if (fallbackApi) {
-    chosenApi = fallbackApi;
-    chosenKey = 'fallback';
-    chosenMember = definition.fallback!;
-  } else {
-    // No fallback, pick first specialist
-    chosenKey = validKeys[0] ?? 'default';
-    chosenApi = specialistApis.get(chosenKey)!;
-    chosenMember = definition.specialists![chosenKey]!;
-  }
-
-  const result = await singleModelCall(chosenApi, prompt, chosenMember.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-  const modelSet = new Set<string>();
-  modelSet.add(definition.router!.model);
-  modelSet.add(chosenMember.model);
-
-  const perModelTokens = new Map<string, { input: number; output: number }>();
-  perModelTokens.set(definition.router!.model, { input: classifyResult.inputTokens, output: classifyResult.outputTokens });
-  perModelTokens.set(chosenMember.model, { input: result.inputTokens, output: result.outputTokens });
-
-  const cost = computeCost(
-    [...modelSet],
-    classifyResult.inputTokens + result.inputTokens,
-    classifyResult.outputTokens + result.outputTokens,
-    perModelTokens,
-  );
-
-  return {
-    answer: result.content,
-    mode: 'router',
-    specialist: chosenKey,
-    classification: classifyResult.content,
-    cost,
-    durationMs: Date.now() - startedAt,
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -761,8 +674,6 @@ export class ModelTeam {
    */
   async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string }): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
-      case 'router':
-        return runRouterMode(prompt, this.definition, signal);
       case 'discussion':
         return runDiscussionMode(prompt, this.definition, signal);
       case 'reviewer':
@@ -794,10 +705,6 @@ function validateTeamDefinition(def: TeamDefinition): void {
   if (!def.mode) throw new Error('Team definition must specify a mode.');
 
   switch (def.mode) {
-    case 'router':
-      if (!def.router) throw new Error('Router mode requires a router member.');
-      if (!def.specialists || Object.keys(def.specialists).length === 0) throw new Error('Router mode requires at least one specialist.');
-      break;
     case 'discussion':
       if (!def.primary) throw new Error('Discussion mode requires a primary member.');
       if (!def.members || def.members.length < 2) throw new Error('Discussion mode requires at least 2 members.');

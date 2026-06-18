@@ -152,26 +152,6 @@ describe('ModelTeam validation', () => {
     expect(() => createModelTeam(def)).toThrow('8 members');
   });
 
-  it('validates router mode requires router', () => {
-    const def: TeamDefinition = {
-      name: 'test-router',
-      mode: 'router',
-      members: [],
-      specialists: { coding: { model: 'claude-sonnet-4-6' } },
-    };
-    expect(() => createModelTeam(def)).toThrow('router');
-  });
-
-  it('validates router mode requires specialists', () => {
-    const def: TeamDefinition = {
-      name: 'test-router',
-      mode: 'router',
-      members: [],
-      router: { model: 'claude-haiku-4-5' },
-    };
-    expect(() => createModelTeam(def)).toThrow('specialist');
-  });
-
   it('validates discussion mode requires at least 2 members', () => {
     const def: TeamDefinition = {
       name: 'test-discussion',
@@ -224,20 +204,6 @@ describe('ModelTeam validation', () => {
     expect(team).toBeInstanceOf(ModelTeam);
     expect(team.name).toBe('valid-panel');
     expect(team.definition.mode).toBe('panel');
-  });
-
-  it('creates a valid router team', () => {
-    const def: TeamDefinition = {
-      name: 'valid-router',
-      mode: 'router',
-      members: [],
-      router: { model: 'claude-haiku-4-5' },
-      specialists: {
-        coding: { model: 'claude-sonnet-4-6', description: 'code tasks' },
-      },
-    };
-    const team = createModelTeam(def);
-    expect(team.definition.mode).toBe('router');
   });
 
   it('validates panel-analysis requires at least one member', () => {

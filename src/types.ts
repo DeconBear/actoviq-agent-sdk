@@ -2389,7 +2389,7 @@ export interface WorktreeInfo {
  * convergence (the `panel` capability). `panel` and `analysis` are retained as
  * backward-compatible aliases that route to the same engine.
  */
-export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'router' | 'discussion' | 'executor-reviewer';
+export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'discussion' | 'executor-reviewer';
 
 export interface TeamMember {
   model: string;
@@ -2448,12 +2448,6 @@ export interface TeamResult {
   durationMs: number;
 }
 
-export interface RouterResult extends TeamResult {
-  mode: 'router';
-  specialist: string;
-  classification: string;
-}
-
 export interface DiscussionResult extends TeamResult {
   mode: 'discussion';
   rounds: number;
@@ -2501,7 +2495,6 @@ export interface AnalysisResult extends TeamResult {
 }
 
 export type ModelTeamResult =
-  | RouterResult
   | DiscussionResult
   | ReviewerResult
   | AnalysisResult;
