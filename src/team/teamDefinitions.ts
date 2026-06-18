@@ -51,16 +51,7 @@ function resolveEnvVars(def: TeamDefinition): TeamDefinition {
     ...def,
     members: resolvedMembers ?? def.members,
     primary: def.primary ? { ...def.primary, apiKey: resolve(def.primary.apiKey) } : undefined,
-    router: def.router ? { ...def.router, apiKey: resolve(def.router.apiKey) } : undefined,
-    facilitator: def.facilitator ? { ...def.facilitator, apiKey: resolve(def.facilitator.apiKey) } : undefined,
-    executor: def.executor ? { ...def.executor, apiKey: resolve(def.executor.apiKey) } : undefined,
     reviewer: def.reviewer ? { ...def.reviewer, apiKey: resolve(def.reviewer.apiKey) } : undefined,
-    fallback: def.fallback ? { ...def.fallback, apiKey: resolve(def.fallback.apiKey) } : undefined,
-    specialists: def.specialists
-      ? Object.fromEntries(
-          Object.entries(def.specialists).map(([k, v]) => [k, { ...v, apiKey: resolve(v.apiKey) }]),
-        )
-      : undefined,
   };
 }
 
@@ -121,11 +112,7 @@ export async function saveTeamDefinition(
       ...def,
       members: def.members?.map((m) => ({ ...m, apiKey: m.apiKey?.startsWith?.('$') ? m.apiKey : undefined })),
       primary: def.primary ? { ...def.primary, apiKey: undefined } : undefined,
-      router: def.router ? { ...def.router, apiKey: undefined } : undefined,
-      facilitator: def.facilitator ? { ...def.facilitator, apiKey: undefined } : undefined,
-      executor: def.executor ? { ...def.executor, apiKey: undefined } : undefined,
       reviewer: def.reviewer ? { ...def.reviewer, apiKey: undefined } : undefined,
-      fallback: def.fallback ? { ...def.fallback, apiKey: undefined } : undefined,
     };
   };
 

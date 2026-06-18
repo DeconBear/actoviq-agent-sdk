@@ -2391,7 +2391,7 @@ export interface WorktreeInfo {
  * convergence (the `panel` capability). `panel` and `analysis` are retained as
  * backward-compatible aliases that route to the same engine.
  */
-export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'discussion' | 'executor-reviewer';
+export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'executor-reviewer';
 
 export interface TeamMember {
   model: string;
@@ -2407,32 +2407,20 @@ export interface TeamDefinition {
   name: string;
   description?: string;
   mode: ModelTeamMode;
+  /** Panel members (panel-analysis / its `panel`+`analysis` aliases). */
   members: TeamMember[];
+  /** Optional synthesizer that drives panel-analysis convergence. */
   primary?: TeamMember;
-  facilitator?: TeamMember;
-  router?: TeamMember;
-  specialists?: Record<string, RouterSpecialist>;
-  executor?: TeamMember;
+  /** The reviewer model (reviewer / its `executor-reviewer` alias). */
   reviewer?: TeamMember;
-  fallback?: TeamMember;
   /** Max panel members dispatched concurrently within this team (still bounded by the global AgentPool). Default: all members. */
   maxParallel?: number;
-  /** Per-member, per-call timeout in ms (applied across all modes/rounds). */
+  /** Per-member, per-call timeout in ms. */
   timeoutMs?: number;
-  /** Safety cap on deliberation rounds (panel/discussion). Default 100; raise/lower per cost budget. */
+  /** Safety cap on panel-analysis convergence rounds. Default 100; raise/lower per cost budget. */
   maxRounds?: number;
   /** Per-member ReAct tool-iteration cap for panel-analysis/reviewer members. Default 16. */
   maxIterations?: number;
-  classificationPrompt?: string;
-}
-
-export interface RouterSpecialist {
-  model: string;
-  provider?: 'anthropic' | 'openai';
-  baseURL?: string;
-  apiKey?: string;
-  systemPrompt?: string;
-  description?: string;
 }
 
 export interface TeamCost {
@@ -2448,16 +2436,6 @@ export interface TeamResult {
   mode: ModelTeamMode;
   cost: TeamCost;
   durationMs: number;
-}
-
-export interface DiscussionResult extends TeamResult {
-  mode: 'discussion';
-  rounds: number;
-  facilitatorVerdicts: Array<{
-    round: number;
-    summary: string;
-    verdict: 'continue' | 'finalize';
-  }>;
 }
 
 /**
@@ -2497,7 +2475,6 @@ export interface AnalysisResult extends TeamResult {
 }
 
 export type ModelTeamResult =
-  | DiscussionResult
   | ReviewerResult
   | AnalysisResult;
 

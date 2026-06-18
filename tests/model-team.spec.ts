@@ -152,16 +152,6 @@ describe('ModelTeam validation', () => {
     expect(() => createModelTeam(def)).toThrow('8 members');
   });
 
-  it('validates discussion mode requires at least 2 members', () => {
-    const def: TeamDefinition = {
-      name: 'test-discussion',
-      mode: 'discussion',
-      members: [{ model: 'claude-sonnet-4-6' }],
-      primary: { model: 'claude-opus-4-8' },
-    };
-    expect(() => createModelTeam(def)).toThrow('at least 2');
-  });
-
   it('validates reviewer mode requires a reviewer member', () => {
     const def: TeamDefinition = {
       name: 'test-reviewer',

@@ -11,7 +11,6 @@ import type {
   TeamDefinition,
   TeamMember,
   TeamResult,
-  DiscussionResult,
   ReviewerResult,
   TeamCost,
   AnalysisResult,
@@ -161,164 +160,6 @@ async function mapWithConcurrency<T, R>(
   );
   await Promise.all(workers);
   return results;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Discussion Mode — roundtable for hard problems
-// ═══════════════════════════════════════════════════════════════════
-
-async function runDiscussionMode(
-  prompt: string,
-  definition: TeamDefinition,
-  signal?: AbortSignal,
-): Promise<DiscussionResult> {
-  const startedAt = Date.now();
-  const primaryApi: MemberApi = await createMemberApi(definition.primary!);
-  const memberApis: MemberApi[] = await Promise.all(definition.members.map((m) => createMemberApi(m)));
-  const facilitatorApi = definition.facilitator
-    ? await createMemberApi(definition.facilitator)
-    : primaryApi; // fallback: primary acts as facilitator
-
-  let rounds = 0;
-  let converged = false;
-  let finalAnswer = '';
-  const facilitatorVerdicts: DiscussionResult['facilitatorVerdicts'] = [];
-  const modelSet = new Set<string>();
-  definition.members.forEach((m) => modelSet.add(m.model));
-  modelSet.add(definition.primary!.model);
-  if (definition.facilitator) modelSet.add(definition.facilitator.model);
-
-  const perModelTokens = new Map<string, { input: number; output: number }>();
-  let totalInput = 0;
-  let totalOutput = 0;
-
-  let discussionTranscript = `# Discussion Topic\n${prompt}\n\n`;
-  const maxRounds = definition.maxRounds ?? 100;
-
-  while (!converged && rounds < maxRounds) {
-    rounds++;
-
-    // Sequential speaking: each member sees prior speakers
-    for (let i = 0; i < definition.members.length; i++) {
-      const member = definition.members[i]!;
-      const speakPrompt = [
-        `## Discussion Round ${rounds}`,
-        '',
-        `Topic: ${prompt}`,
-        '',
-        'Previous discussion:',
-        discussionTranscript,
-        '',
-        `You are ${member.model}. Please contribute your perspective. ` +
-        'Consider what previous speakers have said. Build on agreements, address disagreements.',
-      ].join('\n');
-
-      const result = await singleModelCall(memberApis[i]!, speakPrompt, member.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-      discussionTranscript += `\n### ${member.model} (Round ${rounds})\n${result.content}\n`;
-
-      const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
-      ex.input += result.inputTokens;
-      ex.output += result.outputTokens;
-      perModelTokens.set(member.model, ex);
-      totalInput += result.inputTokens;
-      totalOutput += result.outputTokens;
-    }
-
-    // Facilitator subagent rules after the round
-    const facilitatorPrompt = [
-      'You are a discussion facilitator. Review the roundtable transcript and provide:',
-      '',
-      '1. **Summary**: Key points raised, areas of agreement and disagreement',
-      '2. **Progress Assessment**: Is the discussion converging? Are there blockers?',
-      '3. **Verdict**: Should discussion CONTINUE or FINALIZE?',
-      '',
-      'Respond in this format:',
-      '',
-      'SUMMARY:',
-      '<summary>',
-      '',
-      'VERDICT: CONTINUE|FINALIZE',
-      '',
-      'If CONTINUE, add:',
-      'NEXT_TOPIC: <what the next round should focus on>',
-      '',
-      'Discussion transcript:',
-      discussionTranscript,
-    ].join('\n');
-
-    const facilitatorResult = await singleModelCall(facilitatorApi, facilitatorPrompt, definition.facilitator?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-    if (definition.facilitator) {
-      const fex = perModelTokens.get(definition.facilitator.model) ?? { input: 0, output: 0 };
-      fex.input += facilitatorResult.inputTokens;
-      fex.output += facilitatorResult.outputTokens;
-      perModelTokens.set(definition.facilitator.model, fex);
-    }
-    totalInput += facilitatorResult.inputTokens;
-    totalOutput += facilitatorResult.outputTokens;
-
-    const summaryMatch = facilitatorResult.content.match(/SUMMARY:\s*\n([\s\S]*?)(?=\nVERDICT:|$)/i);
-    const verdictMatch = facilitatorResult.content.match(/VERDICT:\s*(CONTINUE|FINALIZE)/i);
-    const nextTopicMatch = facilitatorResult.content.match(/NEXT_TOPIC:\s*(.+)/i);
-
-    const verdict = verdictMatch?.[1]?.toUpperCase() === 'FINALIZE' ? 'finalize' as const : 'continue' as const;
-
-    facilitatorVerdicts.push({
-      round: rounds,
-      summary: summaryMatch?.[1]?.trim() ?? facilitatorResult.content,
-      verdict,
-    });
-
-    // Primary model makes final decision
-    const primaryDecisionPrompt = [
-      'As the primary decision-maker, review the facilitator\'s report and the full discussion.',
-      '',
-      'Facilitator recommendation:',
-      facilitatorResult.content,
-      '',
-      'Full discussion transcript:',
-      discussionTranscript,
-      '',
-      'You may override the facilitator\'s recommendation. Decide:',
-      '- FINALIZE: synthesize the solution and deliver it',
-      '- CONTINUE: specify what the next round should address',
-      '',
-      'Respond with FINALIZE or CONTINUE followed by your reasoning/output.',
-    ].join('\n');
-
-    const primaryResult = await singleModelCall(primaryApi, primaryDecisionPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-
-    const pex = perModelTokens.get(definition.primary!.model) ?? { input: 0, output: 0 };
-    pex.input += primaryResult.inputTokens;
-    pex.output += primaryResult.outputTokens;
-    perModelTokens.set(definition.primary!.model, pex);
-    totalInput += primaryResult.inputTokens;
-    totalOutput += primaryResult.outputTokens;
-
-    if (primaryResult.content.trim().startsWith('FINALIZE')) {
-      finalAnswer = primaryResult.content.replace(/^FINALIZE\s*/i, '').trim();
-      converged = true;
-    } else {
-      const nextTopic = nextTopicMatch?.[1] ?? primaryResult.content.replace(/^CONTINUE\s*/i, '').trim();
-      discussionTranscript += `\n### Facilitator (Round ${rounds})\nVerdict: CONTINUE\nNext topic: ${nextTopic}\n`;
-    }
-  }
-
-  if (!converged) {
-    finalAnswer = discussionTranscript;
-  }
-
-  const cost = computeCost([...modelSet], totalInput, totalOutput, perModelTokens);
-
-  return {
-    answer: finalAnswer,
-    mode: 'discussion',
-    rounds,
-    facilitatorVerdicts,
-    cost,
-    durationMs: Date.now() - startedAt,
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -674,8 +515,6 @@ export class ModelTeam {
    */
   async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string }): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
-      case 'discussion':
-        return runDiscussionMode(prompt, this.definition, signal);
       case 'reviewer':
       case 'executor-reviewer': // alias: the retired executor loop now runs the single reviewer
         return runReviewerMode(prompt, this.definition, signal, opts?.context);
@@ -705,10 +544,6 @@ function validateTeamDefinition(def: TeamDefinition): void {
   if (!def.mode) throw new Error('Team definition must specify a mode.');
 
   switch (def.mode) {
-    case 'discussion':
-      if (!def.primary) throw new Error('Discussion mode requires a primary member.');
-      if (!def.members || def.members.length < 2) throw new Error('Discussion mode requires at least 2 members.');
-      break;
     case 'reviewer':
     case 'executor-reviewer': // retired alias: needs only a reviewer now
       if (!def.reviewer) throw new Error('Reviewer mode requires a reviewer member.');
