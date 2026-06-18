@@ -937,99 +937,116 @@ async function runPanelAnalysisMode(
     );
   };
 
-  const labelReports = (reports: ExpertPanelReport[]): string =>
-    reports.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
-
   const resultMode: 'analysis' | 'panel-analysis' =
     definition.mode === 'analysis' ? 'analysis' : 'panel-analysis';
 
-  const allReports: ExpertPanelReport[] = [];
-  let rounds = 1;
-  let currentReports = await investigate(1, prompt);
-  allReports.push(...currentReports);
-
-  // No primary → single-pass advisory (original `analysis` behavior).
-  if (!definition.primary) {
-    const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
-    return {
-      answer: labelReports(currentReports),
-      mode: resultMode,
-      reports: allReports,
-      rounds,
-      cost,
-      durationMs: Date.now() - startedAt,
+  // With a primary, build the decision callback that synthesizes findings and
+  // votes FINALIZE/CONTINUE each round; without one, the panel is single-pass.
+  let decide: ((deliberationLog: string) => Promise<string>) | undefined;
+  if (definition.primary) {
+    const primaryApi = await createMemberApi(definition.primary);
+    const primaryModel = definition.primary.model;
+    const primarySystem = definition.primary.systemPrompt;
+    decide = async (deliberationLog: string): Promise<string> => {
+      const decisionPrompt = [
+        'You are the primary synthesizer over a panel of expert analysts; each investigated the task with read-only tools and reported findings.',
+        'Review the full panel findings, then decide whether they are sufficient to answer the task.',
+        '',
+        'Original task:',
+        prompt,
+        '',
+        'Full panel findings so far:',
+        deliberationLog,
+        '',
+        'Respond in one of these formats:',
+        '',
+        'To FINALIZE (findings are sufficient):',
+        'FINALIZE',
+        '<your comprehensive synthesized answer, grounded in the findings>',
+        '',
+        'To CONTINUE (deeper investigation needed):',
+        'CONTINUE',
+        '<a refined question and the specific aspects the panel should investigate next>',
+      ].join('\n');
+      const decision = await singleModelCall(primaryApi, decisionPrompt, primarySystem, memberSignal(signal, definition.timeoutMs));
+      totalInput += decision.inputTokens;
+      totalOutput += decision.outputTokens;
+      const pex = perModelTokens.get(primaryModel) ?? { input: 0, output: 0 };
+      pex.input += decision.inputTokens;
+      pex.output += decision.outputTokens;
+      perModelTokens.set(primaryModel, pex);
+      return decision.content;
     };
   }
 
-  // Primary present → it synthesizes the findings and decides convergence.
-  const primaryApi = await createMemberApi(definition.primary);
-  const primaryModel = definition.primary.model;
-  const maxRounds = definition.maxRounds ?? 100;
-  const deliberationLog: string[] = [`## Round 1 — Panel findings\n${labelReports(currentReports)}`];
-  let finalAnswer = '';
-  let converged = false;
-
-  while (!converged) {
-    const decisionPrompt = [
-      'You are the primary synthesizer over a panel of expert analysts; each investigated the task with read-only tools and reported findings.',
-      'Review the full panel findings, then decide whether they are sufficient to answer the task.',
-      '',
-      'Original task:',
-      prompt,
-      '',
-      'Full panel findings so far:',
-      deliberationLog.join('\n\n---\n\n'),
-      '',
-      'Respond in one of these formats:',
-      '',
-      'To FINALIZE (findings are sufficient):',
-      'FINALIZE',
-      '<your comprehensive synthesized answer, grounded in the findings>',
-      '',
-      'To CONTINUE (deeper investigation needed):',
-      'CONTINUE',
-      '<a refined question and the specific aspects the panel should investigate next>',
-    ].join('\n');
-
-    const decision = await singleModelCall(
-      primaryApi,
-      decisionPrompt,
-      definition.primary.systemPrompt,
-      memberSignal(signal, definition.timeoutMs),
-    );
-    totalInput += decision.inputTokens;
-    totalOutput += decision.outputTokens;
-    const pex = perModelTokens.get(primaryModel) ?? { input: 0, output: 0 };
-    pex.input += decision.inputTokens;
-    pex.output += decision.outputTokens;
-    perModelTokens.set(primaryModel, pex);
-
-    const wantsContinue = decision.content.trim().toUpperCase().startsWith('CONTINUE');
-    if (wantsContinue && rounds < maxRounds) {
-      const refined = decision.content.replace(/^CONTINUE\s*/i, '').trim() || prompt;
-      deliberationLog.push(`## Round ${rounds} — Primary decision\nCONTINUE: ${refined}`);
-      rounds++;
-      currentReports = await investigate(rounds, refined, labelReports(currentReports));
-      allReports.push(...currentReports);
-      deliberationLog.push(`## Round ${rounds} — Panel findings\n${labelReports(currentReports)}`);
-    } else {
-      // FINALIZE, or the safety cap was reached mid-deliberation.
-      finalAnswer = wantsContinue
-        ? labelReports(currentReports) // cap hit: hand back the findings unsynthesized
-        : decision.content.replace(/^FINALIZE\s*/i, '').trim() || labelReports(currentReports);
-      converged = true;
-    }
-  }
+  const { answer, rounds, reports } = await orchestratePanel({
+    prompt,
+    maxRounds: definition.maxRounds ?? 100,
+    investigate,
+    decide,
+  });
 
   const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
   return {
-    answer: finalAnswer,
+    answer,
     mode: resultMode,
-    reports: allReports,
+    reports,
     rounds,
     cost,
     durationMs: Date.now() - startedAt,
   };
+}
+
+/**
+ * Orchestrate the panel over an injectable `investigate` (one round of member
+ * reports) and optional `decide` (the primary's synthesize-or-continue call).
+ *
+ * - No `decide` → single-pass advisory: round 1 only; answer = labeled reports.
+ * - With `decide` → multi-round convergence: after each round the primary votes
+ *   FINALIZE (synthesize) or CONTINUE (refined question); loops until FINALIZE
+ *   or `maxRounds` (safety cap). The keyword match is case-insensitive, and any
+ *   decision that is not a leading CONTINUE finalizes (graceful default).
+ *
+ * Exported so the convergence logic is unit-testable without real model calls.
+ */
+export async function orchestratePanel(opts: {
+  prompt: string;
+  maxRounds: number;
+  investigate: (round: number, question: string, priorContext?: string) => Promise<ExpertPanelReport[]>;
+  decide?: (deliberationLog: string, round: number) => Promise<string>;
+}): Promise<{ answer: string; rounds: number; reports: ExpertPanelReport[] }> {
+  const label = (rs: ExpertPanelReport[]): string =>
+    rs.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
+
+  const allReports: ExpertPanelReport[] = [];
+  let rounds = 1;
+  let currentReports = await opts.investigate(1, opts.prompt);
+  allReports.push(...currentReports);
+
+  // No primary → single-pass advisory (original `analysis` behavior).
+  if (!opts.decide) {
+    return { answer: label(currentReports), rounds, reports: allReports };
+  }
+
+  const deliberationLog: string[] = [`## Round 1 — Panel findings\n${label(currentReports)}`];
+  while (true) {
+    const content = await opts.decide(deliberationLog.join('\n\n---\n\n'), rounds);
+    const wantsContinue = content.trim().toUpperCase().startsWith('CONTINUE');
+    if (wantsContinue && rounds < opts.maxRounds) {
+      const refined = content.replace(/^CONTINUE\s*/i, '').trim() || opts.prompt;
+      deliberationLog.push(`## Round ${rounds} — Primary decision\nCONTINUE: ${refined}`);
+      rounds++;
+      currentReports = await opts.investigate(rounds, refined, label(currentReports));
+      allReports.push(...currentReports);
+      deliberationLog.push(`## Round ${rounds} — Panel findings\n${label(currentReports)}`);
+    } else {
+      // FINALIZE, or the safety cap was reached mid-deliberation.
+      const answer = wantsContinue
+        ? label(currentReports) // cap hit: hand back the findings unsynthesized
+        : content.replace(/^FINALIZE\s*/i, '').trim() || label(currentReports);
+      return { answer, rounds, reports: allReports };
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
