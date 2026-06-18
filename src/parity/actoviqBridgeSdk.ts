@@ -735,13 +735,24 @@ export class ActoviqBridgeSession {
     prompt: string,
     options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): ActoviqBridgeRunStream {
+    // Mark the session as started *synchronously* before returning, so
+    // a back-to-back second stream() call on the same session routes
+    // through `resume` instead of `sessionId`. Previously this flag
+    // was only flipped from inside a detached `.then()` callback on
+    // the previous call's stream, which let a second concurrent call
+    // observe a stale `false` and create a brand-new session,
+    // orphaning the first one.
+    //
+    // The flag is set *after* buildRunOptions() runs (so the current
+    // call still sees the correct value), and the fire-and-forget
+    // `.catch` undoes it if the stream ends up rejected so that the
+    // caller can retry with a fresh session.
     const runStream = this.client.stream(prompt, this.buildRunOptions(options));
-    void runStream.result.then(
-      () => {
-        this.started = true;
-      },
-      () => undefined,
-    );
+    this.started = true;
+    void runStream.result.catch((error) => {
+      this.started = false;
+      throw error;
+    });
     return runStream;
   }
 
