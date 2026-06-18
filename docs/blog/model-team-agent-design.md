@@ -39,16 +39,22 @@ Every mode follows the **Hadamard Agent Harness principle**:
 
 | Mode | Pattern | Who decides |
 |---|---|---|
-| **panel** | N models answer in parallel → a primary synthesizes, optionally over multiple rounds | Primary model converges autonomously |
-| **router** | A classifier dispatches to a user‑defined specialist | User‑configured categories |
-| **discussion** | Members speak in turn each round; a facilitator summarizes; the primary rules | Primary (can override the facilitator) |
-| **executor‑reviewer** | An executor owns the output; a reviewer advises; the executor accepts/rejects | Executor has final authority |
-| **analysis** | N independent **read‑only ReAct agents** investigate and each return a findings report | The *calling* agent — the team only advises |
+| **panel-analysis** | N independent **read‑only ReAct agents** investigate in parallel; an optional `primary` then synthesizes and converges over rounds | No primary = the *calling* agent decides; with a primary = the primary converges autonomously |
+| **reviewer** | One read‑only ReAct agent inspects the project and reports only verifiable issues; the caller injects `context` (what it did + results) into the reviewer's system prompt | The main agent (the "executor") keeps final authority |
 
-The `analysis` mode is the one this report focuses on, because it is the form
-that an agent invokes as a tool while it works.
+> **Design note (current).** The team layer is intentionally small: two read‑only
+> advisory tools the main agent invokes. `panel`/`analysis` are kept as aliases
+> of `panel-analysis`, and `executor-reviewer` as an alias of `reviewer`.
+> *Model routing* is **not** a team — it moved to the `/model` router layer
+> (classify a turn → run it on a different model/provider). A standalone
+> *discussion* mode was retired; sequential debate is better expressed as a
+> Dynamic Workflow.
 
-### 1.2 The autonomous expert panel (`analysis` mode)
+This report focuses on the advisory expert panel (`panel-analysis` with no
+primary — the original `analysis` mode), because it is the form an agent invokes
+as a tool while it works.
+
+### 1.2 The autonomous expert panel (`panel-analysis`, no primary)
 
 Each panel member is an **independent, read‑only ReAct agent** with a curated,
 non‑destructive toolset:
