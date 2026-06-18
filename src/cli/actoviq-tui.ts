@@ -10,8 +10,21 @@
  */
 import { runActoviqTui } from '../tui/actoviqTui.js';
 import type { ActoviqPermissionMode } from '../types.js';
+import { createRequire } from 'node:module';
 
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto']);
+
+// Read package version from the nearest package.json. createRequire lets
+// this work in both ESM and CJS contexts. Falls back to "unknown" when
+// the binary is detached from a package directory.
+const require = createRequire(import.meta.url);
+const VERSION: string = (() => {
+  try {
+    return (require('../package.json') as { version?: string }).version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 function parseArgs(argv: string[]): {
   workDir?: string;
@@ -21,11 +34,14 @@ function parseArgs(argv: string[]): {
   resumeSessionId?: string;
   continueMostRecent?: boolean;
   help?: boolean;
+  version?: boolean;
 } {
   const result: ReturnType<typeof parseArgs> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
-    if (arg === '--help' || arg === '-h') {
+    if (arg === '--version' || arg === '-v') {
+      result.version = true;
+    } else if (arg === '--help' || arg === '-h') {
       result.help = true;
     } else if (arg === '--config' && argv[index + 1]) {
       result.configPath = argv[++index];
@@ -54,6 +70,10 @@ function parseArgs(argv: string[]): {
 
 const args = parseArgs(process.argv.slice(2));
 
+if (args.version) {
+  process.stdout.write(`actoviq-tui ${VERSION}\n`);
+  process.exit(0);
+}
 if (args.help) {
   process.stdout.write(
     [
@@ -67,6 +87,7 @@ if (args.help) {
       '  --model <model>            Override the configured model',
       '  --resume <session-id>      Resume a stored Clean SDK session',
       '  --continue                 Resume the most recent stored session',
+      '  -v, --version              Print the actoviq-tui version and exit',
       '  -h, --help                 Show this help',
       '',
     ].join('\n'),

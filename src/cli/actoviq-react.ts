@@ -20,9 +20,50 @@ import {
   WorktreeService,
 } from 'actoviq-agent-sdk';
 import { execSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import * as readline from 'node:readline';
+
+// Read package version from the nearest package.json. createRequire is
+// used so this works in both ESM and CJS contexts. Falls back to "unknown"
+// when the binary is detached from a package directory (e.g. running
+// straight from a source checkout without `npm install`).
+const require = createRequire(import.meta.url);
+const VERSION: string = (() => {
+  try {
+    return (require('../package.json') as { version?: string }).version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
+if (process.argv.includes('--version') || process.argv.includes('-v')) {
+  process.stdout.write(`actoviq-react ${VERSION}\n`);
+  process.exit(0);
+}
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  process.stdout.write(
+    [
+      'actoviq-react — Clean SDK scrollback REPL',
+      '',
+      'Usage: actoviq-react [work-dir] [config-path] [options]',
+      '',
+      'Arguments:',
+      '  work-dir                    Working directory (default: cwd)',
+      '  config-path                 Path to an Actoviq settings JSON file',
+      '                             (default: ~/.actoviq/settings.json)',
+      '',
+      'Options:',
+      '  -v, --version               Print the actoviq-react version and exit',
+      '  -h, --help                  Show this help',
+      '',
+      'In the REPL, type /help for the list of slash commands.',
+      '',
+    ].join('\n'),
+  );
+  process.exit(0);
+}
 
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
