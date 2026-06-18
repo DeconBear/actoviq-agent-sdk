@@ -1725,8 +1725,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
                 return { name: 'panel-analysis', mode: 'panel-analysis', members: [member('Expert researcher. Investigate with read-only tools; cite sources.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], primary: member('Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.'), timeoutMs: 300000, maxIterations: 12 };
               case 'analysis':
                 return { name: 'analysis-panel', mode: 'analysis', members: [member('Expert researcher. Deep, source-grounded analysis.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], timeoutMs: 300000, maxIterations: 12 };
-              case 'panel':
-                return { name: 'panel', mode: 'panel', members: [member('Thorough analyst.'), member('Creative problem-solver.')], primary: member('Synthesizer. Reconcile views into the best answer.'), timeoutMs: 300000 };
               case 'discussion':
                 return { name: 'discussion', mode: 'discussion', members: [member('Systems thinker.'), member('Pragmatist who weighs trade-offs.')], primary: member('Convener and final decision-maker.'), timeoutMs: 300000 };
               case 'executor-reviewer':
@@ -1740,7 +1738,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           const items = [
             { id: '__none__', label: activeTeamTool ? `No team — remove "${activeTeamName}"` : 'No team (individual) — current', description: 'the agent works solo, no team tool attached' },
             ...saved.map((t) => ({ id: `saved:${t.name}`, label: t.name, description: `saved · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members` })),
-            ...['panel-analysis', 'analysis', 'panel', 'discussion', 'executor-reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
+            ...['panel-analysis', 'analysis', 'discussion', 'executor-reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
           ];
           const choice = await selectItem({ title: 'Team', subtitle: 'attach a team the agent can call as a tool, or remove it', items });
           if (!choice) return;

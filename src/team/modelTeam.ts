@@ -1,8 +1,9 @@
 /**
  * ModelTeam — multi-model cooperation core.
  * Modes: Panel-Analysis (unified read-only expert panel + optional convergence),
- * Panel, Router, Discussion, Executor-Reviewer. (`panel`/`analysis` are retained
- * as aliases that route to the Panel-Analysis engine.)
+ * Router, Discussion, Executor-Reviewer. (`panel` and `analysis` are retained as
+ * aliases that route to the Panel-Analysis engine; the old pure-text panel
+ * implementation has been retired.)
  * All modes follow the Hadamard Agent Harness principle: provide
  * scaffolding, not constraints. Models decide when to converge.
  */
@@ -10,11 +11,9 @@ import type {
   TeamDefinition,
   TeamMember,
   TeamResult,
-  PanelResult,
   RouterResult,
   DiscussionResult,
   ExecutorReviewerResult,
-  TeamPanelResponse,
   TeamCost,
   ExecutorReviewerDecision,
   AnalysisResult,
@@ -164,254 +163,6 @@ async function mapWithConcurrency<T, R>(
   );
   await Promise.all(workers);
   return results;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Panel Mode — multi-round autonomous deliberation
-// ═══════════════════════════════════════════════════════════════════
-
-async function runPanelMode(
-  prompt: string,
-  definition: TeamDefinition,
-  signal?: AbortSignal,
-): Promise<PanelResult> {
-  const startedAt = Date.now();
-  const primaryApi: MemberApi = await createMemberApi(definition.primary!);
-  const memberApis: MemberApi[] = await Promise.all(definition.members.map((m) => createMemberApi(m)));
-
-  let rounds = 0;
-  const allResponses: TeamPanelResponse[] = [];
-  const modelSet = new Set(definition.members.map((m) => m.model));
-  modelSet.add(definition.primary!.model);
-
-  const perModelTokens = new Map<string, { input: number; output: number }>();
-  let totalInput = 0;
-  let totalOutput = 0;
-
-  // Round 1: parallel panel
-  rounds++;
-  const round1Start = Date.now();
-  const pool = getGlobalAgentPool();
-
-  const panelResults = await mapWithConcurrency(
-    definition.members,
-    definition.maxParallel ?? definition.members.length,
-    async (member, i) => {
-      let slot: AgentPoolSlot | undefined;
-      try {
-        slot = await pool.acquire(definition.timeoutMs);
-        const result = await singleModelCall(
-          memberApis[i]!,
-          prompt,
-          member.systemPrompt,
-          memberSignal(signal, definition.timeoutMs),
-        );
-
-        const resp: TeamPanelResponse = {
-          round: 1,
-          model: member.model,
-          content: result.content,
-          tokens: { input: result.inputTokens, output: result.outputTokens },
-          durationMs: result.durationMs,
-        };
-
-        // Track tokens
-        const existing = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
-        existing.input += result.inputTokens;
-        existing.output += result.outputTokens;
-        perModelTokens.set(member.model, existing);
-        totalInput += result.inputTokens;
-        totalOutput += result.outputTokens;
-
-        return resp;
-      } catch {
-        // Graceful degradation: return error marker
-        return {
-          round: 1 as const,
-          model: member.model,
-          content: `[ERROR: ${member.model} failed to respond]`,
-          tokens: { input: 0, output: 0 },
-          durationMs: Date.now() - round1Start,
-        } satisfies TeamPanelResponse;
-      } finally {
-        slot?.release();
-      }
-    },
-  );
-
-  allResponses.push(...panelResults);
-
-  // Primary model analyzes and decides
-  const panelSummary = allResponses
-    .map((r) => `### ${r.model}\n${r.content}`)
-    .join('\n\n---\n\n');
-
-  const analysisPrompt = [
-    'You are the primary decision-maker in a multi-model panel.',
-    'Below are responses from multiple models to the same question.',
-    '',
-    'Your task:',
-    '1. Analyze the responses — note agreements, contradictions, unique insights',
-    '2. Decide whether the answer is complete or needs another round',
-    '3. If complete, synthesize a comprehensive final answer',
-    '4. If not complete, specify what needs further exploration',
-    '',
-    'Original question:',
-    prompt,
-    '',
-    'Panel responses:',
-    panelSummary,
-    '',
-    'Respond in one of these formats:',
-    '',
-    'To FINALIZE (answer is complete):',
-    'FINALIZE',
-    '<your comprehensive synthesized answer>',
-    '',
-    'To CONTINUE (need another round):',
-    'CONTINUE',
-    '<refined question for the next round>',
-    '<specific aspects to explore>',
-  ].join('\n');
-
-  const primaryResult = await singleModelCall(primaryApi, analysisPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-  totalInput += primaryResult.inputTokens;
-  totalOutput += primaryResult.outputTokens;
-
-  const primaryModel = definition.primary!.model;
-  const existing = perModelTokens.get(primaryModel) ?? { input: 0, output: 0 };
-  existing.input += primaryResult.inputTokens;
-  existing.output += primaryResult.outputTokens;
-  perModelTokens.set(primaryModel, existing);
-
-  // Parse primary decision
-  const isContinue = primaryResult.content.trim().startsWith('CONTINUE');
-  let finalAnswer: string;
-
-  if (isContinue) {
-    // Additional rounds — primary model continues to deliberate
-    const refinedQuestion = primaryResult.content.replace(/^CONTINUE\s*/i, '').trim();
-    let currentQuestion = refinedQuestion || prompt;
-    let converged = false;
-    // Carry the most recent round's responses forward for panel members.
-    let previousContext = panelSummary;
-    // Full deliberation history visible to the primary every round: all prior
-    // panel responses AND the primary's own prior analyses (plan: the primary
-    // accumulates full context across rounds to deliberate, not just round 1).
-    const deliberationLog: string[] = [
-      `## Round 1 — Panel responses\n${panelSummary}`,
-      `## Round 1 — Primary analysis\n${primaryResult.content}`,
-    ];
-    const maxRounds = definition.maxRounds ?? 100;
-
-    while (!converged && rounds < maxRounds) { // Safety cap, but primary decides convergence
-      rounds++;
-      const roundStart = Date.now();
-
-      const roundResults = await mapWithConcurrency(
-        definition.members,
-        definition.maxParallel ?? definition.members.length,
-        async (member, i) => {
-          let slot: AgentPoolSlot | undefined;
-          try {
-            slot = await pool.acquire(definition.timeoutMs);
-            const result = await singleModelCall(
-              memberApis[i]!,
-              `[Round ${rounds}] ${currentQuestion}\n\nPrevious round context:\n${previousContext}`,
-              member.systemPrompt,
-              memberSignal(signal, definition.timeoutMs),
-            );
-
-            const resp: TeamPanelResponse = {
-              round: rounds,
-              model: member.model,
-              content: result.content,
-              tokens: { input: result.inputTokens, output: result.outputTokens },
-              durationMs: Date.now() - roundStart,
-            };
-
-            const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
-            ex.input += result.inputTokens;
-            ex.output += result.outputTokens;
-            perModelTokens.set(member.model, ex);
-            totalInput += result.inputTokens;
-            totalOutput += result.outputTokens;
-
-            return resp;
-          } catch {
-            return {
-              round: rounds,
-              model: member.model,
-              content: `[ERROR: ${member.model} failed]`,
-              tokens: { input: 0, output: 0 },
-              durationMs: Date.now() - roundStart,
-            } satisfies TeamPanelResponse;
-          } finally {
-            slot?.release();
-          }
-        },
-      );
-
-      allResponses.push(...roundResults);
-
-      const roundSummary = roundResults
-        .map((r) => `### ${r.model}\n${r.content}`)
-        .join('\n\n---\n\n');
-      previousContext = roundSummary;
-
-      const followUpPrompt = [
-        'You are the primary decision-maker in a multi-model panel.',
-        `This is round ${rounds}. Use the full deliberation history below (all prior rounds' panel responses and your own prior analyses), then weigh this round's new responses.`,
-        '',
-        'Original question:',
-        prompt,
-        '',
-        'Full deliberation history:',
-        deliberationLog.join('\n\n---\n\n'),
-        '',
-        `Round ${rounds} new panel responses to "${currentQuestion}":`,
-        roundSummary,
-        '',
-        'Decide: FINALIZE (then give the comprehensive synthesized answer) or CONTINUE (then give a refined question and the specific aspects to explore).',
-      ].join('\n');
-
-      const followUpResult = await singleModelCall(primaryApi, followUpPrompt, definition.primary?.systemPrompt, memberSignal(signal, definition.timeoutMs));
-      totalInput += followUpResult.inputTokens;
-      totalOutput += followUpResult.outputTokens;
-
-      const pex = perModelTokens.get(primaryModel) ?? { input: 0, output: 0 };
-      pex.input += followUpResult.inputTokens;
-      pex.output += followUpResult.outputTokens;
-      perModelTokens.set(primaryModel, pex);
-
-      if (followUpResult.content.trim().startsWith('FINALIZE')) {
-        finalAnswer = followUpResult.content.replace(/^FINALIZE\s*/i, '').trim();
-        converged = true;
-      } else {
-        currentQuestion = followUpResult.content.replace(/^CONTINUE\s*/i, '').trim() || currentQuestion;
-      }
-
-      deliberationLog.push(`## Round ${rounds} — Panel responses\n${roundSummary}`);
-      deliberationLog.push(`## Round ${rounds} — Primary decision\n${followUpResult.content}`);
-    }
-
-    if (!converged) {
-      finalAnswer = primaryResult.content;
-    }
-  } else {
-    finalAnswer = primaryResult.content.replace(/^FINALIZE\s*/i, '').trim();
-  }
-
-  const cost = computeCost([...modelSet], totalInput, totalOutput, perModelTokens);
-
-  return {
-    answer: finalAnswer!,
-    mode: 'panel',
-    rounds,
-    panelResponses: allResponses,
-    cost,
-    durationMs: Date.now() - startedAt,
-  };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1070,14 +821,13 @@ export class ModelTeam {
    */
   async ask(prompt: string, signal?: AbortSignal): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
-      case 'panel':
-        return runPanelMode(prompt, this.definition, signal);
       case 'router':
         return runRouterMode(prompt, this.definition, signal);
       case 'discussion':
         return runDiscussionMode(prompt, this.definition, signal);
       case 'executor-reviewer':
         return runExecutorReviewerMode(prompt, this.definition, signal);
+      case 'panel': // alias: retired pure-text panel now runs the unified engine
       case 'analysis':
       case 'panel-analysis':
         return runPanelAnalysisMode(prompt, this.definition, signal);
@@ -1103,11 +853,6 @@ function validateTeamDefinition(def: TeamDefinition): void {
   if (!def.mode) throw new Error('Team definition must specify a mode.');
 
   switch (def.mode) {
-    case 'panel':
-      if (!def.primary) throw new Error('Panel mode requires a primary member.');
-      if (!def.members || def.members.length === 0) throw new Error('Panel mode requires at least one panel member.');
-      if (def.members.length > 8) throw new Error('Panel mode supports at most 8 members.');
-      break;
     case 'router':
       if (!def.router) throw new Error('Router mode requires a router member.');
       if (!def.specialists || Object.keys(def.specialists).length === 0) throw new Error('Router mode requires at least one specialist.');
@@ -1120,6 +865,7 @@ function validateTeamDefinition(def: TeamDefinition): void {
       if (!def.executor) throw new Error('Executor-Reviewer mode requires an executor.');
       if (!def.reviewer) throw new Error('Executor-Reviewer mode requires a reviewer.');
       break;
+    case 'panel': // retired alias of panel-analysis (primary now optional)
     case 'analysis':
     case 'panel-analysis':
       if (!def.members || def.members.length === 0) throw new Error('Panel-analysis mode requires at least one panel member.');
