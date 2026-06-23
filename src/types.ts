@@ -2401,6 +2401,12 @@ export interface TeamMember {
   systemPrompt?: string;
   maxTokens?: number;
   description?: string;
+  /** Stable identity used in reports/events/status. Falls back to name → role → model. */
+  id?: string;
+  /** Human-readable name (e.g. "researcher"); used for labels when `id` is absent. */
+  name?: string;
+  /** The member's role/specialty (e.g. "security", "skeptic"). */
+  role?: string;
 }
 
 export interface TeamDefinition {
@@ -2431,11 +2437,49 @@ export interface TeamCost {
   costWarning?: boolean;
 }
 
+/** Per-member execution outcome, collected centrally by the team runtime. */
+export interface MemberStatus {
+  /** Stable member identity (disambiguates members that share a model). */
+  id: string;
+  model: string;
+  role?: string;
+  ok: boolean;
+  error?: string;
+  toolCalls?: number;
+  durationMs?: number;
+  /** True when the member never ran (e.g. preflight failed: missing API key). */
+  skipped?: boolean;
+}
+
+/** Progress events emitted while a team deliberates (for TUI/GUI/programmatic observers). */
+export type TeamEvent =
+  | { type: 'team.started'; mode: ModelTeamMode; members: Array<{ id: string; model: string; role?: string }> }
+  | { type: 'team.member.started'; id: string; model: string; role?: string; round: number }
+  | { type: 'team.member.tool'; id: string; model: string; round: number; tool: string }
+  | { type: 'team.member.completed'; id: string; model: string; role?: string; round: number; ok: boolean; toolCalls: number; durationMs: number; error?: string }
+  | { type: 'team.round.completed'; round: number; reports: number }
+  | { type: 'team.synthesis'; round: number; decision: 'finalize' | 'continue' }
+  | { type: 'team.completed'; mode: ModelTeamMode; rounds: number; incompleteReason?: string };
+
+/** Options for `ModelTeam.ask`. */
+export interface TeamAskOptions {
+  /** Reviewer-mode only: what the requesting agent did and obtained (injected into the reviewer prompt). */
+  context?: string;
+  /** Working directory the team members operate over. */
+  workDir?: string;
+  /** Receives progress events as the team deliberates. */
+  onEvent?: (event: TeamEvent) => void;
+}
+
 export interface TeamResult {
   answer: string;
   mode: ModelTeamMode;
   cost: TeamCost;
   durationMs: number;
+  /** Per-member execution status (includes failures and preflight skips). */
+  memberStatuses?: MemberStatus[];
+  /** Set when the run did not fully succeed (e.g. some members failed, or the round cap was hit). */
+  incompleteReason?: string;
 }
 
 /**
@@ -2453,6 +2497,10 @@ export interface ReviewerResult extends TeamResult {
 /** One panel member's findings in `panel-analysis`/`analysis` mode. */
 export interface ExpertPanelReport {
   model: string;
+  /** Stable member identity (disambiguates members that share a model). */
+  id?: string;
+  /** Member role/specialty, if configured. */
+  role?: string;
   report: string;
   toolCalls: number;
   durationMs: number;
@@ -2478,7 +2526,7 @@ export type ModelTeamResult =
   | ReviewerResult
   | AnalysisResult;
 
-// ── Model Router (a /model routing layer, not a team) ────────────────
+// ── Model Router / Leader-Dispatch (a /model routing layer, not a team) ──
 
 /** A model target: a model id plus optional per-target provider config. */
 export interface RouterModelRef {
@@ -2490,28 +2538,35 @@ export interface RouterModelRef {
   maxTokens?: number;
 }
 
-/** One route: a model target plus a natural-language trigger description. */
+/** One route = one specialist the leader can dispatch a turn to. */
 export interface RouterRoute extends RouterModelRef {
-  /** When the classifier should pick this route. */
+  /** When the leader should dispatch this turn to this specialist. */
   when: string;
-  /** Optional display label (defaults to the model id). */
+  /** Optional display label (defaults to role → name → model). */
   name?: string;
+  /** The specialist's role/expertise (e.g. "frontend", "security"); used for the label and for matching. */
+  role?: string;
+  /** Optional richer description of the specialist's strengths, for the leader to weigh. */
+  description?: string;
 }
 
 /**
- * A router profile, configured under `/model`. On each user input the
- * `routerModel` classifies the request and selects a route; the turn then runs
- * normally on the chosen model (which may be on a different provider). Routing
- * re-evaluates on the next user input.
+ * A router profile = a Leader/Dispatch configuration under `/model`. The
+ * `routerModel` is the leader: on each user input it dispatches the turn to the
+ * single best specialist route; the turn then runs normally on that model (which
+ * may be on a different provider), and that executor may itself convene a team.
+ * Routing re-evaluates on the next user input.
  */
 export interface RouterProfile {
   name: string;
   description?: string;
+  /** The leader: classifies each turn and dispatches it to a specialist route. */
   routerModel: RouterModelRef;
+  /** The specialist roster the leader dispatches among. */
   routes: RouterRoute[];
-  /** Used when the classifier matches no route. Defaults to the first route. */
+  /** Used when the leader matches no route. Defaults to the first route. */
   fallback?: RouterModelRef;
-  /** Optional custom classification-prompt prefix. */
+  /** Optional custom leader/dispatch-prompt prefix. */
   classificationPrompt?: string;
 }
 

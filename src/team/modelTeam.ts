@@ -10,36 +10,34 @@
 import type {
   TeamDefinition,
   TeamMember,
-  TeamResult,
   ReviewerResult,
   TeamCost,
   AnalysisResult,
   ExpertPanelReport,
+  MemberStatus,
   ModelTeamResult,
   AgentToolDefinition,
-  AgentPoolSlot,
   ModelApi,
+  TeamAskOptions,
+  TeamEvent,
 } from '../types.js';
-import { getGlobalAgentPool } from './agentPool.js';
 import { estimateCost, hasFullPricing } from './pricing.js';
-import { createId } from '../runtime/helpers.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
-import { ActoviqModelApi, createActoviqModelApi } from '../runtime/actoviqModelApi.js';
-import { OpenaiModelApi, createOpenaiModelApi } from '../provider/openai-model-api.js';
-import type { MessageParam, ToolResultBlockParam } from '../provider/types.js';
+import { createActoviqModelApi } from '../runtime/actoviqModelApi.js';
+import { createOpenaiModelApi } from '../provider/openai-model-api.js';
+import type { MessageParam } from '../provider/types.js';
+import {
+  buildMemberIdentities,
+  buildReadOnlyExpertTools,
+  mapWithConcurrency,
+  memberSignal,
+  resolveApiKey,
+  runMemberAgent,
+} from './teamRuntime.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Per-member ModelApi instantiation
 // ═══════════════════════════════════════════════════════════════════
-
-function resolveApiKey(apiKey?: string): string | undefined {
-  if (!apiKey) return undefined;
-  if (apiKey.startsWith('$')) {
-    const varName = apiKey.slice(1);
-    return process.env[varName];
-  }
-  return apiKey;
-}
 
 interface MemberApi {
   api: ModelApi;
@@ -130,54 +128,8 @@ function computeCost(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Concurrency + timeout helpers
-// ═══════════════════════════════════════════════════════════════════
-
-/** Combine the caller's abort signal with a per-call timeout (if set). */
-function memberSignal(signal: AbortSignal | undefined, timeoutMs?: number): AbortSignal | undefined {
-  if (!timeoutMs || timeoutMs <= 0) return signal;
-  const signals = [signal, AbortSignal.timeout(timeoutMs)].filter((s): s is AbortSignal => s != null);
-  return AbortSignal.any(signals);
-}
-
-/** Run fn over items with at most `limit` in flight; preserves input order. */
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from(
-    { length: Math.max(1, Math.min(limit, items.length)) },
-    async () => {
-      while (true) {
-        const i = next++;
-        if (i >= items.length) return;
-        results[i] = await fn(items[i]!, i);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
-}
-
-// ═══════════════════════════════════════════════════════════════════
 //  Reviewer Mode — single read-only ReAct reviewer the main agent invokes
 // ═══════════════════════════════════════════════════════════════════
-
-/** Read-only tool set for expert/reviewer agents (no write/edit/bash/delegation). */
-async function buildReadOnlyExpertTools(cwd: string): Promise<AgentToolDefinition[]> {
-  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
-  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
-  const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
-  const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
-  return [
-    ...createActoviqFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
-    ...createActoviqWebTools().filter((t) => t.name === 'WebFetch'),
-    createTavilySearchTool(),
-  ];
-}
 
 /**
  * A single read-only ReAct agent (Read/Glob/Grep + TavilySearch/WebFetch) that
@@ -194,12 +146,12 @@ async function runReviewerMode(
   signal?: AbortSignal,
   context?: string,
   workDir?: string,
+  onEvent?: (event: TeamEvent) => void,
 ): Promise<ReviewerResult> {
   const startedAt = Date.now();
   const reviewer = definition.reviewer!;
-  // Lazy import avoids a circular dependency (agentClient imports modelTeam).
-  const { createAgentSdk } = await import('../runtime/agentClient.js');
   const cwd = workDir ?? process.cwd();
+  const identity = buildMemberIdentities([reviewer])[0]!;
 
   const reviewerFraming = [
     'You are a meticulous reviewer on a multi-model team.',
@@ -218,53 +170,38 @@ async function runReviewerMode(
     reviewer.systemPrompt ? `\n${reviewer.systemPrompt}` : '',
   ].filter(Boolean).join('\n');
 
-  const perModelTokens = new Map<string, { input: number; output: number }>();
-  let totalInput = 0;
-  let totalOutput = 0;
-  let report: string;
-  let toolCalls = 0;
-  const pool = getGlobalAgentPool();
-  let slot: AgentPoolSlot | undefined;
-  let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
+  onEvent?.({ type: 'team.started', mode: 'reviewer', members: [{ id: identity.id, model: identity.model, role: identity.role }] });
 
-  try {
-    slot = await pool.acquire(definition.timeoutMs);
-    sdk = await createAgentSdk({
-      model: reviewer.model,
-      provider: reviewer.provider,
-      baseURL: reviewer.baseURL,
-      authToken: resolveApiKey(reviewer.apiKey),
-      maxTokens: reviewer.maxTokens ?? 32000,
-      workDir: cwd,
-      tools: await buildReadOnlyExpertTools(cwd),
-      permissionMode: 'bypassPermissions',
-      maxToolIterations: definition.maxIterations ?? 16,
-      systemPrompt,
-    });
-    const result = await sdk.run(task, { signal: memberSignal(signal, definition.timeoutMs) });
-    report = result.text;
-    toolCalls = result.toolCalls.length;
-    const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
-    const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
-    perModelTokens.set(reviewer.model, { input, output });
-    totalInput = input;
-    totalOutput = output;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    report = `[ERROR: reviewer ${reviewer.model} failed — ${message}]`;
-  } finally {
-    if (sdk) await sdk.close();
-    slot?.release();
-  }
+  const run = await runMemberAgent({
+    identity,
+    member: reviewer,
+    task,
+    systemPrompt,
+    cwd,
+    tools: await buildReadOnlyExpertTools(cwd),
+    maxIterations: definition.maxIterations ?? 16,
+    timeoutMs: definition.timeoutMs,
+    signal,
+    round: 1,
+    onEvent,
+  });
 
-  const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
+  const perModelTokens = new Map<string, { input: number; output: number }>([
+    [reviewer.model, { input: run.inputTokens, output: run.outputTokens }],
+  ]);
+  const cost = computeCost([reviewer.model], run.inputTokens, run.outputTokens, perModelTokens);
+  const incompleteReason = run.status.ok ? undefined : `reviewer failed — ${run.status.error ?? 'unknown error'}`;
+  onEvent?.({ type: 'team.completed', mode: 'reviewer', rounds: 1, incompleteReason });
+
   return {
-    answer: report,
+    answer: run.report,
     mode: 'reviewer',
-    report,
-    toolCalls,
+    report: run.report,
+    toolCalls: run.status.toolCalls ?? 0,
     cost,
     durationMs: Date.now() - startedAt,
+    memberStatuses: [run.status],
+    incompleteReason,
   };
 }
 
@@ -293,17 +230,17 @@ async function runPanelAnalysisMode(
   definition: TeamDefinition,
   signal?: AbortSignal,
   workDir?: string,
+  onEvent?: (event: TeamEvent) => void,
 ): Promise<AnalysisResult> {
   const startedAt = Date.now();
-  // Lazy imports avoid a circular dependency (agentClient imports modelTeam).
-  const { createAgentSdk } = await import('../runtime/agentClient.js');
   const cwd = workDir ?? process.cwd();
   const readOnlyTools = await buildReadOnlyExpertTools(cwd);
 
   // Bounded ReAct depth per member so a panel can't run away (configurable).
   const memberMaxIterations = definition.maxIterations ?? 16;
-  const pool = getGlobalAgentPool();
+  const identities = buildMemberIdentities(definition.members);
   const perModelTokens = new Map<string, { input: number; output: number }>();
+  const memberStatuses: MemberStatus[] = [];
   let totalInput = 0;
   let totalOutput = 0;
 
@@ -316,9 +253,18 @@ async function runPanelAnalysisMode(
     'verify. Be specific and decision-useful.',
   ].join(' ');
 
+  const resultMode: 'analysis' | 'panel-analysis' =
+    definition.mode === 'analysis' ? 'analysis' : 'panel-analysis';
+
+  onEvent?.({
+    type: 'team.started',
+    mode: resultMode,
+    members: identities.map((identity) => ({ id: identity.id, model: identity.model, role: identity.role })),
+  });
+
   // One investigation round: every member investigates `question` in parallel as
-  // a read-only ReAct agent. `priorContext` (earlier rounds' findings) lets
-  // members build on the deliberation instead of starting cold.
+  // a read-only ReAct agent via the centralized runner. `priorContext` (earlier
+  // rounds' findings) lets members build on the deliberation instead of starting cold.
   const investigate = async (
     round: number,
     question: string,
@@ -330,63 +276,42 @@ async function runPanelAnalysisMode(
     return mapWithConcurrency(
       definition.members,
       definition.maxParallel ?? definition.members.length,
-      async (member): Promise<ExpertPanelReport> => {
-        const start = Date.now();
-        let slot: AgentPoolSlot | undefined;
-        let sdk: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
-        try {
-          slot = await pool.acquire();
-          sdk = await createAgentSdk({
-            model: member.model,
-            provider: member.provider,
-            baseURL: member.baseURL,
-            authToken: resolveApiKey(member.apiKey),
-            maxTokens: member.maxTokens ?? 32000,
-            workDir: cwd,
-            tools: readOnlyTools,
-            permissionMode: 'bypassPermissions',
-            maxToolIterations: memberMaxIterations,
-            systemPrompt: member.systemPrompt
-              ? `${analysisFraming}\n\n${member.systemPrompt}`
-              : analysisFraming,
-          });
-          const result = await sdk.run(memberPrompt, {
-            signal: memberSignal(signal, definition.timeoutMs),
-          });
-          const input = result.requests.reduce((s, r) => s + (r.usage?.input_tokens ?? 0), 0);
-          const output = result.requests.reduce((s, r) => s + (r.usage?.output_tokens ?? 0), 0);
-          const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
-          ex.input += input;
-          ex.output += output;
-          perModelTokens.set(member.model, ex);
-          totalInput += input;
-          totalOutput += output;
-          return {
-            model: member.model,
-            report: result.text,
-            toolCalls: result.toolCalls.length,
-            durationMs: Date.now() - start,
-            round,
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return {
-            model: member.model,
-            report: `[ERROR: ${member.model} analysis failed — ${message}]`,
-            toolCalls: 0,
-            durationMs: Date.now() - start,
-            round,
-          };
-        } finally {
-          if (sdk) await sdk.close();
-          slot?.release();
-        }
+      async (member, index): Promise<ExpertPanelReport> => {
+        const identity = identities[index]!;
+        const run = await runMemberAgent({
+          identity,
+          member,
+          task: memberPrompt,
+          systemPrompt: member.systemPrompt
+            ? `${analysisFraming}\n\n${member.systemPrompt}`
+            : analysisFraming,
+          cwd,
+          tools: readOnlyTools,
+          maxIterations: memberMaxIterations,
+          timeoutMs: definition.timeoutMs,
+          signal,
+          round,
+          onEvent,
+        });
+        const ex = perModelTokens.get(member.model) ?? { input: 0, output: 0 };
+        ex.input += run.inputTokens;
+        ex.output += run.outputTokens;
+        perModelTokens.set(member.model, ex);
+        totalInput += run.inputTokens;
+        totalOutput += run.outputTokens;
+        memberStatuses.push(run.status);
+        return {
+          id: identity.id,
+          role: identity.role,
+          model: identity.model,
+          report: run.report,
+          toolCalls: run.status.toolCalls ?? 0,
+          durationMs: run.status.durationMs ?? 0,
+          round,
+        };
       },
     );
   };
-
-  const resultMode: 'analysis' | 'panel-analysis' =
-    definition.mode === 'analysis' ? 'analysis' : 'panel-analysis';
 
   // With a primary, build the decision callback that synthesizes findings and
   // votes FINALIZE/CONTINUE each round; without one, the panel is single-pass.
@@ -432,7 +357,14 @@ async function runPanelAnalysisMode(
     maxRounds: definition.maxRounds ?? 100,
     investigate,
     decide,
+    onEvent,
   });
+
+  const failed = memberStatuses.filter((status) => !status.ok);
+  const incompleteReason = failed.length > 0
+    ? `${failed.length} of ${memberStatuses.length} member run(s) failed or were skipped`
+    : undefined;
+  onEvent?.({ type: 'team.completed', mode: resultMode, rounds, incompleteReason });
 
   const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
   return {
@@ -442,6 +374,8 @@ async function runPanelAnalysisMode(
     rounds,
     cost,
     durationMs: Date.now() - startedAt,
+    memberStatuses,
+    incompleteReason,
   };
 }
 
@@ -462,14 +396,18 @@ export async function orchestratePanel(opts: {
   maxRounds: number;
   investigate: (round: number, question: string, priorContext?: string) => Promise<ExpertPanelReport[]>;
   decide?: (deliberationLog: string, round: number) => Promise<string>;
+  onEvent?: (event: TeamEvent) => void;
 }): Promise<{ answer: string; rounds: number; reports: ExpertPanelReport[] }> {
+  // Label by stable identity (falls back to model) so members sharing a model
+  // are still distinguishable in the synthesized output.
   const label = (rs: ExpertPanelReport[]): string =>
-    rs.map((r) => `### ${r.model}\n${r.report}`).join('\n\n---\n\n');
+    rs.map((r) => `### ${r.id ?? r.model}\n${r.report}`).join('\n\n---\n\n');
 
   const allReports: ExpertPanelReport[] = [];
   let rounds = 1;
   let currentReports = await opts.investigate(1, opts.prompt);
   allReports.push(...currentReports);
+  opts.onEvent?.({ type: 'team.round.completed', round: 1, reports: currentReports.length });
 
   // No primary → single-pass advisory (original `analysis` behavior).
   if (!opts.decide) {
@@ -481,14 +419,17 @@ export async function orchestratePanel(opts: {
     const content = await opts.decide(deliberationLog.join('\n\n---\n\n'), rounds);
     const wantsContinue = content.trim().toUpperCase().startsWith('CONTINUE');
     if (wantsContinue && rounds < opts.maxRounds) {
+      opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'continue' });
       const refined = content.replace(/^CONTINUE\s*/i, '').trim() || opts.prompt;
       deliberationLog.push(`## Round ${rounds} — Primary decision\nCONTINUE: ${refined}`);
       rounds++;
       currentReports = await opts.investigate(rounds, refined, label(currentReports));
       allReports.push(...currentReports);
+      opts.onEvent?.({ type: 'team.round.completed', round: rounds, reports: currentReports.length });
       deliberationLog.push(`## Round ${rounds} — Panel findings\n${label(currentReports)}`);
     } else {
       // FINALIZE, or the safety cap was reached mid-deliberation.
+      opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'finalize' });
       const answer = wantsContinue
         ? label(currentReports) // cap hit: hand back the findings unsynthesized
         : content.replace(/^FINALIZE\s*/i, '').trim() || label(currentReports);
@@ -515,15 +456,15 @@ export class ModelTeam {
    * (reviewer mode only — what the main agent did and obtained). Returns the
    * mode-specific result.
    */
-  async ask(prompt: string, signal?: AbortSignal, opts?: { context?: string; workDir?: string }): Promise<ModelTeamResult> {
+  async ask(prompt: string, signal?: AbortSignal, opts?: TeamAskOptions): Promise<ModelTeamResult> {
     switch (this.definition.mode) {
       case 'reviewer':
       case 'executor-reviewer': // alias: the retired executor loop now runs the single reviewer
-        return runReviewerMode(prompt, this.definition, signal, opts?.context, opts?.workDir);
+        return runReviewerMode(prompt, this.definition, signal, opts?.context, opts?.workDir, opts?.onEvent);
       case 'panel': // alias: retired pure-text panel now runs the unified engine
       case 'analysis':
       case 'panel-analysis':
-        return runPanelAnalysisMode(prompt, this.definition, signal, opts?.workDir);
+        return runPanelAnalysisMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent);
       default:
         throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
     }
@@ -616,7 +557,13 @@ export function createTeamTool(
         }
         const context = typeof obj.context === 'string' ? obj.context : undefined;
         const result = await team.ask(task, undefined, { context });
-        return JSON.stringify({ answer: result.answer, mode: result.mode, cost: result.cost });
+        return JSON.stringify({
+          answer: result.answer,
+          mode: result.mode,
+          cost: result.cost,
+          memberStatuses: result.memberStatuses,
+          incompleteReason: result.incompleteReason,
+        });
       }
       const candidate =
         typeof input === 'string'
@@ -631,6 +578,8 @@ export function createTeamTool(
         answer: result.answer,
         mode: result.mode,
         cost: result.cost,
+        memberStatuses: result.memberStatuses,
+        incompleteReason: result.incompleteReason,
       });
     },
     interruptBehavior: 'block',

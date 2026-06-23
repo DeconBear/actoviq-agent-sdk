@@ -1,12 +1,13 @@
 /**
- * Model Router — a `/model` routing layer (not a team).
+ * Model Router — the Leader/Dispatch layer for `/model` (not a team).
  *
- * A router profile names a classifier model and a set of routes (each a model
- * target + a natural-language trigger). On each user input, `classifyRoute()`
- * asks the classifier which route fits, and `resolveRoutedRun()` returns the
- * `{ model, modelApi }` to run that turn on — which may be on a different
- * provider. Routing re-evaluates on the next user input; the turn itself runs
- * exactly like a normal Hadamard agent turn.
+ * A profile names a leader model (`routerModel`) and a roster of specialist
+ * routes (each a model target + a `when` trigger and optional `role`/
+ * `description`). On each user input, `classifyRoute()` asks the leader which
+ * specialist should execute this turn, and `resolveRoutedRun()` returns the
+ * `{ model, modelApi }` to run it on — which may be on a different provider. The
+ * turn then runs exactly like a normal Hadamard agent turn, and that executor
+ * may itself convene a team. Routing re-evaluates on the next user input.
  *
  * Profiles load from `.actoviq/routers/<name>.json` (project) and
  * `~/.actoviq/routers/<name>.json` (personal). `apiKey` values starting with
@@ -69,7 +70,7 @@ export function parseRouteSelection(raw: string, routes: RouterRoute[]): RouterR
   }
   const lower = trimmed.toLowerCase();
   for (const route of routes) {
-    const keys = [route.name, route.model].filter((k): k is string => Boolean(k)).map((k) => k.toLowerCase());
+    const keys = [route.role, route.name, route.model].filter((k): k is string => Boolean(k)).map((k) => k.toLowerCase());
     if (keys.some((k) => k.length > 0 && lower.includes(k))) return route;
   }
   return null;
@@ -77,16 +78,20 @@ export function parseRouteSelection(raw: string, routes: RouterRoute[]): RouterR
 
 function buildClassificationPrompt(profile: RouterProfile, userInput: string): string {
   const routeList = profile.routes
-    .map((r, i) => `${i + 1}. ${r.name ?? r.model} — ${r.when}`)
+    .map((r, i) => {
+      const label = r.role ?? r.name ?? r.model;
+      const detail = [r.when, r.description].filter(Boolean).join(' — ');
+      return `${i + 1}. ${label} — ${detail}`;
+    })
     .join('\n');
-  const tail = `Return ONLY the route number (1-${profile.routes.length}); return 0 if none clearly fit.`;
+  const tail = `Return ONLY the specialist number (1-${profile.routes.length}); return 0 if none clearly fit.`;
   if (profile.classificationPrompt) {
-    return `${profile.classificationPrompt}\n\nRoutes:\n${routeList}\n\nUser request:\n${userInput}\n\n${tail}`;
+    return `${profile.classificationPrompt}\n\nSpecialists:\n${routeList}\n\nUser request:\n${userInput}\n\n${tail}`;
   }
   return [
-    'You are a routing classifier. Choose the single best route for the user request.',
+    'You are the team leader. Dispatch the user request to the single best specialist to execute this turn.',
     '',
-    'Routes:',
+    'Specialists:',
     routeList,
     '',
     'User request:',
@@ -133,10 +138,10 @@ export async function classifyRoute(
   const matched = parseRouteSelection(raw, profile.routes);
   const target: RouterModelRef = matched ?? profile.fallback ?? profile.routes[0]!;
   const label = matched
-    ? (matched.name ?? matched.model)
+    ? (matched.role ?? matched.name ?? matched.model)
     : profile.fallback
       ? `fallback:${profile.fallback.model}`
-      : (profile.routes[0]?.name ?? profile.routes[0]?.model ?? 'default');
+      : (profile.routes[0]?.role ?? profile.routes[0]?.name ?? profile.routes[0]?.model ?? 'default');
   return { target, label, classification: raw, matched: matched !== null };
 }
 
@@ -154,12 +159,34 @@ export async function resolveRoutedRun(
   return { model: routed.model, modelApi: routed.modelApi, label: decision.label, decision };
 }
 
+// ── Built-in profiles ────────────────────────────────────────────────
+
+/**
+ * Built-in Leader/Dispatch profiles, available everywhere `/model router` lists
+ * or loads — even with no profile files on disk. A user file of the same name in
+ * `.actoviq/routers/` or `~/.actoviq/routers/` shadows the built-in.
+ */
+export const BUILT_IN_ROUTER_PROFILES: Record<string, RouterProfile> = {
+  dispatch: {
+    name: 'dispatch',
+    description:
+      'Leader/Dispatch starter: a fast leader routes each turn to a quick / general / deep specialist. Copy to .actoviq/routers/dispatch.json and edit the models for your provider.',
+    routerModel: { model: 'claude-haiku-4-5-20251001' },
+    routes: [
+      { role: 'quick', model: 'claude-haiku-4-5-20251001', when: 'short, simple, or factual requests; quick edits and lookups', description: 'Fastest and cheapest — low-effort turns.' },
+      { role: 'general', model: 'claude-sonnet-4-6', when: 'everyday coding, refactors, and explanations', description: 'Balanced default for most work.' },
+      { role: 'deep', model: 'claude-opus-4-8', when: 'hard reasoning, architecture, tricky debugging, or large multi-file changes', description: 'Most capable — when correctness or planning matters most.' },
+    ],
+    fallback: { model: 'claude-sonnet-4-6' },
+  },
+};
+
 // ── Persistence (.actoviq/routers + ~/.actoviq/routers) ──────────────
 
 export interface LoadedRouterProfile {
   name: string;
   profile: RouterProfile;
-  source: 'project' | 'personal';
+  source: 'project' | 'personal' | 'built-in';
   filePath: string;
 }
 
@@ -199,6 +226,10 @@ export function loadRouterProfile(name: string, projectDir?: string, homeDir?: s
       }
     }
   }
+  const builtIn = BUILT_IN_ROUTER_PROFILES[name];
+  if (builtIn) {
+    return { name, profile: resolveProfileEnv(builtIn), source: 'built-in', filePath: '(built-in)' };
+  }
   return null;
 }
 
@@ -222,6 +253,12 @@ export function listRouterProfiles(projectDir?: string, homeDir?: string): Loade
         } catch { /* skip invalid */ }
       }
     } catch { /* skip inaccessible */ }
+  }
+  // Append built-in profiles that a user file hasn't shadowed.
+  for (const [name, profile] of Object.entries(BUILT_IN_ROUTER_PROFILES)) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, profile: resolveProfileEnv(profile), source: 'built-in', filePath: '(built-in)' });
   }
   return out;
 }
