@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { createModelTeam, createTeamTool, ModelTeam, orchestratePanel } from '../src/team/modelTeam.js';
 import { AgentPool, getGlobalAgentPool, resetGlobalAgentPool } from '../src/team/agentPool.js';
 import { getModelPricing, estimateCost, clearPricingCache } from '../src/team/pricing.js';
-import type { TeamDefinition, ExpertPanelReport } from '../src/types.js';
+import type { TeamDefinition, ExpertPanelReport, TeamEvent } from '../src/types.js';
 
 describe('AgentPool', () => {
   beforeEach(() => {
@@ -377,5 +377,39 @@ describe('panel-analysis convergence loop (orchestratePanel)', () => {
     });
     expect(noKeyword.rounds).toBe(1);
     expect(noKeyword.answer).toBe('Here is my answer with no keyword');
+  });
+
+  it('labels advisory output by stable id, disambiguating members that share a model', async () => {
+    const res = await orchestratePanel({
+      prompt: 'task',
+      maxRounds: 100,
+      investigate: async (round) => [
+        { id: 'researcher', model: 'gpt-4o', report: 'R', toolCalls: 0, durationMs: 0, round },
+        { id: 'skeptic', model: 'gpt-4o', report: 'S', toolCalls: 0, durationMs: 0, round },
+      ],
+    });
+    expect(res.answer).toContain('### researcher');
+    expect(res.answer).toContain('### skeptic');
+    // The old behavior labeled both by model ("### gpt-4o") — now disambiguated.
+    expect(res.answer).not.toContain('### gpt-4o');
+  });
+
+  it('emits round.completed and synthesis events for observers', async () => {
+    const events: TeamEvent[] = [];
+    const script = ['CONTINUE dig deeper', 'FINALIZE\ndone'];
+    let d = 0;
+    await orchestratePanel({
+      prompt: 'task',
+      maxRounds: 100,
+      investigate: async (round) => [
+        { id: 'researcher', model: 'gpt-4o', report: `r-${round}`, toolCalls: 0, durationMs: 0, round },
+      ],
+      decide: async () => script[d++]!,
+      onEvent: (event) => events.push(event),
+    });
+    const rounds = events.filter((e) => e.type === 'team.round.completed');
+    const synth = events.filter((e) => e.type === 'team.synthesis');
+    expect(rounds).toHaveLength(2); // round 1 + round 2
+    expect(synth.map((e) => (e.type === 'team.synthesis' ? e.decision : ''))).toEqual(['continue', 'finalize']);
   });
 });

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
+  clearLoadedJsonConfig,
   createActoviqCoreTools,
   createAgentSdk,
   tool,
@@ -23,6 +24,7 @@ let messageId = 0;
 
 beforeEach(() => {
   messageId = 0;
+  clearLoadedJsonConfig();
 });
 
 afterEach(async () => {
@@ -97,6 +99,7 @@ const isCI = process.env.CI === 'true';
 describe('Hadamard SDK subagent parity', () => {
   it.skipIf(isCI)('exposes Agent with Task compatibility and injects background completion notifications', async () => {
     const sessionDirectory = await tempDirectory('actoviq-subagent-notify-');
+    const homeDir = await tempDirectory('actoviq-subagent-home-');
     const modelApi = new RecordingModelApi(request => {
       if (request.system?.includes('focused code-review subagent')) {
         return makeMessage([{ type: 'text', text: 'Background review complete.' }]);
@@ -127,6 +130,7 @@ describe('Hadamard SDK subagent parity', () => {
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      homeDir,
       modelApi,
       effort: 'high',
     });
@@ -136,8 +140,22 @@ describe('Hadamard SDK subagent parity', () => {
       await session.send('Launch the review.');
       const task = (await sdk.tasks.list())[0];
       expect(task?.agentName).toBe('release-reviewer');
-      await sdk.tasks.wait(task!.id);
-      await session.send('Continue after background work.');
+      const completedTask = await sdk.tasks.wait(task!.id);
+      expect(completedTask.text).toContain('Background review complete.');
+
+      let deliveredNotification = false;
+      for (const prompt of [
+        'Continue after background work.',
+        'Continue after background work again.',
+      ]) {
+        await session.send(prompt);
+        deliveredNotification = modelApi.requests.some(request =>
+          requestText(request).includes('<task_notification>') &&
+          requestText(request).includes('Background review complete.'),
+        );
+        if (deliveredNotification) break;
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
 
       const parentRequest = modelApi.requests.find(request =>
         request.tools?.some(toolDefinition => toolDefinition.name === 'Agent'),
@@ -145,10 +163,7 @@ describe('Hadamard SDK subagent parity', () => {
       expect(parentRequest?.tools?.map(toolDefinition => toolDefinition.name)).toEqual(
         expect.arrayContaining(['Agent', 'Task', 'SendMessage']),
       );
-      expect(modelApi.requests.some(request =>
-        requestText(request).includes('<task_notification>') &&
-        requestText(request).includes('Background review complete.'),
-      )).toBe(true);
+      expect(deliveredNotification).toBe(true);
       const childRequest = modelApi.requests.find(request =>
         request.system?.includes('focused code-review subagent'),
       );
@@ -160,6 +175,7 @@ describe('Hadamard SDK subagent parity', () => {
 
   it.skipIf(isCI)('resumes a completed agent through SendMessage with session context preserved', async () => {
     const sessionDirectory = await tempDirectory('actoviq-subagent-resume-');
+    const homeDir = await tempDirectory('actoviq-subagent-home-');
     const modelApi = new RecordingModelApi(request => {
       if (request.system?.includes('focused debugging subagent')) {
         return makeMessage([{
@@ -191,6 +207,7 @@ describe('Hadamard SDK subagent parity', () => {
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      homeDir,
       modelApi,
     });
 

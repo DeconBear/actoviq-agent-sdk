@@ -11,6 +11,7 @@ import './env.js'; // MUST be first: preloads bench keys before runner modules e
  *   REVIEW_FIXTURES="csv-bugs,discount-bugs"     fixtures to run (default: all)
  *   REVIEW_TRIALS=3                              repeat each (agent×fixture) N times (default 1)
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { glob } from 'glob';
 
@@ -29,6 +30,9 @@ interface Row {
   durationMs: number;
   judgeFailed?: boolean;
   comment?: string;
+  found: string[];
+  missed: string[];
+  report: string;
 }
 
 function avg(ns: number[]): number {
@@ -75,6 +79,9 @@ async function main(): Promise<void> {
             durationMs: run.metrics.durationMs,
             judgeFailed: score.judgeFailed,
             comment: score.comment,
+            found: score.found,
+            missed: score.missed,
+            report: run.report,
           });
           console.log(
             score.judgeFailed
@@ -83,7 +90,7 @@ async function main(): Promise<void> {
           );
         } catch (err: any) {
           console.log(`ERROR: ${err.message}`);
-          rows.push({ agent: agent.label, fixture, trial: t, bugs: 0, recall: 0, precision: 0, falsePositives: 0, durationMs: 0, judgeFailed: true });
+          rows.push({ agent: agent.label, fixture, trial: t, bugs: 0, recall: 0, precision: 0, falsePositives: 0, durationMs: 0, judgeFailed: true, found: [], missed: [], report: '' });
         }
       }
     }
@@ -101,6 +108,18 @@ async function main(): Promise<void> {
       `${agent.label.padEnd(30)} ${`${(recall * 100).toFixed(0)}%`.padEnd(8)} ${`${(precision * 100).toFixed(0)}%`.padEnd(10)} ${String(fp).padEnd(8)} ${scored.length}`,
     );
   }
+
+  // Persist for the task explorer / dashboard.
+  const outDir = path.join(process.cwd(), 'bench', 'results');
+  fs.mkdirSync(outDir, { recursive: true });
+  const record = {
+    version: '0.5.0' as const,
+    generatedAt: new Date().toISOString(),
+    agents: agents.map((a) => ({ name: a.name, label: a.label, model: a.model })),
+    runs: rows,
+  };
+  fs.writeFileSync(path.join(outDir, 'review-record.json'), JSON.stringify(record, null, 2), 'utf-8');
+  console.log(`\nWrote bench/results/review-record.json (${rows.length} runs)`);
 
   process.exit(0);
 }

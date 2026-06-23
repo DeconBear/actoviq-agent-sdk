@@ -23,6 +23,12 @@ import { execSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import * as readline from 'node:readline';
+import { hasVersionFlag, readPackageVersion } from './version.js';
+
+if (hasVersionFlag(process.argv.slice(2))) {
+  process.stdout.write(`${readPackageVersion(import.meta.url)}\n`);
+  process.exit(0);
+}
 
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
@@ -174,7 +180,9 @@ async function main() {
     if (t.startsWith('/')) {
       const sp = t.indexOf(' '); const cmd = sp === -1 ? t.slice(1) : t.slice(1, sp);
       switch (cmd) {
-        case 'exit': process.stdout.write(`\n${C.d}Goodbye.${C.r}\n`); process.exit(0);
+        case 'exit':
+          await shutdown(0);
+          return;
         case 'clear': process.stdout.write('\x1b[2J\x1b[H'); return;
         case 'help':
           process.stdout.write(`\n${C.b}Commands:${C.r}\n`);
@@ -487,14 +495,29 @@ async function main() {
   });
   rl.setPrompt(`${C.c}> ${C.r}`);
 
+  let shuttingDown = false;
   let cc = 0; let ccT: ReturnType<typeof setTimeout> | null = null;
+
+  async function shutdown(code: number, closeReadline = true): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (ccT) clearTimeout(ccT);
+    abortCtrl?.abort();
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdin.pause();
+    if (closeReadline) rl.close();
+    process.stdout.write(`\n${C.d}Goodbye.${C.r}\n`);
+    try { await sdk.close(); } catch {}
+    process.exit(code);
+  }
+
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
   process.stdin.on('keypress', (_ch: any, key: any) => {
     if (key?.name === 'c' && key?.ctrl) {
       cc++;
-      if (cc >= 2) { process.stdout.write(`\n${C.d}Goodbye.${C.r}\n`); rl.close(); return; }
+      if (cc >= 2) { void shutdown(0); return; }
       if (ccT) clearTimeout(ccT); ccT = setTimeout(() => { cc = 0; }, 500);
       if (abortCtrl) { abortCtrl.abort(); process.stdout.write(`\n${C.y}  ⏹ Aborting...${C.r}\n`); }
       process.stdout.write('\n'); rl.prompt();
@@ -514,12 +537,9 @@ async function main() {
     rl.prompt();
   });
 
-  rl.on('close', async () => {
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    process.stdout.write(`\n${C.d}Goodbye.${C.r}\n`);
-    try { await sdk.close(); } catch {}
-    process.exit(0);
-  });
+  rl.on('close', () => void shutdown(0, false));
+  process.on('SIGINT', () => void shutdown(0));
+  process.on('SIGTERM', () => void shutdown(0));
 }
 
 main().catch((e) => { process.stderr.write(`Fatal: ${(e as Error).message}\n`); process.exit(1); });

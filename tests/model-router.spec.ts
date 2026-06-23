@@ -1,6 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { parseRouteSelection, classifyRoute } from '../src/router/modelRouter.js';
+import { afterEach, describe, it, expect } from 'vitest';
+
+import {
+  parseRouteSelection,
+  classifyRoute,
+  listRouterProfiles,
+  loadRouterProfile,
+  BUILT_IN_ROUTER_PROFILES,
+} from '../src/router/modelRouter.js';
 import type { RouterProfile, RouterRoute } from '../src/types.js';
 
 const routes: RouterRoute[] = [
@@ -75,5 +85,88 @@ describe('classifyRoute', () => {
     expect(decision.matched).toBe(false);
     expect(decision.target.model).toBe('sonnet'); // fallback
     expect(decision.classification).toBe('');
+  });
+});
+
+describe('leader/dispatch enrichment', () => {
+  const specialists: RouterRoute[] = [
+    { role: 'frontend', model: 'sonnet', when: 'UI work', description: 'React + CSS expert' },
+    { role: 'backend', model: 'deepseek-v4-pro', when: 'APIs and databases' },
+  ];
+
+  it('matches a specialist by role substring', () => {
+    expect(parseRouteSelection('hand this to the backend specialist', specialists)).toBe(specialists[1]);
+    expect(parseRouteSelection('frontend', specialists)).toBe(specialists[0]);
+  });
+
+  it('labels the decision by role when present', async () => {
+    const profile: RouterProfile = { name: 'leader', routerModel: { model: 'lead' }, routes: specialists };
+    const decision = await classifyRoute(profile, 'build an API endpoint', undefined, { classify: async () => '2' });
+    expect(decision.label).toBe('backend');
+    expect(decision.target.model).toBe('deepseek-v4-pro');
+  });
+
+  it('builds a leader/dispatch prompt listing each specialist role + description', async () => {
+    const profile: RouterProfile = { name: 'leader', routerModel: { model: 'lead' }, routes: specialists };
+    let captured = '';
+    await classifyRoute(profile, 'style the navbar', undefined, {
+      classify: async (prompt) => { captured = prompt; return '1'; },
+    });
+    expect(captured.toLowerCase()).toContain('leader');
+    expect(captured.toLowerCase()).toContain('specialist');
+    expect(captured).toContain('frontend');
+    expect(captured).toContain('React + CSS expert');
+  });
+});
+
+describe('built-in dispatch profile', () => {
+  const tempDirs: string[] = [];
+  const tempHome = (): string => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'actoviq-router-'));
+    tempDirs.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ships a well-formed dispatch profile (leader + role/when specialists)', () => {
+    const profile = BUILT_IN_ROUTER_PROFILES.dispatch!;
+    expect(profile.routerModel.model).toBeTruthy();
+    expect(profile.routes.length).toBeGreaterThanOrEqual(2);
+    expect(profile.routes.every((r) => Boolean(r.role) && Boolean(r.when) && Boolean(r.model))).toBe(true);
+  });
+
+  it('is listed even with no router files on disk', () => {
+    const listed = listRouterProfiles(undefined, tempHome());
+    const dispatch = listed.find((p) => p.name === 'dispatch');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.source).toBe('built-in');
+  });
+
+  it('loads by name without a file on disk', () => {
+    const loaded = loadRouterProfile('dispatch', undefined, tempHome());
+    expect(loaded).not.toBeNull();
+    expect(loaded!.source).toBe('built-in');
+    expect(loaded!.profile.routes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('is shadowed by a user profile of the same name (not duplicated)', () => {
+    const home = tempHome();
+    const dir = path.join(home, 'routers');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'dispatch.json'),
+      JSON.stringify({ name: 'dispatch', routerModel: { model: 'mine' }, routes: [{ role: 'x', model: 'm', when: 'w' }] }),
+      'utf-8',
+    );
+
+    const loaded = loadRouterProfile('dispatch', undefined, home);
+    expect(loaded!.source).toBe('personal');
+    expect(loaded!.profile.routerModel.model).toBe('mine');
+
+    const dispatchEntries = listRouterProfiles(undefined, home).filter((p) => p.name === 'dispatch');
+    expect(dispatchEntries).toHaveLength(1);
+    expect(dispatchEntries[0]!.source).toBe('personal');
   });
 });

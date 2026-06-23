@@ -1,6 +1,7 @@
 dist
 node_modules
 coverage
+output/
 *.tsbuildinfo
 .DS_Store
 .codegraph/
@@ -17,6 +18,7 @@ vendor/actoviq-runtime/runtime.bundle.br
 vendor/actoviq-runtime/runtime.bundle.mjs
 vendor/actoviq-runtime/SYNC_SUMMARY.json
 bench/dashboard.html
+bench/task-explorer.html
 bench/results/
 bench/.bench-keys.json
 bench/AGENT_RUNTIME_BENCHMARK_RESULTS.md

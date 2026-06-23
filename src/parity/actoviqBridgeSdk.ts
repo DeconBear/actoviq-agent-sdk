@@ -714,6 +714,7 @@ export class ActoviqBridgeRunStream implements AsyncIterable<ActoviqBridgeJsonEv
 
 export class ActoviqBridgeSession {
   private started: boolean;
+  private runAttempt = 0;
 
   constructor(
     private readonly client: ActoviqBridgeSdkClient,
@@ -726,7 +727,9 @@ export class ActoviqBridgeSession {
   }
 
   async send(prompt: string, options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {}): Promise<ActoviqBridgeRunResult> {
-    const result = await this.client.run(prompt, this.buildRunOptions(options));
+    const runOptions = this.buildRunOptions(options);
+    this.runAttempt += 1;
+    const result = await this.client.run(prompt, runOptions);
     this.started = true;
     return result;
   }
@@ -735,13 +738,17 @@ export class ActoviqBridgeSession {
     prompt: string,
     options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): ActoviqBridgeRunStream {
-    const runStream = this.client.stream(prompt, this.buildRunOptions(options));
-    void runStream.result.then(
-      () => {
-        this.started = true;
-      },
-      () => undefined,
-    );
+    const wasStarted = this.started;
+    const runOptions = this.buildRunOptions(options);
+    const attempt = this.runAttempt + 1;
+    const runStream = this.client.stream(prompt, runOptions);
+    this.runAttempt = attempt;
+    this.started = true;
+    if (!wasStarted) {
+      void runStream.result.catch(() => {
+        if (this.runAttempt === attempt) this.started = false;
+      });
+    }
     return runStream;
   }
 

@@ -116,6 +116,27 @@ describe('Actoviq Runtime SDK bridge', () => {
     }
   });
 
+  it('marks a streaming session as started before the stream finishes', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-session-stream-race-');
+    const sdk = await createActoviqBridgeSdk({
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const session = await sdk.createSession({ title: 'Fixture Session' });
+      const firstStream = session.stream('who-am-i');
+      const secondStream = session.stream('who-am-i');
+      const [first, second] = await Promise.all([firstStream.result, secondStream.result]);
+
+      expect(first.text).toBe('mode:session-id;agent:inherit');
+      expect(second.text).toBe('mode:resume;agent:inherit');
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('exposes structured runtime info, skills, commands, and agents', async () => {
     const tempDir = await createTempDir('actoviq-runtime-introspect-');
     const sdk = await createActoviqBridgeSdk({

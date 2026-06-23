@@ -1,0 +1,3231 @@
+#!/usr/bin/env node
+import { execSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { access, readFile, readdir, rm } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+import {
+  createActoviqCoreTools,
+  createAgentSdk,
+  createModelTeam,
+  createTeamTool,
+  listRouterProfiles,
+  listTeamDefinitions,
+  listWorkflows,
+  loadDefaultActoviqSettings,
+  loadJsonConfigFile,
+  loadRouterProfile,
+  loadTeamDefinition,
+  loadWorkflow,
+  resolveRoutedRun,
+  WorktreeService,
+} from '../index.js';
+import {
+  persistActoviqSettingsStore,
+  resolveActoviqSettingsStore,
+} from '../config/actoviqSettingsStore.js';
+import { readPackageVersion } from '../cli/version.js';
+import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
+import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
+import { renderMarkdown } from './guiMarkdown.js';
+import type {
+  ActoviqEffort,
+  ActoviqPermissionMode,
+  ActoviqPermissionRule,
+  ActoviqRunEffort,
+  ActoviqToolApprover,
+  AgentEvent,
+  AgentToolDefinition,
+  RouterProfile,
+  TeamDefinition,
+} from '../types.js';
+import type { AgentSession } from '../runtime/agentSession.js';
+import type { ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
+
+const DEFAULT_PORT = 4174;
+const EFFORT_LEVELS: readonly ActoviqEffort[] = ['low', 'medium', 'high', 'max'];
+const READONLY_DENY = ['Bash', 'Write', 'Edit', 'NotebookEdit', 'PowerShell'];
+const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'auto',
+]);
+
+export interface ActoviqGuiOptions {
+  workDir?: string;
+  homeDir?: string;
+  host?: string;
+  port?: number;
+  configPath?: string;
+  permissionMode?: ActoviqPermissionMode;
+  model?: string;
+  resumeSessionId?: string;
+  continueMostRecent?: boolean;
+}
+
+export interface ActoviqGuiServer {
+  url: string;
+  /** Per-process secret required on every `/api/*` request (defeats other local processes / CSRF). */
+  token: string;
+  close(): Promise<void>;
+}
+
+interface GuiRunEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+interface PendingPermission {
+  id: string;
+  toolName: string;
+  summary: string;
+  resolve: (outcome: 'allow' | 'always' | 'deny') => void;
+}
+
+interface GuiPreferences {
+  workMode: 'coding' | 'daily';
+  theme: 'system' | 'light' | 'dark';
+  density: 'comfortable' | 'compact';
+  enterToSend: boolean;
+  autoScroll: boolean;
+}
+
+const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
+  workMode: 'coding',
+  theme: 'system',
+  density: 'comfortable',
+  enterToSend: true,
+  autoScroll: true,
+};
+
+function buildGuiSystemPrompt(workDir: string): string {
+  let isGit = false;
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' });
+    isGit = true;
+  } catch {
+    // Non-git workspaces are valid.
+  }
+  return (
+    `You are Hadamard Agent, an interactive GUI agent. Working directory: ${workDir}\n\n` +
+    `<env>\nWorking directory: ${workDir}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
+    `# Tone and style\n` +
+    `- Only use emojis if the user explicitly requests it.\n` +
+    `- Your responses should be short and concise.\n` +
+    `- When referencing code include the pattern file_path:line_number.\n\n` +
+    `# Doing tasks\n` +
+    `- Prefer editing existing files to creating new ones.\n` +
+    `- Do not add features, refactor, or introduce abstractions beyond what the task requires.\n` +
+    `- Default to writing no comments.\n\n` +
+    `# Git Safety Protocol\n` +
+    `- NEVER update the git config.\n` +
+    `- NEVER run destructive git commands unless the user explicitly requests them.\n` +
+    `- NEVER skip hooks unless the user explicitly requests it.\n` +
+    `- NEVER commit changes unless the user explicitly asks you to.\n\n` +
+    `# Other\n` +
+    `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
+    `- When in doubt, use TodoWrite to track progress.`
+  );
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(body));
+}
+
+function text(res: ServerResponse, status: number, body: string, type = 'text/plain'): void {
+  res.writeHead(status, {
+    'content-type': `${type}; charset=utf-8`,
+    'cache-control': 'no-store',
+  });
+  res.end(body);
+}
+
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  if (chunks.length === 0) return {};
+  const raw = Buffer.concat(chunks).toString('utf8');
+  return raw.trim() ? JSON.parse(raw) as Record<string, unknown> : {};
+}
+
+function summarizeInput(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return '';
+  const record = input as Record<string, unknown>;
+  for (const key of ['command', 'file_path', 'notebook_path', 'url', 'path']) {
+    if (typeof record[key] === 'string') return record[key] as string;
+  }
+  try {
+    return JSON.stringify(record);
+  } catch {
+    return '';
+  }
+}
+
+function commandUsage(command: string): string {
+  switch (command) {
+    case 'model': return '/model [config|router [name|off]|<model>|default]';
+    case 'effort': return '/effort [auto|low|medium|high|max]';
+    case 'permissions': return '/permissions [read-only|workspace|full]';
+    case 'resume': return '/resume [session-id]';
+    case 'dream': return '/dream [status|run]';
+    case 'workflows': return '/workflows [run <name> [input]]';
+    case 'worktree': return '/worktree [enter <name>|exit|list]';
+    case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>]';
+    default: return `/${command}`;
+  }
+}
+
+function guiIcon(name: string): string {
+  const icons: Record<string, string> = {
+    agent: '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M9 13h.01"/><path d="M15 13h.01"/><path d="M10 17h4"/>',
+    automation: '<path d="M4 12a8 8 0 0 1 13.66-5.66"/><path d="M18 4v5h-5"/><path d="M20 12a8 8 0 0 1-13.66 5.66"/><path d="M6 20v-5h5"/>',
+    browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8h.01"/><path d="M12 8h.01"/><path d="M3 10h18"/>',
+    chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
+    chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/><path d="m14 4-4 16"/>',
+    command: '<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0 0-6Z"/>',
+    computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
+    environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+    gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
+    git: '<path d="M16 3 21 8l-5 5"/><path d="M8 3 3 8l5 5"/><path d="M12 21v-9"/><path d="M8 12h8"/>',
+    globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
+    hooks: '<path d="M9 18a5 5 0 0 1 0-10h1"/><path d="M15 6a5 5 0 0 1 0 10h-1"/><path d="M8 13h8"/>',
+    keyboard: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01"/><path d="M11 9h.01"/><path d="M15 9h.01"/><path d="M7 13h10"/><path d="M8 17h8"/>',
+    memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
+    mic: '<path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v4"/>',
+    model: '<path d="M12 2 4 6v12l8 4 8-4V6Z"/><path d="m4 6 8 4 8-4"/><path d="M12 10v12"/>',
+    more: '<path d="M12 12h.01"/><path d="M19 12h.01"/><path d="M5 12h.01"/>',
+    palette: '<circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2a10 10 0 0 0 0 20h1.5a2.5 2.5 0 0 0 0-5H12a2 2 0 0 1 0-4h3a7 7 0 0 0 0-11Z"/>',
+    plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
+    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    profile: '<circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+    send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+    terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
+    tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
+    worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
+  };
+  const body = icons[name] ?? icons.gear;
+  return `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+}
+
+function isEffort(value: unknown): value is ActoviqEffort {
+  return typeof value === 'string' && EFFORT_LEVELS.includes(value as ActoviqEffort);
+}
+
+function readEnvFromSettings(raw: Record<string, unknown>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (/^[A-Z0-9_]+$/.test(key) && typeof value === 'string') env[key] = value;
+  }
+  if (isPlainRecord(raw.env)) {
+    for (const [key, value] of Object.entries(raw.env)) {
+      if (typeof value === 'string') env[key] = value;
+    }
+  }
+  return env;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
+  const source = isPlainRecord(raw.gui) ? raw.gui : {};
+  const workMode = source.workMode === 'daily' ? 'daily' : 'coding';
+  const theme = source.theme === 'light' || source.theme === 'dark' ? source.theme : 'system';
+  const density = source.density === 'compact' ? 'compact' : 'comfortable';
+  return {
+    workMode,
+    theme,
+    density,
+    enterToSend: typeof source.enterToSend === 'boolean'
+      ? source.enterToSend
+      : DEFAULT_GUI_PREFERENCES.enterToSend,
+    autoScroll: typeof source.autoScroll === 'boolean'
+      ? source.autoScroll
+      : DEFAULT_GUI_PREFERENCES.autoScroll,
+  };
+}
+
+function normalizeFsPath(value: string): string {
+  const resolved = path.resolve(value).normalize('NFC');
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface StoredSessionFile {
+  id: string;
+  storageId: string;
+  filePath: string;
+  messageCount: number;
+  workDir?: string;
+}
+
+async function listProjectSessionRoots(homeDir: string): Promise<string[]> {
+  const projectsRoot = path.join(homeDir, '.actoviq', 'projects');
+  let projectDirs: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    projectDirs = await readdir(projectsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return projectDirs
+    .filter((projectDir) => projectDir.isDirectory())
+    .map((projectDir) => path.join(projectsRoot, projectDir.name));
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of paths) {
+    const resolved = path.resolve(item);
+    const key = normalizeFsPath(resolved);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(resolved);
+  }
+  return result;
+}
+
+async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessionFile[]> {
+  const sessionsDir = path.join(projectRoot, 'sessions');
+  let files: string[];
+  try {
+    files = await readdir(sessionsDir);
+  } catch {
+    return [];
+  }
+  const sessions: StoredSessionFile[] = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const filePath = path.join(sessionsDir, file);
+    try {
+      const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown;
+      const metadata = isPlainRecord(raw) && isPlainRecord(raw.metadata) ? raw.metadata : {};
+      const messages = isPlainRecord(raw) && Array.isArray(raw.messages) ? raw.messages : [];
+      const storageId = file.slice(0, -'.json'.length);
+      sessions.push({
+        id: isPlainRecord(raw) && typeof raw.id === 'string' ? raw.id : storageId,
+        storageId,
+        filePath,
+        messageCount: messages.length,
+        workDir: typeof metadata.__actoviqWorkDir === 'string' ? metadata.__actoviqWorkDir : undefined,
+      });
+    } catch {
+      // Ignore unreadable historical sessions while building GUI state.
+    }
+  }
+  return sessions;
+}
+
+async function countStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
+  let count = 0;
+  for (const projectRoot of projectRoots) {
+    for (const item of await listStoredSessionFiles(projectRoot)) {
+      if (item.id === activeSessionId || item.storageId === activeSessionId || item.messageCount > 0) continue;
+      count += 1;
+    }
+  }
+  return count;
+}
+
+async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
+  let deleted = 0;
+  for (const projectRoot of projectRoots) {
+    for (const item of await listStoredSessionFiles(projectRoot)) {
+      if (item.id === activeSessionId || item.storageId === activeSessionId || item.messageCount > 0) continue;
+      await rm(item.filePath, { force: true });
+      await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), {
+        recursive: true,
+        force: true,
+      });
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+
+async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory: string): Promise<string[]> {
+  return uniquePaths([
+    currentSessionDirectory,
+    ...await listProjectSessionRoots(homeDir),
+  ]);
+}
+
+async function listKnownProjects(homeDir: string, currentWorkDir: string) {
+  const current = path.resolve(currentWorkDir);
+  const projects = new Map<string, {
+    name: string;
+    path: string;
+    sessionCount: number;
+    active: boolean;
+  }>();
+  const addProject = (projectPath: string, sessionCount = 0) => {
+    const resolved = path.resolve(projectPath);
+    const key = normalizeFsPath(resolved);
+    const existing = projects.get(key);
+    projects.set(key, {
+      name: path.basename(resolved) || resolved,
+      path: resolved,
+      sessionCount: (existing?.sessionCount ?? 0) + sessionCount,
+      active: normalizeFsPath(resolved) === normalizeFsPath(current),
+    });
+  };
+  addProject(current, 0);
+
+  for (const projectRoot of await listProjectSessionRoots(homeDir)) {
+    const countsByWorkDir = new Map<string, { path: string; count: number }>();
+    for (const item of await listStoredSessionFiles(projectRoot)) {
+      if (item.messageCount === 0 || !item.workDir || !(await pathExists(item.workDir))) continue;
+      const key = normalizeFsPath(item.workDir);
+      const existing = countsByWorkDir.get(key);
+      countsByWorkDir.set(key, { path: item.workDir, count: (existing?.count ?? 0) + 1 });
+    }
+    for (const project of countsByWorkDir.values()) {
+      addProject(project.path, project.count);
+    }
+  }
+
+  return [...projects.values()].sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
+}
+
+function openPathInSystem(targetPath: string): void {
+  const command = process.platform === 'win32'
+    ? 'explorer.exe'
+    : process.platform === 'darwin'
+      ? 'open'
+      : 'xdg-open';
+  const child = spawn(command, [targetPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+  child.unref();
+}
+
+function sessionView(session: AgentSession) {
+  return {
+    id: session.id,
+    title: session.title,
+    model: session.model,
+    messages: session.messages.length,
+    permissionContext: session.permissionContext,
+  };
+}
+
+/**
+ * Flatten a stored conversation into the same event shapes the live stream emits,
+ * so the client can replay history through its normal render path when a chat is
+ * opened or resumed.
+ */
+function renderableHistory(session: AgentSession): GuiRunEvent[] {
+  const events: GuiRunEvent[] = [];
+  const results = new Map<string, { ok: boolean; text: string }>();
+  const stringifyResult = (content: ToolResultBlockParam['content']): string => {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block) => {
+          if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+            return (block as { text: string }).text;
+          }
+          try {
+            return JSON.stringify(block);
+          } catch {
+            return '';
+          }
+        })
+        .join('\n');
+    }
+    return '';
+  };
+
+  for (const message of session.messages) {
+    if (!Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_result') {
+        const result = block as ToolResultBlockParam;
+        results.set(result.tool_use_id, { ok: !result.is_error, text: stringifyResult(result.content) });
+      }
+    }
+  }
+
+  for (const message of session.messages) {
+    const content = message.content;
+    if (typeof content === 'string') {
+      if (content.trim()) events.push({ type: message.role === 'assistant' ? 'assistant' : 'user', text: content });
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const type = (block as { type?: unknown }).type;
+      if (type === 'text' && typeof (block as { text?: unknown }).text === 'string' && (block as { text: string }).text.trim()) {
+        events.push({ type: message.role === 'assistant' ? 'assistant' : 'user', text: (block as { text: string }).text });
+      } else if (type === 'tool_use') {
+        const call = block as ToolUseBlock;
+        const result = results.get(call.id);
+        events.push({
+          type: 'tool',
+          name: call.name,
+          input: call.input,
+          ok: result ? result.ok : true,
+          text: result ? result.text : '',
+        });
+      }
+    }
+  }
+
+  return events;
+}
+
+function buildDefaultTeam(mode: string, model: string): TeamDefinition | undefined {
+  // `role` gives each member a stable identity so panel members that share a
+  // model stay distinguishable in reports/events/status.
+  const member = (role: string, systemPrompt: string) => ({ model, role, name: role, systemPrompt });
+  switch (mode) {
+    case 'panel-analysis':
+      return {
+        name: 'panel-analysis',
+        mode: 'panel-analysis',
+        members: [
+          member('researcher', 'Expert researcher. Investigate with read-only tools; cite sources.'),
+          member('skeptic', 'Rigorous skeptic. Verify with sources; challenge assumptions.'),
+        ],
+        primary: member('synthesizer', 'Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.'),
+        timeoutMs: 300000,
+        maxIterations: 12,
+      };
+    case 'analysis':
+      return {
+        name: 'analysis-panel',
+        mode: 'analysis',
+        members: [
+          member('researcher', 'Expert researcher. Deep, source-grounded analysis.'),
+          member('skeptic', 'Rigorous skeptic. Verify with sources; challenge assumptions.'),
+        ],
+        timeoutMs: 300000,
+        maxIterations: 12,
+      };
+    case 'reviewer':
+      return {
+        name: 'reviewer',
+        mode: 'reviewer',
+        members: [],
+        reviewer: member('reviewer', 'Meticulous reviewer. Surface only genuine, verifiable issues with file:line evidence; never speculate.'),
+        timeoutMs: 300000,
+        maxIterations: 16,
+      };
+    default:
+      return undefined;
+  }
+}
+
+async function listenWithFallback(
+  server: ReturnType<typeof createServer>,
+  host: string,
+  startPort: number,
+  attempts = 20,
+): Promise<number> {
+  for (let candidate = startPort; candidate < startPort + attempts; candidate += 1) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: NodeJS.ErrnoException): void => {
+          server.removeListener('listening', onListening);
+          reject(error);
+        };
+        const onListening = (): void => {
+          server.removeListener('error', onError);
+          resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(candidate, host);
+      });
+      return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+    }
+  }
+  throw new Error(`No free port found in range ${startPort}-${startPort + attempts - 1}`);
+}
+
+export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Promise<ActoviqGuiServer> {
+  let workDir = path.resolve(options.workDir ?? process.cwd());
+  const host = options.host ?? '127.0.0.1';
+  const port = options.port ?? DEFAULT_PORT;
+  const permissionMode: ActoviqPermissionMode = options.permissionMode ?? 'bypassPermissions';
+  const authToken = randomBytes(32).toString('hex');
+  let systemPrompt = buildGuiSystemPrompt(workDir);
+
+  try {
+    if (options.configPath) await loadJsonConfigFile(options.configPath);
+    else await loadDefaultActoviqSettings({ homeDir: options.homeDir });
+  } catch {
+    // Missing local config is fine; env vars may carry credentials.
+  }
+
+  let tools = createActoviqCoreTools({ cwd: workDir });
+  const createCleanSdk = () =>
+    createAgentSdk({
+      ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+      workDir,
+      tools,
+      permissionMode,
+      ...(options.model ? { model: options.model } : {}),
+    });
+  let sdk = await createCleanSdk();
+  let toolMetadata = await sdk.listToolMetadata();
+  let session = options.resumeSessionId
+    ? await sdk.resumeSession(options.resumeSessionId, {
+        model: options.model,
+        permissionMode: options.permissionMode,
+      })
+    : options.continueMostRecent
+      ? await sdk.sessions.continueMostRecent({
+          model: options.model,
+          permissionMode: options.permissionMode,
+        })
+      : await sdk.createSession({
+          title: path.basename(workDir),
+          model: options.model,
+          permissionMode,
+        });
+
+  let activeTeamTool: AgentToolDefinition | null = null;
+  let activeTeamName: string | null = null;
+  let activeRouter: RouterProfile | null = null;
+  let routedModelLabel: string | null = null;
+  let runAbort: AbortController | null = null;
+  let eventSink: ((event: GuiRunEvent) => void) | null = null;
+  const pendingPermissions = new Map<string, PendingPermission>();
+
+  // The project/plugin/empty-session scans walk every project on disk. Cache them
+  // briefly (and invalidate on mutations) so `/api/state` is cheap on every turn.
+  type HeavyState = {
+    key: string;
+    at: number;
+    projects: Awaited<ReturnType<typeof listKnownProjects>>;
+    plugins: Awaited<ReturnType<typeof discoverActoviqPlugins>>;
+    hiddenEmptySessionCount: number;
+  };
+  let heavyStateCache: HeavyState | null = null;
+  const invalidateHeavyState = (): void => {
+    heavyStateCache = null;
+  };
+
+  async function reloadSdk(): Promise<void> {
+    const previousSdk = sdk;
+    const nextSdk = await createCleanSdk();
+    try {
+      session = await nextSdk.resumeSession(session.id, {
+        model: options.model,
+        permissionMode: options.permissionMode,
+      });
+      toolMetadata = await nextSdk.listToolMetadata();
+      sdk = nextSdk;
+    } catch (error) {
+      await nextSdk.close().catch(() => undefined);
+      throw error;
+    }
+    await previousSdk.close().catch(() => undefined);
+  }
+
+  async function switchProject(nextWorkDir: string): Promise<Record<string, unknown>> {
+    if (runAbort) {
+      throw new Error('Cannot switch projects while a run is active.');
+    }
+    const resolved = path.resolve(nextWorkDir);
+    if (!(await pathExists(resolved))) {
+      throw new Error(`Workspace does not exist: ${resolved}`);
+    }
+    const previousSdk = sdk;
+    workDir = resolved;
+    systemPrompt = buildGuiSystemPrompt(workDir);
+    tools = createActoviqCoreTools({ cwd: workDir });
+    activeTeamTool = null;
+    activeTeamName = null;
+    activeRouter = null;
+    routedModelLabel = null;
+    const nextSdk = await createCleanSdk();
+    try {
+      const sessions = await nextSdk.sessions.list();
+      const resumable = sessions.find(item => item.messageCount > 0 && item.status !== 'closed')
+        ?? sessions.find(item => item.messageCount > 0)
+        ?? sessions.find(item => item.status !== 'closed');
+      session = resumable
+        ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
+        : await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+      toolMetadata = await nextSdk.listToolMetadata();
+      sdk = nextSdk;
+    } catch (error) {
+      await nextSdk.close().catch(() => undefined);
+      throw error;
+    }
+    await previousSdk.close().catch(() => undefined);
+    invalidateHeavyState();
+    return state();
+  }
+
+  const currentPermissionMode = (): ActoviqPermissionMode =>
+    session.permissionContext.mode ?? permissionMode;
+  const currentEffort = (): ActoviqRunEffort | undefined => {
+    const stored = session.metadata.__actoviqEffort;
+    if (stored === 'auto') return 'auto';
+    return isEffort(stored) ? stored : sdk.config.effort;
+  };
+
+  const approver: ActoviqToolApprover = async (context) => {
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const pending = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
+      const request: PendingPermission = {
+        id,
+        toolName: context.publicName,
+        summary: summarizeInput(context.input),
+        resolve,
+      };
+      pendingPermissions.set(id, request);
+      eventSink?.({
+        type: 'permission.request',
+        id,
+        toolName: request.toolName,
+        summary: request.summary,
+      });
+    });
+    pendingPermissions.delete(id);
+    if (pending === 'always') {
+      const state = session.permissionContext;
+      const permissions = state.permissions.filter(
+        rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
+      );
+      permissions.push({ toolName: context.publicName, behavior: 'allow', source: 'gui-session' });
+      await session.setPermissionContext({
+        mode: state.mode ?? permissionMode,
+        permissions,
+        approver,
+      });
+      return { behavior: 'allow', reason: 'Approved (always) in GUI.' };
+    }
+    return pending === 'allow'
+      ? { behavior: 'allow', reason: 'Approved in GUI.' }
+      : { behavior: 'deny', reason: 'Denied in GUI permission dialog.' };
+  };
+
+  async function state() {
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: options.homeDir,
+    }).catch(() => undefined);
+    const env = store ? readEnvFromSettings(store.raw) : {};
+    const configuredDirs = Array.isArray(store?.raw.pluginDirs)
+      ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
+      : [];
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const cacheKey = `${workDir}|${session.id}`;
+    const now = Date.now();
+    let heavy = heavyStateCache && heavyStateCache.key === cacheKey && now - heavyStateCache.at < 4000
+      ? heavyStateCache
+      : null;
+    if (!heavy) {
+      const sessionStoreRoots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+      const [plugins, projects, hiddenEmptySessionCount] = await Promise.all([
+        discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
+        listKnownProjects(homeDir, workDir),
+        countStoredEmptySessions(sessionStoreRoots, session.id),
+      ]);
+      heavy = { key: cacheKey, at: now, plugins, projects, hiddenEmptySessionCount };
+      heavyStateCache = heavy;
+    }
+    const [allSessions, workflows, teams, routers, skills, agents] = await Promise.all([
+      sdk.sessions.list(),
+      Promise.resolve(listWorkflows(workDir)),
+      Promise.resolve(listTeamDefinitions(workDir)),
+      Promise.resolve(listRouterProfiles(workDir)),
+      Promise.resolve(sdk.skills.listMetadata()),
+      Promise.resolve(sdk.agents.list()),
+    ]);
+    const sessions = allSessions.filter(item => item.messageCount > 0 || item.id === session.id);
+    return {
+      workDir,
+      session: sessionView(session),
+      permissionMode: currentPermissionMode(),
+      effort: currentEffort() ?? 'auto',
+      activeTeamName,
+      activeRouterName: activeRouter?.name ?? null,
+      routedModelLabel,
+      commands: ACTOVIQ_INTERACTIVE_COMMANDS,
+      commandUsages: Object.fromEntries(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS).map(name => [name, commandUsage(name)])),
+      tools: toolMetadata,
+      projects: heavy.projects,
+      sessions,
+      hiddenEmptySessionCount: heavy.hiddenEmptySessionCount,
+      workflows,
+      teams,
+      routers,
+      skills,
+      agents,
+      plugins: heavy.plugins,
+      settings: {
+        configPath: store?.configPath ?? null,
+        provider: env.ACTOVIQ_PROVIDER ?? sdk.config.provider,
+        baseURL: env.ACTOVIQ_BASE_URL ?? '',
+        defaultModel: env.ACTOVIQ_MODEL ?? '',
+        minModel: env.ACTOVIQ_DEFAULT_MIN_MODEL ?? '',
+        mediumModel: env.ACTOVIQ_DEFAULT_MEDIUM_MODEL ?? '',
+        maxModel: env.ACTOVIQ_DEFAULT_MAX_MODEL ?? '',
+        apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
+        preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
+      },
+      running: Boolean(runAbort),
+    };
+  }
+
+  async function saveSettings(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: options.homeDir,
+    });
+    const raw = structuredClone(store.raw);
+    const env = readEnvFromSettings(raw);
+    raw.env = env;
+
+    if (body.provider === 'anthropic' || body.provider === 'openai') {
+      env.ACTOVIQ_PROVIDER = body.provider;
+    }
+    if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+      env.ACTOVIQ_API_KEY = body.apiKey.trim();
+      delete env.ACTOVIQ_AUTH_TOKEN;
+    } else if (body.clearApiKey === true) {
+      delete env.ACTOVIQ_API_KEY;
+      delete env.ACTOVIQ_AUTH_TOKEN;
+    }
+    const envFields = [
+      ['baseURL', 'ACTOVIQ_BASE_URL'],
+      ['defaultModel', 'ACTOVIQ_MODEL'],
+      ['minModel', 'ACTOVIQ_DEFAULT_MIN_MODEL'],
+      ['mediumModel', 'ACTOVIQ_DEFAULT_MEDIUM_MODEL'],
+      ['maxModel', 'ACTOVIQ_DEFAULT_MAX_MODEL'],
+    ] as const;
+    for (const [field, key] of envFields) {
+      if (typeof body[field] !== 'string') continue;
+      const value = body[field].trim();
+      if (value) env[key] = value;
+      else delete env[key];
+    }
+
+    const preferences = isPlainRecord(body.preferences)
+      ? readGuiPreferences({ gui: body.preferences })
+      : readGuiPreferences(raw);
+    raw.gui = preferences;
+    await persistActoviqSettingsStore(store.configPath, raw);
+    await loadJsonConfigFile(store.configPath);
+
+    const permissionPreset = typeof body.permissionPreset === 'string' && body.permissionPreset
+      ? body.permissionPreset.toLowerCase().replace(/[ _]/g, '-')
+      : '';
+    const effort = typeof body.effort === 'string'
+      ? body.effort.toLowerCase()
+      : '';
+
+    let applyError: string | undefined;
+    try {
+      await reloadSdk();
+    } catch (error) {
+      applyError = (error as Error).message;
+    }
+    if (permissionPreset) {
+      await setPermissionPreset(permissionPreset);
+    }
+    if (effort === 'auto' || isEffort(effort)) {
+      await session.mergeMetadata({ __actoviqEffort: effort });
+    }
+    invalidateHeavyState();
+    return {
+      ...await state(),
+      settingsApplyError: applyError,
+    };
+  }
+
+  async function cleanupEmptySessions(): Promise<Record<string, unknown>> {
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: options.homeDir,
+    }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const deleted = await cleanupStoredEmptySessions(
+      await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory),
+      session.id,
+    );
+    invalidateHeavyState();
+    return { deleted, state: await state() };
+  }
+
+  async function setPermissionPreset(key: string): Promise<GuiRunEvent[]> {
+    const presets: Record<string, { mode: ActoviqPermissionMode; rules: ActoviqPermissionRule[]; label: string }> = {
+      'read-only': {
+        mode: 'default',
+        rules: READONLY_DENY.map(toolName => ({ toolName, behavior: 'deny', source: 'permissions-preset' })),
+        label: 'Read-only',
+      },
+      workspace: { mode: 'acceptEdits', rules: [], label: 'Workspace access' },
+      full: { mode: 'bypassPermissions', rules: [], label: 'Full access' },
+    };
+    const preset = presets[key];
+    if (!preset) return [{ type: 'error', message: `unknown permission preset: ${key}` }];
+    await session.setPermissionContext({ mode: preset.mode, permissions: preset.rules, approver });
+    return [{ type: 'notice', message: `permissions: ${preset.label} (${preset.mode})` }];
+  }
+
+  async function runWorkflow(name: string, input?: string): Promise<GuiRunEvent[]> {
+    const workflow = loadWorkflow(name, workDir);
+    if (!workflow) return [{ type: 'error', message: `workflow not found: ${name}` }];
+    const events: GuiRunEvent[] = [{ type: 'notice', message: `running workflow: ${name}` }];
+    const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
+    const runtime = new WorkflowScriptRuntime({
+      sdk: sdk as any,
+      args: input,
+      onEvent: (event: any) => {
+        if (event.type === 'workflow.phase.start') events.push({ type: 'notice', message: `phase: ${event.title}` });
+        if (event.type === 'workflow.agent.start') events.push({ type: 'notice', message: `agent: ${event.label ?? event.agentId}` });
+        if (event.type === 'workflow.log') events.push({ type: 'notice', message: String(event.message) });
+      },
+    });
+    const output = await runtime.execute(workflow.script);
+    if (typeof output.result === 'string' && output.result.trim()) {
+      events.push({ type: 'command.result', title: 'workflow result', text: output.result });
+    }
+    if (output.state.errors.length > 0) {
+      events.push({ type: 'error', message: `${output.state.errors.length} errors during workflow execution` });
+    }
+    return events;
+  }
+
+  async function runSlashCommand(raw: string): Promise<GuiRunEvent[]> {
+    const spaceIndex = raw.indexOf(' ');
+    const name = (spaceIndex === -1 ? raw.slice(1) : raw.slice(1, spaceIndex)).toLowerCase();
+    const args = spaceIndex === -1 ? '' : raw.slice(spaceIndex + 1).trim();
+
+    switch (name) {
+      case 'help':
+        return [{
+          type: 'command.result',
+          title: 'Commands',
+          items: Object.entries(ACTOVIQ_INTERACTIVE_COMMANDS).map(([command, description]) => ({
+            label: `/${command}`,
+            description,
+            detail: commandUsage(command),
+          })),
+        }];
+      case 'clear':
+        return [{ type: 'clear' }];
+      case 'exit':
+      case 'quit':
+        return [{ type: 'notice', message: 'Close the browser tab or stop the actoviq-gui process to quit.' }];
+      case 'model': {
+        if (!args) return [{ type: 'command.result', title: 'Model', text: `current: ${session.model}` }];
+        if (args === 'config') return [{ type: 'settings.open' }];
+        if (args === 'router' || args.startsWith('router ')) {
+          const routerArg = args.slice('router'.length).trim();
+          if (routerArg === 'off' || routerArg === 'none') {
+            activeRouter = null;
+            routedModelLabel = null;
+            return [{ type: 'notice', message: 'router off; using the fixed model' }];
+          }
+          if (!routerArg) {
+            return [{
+              type: 'command.result',
+              title: 'Router profiles',
+              items: listRouterProfiles(workDir).map(profile => ({
+                label: profile.name,
+                description: `${profile.profile.routes.length} routes`,
+                detail: profile.source,
+              })),
+            }];
+          }
+          const loaded = loadRouterProfile(routerArg, workDir);
+          if (!loaded) return [{ type: 'error', message: `router profile not found: ${routerArg}` }];
+          activeRouter = loaded.profile;
+          routedModelLabel = null;
+          return [{ type: 'notice', message: `router active: ${loaded.profile.name}` }];
+        }
+        await session.setModel(args === 'default' ? sdk.config.model : args);
+        return [{ type: 'notice', message: `model set to: ${session.model}` }];
+      }
+      case 'effort': {
+        if (!args) return [{ type: 'command.result', title: 'Effort', text: `current: ${currentEffort() ?? 'auto'}` }];
+        const value = args.toLowerCase();
+        if (value !== 'auto' && !isEffort(value)) return [{ type: 'error', message: 'usage: /effort [auto|low|medium|high|max]' }];
+        await session.mergeMetadata({ __actoviqEffort: value });
+        return [{ type: 'notice', message: `effort set to: ${value}` }];
+      }
+      case 'permissions':
+        return args
+          ? setPermissionPreset(args.toLowerCase().replace(/[ _]/g, '-'))
+          : [{ type: 'command.result', title: 'Permissions', text: `current: ${currentPermissionMode()}` }];
+      case 'sessions': {
+        const sessions = await sdk.sessions.list();
+        return [{
+          type: 'command.result',
+          title: 'Sessions',
+          items: sessions.map(item => ({
+            label: item.id === session.id ? `${item.id} (current)` : item.id,
+            description: `${item.title} · ${item.model} · ${item.status}`,
+          })),
+        }];
+      }
+      case 'resume': {
+        if (!args) return runSlashCommand('/sessions');
+        session = await sdk.resumeSession(args, { model: options.model, permissionMode: options.permissionMode });
+        return [{ type: 'notice', message: `resumed session: ${session.id}` }, { type: 'state' }];
+      }
+      case 'tools':
+        return [{
+          type: 'command.result',
+          title: 'Tools',
+          items: toolMetadata.map(tool => ({
+            label: tool.name,
+            description: `${tool.category} · ${tool.provider}${tool.readOnly ? ' · read-only' : ''}`,
+            detail: tool.description,
+          })),
+        }];
+      case 'memory':
+        return [{ type: 'command.result', title: 'Memory', text: JSON.stringify(await session.compactState(), null, 2) }];
+      case 'compact': {
+        const result = await session.compact({ force: true, summaryInstructions: args || undefined });
+        return result.compacted
+          ? [{ type: 'notice', message: `compacted: ${result.messagesRemoved ?? '?'} messages summarized` }]
+          : [{ type: 'error', message: result.error ?? `compact skipped: ${result.reason}` }];
+      }
+      case 'dream': {
+        if (!args || args === 'status') {
+          return [{ type: 'command.result', title: 'Dream', text: JSON.stringify(await session.dreamState(), null, 2) }];
+        }
+        if (args !== 'run') return [{ type: 'error', message: 'usage: /dream [run|status]' }];
+        const result = await session.dream({ force: true });
+        return [{ type: 'notice', message: result.reason ?? (result.skipped ? 'dream skipped' : result.success ? 'dream completed' : 'dream failed') }];
+      }
+      case 'skills':
+        return [{
+          type: 'command.result',
+          title: 'Skills',
+          items: sdk.skills.listMetadata().map(skill => ({
+            label: skill.displayName ? `${skill.displayName} (${skill.name})` : skill.name,
+            description: `${skill.source} · ${skill.context}${skill.version ? ` · v${skill.version}` : ''}`,
+            detail: `${skill.description} ${skill.whenToUse ?? ''}`,
+          })),
+        }];
+      case 'agents':
+        return [{
+          type: 'command.result',
+          title: 'Subagents',
+          items: sdk.agents.list().map(agent => ({
+            label: agent.name,
+            description: agent.model ?? 'inherits model',
+            detail: agent.description,
+          })),
+        }];
+      case 'mcp': {
+        const mcpTools = toolMetadata.filter(tool => tool.provider === 'mcp');
+        return [{
+          type: 'command.result',
+          title: 'MCP',
+          items: mcpTools.map(tool => ({
+            label: tool.name,
+            description: tool.server ?? 'mcp',
+            detail: tool.description,
+          })),
+          text: mcpTools.length === 0 ? 'no MCP servers are active' : undefined,
+        }];
+      }
+      case 'plugins': {
+        const snapshot = await state();
+        return [{
+          type: 'command.result',
+          title: 'Plugins',
+          items: (snapshot.plugins as any[]).map(plugin => ({
+            label: plugin.name,
+            description: [plugin.version, plugin.capabilities?.join(', ')].filter(Boolean).join(' · '),
+            detail: plugin.path,
+          })),
+        }];
+      }
+      case 'workflows': {
+        if (args.startsWith('run ')) {
+          const rest = args.slice(4).trim();
+          const split = rest.indexOf(' ');
+          return runWorkflow(split === -1 ? rest : rest.slice(0, split), split === -1 ? undefined : rest.slice(split + 1).trim());
+        }
+        return [{
+          type: 'command.result',
+          title: 'Workflows',
+          items: listWorkflows(workDir).map(workflow => ({
+            label: workflow.name,
+            description: workflow.description,
+            detail: workflow.source,
+          })),
+        }];
+      }
+      case 'worktree': {
+        const service = new WorktreeService(workDir);
+        if (args === 'list' || !args) {
+          await service.init();
+          const trees = await service.listWorktrees();
+          return [{
+            type: 'command.result',
+            title: 'Worktrees',
+            items: trees.map(tree => ({
+              label: tree.path,
+              description: tree.isDirty ? 'dirty' : 'clean',
+            })),
+            text: trees.length === 0 ? 'no worktrees' : undefined,
+          }];
+        }
+        if (args === 'exit') {
+          service.exitWorktree();
+          return [{ type: 'notice', message: `exited worktree, cwd: ${service.currentWorkDir}` }];
+        }
+        if (args.startsWith('enter ')) {
+          const nameToEnter = args.slice(6).trim();
+          await service.init();
+          await service.createAndEnterWorktree({ name: nameToEnter });
+          return [{ type: 'notice', message: `entered worktree: ${nameToEnter} (${service.currentWorkDir})` }];
+        }
+        return [{ type: 'error', message: 'usage: /worktree [enter <name>|exit|list]' }];
+      }
+      case 'team': {
+        if (!args || args === 'list') {
+          const saved = listTeamDefinitions(workDir);
+          return [{
+            type: 'command.result',
+            title: 'Teams',
+            items: [
+              ...saved.map(team => ({
+                label: team.name,
+                description: `${team.definition.mode} · ${team.definition.members?.length ?? 0} members`,
+                detail: team.source,
+              })),
+              ...['panel-analysis', 'analysis', 'reviewer'].map(mode => ({
+                label: mode,
+                description: 'built-in',
+              })),
+            ],
+          }];
+        }
+        if (args === 'off') {
+          activeTeamTool = null;
+          activeTeamName = null;
+          return [{ type: 'notice', message: 'team: none' }];
+        }
+        if (args.startsWith('attach ')) {
+          const teamName = args.slice(7).trim();
+          const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+          if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
+          activeTeamTool = createTeamTool(definition);
+          activeTeamName = definition.name;
+          return [{ type: 'notice', message: `team active: ${definition.name}` }];
+        }
+        if (args.startsWith('ask ')) {
+          const rest = args.slice(4).trim();
+          const split = rest.indexOf(' ');
+          if (split === -1) return [{ type: 'error', message: 'usage: /team ask <name> <prompt>' }];
+          const teamName = rest.slice(0, split);
+          const prompt = rest.slice(split + 1).trim();
+          const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+          if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
+          const result = await createModelTeam(definition).ask(prompt);
+          return [{ type: 'command.result', title: `Team response · ${result.mode}`, text: result.answer }];
+        }
+        return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>]' }];
+      }
+      default:
+        return [{ type: 'error', message: `unknown command: /${name}` }];
+    }
+  }
+
+  async function streamRun(input: string, res: ServerResponse): Promise<void> {
+    const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
+    res.writeHead(200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'keep-alive',
+    });
+    send({ type: 'user', text: input });
+
+    if (input.startsWith('/')) {
+      try {
+        for (const event of await runSlashCommand(input)) send(event);
+        send({ type: 'state', state: await state() });
+        send({ type: 'done' });
+      } catch (error) {
+        send({ type: 'error', message: (error as Error).message });
+      } finally {
+        res.end();
+      }
+      return;
+    }
+
+    if (runAbort) {
+      send({ type: 'error', message: 'A run is already active.' });
+      res.end();
+      return;
+    }
+
+    runAbort = new AbortController();
+    eventSink = send;
+    let streamedTextSeen = false;
+    try {
+      let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
+      if (activeRouter) {
+        try {
+          const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
+          routed = { model: decision.model, modelApi: decision.modelApi };
+          routedModelLabel = `${decision.label} (${decision.model})`;
+          send({ type: 'notice', message: `router -> ${routedModelLabel}` });
+        } catch (error) {
+          send({ type: 'notice', message: `router classification failed: ${(error as Error).message}` });
+        }
+      }
+      const stream = session.stream(input, {
+        systemPrompt,
+        signal: runAbort.signal,
+        permissionMode: currentPermissionMode(),
+        effort: currentEffort(),
+        approver,
+        ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
+        ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+      });
+      for await (const event of stream) {
+        forwardAgentEvent(event, send);
+        if (event.type === 'response.text.delta' && event.delta) streamedTextSeen = true;
+      }
+      const result = await stream.result;
+      if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
+      if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
+      toolMetadata = await sdk.listToolMetadata();
+      invalidateHeavyState();
+      send({ type: 'state', state: await state() });
+      send({ type: 'done', usage: result.usage });
+    } catch (error) {
+      const err = error as Error;
+      send({ type: 'error', message: runAbort?.signal.aborted ? 'interrupted' : err.message });
+    } finally {
+      runAbort = null;
+      eventSink = null;
+      invalidateHeavyState();
+      res.end();
+    }
+  }
+
+  // Only loopback hosts may reach the server. The Host check defeats DNS-rebinding
+  // (the browser still sends the attacker's hostname); the Origin check defeats
+  // cross-site requests; the per-process token defeats other local processes.
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1', host.toLowerCase()]);
+  const hostHeaderAllowed = (req: IncomingMessage): boolean => {
+    const header = req.headers.host;
+    if (!header) return false;
+    return loopbackHosts.has(header.replace(/:\d+$/, '').toLowerCase());
+  };
+  const originAllowed = (req: IncomingMessage): boolean => {
+    const origin = req.headers.origin;
+    if (!origin) return true; // non-browser clients and same-origin GETs omit Origin
+    try {
+      return loopbackHosts.has(new URL(origin).hostname.toLowerCase());
+    } catch {
+      return false;
+    }
+  };
+
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url ?? '/', `http://${host}:${port}`);
+      if (!hostHeaderAllowed(req) || !originAllowed(req)) {
+        return text(res, 403, 'Forbidden: invalid host or origin');
+      }
+      if (url.pathname.startsWith('/api/') && req.headers['x-actoviq-token'] !== authToken) {
+        return json(res, 403, { error: 'Forbidden: missing or invalid token' });
+      }
+      if (req.method === 'GET' && url.pathname === '/') {
+        const nonce = randomBytes(16).toString('base64');
+        const html = createActoviqGuiHtml().replace(
+          '<script src="/app.js" type="module"></script>',
+          `<script nonce="${nonce}">window.__ACTOVIQ_TOKEN__=${JSON.stringify(authToken)};</script>\n  <script nonce="${nonce}" src="/app.js" type="module"></script>`,
+        );
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-store',
+          'content-security-policy': [
+            "default-src 'none'",
+            `script-src 'self' 'nonce-${nonce}'`,
+            "style-src 'self'",
+            "img-src 'self' data:",
+            "connect-src 'self'",
+            "font-src 'self'",
+            "base-uri 'none'",
+            "form-action 'self'",
+          ].join('; '),
+        });
+        res.end(html);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/app.css') return text(res, 200, createActoviqGuiStyles(), 'text/css');
+      if (req.method === 'GET' && url.pathname === '/app.js') return text(res, 200, createActoviqGuiClientScript(), 'text/javascript');
+      if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await state());
+      if (req.method === 'GET' && url.pathname === '/api/session/messages') return json(res, 200, { messages: renderableHistory(session) });
+      if (req.method === 'POST' && url.pathname === '/api/settings') {
+        return json(res, 200, await saveSettings(await readJson(req)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/open-location') {
+        openPathInSystem(workDir);
+        return json(res, 200, { ok: true, path: workDir });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/project/open') {
+        const body = await readJson(req);
+        const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
+        if (!nextWorkDir) return json(res, 400, { error: 'Missing project path' });
+        return json(res, 200, await switchProject(nextWorkDir));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/sessions/cleanup') {
+        return json(res, 200, await cleanupEmptySessions());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/send') {
+        const body = await readJson(req);
+        const input = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!input) return json(res, 400, { error: 'Missing text' });
+        return streamRun(input, res);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/new') {
+        session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/resume') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        session = await sdk.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/permission') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        const decision = body.decision;
+        const pending = pendingPermissions.get(id);
+        if (!pending) return json(res, 404, { error: 'Permission request not found' });
+        if (decision !== 'allow' && decision !== 'always' && decision !== 'deny') {
+          return json(res, 400, { error: 'Invalid decision' });
+        }
+        pending.resolve(decision);
+        return json(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/abort') {
+        runAbort?.abort();
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 404, { error: 'Not found' });
+    } catch (error) {
+      return json(res, 500, { error: (error as Error).message });
+    }
+  });
+
+  const actualPort = await listenWithFallback(server, host, port);
+  const url = `http://${host}:${actualPort}/`;
+  process.stdout.write(`actoviq-gui listening on ${url}\n`);
+
+  const close = async () => {
+    runAbort?.abort();
+    await sdk.close().catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
+  return { url, token: authToken, close };
+}
+
+export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<void> {
+  const handle = await startActoviqGuiServer(options);
+  process.once('SIGINT', () => { void close().finally(() => process.exit(0)); });
+  process.once('SIGTERM', () => { void close().finally(() => process.exit(0)); });
+  async function close(): Promise<void> {
+    await handle.close();
+  }
+}
+
+function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void): void {
+  switch (event.type) {
+    case 'run.started':
+      send({ type: 'run.started', model: event.model });
+      return;
+    case 'request.started':
+      send({ type: 'status', message: `request ${event.iteration}${event.requestTokenEstimate ? ` · ~${event.requestTokenEstimate} tokens` : ''}` });
+      return;
+    case 'response.text.delta':
+      if (event.delta) send({ type: 'delta', text: event.delta });
+      return;
+    case 'tool.call':
+      send({
+        type: 'tool.call',
+        id: event.call.id,
+        runId: event.runId,
+        iteration: event.iteration,
+        name: event.call.publicName,
+        provider: event.call.provider,
+        input: event.call.input,
+        startedAt: event.call.startedAt,
+      });
+      return;
+    case 'tool.permission':
+      send({ type: 'tool.permission', toolName: event.decision.publicName, behavior: event.decision.behavior, reason: event.decision.reason });
+      return;
+    case 'tool.result':
+      send({
+        type: 'tool.result',
+        id: event.result.id,
+        runId: event.runId,
+        iteration: event.iteration,
+        name: event.result.publicName,
+        ok: !event.result.isError,
+        text: event.result.outputText,
+        durationMs: event.result.durationMs,
+        completedAt: event.result.completedAt,
+      });
+      return;
+    case 'tool.progress':
+      send({
+        type: 'tool.progress',
+        id: event.toolUseId,
+        runId: event.runId,
+        iteration: event.iteration,
+        data: event.data,
+      });
+      return;
+    case 'session.compacted':
+      send({ type: 'notice', message: `session compacted: ${event.result.messagesRemoved ?? '?'} messages summarized` });
+      return;
+    case 'conversation.compacted':
+      send({ type: 'notice', message: `conversation compacted: ${event.messagesSummarized} messages summarized` });
+      return;
+    case 'model.fallback':
+      send({ type: 'notice', message: `model fallback: ${event.fromModel} -> ${event.toModel}` });
+      return;
+    case 'request.interrupted':
+      send({ type: 'notice', message: 'request interrupted' });
+      return;
+    case 'error':
+      send({ type: 'error', message: event.error.message });
+      return;
+    default:
+      return;
+  }
+}
+
+export function createActoviqGuiHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Actoviq GUI</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app" id="appView">
+    <aside class="sidebar">
+      <div class="sidebar-chrome">
+        <span class="dot active"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+      <nav class="primary-nav" aria-label="Primary">
+        <button id="newSession" class="nav-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
+        <button id="searchNav" class="nav-btn"><span class="nav-icon">${guiIcon('search')}</span><span>Search</span></button>
+        <button id="pluginsNav" class="nav-btn"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
+        <button id="automationNav" class="nav-btn"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
+      </nav>
+      <label class="search"><span>Search</span><input id="commandSearch" placeholder="Search chats"></label>
+      <section class="project-section">
+        <div class="section-title-row">
+          <h2>Projects</h2>
+          <div class="section-actions">
+            <button type="button" id="newWorkspaceBtn" class="mini-action-btn" title="Switch workspace"><span class="mini-icon">${guiIcon('folder')}</span><small>Workspace</small></button>
+            <button type="button" id="newProjectSessionBtn" class="mini-action-btn" title="New chat in this workspace"><span class="mini-icon">${guiIcon('plus')}</span><small>Chat</small></button>
+          </div>
+        </div>
+        <div class="project-control-row">
+          <button class="project-row" id="projectRoot">
+            <span class="folder-icon">${guiIcon('folder')}</span>
+            <span><strong id="projectName">actoviq-agent-sdk</strong><small id="projectPath"></small></span>
+            <span class="chevron">${guiIcon('chevronDown')}</span>
+          </button>
+          <button type="button" id="projectMenuBtn" class="icon-btn" title="Project options" aria-label="Project options">${guiIcon('more')}</button>
+        </div>
+        <div id="projects" class="project-list"></div>
+        <div class="project-actions">
+          <button type="button" id="addProjectBtn" class="sidebar-link">Add workspace</button>
+          <button type="button" id="cleanupSessionsBtn" class="sidebar-link">Clean empty chats</button>
+        </div>
+        <div id="workspaceMeta" class="workspace-meta"></div>
+      </section>
+      <div class="sidebar-footer">
+        <button id="settingsBtn" class="nav-btn"><span class="nav-icon">${guiIcon('gear')}</span><span>Settings</span></button>
+        <button id="collapseSidebar" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">${guiIcon('chevronDown')}</button>
+      </div>
+    </aside>
+    <main class="chat">
+      <header class="topbar">
+        <div class="title-block">
+          <div class="title-row">
+            <h1 id="sessionTitle">Actoviq GUI</h1>
+            <button id="conversationMenu" class="icon-btn" title="Conversation actions" aria-label="Conversation actions">${guiIcon('more')}</button>
+          </div>
+          <p id="workspace"></p>
+        </div>
+        <div class="top-actions">
+          <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
+          <button id="commandPaletteBtn" class="icon-btn" title="Command palette" aria-label="Command palette">${guiIcon('command')}</button>
+          <button id="toolsBtn" class="icon-btn" title="Tools" aria-label="Tools">${guiIcon('tools')}</button>
+          <button id="abortBtn" class="icon-btn" title="Interrupt" aria-label="Interrupt the current run">${guiIcon('close')}</button>
+        </div>
+      </header>
+      <section id="statusbar" class="statusbar"></section>
+      <section id="transcript" class="transcript"></section>
+      <form id="composer" class="composer">
+        <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
+        <div id="attachmentTray" class="attachment-tray hidden"></div>
+        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq or type /help"></textarea>
+        <div id="slashMenu" class="slash-menu hidden"></div>
+        <div id="queueList" class="queue-list hidden"></div>
+        <div class="composer-footer">
+          <div class="composer-left">
+            <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
+            <input id="fileInput" type="file" multiple class="hidden-file-input">
+            <select id="permissionSelect" title="Permission mode">
+              <option value="full">Full access</option>
+              <option value="workspace">Workspace</option>
+              <option value="read-only">Read-only</option>
+            </select>
+            <button type="button" id="insertCommand" class="command-chip" title="Commands">/ Commands</button>
+          </div>
+          <div class="composer-right">
+            <select id="effortSelect" title="Reasoning effort">
+              <option value="auto">Auto</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+            <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
+          </div>
+        </div>
+      </form>
+    </main>
+  </div>
+  <div id="surfaceDrawer" class="surface-drawer hidden">
+    <div class="surface-panel">
+      <header>
+        <div><h2 id="surfaceTitle">Panel</h2><p id="surfaceSubtitle"></p></div>
+        <button type="button" id="closeSurfaceBtn" class="icon-btn" title="Close" aria-label="Close panel">${guiIcon('close')}</button>
+      </header>
+      <div id="surfaceActions" class="surface-actions"></div>
+      <div id="surfaceList" class="surface-list"></div>
+    </div>
+  </div>
+  <div id="workspaceModal" class="modal hidden">
+    <form id="workspaceForm" class="dialog workspace-dialog">
+      <h2>Workspace</h2>
+      <p class="muted">Switch to an existing workspace or open a local project folder.</p>
+      <div id="workspaceChoices" class="workspace-choice-list"></div>
+      <label class="dialog-field">Workspace path<input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project"></label>
+      <p id="workspaceStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cancelWorkspace">Cancel</button>
+        <button type="submit" id="openWorkspaceBtn" class="primary">Open workspace</button>
+      </div>
+    </form>
+  </div>
+  <div id="permissionModal" class="modal hidden">
+    <div class="dialog">
+      <h2>Permission required</h2>
+      <p id="permissionTool"></p>
+      <pre id="permissionSummary"></pre>
+      <div class="dialog-actions">
+        <button data-decision="deny">Deny</button>
+        <button data-decision="allow">Allow</button>
+        <button data-decision="always">Always</button>
+      </div>
+    </div>
+  </div>
+  <div id="settingsModal" class="settings-view hidden">
+    <aside class="settings-sidebar">
+      <button type="button" id="backToAppBtn" class="back-btn">&lt; Back to app</button>
+      <label class="settings-search"><span>Search settings</span><input id="settingsSearch" placeholder="Search settings..."></label>
+      <section>
+        <h2>Personal</h2>
+        <button type="button" class="settings-tab active" data-settings-tab="general"><span class="settings-icon">${guiIcon('gear')}</span>General</button>
+        <button type="button" class="settings-tab" data-settings-tab="models"><span class="settings-icon">${guiIcon('model')}</span>Models & routing</button>
+        <button type="button" class="settings-tab" data-settings-tab="profile"><span class="settings-icon">${guiIcon('profile')}</span>Profile</button>
+        <button type="button" class="settings-tab" data-settings-tab="appearance"><span class="settings-icon">${guiIcon('palette')}</span>Appearance</button>
+        <button type="button" class="settings-tab" data-settings-tab="personalization"><span class="settings-icon">${guiIcon('agent')}</span>Personalization</button>
+        <button type="button" class="settings-tab" data-settings-tab="shortcuts"><span class="settings-icon">${guiIcon('keyboard')}</span>Keyboard shortcuts</button>
+      </section>
+      <section>
+        <h2>Agent</h2>
+        <button type="button" class="settings-tab" data-settings-tab="capabilities"><span class="settings-icon">${guiIcon('tools')}</span>Capabilities</button>
+        <button type="button" class="settings-tab" data-settings-tab="automation"><span class="settings-icon">${guiIcon('automation')}</span>Automation</button>
+        <button type="button" class="settings-tab" data-settings-tab="sessions"><span class="settings-icon">${guiIcon('chat')}</span>Chats</button>
+        <button type="button" class="settings-tab" data-settings-tab="memory"><span class="settings-icon">${guiIcon('memory')}</span>Memory</button>
+      </section>
+      <section>
+        <h2>Integrations</h2>
+        <button type="button" class="settings-tab" data-settings-tab="mcp"><span class="settings-icon">${guiIcon('plug')}</span>MCP servers</button>
+        <button type="button" class="settings-tab" data-settings-tab="browser"><span class="settings-icon">${guiIcon('browser')}</span>Browser</button>
+        <button type="button" class="settings-tab" data-settings-tab="computer"><span class="settings-icon">${guiIcon('computer')}</span>Computer control</button>
+      </section>
+      <section>
+        <h2>Coding</h2>
+        <button type="button" class="settings-tab" data-settings-tab="hooks"><span class="settings-icon">${guiIcon('hooks')}</span>Hooks</button>
+        <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
+        <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
+        <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
+      </section>
+    </aside>
+    <form id="settingsForm" class="settings-main">
+      <section class="settings-panel active" data-settings-panel="general">
+        <h1>General</h1>
+        <div class="settings-group">
+          <h2>Work mode</h2>
+          <p>Choose how much technical detail Actoviq shows by default.</p>
+          <div class="mode-grid">
+            <label class="mode-card"><input type="radio" name="settingsWorkMode" value="coding" id="settingsWorkModeCoding"><span><strong>For coding</strong><small>More technical replies and controls</small></span></label>
+            <label class="mode-card"><input type="radio" name="settingsWorkMode" value="daily" id="settingsWorkModeDaily"><span><strong>For daily work</strong><small>Same power, less technical detail</small></span></label>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h2>Permissions</h2>
+          <div class="settings-row"><span><strong>Default permission</strong><small>Read and edit files in the workspace.</small></span><input id="settingsDefaultPermission" type="checkbox"></div>
+          <div class="settings-row"><span><strong>Auto review</strong><small>Auto-accept workspace edits when possible.</small></span><input id="settingsAutoAudit" type="checkbox"></div>
+          <div class="settings-row"><span><strong>Full access</strong><small>Run with bypass permissions for local agent work.</small></span><input id="settingsFullAccess" type="checkbox"></div>
+          <label class="inline-field">Permission preset
+            <select id="settingsPermissionPreset">
+              <option value="">Keep current</option>
+              <option value="full">Full access</option>
+              <option value="workspace">Workspace</option>
+              <option value="read-only">Read-only</option>
+            </select>
+          </label>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="models">
+        <h1>Models & routing</h1>
+        <div class="settings-group">
+          <h2>Current run</h2>
+          <p id="settingsCurrentRun" class="muted"></p>
+          <div class="settings-row"><span><strong>Active model</strong><small id="settingsCurrentModel">Loading...</small></span><button type="button" id="settingsResetRuntimeModel" class="secondary-btn">Use default</button></div>
+          <div class="settings-command-row">
+            <label>Switch model<input id="settingsRuntimeModel" autocomplete="off" placeholder="model name"></label>
+            <button type="button" id="settingsApplyRuntimeModel" class="secondary-btn">Use model</button>
+          </div>
+          <div class="settings-command-row">
+            <label>Reasoning effort<select id="settingsRuntimeEffort"><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
+            <button type="button" id="settingsApplyRuntimeEffort" class="secondary-btn">Apply effort</button>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h2>Router profiles</h2>
+          <p>Route future turns through a saved model-router profile.</p>
+          <div class="settings-command-row">
+            <label>Router<select id="settingsRouterSelect"></select></label>
+            <button type="button" id="settingsApplyRouter" class="secondary-btn">Use router</button>
+            <button type="button" id="settingsDisableRouter" class="secondary-btn">Disable</button>
+          </div>
+          <div id="settingsRoutersList" class="settings-card-list"></div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="profile">
+        <h1>Profile</h1>
+        <div class="settings-group"><p>User profile settings are stored in local Actoviq settings and memories. Use /memory and /dream to inspect durable context.</p></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="appearance">
+        <h1>Appearance</h1>
+        <div class="settings-group two-col">
+          <label>Theme<select id="settingsTheme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          <label>Density<select id="settingsDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+          <label class="check-row"><input id="settingsEnterToSend" type="checkbox">Enter sends message</label>
+          <label class="check-row"><input id="settingsAutoScroll" type="checkbox">Auto-scroll transcript</label>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="personalization">
+        <h1>Personalization</h1>
+        <div class="settings-group"><p>Personalization uses local settings plus Actoviq memory. Keep stable preferences in memory; keep credentials in configuration.</p></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="shortcuts">
+        <h1>Keyboard shortcuts</h1>
+        <div class="settings-group shortcut-list"><div><kbd>Ctrl</kbd> + <kbd>Enter</kbd><span>Send message</span></div><div><kbd>/</kbd><span>Open command flow</span></div><div><kbd>Shift</kbd> + <kbd>Enter</kbd><span>New line when Enter-to-send is on</span></div></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="capabilities">
+        <h1>Capabilities</h1>
+        <div class="settings-group">
+          <h2>Tools</h2>
+          <p>Review the same registered tool surface exposed by /tools.</p>
+          <div class="settings-action-row"><button type="button" id="settingsOpenTools" class="secondary-btn">Open tools drawer</button></div>
+          <div id="settingsToolsList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Skills</h2>
+          <div class="settings-action-row"><button type="button" id="settingsOpenSkills" class="secondary-btn">Open skills drawer</button></div>
+          <div id="settingsSkillsList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Subagents</h2>
+          <div class="settings-action-row"><button type="button" id="settingsOpenAgents" class="secondary-btn">Open agents drawer</button></div>
+          <div id="settingsAgentsList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Plugins</h2>
+          <div class="settings-action-row"><button type="button" id="settingsOpenPlugins" class="secondary-btn">Open plugins drawer</button></div>
+          <div id="settingsPluginsList" class="settings-card-list compact"></div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="automation">
+        <h1>Automation</h1>
+        <div class="settings-group">
+          <h2>Workflows</h2>
+          <p>Run saved workflow scripts without typing /workflows.</p>
+          <label class="inline-field wide">Workflow input<input id="settingsWorkflowInput" autocomplete="off" placeholder="optional input"></label>
+          <div id="settingsWorkflowsList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Teams</h2>
+          <p>Attach a model team or disable team orchestration.</p>
+          <div class="settings-action-row"><button type="button" id="settingsTeamOff" class="secondary-btn">No team</button></div>
+          <div id="settingsTeamsList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Worktrees</h2>
+          <div class="settings-command-row">
+            <label>Worktree name<input id="settingsWorktreeName" autocomplete="off" placeholder="feature-name"></label>
+            <button type="button" id="settingsEnterWorktree" class="secondary-btn">Create / enter</button>
+            <button type="button" id="settingsExitWorktree" class="secondary-btn">Exit</button>
+          </div>
+          <div class="settings-action-row"><button type="button" id="settingsAutomationWorktreeList" class="secondary-btn">List worktrees</button></div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="sessions">
+        <h1>Chats</h1>
+        <div class="settings-group">
+          <h2>Session management</h2>
+          <p id="settingsSessionSummary" class="muted"></p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsNewChatBtn" class="secondary-btn">New chat</button>
+            <button type="button" id="settingsCleanChatsBtn" class="secondary-btn">Clean empty chats</button>
+          </div>
+          <div id="settingsSessionsList" class="settings-card-list"></div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="memory">
+        <h1>Memory</h1>
+        <div class="settings-group">
+          <h2>Conversation memory</h2>
+          <p>Inspect compact state, compact the current session, or run dream consolidation.</p>
+          <label class="inline-field wide">Compact instructions<input id="settingsCompactInstructions" autocomplete="off" placeholder="optional summary instructions"></label>
+          <div class="settings-action-row">
+            <button type="button" id="settingsMemoryStatusBtn" class="secondary-btn">Inspect memory</button>
+            <button type="button" id="settingsCompactNowBtn" class="secondary-btn">Compact now</button>
+            <button type="button" id="settingsDreamStatusBtn" class="secondary-btn">Dream status</button>
+            <button type="button" id="settingsDreamRunBtn" class="secondary-btn">Run dream</button>
+          </div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="mcp">
+        <h1>MCP servers</h1>
+        <div class="settings-group">
+          <p>Inspect MCP-provided tools and open the full MCP drawer.</p>
+          <button type="button" id="settingsMcpBtn" class="secondary-btn">Inspect MCP servers</button>
+          <div id="settingsMcpList" class="settings-card-list compact"></div>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="browser">
+        <h1>Browser</h1>
+        <div class="settings-group"><p>Browser automation uses registered MCP/tools when available. Inspect tools from the main toolbar.</p></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="computer">
+        <h1>Computer control</h1>
+        <div class="settings-group"><p>Computer control appears when the matching tools are registered for this workspace.</p></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="hooks">
+        <h1>Hooks</h1>
+        <div class="settings-group"><p>Hooks are loaded from Actoviq configuration and agent definitions.</p></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="git">
+        <h1>Git</h1>
+        <div class="settings-group"><button type="button" id="settingsOpenLocation" class="secondary-btn">Open workspace location</button></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="env">
+        <h1>Environment</h1>
+        <p id="settingsPath" class="muted"></p>
+        <div class="settings-group two-col">
+          <label>Provider<select id="settingsProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+          <label>Default model<input id="settingsDefaultModel" autocomplete="off"></label>
+          <label>API key<input id="settingsApiKey" type="password" autocomplete="new-password" placeholder="Leave blank to keep current key"></label>
+          <label class="check-row"><input id="settingsClearApiKey" type="checkbox">Clear saved API key</label>
+          <label>Base URL<input id="settingsBaseUrl" autocomplete="off" placeholder="Provider default"></label>
+          <label>Effort<select id="settingsEffort"><option value="">Keep current</option><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
+          <label>Min model<input id="settingsMinModel" autocomplete="off"></label>
+          <label>Medium model<input id="settingsMediumModel" autocomplete="off"></label>
+          <label>Max model<input id="settingsMaxModel" autocomplete="off"></label>
+        </div>
+      </section>
+      <section class="settings-panel" data-settings-panel="worktree">
+        <h1>Worktrees</h1>
+        <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
+      </section>
+      <div class="settings-savebar">
+        <span id="settingsStatus" class="muted"></span>
+        <button type="button" id="cancelSettings">Cancel</button>
+        <button type="submit" id="saveSettingsBtn" class="primary">Save</button>
+      </div>
+    </form>
+  </div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>`;
+}
+
+export function createActoviqGuiStyles(): string {
+  return `
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: #202124;
+  background: #f6f7f7;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+button, input, textarea, select { font: inherit; }
+button { cursor: pointer; }
+.hidden { display: none !important; }
+.ui-icon { width: 18px; height: 18px; display: block; flex: 0 0 auto; }
+.app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
+.sidebar {
+  width: 300px;
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 10px 10px;
+  overflow: hidden;
+  background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%);
+  border-right: 1px solid #dddddd;
+}
+.sidebar-chrome { display: flex; gap: 8px; height: 22px; align-items: center; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #c7c7c7; }
+.dot.active { background: #4b93f7; }
+.primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
+.nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn, .command-chip {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #2f3337;
+}
+.nav-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0 10px; text-align: left; }
+.nav-icon, .folder-icon, .chevron, .settings-icon, .mini-icon { width: 22px; height: 22px; display: inline-grid; place-items: center; flex: 0 0 22px; color: #4e5358; }
+.nav-icon .ui-icon, .folder-icon .ui-icon, .chevron .ui-icon, .settings-icon .ui-icon, .mini-icon .ui-icon { width: 18px; height: 18px; }
+.nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover, .command-chip:hover { background: rgba(0,0,0,.055); }
+.search { display: grid; gap: 6px; color: #777b80; font-size: 13px; }
+.search input, .settings-search input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #d8d8d8;
+  border-radius: 10px;
+  padding: 0 12px;
+  background: rgba(255,255,255,.78);
+  outline: none;
+}
+.project-section, .command-section { min-height: 0; }
+.project-section { flex: 1; overflow: hidden; }
+.project-section h2, .command-section h2, .settings-sidebar h2 { margin: 8px 10px; font-size: 13px; font-weight: 500; color: #85888d; }
+.section-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 4px; }
+.section-actions { display: flex; align-items: center; gap: 4px; }
+.mini-action-btn { min-height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; color: #4e5358; }
+.mini-action-btn small { font-size: 11px; color: #6d7177; }
+.project-control-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 4px; align-items: center; }
+.project-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; text-align: left; }
+.project-row > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.project-row .chevron { margin-left: auto; color: #7a7e83; }
+.project-list { max-height: 150px; overflow: auto; margin: 4px 0; }
+.project-list button { width: 100%; display: grid; gap: 2px; padding: 7px 10px; text-align: left; }
+.project-list button.active { background: rgba(0,0,0,.06); }
+.project-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px; }
+.workspace-meta { margin: 2px 10px 8px; color: #777b80; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-row strong, .project-list strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-row small, .project-list small, .command-list small { color: #7e8389; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-icon { color: #4e5358; }
+.project-session-list { display: grid; gap: 2px; margin: 2px 0 6px 20px; padding-left: 8px; border-left: 1px solid rgba(0,0,0,.08); }
+.project-session-list.current-project-chats { margin: 0; padding-left: 0; border-left: 0; }
+.project-chat-row { min-height: 30px !important; padding: 6px 9px !important; border-radius: 8px !important; }
+.project-chat-row strong { font-size: 13px; font-weight: 500; }
+.project-chat-row small { font-size: 12px; }
+.project-chat-row.active { background: rgba(0,0,0,.06); }
+.project-chat-more { justify-self: start; min-height: 28px !important; padding: 0 9px !important; color: #7b7f84 !important; }
+.command-list button { width: 100%; padding: 8px 10px; text-align: left; display: grid; gap: 2px; }
+.sidebar-link { justify-self: start; padding: 0 10px; color: #8a8d91; }
+.command-section { max-height: 190px; overflow: auto; }
+.sidebar-footer { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+.sidebar-footer .nav-btn { flex: 1; }
+.icon-btn { width: 34px; height: 34px; display: inline-grid; place-items: center; }
+.icon-btn .ui-icon, .round-btn .ui-icon, .send-btn .ui-icon { width: 18px; height: 18px; }
+.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff; }
+.topbar { min-height: 58px; border-bottom: 1px solid #e7e7e7; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; }
+.title-block { min-width: 0; }
+.title-row { display: flex; align-items: center; gap: 8px; }
+h1 { font-size: 16px; margin: 0; font-weight: 650; }
+.topbar p { margin: 3px 0 0; color: #777b80; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 64vw; }
+.top-actions { display: flex; gap: 8px; align-items: center; }
+.pill-btn { border-color: #dddddd; background: #fff; padding: 0 14px; }
+select { border: 1px solid #dddddd; background: #fff; color: #202124; border-radius: 8px; height: 34px; padding: 0 9px; }
+.statusbar { min-height: 34px; padding: 8px 18px; color: #6b6f75; font-size: 13px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
+.statusbar.running::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #4b93f7; box-shadow: 0 0 0 0 rgba(75,147,247,.45); animation: pulse 1.2s infinite; }
+.statusbar.error::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #c7392f; }
+.transcript { flex: 1; overflow: auto; padding: 24px max(22px, 12vw) 18px; }
+.message { margin: 0 0 18px; line-height: 1.55; white-space: pre-wrap; }
+.message.user { margin-left: auto; max-width: 68%; background: #f1f2f3; padding: 10px 14px; border-radius: 16px; }
+.message.assistant { max-width: 840px; }
+.message.assistant a { color: #2f5fa8; }
+.message.assistant .md-h { margin: 14px 0 8px; line-height: 1.3; }
+.message.assistant ul.md-ul { margin: 8px 0; padding-left: 22px; }
+.message.assistant ul.md-ul li { margin: 2px 0; }
+.message.assistant .inline-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; background: #f1f2f3; padding: 1px 5px; border-radius: 5px; }
+.code-block { position: relative; margin: 10px 0; padding: 12px; background: #1f2330; color: #e6e9ef; border-radius: 8px; overflow: auto; }
+.code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; white-space: pre; }
+.copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.08); color: #e6e9ef; padding: 0 8px; font-size: 12px; }
+.copy-btn:hover { background: rgba(255,255,255,.16); }
+.message.notice, .message.tool, .message.error { max-width: 840px; color: #5f6368; border-left: 3px solid #d8d8d8; padding-left: 12px; font-size: 14px; }
+.message.error { border-left-color: #c7392f; color: #8c1d18; }
+.message.tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
+.tool-card { max-width: 840px; border: 1px solid #e2e5e8; border-radius: 8px; margin: 0 0 18px; overflow: hidden; background: #fff; animation: slideIn .18s ease-out; }
+.tool-card header { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #fafbfc; border-bottom: 1px solid #eef0f2; }
+.tool-card strong { display: block; font-size: 14px; }
+.tool-card small { display: block; color: #777b80; margin-top: 2px; }
+.tool-spinner { width: 14px; height: 14px; border: 2px solid #d7e3f8; border-top-color: #4b93f7; border-radius: 50%; animation: spin .85s linear infinite; flex: 0 0 auto; }
+.tool-card.success .tool-spinner, .tool-card.error .tool-spinner { animation: none; border: 0; display: inline-grid; place-items: center; color: #fff; font-size: 10px; }
+.tool-card.success .tool-spinner { background: #1f8f4c; }
+.tool-card.success .tool-spinner::before { content: "ok"; }
+.tool-card.error .tool-spinner { background: #c7392f; }
+.tool-card.error .tool-spinner::before { content: "x"; }
+.tool-card pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #4d5359; background: #fff; }
+.tool-card.running::after { content: ""; display: block; height: 2px; background: linear-gradient(90deg, transparent, #4b93f7, transparent); animation: sweep 1.15s infinite; }
+.tool-card.error { border-color: #e5b7b2; }
+.tool-card.success { border-color: #cfe6d8; }
+.result { max-width: 840px; border: 1px solid #e1e1e1; border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+.result h3 { margin: 0; padding: 10px 12px; font-size: 14px; border-bottom: 1px solid #e8e8e8; background: #fafafa; }
+.result pre { margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; }
+.result .row { padding: 10px 12px; border-top: 1px solid #eeeeee; }
+.result small { display: block; color: #777b80; margin-top: 3px; }
+.composer { margin: 0 max(22px, 12vw) 18px; border: 1px solid #dddddd; border-radius: 18px; padding: 10px; background: #fff; display: grid; gap: 8px; position: relative; }
+.composer.dragging { border-color: #4b93f7; box-shadow: 0 0 0 3px rgba(75,147,247,.12); }
+.composer textarea { resize: none; border: 0; outline: none; min-height: 58px; max-height: 190px; width: 100%; }
+.hidden-file-input { display: none; }
+.drop-overlay { position: absolute; inset: 8px; z-index: 3; border: 1px dashed #4b93f7; border-radius: 14px; background: rgba(244,248,255,.94); color: #2f5fa8; display: grid; place-items: center; font-weight: 600; pointer-events: none; }
+.drop-overlay.hidden { display: none; }
+.attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; }
+.attachment-tray.hidden { display: none; }
+.attachment-chip { min-height: 30px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid #dfe3e7; border-radius: 8px; padding: 0 8px; background: #f8f9fa; max-width: 100%; }
+.attachment-chip small { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5f6368; }
+.attachment-chip button { border: 0; background: transparent; color: #777b80; padding: 0; min-width: 18px; }
+.slash-menu, .queue-list { border: 1px solid #e1e1e1; border-radius: 10px; overflow: hidden; background: #fff; }
+.slash-menu.hidden, .queue-list.hidden, .surface-drawer.hidden { display: none; }
+.slash-menu button { width: 100%; display: grid; grid-template-columns: 160px 1fr; gap: 10px; min-height: 34px; border: 0; border-bottom: 1px solid #f0f0f0; background: transparent; padding: 7px 10px; text-align: left; }
+.slash-menu button:last-child { border-bottom: 0; }
+.slash-menu button.active { background: #f1f3f4; }
+.slash-menu small, .queue-list small { color: #777b80; }
+.queue-list { display: grid; gap: 0; }
+.queue-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
+.queue-item:last-child { border-bottom: 0; }
+.queue-item button { border: 0; background: transparent; color: #777b80; }
+.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.composer-left, .composer-right { display: flex; align-items: center; gap: 8px; }
+.round-btn, .send-btn { width: 34px; height: 34px; border-radius: 50%; display: inline-grid; place-items: center; }
+.round-btn { background: transparent; border: 1px solid #d8d8d8; color: #4c5055; }
+.command-chip { border-color: #d8d8d8; padding: 0 10px; color: #4c5055; }
+.send-btn { border: 0; background: #202124; color: #fff; }
+.surface-drawer { position: fixed; inset: 0; z-index: 12; background: rgba(0,0,0,.16); display: flex; justify-content: flex-end; }
+.surface-panel { width: min(520px, calc(100vw - 320px)); min-width: 360px; height: 100%; background: #fff; border-left: 1px solid #dedede; display: flex; flex-direction: column; }
+.surface-panel header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #e8e8e8; }
+.surface-panel h2, .surface-panel p { margin: 0; }
+.surface-panel p { color: #777b80; font-size: 13px; }
+.surface-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-bottom: 1px solid #f0f0f0; }
+.surface-actions button, .surface-card button { min-height: 32px; border: 1px solid #d8d8d8; border-radius: 8px; background: #fff; padding: 0 10px; }
+.surface-list { overflow: auto; padding: 12px 18px 24px; display: grid; gap: 10px; }
+.surface-card { border: 1px solid #e1e1e1; border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
+.surface-card strong { overflow-wrap: anywhere; }
+.surface-card p { color: #666b70; margin: 0; overflow-wrap: anywhere; }
+.surface-card footer { display: flex; gap: 8px; flex-wrap: wrap; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.18); display: grid; place-items: center; padding: 20px; z-index: 30; }
+.modal.hidden, .settings-view.hidden { display: none; }
+.dialog { width: min(520px, 100%); background: #fff; border-radius: 8px; border: 1px solid #d8d8d8; padding: 18px; box-shadow: 0 20px 55px rgba(0,0,0,.14); }
+.dialog h2 { margin: 0 0 8px; font-size: 18px; }
+.dialog-field { display: grid; gap: 6px; margin: 14px 0 8px; color: #5f6368; font-size: 13px; }
+.dialog-field input { min-height: 38px; border: 1px solid #d8d8d8; border-radius: 9px; padding: 0 10px; outline: none; }
+.workspace-choice-list { display: grid; gap: 4px; max-height: 220px; overflow: auto; margin: 12px 0; padding: 2px; }
+.workspace-choice { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; padding: 9px 10px; cursor: pointer; font: inherit; }
+.workspace-choice:hover, .workspace-choice.active { background: #f1f1ef; border-color: #e1e1df; }
+.workspace-choice strong, .workspace-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-choice small { color: #73777d; }
+.workspace-choice .workspace-count { color: #7b8086; font-size: 12px; white-space: nowrap; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog-actions button, .settings-savebar button { border: 1px solid #d8d8d8; border-radius: 8px; min-height: 34px; padding: 0 12px; background: #fff; }
+.dialog-actions .primary, .settings-savebar .primary { background: #202124; color: #fff; }
+.settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: #fff; border: 1px solid #cfcfcf; }
+.settings-sidebar { width: 300px; flex: 0 0 300px; padding: 18px 10px; overflow: auto; background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%); border-right: 1px solid #dddddd; }
+.back-btn { width: 100%; min-height: 34px; border: 0; background: transparent; text-align: left; color: #777b80; border-radius: 8px; padding: 0 10px; margin-bottom: 12px; }
+.settings-search { display: grid; gap: 6px; margin-bottom: 18px; color: #777b80; font-size: 13px; }
+.settings-tab { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; border-radius: 8px; padding: 0 10px; text-align: left; color: #2f3337; }
+.settings-icon { color: #4e5358; }
+.settings-tab:hover, .settings-tab.active, .back-btn:hover { background: rgba(0,0,0,.06); }
+.settings-main { flex: 1; overflow: auto; padding: 84px min(11vw, 160px) 110px; position: relative; }
+.settings-panel { display: none; max-width: 840px; }
+.settings-panel.active { display: block; }
+.settings-panel h1 { font-size: 24px; margin: 0 0 64px; }
+.settings-group { margin-bottom: 42px; }
+.settings-group h2 { font-size: 18px; margin: 0 0 8px; }
+.settings-group p { margin: 0 0 20px; color: #7b7f84; }
+.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.mode-card { min-height: 78px; border: 1px solid #e2e2e2; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; }
+.mode-card input { order: 2; width: 20px; height: 20px; accent-color: #4a90f7; }
+.mode-card small { display: block; color: #777b80; margin-top: 4px; }
+.settings-row { min-height: 82px; border: 1px solid #e8e8e8; border-bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; }
+.settings-row:first-child { border-radius: 12px 12px 0 0; }
+.settings-row:nth-last-child(2) { border-bottom: 1px solid #e8e8e8; border-radius: 0 0 12px 12px; }
+.settings-row small { display: block; color: #777b80; margin-top: 4px; }
+.settings-row input[type="checkbox"], .check-row input { width: 22px; height: 22px; accent-color: #4a90f7; }
+.inline-field, .two-col label, .settings-command-row label { display: grid; gap: 7px; color: #5f6368; font-size: 13px; }
+.inline-field { margin-top: 14px; max-width: 320px; }
+.inline-field.wide { max-width: 520px; }
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 0 10px; background: #fff; color: #202124; }
+.check-row { display: flex !important; align-items: center; gap: 10px; color: #2f3337 !important; }
+.shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 38px; }
+kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; padding: 2px 7px; background: #fafafa; }
+.secondary-btn { border-color: #d8d8d8; background: #fff; padding: 0 12px; }
+.settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin: 14px 0; }
+.settings-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; }
+.settings-card-list.compact { max-height: 260px; }
+.settings-card { border: 1px solid #e3e5e7; border-radius: 8px; padding: 12px; display: grid; gap: 8px; background: #fff; }
+.settings-card strong { overflow-wrap: anywhere; font-size: 14px; }
+.settings-card p { margin: 0; color: #6f7479; overflow-wrap: anywhere; }
+.settings-card footer { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-card button { min-height: 30px; border: 1px solid #d8d8d8; border-radius: 8px; background: #fff; padding: 0 10px; }
+.settings-savebar { position: fixed; right: min(11vw, 160px); bottom: 24px; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.94); border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+.muted { color: #777b80; font-size: 13px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(75,147,247,0); } 100% { box-shadow: 0 0 0 0 rgba(75,147,247,0); } }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes slideIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+body[data-density="compact"] .message { margin-bottom: 10px; line-height: 1.42; }
+body[data-density="compact"] .transcript { padding-top: 14px; padding-bottom: 10px; }
+body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
+body[data-theme="dark"] { color: #e8eaed; background: #1f2023; }
+body[data-theme="dark"] .chat, body[data-theme="dark"] .composer, body[data-theme="dark"] .dialog, body[data-theme="dark"] .settings-view, body[data-theme="dark"] .settings-main, body[data-theme="dark"] .surface-panel, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card { background: #1f2023; color: #e8eaed; }
+body[data-theme="dark"] .sidebar, body[data-theme="dark"] .settings-sidebar { background: #202226; border-color: #3b3d43; }
+body[data-theme="dark"] input, body[data-theme="dark"] textarea, body[data-theme="dark"] select, body[data-theme="dark"] .pill-btn, body[data-theme="dark"] .dialog-actions button, body[data-theme="dark"] .settings-savebar button, body[data-theme="dark"] .secondary-btn, body[data-theme="dark"] .surface-actions button, body[data-theme="dark"] .surface-card button, body[data-theme="dark"] .settings-card button, body[data-theme="dark"] .command-chip { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
+body[data-theme="dark"] .nav-btn, body[data-theme="dark"] .settings-tab, body[data-theme="dark"] .project-row, body[data-theme="dark"] .project-list button, body[data-theme="dark"] .command-list button, body[data-theme="dark"] .icon-btn, body[data-theme="dark"] .round-btn, body[data-theme="dark"] .mini-action-btn, body[data-theme="dark"] .check-row, body[data-theme="dark"] .slash-menu button { color: #e8eaed !important; }
+body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .result h3, body[data-theme="dark"] .result .row, body[data-theme="dark"] .mode-card, body[data-theme="dark"] .settings-row, body[data-theme="dark"] .settings-card, body[data-theme="dark"] .surface-panel header, body[data-theme="dark"] .surface-card, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { border-color: #3b3d43; }
+body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
+body[data-theme="dark"] .settings-card { background: #1f2023; }
+body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
+body[data-theme="dark"] .message.assistant a { color: #8ab4f8; }
+body[data-theme="dark"] .tool-card pre { background: #1f2023; color: #c7ccd3; }
+body[data-theme="dark"] .drop-overlay { background: rgba(35,42,52,.95); color: #b8d2ff; }
+body[data-theme="dark"] .muted, body[data-theme="dark"] small, body[data-theme="dark"] .topbar p, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .settings-group p, body[data-theme="dark"] .workspace-meta { color: #aab0b8; }
+body.sidebar-collapsed .sidebar { width: 72px; flex-basis: 72px; }
+body.sidebar-collapsed .sidebar .search,
+body.sidebar-collapsed .project-section,
+body.sidebar-collapsed .command-section,
+body.sidebar-collapsed .sidebar-link,
+body.sidebar-collapsed .nav-btn span:not(.nav-icon) { display: none; }
+body.sidebar-collapsed .sidebar-footer { justify-content: center; }
+@media (max-width: 860px) {
+  .sidebar, .settings-sidebar { width: 86px; flex-basis: 86px; }
+  .sidebar .search, .command-section, .project-section h2, .project-session-list, .sidebar-link, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
+  .transcript { padding: 18px 16px; }
+  .composer { margin: 0 12px 12px; }
+  .mode-grid, .two-col { grid-template-columns: 1fr; }
+  .settings-command-row { grid-template-columns: 1fr; }
+  .settings-main { padding: 48px 22px 110px; }
+}`;
+}
+
+export function createActoviqGuiClientScript(): string {
+  return `
+const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
+function api(path, options = {}) {
+  const headers = Object.assign({}, options.headers || {}, { 'x-actoviq-token': ACTOVIQ_TOKEN });
+  return fetch(path, Object.assign({}, options, { headers }));
+}
+${renderMarkdown.toString()}
+function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
+const state = {
+  currentAssistant: null,
+  pendingPermissionId: null,
+  permissionQueue: [],
+  snapshot: null,
+  sessionsLimit: 16,
+  queue: [],
+  running: false,
+  slashIndex: 0,
+  activeSurface: null,
+  attachments: [],
+  attachmentCounter: 0,
+  lastUsageText: '',
+  toolNodes: new Map(),
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true }
+};
+const el = (id) => document.getElementById(id);
+const transcript = el('transcript');
+const input = el('promptInput');
+const statusbar = el('statusbar');
+
+function shouldAutoScroll() { return state.preferences.autoScroll !== false; }
+function scrollTranscript() { if (shouldAutoScroll()) transcript.scrollTop = transcript.scrollHeight; }
+function applyPreferences(preferences) {
+  state.preferences = { ...state.preferences, ...(preferences || {}) };
+  const theme = state.preferences.theme === 'dark' || state.preferences.theme === 'light'
+    ? state.preferences.theme
+    : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.body.dataset.theme = theme;
+  document.body.dataset.density = state.preferences.density === 'compact' ? 'compact' : 'comfortable';
+}
+function setRunStatus(message, kind = '') {
+  statusbar.textContent = message || '';
+  statusbar.classList.toggle('running', kind === 'running');
+  statusbar.classList.toggle('error', kind === 'error');
+}
+function formatUsage(usage) {
+  if (!usage) return '';
+  const total = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+  return total > 0 ? '~' + total.toLocaleString() + ' tokens last turn' : '';
+}
+function readyLabel() {
+  return 'Ready' + (state.lastUsageText ? ' - ' + state.lastUsageText : '');
+}
+function finalizeAssistant() {
+  if (state.currentAssistant && state.currentAssistant.dataset.raw) {
+    renderMarkdownInto(state.currentAssistant, state.currentAssistant.dataset.raw);
+    scrollTranscript();
+  }
+}
+function displayUserText(text) {
+  const value = String(text || '');
+  return value.length > 1800 ? value.slice(0, 1800) + '\\n\\n[message truncated in UI; full prompt was sent]' : value;
+}
+function addMessage(kind, text) {
+  const node = document.createElement('div');
+  node.className = 'message ' + kind;
+  node.textContent = text || '';
+  transcript.appendChild(node);
+  scrollTranscript();
+  return node;
+}
+function addResult(event) {
+  const box = document.createElement('div');
+  box.className = 'result';
+  const title = document.createElement('h3');
+  title.textContent = event.title || 'Result';
+  box.appendChild(title);
+  if (event.text) {
+    const pre = document.createElement('pre');
+    pre.textContent = event.text;
+    box.appendChild(pre);
+  }
+  for (const item of event.items || []) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.textContent = item.label || '';
+    const small = document.createElement('small');
+    small.textContent = [item.description, item.detail].filter(Boolean).join(' - ');
+    if (small.textContent) row.appendChild(small);
+    box.appendChild(row);
+  }
+  transcript.appendChild(box);
+  scrollTranscript();
+}
+function summarizeToolInput(inputValue) {
+  if (inputValue == null) return '';
+  try {
+    const text = typeof inputValue === 'string' ? inputValue : JSON.stringify(inputValue, null, 2);
+    return text.length > 900 ? text.slice(0, 900) + '\\n...' : text;
+  } catch {
+    return String(inputValue);
+  }
+}
+function formatDuration(ms) {
+  if (typeof ms !== 'number') return '';
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+}
+function addToolActivity(event) {
+  const id = event.id || ('tool-' + Date.now() + '-' + Math.random());
+  const card = document.createElement('article');
+  card.className = 'tool-card running';
+  card.dataset.toolId = id;
+  const header = document.createElement('header');
+  const spinner = document.createElement('span');
+  spinner.className = 'tool-spinner';
+  const labels = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = event.name || 'Tool';
+  const status = document.createElement('small');
+  status.textContent = 'Calling tool';
+  labels.append(title, status);
+  header.append(spinner, labels);
+  const pre = document.createElement('pre');
+  pre.textContent = summarizeToolInput(event.input);
+  if (!pre.textContent) pre.classList.add('hidden');
+  card.append(header, pre);
+  transcript.appendChild(card);
+  state.toolNodes.set(id, { card, status, pre });
+  setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
+  scrollTranscript();
+}
+function updateToolProgress(event) {
+  const node = state.toolNodes.get(event.id);
+  if (!node) return;
+  const progress = event.data && typeof event.data === 'object'
+    ? Object.entries(event.data).map(([key, value]) => key + ': ' + String(value)).slice(0, 3).join(' - ')
+    : String(event.data || '');
+  node.status.textContent = progress || 'Tool is working';
+}
+function updateToolActivity(event) {
+  const id = event.id || ('tool-result-' + Date.now() + '-' + Math.random());
+  let node = state.toolNodes.get(id);
+  if (!node) {
+    addToolActivity({ ...event, id });
+    node = state.toolNodes.get(id);
+    if (!node) return;
+  }
+  node.card.classList.remove('running');
+  node.card.classList.add(event.ok ? 'success' : 'error');
+  node.status.textContent = (event.ok ? 'Completed' : 'Failed') + (event.durationMs ? ' in ' + formatDuration(event.durationMs) : '');
+  const output = String(event.text || '').trim();
+  if (output) {
+    node.pre.classList.remove('hidden');
+    node.pre.textContent = output.length > 1400 ? output.slice(0, 1400) + '\\n...' : output;
+  }
+  setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? '' : 'error');
+  scrollTranscript();
+}
+function makeListButton(label, detail) {
+  const button = document.createElement('button');
+  const strong = document.createElement('strong');
+  strong.textContent = label || '';
+  button.appendChild(strong);
+  if (detail) {
+    const small = document.createElement('small');
+    small.textContent = detail;
+    button.appendChild(small);
+  }
+  return button;
+}
+function describeParts(parts) {
+  return parts.filter(Boolean).map(value => String(value)).join(' - ');
+}
+function renderSelectOptions(id, items, value, emptyLabel) {
+  const select = el(id);
+  select.textContent = '';
+  if (emptyLabel) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    select.appendChild(option);
+  }
+  for (const item of items) {
+    const option = document.createElement('option');
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+  select.value = value || '';
+}
+function addSettingsCard(root, title, description, detail, actions = []) {
+  const card = document.createElement('article');
+  card.className = 'settings-card';
+  const strong = document.createElement('strong');
+  strong.textContent = title || '(unnamed)';
+  card.appendChild(strong);
+  if (description || detail) {
+    const p = document.createElement('p');
+    p.textContent = describeParts([description, detail]);
+    card.appendChild(p);
+  }
+  if (actions.length > 0) {
+    const footer = document.createElement('footer');
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = action.label;
+      button.disabled = Boolean(action.disabled);
+      button.addEventListener('click', action.handler);
+      footer.appendChild(button);
+    }
+    card.appendChild(footer);
+  }
+  root.appendChild(card);
+}
+function renderSettingsCardList(id, items, renderItem) {
+  const root = el(id);
+  root.textContent = '';
+  if (!items || items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'Nothing configured.';
+    root.appendChild(empty);
+    return;
+  }
+  items.forEach(item => renderItem(root, item));
+}
+async function runSettingsCommand(command, status = 'Running command...') {
+  el('settingsStatus').textContent = status;
+  await submitText(command);
+  if (!el('settingsModal').classList.contains('hidden')) {
+    await loadState();
+    renderSettingsCommandPanels();
+    el('settingsStatus').textContent = 'Applied';
+  }
+}
+function renderSettingsCommandPanels() {
+  const snapshot = state.snapshot || {};
+  const session = snapshot.session || {};
+  const settings = snapshot.settings || {};
+  el('settingsCurrentRun').textContent = describeParts([
+    'Permission: ' + (snapshot.permissionMode || 'unknown'),
+    'Effort: ' + (snapshot.effort || 'auto'),
+    'Router: ' + (snapshot.activeRouterName || 'off'),
+    'Team: ' + (snapshot.activeTeamName || 'none'),
+  ]);
+  el('settingsCurrentModel').textContent = session.model || settings.defaultModel || 'default';
+  setField('settingsRuntimeModel', session.model || settings.defaultModel || '');
+  setField('settingsRuntimeEffort', snapshot.effort || 'auto');
+  const routers = snapshot.routers || [];
+  renderSelectOptions(
+    'settingsRouterSelect',
+    routers.map(router => ({ value: router.name, label: router.name })),
+    snapshot.activeRouterName || '',
+    'Fixed model',
+  );
+  renderSettingsCardList('settingsRoutersList', routers, (root, router) => {
+    addSettingsCard(root, router.name, router.profile?.routes ? router.profile.routes.length + ' routes' : '', router.source, [
+      { label: router.name === snapshot.activeRouterName ? 'Active' : 'Use', disabled: router.name === snapshot.activeRouterName, handler: () => runSettingsCommand('/model router ' + router.name, 'Applying router...') },
+    ]);
+  });
+  renderSettingsCardList('settingsToolsList', (snapshot.tools || []).slice(0, 40), (root, tool) => {
+    addSettingsCard(root, tool.name, describeParts([tool.category, tool.provider, tool.readOnly ? 'read-only' : '']), tool.description);
+  });
+  renderSettingsCardList('settingsSkillsList', (snapshot.skills || []).slice(0, 40), (root, skill) => {
+    addSettingsCard(root, skill.displayName ? skill.displayName + ' (' + skill.name + ')' : skill.name, describeParts([skill.source, skill.context, skill.version ? 'v' + skill.version : '']), skill.description || skill.whenToUse);
+  });
+  renderSettingsCardList('settingsAgentsList', snapshot.agents || [], (root, agent) => {
+    addSettingsCard(root, agent.name, agent.model || 'inherits model', agent.description);
+  });
+  renderSettingsCardList('settingsPluginsList', snapshot.plugins || [], (root, plugin) => {
+    addSettingsCard(root, plugin.name, describeParts([plugin.version, Array.isArray(plugin.capabilities) ? plugin.capabilities.join(', ') : '']), plugin.path);
+  });
+  renderSettingsCardList('settingsMcpList', (snapshot.tools || []).filter(tool => tool.provider === 'mcp'), (root, tool) => {
+    addSettingsCard(root, tool.name, tool.server || 'mcp', tool.description);
+  });
+  renderSettingsCardList('settingsWorkflowsList', snapshot.workflows || [], (root, workflow) => {
+    addSettingsCard(root, workflow.name, workflow.description, workflow.source, [
+      { label: 'Run', handler: () => {
+        const task = el('settingsWorkflowInput').value.trim();
+        return runSettingsCommand('/workflows run ' + workflow.name + (task ? ' ' + task : ''), 'Running workflow...');
+      } },
+    ]);
+  });
+  const builtInTeams = ['panel-analysis', 'analysis', 'reviewer'].map(name => ({ name, source: 'built-in', definition: { mode: 'built-in', members: [] } }));
+  const savedTeamNames = new Set((snapshot.teams || []).map(team => team.name));
+  const teams = [...(snapshot.teams || []), ...builtInTeams.filter(team => !savedTeamNames.has(team.name))];
+  renderSettingsCardList('settingsTeamsList', teams, (root, team) => {
+    addSettingsCard(root, team.name, describeParts([team.definition?.mode, team.definition?.members ? team.definition.members.length + ' members' : '', team.source]), '', [
+      { label: team.name === snapshot.activeTeamName ? 'Active' : 'Attach', disabled: team.name === snapshot.activeTeamName, handler: () => runSettingsCommand('/team attach ' + team.name, 'Attaching team...') },
+    ]);
+  });
+  el('settingsSessionSummary').textContent = describeParts([
+    'Current: ' + (session.title || session.id || 'new chat'),
+    (snapshot.sessions || []).length + ' visible chats',
+    (snapshot.hiddenEmptySessionCount || 0) + ' empty hidden',
+  ]);
+  renderSettingsCardList('settingsSessionsList', snapshot.sessions || [], (root, item) => {
+    addSettingsCard(root, item.title || item.id, describeParts([item.model, item.status, (item.messageCount || 0) + ' messages']), item.id, [
+      { label: item.id === session.id ? 'Current' : 'Resume', disabled: item.id === session.id, handler: () => runSettingsCommand('/resume ' + item.id, 'Resuming chat...') },
+    ]);
+  });
+}
+function renderProjects() {
+  const root = el('projects');
+  root.textContent = '';
+  const projects = state.snapshot?.projects || [];
+  const query = el('commandSearch').value.trim().toLowerCase();
+  const visibleSessions = (state.snapshot?.sessions || []).filter(item => {
+    const haystack = [item.id, item.title, item.model, item.status].filter(Boolean).join(' ').toLowerCase();
+    return !query || haystack.includes(query);
+  });
+  const chats = document.createElement('div');
+  chats.className = 'project-session-list current-project-chats';
+  for (const item of visibleSessions.slice(0, state.sessionsLimit)) {
+    const chat = makeListButton(item.title || item.id, [item.model, item.status, (item.messageCount || 0) + ' messages'].filter(Boolean).join(' - '));
+    chat.classList.add('project-chat-row');
+    if (state.snapshot?.session?.id === item.id) chat.classList.add('active');
+    chat.addEventListener('click', () => resumeSession(item.id));
+    chats.appendChild(chat);
+  }
+  if (visibleSessions.length > state.sessionsLimit) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'project-chat-more';
+    more.textContent = 'Show more chats';
+    more.addEventListener('click', () => {
+      state.sessionsLimit += 16;
+      renderProjects();
+    });
+    chats.appendChild(more);
+  }
+  if (visibleSessions.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = query ? 'No matching chats in this workspace.' : 'No chats in this workspace.';
+    chats.appendChild(empty);
+  }
+  root.appendChild(chats);
+  const hidden = state.snapshot?.hiddenEmptySessionCount || 0;
+  const active = projects.find(project => project.active);
+  const activeChats = active?.sessionCount ?? visibleSessions.filter(item => item.messageCount > 0).length;
+  el('workspaceMeta').textContent = activeChats + ' chats here' + (hidden > 0 ? ' - ' + hidden + ' empty hidden' : '');
+  el('cleanupSessionsBtn').textContent = hidden > 0 ? 'Clean ' + hidden + ' empty chats' : 'Clean empty chats';
+}
+function renderWorkspaceChoices() {
+  const root = el('workspaceChoices');
+  root.textContent = '';
+  const projects = state.snapshot?.projects || [];
+  for (const project of projects) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'workspace-choice';
+    if (project.active) button.classList.add('active');
+    const label = document.createElement('span');
+    const title = document.createElement('strong');
+    title.textContent = project.name || project.path;
+    const detail = document.createElement('small');
+    detail.textContent = project.path;
+    label.append(title, detail);
+    const count = document.createElement('span');
+    count.className = 'workspace-count';
+    count.textContent = project.active ? 'Current' : (project.sessionCount || 0) + ' chats';
+    button.append(label, count);
+    button.addEventListener('click', async () => {
+      if (project.active) {
+        el('workspacePathInput').value = project.path;
+        return;
+      }
+      el('workspaceStatus').textContent = 'Switching workspace...';
+      const ok = await switchProject(project.path);
+      el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
+      if (ok) closeWorkspaceDialog();
+    });
+    root.appendChild(button);
+  }
+  if (projects.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No saved workspaces yet.';
+    root.appendChild(empty);
+  }
+}
+function permissionSelectValue(mode) {
+  if (mode === 'bypassPermissions') return 'full';
+  if (mode === 'acceptEdits') return 'workspace';
+  return 'read-only';
+}
+async function hydrateTranscript() {
+  let data;
+  try {
+    const res = await api('/api/session/messages');
+    if (!res.ok) return;
+    data = await res.json();
+  } catch {
+    return;
+  }
+  transcript.textContent = '';
+  state.toolNodes.clear();
+  state.currentAssistant = null;
+  for (const entry of (data.messages || [])) {
+    if (entry.type === 'user') {
+      addMessage('user', displayUserText(entry.text));
+    } else if (entry.type === 'assistant') {
+      const node = addMessage('assistant', '');
+      node.dataset.raw = entry.text || '';
+      renderMarkdownInto(node, entry.text || '');
+    } else if (entry.type === 'tool') {
+      const id = 'hist-' + Math.random().toString(36).slice(2);
+      addToolActivity({ id, name: entry.name, input: entry.input });
+      updateToolActivity({ id, name: entry.name, ok: entry.ok, text: entry.text });
+    }
+  }
+  setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
+  scrollTranscript();
+}
+async function loadState() {
+  const res = await api('/api/state');
+  state.snapshot = await res.json();
+  applyPreferences(state.snapshot.settings?.preferences);
+  const workDir = state.snapshot.workDir || '';
+  const parts = workDir.split(/[\\\\/]/).filter(Boolean);
+  el('projectName').textContent = parts[parts.length - 1] || 'workspace';
+  el('projectPath').textContent = workDir;
+  el('sessionTitle').textContent = state.snapshot.session?.title || 'Actoviq GUI';
+  el('workspace').textContent = workDir + ' - ' + state.snapshot.session.model + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
+  state.running = Boolean(state.snapshot.running);
+  setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
+  el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
+  el('effortSelect').value = state.snapshot.effort || 'auto';
+  renderProjects();
+  if (state.activeSurface) renderSurface(state.activeSurface);
+  if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
+  if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+}
+async function resumeSession(id) {
+  await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  await loadState();
+  await hydrateTranscript();
+  closeSurface();
+}
+async function switchProject(projectPath) {
+  if (!projectPath) return false;
+  const res = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
+  if (!res.ok) { addMessage('error', await res.text()); return false; }
+  state.snapshot = await res.json();
+  transcript.textContent = '';
+  state.toolNodes.clear();
+  state.sessionsLimit = 16;
+  await loadState();
+  await hydrateTranscript();
+  closeSurface();
+  return true;
+}
+async function addWorkspace() {
+  el('workspacePathInput').value = '';
+  el('workspaceStatus').textContent = '';
+  renderWorkspaceChoices();
+  el('workspaceModal').classList.remove('hidden');
+  el('workspacePathInput').focus();
+}
+function closeWorkspaceDialog() {
+  el('workspaceModal').classList.add('hidden');
+}
+async function submitWorkspace(event) {
+  event.preventDefault();
+  const projectPath = el('workspacePathInput').value.trim();
+  if (!projectPath) {
+    el('workspaceStatus').textContent = 'Enter a workspace path.';
+    return;
+  }
+  el('workspaceStatus').textContent = 'Opening workspace...';
+  const ok = await switchProject(projectPath);
+  el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
+  if (ok) closeWorkspaceDialog();
+}
+async function cleanupSessions() {
+  const res = await api('/api/sessions/cleanup', { method: 'POST' });
+  if (!res.ok) { addMessage('error', await res.text()); return; }
+  const payload = await res.json();
+  state.snapshot = payload.state;
+  addMessage('notice', 'cleaned empty chats: ' + payload.deleted);
+  await loadState();
+}
+async function createNewSession() {
+  await api('/api/session/new', { method: 'POST' });
+  transcript.textContent = '';
+  state.toolNodes.clear();
+  state.currentAssistant = null;
+  await loadState();
+}
+async function openLocation() {
+  const res = await api('/api/open-location', { method: 'POST' });
+  if (!res.ok) addMessage('error', await res.text());
+}
+function commandNeedsSpace(name) {
+  return ['model','effort','permissions','resume','dream','workflows','worktree','team'].includes(name);
+}
+function slashMatches() {
+  const value = input.value.trim();
+  if (!value.startsWith('/') || value.includes(' ')) return [];
+  const query = value.slice(1).toLowerCase();
+  return Object.entries(state.snapshot?.commands || {})
+    .map(([name, description]) => ({ name, description }))
+    .filter(item => item.name.startsWith(query))
+    .slice(0, 10);
+}
+function renderSlashMenu() {
+  const menu = el('slashMenu');
+  const matches = slashMatches();
+  menu.textContent = '';
+  if (matches.length === 0) {
+    menu.classList.add('hidden');
+    return;
+  }
+  state.slashIndex = Math.max(0, Math.min(state.slashIndex, matches.length - 1));
+  for (const [index, item] of matches.entries()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    if (index === state.slashIndex) button.classList.add('active');
+    const strong = document.createElement('strong');
+    strong.textContent = '/' + item.name;
+    const small = document.createElement('small');
+    small.textContent = item.description;
+    button.append(strong, small);
+    button.addEventListener('click', () => completeSlash(item.name));
+    menu.appendChild(button);
+  }
+  menu.classList.remove('hidden');
+}
+function completeSlash(name) {
+  input.value = '/' + name + (commandNeedsSpace(name) ? ' ' : '');
+  el('slashMenu').classList.add('hidden');
+  input.focus();
+}
+function formatFileSize(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+function renderAttachments() {
+  const tray = el('attachmentTray');
+  tray.textContent = '';
+  if (state.attachments.length === 0) {
+    tray.classList.add('hidden');
+    return;
+  }
+  for (const attachment of state.attachments) {
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    const label = document.createElement('small');
+    label.textContent = attachment.name + ' - ' + formatFileSize(attachment.size);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'x';
+    remove.addEventListener('click', () => {
+      state.attachments = state.attachments.filter(item => item.id !== attachment.id);
+      renderAttachments();
+    });
+    chip.append(label, remove);
+    tray.appendChild(chip);
+  }
+  tray.classList.remove('hidden');
+}
+async function addFileAttachment(file) {
+  const maxInlineBytes = 512 * 1024;
+  let text = '';
+  let note = '';
+  const localPath = typeof file.path === 'string' ? file.path : '';
+  if (file.size <= maxInlineBytes) {
+    try {
+      text = await file.text();
+      if (text.length > 120000) {
+        text = text.slice(0, 120000);
+        note = 'Content truncated for prompt size.';
+      }
+    } catch {
+      note = 'Could not read file content in the renderer.';
+    }
+  } else {
+    note = 'File is larger than 512 KB; content was not inlined.';
+  }
+  state.attachments.push({
+    id: 'att-' + (++state.attachmentCounter),
+    name: file.name || 'file',
+    size: file.size || 0,
+    type: file.type || '',
+    path: localPath,
+    text,
+    note,
+  });
+}
+async function addFiles(files) {
+  const list = Array.from(files || []).slice(0, 8);
+  for (const file of list) await addFileAttachment(file);
+  renderAttachments();
+  if (list.length > 0) input.focus();
+}
+function clearAttachments() {
+  state.attachments = [];
+  renderAttachments();
+}
+function buildSubmissionText(text) {
+  if (state.attachments.length === 0) return text;
+  const lines = [text || 'Please review the attached file(s).', '', 'Attached files:'];
+  for (const attachment of state.attachments) {
+    lines.push('', '--- ' + attachment.name + ' ---');
+    lines.push('Size: ' + formatFileSize(attachment.size));
+    if (attachment.type) lines.push('Type: ' + attachment.type);
+    if (attachment.path) lines.push('Local path: ' + attachment.path);
+    if (attachment.note) lines.push('Note: ' + attachment.note);
+    if (attachment.text) lines.push('Content:', attachment.text);
+  }
+  return lines.join('\\n');
+}
+function renderQueue() {
+  const root = el('queueList');
+  root.textContent = '';
+  if (state.queue.length === 0) {
+    root.classList.add('hidden');
+    return;
+  }
+  for (const [index, text] of state.queue.entries()) {
+    const row = document.createElement('div');
+    row.className = 'queue-item';
+    const label = document.createElement('small');
+    label.textContent = 'Queued #' + (index + 1) + ': ' + text;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'remove';
+    remove.addEventListener('click', () => {
+      state.queue.splice(index, 1);
+      renderQueue();
+    });
+    row.append(label, remove);
+    root.appendChild(row);
+  }
+  root.classList.remove('hidden');
+}
+function enqueueText(text) {
+  state.queue.push(text);
+  renderQueue();
+  addMessage('notice', 'queued: ' + text);
+}
+async function submitText(text) {
+  if (!text) return;
+  if (state.running) {
+    enqueueText(text);
+    return;
+  }
+  await sendText(text);
+}
+async function processQueue() {
+  if (state.running || state.queue.length === 0) return;
+  const next = state.queue.shift();
+  renderQueue();
+  if (next) await sendText(next);
+}
+function closeSurface() {
+  state.activeSurface = null;
+  el('surfaceDrawer').classList.add('hidden');
+}
+function surfaceData(kind) {
+  const snapshot = state.snapshot || {};
+  if (kind === 'projects') return {
+    title: 'Projects',
+    subtitle: 'Switch workspaces and manage chats',
+    items: snapshot.projects || [],
+  };
+  if (kind === 'sessions') return {
+    title: 'Chats',
+    subtitle: (snapshot.hiddenEmptySessionCount || 0) + ' empty chats hidden',
+    items: snapshot.sessions || [],
+  };
+  if (kind === 'workflows') return { title: 'Workflows', subtitle: 'Run saved workflow scripts', items: snapshot.workflows || [] };
+  if (kind === 'plugins') return { title: 'Plugins', subtitle: 'Discovered Clean plugins', items: snapshot.plugins || [] };
+  if (kind === 'tools') return { title: 'Tools', subtitle: 'Registered tools for this workspace', items: snapshot.tools || [] };
+  if (kind === 'skills') return { title: 'Skills', subtitle: 'Available skills', items: snapshot.skills || [] };
+  if (kind === 'agents') return { title: 'Subagents', subtitle: 'Available agent definitions', items: snapshot.agents || [] };
+  if (kind === 'mcp') return { title: 'MCP servers', subtitle: 'MCP-provided tools', items: (snapshot.tools || []).filter(tool => tool.provider === 'mcp') };
+  if (kind === 'teams') return { title: 'Teams', subtitle: 'Attach a model team to the main agent', items: snapshot.teams || [] };
+  if (kind === 'routers') return { title: 'Model routers', subtitle: 'Route turns by profile', items: snapshot.routers || [] };
+  return { title: 'Panel', subtitle: '', items: [] };
+}
+function itemTitle(item, kind) {
+  return item.name || item.title || item.id || item.path || item.label || '(unnamed)';
+}
+function itemDescription(item, kind) {
+  if (kind === 'projects') return item.path + ' - ' + (item.sessionCount || 0) + ' chats';
+  if (kind === 'sessions') return [item.model, item.status, item.messageCount + ' messages', item.preview].filter(Boolean).join(' - ');
+  if (kind === 'workflows') return [item.description, item.source].filter(Boolean).join(' - ');
+  if (kind === 'tools') return [item.category, item.provider, item.readOnly ? 'read-only' : '', item.description].filter(Boolean).join(' - ');
+  if (kind === 'teams') return [item.definition?.mode, item.source].filter(Boolean).join(' - ');
+  if (kind === 'routers') return [item.profile?.routes ? item.profile.routes.length + ' routes' : '', item.source].filter(Boolean).join(' - ');
+  return [item.description, item.detail, item.source, item.path].filter(Boolean).join(' - ');
+}
+function addSurfaceAction(label, handler) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.addEventListener('click', handler);
+  el('surfaceActions').appendChild(button);
+}
+function renderSurface(kind) {
+  const data = surfaceData(kind);
+  state.activeSurface = kind;
+  el('surfaceTitle').textContent = data.title;
+  el('surfaceSubtitle').textContent = data.subtitle || '';
+  el('surfaceActions').textContent = '';
+  el('surfaceList').textContent = '';
+  if (kind === 'projects') {
+    addSurfaceAction('Add workspace', addWorkspace);
+  }
+  if (kind === 'sessions') {
+    addSurfaceAction('Clean empty chats', cleanupSessions);
+  }
+  if (kind === 'teams') {
+    addSurfaceAction('No team', () => submitText('/team off'));
+  }
+  if (kind === 'routers') {
+    addSurfaceAction('Router off', () => submitText('/model router off'));
+  }
+  for (const item of data.items) {
+    const card = document.createElement('article');
+    card.className = 'surface-card';
+    const strong = document.createElement('strong');
+    strong.textContent = itemTitle(item, kind);
+    const desc = document.createElement('p');
+    desc.textContent = itemDescription(item, kind);
+    const footer = document.createElement('footer');
+    if (kind === 'projects') {
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = item.active ? 'Current' : 'Switch';
+      open.disabled = Boolean(item.active);
+      open.addEventListener('click', () => switchProject(item.path));
+      footer.appendChild(open);
+    } else if (kind === 'sessions') {
+      const resume = document.createElement('button');
+      resume.type = 'button';
+      resume.textContent = item.id === state.snapshot?.session?.id ? 'Current' : 'Resume';
+      resume.disabled = item.id === state.snapshot?.session?.id;
+      resume.addEventListener('click', () => resumeSession(item.id));
+      footer.appendChild(resume);
+    } else if (kind === 'workflows') {
+      const run = document.createElement('button');
+      run.type = 'button';
+      run.textContent = 'Run';
+      run.addEventListener('click', () => {
+        const task = window.prompt('Workflow input', '');
+        submitText('/workflows run ' + item.name + (task && task.trim() ? ' ' + task.trim() : ''));
+      });
+      footer.appendChild(run);
+    } else if (kind === 'teams') {
+      const attach = document.createElement('button');
+      attach.type = 'button';
+      attach.textContent = 'Attach';
+      attach.addEventListener('click', () => submitText('/team attach ' + item.name));
+      footer.appendChild(attach);
+    } else if (kind === 'routers') {
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.textContent = 'Use router';
+      select.addEventListener('click', () => submitText('/model router ' + item.name));
+      footer.appendChild(select);
+    }
+    card.append(strong, desc, footer);
+    el('surfaceList').appendChild(card);
+  }
+  if (data.items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'Nothing to show.';
+    el('surfaceList').appendChild(empty);
+  }
+  el('surfaceDrawer').classList.remove('hidden');
+}
+async function openSurface(kind) {
+  await loadState();
+  renderSurface(kind);
+}
+async function sendText(text) {
+  state.running = true;
+  setRunStatus('Running', 'running');
+  const res = await api('/api/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+  if (!res.ok || !res.body) {
+    addMessage('error', await res.text());
+    state.running = false;
+    setRunStatus(readyLabel());
+    await processQueue();
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) handleEvent(JSON.parse(line));
+      }
+      if (done) break;
+    }
+  } finally {
+    state.running = false;
+    setRunStatus(readyLabel());
+    await processQueue();
+  }
+}
+function handleEvent(event) {
+  if (event.type === 'user') { finalizeAssistant(); state.currentAssistant = null; addMessage('user', displayUserText(event.text)); }
+  else if (event.type === 'delta') {
+    if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
+    state.currentAssistant.dataset.raw += event.text || '';
+    state.currentAssistant.textContent = state.currentAssistant.dataset.raw;
+    scrollTranscript();
+  } else if (event.type === 'status') setRunStatus(event.message || 'Running', 'running');
+  else if (event.type === 'notice') addMessage('notice', event.message || '');
+  else if (event.type === 'tool.call') { finalizeAssistant(); state.currentAssistant = null; addToolActivity(event); }
+  else if (event.type === 'tool.progress') updateToolProgress(event);
+  else if (event.type === 'tool.result') updateToolActivity(event);
+  else if (event.type === 'command.result') addResult(event);
+  else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; }
+  else if (event.type === 'permission.request') showPermission(event);
+  else if (event.type === 'settings.open') void openSettings('env').catch(console.error);
+  else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
+  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); }
+  else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
+}
+function showPermission(event) {
+  state.permissionQueue.push(event);
+  if (state.pendingPermissionId == null) showNextPermission();
+}
+function showNextPermission() {
+  const next = state.permissionQueue.shift();
+  if (!next) {
+    state.pendingPermissionId = null;
+    el('permissionModal').classList.add('hidden');
+    return;
+  }
+  state.pendingPermissionId = next.id;
+  el('permissionTool').textContent = next.toolName || '';
+  el('permissionSummary').textContent = next.summary || '(no arguments)';
+  el('permissionModal').classList.remove('hidden');
+}
+function setField(id, value) { el(id).value = value == null ? '' : String(value); }
+function setChecked(id, value) { el(id).checked = Boolean(value); }
+function showSettingsTab(tab) {
+  document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
+  document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
+}
+async function openSettings(tab = 'general') {
+  if (!state.snapshot) {
+    await loadState();
+  }
+  const settings = state.snapshot?.settings || {};
+  const preferences = settings.preferences || {};
+  el('settingsPath').textContent = settings.configPath ? 'Saved locally: ' + settings.configPath : 'Settings path unavailable';
+  const mode = preferences.workMode === 'daily' ? 'daily' : 'coding';
+  setChecked('settingsWorkModeCoding', mode === 'coding');
+  setChecked('settingsWorkModeDaily', mode === 'daily');
+  setField('settingsProvider', settings.provider || 'anthropic');
+  setField('settingsDefaultModel', settings.defaultModel || '');
+  setField('settingsApiKey', '');
+  el('settingsApiKey').placeholder = settings.apiKeyConfigured ? 'Configured; leave blank to keep current key' : 'Paste API key';
+  setChecked('settingsClearApiKey', false);
+  setField('settingsBaseUrl', settings.baseURL || '');
+  setField('settingsPermissionPreset', '');
+  setChecked('settingsDefaultPermission', true);
+  setChecked('settingsAutoAudit', state.snapshot?.permissionMode === 'acceptEdits');
+  setChecked('settingsFullAccess', state.snapshot?.permissionMode === 'bypassPermissions');
+  setField('settingsMinModel', settings.minModel || '');
+  setField('settingsMediumModel', settings.mediumModel || '');
+  setField('settingsMaxModel', settings.maxModel || '');
+  setField('settingsEffort', '');
+  setField('settingsTheme', preferences.theme || 'system');
+  setField('settingsDensity', preferences.density || 'comfortable');
+  setChecked('settingsEnterToSend', preferences.enterToSend);
+  setChecked('settingsAutoScroll', preferences.autoScroll !== false);
+  el('settingsStatus').textContent = '';
+  renderSettingsCommandPanels();
+  el('settingsModal').classList.remove('hidden');
+  showSettingsTab(tab);
+}
+function closeSettings() { el('settingsModal').classList.add('hidden'); }
+function derivePermissionPreset() {
+  if (el('settingsPermissionPreset').value) return el('settingsPermissionPreset').value;
+  if (el('settingsFullAccess').checked) return 'full';
+  if (el('settingsAutoAudit').checked) return 'workspace';
+  if (el('settingsDefaultPermission').checked) return 'workspace';
+  return '';
+}
+async function saveSettings(event) {
+  event.preventDefault();
+  el('settingsStatus').textContent = 'Saving...';
+  const workMode = document.querySelector('input[name="settingsWorkMode"]:checked')?.value || 'coding';
+  const body = {
+    provider: el('settingsProvider').value,
+    defaultModel: el('settingsDefaultModel').value,
+    apiKey: el('settingsApiKey').value,
+    clearApiKey: el('settingsClearApiKey').checked,
+    baseURL: el('settingsBaseUrl').value,
+    permissionPreset: derivePermissionPreset(),
+    minModel: el('settingsMinModel').value,
+    mediumModel: el('settingsMediumModel').value,
+    maxModel: el('settingsMaxModel').value,
+    effort: el('settingsEffort').value,
+    preferences: {
+      workMode,
+      theme: el('settingsTheme').value,
+      density: el('settingsDensity').value,
+      enterToSend: el('settingsEnterToSend').checked,
+      autoScroll: el('settingsAutoScroll').checked,
+    },
+  };
+  const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { el('settingsStatus').textContent = 'Save failed'; addMessage('error', await res.text()); return; }
+  state.snapshot = await res.json();
+  applyPreferences(state.snapshot.settings?.preferences);
+  el('settingsStatus').textContent = state.snapshot.settingsApplyError ? 'Saved; restart may be required' : 'Saved';
+  if (state.snapshot.settingsApplyError) addMessage('notice', 'Settings saved, but the active SDK could not reload: ' + state.snapshot.settingsApplyError);
+  await loadState();
+}
+document.querySelectorAll('[data-decision]').forEach(button => {
+  button.addEventListener('click', async () => {
+    const id = state.pendingPermissionId;
+    state.pendingPermissionId = null;
+    if (id) await api('/api/permission', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, decision: button.dataset.decision }) });
+    showNextPermission();
+  });
+});
+document.querySelectorAll('.settings-tab').forEach(button => button.addEventListener('click', () => showSettingsTab(button.dataset.settingsTab)));
+el('composer').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const text = input.value.trim();
+  if (!text && state.attachments.length === 0) return;
+  const submission = buildSubmissionText(text);
+  input.value = '';
+  clearAttachments();
+  renderSlashMenu();
+  await submitText(submission);
+});
+input.addEventListener('keydown', (event) => {
+  const matches = slashMatches();
+  const menuVisible = !el('slashMenu').classList.contains('hidden');
+  if (menuVisible && matches.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault();
+    state.slashIndex = event.key === 'ArrowDown'
+      ? (state.slashIndex + 1) % matches.length
+      : (state.slashIndex + matches.length - 1) % matches.length;
+    renderSlashMenu();
+    return;
+  }
+  if (menuVisible && matches.length > 0 && (event.key === 'Tab' || event.key === 'Enter')) {
+    event.preventDefault();
+    completeSlash(matches[state.slashIndex]?.name || matches[0].name);
+    return;
+  }
+  if (event.key === 'Escape') {
+    el('slashMenu').classList.add('hidden');
+    return;
+  }
+  if (event.key !== 'Enter') return;
+  if (state.preferences.enterToSend && !event.shiftKey) { event.preventDefault(); el('composer').requestSubmit(); }
+  else if (!state.preferences.enterToSend && (event.ctrlKey || event.metaKey)) { event.preventDefault(); el('composer').requestSubmit(); }
+});
+input.addEventListener('input', () => {
+  state.slashIndex = 0;
+  renderSlashMenu();
+});
+el('fileUploadBtn').addEventListener('click', () => el('fileInput').click());
+el('fileInput').addEventListener('change', async (event) => {
+  await addFiles(event.target.files);
+  event.target.value = '';
+});
+el('insertCommand').addEventListener('click', async () => {
+  if (!state.snapshot?.commands) await loadState().catch(() => undefined);
+  input.value = input.value || '/';
+  input.focus();
+  renderSlashMenu();
+});
+el('composer').addEventListener('dragover', (event) => {
+  if (!event.dataTransfer || Array.from(event.dataTransfer.types || []).indexOf('Files') === -1) return;
+  event.preventDefault();
+  el('composer').classList.add('dragging');
+  el('dropOverlay').classList.remove('hidden');
+});
+el('composer').addEventListener('dragleave', (event) => {
+  if (el('composer').contains(event.relatedTarget)) return;
+  el('composer').classList.remove('dragging');
+  el('dropOverlay').classList.add('hidden');
+});
+el('composer').addEventListener('drop', async (event) => {
+  if (!event.dataTransfer) return;
+  event.preventDefault();
+  el('composer').classList.remove('dragging');
+  el('dropOverlay').classList.add('hidden');
+  await addFiles(event.dataTransfer.files);
+});
+el('newSession').addEventListener('click', createNewSession);
+el('searchNav').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
+el('pluginsNav').addEventListener('click', () => { openSurface('plugins').catch(console.error); });
+el('automationNav').addEventListener('click', () => { openSurface('workflows').catch(console.error); });
+el('toolsBtn').addEventListener('click', () => { openSurface('tools').catch(console.error); });
+el('commandPaletteBtn').addEventListener('click', async () => {
+  if (!state.snapshot?.commands) await loadState().catch(() => undefined);
+  input.value = '/';
+  input.focus();
+  renderSlashMenu();
+});
+el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
+el('openLocationBtn').addEventListener('click', openLocation);
+el('projectRoot').addEventListener('click', () => { openSurface('projects').catch(console.error); });
+el('projectMenuBtn').addEventListener('click', () => { openSurface('projects').catch(console.error); });
+el('newWorkspaceBtn').addEventListener('click', addWorkspace);
+el('newProjectSessionBtn').addEventListener('click', createNewSession);
+el('addProjectBtn').addEventListener('click', addWorkspace);
+el('cleanupSessionsBtn').addEventListener('click', cleanupSessions);
+el('workspaceForm').addEventListener('submit', submitWorkspace);
+el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
+el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
+el('settingsOpenLocation').addEventListener('click', openLocation);
+el('settingsApplyRuntimeModel').addEventListener('click', () => {
+  const model = el('settingsRuntimeModel').value.trim();
+  if (model) runSettingsCommand('/model ' + model, 'Switching model...').catch(console.error);
+});
+el('settingsResetRuntimeModel').addEventListener('click', () => { runSettingsCommand('/model default', 'Switching to default model...').catch(console.error); });
+el('settingsApplyRuntimeEffort').addEventListener('click', () => { runSettingsCommand('/effort ' + el('settingsRuntimeEffort').value, 'Applying effort...').catch(console.error); });
+el('settingsApplyRouter').addEventListener('click', () => {
+  const router = el('settingsRouterSelect').value;
+  if (router) runSettingsCommand('/model router ' + router, 'Applying router...').catch(console.error);
+});
+el('settingsDisableRouter').addEventListener('click', () => { runSettingsCommand('/model router off', 'Disabling router...').catch(console.error); });
+el('settingsOpenTools').addEventListener('click', () => { closeSettings(); openSurface('tools').catch(console.error); });
+el('settingsOpenSkills').addEventListener('click', () => { closeSettings(); openSurface('skills').catch(console.error); });
+el('settingsOpenAgents').addEventListener('click', () => { closeSettings(); openSurface('agents').catch(console.error); });
+el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); openSurface('plugins').catch(console.error); });
+el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
+el('settingsEnterWorktree').addEventListener('click', () => {
+  const name = el('settingsWorktreeName').value.trim();
+  if (name) runSettingsCommand('/worktree enter ' + name, 'Entering worktree...').catch(console.error);
+});
+el('settingsExitWorktree').addEventListener('click', () => { runSettingsCommand('/worktree exit', 'Exiting worktree...').catch(console.error); });
+el('settingsAutomationWorktreeList').addEventListener('click', () => { runSettingsCommand('/worktree list', 'Listing worktrees...').catch(console.error); });
+el('settingsNewChatBtn').addEventListener('click', async () => {
+  await createNewSession();
+  if (!el('settingsModal').classList.contains('hidden')) {
+    renderSettingsCommandPanels();
+    el('settingsStatus').textContent = 'New chat created';
+  }
+});
+el('settingsCleanChatsBtn').addEventListener('click', async () => {
+  await cleanupSessions();
+  await loadState();
+  renderSettingsCommandPanels();
+  el('settingsStatus').textContent = 'Empty chats cleaned';
+});
+el('settingsMemoryStatusBtn').addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
+el('settingsCompactNowBtn').addEventListener('click', () => {
+  const instructions = el('settingsCompactInstructions').value.trim();
+  runSettingsCommand('/compact' + (instructions ? ' ' + instructions : ''), 'Compacting session...').catch(console.error);
+});
+el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsCommand('/dream status', 'Inspecting dream state...').catch(console.error); });
+el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
+el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
+el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
+el('abortBtn').addEventListener('click', () => api('/api/abort', { method: 'POST' }));
+el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
+el('effortSelect').addEventListener('change', (event) => submitText('/effort ' + event.target.value));
+el('closeSurfaceBtn').addEventListener('click', closeSurface);
+el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
+el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });
+el('backToAppBtn').addEventListener('click', closeSettings);
+el('cancelSettings').addEventListener('click', closeSettings);
+el('settingsForm').addEventListener('submit', saveSettings);
+el('settingsSearch').addEventListener('input', (event) => {
+  const query = event.target.value.trim().toLowerCase();
+  document.querySelectorAll('.settings-tab').forEach(button => {
+    button.style.display = !query || button.textContent.toLowerCase().includes(query) ? '' : 'none';
+  });
+});
+el('commandSearch').addEventListener('input', () => { renderProjects(); });
+el('collapseSidebar').addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
+transcript.addEventListener('click', (event) => {
+  const button = event.target.closest ? event.target.closest('.copy-btn') : null;
+  if (!button) return;
+  const code = button.parentElement && button.parentElement.querySelector('code');
+  if (!code) return;
+  navigator.clipboard.writeText(code.textContent || '').then(() => {
+    const original = button.textContent;
+    button.textContent = 'Copied';
+    setTimeout(() => { button.textContent = original; }, 1200);
+  }).catch(() => {});
+});
+loadState().then(hydrateTranscript).catch(error => addMessage('error', error.message));
+`;
+}
+
+export function parseActoviqGuiArgs(argv: string[]): ActoviqGuiOptions & { help?: boolean; version?: boolean } {
+  const result: ActoviqGuiOptions & { help?: boolean; version?: boolean } = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    if (arg === '--help' || arg === '-h') result.help = true;
+    else if (arg === '--version' || arg === '-v') result.version = true;
+    else if (arg === '--host' && argv[index + 1]) result.host = argv[++index];
+    else if (arg === '--port' && argv[index + 1]) result.port = Number(argv[++index]);
+    else if (arg === '--config' && argv[index + 1]) result.configPath = argv[++index];
+    else if (arg === '--permission-mode' && argv[index + 1]) {
+      const mode = argv[++index]!;
+      if (!PERMISSION_MODES.has(mode as ActoviqPermissionMode)) throw new Error(`Unknown permission mode: ${mode}`);
+      result.permissionMode = mode as ActoviqPermissionMode;
+    } else if (arg === '--model' && argv[index + 1]) result.model = argv[++index];
+    else if (arg === '--resume' && argv[index + 1]) result.resumeSessionId = argv[++index];
+    else if (arg === '--continue') result.continueMostRecent = true;
+    else if (!arg.startsWith('-') && !result.workDir) result.workDir = arg;
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  return result;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const args = parseActoviqGuiArgs(process.argv.slice(2));
+  if (args.version) {
+    process.stdout.write(`${readPackageVersion(import.meta.url)}\n`);
+    process.exit(0);
+  }
+  if (args.help) {
+    process.stdout.write([
+      'actoviq-gui - Clean SDK local GUI',
+      '',
+      'Usage: actoviq-gui [work-dir] [options]',
+      '',
+      'Options:',
+      '  --host <host>              Host to bind (default: 127.0.0.1)',
+      '  --port <port>              Port to bind (default: 4174)',
+      '  --config <path>            Load a specific Actoviq settings JSON file',
+      '  --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)',
+      '  --model <model>            Override the configured model',
+      '  --resume <session-id>      Resume a stored Clean SDK session',
+      '  --continue                 Resume the most recent stored session',
+      '  -v, --version              Show package version',
+      '  -h, --help                 Show this help',
+      '',
+    ].join('\n'));
+    process.exit(0);
+  }
+  runActoviqGui(args).catch((error) => {
+    process.stderr.write(`Fatal: ${(error as Error).stack ?? (error as Error).message}\n`);
+    process.exit(1);
+  });
+}
