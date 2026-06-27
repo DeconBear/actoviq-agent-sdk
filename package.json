@@ -32,6 +32,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "README.md",
     "README-zh.md",
     "vendor/actoviq-runtime/cli.js"

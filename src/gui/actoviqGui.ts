@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { access, readFile, readdir, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -102,7 +102,7 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   autoScroll: true,
 };
 
-function buildGuiSystemPrompt(workDir: string): string {
+function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'coding'): string {
   let isGit = false;
   try {
     execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' });
@@ -128,7 +128,12 @@ function buildGuiSystemPrompt(workDir: string): string {
     `- NEVER commit changes unless the user explicitly asks you to.\n\n` +
     `# Other\n` +
     `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
-    `- When in doubt, use TodoWrite to track progress.`
+    `- When in doubt, use TodoWrite to track progress.` +
+    (workMode === 'daily'
+      ? `\n\n# Work mode: For daily work\n` +
+        `- The user prefers an everyday-assistant style: reply in plain language, keep it concise, and minimize jargon, file paths, and raw code unless they ask for them.\n` +
+        `- You are equally capable in this mode — only the presentation is less technical. Still use tools and do the real work; just summarize results in accessible terms.`
+      : ``)
   );
 }
 
@@ -201,6 +206,7 @@ function guiIcon(name: string): string {
     globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
     hooks: '<path d="M9 18a5 5 0 0 1 0-10h1"/><path d="M15 6a5 5 0 0 1 0 10h-1"/><path d="M8 13h8"/>',
     keyboard: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01"/><path d="M11 9h.01"/><path d="M15 9h.01"/><path d="M7 13h10"/><path d="M8 17h8"/>',
+    logo: '<circle cx="12" cy="12" r="2.4"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M7.1 12h2.5"/><path d="M14.4 12h2.5"/><path d="M12 7.1v2.5"/><path d="M12 14.4v2.5"/><path d="m18.3 4.2.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
     memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
     mic: '<path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v4"/>',
     model: '<path d="M12 2 4 6v12l8 4 8-4V6Z"/><path d="m4 6 8 4 8-4"/><path d="M12 10v12"/>',
@@ -578,13 +584,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const port = options.port ?? DEFAULT_PORT;
   const permissionMode: ActoviqPermissionMode = options.permissionMode ?? 'bypassPermissions';
   const authToken = randomBytes(32).toString('hex');
-  let systemPrompt = buildGuiSystemPrompt(workDir);
+  let guiWorkMode: 'coding' | 'daily' = 'coding';
+  let systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
 
   try {
     if (options.configPath) await loadJsonConfigFile(options.configPath);
     else await loadDefaultActoviqSettings({ homeDir: options.homeDir });
   } catch {
     // Missing local config is fine; env vars may carry credentials.
+  }
+
+  try {
+    const initialStore = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir });
+    guiWorkMode = readGuiPreferences(initialStore.raw).workMode;
+    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+  } catch {
+    // Keep defaults when settings cannot be read.
   }
 
   let tools = createActoviqCoreTools({ cwd: workDir });
@@ -663,7 +678,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     const previousSdk = sdk;
     workDir = resolved;
-    systemPrompt = buildGuiSystemPrompt(workDir);
+    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
     tools = createActoviqCoreTools({ cwd: workDir });
     activeTeamTool = null;
     activeTeamName = null;
@@ -839,6 +854,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ? readGuiPreferences({ gui: body.preferences })
       : readGuiPreferences(raw);
     raw.gui = preferences;
+    guiWorkMode = preferences.workMode;
+    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
     await persistActoviqSettingsStore(store.configPath, raw);
     await loadJsonConfigFile(store.configPath);
 
@@ -1238,6 +1255,88 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
 
+  // Read-only git view (Electron-safe: execFileSync, no shell, so `%`/`@{u}` aren't mangled on Windows).
+  function gitText(args: string[]): string {
+    try {
+      return execFileSync('git', args, { cwd: workDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return '';
+    }
+  }
+  function gitInfo(): Record<string, unknown> {
+    if (gitText(['rev-parse', '--is-inside-work-tree']) !== 'true') return { isRepo: false };
+    const statusRaw = gitText(['status', '--porcelain=v1']);
+    const status = statusRaw
+      ? statusRaw.split('\n').filter(Boolean).map((line) => ({ x: (line[0] ?? ' ').trim(), y: (line[1] ?? ' ').trim(), file: line.slice(3) }))
+      : [];
+    const branchesRaw = gitText(['branch', '--format=%(HEAD)\t%(refname:short)']);
+    const branches = branchesRaw
+      ? branchesRaw.split('\n').filter(Boolean).map((line) => {
+          const [head, ...rest] = line.split('\t');
+          return { name: rest.join('\t') || line.trim(), current: head === '*' };
+        })
+      : [];
+    const logRaw = gitText(['log', '--pretty=format:%h\t%s\t%cr\t%an', '-n', '30']);
+    const commits = logRaw
+      ? logRaw.split('\n').filter(Boolean).map((line) => {
+          const [hash, subject, date, author] = line.split('\t');
+          return { hash: hash ?? '', subject: subject ?? '', date: date ?? '', author: author ?? '' };
+        })
+      : [];
+    const upstream = gitText(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    let ahead = 0;
+    let behind = 0;
+    const counts = upstream ? gitText(['rev-list', '--left-right', '--count', '@{u}...HEAD']) : '';
+    if (counts) {
+      const [b, a] = counts.split(/\s+/);
+      behind = Number(b) || 0;
+      ahead = Number(a) || 0;
+    }
+    return { isRepo: true, branch: gitText(['rev-parse', '--abbrev-ref', 'HEAD']), upstream, ahead, behind, status, branches, commits };
+  }
+
+  async function deleteSession(id: string): Promise<Record<string, unknown>> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    let deleted = false;
+    for (const projectRoot of roots) {
+      for (const item of await listStoredSessionFiles(projectRoot)) {
+        if (item.id !== id && item.storageId !== id) continue;
+        await rm(item.filePath, { force: true });
+        await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), { recursive: true, force: true });
+        deleted = true;
+      }
+    }
+    // If the active chat was deleted, open a fresh one so the UI stays consistent.
+    if (session.id === id) {
+      session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+    }
+    invalidateHeavyState();
+    return { deleted, state: await state() };
+  }
+
+  async function forgetProject(targetPath: string): Promise<Record<string, unknown>> {
+    const resolved = path.resolve(targetPath);
+    if (normalizeFsPath(resolved) === normalizeFsPath(workDir)) {
+      return { ok: false, error: 'Cannot forget the active workspace — switch to another first.', state: await state() };
+    }
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    let deleted = 0;
+    for (const projectRoot of roots) {
+      for (const item of await listStoredSessionFiles(projectRoot)) {
+        if (!item.workDir || normalizeFsPath(item.workDir) !== normalizeFsPath(resolved)) continue;
+        await rm(item.filePath, { force: true });
+        await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), { recursive: true, force: true });
+        deleted += 1;
+      }
+    }
+    invalidateHeavyState();
+    return { ok: true, deleted, state: await state() };
+  }
+
   // Only loopback hosts may reach the server. The Host check defeats DNS-rebinding
   // (the browser still sends the attacker's hostname); the Origin check defeats
   // cross-site requests; the per-process token defeats other local processes.
@@ -1308,6 +1407,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'POST' && url.pathname === '/api/sessions/cleanup') {
         return json(res, 200, await cleanupEmptySessions());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/git') {
+        return json(res, 200, gitInfo());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/delete') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        return json(res, 200, await deleteSession(id));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/project/forget') {
+        const body = await readJson(req);
+        const target = typeof body.path === 'string' ? body.path.trim() : '';
+        if (!target) return json(res, 400, { error: 'Missing project path' });
+        return json(res, 200, await forgetProject(target));
       }
       if (req.method === 'POST' && url.pathname === '/api/send') {
         const body = await readJson(req);
@@ -1449,8 +1563,9 @@ export function createActoviqGuiHtml(): string {
 <body>
   <div class="app" id="appView">
     <aside class="sidebar">
-      <div class="sidebar-chrome">
-        <span class="dot active"></span><span class="dot"></span><span class="dot"></span>
+      <div class="brand">
+        <span class="brand-mark">${guiIcon('logo')}</span>
+        <span class="brand-name">Actoviq</span>
       </div>
       <nav class="primary-nav" aria-label="Primary">
         <button id="newSession" class="nav-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
@@ -1498,9 +1613,7 @@ export function createActoviqGuiHtml(): string {
         </div>
         <div class="top-actions">
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
-          <button id="commandPaletteBtn" class="icon-btn" title="Command palette" aria-label="Command palette">${guiIcon('command')}</button>
-          <button id="toolsBtn" class="icon-btn" title="Tools" aria-label="Tools">${guiIcon('tools')}</button>
-          <button id="abortBtn" class="icon-btn" title="Interrupt" aria-label="Interrupt the current run">${guiIcon('close')}</button>
+          <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
       <section id="statusbar" class="statusbar"></section>
@@ -1546,6 +1659,7 @@ export function createActoviqGuiHtml(): string {
       <div id="surfaceList" class="surface-list"></div>
     </div>
   </div>
+  <div id="contextMenu" class="context-menu hidden"></div>
   <div id="workspaceModal" class="modal hidden">
     <form id="workspaceForm" class="dialog workspace-dialog">
       <h2>Workspace</h2>
@@ -1741,15 +1855,18 @@ export function createActoviqGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="memory">
         <h1>Memory</h1>
         <div class="settings-group">
-          <h2>Conversation memory</h2>
-          <p>Inspect compact state, compact the current session, or run dream consolidation.</p>
-          <label class="inline-field wide">Compact instructions<input id="settingsCompactInstructions" autocomplete="off" placeholder="optional summary instructions"></label>
-          <div class="settings-action-row">
-            <button type="button" id="settingsMemoryStatusBtn" class="secondary-btn">Inspect memory</button>
-            <button type="button" id="settingsCompactNowBtn" class="secondary-btn">Compact now</button>
-            <button type="button" id="settingsDreamStatusBtn" class="secondary-btn">Dream status</button>
-            <button type="button" id="settingsDreamRunBtn" class="secondary-btn">Run dream</button>
-          </div>
+          <p>Actoviq keeps two kinds of memory: the <strong>current chat's context</strong> (compaction summarizes older turns so the conversation keeps fitting in the model's window) and <strong>durable memory</strong> (dream consolidates lasting facts about you and the project). Both run automatically — the controls below let you inspect or trigger them by hand. Results open in the chat transcript.</p>
+        </div>
+        <div class="settings-group">
+          <h2>Current chat context</h2>
+          <div class="settings-help-row"><span><strong>Inspect memory</strong><small>Show the current compaction state and what has been summarized so far.</small></span><button type="button" id="settingsMemoryStatusBtn" class="secondary-btn">Inspect</button></div>
+          <div class="settings-help-row"><span><strong>Compact now</strong><small>Summarize older turns right now to free up context space.</small></span><button type="button" id="settingsCompactNowBtn" class="secondary-btn">Compact</button></div>
+          <label class="inline-field wide">Compaction guidance (optional)<input id="settingsCompactInstructions" autocomplete="off" placeholder="e.g. keep API decisions, drop long file listings"></label>
+        </div>
+        <div class="settings-group">
+          <h2>Durable memory (dream)</h2>
+          <div class="settings-help-row"><span><strong>Dream status</strong><small>See when consolidation last ran and what is pending.</small></span><button type="button" id="settingsDreamStatusBtn" class="secondary-btn">Status</button></div>
+          <div class="settings-help-row"><span><strong>Run dream</strong><small>Consolidate lasting memories from this session into your stored profile now.</small></span><button type="button" id="settingsDreamRunBtn" class="secondary-btn">Run</button></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="mcp">
@@ -1774,7 +1891,11 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="git">
         <h1>Git</h1>
-        <div class="settings-group"><button type="button" id="settingsOpenLocation" class="secondary-btn">Open workspace location</button></div>
+        <div class="settings-group">
+          <p id="settingsGitSummary" class="muted">Reading repository…</p>
+          <div class="settings-help-row"><span><strong>Git tree</strong><small>Browse branches, working-tree changes, and recent commits for this workspace.</small></span><button type="button" id="settingsGitTreeBtn" class="secondary-btn">View Git tree</button></div>
+          <div class="settings-help-row"><span><strong>Workspace folder</strong><small>Open this project's folder in your system file manager.</small></span><button type="button" id="settingsOpenLocation" class="secondary-btn">Open location</button></div>
+        </div>
       </section>
       <section class="settings-panel" data-settings-panel="env">
         <h1>Environment</h1>
@@ -1833,9 +1954,10 @@ button { cursor: pointer; }
   background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%);
   border-right: 1px solid #dddddd;
 }
-.sidebar-chrome { display: flex; gap: 8px; height: 22px; align-items: center; }
-.dot { width: 12px; height: 12px; border-radius: 50%; background: #c7c7c7; }
-.dot.active { background: #4b93f7; }
+.brand { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 6px; }
+.brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: linear-gradient(135deg, #4b93f7 0%, #6ad0a8 100%); color: #fff; }
+.brand-mark .ui-icon { width: 18px; height: 18px; }
+.brand-name { font-weight: 650; font-size: 15px; letter-spacing: .2px; color: #2f3337; }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
 .nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn, .command-chip {
   min-height: 34px;
@@ -1965,6 +2087,24 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .round-btn { background: transparent; border: 1px solid #d8d8d8; color: #4c5055; }
 .command-chip { border-color: #d8d8d8; padding: 0 10px; color: #4c5055; }
 .send-btn { border: 0; background: #202124; color: #fff; }
+.send-btn.stopping { background: #c7392f; }
+.context-menu { position: fixed; z-index: 40; min-width: 168px; background: #fff; border: 1px solid #d8d8d8; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.18); padding: 4px; display: grid; gap: 2px; }
+.context-menu.hidden { display: none; }
+.context-menu button { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 6px; min-height: 32px; padding: 0 10px; color: #2f3337; cursor: pointer; }
+.context-menu button:hover { background: rgba(0,0,0,.06); }
+.context-menu button.danger { color: #c7392f; }
+.git-section { display: grid; gap: 6px; }
+.git-section > h3 { margin: 2px 0; font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: #85888d; }
+.git-branch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-badge { border: 1px solid #d8d8d8; border-radius: 999px; padding: 2px 10px; font-size: 12px; color: #4e5358; }
+.git-row { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; border-top: 1px solid #f0f0f0; font-size: 13px; }
+.git-row:first-child { border-top: 0; }
+.git-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+.git-stat { font-family: ui-monospace, Consolas, monospace; font-size: 12px; min-width: 22px; color: #1f8f4c; }
+.git-stat.del { color: #c7392f; }
+.git-current { font-weight: 650; }
+.git-hash { font-family: ui-monospace, Consolas, monospace; color: #7a7e83; }
+.git-meta { color: #85888d; margin-left: auto; white-space: nowrap; }
 .surface-drawer { position: fixed; inset: 0; z-index: 12; background: rgba(0,0,0,.16); display: flex; justify-content: flex-end; }
 .surface-panel { width: min(520px, calc(100vw - 320px)); min-width: 360px; height: 100%; background: #fff; border-left: 1px solid #dedede; display: flex; flex-direction: column; }
 .surface-panel header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #e8e8e8; }
@@ -2026,6 +2166,11 @@ kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; p
 .secondary-btn { border-color: #d8d8d8; background: #fff; padding: 0 12px; }
 .settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin: 14px 0; }
 .settings-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.settings-help-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid #eee; }
+.settings-help-row:first-of-type { border-top: 0; }
+.settings-help-row > span { display: grid; gap: 3px; }
+.settings-help-row small { color: #777b80; }
+.settings-help-row .secondary-btn { white-space: nowrap; }
 .settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; }
 .settings-card-list.compact { max-height: 260px; }
 .settings-card { border: 1px solid #e3e5e7; border-radius: 8px; padding: 12px; display: grid; gap: 8px; background: #fff; }
@@ -2052,6 +2197,12 @@ body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[
 body[data-theme="dark"] .settings-card { background: #1f2023; }
 body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
 body[data-theme="dark"] .message.assistant a { color: #8ab4f8; }
+body[data-theme="dark"] .brand-name { color: #e8eaed; }
+body[data-theme="dark"] .context-menu { background: #26272b; border-color: #3b3d43; }
+body[data-theme="dark"] .context-menu button { color: #e8eaed; }
+body[data-theme="dark"] .context-menu button:hover { background: #33363c; }
+body[data-theme="dark"] .git-row, body[data-theme="dark"] .settings-help-row { border-color: #3b3d43; }
+body[data-theme="dark"] .git-badge { border-color: #3b3d43; color: #aab0b8; }
 body[data-theme="dark"] .tool-card pre { background: #1f2023; color: #c7ccd3; }
 body[data-theme="dark"] .drop-overlay { background: rgba(35,42,52,.95); color: #b8d2ff; }
 body[data-theme="dark"] .muted, body[data-theme="dark"] small, body[data-theme="dark"] .topbar p, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .settings-group p, body[data-theme="dark"] .workspace-meta { color: #aab0b8; }
@@ -2060,6 +2211,7 @@ body.sidebar-collapsed .sidebar .search,
 body.sidebar-collapsed .project-section,
 body.sidebar-collapsed .command-section,
 body.sidebar-collapsed .sidebar-link,
+body.sidebar-collapsed .brand-name,
 body.sidebar-collapsed .nav-btn span:not(.nav-icon) { display: none; }
 body.sidebar-collapsed .sidebar-footer { justify-content: center; }
 @media (max-width: 860px) {
@@ -2113,10 +2265,57 @@ function applyPreferences(preferences) {
   document.body.dataset.theme = theme;
   document.body.dataset.density = state.preferences.density === 'compact' ? 'compact' : 'comfortable';
 }
+const SEND_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
+const STOP_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
+function updateSendButton() {
+  const btn = el('sendBtn');
+  if (!btn) return;
+  if (state.running) {
+    btn.innerHTML = STOP_SVG;
+    btn.title = 'Stop';
+    btn.setAttribute('aria-label', 'Stop the current run');
+    btn.classList.add('stopping');
+  } else {
+    btn.innerHTML = SEND_SVG;
+    btn.title = 'Send';
+    btn.setAttribute('aria-label', 'Send message');
+    btn.classList.remove('stopping');
+  }
+}
+function hideContextMenu() {
+  const menu = el('contextMenu');
+  if (menu) menu.classList.add('hidden');
+}
+function showContextMenu(x, y, items) {
+  const menu = el('contextMenu');
+  menu.textContent = '';
+  for (const item of items) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = item.label;
+    if (item.danger) button.classList.add('danger');
+    button.addEventListener('click', (event) => { event.stopPropagation(); hideContextMenu(); item.onClick(); });
+    menu.appendChild(button);
+  }
+  menu.classList.remove('hidden');
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + 'px';
+}
+function dangerConfirmMenu(x, y, confirmLabel, onConfirm) {
+  showContextMenu(x, y, [
+    { label: confirmLabel, danger: true, onClick: onConfirm },
+    { label: 'Cancel', onClick: hideContextMenu },
+  ]);
+}
+function flashStatus(message) {
+  setRunStatus(message);
+  setTimeout(() => { if (!state.running) setRunStatus(readyLabel()); }, 2600);
+}
 function setRunStatus(message, kind = '') {
   statusbar.textContent = message || '';
   statusbar.classList.toggle('running', kind === 'running');
   statusbar.classList.toggle('error', kind === 'error');
+  updateSendButton();
 }
 function formatUsage(usage) {
   if (!usage) return '';
@@ -2392,6 +2591,14 @@ function renderProjects() {
     chat.classList.add('project-chat-row');
     if (state.snapshot?.session?.id === item.id) chat.classList.add('active');
     chat.addEventListener('click', () => resumeSession(item.id));
+    chat.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      const cx = event.clientX;
+      const cy = event.clientY;
+      showContextMenu(cx, cy, [
+        { label: 'Delete chat', danger: true, onClick: () => dangerConfirmMenu(cx, cy, 'Confirm delete chat', () => deleteChat(item.id)) },
+      ]);
+    });
     chats.appendChild(chat);
   }
   if (visibleSessions.length > state.sessionsLimit) {
@@ -2446,6 +2653,15 @@ function renderWorkspaceChoices() {
       const ok = await switchProject(project.path);
       el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
       if (ok) closeWorkspaceDialog();
+    });
+    button.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      if (project.active) return;
+      const cx = event.clientX;
+      const cy = event.clientY;
+      showContextMenu(cx, cy, [
+        { label: 'Forget workspace', danger: true, onClick: () => dangerConfirmMenu(cx, cy, 'Confirm forget workspace', () => forgetWorkspace(project.path)) },
+      ]);
     });
     root.appendChild(button);
   }
@@ -2551,11 +2767,11 @@ async function submitWorkspace(event) {
 }
 async function cleanupSessions() {
   const res = await api('/api/sessions/cleanup', { method: 'POST' });
-  if (!res.ok) { addMessage('error', await res.text()); return; }
+  if (!res.ok) { flashStatus('Could not clean empty chats'); return; }
   const payload = await res.json();
   state.snapshot = payload.state;
-  addMessage('notice', 'cleaned empty chats: ' + payload.deleted);
   await loadState();
+  flashStatus(payload.deleted > 0 ? 'Cleaned ' + payload.deleted + ' empty chat' + (payload.deleted === 1 ? '' : 's') : 'No empty chats to clean');
 }
 async function createNewSession() {
   await api('/api/session/new', { method: 'POST' });
@@ -2855,6 +3071,138 @@ async function openSurface(kind) {
   await loadState();
   renderSurface(kind);
 }
+async function gitData() {
+  try {
+    const res = await api('/api/git');
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+function gitSection(title) {
+  const card = document.createElement('article');
+  card.className = 'surface-card git-section';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  card.appendChild(heading);
+  return card;
+}
+async function openGitSurface() {
+  hideContextMenu();
+  const data = await gitData();
+  state.activeSurface = null;
+  el('surfaceTitle').textContent = 'Git';
+  el('surfaceActions').textContent = '';
+  el('surfaceList').textContent = '';
+  if (!data || !data.isRepo) {
+    el('surfaceSubtitle').textContent = data ? 'Not a git repository' : 'Git unavailable';
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = data ? 'This workspace is not a git repository.' : 'Could not read git information.';
+    el('surfaceList').appendChild(note);
+    el('surfaceDrawer').classList.remove('hidden');
+    return;
+  }
+  const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
+  el('surfaceSubtitle').textContent = 'On ' + data.branch + (data.upstream ? ' → ' + data.upstream : '') + tracking;
+
+  const status = data.status || [];
+  const changes = gitSection('Changes (' + status.length + ')');
+  if (status.length === 0) {
+    const clean = document.createElement('p');
+    clean.className = 'muted';
+    clean.textContent = 'Working tree clean.';
+    changes.appendChild(clean);
+  } else {
+    for (const entry of status) {
+      const row = document.createElement('div');
+      row.className = 'git-row';
+      const code = (entry.x || '') + (entry.y || '');
+      const stat = document.createElement('span');
+      stat.className = 'git-stat' + (code.indexOf('D') !== -1 ? ' del' : '');
+      stat.textContent = code || '•';
+      const file = document.createElement('span');
+      file.className = 'git-mono';
+      file.textContent = entry.file;
+      row.append(stat, file);
+      changes.appendChild(row);
+    }
+  }
+  el('surfaceList').appendChild(changes);
+
+  const branchList = data.branches || [];
+  const branches = gitSection('Branches (' + branchList.length + ')');
+  for (const branch of branchList) {
+    const row = document.createElement('div');
+    row.className = 'git-row';
+    const name = document.createElement('span');
+    if (branch.current) name.className = 'git-current';
+    name.textContent = (branch.current ? '● ' : '') + branch.name;
+    row.appendChild(name);
+    branches.appendChild(row);
+  }
+  el('surfaceList').appendChild(branches);
+
+  const commitList = data.commits || [];
+  const commits = gitSection('Recent commits');
+  for (const commit of commitList) {
+    const row = document.createElement('div');
+    row.className = 'git-row';
+    const hash = document.createElement('span');
+    hash.className = 'git-hash';
+    hash.textContent = commit.hash;
+    const subject = document.createElement('span');
+    subject.textContent = commit.subject;
+    const meta = document.createElement('span');
+    meta.className = 'git-meta';
+    meta.textContent = commit.date + (commit.author ? ' · ' + commit.author : '');
+    row.append(hash, subject, meta);
+    commits.appendChild(row);
+  }
+  if (commitList.length === 0) {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'No commits.';
+    commits.appendChild(note);
+  }
+  el('surfaceList').appendChild(commits);
+  el('surfaceDrawer').classList.remove('hidden');
+}
+async function refreshGitSettingsSummary() {
+  const target = el('settingsGitSummary');
+  if (!target) return;
+  const data = await gitData();
+  if (!data || !data.isRepo) {
+    target.textContent = data ? 'Not a git repository.' : 'Git information unavailable.';
+    return;
+  }
+  const changed = (data.status || []).length;
+  const tracking = (data.ahead ? ' · ↑' + data.ahead : '') + (data.behind ? ' · ↓' + data.behind : '');
+  target.textContent = 'On branch ' + data.branch + ' · ' + changed + ' changed file' + (changed === 1 ? '' : 's') + tracking;
+}
+async function deleteChat(id) {
+  const wasActive = state.snapshot?.session?.id === id;
+  const res = await api('/api/session/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!res.ok) { flashStatus('Could not delete chat'); return; }
+  await loadState();
+  if (wasActive) {
+    transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    await hydrateTranscript();
+  }
+  flashStatus('Chat deleted');
+}
+async function forgetWorkspace(projectPath) {
+  const res = await api('/api/project/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
+  if (!res.ok) { flashStatus('Could not forget workspace'); return; }
+  const payload = await res.json();
+  if (payload && payload.error) { flashStatus(payload.error); return; }
+  await loadState();
+  if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
+  flashStatus('Workspace forgotten' + (payload.deleted ? ' (' + payload.deleted + ' chats removed)' : ''));
+}
 async function sendText(text) {
   state.running = true;
   setRunStatus('Running', 'running');
@@ -2928,6 +3276,7 @@ function setChecked(id, value) { el(id).checked = Boolean(value); }
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
+  if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
@@ -3012,6 +3361,7 @@ document.querySelectorAll('[data-decision]').forEach(button => {
 document.querySelectorAll('.settings-tab').forEach(button => button.addEventListener('click', () => showSettingsTab(button.dataset.settingsTab)));
 el('composer').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (state.running) { await api('/api/abort', { method: 'POST' }); return; }
   const text = input.value.trim();
   if (!text && state.attachments.length === 0) return;
   const submission = buildSubmissionText(text);
@@ -3081,13 +3431,7 @@ el('newSession').addEventListener('click', createNewSession);
 el('searchNav').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('pluginsNav').addEventListener('click', () => { openSurface('plugins').catch(console.error); });
 el('automationNav').addEventListener('click', () => { openSurface('workflows').catch(console.error); });
-el('toolsBtn').addEventListener('click', () => { openSurface('tools').catch(console.error); });
-el('commandPaletteBtn').addEventListener('click', async () => {
-  if (!state.snapshot?.commands) await loadState().catch(() => undefined);
-  input.value = '/';
-  input.focus();
-  renderSlashMenu();
-});
+el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
 el('projectRoot').addEventListener('click', () => { openSurface('projects').catch(console.error); });
@@ -3144,7 +3488,13 @@ el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsComman
 el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
-el('abortBtn').addEventListener('click', () => api('/api/abort', { method: 'POST' }));
+el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('contextmenu', (event) => {
+  const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
+  if (!onTarget) hideContextMenu();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('effortSelect').addEventListener('change', (event) => submitText('/effort ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
