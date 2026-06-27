@@ -102,9 +102,9 @@ describe('Bridge provider: resolveExecutable precedence', () => {
 });
 
 describe('detectBridgeProviders', () => {
-  it('returns three entries with id/displayName/available/path/version', async () => {
+  it('returns entries for all six registered providers', async () => {
     const results = await detectBridgeProviders();
-    expect(results).toHaveLength(3);
+    expect(results).toHaveLength(6);
 
     for (const entry of results) {
       expect(entry).toHaveProperty('id');

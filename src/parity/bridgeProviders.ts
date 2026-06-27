@@ -56,7 +56,19 @@ function execFileAsync(
  * a single normalized event; one native event may also emit several.
  */
 export interface BridgeEventNormalizer {
+  /**
+   * Translate one parsed JSON line (stream-json/JSONL providers) into
+   * normalized events. Return `[]` to drop the line.
+   */
   translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[];
+  /**
+   * When true, the provider emits plain text (not JSONL). `translate()` is
+   * called with each raw text line as `{_raw: line}`, and `flush()` is
+   * called once when stdout ends.
+   */
+  rawText?: true;
+  /** Flush accumulated state at end-of-stream (raw-text providers only). */
+  flush?(): ActoviqBridgeJsonEvent[];
 }
 
 export interface RuntimeProvider {
@@ -222,7 +234,7 @@ export function getDefaultProviderId(): RuntimeProviderId {
     const bridge = (raw as { bridge?: unknown }).bridge;
     if (bridge && typeof bridge === 'object') {
       const dp = (bridge as { defaultProvider?: unknown }).defaultProvider;
-      if (dp === 'claude' || dp === 'pi' || dp === 'codex') return dp;
+      if (dp === 'claude' || dp === 'pi' || dp === 'codex' || dp === 'codewhale' || dp === 'reasonix' || dp === 'crush') return dp;
     }
   }
   return 'claude';
@@ -233,6 +245,9 @@ export function resolveProvider(id?: RuntimeProviderId): RuntimeProvider {
   if (resolved === 'claude') return claudeProvider;
   if (resolved === 'pi') return piProvider;
   if (resolved === 'codex') return codexProvider;
+  if (resolved === 'codewhale') return codewhaleProvider;
+  if (resolved === 'reasonix') return reasonixProvider;
+  if (resolved === 'crush') return crushProvider;
   throw new ActoviqBridgeProcessError(`Unknown bridge provider: ${String(resolved)}`);
 }
 
@@ -244,7 +259,7 @@ export function resolveProvider(id?: RuntimeProviderId): RuntimeProvider {
  */
 export async function detectBridgeProviders(): Promise<BridgeProviderDetection[]> {
   const results: BridgeProviderDetection[] = [];
-  for (const provider of [claudeProvider, piProvider, codexProvider]) {
+  for (const provider of [claudeProvider, piProvider, codexProvider, codewhaleProvider, reasonixProvider, crushProvider]) {
     let path: string | undefined;
     let available = false;
     let version: string | undefined;
@@ -571,6 +586,143 @@ class CodexNormalizer implements BridgeEventNormalizer {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Plain-text normalizer — shared by providers whose headless mode emits
+// plain text (no JSONL / stream-json). Captures the full stdout as the
+// assistant text and closes with a result event. No streaming deltas, no
+// tool cards — simple and adequate for reasonix / crush.
+// ---------------------------------------------------------------------------
+
+class PlainTextNormalizer implements BridgeEventNormalizer {
+  rawText = true as const;
+  private sessionId: string | undefined;
+  private text = '';
+
+  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+    // raw-text mode: `parseStdoutEvents` wraps each line as `{_raw: line}`.
+    const line = typeof raw._raw === 'string' ? raw._raw : '';
+    this.text += (this.text ? '\n' : '') + line;
+    return [];
+  }
+
+  flush(): ActoviqBridgeJsonEvent[] {
+    const sid = this.sessionId ?? '';
+    return [
+      bridgeEvent('system', {
+        subtype: 'init',
+        session_id: sid,
+        tools: [],
+        mcp_servers: [],
+        slash_commands: [],
+        agents: [],
+        skills: [],
+        plugins: [],
+      }),
+      bridgeEvent('assistant', {
+        session_id: sid,
+        message: {
+          role: 'assistant',
+          content: this.text ? [{ type: 'text', text: this.text }] : [],
+        },
+      }),
+      bridgeEvent('result', {
+        subtype: 'success',
+        session_id: sid,
+        is_error: false,
+        result: this.text,
+        stop_reason: 'end_turn',
+        num_turns: 1,
+      }),
+    ];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// codewhale provider (stream-json — compatible with Claude Code)
+// ---------------------------------------------------------------------------
+
+class CodewhaleProvider extends BaseRuntimeProvider {
+  readonly id = 'codewhale' as const;
+  readonly pathBinary = 'codewhale';
+  readonly displayName = 'CodeWhale CLI (codewhale)';
+
+  buildArgs(prompt: string, _options: ActoviqBridgeRunOptions): string[] {
+    return ['exec', '--auto', '--output-format', 'stream-json', prompt];
+  }
+
+  buildChildEnv(
+    baseEnv: Record<string, string>,
+    settingsEnv: Record<string, string>,
+    overrides?: Record<string, string>,
+  ): Record<string, string> {
+    return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
+  }
+
+  createNormalizer(): BridgeEventNormalizer {
+    return { translate: raw => [raw as ActoviqBridgeJsonEvent] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// reasonix provider (plain-text, DeepSeek-native)
+// ---------------------------------------------------------------------------
+
+class ReasonixProvider extends BaseRuntimeProvider {
+  readonly id = 'reasonix' as const;
+  readonly pathBinary = 'reasonix';
+  readonly displayName = 'Reasonix CLI (reasonix)';
+
+  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+    const args = ['run'];
+    if (options.model) { args.push('-m', options.model); }
+    if (options.systemPrompt) { args.push('-s', options.systemPrompt); }
+    if (options.effort) { args.push('--effort', options.effort); }
+    args.push(prompt);
+    return args;
+  }
+
+  buildChildEnv(
+    baseEnv: Record<string, string>,
+    settingsEnv: Record<string, string>,
+    overrides?: Record<string, string>,
+  ): Record<string, string> {
+    return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
+  }
+
+  createNormalizer(): BridgeEventNormalizer {
+    return new PlainTextNormalizer();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// crush provider (plain-text, Charmbracelet)
+// ---------------------------------------------------------------------------
+
+class CrushProvider extends BaseRuntimeProvider {
+  readonly id = 'crush' as const;
+  readonly pathBinary = 'crush';
+  readonly displayName = 'Crush CLI (crush)';
+
+  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+    const args = ['run'];
+    if (options.model) { args.push('-m', options.model); }
+    args.push(prompt);
+    return args;
+  }
+
+  buildChildEnv(
+    baseEnv: Record<string, string>,
+    settingsEnv: Record<string, string>,
+    overrides?: Record<string, string>,
+  ): Record<string, string> {
+    return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
+  }
+
+  createNormalizer(): BridgeEventNormalizer {
+    return new PlainTextNormalizer();
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -578,9 +730,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export const claudeProvider: RuntimeProvider = new ClaudeProvider();
 export const piProvider: RuntimeProvider = new PiProvider();
 export const codexProvider: RuntimeProvider = new CodexProvider();
+export const codewhaleProvider: RuntimeProvider = new CodewhaleProvider();
+export const reasonixProvider: RuntimeProvider = new ReasonixProvider();
+export const crushProvider: RuntimeProvider = new CrushProvider();
 
 export const BRIDGE_PROVIDERS: Record<RuntimeProviderId, RuntimeProvider> = {
   claude: claudeProvider,
   pi: piProvider,
   codex: codexProvider,
+  codewhale: codewhaleProvider,
+  reasonix: reasonixProvider,
+  crush: crushProvider,
 };

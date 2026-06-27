@@ -583,6 +583,14 @@ async function parseStdoutEvents(
       continue;
     }
 
+    if (normalizer.rawText) {
+      // Plain-text provider — feed each line as-is; no JSON structure.
+      for (const event of normalizer.translate({ _raw: trimmed })) {
+        onEvent(event);
+      }
+      continue;
+    }
+
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
@@ -600,6 +608,13 @@ async function parseStdoutEvents(
     // system/assistant/result trio (pi, codex) translate here; claude is a
     // passthrough normalizer, so its behavior is unchanged.
     for (const event of normalizer.translate(parsed)) {
+      onEvent(event);
+    }
+  }
+
+  // Raw-text providers flush accumulated text at stream end.
+  if (normalizer.flush) {
+    for (const event of normalizer.flush()) {
       onEvent(event);
     }
   }

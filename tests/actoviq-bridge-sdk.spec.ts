@@ -14,6 +14,9 @@ const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
 const fakePiCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-pi-cli.mjs');
 const fakeCodexCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-codex-cli.mjs');
+const fakeCodewhaleCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-codewhale-cli.mjs');
+const fakeReasonixCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-reasonix-cli.mjs');
+const fakeCrushCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-crush-cli.mjs');
 const originalConfigDir = process.env.ACTOVIQ_CONFIG_DIR;
 
 afterEach(async () => {
@@ -727,6 +730,66 @@ describe('Actoviq Bridge SDK directCli: codex provider', () => {
       expect(result.isError).toBe(true);
       expect(result.subtype).toBe('error');
       expect(result.text).toContain('codex usage limit reached');
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('Actoviq Bridge SDK directCli: codewhale provider', () => {
+  it('spawns codewhale and normalizes the stream-json output', async () => {
+    const tempDir = await createTempDir('actoviq-codewhale-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codewhale',
+      executable: process.execPath,
+      cliPath: fakeCodewhaleCliPath,
+      workDir: tempDir,
+    });
+    try {
+      const result = await sdk.run('hello-codewhale');
+      expect(result.text).toBe('codewhale:hello-codewhale');
+      expect(result.isError).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
+  it('captures plain-text stdout and wraps it in a result', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+    });
+    try {
+      const result = await sdk.run('hello-reasonix');
+      expect(result.text).toBe('reasonix:hello-reasonix');
+      expect(result.isError).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('Actoviq Bridge SDK directCli: crush provider', () => {
+  it('captures plain-text stdout and wraps it in a result', async () => {
+    const tempDir = await createTempDir('actoviq-crush-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'crush',
+      executable: process.execPath,
+      cliPath: fakeCrushCliPath,
+      workDir: tempDir,
+    });
+    try {
+      const result = await sdk.run('hello-crush');
+      expect(result.text).toBe('crush:hello-crush');
+      expect(result.isError).toBe(false);
     } finally {
       await sdk.close();
     }
