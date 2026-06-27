@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -74,6 +75,16 @@ function getUserArgs(): string[] {
   return mainIndex >= 0 ? process.argv.slice(mainIndex + 1) : process.argv.slice(2);
 }
 
+function resolveIconPath(): string | undefined {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(dir, '../../../assets/actoviq-icon.png'), // dist/src/gui -> repo/assets
+    path.join(dir, '../../assets/actoviq-icon.png'), // src/gui (tsx) -> repo/assets
+    path.join(process.cwd(), 'assets', 'actoviq-icon.png'),
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
 async function createWindow(): Promise<void> {
   const args = parseActoviqGuiArgs(getUserArgs());
   if (args.version) {
@@ -105,6 +116,8 @@ async function createWindow(): Promise<void> {
 
   guiServer = await startActoviqGuiServer(args);
   installApplicationMenu();
+  app.setAppUserModelId('com.actoviq.gui');
+  const iconPath = resolveIconPath();
   const window = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -113,6 +126,7 @@ async function createWindow(): Promise<void> {
     title: 'Actoviq',
     backgroundColor: '#f3f3f3',
     show: false,
+    ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

@@ -15,8 +15,9 @@ This project is inspired by excellent agent projects and runtimes including Clau
 
 ## Highlights
 
-- **Model Team** — read-only advisory teams the agent invokes: `panel-analysis` (parallel investigation + optional primary-driven convergence) and `reviewer` (reports only verifiable issues); per-member independent provider config, $ENV_VAR apiKey resolution, global AgentPool
-- **Model Router** — a `/model` layer (not a team): classify each turn and route it to a different model/provider, then run normally; profiles in `~/.actoviq/routers/`
+- **Desktop GUI (`actoviq-gui`)** — an Electron chat UI: streamed transcript with markdown + copyable code, conversation history on resume, command palette, settings, and per-tool permission prompts. Security-hardened (loopback Host/Origin checks + per-process token + CSP)
+- **Model Team** — read-only advisory teams the agent invokes: `panel-analysis` (parallel investigation + optional primary-driven convergence) and `reviewer` (reports only verifiable issues). A centralized runtime (`src/team/teamRuntime.ts`) runs every member with a stable identity (id/name/role), streamed `TeamEvent`s, and structured `memberStatuses`; per-member provider config, $ENV_VAR apiKey resolution, global AgentPool
+- **Model Router / Leader-Dispatch** — a `/model` layer (not a team): a leader classifies each turn and dispatches it to the best specialist route (model/provider), then runs normally. Routes carry `role`/`description`, a built-in `dispatch` profile ships out of the box, profiles live in `~/.actoviq/routers/`, and the chosen executor may itself convene a team
 - **Dynamic Workflows** — JS script-based multi-agent orchestration with `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout, hooks for non-git VCS
 - **TavilySearch** — AI-optimized web search, pure TypeScript, auto key detection
@@ -124,6 +125,40 @@ Both CLIs share the same Hadamard SDK runtime defaults (Actoviq settings from `~
 By default, Hadamard SDK sessions are scoped to the current workspace under `~/.actoviq/projects/<workspace-key>`. Explicit `sessionDirectory` settings still take precedence.
 
 Model tiers are provider-neutral aliases. Configure them with `ACTOVIQ_DEFAULT_MIN_MODEL`, `ACTOVIQ_DEFAULT_MEDIUM_MODEL`, and `ACTOVIQ_DEFAULT_MAX_MODEL`, then use `min`, `medium`, or `max` anywhere a model can be selected.
+
+## Desktop GUI (`actoviq-gui`)
+
+A local Electron desktop chat UI for the Hadamard SDK.
+
+```bash
+npx actoviq-gui [work-dir] [options]
+
+# Options
+#   --port <port>              Internal port to bind (default: 4174, auto-fallback if busy)
+#   --config <path>            Load a specific Actoviq settings JSON file
+#   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
+#   --model <model>            Override the configured model
+#   --resume <session-id>      Resume a stored session
+#   --continue                 Resume the most recent stored session
+```
+
+It opens an Electron window backed by a localhost-only HTTP server. Features:
+
+- **Streamed transcript** with markdown rendering and copyable code blocks, plus live tool-call cards
+- **Conversation history on resume** — opening or switching a chat replays its stored messages
+- **Command palette + slash commands**, settings (provider / model / keys / appearance), workspace switching, and empty-chat cleanup
+- **Per-tool permission prompts** (queued so concurrent requests don't collide) and a token-usage readout
+
+**Security model:** the internal API is reachable only from loopback (Host + Origin allowlist, which defeats DNS-rebinding / CSRF) and requires a per-process token; the page ships a strict Content-Security-Policy. Electron runs with `sandbox`, `contextIsolation`, and no `nodeIntegration`.
+
+> `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime. The core SDK does not require them.
+
+## Developer notes
+
+- **Build before launching the CLIs/GUI:** `npm run build` (clean + `tsc`). Type-check only with `npm run typecheck`; run the suite with `npm test -- --run`.
+- **Team behavior is centralized:** extend teams through `src/team/teamRuntime.ts` (`runMemberAgent` / `buildMemberIdentities` / `preflightMember`) rather than duplicating per-mode logic. Observe a run via `team.ask(prompt, signal, { onEvent })` and inspect `result.memberStatuses` / `result.incompleteReason`.
+- **Router profiles are leader/dispatch configs:** a `RouterProfile` is a leader (`routerModel`) + a roster of specialist `routes` (each with `when` and optional `role` / `description`). `BUILT_IN_ROUTER_PROFILES` ships a ready-made `dispatch` profile; a user file of the same name in `.actoviq/routers/` shadows it.
+- **`CLAUDE.md` is intentionally git-ignored** in this repo — keep contributor-facing docs here in the README (or under `docs/`), not in `CLAUDE.md`.
 
 ## Tutorials
 

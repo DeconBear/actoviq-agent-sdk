@@ -94,7 +94,15 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="saveSettingsBtn"');
     expect(html).toContain('id="backToAppBtn"');
     expect(html).toContain('id="openLocationBtn"');
-    expect(html).toContain('id="abortBtn"');
+    // The command-palette / tools / abort (×) top-bar buttons were removed; the
+    // top bar now hosts a Git-tree button, and abort moved onto the send button.
+    expect(html).not.toContain('id="abortBtn"');
+    expect(html).not.toContain('id="commandPaletteBtn"');
+    expect(html).not.toContain('id="toolsBtn"');
+    expect(html).toContain('id="gitBtn"');
+    expect(html).toContain('id="contextMenu"');
+    expect(html).toContain('id="settingsGitTreeBtn"');
+    expect(html).toContain('class="brand"');
     expect(html.indexOf('id="insertCommand"')).toBeGreaterThan(html.indexOf('id="permissionSelect"'));
     expect(css).toContain('.sidebar');
     expect(css).toContain('.composer');
@@ -144,5 +152,17 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('newProjectSessionBtn');
     expect(js).toContain('completeSlash');
     expect(js).toContain('processQueue');
+    expect(js).toContain('/api/git');
+    expect(js).toContain('/api/session/delete');
+    expect(js).toContain('/api/project/forget');
+    expect(js).toContain('openGitSurface');
+    expect(js).toContain('showContextMenu');
+    expect(js).toContain('deleteChat');
+    expect(js).toContain('forgetWorkspace');
+    expect(js).toContain('updateSendButton');
+    expect(css).toContain('.context-menu');
+    expect(css).toContain('.git-section');
+    expect(css).toContain('.brand ');
+    expect(css).toContain('.settings-help-row');
   });
 });
