@@ -7,10 +7,12 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  createActoviqBridgeSdk,
   createActoviqCoreTools,
   createAgentSdk,
   createModelTeam,
   createTeamTool,
+  detectBridgeProviders,
   listRouterProfiles,
   listTeamDefinitions,
   listWorkflows,
@@ -22,6 +24,7 @@ import {
   resolveRoutedRun,
   WorktreeService,
 } from '../index.js';
+import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -37,6 +40,7 @@ import type {
   ActoviqRunEffort,
   ActoviqToolApprover,
   AgentEvent,
+  AgentRunResult,
   AgentToolDefinition,
   RouterProfile,
   TeamDefinition,
@@ -637,6 +641,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let eventSink: ((event: GuiRunEvent) => void) | null = null;
   const pendingPermissions = new Map<string, PendingPermission>();
 
+  // Bridge mode — toggles between in-process Hadamard SDK and spawn-based bridge.
+  let bridgeMode = false;
+  let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
+  let bridgeProviderLabel: string | null = null;
+
   // The project/plugin/empty-session scans walk every project on disk. Cache them
   // briefly (and invalidate on mutations) so `/api/state` is cheap on every turn.
   type HeavyState = {
@@ -812,6 +821,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         maxModel: env.ACTOVIQ_DEFAULT_MAX_MODEL ?? '',
         apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
+        bridge: store?.raw?.bridge ?? {},
       },
       running: Boolean(runAbort),
     };
@@ -848,6 +858,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const value = body[field].trim();
       if (value) env[key] = value;
       else delete env[key];
+    }
+
+    // Bridge settings: write per-provider paths + default provider.
+    if (isPlainRecord(body.bridge)) {
+      raw.bridge = { ...(isPlainRecord(raw.bridge) ? raw.bridge : {}), ...body.bridge };
     }
 
     const preferences = isPlainRecord(body.preferences)
@@ -1224,15 +1239,39 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           send({ type: 'notice', message: `router classification failed: ${(error as Error).message}` });
         }
       }
-      const stream = session.stream(input, {
-        systemPrompt,
-        signal: runAbort.signal,
-        permissionMode: currentPermissionMode(),
-        effort: currentEffort(),
-        approver,
-        ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
-        ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
-      });
+      let stream: AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> };
+      let runModel = routed?.model ?? options.model ?? 'bridge';
+      if (bridgeMode) {
+        // Lazily create the bridge client on first bridge run.
+        if (!bridgeClient) {
+          const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+          const bridgeCfg: Record<string, unknown> = (store?.raw?.bridge as Record<string, unknown>) ?? {};
+          const provider = (typeof bridgeCfg.defaultProvider === 'string' ? bridgeCfg.defaultProvider : 'claude');
+          bridgeProviderLabel = provider;
+          bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: provider as any, workDir });
+          const mp = (provider as string)[0]?.toUpperCase() + (provider as string).slice(1);
+          runModel = `${mp} Code`;
+          send({ type: 'notice', message: `bridge -> ${provider} (${runModel})` });
+        }
+        const runId = `bridge-${Date.now()}`;
+        const bs = bridgeClient.stream(input, {
+          signal: runAbort.signal,
+          model: options.model,
+          systemPrompt,
+          appendSystemPrompt: undefined,
+        });
+        stream = adaptBridgeRun(bs, bs.result, runId, runModel);
+      } else {
+        stream = session.stream(input, {
+          systemPrompt,
+          signal: runAbort.signal,
+          permissionMode: currentPermissionMode(),
+          effort: currentEffort(),
+          approver,
+          ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
+          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+        });
+      }
       for await (const event of stream) {
         forwardAgentEvent(event, send);
         if (event.type === 'response.text.delta' && event.delta) streamedTextSeen = true;
@@ -1240,10 +1279,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
-      toolMetadata = await sdk.listToolMetadata();
+      if (!bridgeMode) {
+        toolMetadata = await sdk.listToolMetadata();
+      }
       invalidateHeavyState();
+      // Persist bridge turn to the chat transcript so it survives reload.
+      if (bridgeMode && result.text) {
+        await session.appendMessages([
+          { role: 'user', content: input },
+          { role: 'assistant', content: result.text },
+        ]).catch(() => undefined);
+      }
       send({ type: 'state', state: await state() });
-      send({ type: 'done', usage: result.usage });
+      send({ type: 'done', usage: (result as any).usage });
     } catch (error) {
       const err = error as Error;
       send({ type: 'error', message: runAbort?.signal.aborted ? 'interrupted' : err.message });
@@ -1394,6 +1442,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'GET' && url.pathname === '/api/session/messages') return json(res, 200, { messages: renderableHistory(session) });
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         return json(res, 200, await saveSettings(await readJson(req)));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
+        return json(res, 200, { providers: await detectBridgeProviders() });
       }
       if (req.method === 'POST' && url.pathname === '/api/open-location') {
         openPathInSystem(workDir);
@@ -1717,6 +1768,7 @@ export function createActoviqGuiHtml(): string {
         <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
         <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
         <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
+        <button type="button" class="settings-tab" data-settings-tab="bridge"><span class="settings-icon">${guiIcon('hooks')}</span>Bridge</button>
       </section>
     </aside>
     <form id="settingsForm" class="settings-main">
@@ -1915,6 +1967,17 @@ export function createActoviqGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="worktree">
         <h1>Worktrees</h1>
         <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
+      </section>
+      <section class="settings-panel" data-settings-panel="bridge">
+        <h1>Bridge runtimes</h1>
+        <p>Spawn a locally installed agent CLI (claude / pi / codex) directly instead of the in-process Hadamard SDK. Each provider is auto-detected on PATH; you can also set explicit paths and pick a default.</p>
+        <div class="settings-group" id="bridgeDetected"><button type="button" id="settingsBridgeDetectBtn" class="secondary-btn">Detect runtimes</button></div>
+        <div class="settings-group">
+          <label>Default provider<select id="settingsBridgeDefault"><option value="">claude</option></select></label>
+          <label>Claude Code path<input id="settingsBridgeClaudePath" placeholder="auto-detected on PATH" autocomplete="off"></label>
+          <label>pi path<input id="settingsBridgePiPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
+          <label>codex path<input id="settingsBridgeCodexPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
+        </div>
       </section>
       <div class="settings-savebar">
         <span id="settingsStatus" class="muted"></span>
@@ -3273,10 +3336,29 @@ function showNextPermission() {
 }
 function setField(id, value) { el(id).value = value == null ? '' : String(value); }
 function setChecked(id, value) { el(id).checked = Boolean(value); }
+async function refreshBridgeDetect() {
+  const el = document.getElementById('bridgeDetected');
+  if (!el) return;
+  el.innerHTML = '<span class="muted">Detecting...</span>';
+  try {
+    const res = await api('/api/bridge/detect');
+    const data = await res.json();
+    const providers = data.providers || [];
+    let html = '';
+    for (const p of providers) {
+      const mark = p.available ? '✔' : '✘';
+      const ver = p.version ? ' v' + p.version : '';
+      const path = p.path ? ' · ' + p.path : '';
+      html += \`<p class="bridge-provider"><strong>\${p.id}</strong> \${mark}\${ver}\${path}</p>\`;
+    }
+    el.innerHTML = html || '<p class="muted">No providers detected.</p>';
+  } catch { el.innerHTML = '<p class="muted">Detection failed.</p>'; }
+}
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
+  if (tab === 'bridge') refreshBridgeDetect().catch(() => undefined);
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
@@ -3306,6 +3388,11 @@ async function openSettings(tab = 'general') {
   setField('settingsDensity', preferences.density || 'comfortable');
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
+  const bridge = settings.bridge || {};
+  setField('settingsBridgeDefault', bridge.defaultProvider || '');
+  setField('settingsBridgeClaudePath', (bridge.providers?.claude?.path) || '');
+  setField('settingsBridgePiPath', (bridge.providers?.pi?.path) || '');
+  setField('settingsBridgeCodexPath', (bridge.providers?.codex?.path) || '');
   el('settingsStatus').textContent = '';
   renderSettingsCommandPanels();
   el('settingsModal').classList.remove('hidden');
@@ -3340,6 +3427,14 @@ async function saveSettings(event) {
       density: el('settingsDensity').value,
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
+    },
+    bridge: {
+      defaultProvider: el('settingsBridgeDefault').value || undefined,
+      providers: {
+        claude: { path: el('settingsBridgeClaudePath').value || undefined },
+        pi: { path: el('settingsBridgePiPath').value || undefined },
+        codex: { path: el('settingsBridgeCodexPath').value || undefined },
+      },
     },
   };
   const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -3488,6 +3583,7 @@ el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsComman
 el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
+el('settingsBridgeDetectBtn').addEventListener('click', () => { refreshBridgeDetect().catch(console.error); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 document.addEventListener('click', hideContextMenu);
 document.addEventListener('contextmenu', (event) => {

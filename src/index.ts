@@ -3,6 +3,11 @@
   getLoadedJsonConfig,
   loadJsonConfigFile,
 } from './config/loadJsonConfigFile.js';
+export {
+  resolveActoviqSettingsStore,
+  persistActoviqSettingsStore,
+  getDefaultActoviqSettingsPath,
+} from './config/actoviqSettingsStore.js';
 export { mapActoviqEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
 export {
   ActoviqBuddyApi,
@@ -322,6 +327,9 @@ export {
   getActoviqBridgeSessionMessages,
   listActoviqBridgeSessions,
 } from './parity/actoviqTranscripts.js';
+export {
+  detectBridgeProviders,
+} from './parity/bridgeProviders.js';
 
 export type * from './types.js';
 

@@ -7,9 +7,12 @@ import process from 'node:process';
 import {
   analyzeActoviqBridgeEvents,
   createActoviqBridgeSdk,
+  detectBridgeProviders,
   getActoviqBridgeTextDelta,
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
+  persistActoviqSettingsStore,
+  resolveActoviqSettingsStore,
 } from 'actoviq-agent-sdk';
 
 const WORKSPACE_PATH = process.cwd();
@@ -52,7 +55,7 @@ async function main(): Promise<void> {
     configSource = '~/.actoviq/settings.json';
   }
 
-  const sdk = await createActoviqBridgeSdk({
+  let sdk = await createActoviqBridgeSdk({
     workDir: WORKSPACE_PATH,
     tools: 'default',
     maxTurns: 32,
@@ -61,12 +64,19 @@ async function main(): Promise<void> {
     includePartialMessages: true,
   });
 
-  const runtime = await sdk.getRuntimeInfo({
-    workDir: WORKSPACE_PATH,
-    maxTurns: 2,
-  });
+  async function recreateBridgeSdk(): Promise<void> {
+    await sdk.close().catch(() => undefined);
+    sdk = await createActoviqBridgeSdk({
+      workDir: WORKSPACE_PATH,
+      tools: 'default',
+      maxTurns: 32,
+      permissionMode: 'bypassPermissions',
+      dangerouslySkipPermissions: true,
+      includePartialMessages: true,
+    });
+  }
 
-  const session = await sdk.createSession({
+  let session = await sdk.createSession({
     title: 'Interactive Agent Example',
     workDir: WORKSPACE_PATH,
     tools: 'default',
@@ -82,15 +92,89 @@ async function main(): Promise<void> {
     terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   });
 
-  console.log('Actoviq interactive agent example');
+  console.log('Actoviq Bridge — interactive agent');
   console.log(`Workspace: ${WORKSPACE_PATH}`);
-  console.log(`Config source: ${configSource}`);
-  console.log(`Runtime model: ${runtime.model ?? 'unknown-model'}`);
-  console.log(`Built-in tools: ${runtime.tools.join(', ')}`);
-  console.log(`Skills: ${runtime.skills.join(', ')}`);
-  console.log(`Agents: ${runtime.agents.join(', ')}`);
-  console.log('Type your prompt and press Enter.');
-  console.log('Use exit, quit, /exit, or :q to leave.');
+  console.log(`Config:    ${configSource}`);
+  console.log('');
+
+  // Show which runtimes are detected (non-blocking — probe if config is loaded).
+  const detections = await detectBridgeProviders();
+  for (const d of detections) {
+    const mark = d.available ? '✔' : '✘';
+    console.log(`  ${mark} ${d.id.padEnd(8)} ${d.version ?? 'not found'}`);
+  }
+  console.log('');
+  console.log('Commands: /bridge (configure runtimes), /providers (re-detect)');
+  console.log('Type a prompt and press Enter. Use exit, quit, /exit, or :q to leave.');
+
+  // --- slash-command handlers (closures over the mutable sdk/session + rl) ---
+
+  async function cmdProviders(): Promise<void> {
+    console.log('');
+    const results = await detectBridgeProviders();
+    for (const d of results) {
+      const mark = d.available ? '✔' : '✘';
+      const ver = d.version ? ` v${d.version}` : ' not found';
+      const pathHint = d.path ? ` → ${d.path}` : '';
+      console.log(`  ${mark} ${d.id.padEnd(8)} ${ver}${pathHint}`);
+    }
+  }
+
+  async function cmdBridge(): Promise<void> {
+    const results = await detectBridgeProviders();
+    console.log('');
+    for (let i = 0; i < results.length; i++) {
+      const d = results[i]!;
+      const mark = d.available ? '✔' : '✘';
+      const pathHint = d.path ? ` (${d.path})` : '';
+      const verHint = d.version ? ` v${d.version}` : ' not found';
+      console.log(`  [${i + 1}] ${d.id}  ${mark}${verHint}${pathHint}`);
+    }
+
+    const choice = await rl.question('\nSelect default provider (1-3, Enter to skip)> ');
+    const idx = parseInt(choice, 10);
+    if (idx < 1 || idx > 3) return;
+
+    const provider = results[idx - 1]!;
+    const store = await resolveActoviqSettingsStore();
+    const raw: Record<string, unknown> = structuredClone(store.raw);
+    const bridge: Record<string, unknown> = (raw.bridge as Record<string, unknown>) ?? {};
+    bridge.defaultProvider = provider.id;
+    raw.bridge = bridge;
+    await persistActoviqSettingsStore(store.configPath, raw);
+    await loadJsonConfigFile(store.configPath);
+
+    const pathOverride = await rl.question(
+      `Executable path for ${provider.id} (Enter to use auto-detection)> `,
+    );
+    if (pathOverride.trim()) {
+      const store2 = await resolveActoviqSettingsStore();
+      const raw2: Record<string, unknown> = structuredClone(store2.raw);
+      const bridge2: Record<string, unknown> = (raw2.bridge as Record<string, unknown>) ?? {};
+      const providers: Record<string, unknown> = (bridge2.providers as Record<string, unknown>) ?? {};
+      providers[provider.id] = { ...(providers[provider.id] as Record<string, unknown> ?? {}), path: pathOverride.trim() };
+      bridge2.providers = providers;
+      raw2.bridge = bridge2;
+      await persistActoviqSettingsStore(store2.configPath, raw2);
+      await loadJsonConfigFile(store2.configPath);
+    }
+
+    await recreateBridgeSdk();
+    session = await sdk.createSession({
+      title: 'Interactive Agent Example',
+      workDir: WORKSPACE_PATH,
+      tools: 'default',
+      maxTurns: 32,
+      permissionMode: 'bypassPermissions',
+      dangerouslySkipPermissions: true,
+      includePartialMessages: true,
+    });
+
+    console.log(`\n✓ Default provider set to ${provider.id}. Session recreated.\n`);
+    await cmdProviders();
+  }
+
+  // --- input loop ---
 
   try {
     while (true) {
@@ -108,6 +192,16 @@ async function main(): Promise<void> {
 
       if (shouldExit(prompt)) {
         break;
+      }
+
+      // Dispatch slash commands before treating as a normal prompt.
+      if (prompt.startsWith('/bridge')) {
+        await cmdBridge();
+        continue;
+      }
+      if (prompt.startsWith('/providers')) {
+        await cmdProviders();
+        continue;
       }
 
       const stream = session.stream(prompt);
