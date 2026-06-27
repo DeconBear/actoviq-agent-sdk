@@ -32,6 +32,54 @@ export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 
 没有这个 bundle，actoviq-bridge-sdk 功能将不可用。
 
+> **注意（原生 exe 形态的 Claude Code）：** 新版 `@anthropic-ai/claude-code`
+> 以原生可执行文件发布（`bin/claude.exe`），包内**没有** `runtime.bundle.br`，
+> `actoviq-link-runtime` 对它无法生效。此时请改用下面的 **directCli 模式**，
+> 它直接 spawn 本机 `claude` 二进制，不需要 bundle。
+
+## 1.1 直接复用本机 Claude Code（directCli 模式）
+
+如果你已在 PATH 上装好 Claude Code，可以跳过 bundle，直接让 bridge
+spawn 本机的 `claude`：
+
+```ts
+import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+
+const sdk = await createActoviqBridgeSdk({
+  directCli: true,           // spawn 本机 claude，绕过 runtime.bundle.br + Bun
+  // executable: 'claude',   // 可选，默认在 PATH 上找 `claude`
+  workDir: process.cwd(),
+});
+
+const result = await sdk.run('用一句话总结当前目录。');
+```
+
+directCli 模式的工作方式（与 multica daemon 的 "shell out by name" 一致）：
+bridge 在 PATH 上找到 `claude`，以 `-p --output-format stream-json --verbose …`
+参数 spawn 它，并解析标准 `system/assistant/result` 事件流——与 bundle 模式
+的协议完全相同，只是子进程换成了你本机安装的官方 claude。
+
+**Provider 隔离（关键能力）：** directCli 模式**完整保留** actoviq 的 env
+注入链（`~/.actoviq/settings.json` 的 `env` 块 → `ANTHROPIC_BASE_URL` /
+`ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` 等，见 `anthropicEnvMapping.ts`）。
+因此你可以让 **交互式 `claude` 走 Claude 官方，而 bridge 下的 `claude` 子进程
+重定向到 DeepSeek 等其他 provider**——子进程的 `ANTHROPIC_*` 环境变量覆盖
+`~/.claude/settings.json`，两者互不干扰。例：
+
+```json
+// ~/.actoviq/settings.json（仅影响 bridge 子进程，不影响交互式 claude）
+{
+  "env": {
+    "ACTOVIQ_AUTH_TOKEN": "sk-...",
+    "ACTOVIQ_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ACTOVIQ_DEFAULT_MAX_MODEL": "deepseek-v4-pro"
+  }
+}
+```
+
+> 提示：若你的 PowerShell 当前 shell 已 `ANTHROPIC_API_KEY` 指向 Claude 官方，
+> 且 settings.json 未配凭证，子进程会回退到该值——请把 provider 配置写全。
+
 ## 2. bridge 是什么
 
 bridge 可以理解成一层兼容适配层。它暴露的是更偏 runtime 风格的执行路径。
