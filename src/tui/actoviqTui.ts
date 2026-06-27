@@ -1990,15 +1990,88 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             return;
           }
           if (args === 'help' || !args) {
+            // Interactive panel — show all providers + actions.
+            const statuses = await detectBridgeProviders();
+            const defaultId = bridgeProviderLabel ?? 'claude';
+            const currentModel = bridgeModelLabel ?? 'session default';
+            const statusLines = statuses.map(d => {
+              const mark = d.available ? `${A.green}✔${A.reset}` : `${A.red}✘${A.reset}`;
+              const star = d.id === defaultId ? ' *' : '';
+              const ver = d.version ? ` ${A.dim}v${d.version}${A.reset}` : '';
+              const path = d.path ? ` ${A.dim}${d.path}${A.reset}` : '';
+              return `${mark} ${d.id}${star}${ver}${path}`;
+            });
+
             appendStatic([
-              ...formatInfoLine('/bridge sub-commands:'),
-              `  ${A.dim}run <prompt>${A.reset}  — run a bridge turn with the configured provider`,
-              `  ${A.dim}switch <id>${A.reset} — switch default provider (claude/pi/codex/codewhale/reasonix/crush)`,
-              `  ${A.dim}model [id]${A.reset} — set the model for the current bridge provider`,
-              `  ${A.dim}setup${A.reset}      — detect runtimes and pick a default`,
-              `  ${A.dim}off${A.reset}        — disable bridge mode, back to in-process SDK`,
+              `Bridge${bridgeMode ? ` ${A.green}(active)${A.reset}` : ` ${A.dim}(idle)${A.reset}`}`,
+              `  Provider: ${A.bold}${defaultId}${A.reset}  ·  Model: ${A.dim}${currentModel}${A.reset}`,
+              '',
+              ...statusLines,
               '',
             ]);
+
+            const choice = await selectItem({
+              title: 'Bridge',
+              subtitle: `Provider: ${defaultId}  ·  Model: ${currentModel}`,
+              searchable: false,
+              items: [
+                { id: 'run', label: '▶ Run', description: 'type a prompt and run it through the bridge CLI' },
+                { id: 'switch', label: '⇄ Switch provider', description: 'pick a different runtime' },
+                { id: 'model', label: '◈ Model', description: `change model (current: ${currentModel})` },
+                { id: 'detect', label: '↻ Detect runtimes', description: 're-scan PATH for installed CLIs' },
+                { id: 'setup', label: '⚙ Setup wizard', description: 'one-step detect + configure' },
+                ...(bridgeMode ? [{ id: 'off', label: '■ Disable bridge', description: 'back to in-process SDK' }] : []),
+                { id: 'help', label: '? Help', description: 'show all /bridge sub-commands' },
+              ],
+            });
+
+            if (!choice) return;
+            if (choice === 'run') {
+              const task = await promptText({ title: 'Bridge run', label: 'Prompt' });
+              if (task?.trim()) {
+                appendStatic([...formatInfoLine(`/bridge run ${task.trim()}`), '']);
+                await runBridgePrompt(task.trim());
+              }
+              return;
+            }
+            if (choice === 'switch') {
+              const providerItems = statuses.map(d => ({
+                id: `s:${d.id}`,
+                label: d.id,
+                description: d.available ? (d.version ?? 'detected') : 'not found',
+              }));
+              const provider = await selectItem({ title: 'Switch bridge provider', searchable: false, items: providerItems });
+              if (provider) await switchBridgeProvider(provider.slice(2));
+              return;
+            }
+            if (choice === 'model') { await selectBridgeModel(); return; }
+            if (choice === 'detect') {
+              const refreshed = await detectBridgeProviders();
+              appendStatic(['', ...refreshed.map(d => `${d.available ? '✔' : '✘'} ${d.id} ${d.version ?? ''}`), '']);
+              return;
+            }
+            if (choice === 'setup') { await configureBridgeSettings(); return; }
+            if (choice === 'off') {
+              bridgeMode = false;
+              await bridgeClient?.close().catch(() => undefined);
+              bridgeClient = null;
+              bridgeProviderLabel = null;
+              bridgeModelLabel = null;
+              appendStatic([...formatInfoLine('bridge mode disabled'), '']);
+              return;
+            }
+            if (choice === 'help') {
+              appendStatic([
+                ...formatInfoLine('/bridge sub-commands:'),
+                `  ${A.dim}run <prompt>${A.reset}  — run a bridge turn`,
+                `  ${A.dim}switch <id>${A.reset} — switch default provider`,
+                `  ${A.dim}model [id]${A.reset} — set model for current provider`,
+                `  ${A.dim}setup${A.reset}      — one-step detect + configure`,
+                `  ${A.dim}off${A.reset}        — disable bridge mode`,
+                '',
+              ]);
+              return;
+            }
             return;
           }
           await configureBridgeSettings();
