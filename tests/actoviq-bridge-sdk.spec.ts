@@ -499,3 +499,86 @@ describe('Actoviq Runtime SDK bridge', () => {
     }
   });
 });
+
+// directCli mode spawns a locally installed agent CLI (e.g. `claude`) directly,
+// bypassing the vendored runtime.bundle.br + Bun wrapper, while keeping the
+// ANTHROPIC_* env-injection chain intact so a direct run can target a
+// non-Claude provider (e.g. DeepSeek) without touching interactive Claude Code.
+describe('Actoviq Bridge SDK directCli mode', () => {
+  it('spawns the executable directly without a cliPath arg, and inherits env values', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-');
+    const configPath = path.join(tempDir, 'bridge-config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({ ACTOVIQ_AUTH_TOKEN: 'fixture-token' }),
+      'utf8',
+    );
+
+    await loadJsonConfigFile(configPath);
+    // executable = the fake CLI via node; cliPath is ignored in directCli mode
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('hello-direct');
+
+      expect(result.text).toBe('echo:hello-direct;agent:inherit');
+      // env injection still works in directCli mode
+      expect(result.initEvent?.env_token).toBe('fixture-token');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('redirects the spawned process to a non-Claude provider via ANTHROPIC_* env', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-provider-');
+    const configPath = path.join(tempDir, 'bridge-config.json');
+    // DeepSeek's Anthropic-compatible endpoint — proves directCli mode keeps
+    // the env-injection chain that lets bridge target a different provider
+    // from the user's interactive Claude Code.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        ACTOVIQ_AUTH_TOKEN: 'sk-deepseek-fixture',
+        ACTOVIQ_BASE_URL: 'https://api.deepseek.com/anthropic',
+      }),
+      'utf8',
+    );
+
+    await loadJsonConfigFile(configPath);
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('provider-check');
+
+      expect(result.initEvent?.anthropic_base_url).toBe('https://api.deepseek.com/anthropic');
+      expect(result.initEvent?.anthropic_auth_token).toBe('sk-deepseek-fixture');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('errors clearly when directCli has no claude on PATH and no executable', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-missing-');
+    // A PATH with no `claude` binary — directCli must refuse rather than
+    // fall back to the vendored bundle.
+    const originalPath = process.env.PATH;
+    process.env.PATH = tempDir;
+    try {
+      await expect(
+        createActoviqBridgeSdk({ directCli: true, workDir: tempDir }),
+      ).rejects.toThrow(/claude.*executable.*PATH/i);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});

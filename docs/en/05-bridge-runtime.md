@@ -32,6 +32,57 @@ export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 
 Without this bundle, actoviq-bridge-sdk features will not work.
 
+> **Note (native-exe Claude Code):** newer `@anthropic-ai/claude-code` ships
+> as a native executable (`bin/claude.exe`) with **no** `runtime.bundle.br`
+> inside the package, so `actoviq-link-runtime` cannot link it. Use the
+> **directCli mode** below instead — it spawns your local `claude` binary
+> directly and needs no bundle.
+
+## 1.1. Reusing the local Claude Code directly (directCli mode)
+
+If Claude Code is installed on your PATH, you can skip the bundle and have
+the bridge spawn your local `claude` directly:
+
+```ts
+import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+
+const sdk = await createActoviqBridgeSdk({
+  directCli: true,           // spawn the local claude, bypassing runtime.bundle.br + Bun
+  // executable: 'claude',   // optional; defaults to `claude` found on PATH
+  workDir: process.cwd(),
+});
+
+const result = await sdk.run('Summarize the current directory in one sentence.');
+```
+
+This works like multica's "shell out by name": the bridge locates `claude` on
+PATH, spawns it with `-p --output-format stream-json --verbose …`, and parses
+the same `system/assistant/result` event stream as the bundle path — only the
+child process is your installed official claude instead of the vendored bundle.
+
+**Provider isolation (key capability):** directCli mode **fully preserves**
+actoviq's env-injection chain (`~/.actoviq/settings.json` → `ANTHROPIC_BASE_URL`
+/ `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`, see `anthropicEnvMapping.ts`). So
+you can keep your **interactive `claude` on Claude official while the bridge's
+`claude` child redirects to DeepSeek or another provider** — the child's
+`ANTHROPIC_*` env overrides `~/.claude/settings.json`, and the two never
+interfere. Example:
+
+```json
+// ~/.actoviq/settings.json (affects only the bridge child, not interactive claude)
+{
+  "env": {
+    "ACTOVIQ_AUTH_TOKEN": "sk-...",
+    "ACTOVIQ_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ACTOVIQ_DEFAULT_MAX_MODEL": "deepseek-v4-pro"
+  }
+}
+```
+
+> Tip: if your current shell has `ANTHROPIC_API_KEY` set to Claude official and
+> settings.json provides no credential, the child falls back to that value —
+> configure the provider fully.
+
 ## 2. What bridge means
 
 The actoviq-bridge-sdk is a compatibility layer that exposes a runtime-oriented execution path from the current package.

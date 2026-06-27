@@ -178,6 +178,29 @@ async function resolveActoviqRuntimeCliPath(explicitPath?: string): Promise<stri
   return resolved;
 }
 
+/**
+ * Resolve the executable for direct-CLI mode (e.g. a locally installed
+ * `claude` on PATH). Unlike the vendored bundle path, this never touches Bun
+ * or `runtime.bundle.br` — it just locates a runnable agent CLI binary.
+ */
+async function resolveDirectCliExecutable(explicitPath?: string): Promise<string> {
+  if (explicitPath) {
+    if (!(await isExecutable(explicitPath))) {
+      throw new ActoviqBridgeProcessError(
+        `The configured executable was not found or is not executable: ${explicitPath}`,
+      );
+    }
+    return explicitPath;
+  }
+  const pathCandidate = await findExecutableOnPath('claude');
+  if (pathCandidate) {
+    return pathCandidate;
+  }
+  throw new ActoviqBridgeProcessError(
+    'No "claude" executable was found on PATH. Install Claude Code (@anthropic-ai/claude-code) or pass { executable } explicitly.',
+  );
+}
+
 function stringifyCliValue(value: string | Record<string, unknown>): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
@@ -1236,6 +1259,7 @@ export class ActoviqBridgeSdkClient {
   private constructor(
     private readonly executable: string,
     private readonly cliPath: string,
+    private readonly directCli: boolean,
     private readonly defaults: CreateActoviqBridgeSdkOptions,
   ) {
     this.sessions = new ActoviqBridgeSessionsApi(this);
@@ -1254,9 +1278,20 @@ export class ActoviqBridgeSdkClient {
   }
 
   static async create(options: CreateActoviqBridgeSdkOptions = {}): Promise<ActoviqBridgeSdkClient> {
+    if (options.directCli) {
+      const executable = await resolveDirectCliExecutable(options.executable);
+      // cliPath is retained so a node+script pair works too, but left empty for
+      // a plain binary executable (real `claude` on PATH).
+      const cliPath = options.cliPath ?? '';
+      return new ActoviqBridgeSdkClient(executable, cliPath, true, {
+        ...options,
+        executable: undefined,
+        cliPath: undefined,
+      });
+    }
     const executable = await resolveBunExecutable(options.executable);
     const cliPath = await resolveActoviqRuntimeCliPath(options.cliPath);
-    return new ActoviqBridgeSdkClient(executable, cliPath, {
+    return new ActoviqBridgeSdkClient(executable, cliPath, false, {
       ...options,
       executable: undefined,
       cliPath: undefined,
@@ -1562,7 +1597,10 @@ export class ActoviqBridgeSdkClient {
       childEnv.USE_BUILTIN_RIPGREP = '0';
     }
 
-    const child = spawn(merged.executable ?? this.executable, [merged.cliPath ?? this.cliPath, ...rawArgs], {
+    const spawnArgs = this.directCli
+      ? (this.cliPath ? [this.cliPath, ...rawArgs] : rawArgs)
+      : [merged.cliPath ?? this.cliPath, ...rawArgs];
+    const child = spawn(merged.executable ?? this.executable, spawnArgs, {
       cwd: merged.workDir ?? this.defaults.workDir ?? process.cwd(),
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1635,7 +1673,10 @@ export class ActoviqBridgeSdkClient {
       childEnv.USE_BUILTIN_RIPGREP = '0';
     }
 
-    const args = [options.cliPath ?? this.cliPath, ...buildCliArgs(prompt, options)];
+    const cliArgs = buildCliArgs(prompt, options);
+    const args = this.directCli
+      ? (this.cliPath ? [this.cliPath, ...cliArgs] : cliArgs)
+      : [options.cliPath ?? this.cliPath, ...cliArgs];
     const child = spawn(options.executable ?? this.executable, args, {
       cwd: options.workDir ?? this.defaults.workDir ?? process.cwd(),
       env: childEnv,

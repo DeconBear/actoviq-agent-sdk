@@ -1999,6 +1999,15 @@ export interface ActoviqBridgeJsonEvent extends Record<string, unknown> {
 export interface CreateActoviqBridgeSdkOptions {
   executable?: string;
   cliPath?: string;
+  /**
+   * Spawn a locally installed agent CLI (e.g. `claude` on PATH) directly,
+   * bypassing the vendored `runtime.bundle.br` + Bun wrapper. When true,
+   * `executable` is the CLI to spawn (defaults to the `claude` found on PATH)
+   * and `cliPath` is ignored. The env-injection chain (ANTHROPIC_* mapping)
+   * is unchanged, so a direct run can still target a non-Claude provider
+   * (e.g. DeepSeek) without touching the user's interactive Claude Code.
+   */
+  directCli?: boolean;
   homeDir?: string;
   workDir?: string;
   model?: string;

@@ -66,6 +66,8 @@ emit({
   skills: ['debug', 'verify'],
   plugins: [{ name: 'fixture-plugin', source: 'builtin', path: '/plugins/fixture' }],
   env_token: envToken,
+  anthropic_base_url: process.env.ANTHROPIC_BASE_URL ?? undefined,
+  anthropic_auth_token: process.env.ANTHROPIC_AUTH_TOKEN ?? undefined,
 });
 
 const text =
