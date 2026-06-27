@@ -1994,7 +1994,7 @@ export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
  * `-p` stream-json protocol; `pi` and `codex` reuse the same spawn + JSONL
  * pipeline with their own wire protocols.
  */
-export type RuntimeProviderId = 'claude' | 'pi' | 'codex';
+export type RuntimeProviderId = 'claude' | 'pi' | 'codex' | 'codewhale' | 'reasonix' | 'crush';
 
 /** Result of `detectBridgeProviders()` — one entry per known provider. */
 export interface BridgeProviderDetection {

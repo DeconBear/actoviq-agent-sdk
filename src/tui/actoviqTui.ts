@@ -12,6 +12,7 @@ import path from 'node:path';
 import * as readline from 'node:readline';
 
 import {
+  createActoviqBridgeSdk,
   createActoviqCoreTools,
   createAgentSdk,
   detectBridgeProviders,
@@ -28,6 +29,7 @@ import {
   resolveRoutedRun,
   WorktreeService,
 } from '../index.js';
+import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -276,6 +278,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // /model router: when set, each user turn is classified and routed to a model.
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
+  // Bridge mode: when true, prompts spawn the configured bridge CLI instead of
+  // the in-process Hadamard SDK. Toggled via /bridge run / /bridge off.
+  let bridgeMode = false;
+  let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
+  let bridgeProviderLabel: string | null = null;
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
@@ -737,7 +744,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const modelLabel = activeRouter
       ? `router:${activeRouter.name}${routedModelLabel ? ` → ${routedModelLabel}` : ''}`
       : session.model;
-    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'} · `;
+    const bridgeTag = bridgeMode && bridgeProviderLabel ? ` · bridge:${bridgeProviderLabel}` : '';
+    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'}${bridgeTag} · `;
     return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
   }
 
@@ -1331,6 +1339,63 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
+  async function runBridgePrompt(prompt: string): Promise<void> {
+    if (!bridgeClient) {
+      const detections = await detectBridgeProviders();
+      const available = detections.filter(d => d.available);
+      if (available.length === 0) {
+        appendStatic([...formatErrorLine('No bridge runtimes detected. Run /bridge setup first.'), '']);
+        return;
+      }
+      const provider = (available[0] as { id: string }).id;
+      bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: provider as any, workDir: sdk.config.workDir });
+      bridgeProviderLabel = provider;
+      bridgeMode = true;
+      appendStatic([...formatInfoLine(`bridge started — provider: ${provider}`), '']);
+    }
+    appendStatic(formatUserPrompt(prompt));
+    commandBusy = true;
+    renderDynamic();
+    const runId = `tui-bridge-${Date.now()}`;
+    try {
+      const bs = bridgeClient.stream(prompt, { model: session.model });
+      const adapted = adaptBridgeRun(bs, bs.result, runId, bridgeProviderLabel ?? 'bridge');
+      for await (const event of adapted) {
+        handleAgentEvent(event);
+      }
+      const result = await adapted.result;
+      if (result.text) {
+        appendStatic(['', ...renderRichText(result.text, screen.width), '']);
+      }
+    } catch (error: any) {
+      appendStatic([...formatErrorLine(`bridge error: ${error.message}`), '']);
+    } finally {
+      commandBusy = false;
+      renderDynamic();
+    }
+  }
+
+  async function switchBridgeProvider(target: string): Promise<void> {
+    const valid = ['claude','pi','codex','codewhale','reasonix','crush'];
+    if (!valid.includes(target)) {
+      appendStatic([...formatErrorLine(`unknown provider: ${target}. Valid: ${valid.join(', ')}`), '']);
+      return;
+    }
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const raw = structuredClone(store.raw);
+    const bridge: Record<string, unknown> = (raw.bridge as Record<string, unknown>) ?? {};
+    bridge.defaultProvider = target;
+    raw.bridge = bridge;
+    await persistActoviqSettingsStore(store.configPath, raw);
+    await loadJsonConfigFile(store.configPath);
+    // Recreate bridge client if active.
+    await bridgeClient?.close().catch(() => undefined);
+    bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: target as any, workDir: sdk.config.workDir });
+    bridgeProviderLabel = target;
+    bridgeMode = true;
+    appendStatic([...formatInfoLine(`bridge switched to ${target}`), '']);
+  }
+
   async function chooseEffort(): Promise<void> {
     const selected = await selectItem({
       title: 'Select reasoning effort',
@@ -1813,6 +1878,40 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         case 'bridge': {
+          if (args === 'run' || args.startsWith('run ')) {
+            const bp = args.startsWith('run ') ? args.slice(4).trim() : '';
+            if (!bp) { appendStatic([...formatErrorLine('usage: /bridge run <prompt>'), '']); return; }
+            await runBridgePrompt(bp);
+            return;
+          }
+          if (args === 'switch' || args.startsWith('switch ')) {
+            const target = args.startsWith('switch ') ? args.slice(7).trim() : '';
+            await switchBridgeProvider(target);
+            return;
+          }
+          if (args === 'setup') {
+            await configureBridgeSettings();
+            return;
+          }
+          if (args === 'off') {
+            bridgeMode = false;
+            await bridgeClient?.close().catch(() => undefined);
+            bridgeClient = null;
+            bridgeProviderLabel = null;
+            appendStatic([...formatInfoLine('bridge mode disabled — back to in-process SDK'), '']);
+            return;
+          }
+          if (args === 'help' || !args) {
+            appendStatic([
+              ...formatInfoLine('/bridge sub-commands:'),
+              `  ${A.dim}run <prompt>${A.reset}  — run a bridge turn with the configured provider`,
+              `  ${A.dim}switch <id>${A.reset} — switch default provider (claude/pi/codex/codewhale/reasonix/crush)`,
+              `  ${A.dim}setup${A.reset}      — detect runtimes and pick a default`,
+              `  ${A.dim}off${A.reset}        — disable bridge mode, back to in-process SDK`,
+              '',
+            ]);
+            return;
+          }
           await configureBridgeSettings();
           return;
         }
