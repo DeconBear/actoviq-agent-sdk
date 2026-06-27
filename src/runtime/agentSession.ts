@@ -236,6 +236,22 @@ export class AgentSession {
     this.stored = updated;
   }
 
+  /**
+   * Append messages to the stored transcript without starting a new run.
+   * Used by the GUI bridge-run path to persist bridge turns into the
+   * hadamard chat transcript so they survive reload.
+   */
+  async appendMessages(messages: MessageParam[]): Promise<void> {
+    const updatedAt = new Date().toISOString();
+    const updated = {
+      ...this.stored,
+      messages: [...this.stored.messages, ...messages],
+      updatedAt,
+    };
+    await this.store.save(updated);
+    this.stored = updated;
+  }
+
   async mergeMetadata(metadata: Record<string, unknown>): Promise<void> {
     const updatedAt = new Date().toISOString();
     const updated = {

@@ -14,6 +14,7 @@ import * as readline from 'node:readline';
 import {
   createActoviqCoreTools,
   createAgentSdk,
+  detectBridgeProviders,
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
   listWorkflows,
@@ -1253,6 +1254,83 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
+  async function configureBridgeSettings(): Promise<void> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const raw = structuredClone(store.raw);
+    const bridge: Record<string, unknown> = (raw.bridge as Record<string, unknown>) ?? {};
+    let dirty = false;
+
+    const detections = await detectBridgeProviders();
+
+    while (true) {
+      const defaultLabel = (typeof bridge.defaultProvider === 'string' ? bridge.defaultProvider : 'claude');
+      const providerItems = detections.map((d) => ({
+        id: `provider:${d.id}`,
+        label: `${d.id}${d.available ? '' : ' (not found)'}`,
+        description: d.version ? `v${d.version}${d.path ? ` · ${d.path}` : ''}` : 'not detected',
+      }));
+      const selected = await selectItem({
+        title: 'Bridge runtime settings',
+        subtitle: store.configPath,
+        searchable: false,
+        items: [
+          { id: 'default', label: 'Default provider', description: defaultLabel },
+          ...providerItems,
+          { id: 'save', label: 'Save and apply', description: dirty ? 'Unsaved changes' : 'No changes' },
+          { id: 'cancel', label: 'Cancel' },
+        ],
+      });
+      if (!selected || selected === 'cancel') return;
+      if (selected === 'save') {
+        if (!dirty) {
+          appendStatic([...formatInfoLine('bridge settings unchanged'), '']);
+          return;
+        }
+        raw.bridge = bridge;
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        appendStatic([...formatInfoLine(`bridge settings saved: ${store.configPath}`), '']);
+        return;
+      }
+      if (selected === 'default') {
+        const providerChoices = detections.map((d) => ({
+          id: d.id,
+          label: d.id,
+          description: d.available ? (d.version ?? 'detected') : 'not found',
+        }));
+        const provider = await selectItem({
+          title: 'Select default bridge provider',
+          searchable: false,
+          items: providerChoices,
+        });
+        if (provider) {
+          bridge.defaultProvider = provider;
+          dirty = true;
+        }
+        continue;
+      }
+      if (selected.startsWith('provider:')) {
+        const pid = selected.slice('provider:'.length);
+        const providers: Record<string, unknown> = (bridge.providers as Record<string, unknown>) ?? {};
+        const entry: Record<string, unknown> = (providers[pid] as Record<string, unknown>) ?? {};
+        const pathInput = await promptText({
+          title: `Executable path for ${pid}`,
+          label: 'Path',
+          description: `Leave empty to auto-detect on PATH. Current: ${(entry.path as string) ?? 'auto'}`,
+          initial: (entry.path as string) ?? '',
+        });
+        if (pathInput !== undefined) {
+          if (pathInput.trim()) entry.path = pathInput.trim();
+          else delete entry.path;
+          providers[pid] = entry;
+          bridge.providers = providers;
+          dirty = true;
+        }
+        continue;
+      }
+    }
+  }
+
   async function chooseEffort(): Promise<void> {
     const selected = await selectItem({
       title: 'Select reasoning effort',
@@ -1732,6 +1810,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             return;
           }
           appendStatic([...formatInfoLine('usage: /worktree [enter <name>|exit|list]'), '']);
+          return;
+        }
+        case 'bridge': {
+          await configureBridgeSettings();
           return;
         }
         // ── v0.5.0: Model Team ───────────────────────────────────

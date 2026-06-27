@@ -18,18 +18,36 @@
  * deltas), so each provider hands back a fresh normalizer per run.
  */
 
+import { execFile } from 'node:child_process';
+
 import type {
   ActoviqBridgeJsonEvent,
   ActoviqBridgeRunOptions,
+  BridgeProviderDetection,
   RuntimeProviderId,
 } from '../types.js';
 
 import { ActoviqBridgeProcessError } from '../errors.js';
 import { mapActoviqEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
+import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   findExecutableOnPath,
   isExecutable,
+  IS_WINDOWS,
 } from './bridgeExecResolver.js';
+
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: Parameters<typeof execFile>[2],
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout: stdout as string, stderr: stderr as string });
+    });
+  });
+}
 
 /**
  * Per-run state + the translate step. `translate(rawLine)` returns the
@@ -49,6 +67,13 @@ export interface RuntimeProvider {
   readonly displayName: string;
 
   resolveExecutable(explicitPath?: string): Promise<string>;
+  /**
+   * Best-effort `<binary> --version` probe. Returns the version string on
+   * success, or `undefined` if the binary cannot be probed (missing, exits
+   * non-zero, hangs, etc.). Used by `detectBridgeProviders()` only — never on
+   * the run path.
+   */
+  probeVersion(executablePath: string): Promise<string | undefined>;
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[];
   /**
    * Build the child env. `settingsEnv` is the `~/.actoviq/settings.json` env
@@ -71,6 +96,17 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
   abstract readonly pathBinary: string;
   abstract readonly displayName: string;
 
+  /**
+   * Resolve the executable for a run. Precedence (all in-memory; mirrors
+   * `buildChildEnvironment` in actoviqBridgeSdk.ts — no file I/O here):
+   *   1. `explicitPath` arg (caller-supplied `{ executable }`)
+   *   2. `ACTOVIQ_<ID>_PATH` env var (top-level or `env:` block — both are
+   *      captured by `extractEnv` in loadJsonConfigFile.ts)
+   *   3. `raw.bridge.providers[id].path` from the loaded settings store
+   *   4. `findExecutableOnPath(this.pathBinary)` — the binary on PATH
+   *
+   * Mirrors the `ACTOVIQ_BASH_PATH` precedent in src/tools/bash/BashTool.ts.
+   */
   async resolveExecutable(explicitPath?: string): Promise<string> {
     if (explicitPath) {
       if (!(await isExecutable(explicitPath))) {
@@ -80,13 +116,56 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
       }
       return explicitPath;
     }
+
+    const envVar = `ACTOVIQ_${this.id.toUpperCase()}_PATH`;
+    const loaded = getLoadedJsonConfig();
+    const settingsEnvPath =
+      typeof loaded?.env?.[envVar] === 'string' ? loaded.env[envVar] : undefined;
+    const processEnvPath = process.env[envVar];
+    const envPath = settingsEnvPath ?? processEnvPath;
+    if (envPath) {
+      if (!(await isExecutable(envPath))) {
+        throw new ActoviqBridgeProcessError(
+          `${envVar} (${envPath}) was not found or is not executable.`,
+        );
+      }
+      return envPath;
+    }
+
+    const settingsBlockPath = readSettingsBlockPath(loaded?.raw, this.id);
+    if (settingsBlockPath) {
+      if (!(await isExecutable(settingsBlockPath))) {
+        throw new ActoviqBridgeProcessError(
+          `Configured ${this.id} bridge path (${settingsBlockPath}) was not found or is not executable.`,
+        );
+      }
+      return settingsBlockPath;
+    }
+
     const pathCandidate = await findExecutableOnPath(this.pathBinary);
     if (pathCandidate) {
       return pathCandidate;
     }
     throw new ActoviqBridgeProcessError(
-      `No "${this.pathBinary}" executable was found on PATH. Install ${this.displayName} or pass { executable } explicitly.`,
+      `No "${this.pathBinary}" executable was found on PATH. Install ${this.displayName}, set ${envVar}, or run \`/bridge\` to configure it.`,
     );
+  }
+
+  async probeVersion(executablePath: string): Promise<string | undefined> {
+    // Windows npm shims are `.cmd`/`.bat` and need a shell to run. Mirror the
+    // spawn shape used by actoviqBridgeSdk.ts:1536.
+    try {
+      const { stdout } = await execFileAsync(executablePath, ['--version'], {
+        shell: IS_WINDOWS && /\.(?:cmd|bat)$/i.test(executablePath),
+        windowsHide: true,
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
+      const trimmed = (stdout ?? '').trim();
+      return trimmed || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   abstract buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[];
@@ -113,7 +192,39 @@ export function bridgeEvent(
 
 let currentProvider: RuntimeProvider | undefined;
 
+/**
+ * Read the per-provider path override from the `bridge.providers[id].path`
+ * settings block (in-memory only — the caller persists via the settings store).
+ */
+function readSettingsBlockPath(
+  raw: Record<string, unknown> | null | undefined,
+  id: RuntimeProviderId,
+): string | undefined {
+  if (!raw) return undefined;
+  const bridge = (raw as { bridge?: unknown }).bridge;
+  if (!bridge || typeof bridge !== 'object') return undefined;
+  const providers = (bridge as { providers?: unknown }).providers;
+  if (!providers || typeof providers !== 'object') return undefined;
+  const entry = (providers as Record<string, unknown>)[id];
+  if (!entry || typeof entry !== 'object') return undefined;
+  const p = (entry as { path?: unknown }).path;
+  return typeof p === 'string' && p ? p : undefined;
+}
+
+/**
+ * The configured default provider, read from `bridge.defaultProvider` in the
+ * loaded settings store. Falls back to `'claude'`. Explicit
+ * `directCliProvider` (passed to `resolveProvider`) always wins over this.
+ */
 export function getDefaultProviderId(): RuntimeProviderId {
+  const raw = getLoadedJsonConfig()?.raw;
+  if (raw && typeof raw === 'object') {
+    const bridge = (raw as { bridge?: unknown }).bridge;
+    if (bridge && typeof bridge === 'object') {
+      const dp = (bridge as { defaultProvider?: unknown }).defaultProvider;
+      if (dp === 'claude' || dp === 'pi' || dp === 'codex') return dp;
+    }
+  }
   return 'claude';
 }
 
@@ -123,6 +234,38 @@ export function resolveProvider(id?: RuntimeProviderId): RuntimeProvider {
   if (resolved === 'pi') return piProvider;
   if (resolved === 'codex') return codexProvider;
   throw new ActoviqBridgeProcessError(`Unknown bridge provider: ${String(resolved)}`);
+}
+
+/**
+ * Probe the locally installed agent CLIs. Resolves each provider via the
+ * env/settings/PATH chain (so env overrides are honored) and best-effort
+ * `--version`. Never throws — a missing provider is reported as
+ * `available: false` with `path: undefined`.
+ */
+export async function detectBridgeProviders(): Promise<BridgeProviderDetection[]> {
+  const results: BridgeProviderDetection[] = [];
+  for (const provider of [claudeProvider, piProvider, codexProvider]) {
+    let path: string | undefined;
+    let available = false;
+    let version: string | undefined;
+    try {
+      path = await provider.resolveExecutable();
+      available = Boolean(path);
+      if (path) {
+        version = await provider.probeVersion(path);
+      }
+    } catch {
+      // Not installed / not configured — report unavailable.
+    }
+    results.push({
+      id: provider.id,
+      displayName: provider.displayName,
+      path,
+      available,
+      version,
+    });
+  }
+  return results;
 }
 
 /** Package-private seam for tests that need the ambient provider. */

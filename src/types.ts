@@ -1996,6 +1996,18 @@ export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
  */
 export type RuntimeProviderId = 'claude' | 'pi' | 'codex';
 
+/** Result of `detectBridgeProviders()` — one entry per known provider. */
+export interface BridgeProviderDetection {
+  id: RuntimeProviderId;
+  displayName: string;
+  /** Resolved path (if found), `undefined` if not installed/configured. */
+  path?: string;
+  /** `true` when the executable was resolved successfully. */
+  available: boolean;
+  /** Best-effort `--version` string, or `undefined` if probing failed. */
+  version?: string;
+}
+
 export interface ActoviqBridgeJsonEvent extends Record<string, unknown> {
   type: string;
   subtype?: string;

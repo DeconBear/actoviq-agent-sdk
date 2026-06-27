@@ -17,6 +17,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   workflows: 'Browse saved dynamic workflows',
   worktree: 'Enter, exit, or list git worktrees',
   team: 'List or run Model Team definitions',
+  bridge: 'Configure bridge runtimes (claude/pi/codex)',
   exit: 'Quit',
 };
 
