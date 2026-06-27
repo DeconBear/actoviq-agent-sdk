@@ -1,13 +1,19 @@
 ﻿import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
-import { access } from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
-import { mapActoviqEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
+import {
+  findExecutableOnPath,
+  findFirstExistingPath,
+  isExecutable,
+  IS_WINDOWS,
+  pathExists,
+} from './bridgeExecResolver.js';
+import type { BridgeEventNormalizer, RuntimeProvider } from './bridgeProviders.js';
+import { resolveProvider } from './bridgeProviders.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { ActoviqBridgeProcessError, RunAbortedError } from '../errors.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
@@ -41,74 +47,9 @@ import {
 } from './actoviqTranscripts.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const IS_WINDOWS = process.platform === 'win32';
 
 function isAbortErrorLike(error: unknown): boolean {
   return error instanceof RunAbortedError || (error instanceof Error && error.name === 'AbortError');
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, fsConstants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function isExecutable(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, IS_WINDOWS ? fsConstants.F_OK : fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function splitPathEnv(pathValue: string | undefined): string[] {
-  if (!pathValue) {
-    return [];
-  }
-  return pathValue.split(path.delimiter).filter(Boolean);
-}
-
-async function findExecutableOnPath(name: string): Promise<string | undefined> {
-  const pathDirectories = splitPathEnv(process.env.PATH);
-  const extensions = IS_WINDOWS
-    ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
-        .split(';')
-        .filter(Boolean)
-    : [''];
-
-  for (const directory of pathDirectories) {
-    const directCandidate = path.join(directory, name);
-    if (!IS_WINDOWS && (await isExecutable(directCandidate))) {
-      return directCandidate;
-    }
-
-    for (const extension of extensions) {
-      const candidate = directCandidate.endsWith(extension.toLowerCase())
-        ? directCandidate
-        : `${directCandidate}${extension.toLowerCase()}`;
-      if (await isExecutable(candidate)) {
-        return candidate;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-async function findFirstExistingPath(candidates: string[]): Promise<string | undefined> {
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-    if (await pathExists(candidate)) {
-      return candidate;
-    }
-  }
-  return undefined;
 }
 
 async function resolveBunExecutable(explicitPath?: string): Promise<string> {
@@ -179,27 +120,10 @@ async function resolveActoviqRuntimeCliPath(explicitPath?: string): Promise<stri
 }
 
 /**
- * Resolve the executable for direct-CLI mode (e.g. a locally installed
- * `claude` on PATH). Unlike the vendored bundle path, this never touches Bun
- * or `runtime.bundle.br` — it just locates a runnable agent CLI binary.
+ * Resolve the executable for direct-CLI mode. Provider-specific PATH lookup
+ * and error messaging now live in each RuntimeProvider (bridgeProviders.ts);
+ * this file only needs the bundle-path resolver above.
  */
-async function resolveDirectCliExecutable(explicitPath?: string): Promise<string> {
-  if (explicitPath) {
-    if (!(await isExecutable(explicitPath))) {
-      throw new ActoviqBridgeProcessError(
-        `The configured executable was not found or is not executable: ${explicitPath}`,
-      );
-    }
-    return explicitPath;
-  }
-  const pathCandidate = await findExecutableOnPath('claude');
-  if (pathCandidate) {
-    return pathCandidate;
-  }
-  throw new ActoviqBridgeProcessError(
-    'No "claude" executable was found on PATH. Install Claude Code (@anthropic-ai/claude-code) or pass { executable } explicitly.',
-  );
-}
 
 function stringifyCliValue(value: string | Record<string, unknown>): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -619,24 +543,20 @@ function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[
   return args;
 }
 
-function buildChildEnvironment(envOverrides?: Record<string, string>): Record<string, string> {
+function buildChildEnvironment(
+  provider: RuntimeProvider,
+  envOverrides?: Record<string, string>,
+): Record<string, string> {
   const loadedConfig = getLoadedJsonConfig();
-  // Actoviq settings are the single source of model/credential config: derive
-  // ANTHROPIC_* equivalents so the Claude Code-based child process does not
-  // silently fall back to ~/.claude/settings.json or keychain credentials.
-  // Derived values override inherited process.env ANTHROPIC_* entries, while
-  // explicit ANTHROPIC_* keys in the settings env block and caller overrides win.
+  // Actoviq settings are the single source of model/credential config. Each
+  // provider decides how to translate the settings env block into the
+  // credential variables its CLI reads (claude: ANTHROPIC_*; pi/codex: their
+  // own) and in what order they override the inherited process env.
   const settingsEnv = loadedConfig?.env ?? {};
-  const mergedEnv: Record<string, string> = {
-    ...Object.fromEntries(
-      Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-    ),
-    ...mapActoviqEnvToAnthropicEnv(settingsEnv),
-    ...settingsEnv,
-    ...(envOverrides ?? {}),
-  };
-
-  return mergedEnv;
+  const baseEnv = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+  return provider.buildChildEnv(baseEnv, settingsEnv, envOverrides);
 }
 
 async function prefersSystemRipgrep(envOverrides?: Record<string, string>): Promise<boolean> {
@@ -650,6 +570,7 @@ async function prefersSystemRipgrep(envOverrides?: Record<string, string>): Prom
 async function parseStdoutEvents(
   child: ReturnType<typeof spawn>,
   onEvent: (event: ActoviqBridgeJsonEvent) => void,
+  normalizer: BridgeEventNormalizer,
 ): Promise<void> {
   if (!child.stdout) {
     return;
@@ -675,7 +596,12 @@ async function parseStdoutEvents(
       throw new ActoviqBridgeProcessError('Actoviq Runtime emitted a malformed stream event.');
     }
 
-    onEvent(parsed as ActoviqBridgeJsonEvent);
+    // Providers whose native wire format differs from the canonical
+    // system/assistant/result trio (pi, codex) translate here; claude is a
+    // passthrough normalizer, so its behavior is unchanged.
+    for (const event of normalizer.translate(parsed)) {
+      onEvent(event);
+    }
   }
 }
 
@@ -1260,6 +1186,7 @@ export class ActoviqBridgeSdkClient {
     private readonly executable: string,
     private readonly cliPath: string,
     private readonly directCli: boolean,
+    private readonly provider: RuntimeProvider,
     private readonly defaults: CreateActoviqBridgeSdkOptions,
   ) {
     this.sessions = new ActoviqBridgeSessionsApi(this);
@@ -1279,11 +1206,12 @@ export class ActoviqBridgeSdkClient {
 
   static async create(options: CreateActoviqBridgeSdkOptions = {}): Promise<ActoviqBridgeSdkClient> {
     if (options.directCli) {
-      const executable = await resolveDirectCliExecutable(options.executable);
+      const provider = resolveProvider(options.directCliProvider);
+      const executable = await provider.resolveExecutable(options.executable);
       // cliPath is retained so a node+script pair works too, but left empty for
       // a plain binary executable (real `claude` on PATH).
       const cliPath = options.cliPath ?? '';
-      return new ActoviqBridgeSdkClient(executable, cliPath, true, {
+      return new ActoviqBridgeSdkClient(executable, cliPath, true, provider, {
         ...options,
         executable: undefined,
         cliPath: undefined,
@@ -1291,7 +1219,7 @@ export class ActoviqBridgeSdkClient {
     }
     const executable = await resolveBunExecutable(options.executable);
     const cliPath = await resolveActoviqRuntimeCliPath(options.cliPath);
-    return new ActoviqBridgeSdkClient(executable, cliPath, false, {
+    return new ActoviqBridgeSdkClient(executable, cliPath, false, resolveProvider('claude'), {
       ...options,
       executable: undefined,
       cliPath: undefined,
@@ -1592,7 +1520,7 @@ export class ActoviqBridgeSdkClient {
     }
 
     const merged = this.mergeOptions(options);
-    const childEnv = buildChildEnvironment(merged.env);
+    const childEnv = buildChildEnvironment(this.provider, merged.env);
     if (await prefersSystemRipgrep(merged.env)) {
       childEnv.USE_BUILTIN_RIPGREP = '0';
     }
@@ -1668,12 +1596,16 @@ export class ActoviqBridgeSdkClient {
       throw new RunAbortedError('The Actoviq Runtime run was aborted before it started.');
     }
 
-    const childEnv = buildChildEnvironment(options.env);
+    const childEnv = buildChildEnvironment(this.provider, options.env);
     if (await prefersSystemRipgrep(options.env)) {
       childEnv.USE_BUILTIN_RIPGREP = '0';
     }
 
-    const cliArgs = buildCliArgs(prompt, options);
+    // argv: claude (bundle or directCli) reuses the full stream-json flag set
+    // in buildCliArgs(); pi/codex use their provider-specific buildArgs().
+    const cliArgs = this.provider.id === 'claude'
+      ? buildCliArgs(prompt, options)
+      : this.provider.buildArgs(prompt, options);
     const args = this.directCli
       ? (this.cliPath ? [this.cliPath, ...cliArgs] : cliArgs)
       : [options.cliPath ?? this.cliPath, ...cliArgs];
@@ -1699,6 +1631,7 @@ export class ActoviqBridgeSdkClient {
     };
     options.signal?.addEventListener('abort', abort, { once: true });
 
+    const normalizer = this.provider.createNormalizer();
     const stdoutPromise = parseStdoutEvents(child, event => {
       events.push(structuredClone(event));
       if (event.type === 'system' && event.subtype === 'init') {
@@ -1711,7 +1644,7 @@ export class ActoviqBridgeSdkClient {
         resultEvent = structuredClone(event);
       }
       controller.emit(event);
-    });
+    }, normalizer);
     const stderrPromise = readStderr(child);
 
     const exitCodePromise = new Promise<number | null>((resolve, reject) => {

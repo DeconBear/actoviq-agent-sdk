@@ -12,6 +12,8 @@ import {
 
 const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
+const fakePiCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-pi-cli.mjs');
+const fakeCodexCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-codex-cli.mjs');
 const originalConfigDir = process.env.ACTOVIQ_CONFIG_DIR;
 
 afterEach(async () => {
@@ -579,6 +581,154 @@ describe('Actoviq Bridge SDK directCli mode', () => {
       ).rejects.toThrow(/claude.*executable.*PATH/i);
     } finally {
       process.env.PATH = originalPath;
+    }
+  });
+});
+
+// directCli with non-claude providers: pi and codex reuse the spawn + JSONL
+// pipeline but speak their own wire protocols. The fake CLIs emit each
+// provider's native stream; the provider normalizer translates it into the
+// system/assistant/result trio the bridge already switches on.
+describe('Actoviq Bridge SDK directCli: pi provider', () => {
+  it('normalizes the pi JSONL stream into a bridge result', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-pi-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'pi',
+      executable: process.execPath,
+      cliPath: fakePiCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('hello-pi');
+
+      expect(result.text).toBe('pi:hello-pi');
+      expect(result.isError).toBe(false);
+      expect(result.sessionId).toBe('pi-fixture-session');
+      expect(result.initEvent?.type).toBe('system');
+      expect(result.initEvent?.subtype).toBe('init');
+      // pi emits no tool/skill catalog — introspection degrades gracefully.
+      expect(result.initEvent?.tools).toEqual([]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('passes --model through and surfaces it in the assistant message', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-pi-model-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'pi',
+      executable: process.execPath,
+      cliPath: fakePiCliPath,
+      model: 'gpt-4o-mini',
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('who-am-i');
+      // fake-pi echoes the model into the assistant text.
+      expect(result.text).toBe('pi:agent:gpt-4o-mini');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('injects OPENAI_API_KEY (provider-specific credential, not ANTHROPIC_*)', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-pi-env-');
+    const configPath = path.join(tempDir, 'bridge-config.json');
+    // pi reads OPENAI_API_KEY directly; the Actoviq settings env passes through
+    // unchanged (no ANTHROPIC_* remapping for non-claude providers).
+    await writeFile(
+      configPath,
+      JSON.stringify({ OPENAI_API_KEY: 'sk-pi-fixture' }),
+      'utf8',
+    );
+    await loadJsonConfigFile(configPath);
+
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'pi',
+      executable: process.execPath,
+      cliPath: fakePiCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('check-env');
+      // fake-pi echoes the injected key into the assistant text — proving the
+      // OPENAI_API_KEY from settings reached the pi child process. (pi does
+      // not remap ANTHROPIC_* the way the claude provider does; inherited
+      // ANTHROPIC_* vars pass through harmlessly since pi does not read them.)
+      expect(result.text).toMatch(/^pi:env:sk-pi-fixture:/);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('Actoviq Bridge SDK directCli: codex provider', () => {
+  it('normalizes the codex exec JSONL stream into a bridge result', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('hello-codex');
+
+      expect(result.text).toBe('codex:hello-codex');
+      expect(result.isError).toBe(false);
+      expect(result.sessionId).toBe('codex-fixture-thread');
+      expect(result.initEvent?.type).toBe('system');
+      expect(result.initEvent?.subtype).toBe('init');
+      expect(result.initEvent?.tools).toEqual([]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('passes -m model through to the codex child', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-model-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      model: 'gpt-5',
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('who-am-i');
+      expect(result.text).toBe('codex:agent:gpt-5');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('maps codex turn.failed into an error result', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-fail-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('force-fail');
+      expect(result.isError).toBe(true);
+      expect(result.subtype).toBe('error');
+      expect(result.text).toContain('codex usage limit reached');
+    } finally {
+      await sdk.close();
     }
   });
 });

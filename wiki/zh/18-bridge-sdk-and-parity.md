@@ -37,7 +37,7 @@ createActoviqBridgeSdk()
 
 ### 执行模式：Bundle 与 directCli
 
-`createActoviqBridgeSdk()` 通过 `directCli` 选项在两种模式下 spawn 运行时。两者共用相同的 `stream-json` 协议与相同的 `ANTHROPIC_*` 环境注入链，因此 provider 隔离行为完全一致。
+`createActoviqBridgeSdk()` 通过 `directCli` 选项在两种模式下 spawn 运行时。Bundle 模式走 Claude Code 的 `stream-json` 协议；directCli 模式支持多 provider（`directCliProvider`），各家 wire 协议不同但共用同一 env 注入 seam，因此 provider 隔离行为一致。
 
 | 模式 | `directCli` | spawn 的进程 | 依赖 |
 |---|---|---|---|
@@ -60,6 +60,24 @@ const sdk2 = await createActoviqBridgeSdk({ workDir });
 
 **Provider 隔离（两种模式都适用）：** spawn 之前，`buildChildEnvironment` 会把 `~/.actoviq/settings.json` 映射为 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` 并注入子进程，覆盖子进程自身的 `~/.claude/settings.json`。因此交互式 `claude` 可继续走 Claude 官方，而 bridge 的子进程跑在 DeepSeek（或任意 Anthropic 兼容端点）上——见 `src/config/anthropicEnvMapping.ts`。
 ```
+
+### directCli provider（claude / pi / codex）
+
+directCli 不限于 claude。`directCliProvider` 选择 spawn 哪个本机 CLI；每个 provider 是一个 `RuntimeProvider`（`src/parity/bridgeProviders.ts`），提供 argv 构建、env 注入、以及一个 per-run 事件 normalizer，把各家原生 JSONL 翻译成 `execute()` 已在 switch 的 `system/assistant/result` 三元组。
+
+| Provider | 二进制 | 入口 | 原生协议 → 归一化 |
+|---|---|---|---|
+| `claude`（默认） | `claude` | `claude -p --output-format stream-json …` | stream-json（透传） |
+| `pi` | `pi` | `pi -p --mode json …` | `session`/`message_update`/`message_end`/`agent_end` |
+| `codex` | `codex` | `codex exec --json …` | `thread.started`/`item.completed`(agent_message)/`turn.completed`/`turn.failed` |
+
+```typescript
+const piSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'pi', workDir });
+const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'codex', workDir });
+```
+
+- **凭证各异：** claude → `ANTHROPIC_*`；pi/codex → 各自的（`OPENAI_API_KEY` 等），经 settings env 块注入，不做 `ANTHROPIC_*` 重映射。
+- **pi/codex 的内省降级：** 启动事件不含 tools/skills/agents 清单，故 `getRuntimeInfo`/`listSkills`/`getRuntimeCatalog` 返回有限数据。生命周期方法（run/stream/session/fork）三家完整对齐。
 
 ### 事件提取
 
