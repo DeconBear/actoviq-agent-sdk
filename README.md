@@ -151,7 +151,7 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 
 **Security model:** the internal API is reachable only from loopback (Host + Origin allowlist, which defeats DNS-rebinding / CSRF) and requires a per-process token; the page ships a strict Content-Security-Policy. Electron runs with `sandbox`, `contextIsolation`, and no `nodeIntegration`.
 
-> `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime. The core SDK does not require them.
+> `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime (the bridge's `directCli` mode needs no `bun` either). The core SDK does not require them.
 
 ## Developer notes
 

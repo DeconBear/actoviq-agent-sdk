@@ -34,6 +34,9 @@ modifiable. Zero runtime dependencies beyond `zod` and `glob`.
 **actoviq-bridge-sdk** (`createActoviqBridgeSdk()`): Spawns a `bun` child
 process running a pre-compiled runtime bundle. Used as a reference
 implementation and fallback. The ReAct loop inside the bundle is not modifiable.
+With `directCli: true` it instead spawns the local `claude` on PATH directly
+(no bundle/Bun), reusing the official native-exe Claude Code; provider
+isolation (`ANTHROPIC_*` env) applies to both modes.
 
 ### Harness Design Philosophy
 

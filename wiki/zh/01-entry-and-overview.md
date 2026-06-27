@@ -28,7 +28,7 @@
 
 **Hadamard SDK**（`createAgentSdk()`）：进程内执行。ReAct 循环（`conversationEngine.ts`）直接在 Node.js 中运行。所有 TypeScript 源码可修改。除 `zod` 和 `glob` 外无运行时依赖。
 
-**actoviq-bridge-sdk**（`createActoviqBridgeSdk()`）：通过 `bun` 子进程运行预编译的运行时 bundle。作为参考实现和回退方案。bundle 内的 ReAct 循环不可修改。
+**actoviq-bridge-sdk**（`createActoviqBridgeSdk()`）：通过 `bun` 子进程运行预编译的运行时 bundle。作为参考实现和回退方案。bundle 内的 ReAct 循环不可修改。设 `directCli: true` 时则直接 spawn PATH 上的本地 `claude`（无需 bundle/Bun），复用官方原生 exe Claude Code；provider 隔离（`ANTHROPIC_*` 环境注入）两种模式都适用。
 
 ### Harness 设计哲学
 
