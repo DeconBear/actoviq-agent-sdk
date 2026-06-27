@@ -80,45 +80,90 @@ bridge 在 PATH 上找到 `claude`，以 `-p --output-format stream-json --verbo
 > 提示：若你的 PowerShell 当前 shell 已 `ANTHROPIC_API_KEY` 指向 Claude 官方，
 > 且 settings.json 未配凭证，子进程会回退到该值——请把 provider 配置写全。
 
-## 1.2 多 provider：claude / pi / codex
-
-directCli 模式不限于 Claude Code。`directCliProvider` 选择 spawn 哪个本机 CLI，
-三家共用同一套 spawn + 逐行 JSONL 管线，只是各自的 wire 协议不同——bridge 用一个
-normalizer 把各家原生事件翻译成统一的 `system/assistant/result` 三元组：
+## 1.2 六大 provider（claude / pi / codex / codewhale / reasonix / crush）
 
 | Provider | `directCliProvider` | 本机二进制 | 入口 | 协议 |
 |---|---|---|---|---|
-| Claude Code（默认） | `'claude'` | `claude` | `claude -p …` | stream-json |
-| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL（session/message_update/agent_end） |
-| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL（thread.started/item.*/turn.completed） |
+| Claude Code（默认） | `'claude'` | `claude` | `claude -p --output-format stream-json …` | stream-json |
+| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL |
+| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL |
+| CodeWhale | `'codewhale'` | `codewhale` | `codewhale exec --auto --output-format stream-json …` | stream-json（与 claude 相同） |
+| Reasonix | `'reasonix'` | `reasonix` | `reasonix run [--model] [--effort] <task>` | 纯文本 |
+| Crush | `'crush'` | `crush` | `crush run [--model] [--session] <prompt>` | 纯文本 |
 
 ```ts
-// 复用本机的 pi CLI
-const piSdk = await createActoviqBridgeSdk({
+const sdk = await createActoviqBridgeSdk({
   directCli: true,
-  directCliProvider: 'pi',
-  workDir: process.cwd(),
-});
-
-// 复用本机的 codex CLI
-const codexSdk = await createActoviqBridgeSdk({
-  directCli: true,
-  directCliProvider: 'codex',
+  directCliProvider: 'codewhale',   // 或 'reasonix', 'crush', …
   workDir: process.cwd(),
 });
 ```
 
-**凭证注入按 provider 不同：** claude 走 `ANTHROPIC_*`（见上节）；pi/codex 读各家
-自己的环境变量（`OPENAI_API_KEY` 等）。在 `~/.actoviq/settings.json` 的 `env` 块里
-直接写对应 provider 的 key 即可——pi/codex 不会做 `ANTHROPIC_*` 重映射。
+**凭证：** claude → `ANTHROPIC_*`；codewhale → ANTHROPIC_*/DEEPSEEK_*；
+reasonix → DEEPSEEK_*；crush → OPENAI_*/ANTHROPIC_*。
+在 `~/.actoviq/settings.json` 的 `env` 块里直接写对应 provider 的 key。
 
-**Introspection 降级：** pi 和 codex 的启动事件不携带 tools/skills/agents/slash_commands
-清单（claude 会带）。因此 `getRuntimeInfo()` / `listSkills()` / `getRuntimeCatalog()` 等
-内省方法对 pi/codex 返回有限数据（tools/skills 为空数组）。run / stream / session /
-createSession / continueMostRecent / fork 等生命周期方法三家完整对齐。
+**Introspection 降级** 适用于 pi/codex/reasonix/crush（启动事件不含 tools/skills 清单）。
+run/stream/session 等生命周期方法六家完整对齐。
 
-实现细节见 `src/parity/bridgeProviders.ts`（每个 provider 一个 `RuntimeProvider`：
-argv 构建、env 注入、事件归一化）。
+## 1.3 环境覆盖与自动检测
+
+### `ACTOVIQ_<PROVIDER>_PATH`
+
+当 CLI 不在 `PATH` 上时，用它覆盖自动检测的二进制路径：
+
+```bash
+export ACTOVIQ_CLAUDE_PATH=/opt/claude-code/bin/claude
+export ACTOVIQ_CODEX_PATH=/custom/codex
+export ACTOVIQ_REASONIX_PATH=~/bin/reasonix
+# … 每个 provider 都遵循 ACTOVIQ_<ID>_PATH 模式
+```
+
+写在 `~/.actoviq/settings.json` 的 `env` 块（或顶层）——与 `ACTOVIQ_BASH_PATH` 惯例一致。
+
+### `bridge` 设置块
+
+```jsonc
+// ~/.actoviq/settings.json
+{
+  "bridge": {
+    "defaultProvider": "codewhale",
+    "providers": {
+      "crush": { "path": "/opt/crush" }
+    }
+  }
+}
+```
+
+解析优先级（全部在内存中，run 时无文件 I/O）：
+`executable` 选项 → `ACTOVIQ_<ID>_PATH` 环境变量 → `bridge.providers[id].path` → `PATH`。
+
+### `detectBridgeProviders()` API
+
+```ts
+import { detectBridgeProviders } from 'actoviq-agent-sdk';
+
+const providers = await detectBridgeProviders();
+// [{ id:'claude', available:true, path:'/…/claude.cmd', version:'2.1.186', displayName:'…' }, …]
+```
+
+返回每个已注册 provider 的条目，包含 best-effort `--version` 探测。
+被 CLI 的 `/bridge` 向导、TUI 的 `/bridge setup`、GUI 的 Settings→Bridge 面板使用。
+
+## 1.4 问题排查——没有检测到 runtime？
+
+1. **安装 CLI**（`npm i -g @anthropic-ai/claude-code`、`npm i -g codewhale`、…）
+   并重启 shell 确保它在 `PATH` 上。
+2. **运行 `npx actoviq-interactive-agent`** 并输入 `/bridge`——向导会展示检测到的
+   provider，让你选择一个作为默认。
+3. **设置 `ACTOVIQ_<ID>_PATH`**（见 1.3），适用于二进制已安装但不在 `PATH` 的情况
+   （CI、不继承 shell profile 的 IDE 启动器等常见场景）。
+4. **让 Claude Code 帮忙：** 把 `/providers` 的输出（或 GUI 的「Detect runtimes」
+   按钮结果）贴给 Claude Code，让它指导安装和配置。
+
+实现：`src/parity/bridgeProviders.ts`（各 provider 的 argv/env/normalizer），
+`src/cli/bridge-interactive-agent.ts`（/bridge 向导），`src/tui/actoviqTui.ts`
+（/bridge run/switch/setup），`src/gui/actoviqGui.ts`（bridge 面板 + 实跑）。
 
 ## 2. bridge 是什么
 
