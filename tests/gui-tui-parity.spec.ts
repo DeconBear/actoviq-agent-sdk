@@ -34,6 +34,7 @@ describe('TUI and GUI parity', () => {
       'workflows',
       'worktree',
       'team',
+      'bridge',
       'exit',
     ]);
   });
