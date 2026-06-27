@@ -85,8 +85,10 @@ function analyzeActoviqBridgeEvents(output: string): BridgeEventAnalysis { /* ..
 ### Execution Modes: Bundle vs directCli
 
 `createActoviqBridgeSdk()` spawns the runtime in one of two modes, selected by
-the `directCli` option. Both share the same `stream-json` protocol and the same
-`ANTHROPIC_*` env-injection chain, so provider isolation works identically.
+the `directCli` option. Bundle mode speaks Claude Code's `stream-json` protocol;
+directCli mode supports multiple providers (`directCliProvider`), each with its
+own wire protocol but the same env-injection seam, so provider isolation works
+identically.
 
 | Mode | `directCli` | Spawned process | Needs |
 |---|---|---|---|
@@ -116,6 +118,31 @@ maps `~/.actoviq/settings.json` → `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN
 `~/.claude/settings.json`. So the interactive `claude` can stay on Claude
 official while the bridge's child runs on DeepSeek (or any Anthropic-compatible
 endpoint) — see `src/config/anthropicEnvMapping.ts`.
+
+### directCli providers (claude / pi / codex)
+
+directCli is not claude-only. `directCliProvider` picks which local CLI to spawn;
+each provider is a `RuntimeProvider` (`src/parity/bridgeProviders.ts`) supplying
+argv construction, env injection, and a per-run event normalizer that translates
+the provider's native JSONL into the `system/assistant/result` trio `execute()`
+already switches on.
+
+| Provider | binary | entry | native protocol → normalized |
+|---|---|---|---|
+| `claude` (default) | `claude` | `claude -p --output-format stream-json …` | stream-json (passthrough) |
+| `pi` | `pi` | `pi -p --mode json …` | `session`/`message_update`/`message_end`/`agent_end` |
+| `codex` | `codex` | `codex exec --json …` | `thread.started`/`item.completed`(agent_message)/`turn.completed`/`turn.failed` |
+
+```typescript
+const piSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'pi', workDir });
+const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'codex', workDir });
+```
+
+- **Credentials differ:** claude → `ANTHROPIC_*`; pi/codex → their own
+  (`OPENAI_API_KEY`, etc.) via the settings env block, no `ANTHROPIC_*` remap.
+- **Introspection degrades for pi/codex:** their startup events carry no
+  tools/skills/agents catalog, so `getRuntimeInfo`/`listSkills`/`getRuntimeCatalog`
+  return limited data. Lifecycle methods (run/stream/session/fork) are fully aligned.
 
 ### Compatibility Matrix
 

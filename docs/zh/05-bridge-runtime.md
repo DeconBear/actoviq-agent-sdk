@@ -80,6 +80,46 @@ bridge 在 PATH 上找到 `claude`，以 `-p --output-format stream-json --verbo
 > 提示：若你的 PowerShell 当前 shell 已 `ANTHROPIC_API_KEY` 指向 Claude 官方，
 > 且 settings.json 未配凭证，子进程会回退到该值——请把 provider 配置写全。
 
+## 1.2 多 provider：claude / pi / codex
+
+directCli 模式不限于 Claude Code。`directCliProvider` 选择 spawn 哪个本机 CLI，
+三家共用同一套 spawn + 逐行 JSONL 管线，只是各自的 wire 协议不同——bridge 用一个
+normalizer 把各家原生事件翻译成统一的 `system/assistant/result` 三元组：
+
+| Provider | `directCliProvider` | 本机二进制 | 入口 | 协议 |
+|---|---|---|---|---|
+| Claude Code（默认） | `'claude'` | `claude` | `claude -p …` | stream-json |
+| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL（session/message_update/agent_end） |
+| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL（thread.started/item.*/turn.completed） |
+
+```ts
+// 复用本机的 pi CLI
+const piSdk = await createActoviqBridgeSdk({
+  directCli: true,
+  directCliProvider: 'pi',
+  workDir: process.cwd(),
+});
+
+// 复用本机的 codex CLI
+const codexSdk = await createActoviqBridgeSdk({
+  directCli: true,
+  directCliProvider: 'codex',
+  workDir: process.cwd(),
+});
+```
+
+**凭证注入按 provider 不同：** claude 走 `ANTHROPIC_*`（见上节）；pi/codex 读各家
+自己的环境变量（`OPENAI_API_KEY` 等）。在 `~/.actoviq/settings.json` 的 `env` 块里
+直接写对应 provider 的 key 即可——pi/codex 不会做 `ANTHROPIC_*` 重映射。
+
+**Introspection 降级：** pi 和 codex 的启动事件不携带 tools/skills/agents/slash_commands
+清单（claude 会带）。因此 `getRuntimeInfo()` / `listSkills()` / `getRuntimeCatalog()` 等
+内省方法对 pi/codex 返回有限数据（tools/skills 为空数组）。run / stream / session /
+createSession / continueMostRecent / fork 等生命周期方法三家完整对齐。
+
+实现细节见 `src/parity/bridgeProviders.ts`（每个 provider 一个 `RuntimeProvider`：
+argv 构建、env 注入、事件归一化）。
+
 ## 2. bridge 是什么
 
 bridge 可以理解成一层兼容适配层。它暴露的是更偏 runtime 风格的执行路径。

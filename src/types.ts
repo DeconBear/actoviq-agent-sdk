@@ -1989,6 +1989,13 @@ export type ActoviqBridgePermissionMode =
 
 export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
 
+/**
+ * Which agent CLI directCli mode drives. `claude` (default) uses Claude Code's
+ * `-p` stream-json protocol; `pi` and `codex` reuse the same spawn + JSONL
+ * pipeline with their own wire protocols.
+ */
+export type RuntimeProviderId = 'claude' | 'pi' | 'codex';
+
 export interface ActoviqBridgeJsonEvent extends Record<string, unknown> {
   type: string;
   subtype?: string;
@@ -2000,14 +2007,19 @@ export interface CreateActoviqBridgeSdkOptions {
   executable?: string;
   cliPath?: string;
   /**
-   * Spawn a locally installed agent CLI (e.g. `claude` on PATH) directly,
-   * bypassing the vendored `runtime.bundle.br` + Bun wrapper. When true,
-   * `executable` is the CLI to spawn (defaults to the `claude` found on PATH)
-   * and `cliPath` is ignored. The env-injection chain (ANTHROPIC_* mapping)
-   * is unchanged, so a direct run can still target a non-Claude provider
-   * (e.g. DeepSeek) without touching the user's interactive Claude Code.
+   * Spawn a locally installed agent CLI directly, bypassing the vendored
+   * `runtime.bundle.br` + Bun wrapper. When true, `executable` is the CLI to
+   * spawn (defaults to the provider's binary on PATH). Provider isolation
+   * (env injection) applies to all providers.
    */
   directCli?: boolean;
+  /**
+   * Which agent CLI directCli mode drives. Defaults to `claude` (Claude Code
+   * `-p` stream-json). `pi` and `codex` reuse the same spawn + JSONL pipeline
+   * but speak their own wire protocols — see `src/parity/bridgeProviders.ts`.
+   * Only consulted when `directCli` is true; ignored by the bundle path.
+   */
+  directCliProvider?: RuntimeProviderId;
   homeDir?: string;
   workDir?: string;
   model?: string;

@@ -83,6 +83,48 @@ interfere. Example:
 > settings.json provides no credential, the child falls back to that value —
 > configure the provider fully.
 
+## 1.2. Multiple providers: claude / pi / codex
+
+directCli mode is not limited to Claude Code. `directCliProvider` selects which
+local CLI to spawn. All three share the same spawn + line-by-line JSONL pipeline;
+only their wire protocols differ — a normalizer translates each provider's native
+events into the unified `system/assistant/result` trio.
+
+| Provider | `directCliProvider` | Local binary | Entry | Protocol |
+|---|---|---|---|---|
+| Claude Code (default) | `'claude'` | `claude` | `claude -p …` | stream-json |
+| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL (session/message_update/agent_end) |
+| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL (thread.started/item.*/turn.completed) |
+
+```ts
+// reuse the local pi CLI
+const piSdk = await createActoviqBridgeSdk({
+  directCli: true,
+  directCliProvider: 'pi',
+  workDir: process.cwd(),
+});
+
+// reuse the local codex CLI
+const codexSdk = await createActoviqBridgeSdk({
+  directCli: true,
+  directCliProvider: 'codex',
+  workDir: process.cwd(),
+});
+```
+
+**Credentials differ per provider:** claude uses `ANTHROPIC_*` (above); pi/codex read
+their own env vars (`OPENAI_API_KEY`, etc.). Put the provider-specific key directly in the
+`env` block of `~/.actoviq/settings.json` — pi/codex do not remap `ANTHROPIC_*`.
+
+**Introspection degrades:** pi and codex startup events carry no
+tools/skills/agents/slash_commands catalog (claude does). So `getRuntimeInfo()` /
+`listSkills()` / `getRuntimeCatalog()` return limited data (empty tools/skills) for
+pi/codex. run / stream / session / createSession / continueMostRecent / fork are fully
+aligned across all three.
+
+See `src/parity/bridgeProviders.ts` for the per-provider `RuntimeProvider` (argv
+construction, env injection, event normalization).
+
 ## 2. What bridge means
 
 The actoviq-bridge-sdk is a compatibility layer that exposes a runtime-oriented execution path from the current package.
