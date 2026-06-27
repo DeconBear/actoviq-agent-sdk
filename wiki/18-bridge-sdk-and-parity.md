@@ -131,7 +131,10 @@ already switches on.
 |---|---|---|---|
 | `claude` (default) | `claude` | `claude -p --output-format stream-json …` | stream-json (passthrough) |
 | `pi` | `pi` | `pi -p --mode json …` | `session`/`message_update`/`message_end`/`agent_end` |
-| `codex` | `codex` | `codex exec --json …` | `thread.started`/`item.completed`(agent_message)/`turn.completed`/`turn.failed` |
+| `codex` | `codex` | `codex exec --json …` | `thread.started`/`item.completed`/`turn.completed`/`turn.failed` |
+| `codewhale` | `codewhale` | `codewhale exec --auto --output-format stream-json …` | stream-json (passthrough, same as claude) |
+| `reasonix` | `reasonix` | `reasonix run [--model] [--effort] <task>` | plain text (PlainTextNormalizer) |
+| `crush` | `crush` | `crush run [--model] [--session] <prompt>` | plain text (PlainTextNormalizer) |
 
 ```typescript
 const piSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'pi', workDir });

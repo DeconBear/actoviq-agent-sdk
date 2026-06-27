@@ -83,47 +83,91 @@ interfere. Example:
 > settings.json provides no credential, the child falls back to that value —
 > configure the provider fully.
 
-## 1.2. Multiple providers: claude / pi / codex
+## 1.2. Six providers (claude / pi / codex / codewhale / reasonix / crush)
 
-directCli mode is not limited to Claude Code. `directCliProvider` selects which
-local CLI to spawn. All three share the same spawn + line-by-line JSONL pipeline;
-only their wire protocols differ — a normalizer translates each provider's native
-events into the unified `system/assistant/result` trio.
-
-| Provider | `directCliProvider` | Local binary | Entry | Protocol |
+| Provider | `directCliProvider` | Binary | Entry | Protocol |
 |---|---|---|---|---|
-| Claude Code (default) | `'claude'` | `claude` | `claude -p …` | stream-json |
-| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL (session/message_update/agent_end) |
-| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL (thread.started/item.*/turn.completed) |
+| Claude Code (default) | `'claude'` | `claude` | `claude -p --output-format stream-json …` | stream-json |
+| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL |
+| codex | `'codex'` | `codex` | `codex exec --json …` | JSONL |
+| CodeWhale | `'codewhale'` | `codewhale` | `codewhale exec --auto --output-format stream-json …` | stream-json (same as claude) |
+| Reasonix | `'reasonix'` | `reasonix` | `reasonix run [--model] [--effort] <task>` | plain text |
+| Crush | `'crush'` | `crush` | `crush run [--model] [--session] <prompt>` | plain text |
 
 ```ts
-// reuse the local pi CLI
-const piSdk = await createActoviqBridgeSdk({
+const sdk = await createActoviqBridgeSdk({
   directCli: true,
-  directCliProvider: 'pi',
-  workDir: process.cwd(),
-});
-
-// reuse the local codex CLI
-const codexSdk = await createActoviqBridgeSdk({
-  directCli: true,
-  directCliProvider: 'codex',
+  directCliProvider: 'codewhale',   // or 'reasonix', 'crush', …
   workDir: process.cwd(),
 });
 ```
 
-**Credentials differ per provider:** claude uses `ANTHROPIC_*` (above); pi/codex read
-their own env vars (`OPENAI_API_KEY`, etc.). Put the provider-specific key directly in the
-`env` block of `~/.actoviq/settings.json` — pi/codex do not remap `ANTHROPIC_*`.
+**Credentials:** claude → `ANTHROPIC_*`; codewhale → ANTHROPIC_*/DEEPSEEK_*;
+reasonix → DEEPSEEK_*; crush → OPENAI_*/ANTHROPIC_*.
+Put keys in `~/.actoviq/settings.json`'s `env` block.
 
-**Introspection degrades:** pi and codex startup events carry no
-tools/skills/agents/slash_commands catalog (claude does). So `getRuntimeInfo()` /
-`listSkills()` / `getRuntimeCatalog()` return limited data (empty tools/skills) for
-pi/codex. run / stream / session / createSession / continueMostRecent / fork are fully
-aligned across all three.
+**Introspection degrades** for pi/codex/reasonix/crush (no tools/skills catalog in
+startup events). run / stream / session lifecycle is aligned across all six.
 
-See `src/parity/bridgeProviders.ts` for the per-provider `RuntimeProvider` (argv
-construction, env injection, event normalization).
+## 1.3. Env overrides & auto-detection
+
+### `ACTOVIQ_<PROVIDER>_PATH`
+
+Overrides the auto-detected binary path when the CLI is not on `PATH`:
+
+```bash
+export ACTOVIQ_CLAUDE_PATH=/opt/claude-code/bin/claude
+export ACTOVIQ_CODEX_PATH=/custom/codex
+export ACTOVIQ_REASONIX_PATH=~/bin/reasonix
+# … same pattern for every provider: ACTOVIQ_<ID>_PATH
+```
+
+These go into `~/.actoviq/settings.json`'s `env` block (or the top level) —
+mirrors the `ACTOVIQ_BASH_PATH` convention.
+
+### `bridge` settings block
+
+```jsonc
+// ~/.actoviq/settings.json
+{
+  "bridge": {
+    "defaultProvider": "codewhale",
+    "providers": {
+      "crush": { "path": "/opt/crush" }  // per-provider path override
+    }
+  }
+}
+```
+
+Resolution order (all in-memory, no file I/O during a run):
+`executable` option → `ACTOVIQ_<ID>_PATH` env → `bridge.providers[id].path` → `PATH`.
+
+### `detectBridgeProviders()`
+
+```ts
+import { detectBridgeProviders } from 'actoviq-agent-sdk';
+
+const providers = await detectBridgeProviders();
+// [{ id:'claude', available:true, path:'/…/claude.cmd', version:'2.1.186', displayName:'…' }, …]
+```
+
+Returns one entry per registered provider, best-effort `--version` probe included.
+Used by the CLI `/bridge` wizard, TUI `/bridge setup`, and GUI Settings → Bridge panel.
+
+## 1.4. Troubleshooting — no runtime detected?
+
+1. **Install the CLI** (`npm i -g @anthropic-ai/claude-code`, `npm i -g codewhale`, …)
+   and restart your shell so it's on `PATH`.
+2. **Run `npx actoviq-interactive-agent`** and type `/bridge` — the wizard shows
+   detected providers and lets you pick a default.
+3. **Set `ACTOVIQ_<ID>_PATH`** (see 1.3) if the binary is installed but not on `PATH`
+   (common in CI, IDE launchers that don't inherit shell profiles).
+4. **Ask Claude Code to help:** paste the output of `/providers` (or the GUI's
+   "Detect runtimes" button) into Claude Code and let it guide the install.
+
+Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalizer),
+`src/cli/bridge-interactive-agent.ts` (/bridge wizard), `src/tui/actoviqTui.ts`
+(/bridge run/switch/setup), `src/gui/actoviqGui.ts` (bridge panel + run).
 
 ## 2. What bridge means
 
