@@ -100,6 +100,8 @@ export interface RuntimeProvider {
   ): Record<string, string>;
   /** A fresh normalizer for one run. */
   createNormalizer(): BridgeEventNormalizer;
+  /** Recommended model IDs for this provider (used by TUI `/bridge model`). */
+  suggestedModels(): string[];
 }
 
 /** Shared base for executable resolution (PATH lookup + explicit-path check). */
@@ -187,6 +189,7 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     overrides?: Record<string, string>,
   ): Record<string, string>;
   abstract createNormalizer(): BridgeEventNormalizer;
+  abstract suggestedModels(): string[];
 }
 
 /**
@@ -330,6 +333,9 @@ class ClaudeProvider extends BaseRuntimeProvider {
     // claude's stream-json is already the canonical system/assistant/result shape.
     return { translate: raw => [raw as ActoviqBridgeJsonEvent] };
   }
+  suggestedModels(): string[] {
+    return ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5', 'claude-fable-5'];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +378,9 @@ class PiProvider extends BaseRuntimeProvider {
 
   createNormalizer(): BridgeEventNormalizer {
     return new PiNormalizer();
+  }
+  suggestedModels(): string[] {
+    return ['gpt-5', 'gpt-5-mini', 'claude-sonnet-4-6', 'deepseek-v4-pro', 'gemini-2.5-pro'];
   }
 }
 
@@ -514,6 +523,9 @@ class CodexProvider extends BaseRuntimeProvider {
 
   createNormalizer(): BridgeEventNormalizer {
     return new CodexNormalizer();
+  }
+  suggestedModels(): string[] {
+    return ['gpt-5', 'gpt-5-mini', 'o3', 'o4-mini'];
   }
 }
 
@@ -661,6 +673,7 @@ class CodewhaleProvider extends BaseRuntimeProvider {
   createNormalizer(): BridgeEventNormalizer {
     return { translate: raw => [raw as ActoviqBridgeJsonEvent] };
   }
+  suggestedModels(): string[] { return []; }
 }
 
 // ---------------------------------------------------------------------------
@@ -692,11 +705,10 @@ class ReasonixProvider extends BaseRuntimeProvider {
   createNormalizer(): BridgeEventNormalizer {
     return new PlainTextNormalizer();
   }
+  suggestedModels(): string[] {
+    return ['deepseek-v4-pro', 'deepseek-v4-flash'];
+  }
 }
-
-// ---------------------------------------------------------------------------
-// crush provider (plain-text, Charmbracelet)
-// ---------------------------------------------------------------------------
 
 class CrushProvider extends BaseRuntimeProvider {
   readonly id = 'crush' as const;
@@ -720,6 +732,9 @@ class CrushProvider extends BaseRuntimeProvider {
 
   createNormalizer(): BridgeEventNormalizer {
     return new PlainTextNormalizer();
+  }
+  suggestedModels(): string[] {
+    return ['gpt-5', 'claude-sonnet-4-6', 'gemini-2.5-pro'];
   }
 }
 

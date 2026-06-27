@@ -34,6 +34,7 @@ import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
+import { resolveProvider } from '../parity/bridgeProviders.js';
 import type {
   ActoviqEffort,
   ActoviqRunEffort,
@@ -283,6 +284,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let bridgeMode = false;
   let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
   let bridgeProviderLabel: string | null = null;
+  let bridgeModelLabel: string | null = null;
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
@@ -744,7 +746,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const modelLabel = activeRouter
       ? `router:${activeRouter.name}${routedModelLabel ? ` → ${routedModelLabel}` : ''}`
       : session.model;
-    const bridgeTag = bridgeMode && bridgeProviderLabel ? ` · bridge:${bridgeProviderLabel}` : '';
+    const bridgeTag = bridgeMode && bridgeProviderLabel
+      ? ` · bridge:${bridgeProviderLabel}${bridgeModelLabel ? ` · ${bridgeModelLabel}` : ''}`
+      : '';
     const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'}${bridgeTag} · `;
     return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
   }
@@ -1357,8 +1361,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     commandBusy = true;
     renderDynamic();
     const runId = `tui-bridge-${Date.now()}`;
+    // Resolve bridge-specific model from settings (falls back to session model).
+    const bp = bridgeProviderLabel ?? 'claude';
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath }).catch(() => undefined);
+    const bpModel: string | undefined = (store?.raw as any)?.bridge?.providers?.[bp]?.model;
+    const bridgeModel = bpModel ?? session.model;
+    bridgeModelLabel = bpModel ?? null;
     try {
-      const bs = bridgeClient.stream(prompt, { model: session.model });
+      const bs = bridgeClient.stream(prompt, { model: bridgeModel });
       const adapted = adaptBridgeRun(bs, bs.result, runId, bridgeProviderLabel ?? 'bridge');
       for await (const event of adapted) {
         handleAgentEvent(event);
@@ -1394,6 +1404,78 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     bridgeProviderLabel = target;
     bridgeMode = true;
     appendStatic([...formatInfoLine(`bridge switched to ${target}`), '']);
+  }
+
+  async function selectBridgeModel(modelId = ''): Promise<void> {
+    const bp = bridgeProviderLabel ?? 'claude';
+    const provider = resolveProvider(bp as any);
+    const suggested = provider.suggestedModels();
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const raw = structuredClone(store.raw);
+    const bridge: Record<string,unknown> = (raw.bridge as Record<string,unknown>) ?? {};
+    const providers: Record<string,unknown> = (bridge.providers as Record<string,unknown>) ?? {};
+    const entry: Record<string,unknown> = (providers[bp] as Record<string,unknown>) ?? {};
+    const current = typeof entry.model === 'string' ? entry.model : '';
+
+    if (modelId) {
+      // Direct set: /bridge model claude-sonnet-4-6
+      entry.model = modelId;
+      providers[bp] = entry;
+      bridge.providers = providers;
+      raw.bridge = bridge;
+      await persistActoviqSettingsStore(store.configPath, raw);
+      await loadJsonConfigFile(store.configPath);
+      bridgeModelLabel = modelId;
+      appendStatic([...formatInfoLine(`bridge model → ${modelId} (${bp})`), '']);
+      return;
+    }
+
+    // Picker: show suggested models + current + custom
+    const items = suggested.map(m => ({
+      id: `m:${m}`,
+      label: m,
+      description: m === current ? 'current' : '',
+    }));
+    items.push({ id: 'custom', label: 'Custom…', description: 'type a model ID manually' });
+    if (current && !suggested.includes(current)) {
+      items.unshift({ id: `m:${current}`, label: current, description: 'current (custom)' });
+    }
+
+    const selected = await selectItem({
+      title: `Bridge model for ${bp}`,
+      subtitle: current ? `Current: ${current}` : 'Using session model',
+      searchable: false,
+      items,
+    });
+    if (selected === 'custom') {
+      const customModel = await promptText({
+        title: `Custom model for ${bp}`,
+        label: 'Model ID',
+        initial: current,
+      });
+      if (customModel !== undefined) {
+        if (customModel.trim()) { entry.model = customModel.trim(); bridgeModelLabel = customModel.trim(); }
+        else { delete entry.model; bridgeModelLabel = null; }
+        providers[bp] = entry;
+        bridge.providers = providers;
+        raw.bridge = bridge;
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        appendStatic([...formatInfoLine(`bridge model → ${customModel.trim() || 'session default'} (${bp})`), '']);
+      }
+      return;
+    }
+    if (selected && selected.startsWith('m:')) {
+      const m = selected.slice(2);
+      entry.model = m;
+      bridgeModelLabel = m;
+      providers[bp] = entry;
+      bridge.providers = providers;
+      raw.bridge = bridge;
+      await persistActoviqSettingsStore(store.configPath, raw);
+      await loadJsonConfigFile(store.configPath);
+      appendStatic([...formatInfoLine(`bridge model → ${m} (${bp})`), '']);
+    }
   }
 
   async function chooseEffort(): Promise<void> {
@@ -1898,7 +1980,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             await bridgeClient?.close().catch(() => undefined);
             bridgeClient = null;
             bridgeProviderLabel = null;
+            bridgeModelLabel = null;
             appendStatic([...formatInfoLine('bridge mode disabled — back to in-process SDK'), '']);
+            return;
+          }
+          if (args === 'model' || args.startsWith('model ')) {
+            const modelId = args.startsWith('model ') ? args.slice(6).trim() : '';
+            await selectBridgeModel(modelId);
             return;
           }
           if (args === 'help' || !args) {
@@ -1906,6 +1994,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               ...formatInfoLine('/bridge sub-commands:'),
               `  ${A.dim}run <prompt>${A.reset}  — run a bridge turn with the configured provider`,
               `  ${A.dim}switch <id>${A.reset} — switch default provider (claude/pi/codex/codewhale/reasonix/crush)`,
+              `  ${A.dim}model [id]${A.reset} — set the model for the current bridge provider`,
               `  ${A.dim}setup${A.reset}      — detect runtimes and pick a default`,
               `  ${A.dim}off${A.reset}        — disable bridge mode, back to in-process SDK`,
               '',
