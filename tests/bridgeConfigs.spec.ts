@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   addBridgeConfig,
-  buildConfigEnv,
   findBridgeConfig,
   getBridgeConfigsPath,
   maskApiKey,
@@ -36,20 +36,19 @@ describe('bridgeConfigs persistence', () => {
   it('writes then reads a config round-trip', async () => {
     const home = await makeHome();
     writeBridgeConfigs({ configs: [
-      { name: 'deepseek-claude', provider: 'claude', apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' },
-      { name: 'qwen', provider: 'pi', apiKey: 'sk-q' },
+      { name: 'deepseek', provider: 'anthropic' as const, apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' },
+      { name: 'qwen', provider: 'openai' as const, apiKey: 'sk-q' },
     ] }, home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(2);
-    expect(read.configs[0]).toMatchObject({ name: 'deepseek-claude', provider: 'claude', apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' });
-    // optional fields absent when unset
+    expect(read.configs[0]).toMatchObject({ name: 'deepseek', provider: 'anthropic', apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' });
     expect(read.configs[1]?.baseURL).toBeUndefined();
   });
 
   it('addBridgeConfig dedupes by name (replaces)', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'a', provider: 'claude', apiKey: 'old' }, home);
-    addBridgeConfig({ name: 'a', provider: 'claude', apiKey: 'new', baseURL: 'https://x' }, home);
+    addBridgeConfig({ name: 'a', provider: 'anthropic', apiKey: 'old' }, home);
+    addBridgeConfig({ name: 'a', provider: 'anthropic', apiKey: 'new', baseURL: 'https://x' }, home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(1);
     expect(read.configs[0]?.apiKey).toBe('new');
@@ -58,8 +57,8 @@ describe('bridgeConfigs persistence', () => {
 
   it('removeBridgeConfig deletes by name', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'a', provider: 'claude' }, home);
-    addBridgeConfig({ name: 'b', provider: 'pi' }, home);
+    addBridgeConfig({ name: 'a', provider: 'anthropic' }, home);
+    addBridgeConfig({ name: 'b', provider: 'openai' }, home);
     removeBridgeConfig('a', home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(1);
@@ -68,21 +67,22 @@ describe('bridgeConfigs persistence', () => {
 
   it('findBridgeConfig looks up by name', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'deepseek-claude', provider: 'claude' }, home);
-    expect(findBridgeConfig('deepseek-claude', home)?.provider).toBe('claude');
+    addBridgeConfig({ name: 'deepseek', provider: 'anthropic' }, home);
+    expect(findBridgeConfig('deepseek', home)?.provider).toBe('anthropic');
     expect(findBridgeConfig('missing', home)).toBeUndefined();
   });
 
-  it('ignores malformed entries gracefully', async () => {
+  it('migrates unknown providers to anthropic and drops entries without a name', async () => {
     const home = await makeHome();
     writeBridgeConfigs({ configs: [
-      { name: 'ok', provider: 'claude' },
-      { name: 'bad-provider', provider: 'nope' } as never,
-      { provider: 'pi' } as never,
+      { name: 'ok', provider: 'anthropic' },
+      { name: 'migrated', provider: 'nope' } as never,
+      { provider: 'openai' } as never,
     ] }, home);
     const read = readBridgeConfigs(home);
-    expect(read.configs).toHaveLength(1);
-    expect(read.configs[0]?.name).toBe('ok');
+    // 'ok' + 'migrated' (nope→anthropic) both survive; nameless entry dropped.
+    expect(read.configs).toHaveLength(2);
+    expect(read.configs.find(c => c.name === 'migrated')?.provider).toBe('anthropic');
   });
 
   it('getBridgeConfigsPath points under ~/.actoviq/bridge-configs.json', () => {
@@ -90,44 +90,42 @@ describe('bridgeConfigs persistence', () => {
   });
 });
 
-describe('buildConfigEnv', () => {
-  it('maps claude credentials to ANTHROPIC_*', () => {
-    const env = buildConfigEnv({ name: 'c', provider: 'claude', apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' });
-    expect(env.ANTHROPIC_API_KEY).toBe('sk-x');
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-x');
-    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com');
-    expect(env.ANTHROPIC_MODEL).toBe('deepseek-chat');
+describe('legacy provider migration', () => {
+  const HOME = os.tmpdir();
+
+  it('migrates legacy RuntimeProviderId → in-process provider on read', () => {
+    const file = getBridgeConfigsPath(HOME);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ configs: [
+      { name: 'legacy-claude', provider: 'claude', apiKey: 'sk-c', baseURL: 'https://x.com' },
+      { name: 'legacy-pi', provider: 'pi', apiKey: 'sk-pi' },
+      { name: 'legacy-codex', provider: 'codex' },
+      { name: 'legacy-codewhale', provider: 'codewhale' },
+      { name: 'legacy-reasonix', provider: 'reasonix' },
+      { name: 'legacy-crush', provider: 'crush' },
+    ] }));
+
+    const read = readBridgeConfigs(HOME);
+
+    const byName: Record<string, string> = {};
+    for (const c of read.configs) byName[c.name] = c.provider;
+
+    expect(byName['legacy-claude']).toBe('anthropic');
+    expect(byName['legacy-pi']).toBe('openai');
+    expect(byName['legacy-codex']).toBe('openai');
+    expect(byName['legacy-codewhale']).toBe('anthropic');
+    expect(byName['legacy-reasonix']).toBe('anthropic');
+    expect(byName['legacy-crush']).toBe('openai');
+    // Migrated file is re-saved (best-effort).
   });
 
-  it('maps codex credentials to OPENAI_*', () => {
-    const env = buildConfigEnv({ name: 'c', provider: 'codex', apiKey: 'sk-oai', baseURL: 'https://api.openai.com' });
-    expect(env.OPENAI_API_KEY).toBe('sk-oai');
-    expect(env.OPENAI_BASE_URL).toBe('https://api.openai.com');
-  });
-
-  it('maps reasonix credentials to DEEPSEEK_API_KEY', () => {
-    const env = buildConfigEnv({ name: 'c', provider: 'reasonix', apiKey: 'sk-ds' });
-    expect(env.DEEPSEEK_API_KEY).toBe('sk-ds');
-    expect(env.OPENAI_API_KEY).toBeUndefined();
-  });
-
-  it('maps pi to OPENAI_* by default, ANTHROPIC_* when baseURL mentions anthropic', () => {
-    const oai = buildConfigEnv({ name: 'c', provider: 'pi', apiKey: 'k', baseURL: 'https://api.openai.com' });
-    expect(oai.OPENAI_API_KEY).toBe('k');
-    expect(oai.ANTHROPIC_API_KEY).toBeUndefined();
-    const ant = buildConfigEnv({ name: 'c', provider: 'pi', apiKey: 'k', baseURL: 'https://api.anthropic.com' });
-    expect(ant.ANTHROPIC_API_KEY).toBe('k');
-    expect(ant.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
-  });
-
-  it('omits empty fields (never clobbers inherited values with nothing)', () => {
-    const env = buildConfigEnv({ name: 'c', provider: 'claude' });
-    expect(env).toEqual({});
-  });
-
-  it('maps codewhale to ANTHROPIC_* and crush to OPENAI_API_KEY', () => {
-    expect(buildConfigEnv({ name: 'c', provider: 'codewhale', apiKey: 'k', baseURL: 'https://x' })).toMatchObject({ ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'https://x' });
-    expect(buildConfigEnv({ name: 'c', provider: 'crush', apiKey: 'k' })).toMatchObject({ OPENAI_API_KEY: 'k' });
+  it('leaves already-correct anthropic/openai untouched', async () => {
+    const home = await makeHome();
+    addBridgeConfig({ name: 'a', provider: 'anthropic' }, home);
+    addBridgeConfig({ name: 'b', provider: 'openai' }, home);
+    const read = readBridgeConfigs(home);
+    expect(read.configs[0]?.provider).toBe('anthropic');
+    expect(read.configs[1]?.provider).toBe('openai');
   });
 });
 
