@@ -49,6 +49,8 @@ import type {
   RouterProfile,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
+import { createPreToolUseHookClassifier, readPreToolUseHooks } from '../hooks/userHooks.js';
+import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
@@ -497,6 +499,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return undefined;
         }
       : undefined;
+
+  // User-configurable PreToolUse hooks from settings.json hooks.PreToolUse[].
+  // Lazily reads the live settings so edits are picked up without a restart.
+  // The classifier returns undefined (no-op) when no hooks match — so the run
+  // path is unchanged for users who haven't configured any.
+  const preToolUseHookClassifier = createPreToolUseHookClassifier(
+    () => readPreToolUseHooks(getLoadedJsonConfig()?.raw),
+  );
 
   function summarizeForDialog(input: unknown): string {
     if (typeof input !== 'object' || input === null) return '';
@@ -1089,6 +1099,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
           approver,
+          classifier: preToolUseHookClassifier,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
           ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
           ...(canUseTool ? { canUseTool } : {}),
@@ -1282,6 +1293,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       skills: '/skills',
       agents: '/agents',
       mcp: '/mcp',
+      hooks: '/hooks',
       plugins: '/plugins',
       dream: '/dream [run|status]',
       workflows: '/workflows [run <name>|list]',
@@ -2347,6 +2359,33 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'mcp':
           await showMcp();
           return;
+        case 'hooks': {
+          // List configured PreToolUse hooks (gap #2). Hooks are read live
+          // from the settings store hooks.PreToolUse[] block.
+          const hooks = readPreToolUseHooks(getLoadedJsonConfig()?.raw);
+          if (hooks.length === 0) {
+            appendStatic([
+              ...formatInfoLine('no PreToolUse hooks configured'),
+              ...formatInfoLine('add to ~/.actoviq/settings.json:'),
+              `  ${A.dim}"hooks": {${A.reset}`,
+              `  ${A.dim}  "PreToolUse": [${A.reset}`,
+              `  ${A.dim}    { "matcher": "Bash", "command": "echo checking $ACTOVIQ_HOOK_TOOL", "description": "..." }${A.reset}`,
+              `  ${A.dim}  ]${A.reset}`,
+              `  ${A.dim}}${A.reset}`,
+              '',
+            ]);
+          } else {
+            appendStatic([
+              `${A.bold}PreToolUse hooks${A.reset} ${A.dim}(${hooks.length})${A.reset}`,
+              ...hooks.map((h, i) =>
+                `  ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 60)}${h.description ? ` ${A.dim}${h.description}${A.reset}` : ''}`,
+              ),
+              ...formatInfoLine('a non-zero exit or "BLOCK" stdout denies the tool'),
+              '',
+            ]);
+          }
+          return;
+        }
         case 'plugins':
           await showPlugins();
           return;

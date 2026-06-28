@@ -36,6 +36,7 @@ describe('TUI and GUI parity', () => {
       'skills',
       'agents',
       'mcp',
+      'hooks',
       'plugins',
       'dream',
       'workflows',
