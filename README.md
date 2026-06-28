@@ -1,4 +1,4 @@
-﻿# Actoviq Agent SDK
+# Actoviq Agent SDK
 
 [![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
 [![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
@@ -9,22 +9,35 @@
 
 Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
-Actoviq Agent SDK is an experimental TypeScript SDK for building multi-tool, multi-session agents with a clean-first public API, MCP integration, and memory helpers.
+**Actoviq** is an agent team platform — a TypeScript framework for composing multiple AI agents, runtimes, and providers into collaborative multi-agent systems. It grew out of a programmable agent SDK but now targets the **multi-agent, multi-runtime state management** and **model team collaboration** space: coordinating specialized models, routing turns across providers, and orchestrating agent swarms with shared context.
 
-This project is inspired by excellent agent projects and runtimes including Claude Code, Codex, Deepagents, and similar work in the ecosystem. Actoviq remains an independent project with its own public SDK surface and documentation.
+Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Actoviq remains independent with its own public surface and documentation.
+
+## Vision
+
+- **Multi-agent**: subagent delegation (Task tool), panel-analysis teams, reviewer-auditor pairs, dynamic workflows — agents collaborating, not just a single loop.
+- **Multi-runtime state management**: bridge configs let you pre-configure multiple backends (anthropic / openai / any-compatible) with apiKey + baseURL + model, switch by name mid-session, and the conversation context survives the switch (same session object, same transcript).
+- **Model team collaboration**: leaders dispatch to specialists (`/model router`), panel members investigate in parallel with structured convergence, reviewers report only verifiable issues — teams as first-class tools the agent invokes.
 
 ## Highlights
 
-- **Desktop GUI (`actoviq-gui`)** — an Electron chat UI: streamed transcript with markdown + copyable code, conversation history on resume, command palette, settings, and per-tool permission prompts. Security-hardened (loopback Host/Origin checks + per-process token + CSP)
-- **Model Team** — read-only advisory teams the agent invokes: `panel-analysis` (parallel investigation + optional primary-driven convergence) and `reviewer` (reports only verifiable issues). A centralized runtime (`src/team/teamRuntime.ts`) runs every member with a stable identity (id/name/role), streamed `TeamEvent`s, and structured `memberStatuses`; per-member provider config, $ENV_VAR apiKey resolution, global AgentPool
-- **Model Router / Leader-Dispatch** — a `/model` layer (not a team): a leader classifies each turn and dispatches it to the best specialist route (model/provider), then runs normally. Routes carry `role`/`description`, a built-in `dispatch` profile ships out of the box, profiles live in `~/.actoviq/routers/`, and the chosen executor may itself convene a team
-- **Dynamic Workflows** — JS script-based multi-agent orchestration with `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement
-- **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout, hooks for non-git VCS
-- **TavilySearch** — AI-optimized web search, pure TypeScript, auto key detection
-- **Standard Benchmark** — Self-contained framework with DeepSeek judge, HTML dashboard, 4-agent comparison (Hadamard/Bridge/Official)
-- **TUI/REPL**: selection pickers for `/team`, `/workflows`, `/worktree`; `/permissions` presets (read-only / workspace / full); `@` file completion; and a live context-usage + active-mode status line
+- **Model Team** — `panel-analysis` (parallel investigation + convergence) and `reviewer` (verifiable-issues-only auditor). Centralized runtime (`src/team/teamRuntime.ts`) per stable member identity, streamed `TeamEvent`s, per-member provider config, `$ENV_VAR` apiKey resolution, global AgentPool.
+- **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.actoviq/routers/`.
+- **Dynamic Workflows** — JS script-based multi-agent orchestration: `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement.
+- **Bridge (named connection configs)** — in-process runtime switching: pre-configure `anthropic`/`openai` backends with name + apiKey + baseURL + model, switch by name mid-session, multi-turn context survives (same session). `/bridge config` single-page editor; `/bridge` lists saved configs; per-config usage tracking in `/cost`.
+- **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened.
+- **TUI (`actoviq-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
+- **Plan mode + hooks** — `EnterPlanMode`/`ExitPlanMode` tools with plan file; user-configurable `PreToolUse`/`PostToolUse`/`SessionStart` hooks from `settings.json`.
+- **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout.
+- **TavilySearch** — AI-optimized web search, pure TypeScript.
+- **Standard Benchmark** — Self-contained framework with DeepSeek judge, HTML dashboard, 4-agent comparison.
 
-This repository is still under active development. APIs and runtime behavior may continue to evolve. Issues and pull requests are very welcome.
+## Roadmap — toward agent teams
+
+- **Swarm coordination** — mailbox-based inter-agent communication, task queues, shared knowledge graph.
+- **Persistent team memory** — team-scoped context that survives across sessions and member changes.
+- **Cross-runtime session continuity** — resume a bridge runtime's session exactly where you left it, regardless of which config was active.
+- **Model team IDE** — visual team builder, member role editor, team health dashboard.
 
 ## Install
 
@@ -90,7 +103,7 @@ This launches a readline-based interactive agent with:
 
 ## Terminal UI (TUI)
 
-`actoviq-tui` is the full terminal UI for the Hadamard SDK, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
+`actoviq-tui` is the full terminal UI, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
 
 ```bash
 npx actoviq-tui [work-dir] [options]
@@ -106,19 +119,19 @@ npx actoviq-tui [work-dir] [options]
 Features:
 
 - **Streaming transcript in native scrollback** — assistant text, `⏺ Tool(args)` calls, and `⎿ ✓/✗` result lines flush into the normal terminal buffer; scrollback and copy/paste work as usual.
-- **Live status line** — spinner, elapsed time, tool count, and the active tool while the agent works, over an always-visible mode line (model · permission preset · effort · active team) that shows **context usage as a percentage of the window** and turns yellow then red as it fills.
+- **Live status line** — spinner, elapsed time, tool count, and the active tool while the agent works, over an always-visible mode line (model · permission · effort · team · bridge · context%) that shows context usage as a percentage of the window and turns yellow then red as it fills.
 - **Claude-style prompt bar** — type `\` then `Enter` (or `Ctrl+J`) for a newline; `↑`/`↓` walk input history; the caret renders inline.
-- **Slash-command menu** — type `/` to open a filtered menu (`↑↓` select, `Tab` complete, `Enter` run). `/resume` opens a searchable project-session picker, while `/resume <session-id>` still resumes directly.
-- **`@` file completion** — type `@` to open a workspace file picker filtered by the partial path; `↑↓` select, `Tab`/`Enter` insert it. The list is git-aware (tracked + untracked, `.gitignore`-honoring) and refreshes after each run.
-- **Team / workflow / worktree pickers** — `/team` activates a saved Model Team (or "no team") as a tool the agent may call; `/workflows` runs a saved dynamic workflow; `/worktree` enters, exits, or lists git worktrees. Direct forms still work (`/team ask <name> <prompt>`, `/workflows run <name>`, `/worktree enter <name>`).
-- **Permission presets** — `/permissions` switches between **read-only**, **workspace-access** (auto-approve edits inside the workspace), and **full-access** (bypass) presets without restarting.
-- **Runtime catalogs** — `/skills`, `/agents`, `/mcp`, and `/plugins` browse the Hadamard SDK capabilities visible to the current workspace; `/help` provides a searchable command reference.
-- **Model and effort controls** — `/model` opens a model picker, `/model config` edits the provider, masked API key, base URL, and `min`/`medium`/`max` model tiers, and `/effort` selects `low`, `medium`, `high`, `max`, or automatic provider behavior.
-- **Dream controls** — `/dream` opens a run/status picker; `/dream run` and `/dream status` remain available for direct use.
+- **Slash-command menu** — type `/` to open a filtered menu (`↑↓` select, `Tab` complete, `Enter` run). `/resume` opens a searchable project-session picker.
+- **`@` file completion** — type `@` to open a git-aware workspace file picker filtered by the partial path; subsequence fuzzy matching.
+- **Team / workflow / worktree pickers** — `/team` activates a saved Model Team; `/workflows` runs a saved dynamic workflow; `/worktree` enters, exits, or lists git worktrees.
+- **Permission presets + per-tool scope** — `/permissions` switches between read-only/workspace/full/plan presets; always-allow rules persist with project or user scope.
 - **Mid-run steering** — keep typing while the agent works and press `Enter`: the message is queued and injected into the very next model request (shown as `⧗ queued`).
-- **Permission dialogs** — with `--permission-mode default`, mutating tools pause for an approve / always-allow / deny dialog. Always-allow choices are stored with the session and restored on resume.
-- **Interrupts** — `Esc` aborts the current run; `Ctrl+C` clears the input (twice quickly exits); `Ctrl+D` exits on an empty prompt.
+- **Plan mode + hooks** — `/plan` enters plan mode (`EnterPlanMode`/`ExitPlanMode` tools, plan file); `PreToolUse`/`PostToolUse`/`SessionStart` hooks from settings.json; `/hooks` lists them.
+- **Bridge configs** — `/bridge config` manages named connection profiles (name + runtime + apiKey + baseURL + model); `/bridge` lists them; selecting one switches the active runtime in-process. Per-config usage in `/cost` and `/usage`.
+- **Diagnostics + inspection** — `/doctor` checks config health; `/context` inspects the context window; `/cost`/`/usage` track token + spend (per-config breakdown); `/review` reviews the git diff; `/stats` shows session stats.
 - **Context management built in** — the Hadamard SDK auto-compacts long sessions mid-run and reactively recovers when a provider rejects an oversized prompt; compactions surface as `∿ context compacted` notices.
+- **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.actoviq/mcp.json`.
+- **Image attachments** — `@<path>.png` tokens expand into image content blocks (in-process, read as base64).
 
 Both CLIs share the same Hadamard SDK runtime defaults (Actoviq settings from `~/.actoviq/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and run against any Anthropic-compatible or OpenAI-compatible provider.
 
@@ -151,7 +164,7 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 
 **Security model:** the internal API is reachable only from loopback (Host + Origin allowlist, which defeats DNS-rebinding / CSRF) and requires a per-process token; the page ships a strict Content-Security-Policy. Electron runs with `sandbox`, `contextIsolation`, and no `nodeIntegration`.
 
-> `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime (the bridge's `directCli` mode needs no `bun` either). The core SDK does not require them.
+> `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime. The core SDK does not require them.
 >
 > **Bridge env overrides:** `ACTOVIQ_CLAUDE_PATH`, `ACTOVIQ_PI_PATH`, … (one per provider) to point the bridge at a specific runtime binary when it's not on `PATH`. See `docs/en/05-bridge-runtime.md`.
 
