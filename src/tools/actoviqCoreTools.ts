@@ -19,6 +19,7 @@ import { createTavilySearchTool } from './tavilySearch.js';
 import { createBashTool } from './bash/BashTool.js';
 import { createTodoWriteTool } from './todo/TodoWriteTool.js';
 import { createAskUserQuestionTool } from './askUserQuestion/AskUserQuestionTool.js';
+import { createPlanModeTools } from './planMode/PlanModeTools.js';
 import { createActoviqTaskTools } from './actoviqTaskTools.js';
 import { createNotebookEditTool } from './actoviqNotebookEdit.js';
 import { createPowerShellTool } from './actoviqShellTools.js';
@@ -28,6 +29,7 @@ export interface ActoviqCoreToolsOptions extends ActoviqFileToolsOptions {
   bash?: boolean;
   todoWrite?: boolean;
   askUserQuestion?: boolean;
+  planModeTools?: boolean;
   webTools?: boolean;
   taskTools?: boolean;
   notebookEdit?: boolean;
@@ -45,6 +47,10 @@ export function createActoviqCoreTools(
   if (options.bash !== false) tools.push(createBashTool());
   if (options.todoWrite !== false) tools.push(createTodoWriteTool());
   if (options.askUserQuestion !== false) tools.push(createAskUserQuestionTool());
+  // Plan-mode tools let the agent enter/exit planning and present a plan.
+  if (options.planModeTools !== false && options.cwd) {
+    tools.push(...createPlanModeTools(options.cwd));
+  }
   if (options.webTools !== false) {
     tools.push(...createActoviqWebTools());
     // Tavily: enabled when TAVILY_API_KEY is set (no Python dependency)
