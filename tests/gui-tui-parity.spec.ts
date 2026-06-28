@@ -18,6 +18,7 @@ describe('TUI and GUI parity', () => {
     expect(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS)).toEqual([
       'help',
       'clear',
+      'init',
       'compact',
       'memory',
       'model',

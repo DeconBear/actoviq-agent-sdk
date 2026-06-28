@@ -1153,6 +1153,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const usage: Record<string, string> = {
       help: '/help',
       clear: '/clear',
+      init: '/init',
       compact: '/compact [summary instructions]',
       memory: '/memory',
       model: '/model [model|min|medium|max|default|config|router]',
@@ -1937,6 +1938,15 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           process.stdout.write('\x1b[2J\x1b[H');
           renderDynamic();
           return;
+        case 'init': {
+          // Bootstrap a CLAUDE.md by having the agent explore the repo and
+          // write concise guidance — complements the CLAUDE.md loader (the
+          // generated file is then injected into every system prompt).
+          await startRun(
+            'Create or update a CLAUDE.md at the repo root with concise guidance for AI coding assistants: the build/test/lint/run commands, a short architecture overview, key conventions, and non-obvious gotchas. Explore with Glob, Grep, and Read first (package.json, README, existing CLAUDE.md, key source dirs). If a CLAUDE.md already exists, improve it without discarding user-authored sections. Keep it focused — no filler.',
+          );
+          return;
+        }
         case 'exit':
         case 'quit':
           await shutdown(0);
