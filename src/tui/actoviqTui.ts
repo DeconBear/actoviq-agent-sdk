@@ -1181,6 +1181,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       init: '/init',
       compact: '/compact [summary instructions]',
       memory: '/memory',
+      context: '/context',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
@@ -2068,6 +2069,35 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           } catch (error) {
             appendStatic([...formatErrorLine((error as Error).message), '']);
           }
+          return;
+        }
+        case 'context': {
+          // Break down what is consuming the context window (gap #9 vs
+          // claude-code's /context) — usage, messages, system prompt, tools,
+          // the loaded CLAUDE.md sources, and the active config.
+          const window = sdk.config.compact?.contextWindowTokens ?? 200_000;
+          const used = lastTokenEstimate ?? 0;
+          const pct = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
+          const usedK = used >= 1000 ? `${(used / 1000).toFixed(1)}k` : `${used}`;
+          const windowK = window >= 1000 ? `${(window / 1000).toFixed(0)}k` : `${window}`;
+          const ctxColor = pct >= 90 ? A.red : pct >= 70 ? A.yellow : A.dim;
+          const messages = session.messages.length;
+          const sysChars = systemPrompt.length;
+          const mcpCount = toolMetadata.filter(t => t.provider === 'mcp').length;
+          const project = loadProjectContext(sdk.config.workDir);
+          const team = activeTeamName ?? 'none';
+          const router = activeRouter ? activeRouter.name : 'off';
+          const bridge = bridgeMode && bridgeProviderLabel ? bridgeProviderLabel : 'off';
+          appendStatic([
+            `${A.bold}Context window${A.reset}`,
+            `  ${ctxColor}${pct}% used (${usedK} / ${windowK} tokens)${A.reset}`,
+            `  ${A.dim}messages${A.reset}        ${messages}`,
+            `  ${A.dim}system prompt${A.reset}   ~${sysChars} chars`,
+            `  ${A.dim}tools${A.reset}           ${toolMetadata.length}${mcpCount > 0 ? ` (${mcpCount} MCP)` : ''}`,
+            `  ${A.dim}CLAUDE.md${A.reset}       ${project.sources.length ? project.sources.join(', ') : '(none loaded)'}`,
+            `  ${A.dim}active${A.reset}         model=${session.model} · effort=${currentEffort() ?? 'auto'} · team=${team} · router=${router} · bridge=${bridge}`,
+            '',
+          ]);
           return;
         }
         case 'compact': {
