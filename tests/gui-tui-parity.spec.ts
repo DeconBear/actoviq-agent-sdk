@@ -25,6 +25,8 @@ describe('TUI and GUI parity', () => {
       'cost',
       'usage',
       'doctor',
+      'batch',
+      'goal',
       'review',
       'stats',
       'export',

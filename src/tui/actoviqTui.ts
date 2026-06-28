@@ -919,7 +919,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const bridgeTag = bridgeMode && activeBridgeConfig
       ? ` · bridge:${activeBridgeConfig.name}${bridgeModelLabel ? ` · ${bridgeModelLabel}` : ''}`
       : '';
-    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'}${bridgeTag} · `;
+    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'}${bridgeTag}${goalContextLine()} · `;
     return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
   }
 
@@ -1392,6 +1392,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       cost: '/cost',
       usage: '/usage',
       doctor: '/doctor',
+      batch: '/batch <file>',
+      goal: '/goal [objective|clear|pause|resume]',
       review: '/review',
       stats: '/stats',
       export: '/export [filename]',
@@ -2120,6 +2122,38 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     appendStatic([...formatInfoLine(`effort set to: ${currentEffort() ?? 'auto'}`), '']);
   }
 
+  // ── /goal: session-scoped goal with status tracking ─────────────────
+  const GOAL_METADATA_KEY = '__actoviqGoal';
+  type GoalStatus = 'active' | 'paused' | 'complete';
+  interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
+
+  function getGoal(): SessionGoal | null {
+    const raw = session.metadata[GOAL_METADATA_KEY];
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw) as SessionGoal; } catch { /* ignore */ }
+    }
+    if (typeof raw === 'object' && raw !== null) return raw as SessionGoal;
+    return null;
+  }
+
+  async function setGoal(objective: string): Promise<void> {
+    const goal: SessionGoal = { objective, status: 'active', setAt: new Date().toISOString() };
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+  }
+
+  async function clearGoal(): Promise<void> {
+    const md = { ...session.metadata };
+    delete md[GOAL_METADATA_KEY];
+    await session.mergeMetadata(md);
+  }
+
+  function goalContextLine(): string {
+    const g = getGoal();
+    if (!g) return '';
+    const statusMarks: Record<GoalStatus, string> = { active: `${A.green}▶${A.reset}`, paused: `${A.yellow}‖${A.reset}`, complete: `${A.dim}✓${A.reset}` };
+    return ` · goal:${statusMarks[g.status] ?? ''}${A.dim}${truncateToWidth(g.objective, 30)}${A.reset}`;
+  }
+
   async function chooseOutputStyle(arg: string): Promise<void> {
     const valid = OUTPUT_STYLES.map(s => s.id);
     if (arg) {
@@ -2656,6 +2690,66 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           }
           lines.push('');
           appendStatic(lines);
+          return;
+        }
+        case 'batch': {
+          const file = args.trim();
+          if (!file) {
+            appendStatic([...formatErrorLine('usage: /batch <file> — runs each line as a separate turn'), '']);
+            return;
+          }
+          let prompts: string[];
+          try {
+            const content = fs.readFileSync(path.resolve(workDir, file), 'utf-8');
+            prompts = content.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+          } catch (error) {
+            appendStatic([...formatErrorLine(`cannot read batch file: ${(error as Error).message}`), '']);
+            return;
+          }
+          if (!prompts.length) {
+            appendStatic([...formatInfoLine('batch file is empty'), '']);
+            return;
+          }
+          appendStatic([...formatInfoLine(`batch: ${prompts.length} prompt${prompts.length === 1 ? '' : 's'} from ${file}`), '']);
+          for (let i = 0; i < prompts.length; i++) {
+            appendStatic([`${A.dim}[${i + 1}/${prompts.length}]${A.reset} ${A.bold}>${A.reset} ${truncateToWidth(prompts[i]!, 60)}`, '']);
+            await startRun(prompts[i]!);
+          }
+          appendStatic([...formatInfoLine(`batch complete — ${prompts.length} prompt${prompts.length === 1 ? '' : 's'} done`), '']);
+          return;
+        }
+        case 'goal': {
+          const arg = args.trim();
+          if (!arg) {
+            const g = getGoal();
+            if (!g) {
+              appendStatic([...formatInfoLine('no goal set — use /goal <objective> to set one'), '']);
+            } else {
+              const marks: Record<GoalStatus, string> = { active: `${A.green}▶ active${A.reset}`, paused: `${A.yellow}‖ paused${A.reset}`, complete: `${A.dim}✓ complete${A.reset}` };
+              appendStatic([`${A.bold}Goal${A.reset}  ${marks[g.status]}  ${A.dim}${g.setAt.slice(0, 10)}${A.reset}`, `  ${g.objective}`, '']);
+            }
+            return;
+          }
+          if (arg === 'clear') { await clearGoal(); appendStatic([...formatInfoLine('goal cleared'), '']); return; }
+          if (arg === 'pause') {
+            const g = getGoal();
+            if (g && g.status === 'active') { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'paused' } }); appendStatic([...formatInfoLine('goal paused'), '']); }
+            else { appendStatic([...formatInfoLine('no active goal to pause'), '']); }
+            return;
+          }
+          if (arg === 'resume') {
+            const g = getGoal();
+            if (g && g.status === 'paused') { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'active' } }); appendStatic([...formatInfoLine('goal resumed'), '']); }
+            else { appendStatic([...formatInfoLine('no paused goal to resume'), '']); }
+            return;
+          }
+          if (arg === 'complete' || arg === 'done') {
+            const g = getGoal();
+            if (g) { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'complete' } }); appendStatic([...formatInfoLine('goal marked complete'), '']); }
+            return;
+          }
+          await setGoal(arg);
+          appendStatic([...formatInfoLine(`goal set — ${arg}`), '']);
           return;
         }
         case 'review': {
