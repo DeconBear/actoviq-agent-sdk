@@ -32,7 +32,7 @@ import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
-import { createPreToolUseHookClassifier, readPreToolUseHooks } from '../hooks/userHooks.js';
+import { createPreToolUseHookClassifier, readPreToolUseHooks, readPostToolUseHooks, runPostToolUseHooks, readSessionStartHooks, runSessionStartHooks } from '../hooks/userHooks.js';
 import type {
   ActoviqEffort,
   ActoviqRunEffort,
@@ -358,6 +358,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           model: options.model,
           permissionMode,
         });
+  // Run SessionStart hooks (fire-and-forget, from settings.json hooks.SessionStart[]).
+  runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), sdk.config.workDir);
 
   const screen = new TuiScreen(process.stdout);
   const editor = new InputEditor();
@@ -419,6 +421,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
+  // Track tool names by callId for PostToolUse hook context.
+  const toolCallNames = new Map<string, string>();
   // Live todo list (captured from TodoWrite tool calls). Rendered as a
   // persistent panel in the dynamic region so the user can see what the agent
   // is working on / what remains — Claude Code's main progress affordance.
@@ -1255,6 +1259,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         if (pending.length > 0) appendStatic(pending);
         runToolCount += 1;
         statusNote = event.call.publicName;
+        toolCallNames.set(event.call.id, event.call.publicName);
         // Render Edit calls as a colored old→new diff instead of a one-liner.
         appendStatic(
           event.call.publicName === 'Edit'
@@ -1299,6 +1304,17 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             screen.width,
           ),
         );
+        // Run matching PostToolUse hooks (fire-and-forget, never block).
+        const toolName = toolCallNames.get(event.result.id);
+        if (toolName) {
+          runPostToolUseHooks(
+            () => readPostToolUseHooks(getLoadedJsonConfig()?.raw),
+            toolName,
+            null as unknown,
+            event.result.outputText ?? '',
+            sdk.config.workDir,
+          );
+        }
         renderDynamic();
         return;
       case 'conversation.compacted':
@@ -2611,29 +2627,38 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           await showMcp();
           return;
         case 'hooks': {
-          // List configured PreToolUse hooks (gap #2). Hooks are read live
-          // from the settings store hooks.PreToolUse[] block.
-          const hooks = readPreToolUseHooks(getLoadedJsonConfig()?.raw);
-          if (hooks.length === 0) {
+          // List configured hooks from settings.json (gap #2). Hooks are read
+          // live from the hooks.PreToolUse[], hooks.PostToolUse[], and
+          // hooks.SessionStart[] blocks.
+          const preHooks = readPreToolUseHooks(getLoadedJsonConfig()?.raw);
+          const postHooks = readPostToolUseHooks(getLoadedJsonConfig()?.raw);
+          const startHooks = readSessionStartHooks(getLoadedJsonConfig()?.raw);
+          const total = preHooks.length + postHooks.length + startHooks.length;
+          if (total === 0) {
             appendStatic([
-              ...formatInfoLine('no PreToolUse hooks configured'),
-              ...formatInfoLine('add to ~/.actoviq/settings.json:'),
-              `  ${A.dim}"hooks": {${A.reset}`,
-              `  ${A.dim}  "PreToolUse": [${A.reset}`,
-              `  ${A.dim}    { "matcher": "Bash", "command": "echo checking $ACTOVIQ_HOOK_TOOL", "description": "..." }${A.reset}`,
-              `  ${A.dim}  ]${A.reset}`,
-              `  ${A.dim}}${A.reset}`,
+              ...formatInfoLine('no hooks configured'),
+              ...formatInfoLine('add to ~/.actoviq/settings.json: "{ hooks: { PreToolUse: [...], PostToolUse: [...], SessionStart: [...] } }"'),
+              `  ${A.dim}PreToolUse:   { "matcher": "Bash", "command": "echo checking $ACTOVIQ_HOOK_TOOL" }${A.reset}`,
+              `  ${A.dim}PostToolUse:  { "matcher": "*", "command": "notify-tool-complete" }  (fire-and-forget)${A.reset}`,
+              `  ${A.dim}SessionStart: { "command": "echo session started" }  (fire-and-forget)${A.reset}`,
               '',
             ]);
           } else {
-            appendStatic([
-              `${A.bold}PreToolUse hooks${A.reset} ${A.dim}(${hooks.length})${A.reset}`,
-              ...hooks.map((h, i) =>
-                `  ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 60)}${h.description ? ` ${A.dim}${h.description}${A.reset}` : ''}`,
-              ),
-              ...formatInfoLine('a non-zero exit or "BLOCK" stdout denies the tool'),
-              '',
-            ]);
+            const lines: string[] = [`${A.bold}Hooks${A.reset} ${A.dim}(${total})${A.reset}`];
+            if (preHooks.length > 0) {
+              lines.push(`${A.bold}  PreToolUse${A.reset} ${A.dim}(${preHooks.length}) — blocks tool on non-zero exit or "BLOCK" stdout${A.reset}`);
+              preHooks.forEach((h, i) => lines.push(`    ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 50)}`));
+            }
+            if (postHooks.length > 0) {
+              lines.push(`${A.bold}  PostToolUse${A.reset} ${A.dim}(${postHooks.length}) — fire-and-forget after tool completes${A.reset}`);
+              postHooks.forEach((h, i) => lines.push(`    ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 50)}`));
+            }
+            if (startHooks.length > 0) {
+              lines.push(`${A.bold}  SessionStart${A.reset} ${A.dim}(${startHooks.length}) — fire-and-forget on session init${A.reset}`);
+              startHooks.forEach((h, i) => lines.push(`    ${A.dim}${i + 1}.${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 50)}`));
+            }
+            lines.push('');
+            appendStatic(lines);
           }
           return;
         }

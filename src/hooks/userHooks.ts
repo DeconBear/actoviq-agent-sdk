@@ -103,3 +103,99 @@ export function createPreToolUseHookClassifier(
     return undefined; // no hook blocked — fall through to normal permission flow
   };
 }
+
+// ── PostToolUse hooks (fire-and-forget after a tool completes) ──────────
+
+export interface PostToolUseHook {
+  matcher: string;
+  command: string;
+  description?: string;
+}
+
+export interface SessionStartHook {
+  command: string;
+  description?: string;
+}
+
+export function readPostToolUseHooks(raw: unknown): PostToolUseHook[] {
+  const hooks = (raw as { hooks?: { PostToolUse?: unknown } } | null)?.hooks?.PostToolUse;
+  if (!Array.isArray(hooks)) return [];
+  return hooks.filter((h): h is PostToolUseHook =>
+    typeof h === 'object' && h !== null &&
+    typeof (h as PostToolUseHook).matcher === 'string' &&
+    typeof (h as PostToolUseHook).command === 'string');
+}
+
+export function readSessionStartHooks(raw: unknown): SessionStartHook[] {
+  const hooks = (raw as { hooks?: { SessionStart?: unknown } } | null)?.hooks?.SessionStart;
+  if (!Array.isArray(hooks)) return [];
+  return hooks.filter((h): h is SessionStartHook =>
+    typeof h === 'object' && h !== null &&
+    typeof (h as SessionStartHook).command === 'string');
+}
+
+function toolMatchesPattern(matcher: string, toolName: string): boolean {
+  if (matcher === '*' || matcher === '') return true;
+  const re = new RegExp('^' + matcher.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+  return re.test(toolName);
+}
+
+/**
+ * Run matching PostToolUse shell commands after a tool completes.
+ * Fire-and-forget — a failing hook is reported but never blocks the run.
+ */
+export function runPostToolUseHooks(
+  loadHooks: () => PostToolUseHook[],
+  publicName: string,
+  input: unknown,
+  output: unknown,
+  workDir: string,
+): void {
+  const hooks = loadHooks().filter(h => toolMatchesPattern(h.matcher, publicName));
+  if (hooks.length === 0) return;
+  for (const hook of hooks) {
+    try {
+      spawnSync(hook.command, {
+        shell: true,
+        cwd: workDir,
+        input: '',
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          ACTOVIQ_HOOK_EVENT: 'PostToolUse',
+          ACTOVIQ_HOOK_TOOL: publicName,
+          ACTOVIQ_HOOK_INPUT: JSON.stringify(input ?? {}).slice(0, 4000),
+          ACTOVIQ_HOOK_OUTPUT: typeof output === 'string' ? output.slice(0, 8000) : JSON.stringify(output ?? {}).slice(0, 8000),
+        },
+      });
+    } catch {
+      // best-effort — post hooks never block
+    }
+  }
+}
+
+/**
+ * Run SessionStart shell commands when a session is loaded/created.
+ * Fire-and-forget — failures are silent.
+ */
+export function runSessionStartHooks(
+  loadHooks: () => SessionStartHook[],
+  workDir: string,
+): void {
+  const hooks = loadHooks();
+  for (const hook of hooks) {
+    try {
+      spawnSync(hook.command, {
+        shell: true,
+        cwd: workDir,
+        input: '',
+        encoding: 'utf8',
+        timeout: 15_000,
+        env: { ...process.env, ACTOVIQ_HOOK_EVENT: 'SessionStart' },
+      });
+    } catch {
+      // best-effort
+    }
+  }
+}
