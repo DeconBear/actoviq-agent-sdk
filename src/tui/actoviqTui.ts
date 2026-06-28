@@ -304,14 +304,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       tools,
       permissionMode,
       // Load user-managed stdio MCP servers from ~/.actoviq/mcp.json (gap #10).
-      mcpServers: readMcpServerConfig().servers.map(s => ({
-        kind: 'stdio' as const,
-        name: s.name,
-        command: s.command,
-        ...(s.args ? { args: s.args } : {}),
-        ...(s.env ? { env: s.env } : {}),
-        ...(s.cwd ? { cwd: s.cwd } : {}),
-      })),
+      mcpServers: readMcpServerConfig().servers.map(s => (
+        s.command
+          ? { kind: 'stdio' as const, name: s.name, command: s.command, ...(s.args ? { args: s.args } : {}), ...(s.env ? { env: s.env } : {}), ...(s.cwd ? { cwd: s.cwd } : {}) }
+          : { kind: 'streamable_http' as const, name: s.name, url: s.url!, ...(s.headers ? { headers: s.headers } : {}) }
+      )),
       ...(options.model ? { model: options.model } : {}),
     });
   let sdk = await createCleanSdk();
@@ -2177,10 +2174,26 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     if (choice === 'add') {
       const name = (await promptText({ title: 'MCP server name', label: 'name' }))?.trim();
       if (!name) return;
-      const command = (await promptText({ title: `Command for ${name}`, label: 'command', description: 'e.g. npx or a binary path' }))?.trim();
-      if (!command) return;
-      const argsRaw = await promptText({ title: `Args for ${name}`, label: 'args', description: 'space-separated (optional)' });
-      addMcpServer({ name, command, ...(argsRaw?.trim() ? { args: argsRaw.trim().split(/\s+/) } : {}) });
+      const kind = await selectItem({
+        title: 'Server type',
+        items: [
+          { id: 'stdio', label: 'stdio', description: 'local process (e.g. npx, python, a binary)' },
+          { id: 'http', label: 'http', description: 'remote streamable HTTP MCP server (url)' },
+        ],
+      });
+      if (!kind) return;
+      if (kind === 'stdio') {
+        const command = (await promptText({ title: `Command for ${name}`, label: 'command', description: 'e.g. npx or a binary path' }))?.trim();
+        if (!command) return;
+        const argsRaw = await promptText({ title: `Args for ${name}`, label: 'args', description: 'space-separated (optional)' });
+        addMcpServer({ name, command, ...(argsRaw?.trim() ? { args: argsRaw.trim().split(/\s+/) } : {}) });
+      } else {
+        const url = (await promptText({ title: `URL for ${name}`, label: 'url', description: 'e.g. https://mcp.example.com' }))?.trim();
+        if (!url) return;
+        const headersRaw = await promptText({ title: `Headers for ${name}`, label: 'headers', description: 'key:value, comma-separated (optional)' });
+        const headers: Record<string, string> | undefined = headersRaw?.trim() ? Object.fromEntries(headersRaw.split(',').map(p => p.split(':').map(s => s.trim())).filter(a => a.length === 2)) : undefined;
+        addMcpServer({ name, url, ...(headers ? { headers } : {}) });
+      }
       appendStatic([...formatInfoLine(`added MCP server "${name}" — reloading SDK`), '']);
       await reloadCleanSdk();
       return;

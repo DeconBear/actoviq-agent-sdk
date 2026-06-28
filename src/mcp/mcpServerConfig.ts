@@ -1,10 +1,10 @@
 /**
- * User-managed MCP server config (gap #10, scoped subset).
+ * User-managed MCP server config (gap #10, scoped subset — now includes
+ * remote HTTP servers).
  *
- * A persisted list of stdio MCP servers the user added from the TUI
- * (~/.actoviq/mcp.json), loaded by the SDK client at startup. The TUI's
- * /mcp add and /mcp remove write here and reload the client. Format mirrors
- * the StdioMcpServerDefinition but stored as plain JSON (no class instances).
+ * Persisted to ~/.actoviq/mcp.json. Each entry is either a stdio server
+ * (command + optional args/env/cwd) or an HTTP server (url + optional headers).
+ * The TUI's /mcp add writes here and reloads the client.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -12,10 +12,13 @@ import path from 'node:path';
 
 export interface PersistedMcpServer {
   name: string;
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** For remote HTTP MCP servers (streamable_http). */
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface PersistedMcpConfig {
@@ -36,7 +39,7 @@ export function readMcpServerConfig(homeDir: string = os.homedir()): PersistedMc
           (s: unknown): s is PersistedMcpServer =>
             typeof s === 'object' && s !== null &&
             typeof (s as PersistedMcpServer).name === 'string' &&
-            typeof (s as PersistedMcpServer).command === 'string',
+            (typeof (s as PersistedMcpServer).command === 'string' || typeof (s as PersistedMcpServer).url === 'string'),
         )
       : [];
     return { servers };
