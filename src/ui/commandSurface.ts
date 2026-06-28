@@ -8,6 +8,8 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   cost: 'Show running token + spend totals',
   usage: 'Alias for /cost',
   doctor: 'Run configuration diagnostics',
+  review: 'Review the current git diff for correctness',
+  stats: 'Show session statistics',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
   'output-style': 'Select the response output style',

@@ -1322,6 +1322,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       cost: '/cost',
       usage: '/usage',
       doctor: '/doctor',
+      review: '/review',
+      stats: '/stats',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       'output-style': '/output-style [default|concise|explanatory|learning]',
@@ -2507,6 +2509,39 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           }
           lines.push('');
           appendStatic(lines);
+          return;
+        }
+        case 'review': {
+          // Run a code-review prompt on the current git diff (gap #5 subset).
+          let diff = '';
+          try {
+            diff = execSync('git diff', { cwd: workDir, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 15_000 }).trim();
+          } catch { /* no diff available */ }
+          if (!diff) {
+            appendStatic([...formatInfoLine('no uncommitted changes to review — working tree is clean'), '']);
+            return;
+          }
+          await startRun(
+            'Review this code change for correctness bugs, security issues, and simplification opportunities. ' +
+            'File-by-file, note any real problems with file_path:line_number. Skip trivial style nits.\n\n```diff\n' +
+            diff.slice(0, 80_000) + '\n```',
+          );
+          return;
+        }
+        case 'stats': {
+          const now = Date.now();
+          const uptime = Math.max(0, Math.round((now - (runStartedAt || now)) / 1000));
+          const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+          appendStatic([
+            `${A.bold}Session stats${A.reset}`,
+            `  ${A.dim}messages${A.reset}     ${session.messages.length}`,
+            `  ${A.dim}tokens${A.reset}       ${fmtTok(totalInputTokens)} in · ${fmtTok(totalOutputTokens)} out`,
+            `  ${A.dim}tools${A.reset}        ${toolMetadata.length}${toolMetadata.filter(t => t.provider === 'mcp').length ? ` (${toolMetadata.filter(t => t.provider === 'mcp').length} MCP)` : ''}`,
+            `  ${A.dim}model${A.reset}       ${session.model}${bridgeMode && activeBridgeConfig ? ` · bridge:${activeBridgeConfig.name}` : ''}`,
+            `  ${A.dim}output style${A.reset} ${outputStyle}`,
+            `  ${A.dim}plan mode${A.reset}   ${session.permissionContext.mode === 'plan' ? 'on' : 'off'}`,
+            '',
+          ]);
           return;
         }
         case 'compact': {
