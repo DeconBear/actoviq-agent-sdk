@@ -21,6 +21,7 @@ describe('TUI and GUI parity', () => {
       'init',
       'compact',
       'memory',
+      'context',
       'model',
       'effort',
       'permissions',

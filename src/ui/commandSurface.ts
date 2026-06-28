@@ -4,6 +4,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   init: 'Generate a CLAUDE.md for this project',
   compact: 'Compact the current session',
   memory: 'Show memory/compact state',
+  context: 'Show what is in the context window',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
   permissions: 'Show or set the permission mode',
