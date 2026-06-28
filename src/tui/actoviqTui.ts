@@ -177,10 +177,23 @@ interface Key {
  * expert-panel member reports so long output reads cleanly instead of dumping
  * raw lines. Optionally caps very long output with a "… (N more lines)" note.
  */
-function renderRichText(text: string, width: number, opts: { maxLines?: number } = {}): string[] {
+export function renderRichText(text: string, width: number, opts: { maxLines?: number } = {}): string[] {
   const cols = Math.max(20, width - 2);
   const out: string[] = [];
+  let inFence = false;
   for (const raw of text.replace(/\r/g, '').split('\n')) {
+    // Fenced code blocks: render a dim rule at the fence and the content
+    // dim/gray so code reads as a block instead of raw markdown text. Code
+    // lines are not word-wrapped (wrapping would corrupt code).
+    if (/^\s*```/.test(raw)) {
+      inFence = !inFence;
+      out.push(`${A.dim}${'─'.repeat(Math.min(cols, 40))}${A.reset}`);
+      continue;
+    }
+    if (inFence) {
+      out.push(`${A.gray}  ${raw}${A.reset}`);
+      continue;
+    }
     const heading = /^(#{1,6})\s+(.*)$/.exec(raw);
     if (heading) {
       out.push(`${A.bold}${A.cyan}${heading[2]}${A.reset}`);
