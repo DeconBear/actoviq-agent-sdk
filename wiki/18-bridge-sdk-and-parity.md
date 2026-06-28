@@ -147,6 +147,17 @@ const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvid
   tools/skills/agents catalog, so `getRuntimeInfo`/`listSkills`/`getRuntimeCatalog`
   return limited data. Lifecycle methods (run/stream/session/fork) are fully aligned.
 
+The TUI `/bridge` control board and the CLI `/bridge` wizard both drive
+`detectBridgeProviders()` + `resolveProvider()`. The board shows each provider's
+✔/✘, version, path, and a credential-readiness hint (`BRIDGE_PROVIDER_CREDENTIALS`),
+activates a provider in one tap, and the `run`/`switch`/`model`/`setup`/`off`/`help`
+sub-commands autocomplete. Activating a provider routes every normal prompt through
+that runtime — `startRun` branches on `bridgeMode`, swapping only the event source
+(`session.stream` vs `adaptBridgeRun(bridgeClient.stream)`) while reusing the whole
+run loop (status spinner, streamed transcript, tool cards, Esc interrupt, steering
+queue, history). `/bridge off` returns to the in-process SDK. Each bridge turn is
+one-shot (no cross-turn conversation context).
+
 ### Compatibility Matrix
 
 ```typescript

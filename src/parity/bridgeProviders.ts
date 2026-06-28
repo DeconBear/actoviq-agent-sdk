@@ -757,3 +757,22 @@ export const BRIDGE_PROVIDERS: Record<RuntimeProviderId, RuntimeProvider> = {
   reasonix: reasonixProvider,
   crush: crushProvider,
 };
+
+/**
+ * Best-effort credential env-var names each provider's CLI reads. The TUI
+ * treats "any one of these set" (across the settings env block ∪ process.env)
+ * as "credentials likely configured". Empty arrays mean the provider's
+ * credential var is not known from its public surface (codewhale/crush are
+ * multi-backend); the UI shows an honest "(unknown)" rather than a wrong key.
+ * This is advisory display data only — it never gates a run.
+ */
+export const BRIDGE_PROVIDER_CREDENTIALS: Record<RuntimeProviderId, string[]> = {
+  // claude maps ACTOVIQ_* → ANTHROPIC_* (see anthropicEnvMapping.ts); either form works.
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ACTOVIQ_API_KEY', 'ACTOVIQ_AUTH_TOKEN'],
+  // pi supports OpenAI- and Anthropic-compatible backends.
+  pi: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  codex: ['OPENAI_API_KEY'],
+  reasonix: ['DEEPSEEK_API_KEY'],
+  codewhale: [],
+  crush: [],
+};

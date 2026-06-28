@@ -152,7 +152,18 @@ const providers = await detectBridgeProviders();
 ```
 
 Returns one entry per registered provider, best-effort `--version` probe included.
-Used by the CLI `/bridge` wizard, TUI `/bridge setup`, and GUI Settings → Bridge panel.
+Used by the CLI `/bridge` wizard, the TUI `/bridge` control board, and GUI Settings → Bridge panel.
+
+### TUI runtime switching
+
+In the TUI, `/bridge` opens a control board. Activating a provider (selecting its
+row, or `/bridge switch <id>`) sets it as the active runtime: every prompt you then
+type normally runs through that bridge runtime, reusing the full TUI — live status
+spinner, streamed transcript, tool cards, Esc-to-interrupt, and input history.
+`/bridge off` switches back to the in-process Hadamard SDK. `/bridge run <prompt>`
+forces a single bridge turn without changing the toggle. Each bridge turn is
+one-shot: the runtime does not carry conversation context across turns (the bridge
+child is spawned fresh per prompt).
 
 ## 1.4. Troubleshooting — no runtime detected?
 
@@ -165,9 +176,12 @@ Used by the CLI `/bridge` wizard, TUI `/bridge setup`, and GUI Settings → Brid
 4. **Ask Claude Code to help:** paste the output of `/providers` (or the GUI's
    "Detect runtimes" button) into Claude Code and let it guide the install.
 
-Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalizer),
-`src/cli/bridge-interactive-agent.ts` (/bridge wizard), `src/tui/actoviqTui.ts`
-(/bridge run/switch/setup), `src/gui/actoviqGui.ts` (bridge panel + run).
+Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalizer +
+`BRIDGE_PROVIDER_CREDENTIALS` readiness hints), `src/cli/bridge-interactive-agent.ts`
+(/bridge wizard), `src/tui/actoviqTui.ts` (TUI `/bridge` control board — one-tap
+provider activation, per-provider model, credential hints, and live run status; the
+`run`/`switch`/`model`/`setup`/`off`/`help` sub-commands autocomplete), `src/gui/actoviqGui.ts`
+(bridge panel + run).
 
 ## 2. What bridge means
 

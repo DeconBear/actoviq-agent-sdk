@@ -82,6 +82,8 @@ const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvid
 - **凭证各异：** claude → `ANTHROPIC_*`；pi/codex → 各自的（`OPENAI_API_KEY` 等），经 settings env 块注入，不做 `ANTHROPIC_*` 重映射。
 - **pi/codex 的内省降级：** 启动事件不含 tools/skills/agents 清单，故 `getRuntimeInfo`/`listSkills`/`getRuntimeCatalog` 返回有限数据。生命周期方法（run/stream/session/fork）三家完整对齐。
 
+TUI 的 `/bridge` 控制面板与 CLI 的 `/bridge` 向导都驱动 `detectBridgeProviders()` + `resolveProvider()`。面板展示每个 provider 的 ✔/✘、版本、路径，以及凭证就绪提示（`BRIDGE_PROVIDER_CREDENTIALS`），可一键激活 provider；`run`/`switch`/`model`/`setup`/`off`/`help` 子命令支持自动补全。激活某个 provider 后，每条普通 prompt 都会经该运行时执行——`startRun` 按 `bridgeMode` 分支，只替换事件源（`session.stream` 与 `adaptBridgeRun(bridgeClient.stream)`），其余运行循环（状态 spinner、流式 transcript、工具卡片、Esc 中断、steering 队列、历史）全部复用。`/bridge off` 切回进程内 SDK。每个 bridge 轮次都是一次性的（不跨轮次保留对话上下文）。
+
 ### 事件提取
 
 ```typescript

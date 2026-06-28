@@ -9,7 +9,7 @@ import {
   loadJsonConfigFile,
   detectBridgeProviders,
 } from '../src/index.js';
-import { claudeProvider, piProvider, codexProvider } from '../src/parity/bridgeProviders.js';
+import { BRIDGE_PROVIDER_CREDENTIALS, claudeProvider, piProvider, codexProvider } from '../src/parity/bridgeProviders.js';
 
 const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
@@ -163,5 +163,33 @@ describe('Bridge provider: probeVersion (best-effort)', () => {
     // On this machine claude is a .cmd shim → should return a version string.
     expect(typeof version).toBe('string');
     expect(version!.length).toBeGreaterThan(0);
+  });
+});
+
+describe('BRIDGE_PROVIDER_CREDENTIALS', () => {
+  // Advisory display data only — surfaces which env var each provider's CLI
+  // reads so the TUI /bridge board can show credential readiness.
+  it('covers all six providers', () => {
+    expect(Object.keys(BRIDGE_PROVIDER_CREDENTIALS).sort()).toEqual([
+      'claude',
+      'codewhale',
+      'codex',
+      'crush',
+      'pi',
+      'reasonix',
+    ]);
+  });
+
+  it('lists the credential vars each known provider reads', () => {
+    expect(BRIDGE_PROVIDER_CREDENTIALS.claude).toContain('ANTHROPIC_API_KEY');
+    expect(BRIDGE_PROVIDER_CREDENTIALS.claude).toContain('ACTOVIQ_API_KEY');
+    expect(BRIDGE_PROVIDER_CREDENTIALS.pi).toContain('OPENAI_API_KEY');
+    expect(BRIDGE_PROVIDER_CREDENTIALS.codex).toContain('OPENAI_API_KEY');
+    expect(BRIDGE_PROVIDER_CREDENTIALS.reasonix).toContain('DEEPSEEK_API_KEY');
+  });
+
+  it('uses an empty list (honest "unknown") for multi-backend providers', () => {
+    expect(BRIDGE_PROVIDER_CREDENTIALS.codewhale).toEqual([]);
+    expect(BRIDGE_PROVIDER_CREDENTIALS.crush).toEqual([]);
   });
 });

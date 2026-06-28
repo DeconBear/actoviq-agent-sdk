@@ -148,7 +148,16 @@ const providers = await detectBridgeProviders();
 ```
 
 返回每个已注册 provider 的条目，包含 best-effort `--version` 探测。
-被 CLI 的 `/bridge` 向导、TUI 的 `/bridge setup`、GUI 的 Settings→Bridge 面板使用。
+被 CLI 的 `/bridge` 向导、TUI 的 `/bridge` 控制面板、GUI 的 Settings→Bridge 面板使用。
+
+### TUI 运行时切换
+
+在 TUI 中，`/bridge` 打开控制面板。激活某个 provider（选中其所在行，或
+`/bridge switch <id>`）会将其设为当前运行时：此后你直接输入的每条普通 prompt
+都会经该 bridge 运行时执行，并复用整个 TUI——实时状态 spinner、流式 transcript、
+工具卡片、Esc 中断、输入历史。`/bridge off` 切回进程内 Hadamard SDK。
+`/bridge run <prompt>` 不改变开关、强制执行单次 bridge 轮次。每个 bridge 轮次都是
+一次性的：运行时不跨轮次保留对话上下文（每条 prompt 都会新起一个 bridge 子进程）。
 
 ## 1.4 问题排查——没有检测到 runtime？
 
@@ -161,9 +170,11 @@ const providers = await detectBridgeProviders();
 4. **让 Claude Code 帮忙：** 把 `/providers` 的输出（或 GUI 的「Detect runtimes」
    按钮结果）贴给 Claude Code，让它指导安装和配置。
 
-实现：`src/parity/bridgeProviders.ts`（各 provider 的 argv/env/normalizer），
-`src/cli/bridge-interactive-agent.ts`（/bridge 向导），`src/tui/actoviqTui.ts`
-（/bridge run/switch/setup），`src/gui/actoviqGui.ts`（bridge 面板 + 实跑）。
+实现：`src/parity/bridgeProviders.ts`（各 provider 的 argv/env/normalizer +
+`BRIDGE_PROVIDER_CREDENTIALS` 凭证就绪提示），`src/cli/bridge-interactive-agent.ts`
+（/bridge 向导），`src/tui/actoviqTui.ts`（TUI `/bridge` 控制面板——一键激活 provider、
+逐 provider 设置模型、凭证提示、实跑状态；`run`/`switch`/`model`/`setup`/`off`/`help`
+子命令支持自动补全），`src/gui/actoviqGui.ts`（bridge 面板 + 实跑）。
 
 ## 2. bridge 是什么
 
