@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, execSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { access, readFile, readdir, rm } from 'node:fs/promises';
+import { access, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
+import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 import {
-  createActoviqBridgeSdk,
   createActoviqCoreTools,
   createAgentSdk,
   createModelTeam,
@@ -24,7 +25,35 @@ import {
   resolveRoutedRun,
   WorktreeService,
 } from '../index.js';
-import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
+import {
+  addBridgeConfig,
+  findBridgeConfig,
+  maskApiKey,
+  readBridgeConfigs,
+  removeBridgeConfig,
+  type PersistedBridgeConfig,
+} from '../parity/bridgeConfigs.js';
+import { buildRouteModelApi } from '../router/modelRouter.js';
+import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
+import { estimateCost } from '../team/pricing.js';
+import { createPlanModeTools, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
+import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
+import { loadProjectContext } from '../memory/projectContext.js';
+import {
+  addMcpServer,
+  readMcpServerConfig,
+  removeMcpServer,
+  type PersistedMcpServer,
+} from '../mcp/mcpServerConfig.js';
+import {
+  createPreToolUseHookClassifier,
+  readPostToolUseHooks,
+  readPreToolUseHooks,
+  readSessionStartHooks,
+  runPostToolUseHooks,
+  runSessionStartHooks,
+} from '../hooks/userHooks.js';
+import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -34,6 +63,7 @@ import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import { renderMarkdown } from './guiMarkdown.js';
 import type {
+  ActoviqCanUseTool,
   ActoviqEffort,
   ActoviqPermissionMode,
   ActoviqPermissionRule,
@@ -46,7 +76,7 @@ import type {
   TeamDefinition,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
-import type { ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
+import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
 
 const DEFAULT_PORT = 4174;
 const EFFORT_LEVELS: readonly ActoviqEffort[] = ['low', 'medium', 'high', 'max'];
@@ -87,7 +117,7 @@ interface PendingPermission {
   id: string;
   toolName: string;
   summary: string;
-  resolve: (outcome: 'allow' | 'always' | 'deny') => void;
+  resolve: (outcome: 'allow' | 'always' | 'always-user' | 'deny') => void;
 }
 
 interface GuiPreferences {
@@ -114,7 +144,13 @@ function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'c
   } catch {
     // Non-git workspaces are valid.
   }
-  return (
+  // Load the CLAUDE.md hierarchy (user + project, with @includes) so the agent
+  // picks up project-specific instructions — the canonical Claude Code behavior.
+  const project = loadProjectContext(workDir);
+  const projectSection = project.text
+    ? `\n\n# Project context (CLAUDE.md)\n\nThe following project instructions were loaded from CLAUDE.md files. Treat them as authoritative guidance for this workspace.\n\n${project.text}\n`
+    : '';
+  const base = (
     `You are Hadamard Agent, an interactive GUI agent. Working directory: ${workDir}\n\n` +
     `<env>\nWorking directory: ${workDir}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
     `# Tone and style\n` +
@@ -139,6 +175,7 @@ function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'c
         `- You are equally capable in this mode — only the presentation is less technical. Still use tools and do the real work; just summarize results in accessible terms.`
       : ``)
   );
+  return base + projectSection;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -176,6 +213,42 @@ function summarizeInput(input: unknown): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Expand @<image-path> tokens into Anthropic image content blocks so the user
+ * can attach screenshots/designs inline. Returns the string unchanged when no
+ * image actually loads (the @tokens stay literal). Mirrors the TUI's
+ * expandImageRefs — the @path route only (clipboard capture is platform-specific).
+ */
+function expandImageRefs(text: string, workDir: string): string | ContentBlockParam[] {
+  const refs = text.match(/@([\w./\\-]+\.(?:png|jpe?g|gif|webp|bmp))/gi);
+  if (!refs) return text;
+  const blocks: ContentBlockParam[] = [];
+  let cursor = 0;
+  const seen = new Set<string>();
+  let imagesAdded = 0;
+  for (const ref of refs) {
+    const raw = ref.slice(1); // strip @
+    const resolved = path.resolve(workDir, raw);
+    if (seen.has(resolved)) continue;
+    let data: string;
+    try {
+      data = readFileSync(resolved).toString('base64');
+    } catch {
+      continue; // not readable — leave the @token in the text below
+    }
+    const at = text.indexOf(ref, cursor);
+    if (at > cursor) blocks.push({ type: 'text', text: text.slice(cursor, at) });
+    const ext = path.extname(raw).slice(1).toLowerCase();
+    const mediaType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data } });
+    cursor = at + ref.length;
+    seen.add(resolved);
+    imagesAdded++;
+  }
+  if (cursor < text.length) blocks.push({ type: 'text', text: text.slice(cursor) });
+  return imagesAdded > 0 ? blocks : text;
 }
 
 function commandUsage(command: string): string {
@@ -606,7 +679,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Keep defaults when settings cannot be read.
   }
 
-  let tools = createActoviqCoreTools({ cwd: workDir });
+  // Plan mode tools (EnterPlanMode / ExitPlanMode) give the agent a structured
+  // research-then-propose flow. onPlanModeChange flips the session into plan
+  // permission mode so mutating tools are blocked while the agent researches;
+  // the holder is assigned after the session + approver exist.
+  let applyPlanPermission: (() => Promise<void>) | null = null;
+  const buildTools = () => [
+    ...createActoviqCoreTools({ cwd: workDir }),
+    ...createPlanModeTools(workDir, {
+      onPlanModeChange: async (mode) => { if (mode === 'plan') await applyPlanPermission?.(); },
+    }),
+  ];
+  let tools = buildTools();
   const createCleanSdk = () =>
     createAgentSdk({
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
@@ -633,6 +717,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           permissionMode,
         });
 
+  // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
+  runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), workDir);
+
   let activeTeamTool: AgentToolDefinition | null = null;
   let activeTeamName: string | null = null;
   let activeRouter: RouterProfile | null = null;
@@ -641,10 +728,43 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let eventSink: ((event: GuiRunEvent) => void) | null = null;
   const pendingPermissions = new Map<string, PendingPermission>();
 
-  // Bridge mode — toggles between in-process Hadamard SDK and spawn-based bridge.
+  // Bridge mode — in-process: a named config pre-builds a ModelApi via
+  // buildRouteModelApi and is injected per-run into session.stream({model, modelApi}).
+  // Same session → context survives switching bridge↔hadamard. No child process.
   let bridgeMode = false;
-  let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
-  let bridgeProviderLabel: string | null = null;
+  let activeBridgeConfig: PersistedBridgeConfig | null = null;
+  let activeBridgeModelApi: Awaited<ReturnType<typeof buildRouteModelApi>> | null = null;
+  let bridgeModelLabel: string | null = null;
+  // /output-style prompt prefix swap (applied per turn; 'default' is a no-op).
+  let outputStyle: OutputStyleId = 'default';
+  // Usage totals for /cost, /usage, /stats. Per-config breakdown attributes spend
+  // to each bridge config so the user can compare backends (mirrors the TUI).
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostUsd: number | null = 0;
+  const configUsage = new Map<string, { inputTokens: number; outputTokens: number; turns: number }>();
+
+  function recordUsage(model: string, usage: { input_tokens?: number; output_tokens?: number } | undefined): void {
+    const inT = usage?.input_tokens ?? 0;
+    const outT = usage?.output_tokens ?? 0;
+    totalInputTokens += inT;
+    totalOutputTokens += outT;
+    const cost = estimateCost(model, inT, outT, options.homeDir);
+    totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
+    if (bridgeMode && activeBridgeConfig) {
+      const rec = configUsage.get(activeBridgeConfig.name) ?? { inputTokens: 0, outputTokens: 0, turns: 0 };
+      rec.inputTokens += inT;
+      rec.outputTokens += outT;
+      rec.turns += 1;
+      configUsage.set(activeBridgeConfig.name, rec);
+    }
+  }
+  function configCost(name: string, rec: { inputTokens: number; outputTokens: number }): string | null {
+    const cfg = findBridgeConfig(name, options.homeDir);
+    if (!cfg?.model) return null;
+    const cost = estimateCost(cfg.model, rec.inputTokens, rec.outputTokens, options.homeDir);
+    return cost !== null ? `$${cost.toFixed(4)}` : null;
+  }
 
   // The project/plugin/empty-session scans walk every project on disk. Cache them
   // briefly (and invalidate on mutations) so `/api/state` is cheap on every turn.
@@ -688,7 +808,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const previousSdk = sdk;
     workDir = resolved;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
-    tools = createActoviqCoreTools({ cwd: workDir });
+    tools = buildTools();
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
@@ -723,7 +843,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const approver: ActoviqToolApprover = async (context) => {
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const pending = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
+    const pending = await new Promise<'allow' | 'always' | 'always-user' | 'deny'>((resolve) => {
       const request: PendingPermission = {
         id,
         toolName: context.publicName,
@@ -739,22 +859,55 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       });
     });
     pendingPermissions.delete(id);
-    if (pending === 'always') {
+    if (pending === 'always' || pending === 'always-user') {
       const state = session.permissionContext;
       const permissions = state.permissions.filter(
         rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
       );
-      permissions.push({ toolName: context.publicName, behavior: 'allow', source: 'gui-session' });
+      const source: 'project' | 'user' = pending === 'always-user' ? 'user' : 'project';
+      permissions.push({ toolName: context.publicName, behavior: 'allow', source });
       await session.setPermissionContext({
         mode: state.mode ?? permissionMode,
         permissions,
         approver,
       });
-      return { behavior: 'allow', reason: 'Approved (always) in GUI.' };
+      return { behavior: 'allow', reason: `Approved (always — ${source} scope) in GUI.` };
     }
     return pending === 'allow'
       ? { behavior: 'allow', reason: 'Approved in GUI.' }
       : { behavior: 'deny', reason: 'Denied in GUI permission dialog.' };
+  };
+
+  // Read-only Bash auto-allow + mutating-tool prompt (mirrors the TUI's
+  // canUseTool). Only active in the 'default' permission mode; returns undefined
+  // (no decision) otherwise so workspace/full modes keep their behavior.
+  const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit', 'PowerShell']);
+  const canUseTool: ActoviqCanUseTool = (context) => {
+    if (currentPermissionMode() !== 'default') return undefined;
+    if (context.publicName === 'Bash') {
+      const command = (context.input as { command?: unknown } | null)?.command;
+      if (typeof command === 'string' && isReadOnlyBashCommand(command)) {
+        return undefined; // auto-allow harmless read-only commands
+      }
+      return { behavior: 'ask', reason: 'Bash command may modify the workspace.' };
+    }
+    if (MUTATING_TOOLS.has(context.publicName)) {
+      return { behavior: 'ask', reason: `${context.publicName} mutates the workspace.` };
+    }
+    return undefined;
+  };
+
+  // User-configurable PreToolUse hooks from settings.json hooks.PreToolUse[].
+  // Lazily reads live settings so edits apply without a restart; a no-op when no
+  // hooks match (the common case), so the run path is unchanged.
+  const preToolUseHookClassifier = createPreToolUseHookClassifier(
+    () => readPreToolUseHooks(getLoadedJsonConfig()?.raw),
+  );
+
+  // Wire the plan-mode tools' onPlanModeChange to flip the session into plan
+  // permission mode so mutating tools are blocked while the agent researches.
+  applyPlanPermission = async () => {
+    await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
   };
 
   async function state() {
@@ -822,6 +975,42 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
         bridge: store?.raw?.bridge ?? {},
+      },
+      bridgeState: {
+        mode: bridgeMode,
+        activeConfig: activeBridgeConfig
+          ? {
+              name: activeBridgeConfig.name,
+              provider: activeBridgeConfig.provider,
+              apiKeyMasked: maskApiKey(activeBridgeConfig.apiKey),
+              baseURL: activeBridgeConfig.baseURL ?? '',
+              model: activeBridgeConfig.model ?? '',
+            }
+          : null,
+        activeModelLabel: bridgeModelLabel,
+        configs: readBridgeConfigs(options.homeDir).configs.map(c => ({
+          name: c.name,
+          provider: c.provider,
+          apiKeyMasked: maskApiKey(c.apiKey),
+          baseURL: c.baseURL ?? '',
+          model: c.model ?? '',
+        })),
+      },
+      goal: getGoal(),
+      outputStyle,
+      outputStyles: OUTPUT_STYLES,
+      planMode: currentPermissionMode() === 'plan',
+      plan: readPlanFile(workDir),
+      todos,
+      usage: {
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        costUsd: totalCostUsd,
+        perConfig: Array.from(configUsage.entries()).map(([cfgName, rec]) => ({
+          name: cfgName,
+          ...rec,
+          costUsd: configCost(cfgName, rec),
+        })),
       },
       running: Boolean(runAbort),
     };
@@ -952,6 +1141,86 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       events.push({ type: 'error', message: `${output.state.errors.length} errors during workflow execution` });
     }
     return events;
+  }
+
+  // Live todo list captured from TodoWrite tool calls; surfaced in state() so the
+  // frontend can render a persistent panel (mirrors the TUI's buildTodoPanel).
+  let todos: { subject: string; status: string; activeForm?: string }[] = [];
+
+  // ── Bridge: in-process named configs ─────────────────────────────────
+  // activateBridgeConfig pre-builds a ModelApi via buildRouteModelApi and stores
+  // it; streamRun injects {model, modelApi} per-run on the SAME session, so
+  // context survives switching bridge↔hadamard. No child process anywhere.
+  async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
+    const routed = await buildRouteModelApi({
+      model: config.model || session.model,
+      provider: config.provider,
+      baseURL: config.baseURL,
+      apiKey: config.apiKey,
+      maxTokens: 32000,
+    });
+    activeBridgeModelApi = routed;
+    bridgeModelLabel = routed.model;
+    activeBridgeConfig = config;
+    bridgeMode = true;
+    return true;
+  }
+  function disableBridge(): void {
+    bridgeMode = false;
+    activeBridgeConfig = null;
+    activeBridgeModelApi = null;
+    bridgeModelLabel = null;
+    // session context stays intact — switching back to the default provider.
+  }
+
+  // ── Goal: session-scoped objective stored in session metadata ─────────
+  const GOAL_METADATA_KEY = '__actoviqGoal';
+  type GoalStatus = 'active' | 'paused' | 'complete';
+  interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
+  function getGoal(): SessionGoal | null {
+    const raw = session.metadata[GOAL_METADATA_KEY];
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw) as SessionGoal; } catch { /* ignore */ }
+    }
+    if (typeof raw === 'object' && raw !== null) return raw as SessionGoal;
+    return null;
+  }
+  async function setGoal(objective: string): Promise<SessionGoal> {
+    const goal: SessionGoal = { objective, status: 'active', setAt: new Date().toISOString() };
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+    return goal;
+  }
+  async function clearGoal(): Promise<void> {
+    // mergeMetadata can't delete a key; setting undefined clears it functionally
+    // (getGoal treats falsy as null) and JSON.stringify drops it on save.
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: undefined });
+  }
+  async function setGoalStatus(status: GoalStatus): Promise<SessionGoal | null> {
+    const goal = getGoal();
+    if (!goal) return null;
+    goal.status = status;
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+    return goal;
+  }
+
+  // ── Batch: read a file and return its prompts for sequential execution ─
+  async function runBatch(fileArg: string): Promise<GuiRunEvent[]> {
+    const filePath = path.resolve(workDir, fileArg);
+    let content: string;
+    try {
+      content = await readFile(filePath, 'utf8');
+    } catch {
+      return [{ type: 'error', message: `batch: cannot read ${filePath}` }];
+    }
+    const prompts = content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith('#'));
+    if (prompts.length === 0) return [{ type: 'error', message: 'batch: file has no prompts' }];
+    return [
+      { type: 'notice', message: `batch: ${prompts.length} prompts from ${path.basename(filePath)}` },
+      { type: 'batch.queue', prompts },
+    ];
   }
 
   async function runSlashCommand(raw: string): Promise<GuiRunEvent[]> {
@@ -1191,6 +1460,206 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>]' }];
       }
+      case 'init': {
+        const prompt = 'Explore this repository (read package.json, README, and CLAUDE.md if present; list the top-level structure), then write or improve a root CLAUDE.md documenting: what the project is, key commands (build/test/run), the high-level architecture, and important conventions. Keep it concise and accurate.';
+        return [{ type: 'agent.prompt', text: prompt }];
+      }
+      case 'context': {
+        const project = loadProjectContext(workDir);
+        const mcp = toolMetadata.filter(t => t.provider === 'mcp').length;
+        const lines = [
+          `Model: ${session.model}`,
+          `Effort: ${currentEffort() ?? 'auto'}`,
+          `Permission: ${currentPermissionMode()}`,
+          `Messages: ${session.messages.length}`,
+          `System prompt: ${systemPrompt.length} chars`,
+          `Tools: ${toolMetadata.length} (${mcp} MCP)`,
+          `Output style: ${outputStyle}`,
+          `Bridge: ${bridgeMode ? (activeBridgeConfig?.name ?? 'on') : 'off'}`,
+          `CLAUDE.md sources: ${project.sources.length ? project.sources.join(', ') : '(none)'}`,
+        ];
+        return [{ type: 'command.result', title: 'Context', text: lines.join('\n') }];
+      }
+      case 'cost':
+      case 'usage': {
+        const lines = [
+          `Input tokens: ${totalInputTokens.toLocaleString()}`,
+          `Output tokens: ${totalOutputTokens.toLocaleString()}`,
+          `Cost: ${totalCostUsd === null ? 'unknown' : '$' + totalCostUsd.toFixed(4)}`,
+          `Model: ${session.model}`,
+        ];
+        if (configUsage.size > 0) {
+          lines.push('', 'By config:');
+          for (const [cfgName, rec] of configUsage) {
+            const star = activeBridgeConfig?.name === cfgName ? ' *' : '';
+            const cost = configCost(cfgName, rec);
+            lines.push(`  ${cfgName}${star} — ${rec.turns} turns, ${(rec.inputTokens + rec.outputTokens).toLocaleString()} tokens${cost ? ', ' + cost : ''}`);
+          }
+        }
+        return [{ type: 'command.result', title: 'Usage', text: lines.join('\n') }];
+      }
+      case 'doctor': {
+        const env = readEnvFromSettings(getLoadedJsonConfig()?.raw ?? {});
+        const project = loadProjectContext(workDir);
+        let isGit = false;
+        try { execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' }); isGit = true; } catch { /* not a git repo */ }
+        const key = env.ACTOVIQ_API_KEY ? maskApiKey(env.ACTOVIQ_API_KEY) : env.ACTOVIQ_AUTH_TOKEN ? '(auth token)' : '(none)';
+        const lines = [
+          `Model: ${session.model}`,
+          `Provider: ${env.ACTOVIQ_PROVIDER ?? sdk.config.provider}`,
+          `API key: ${key}`,
+          `Base URL: ${env.ACTOVIQ_BASE_URL ?? sdk.config.baseURL ?? '(default)'}`,
+          `Workdir: ${workDir}`,
+          `Git repo: ${isGit ? 'Yes' : 'No'}`,
+          `Session: ${session.id} (${session.messages.length} messages)`,
+          `Permission: ${currentPermissionMode()}`,
+          `Tools: ${toolMetadata.length}`,
+          `CLAUDE.md: ${project.sources.length ? project.sources.join(', ') : '(none)'}`,
+          `Bridge: ${bridgeMode ? `${activeBridgeConfig?.name ?? 'on'} → ${bridgeModelLabel ?? '?'}` : 'off'}`,
+        ];
+        return [{ type: 'command.result', title: 'Doctor', text: lines.join('\n') }];
+      }
+      case 'batch':
+        if (!args) return [{ type: 'error', message: 'usage: /batch <file>' }];
+        return runBatch(args);
+      case 'goal': {
+        const goal = getGoal();
+        const mark = (s: GoalStatus) => (s === 'active' ? '▶' : s === 'paused' ? '‖' : '✓');
+        if (!args) {
+          return goal
+            ? [{ type: 'command.result', title: 'Goal', text: `${mark(goal.status)} ${goal.objective}\nstatus: ${goal.status} · set: ${goal.setAt}` }]
+            : [{ type: 'notice', message: 'no goal set — /goal <objective>' }];
+        }
+        if (args === 'clear') { await clearGoal(); return [{ type: 'notice', message: 'goal cleared' }, { type: 'state' }]; }
+        if (args === 'pause') { const g = await setGoalStatus('paused'); return g ? [{ type: 'notice', message: 'goal paused' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to pause' }]; }
+        if (args === 'resume') { const g = await setGoalStatus('active'); return g ? [{ type: 'notice', message: 'goal resumed' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to resume' }]; }
+        if (args === 'complete' || args === 'done') { const g = await setGoalStatus('complete'); return g ? [{ type: 'notice', message: 'goal complete' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to complete' }]; }
+        await setGoal(args);
+        return [{ type: 'notice', message: `goal set: ${args.slice(0, 60)}` }, { type: 'state' }];
+      }
+      case 'review': {
+        const diff = gitText(['--no-pager', 'diff']);
+        if (!diff) return [{ type: 'error', message: 'no git diff to review (stage/commit changes first)' }];
+        const capped = diff.length > 80000 ? diff.slice(0, 80000) + '\n…[diff truncated]' : diff;
+        const prompt = `Review the following git diff for correctness, security, and style issues. For each finding cite file:line and explain the problem and the fix. Be concise.\n\n\`\`\`diff\n${capped}\n\`\`\``;
+        return [{ type: 'agent.prompt', text: prompt }];
+      }
+      case 'stats': {
+        const mcp = toolMetadata.filter(t => t.provider === 'mcp').length;
+        const lines = [
+          `Messages: ${session.messages.length}`,
+          `Input tokens: ${totalInputTokens.toLocaleString()}`,
+          `Output tokens: ${totalOutputTokens.toLocaleString()}`,
+          `Tools: ${toolMetadata.length} (${mcp} MCP)`,
+          `Model: ${session.model}${bridgeMode ? ' (bridge:' + (activeBridgeConfig?.name ?? '?') + ')' : ''}`,
+          `Output style: ${outputStyle}`,
+          `Plan mode: ${currentPermissionMode() === 'plan' ? 'on' : 'off'}`,
+        ];
+        return [{ type: 'command.result', title: 'Stats', text: lines.join('\n') }];
+      }
+      case 'export': {
+        const lines: string[] = [];
+        for (const message of session.messages) {
+          const role = message.role === 'assistant' ? 'Assistant' : 'User';
+          const text = typeof message.content === 'string'
+            ? message.content
+            : Array.isArray(message.content)
+              ? message.content.map((b) => {
+                  const t = (b as { text?: unknown } | null)?.text;
+                  return typeof t === 'string' ? t : '';
+                }).join('\n')
+              : '';
+          if (text.trim()) { lines.push(`## ${role}`, '', text, '', '---', ''); }
+        }
+        const md = lines.join('\n');
+        const file = args ? path.resolve(workDir, args) : path.resolve(workDir, `session-${Date.now()}.md`);
+        try { await writeFile(file, md, 'utf8'); return [{ type: 'notice', message: `exported to ${file}` }]; }
+        catch (e) { return [{ type: 'error', message: `export failed: ${(e as Error).message}` }]; }
+      }
+      case 'rewind': {
+        const n = parseInt(args || '1', 10);
+        if (!Number.isFinite(n) || n < 1) return [{ type: 'error', message: 'usage: /rewind <N>' }];
+        const kept = session.messages.slice(0, Math.max(0, session.messages.length - n));
+        const newSession = await sdk.createSession({ title: session.title, model: options.model, permissionMode });
+        if (kept.length > 0) await newSession.appendMessages(kept).catch(() => undefined);
+        session = newSession;
+        return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
+      }
+      case 'output-style': {
+        const valid = OUTPUT_STYLES.map(s => s.id);
+        if (!args) return [{ type: 'command.result', title: 'Output style', text: `current: ${outputStyle}\navailable: ${valid.join(', ')}` }];
+        if (!valid.includes(args as OutputStyleId)) return [{ type: 'error', message: `usage: /output-style [${valid.join('|')}]` }];
+        outputStyle = args as OutputStyleId;
+        return [{ type: 'notice', message: `output style: ${outputStyle}` }, { type: 'state' }];
+      }
+      case 'hooks': {
+        const raw = getLoadedJsonConfig()?.raw;
+        const pre = readPreToolUseHooks(raw);
+        const post = readPostToolUseHooks(raw);
+        const start = readSessionStartHooks(raw);
+        const lines: string[] = [];
+        const fmt = (h: { matcher?: string; command?: string }) => `  ${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
+        lines.push(`PreToolUse (${pre.length}):`); pre.forEach(h => lines.push(fmt(h)));
+        lines.push(`PostToolUse (${post.length}):`); post.forEach(h => lines.push(fmt(h)));
+        lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(`  ${h.command}`));
+        if (pre.length + post.length + start.length === 0) {
+          lines.push('', 'No hooks configured. Add to settings.json:', '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $ACTOVIQ_HOOK_TOOL" }] } }');
+        }
+        return [{ type: 'command.result', title: 'Hooks', text: lines.join('\n') }];
+      }
+      case 'plan': {
+        if (args === 'off') {
+          const mode = permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default';
+          await session.setPermissionContext({ mode, permissions: [], approver });
+          return [{ type: 'notice', message: 'plan mode off' }, { type: 'state' }];
+        }
+        if (args === 'open') {
+          openPathInSystem(planFilePath(workDir));
+          return [{ type: 'notice', message: 'opened plan file' }];
+        }
+        if (currentPermissionMode() !== 'plan') {
+          await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+        }
+        const plan = readPlanFile(workDir);
+        return plan
+          ? [{ type: 'command.result', title: 'Plan', text: plan }, { type: 'state' }]
+          : [{ type: 'notice', message: 'plan mode on — research, then ExitPlanMode. No plan yet.' }, { type: 'state' }];
+      }
+      case 'bridge': {
+        if (args === 'off') { disableBridge(); return [{ type: 'notice', message: 'bridge off — using default provider' }, { type: 'state' }]; }
+        if (args === 'help') {
+          return [{ type: 'command.result', title: 'Bridge help', text: [
+            '/bridge — open the bridge board (Settings → Bridge)',
+            '/bridge switch <name> — activate a named config',
+            '/bridge model [id] — set the active config model',
+            '/bridge config — manage named configs',
+            '/bridge off — return to the default provider',
+            '/bridge run <prompt> — run one prompt through the active config',
+            'Configs live in ~/.actoviq/bridge-configs.json',
+          ].join('\n') }];
+        }
+        if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'bridge' }];
+        if (args.startsWith('switch ')) {
+          const cfgName = args.slice(7).trim();
+          const cfg = findBridgeConfig(cfgName, options.homeDir);
+          if (!cfg) return [{ type: 'error', message: `bridge config not found: ${cfgName}` }];
+          await activateBridgeConfig(cfg);
+          return [{ type: 'notice', message: `bridge active: ${cfg.name} → ${bridgeModelLabel} (provider ${cfg.provider})` }, { type: 'state' }];
+        }
+        if (args.startsWith('model')) {
+          const modelArg = args.slice(5).trim();
+          if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
+          if (!modelArg) return [{ type: 'command.result', title: 'Bridge model', text: `current: ${bridgeModelLabel ?? activeBridgeConfig.model ?? '(default)'}` }];
+          activeBridgeConfig = { ...activeBridgeConfig, model: modelArg };
+          await activateBridgeConfig(activeBridgeConfig);
+          return [{ type: 'notice', message: `bridge model set: ${modelArg}` }, { type: 'state' }];
+        }
+        if (args.startsWith('run ')) {
+          if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
+          return [{ type: 'agent.prompt', text: args.slice(4).trim() }];
+        }
+        return [{ type: 'settings.open', tab: 'bridge' }];
+      }
       default:
         return [{ type: 'error', message: `unknown command: /${name}` }];
     }
@@ -1229,7 +1698,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     let streamedTextSeen = false;
     try {
       let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
-      if (activeRouter) {
+      if (activeRouter && !bridgeMode) {
         try {
           const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
           routed = { model: decision.model, modelApi: decision.modelApi };
@@ -1239,57 +1708,81 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           send({ type: 'notice', message: `router classification failed: ${(error as Error).message}` });
         }
       }
+      // Branch the event source. Bridge mode runs IN-PROCESS through the selected
+      // config's provider/apiKey/baseURL/model (no child process): inject the
+      // pre-built {model, modelApi} into session.stream — the /model router's
+      // proven cross-provider mechanism. Same session → context survives switching
+      // bridge↔hadamard. Otherwise a normal in-process turn (optionally routed).
+      const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
       let stream: AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> };
-      let runModel = routed?.model ?? options.model ?? 'bridge';
-      if (bridgeMode) {
-        // Lazily create the bridge client on first bridge run.
-        if (!bridgeClient) {
-          const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-          const bridgeCfg: Record<string, unknown> = (store?.raw?.bridge as Record<string, unknown>) ?? {};
-          const provider = (typeof bridgeCfg.defaultProvider === 'string' ? bridgeCfg.defaultProvider : 'claude');
-          bridgeProviderLabel = provider;
-          bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: provider as any, workDir });
-          const mp = (provider as string)[0]?.toUpperCase() + (provider as string).slice(1);
-          runModel = `${mp} Code`;
-          send({ type: 'notice', message: `bridge -> ${provider} (${runModel})` });
-        }
-        const runId = `bridge-${Date.now()}`;
-        const bs = bridgeClient.stream(input, {
-          signal: runAbort.signal,
-          model: options.model,
-          systemPrompt,
-          appendSystemPrompt: undefined,
-        });
-        stream = adaptBridgeRun(bs, bs.result, runId, runModel);
-      } else {
-        stream = session.stream(input, {
-          systemPrompt,
+      if (bridgeMode && activeBridgeModelApi) {
+        const bridgeName = activeBridgeConfig?.name ?? 'bridge';
+        send({ type: 'notice', message: `bridge -> ${bridgeName} (${activeBridgeModelApi.model})` });
+        stream = session.stream(expandImageRefs(input, workDir), {
+          systemPrompt: systemPromptForRun,
           signal: runAbort.signal,
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
           approver,
+          classifier: preToolUseHookClassifier,
+          canUseTool,
+          model: activeBridgeModelApi.model,
+          modelApi: activeBridgeModelApi.modelApi,
+          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+        });
+      } else {
+        stream = session.stream(expandImageRefs(input, workDir), {
+          systemPrompt: systemPromptForRun,
+          signal: runAbort.signal,
+          permissionMode: currentPermissionMode(),
+          effort: currentEffort(),
+          approver,
+          classifier: preToolUseHookClassifier,
+          canUseTool,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
           ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
         });
       }
+      // Track tool call inputs so PostToolUse hooks (fire-and-forget) get both the
+      // input and the output for the matching result.
+      const toolCallInputs = new Map<string, { name: string; input: unknown }>();
       for await (const event of stream) {
         forwardAgentEvent(event, send);
+        if (event.type === 'tool.call') {
+          toolCallInputs.set(event.call.id, { name: event.call.publicName, input: event.call.input });
+          // Capture the live todo list from TodoWrite calls for the panel.
+          if (event.call.publicName === 'TodoWrite') {
+            const tasks = (event.call.input as { tasks?: unknown[] } | null)?.tasks;
+            if (Array.isArray(tasks)) {
+              todos = tasks.map((t) => {
+                const task = t as { subject?: string; status?: string; activeForm?: string };
+                return {
+                  subject: typeof task.subject === 'string' ? task.subject : '',
+                  status: typeof task.status === 'string' ? task.status : 'pending',
+                  ...(typeof task.activeForm === 'string' && task.activeForm ? { activeForm: task.activeForm } : {}),
+                };
+              }).filter(t => t.subject);
+            }
+          }
+        } else if (event.type === 'tool.result') {
+          const prev = toolCallInputs.get(event.result.id);
+          runPostToolUseHooks(
+            () => readPostToolUseHooks(getLoadedJsonConfig()?.raw),
+            event.result.publicName,
+            prev?.input,
+            event.result.outputText,
+            workDir,
+          );
+          toolCallInputs.delete(event.result.id);
+        }
         if (event.type === 'response.text.delta' && event.delta) streamedTextSeen = true;
       }
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
-      if (!bridgeMode) {
-        toolMetadata = await sdk.listToolMetadata();
-      }
+      recordUsage(routed?.model ?? activeBridgeModelApi?.model ?? session.model, (result as any).usage);
+      toolMetadata = await sdk.listToolMetadata();
       invalidateHeavyState();
-      // Persist bridge turn to the chat transcript so it survives reload.
-      if (bridgeMode && result.text) {
-        await session.appendMessages([
-          { role: 'user', content: input },
-          { role: 'assistant', content: result.text },
-        ]).catch(() => undefined);
-      }
       send({ type: 'state', state: await state() });
       send({ type: 'done', usage: (result as any).usage });
     } catch (error) {
@@ -1446,6 +1939,48 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
         return json(res, 200, { providers: await detectBridgeProviders() });
       }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/config') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const provider = body.provider === 'openai' ? 'openai' : 'anthropic';
+        if (!name) return json(res, 400, { error: 'Missing config name' });
+        const config: PersistedBridgeConfig = { name, provider };
+        if (typeof body.apiKey === 'string' && body.apiKey) config.apiKey = body.apiKey;
+        if (typeof body.baseURL === 'string' && body.baseURL) config.baseURL = body.baseURL;
+        if (typeof body.model === 'string' && body.model) config.model = body.model;
+        addBridgeConfig(config, options.homeDir);
+        // If the saved config is the active one, refresh it so the next turn uses it.
+        if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/config/delete') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing config name' });
+        removeBridgeConfig(name, options.homeDir);
+        if (activeBridgeConfig?.name === name) disableBridge();
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/activate') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const cfg = findBridgeConfig(name, options.homeDir);
+        if (!cfg) return json(res, 404, { error: `bridge config not found: ${name}` });
+        try {
+          await activateBridgeConfig(cfg);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/off') {
+        disableBridge();
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
       if (req.method === 'POST' && url.pathname === '/api/open-location') {
         openPathInSystem(workDir);
         return json(res, 200, { ok: true, path: workDir });
@@ -1497,10 +2032,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const decision = body.decision;
         const pending = pendingPermissions.get(id);
         if (!pending) return json(res, 404, { error: 'Permission request not found' });
-        if (decision !== 'allow' && decision !== 'always' && decision !== 'deny') {
+        if (decision !== 'allow' && decision !== 'always' && decision !== 'always-user' && decision !== 'deny') {
           return json(res, 400, { error: 'Invalid decision' });
         }
-        pending.resolve(decision);
+        pending.resolve(decision as 'allow' | 'always' | 'always-user' | 'deny');
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
@@ -1525,8 +2060,47 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   return { url, token: authToken, close };
 }
 
+// First-run onboarding: guides the user through creating ~/.actoviq/settings.json
+// when no credential is found (mirrors the TUI's onboardCredentials). Uses plain
+// readline so it works in any terminal launching `actoviq-gui`.
+async function onboardCredentials(opts: { configPath?: string; homeDir?: string }): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
+  process.stdout.write('\n  Welcome to Actoviq! Let\'s set up your first connection.\n\n');
+  const provider = ((await ask('  Provider (anthropic/openai) [anthropic]: ')).trim().toLowerCase() || 'anthropic') as 'anthropic' | 'openai';
+  const apiKey = (await ask('  API key: ')).trim();
+  const baseURL = (await ask('  Base URL [https://api.deepseek.com]: ')).trim() || 'https://api.deepseek.com';
+  const model = (await ask('  Model [deepseek-chat]: ')).trim() || 'deepseek-chat';
+  rl.close();
+  if (!apiKey) {
+    process.stdout.write('  No API key entered. Set ACTOVIQ_API_KEY and rerun, or open Settings → Environment in the GUI.\n');
+    return;
+  }
+  const store = await resolveActoviqSettingsStore({ configPath: opts.configPath, homeDir: opts.homeDir });
+  const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
+  const env = isPlainRecord(raw.env) ? { ...raw.env } : {};
+  env.ACTOVIQ_API_KEY = apiKey;
+  env.ACTOVIQ_BASE_URL = baseURL;
+  env.ACTOVIQ_MODEL = model;
+  if (provider === 'openai') env.ACTOVIQ_PROVIDER = 'openai';
+  raw.env = env;
+  await persistActoviqSettingsStore(store.configPath, raw);
+  await loadJsonConfigFile(store.configPath);
+  process.stdout.write(`  Config saved to ${store.configPath}. Starting GUI…\n\n`);
+}
+
 export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<void> {
-  const handle = await startActoviqGuiServer(options);
+  let handle: ActoviqGuiServer;
+  try {
+    handle = await startActoviqGuiServer(options);
+  } catch (error) {
+    if (/(No Actoviq credential|credential was found)/i.test((error as Error).message)) {
+      await onboardCredentials(options);
+      handle = await startActoviqGuiServer(options);
+    } else {
+      throw error;
+    }
+  }
   process.once('SIGINT', () => { void close().finally(() => process.exit(0)); });
   process.once('SIGTERM', () => { void close().finally(() => process.exit(0)); });
   async function close(): Promise<void> {
