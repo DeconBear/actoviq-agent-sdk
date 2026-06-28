@@ -1899,8 +1899,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       ? { name: existing.name, provider: existing.provider, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
       : { name: '', provider: 'anthropic' };
 
-    // Snapshot detected runtimes once (provider picker shows them as context).
-    const detections = await detectBridgeProviders();
+    // Lazy-detect: runtimes are probed only when the user opens the runtime
+    // picker, so the form renders instantly. Cached after first probe.
+    let detections: Awaited<ReturnType<typeof detectBridgeProviders>> | null = null;
 
     while (true) {
       // Render the live form.
@@ -1951,8 +1952,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       }
       if (choice === 'provider') {
         // Show detected runtimes as the primary options; each maps to an
-        // in-process provider (anthropic/openai). The user picks a familiar
-        // runtime name (claude, pi, …); the provider is auto-set.
+        // in-process provider. Detection is lazy — probed only when the user
+        // opens this picker, so the form renders instantly.
+        if (!detections) {
+          appendStatic([...formatInfoLine('scanning for runtimes…'), '']);
+          detections = await detectBridgeProviders();
+        }
         const RUNTIME_MAP: Record<string, { provider: InProcessProvider; label: string }> = {
           claude: { provider: 'anthropic', label: 'claude' },
           codewhale: { provider: 'anthropic', label: 'codewhale' },
@@ -1968,7 +1973,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           label: `${d.id}${d.id === curRuntime ? ' ✓' : ''}`,
           description: `${RUNTIME_MAP[d.id]?.provider ?? '?'}${d.available ? (d.version ? ` · v${d.version}` : ' · detected') : ' · not found'}${d.id === 'reasonix' ? ' · DeepSeek' : d.id === 'crush' ? ' · multi-backend' : ''}`,
         }));
-        // Always include all 6 even if not detected (user may set path manually).
         const v = await selectItem({
           title: 'Runtime',
           subtitle: curRuntime ? `current: ${curRuntime} (${curProvider})` : `current provider: ${curProvider}`,
