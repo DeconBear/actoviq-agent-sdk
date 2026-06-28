@@ -50,6 +50,7 @@ import type {
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
+import { estimateCost } from '../team/pricing.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { pathToFileURL } from 'node:url';
 import {
@@ -335,6 +336,19 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let runStartedAt = 0;
   let runToolCount = 0;
   let lastTokenEstimate: number | undefined;
+  // Running token + USD totals for /cost and /usage (gap #20). input/output
+  // are summed across turns; costUsd is null when a model has no pricing.
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostUsd: number | null = 0; // null = unknown pricing for some model
+  function recordUsage(model: string, usage: { input_tokens?: number; output_tokens?: number } | undefined): void {
+    const inT = usage?.input_tokens ?? 0;
+    const outT = usage?.output_tokens ?? 0;
+    totalInputTokens += inT;
+    totalOutputTokens += outT;
+    const cost = estimateCost(model, inT, outT);
+    totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
+  }
   let statusNote = '';
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1024,6 +1038,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         handleAgentEvent(event);
       }
       const result = await resultPromise;
+      // Accumulate token + USD usage for /cost and /usage. The model is the
+      // routed model (if a router is active) or the session model. Bridge runs
+      // expose no structured usage, so only the in-process path records here.
+      if (!bridgeRt) {
+        recordUsage(routed?.model ?? session.model, result.usage as { input_tokens?: number; output_tokens?: number } | undefined);
+      }
       const rest = flusher.drain();
       if (rest.length > 0) appendStatic(rest);
       if (!flusher.hasContent && result.text && runHadNoStreamedText()) {
@@ -1182,6 +1202,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       compact: '/compact [summary instructions]',
       memory: '/memory',
       context: '/context',
+      cost: '/cost',
+      usage: '/usage',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
@@ -2096,6 +2118,22 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             `  ${A.dim}tools${A.reset}           ${toolMetadata.length}${mcpCount > 0 ? ` (${mcpCount} MCP)` : ''}`,
             `  ${A.dim}CLAUDE.md${A.reset}       ${project.sources.length ? project.sources.join(', ') : '(none loaded)'}`,
             `  ${A.dim}active${A.reset}         model=${session.model} · effort=${currentEffort() ?? 'auto'} · team=${team} · router=${router} · bridge=${bridge}`,
+            '',
+          ]);
+          return;
+        }
+        case 'cost':
+        case 'usage': {
+          // Running token + spend totals for the session (gap #20).
+          const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+          const costStr = totalCostUsd === null
+            ? `${A.dim}(unknown — model lacks pricing; set ~/.actoviq/pricing.json)${A.reset}`
+            : `$${totalCostUsd.toFixed(4)}`;
+          appendStatic([
+            `${A.bold}Session usage${A.reset}`,
+            `  ${A.dim}tokens${A.reset}   ${fmtTok(totalInputTokens)} in · ${fmtTok(totalOutputTokens)} out`,
+            `  ${A.dim}cost${A.reset}     ${costStr}`,
+            `  ${A.dim}model${A.reset}    ${session.model}`,
             '',
           ]);
           return;
