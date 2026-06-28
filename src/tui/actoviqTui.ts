@@ -49,6 +49,7 @@ import type {
   RouterProfile,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
+import { loadProjectContext } from '../memory/projectContext.js';
 import { pathToFileURL } from 'node:url';
 import {
   ACTOVIQ_INTERACTIVE_COMMANDS,
@@ -206,6 +207,12 @@ function buildSystemPrompt(workDir: string): string {
   } catch {
     // not a git repo
   }
+  // Load the CLAUDE.md hierarchy (user + project, with @includes) so the agent
+  // picks up project-specific instructions — the canonical Claude Code behavior.
+  const project = loadProjectContext(workDir);
+  const projectSection = project.text
+    ? `\n\n# Project context (CLAUDE.md)\n\nThe following project instructions were loaded from CLAUDE.md files. Treat them as authoritative guidance for this workspace.\n\n${project.text}\n`
+    : '';
   return (
     `You are Hadamard Agent, an interactive CLI agent. Working directory: ${workDir}\n\n` +
     `<env>\nWorking directory: ${workDir}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
@@ -225,7 +232,7 @@ function buildSystemPrompt(workDir: string): string {
     `# Other\n` +
     `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
     `- When in doubt, use TodoWrite to track progress.`
-  );
+  ) + projectSection;
 }
 
 export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<void> {
