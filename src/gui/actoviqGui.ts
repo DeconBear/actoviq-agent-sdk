@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, execSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { access, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -1817,14 +1818,36 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
     const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    // Also include the SDK session dir's parent (it may hold sessions/ directly).
+    roots.push(path.dirname(sdk.config.sessionDirectory));
     let deleted = false;
     for (const projectRoot of roots) {
+      // Check the active sessions directory.
       for (const item of await listStoredSessionFiles(projectRoot)) {
         if (item.id !== id && item.storageId !== id) continue;
         await rm(item.filePath, { force: true });
         await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), { recursive: true, force: true });
         deleted = true;
       }
+      // Also check the archive directory.
+      const archiveDir = path.join(projectRoot, 'archive');
+      try {
+        for (const file of await readdir(archiveDir)) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          let sessionId: string | undefined;
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw === 'object' && raw !== null && typeof (raw as { id?: unknown }).id === 'string') {
+              sessionId = (raw as { id: string }).id;
+            }
+          } catch { /* skip */ }
+          if (sessionId !== id && storageId !== id) continue;
+          await rm(path.join(archiveDir, file), { force: true });
+          await rm(path.join(archiveDir, '.checkpoints', storageId), { recursive: true, force: true });
+          deleted = true;
+        }
+      } catch { /* archive dir may not exist */ }
     }
     // If the active chat was deleted, open a fresh one so the UI stays consistent.
     if (session.id === id) {
@@ -1832,6 +1855,115 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     invalidateHeavyState();
     return { deleted, state: await state() };
+  }
+
+  // ── Archive / unarchive sessions ─────────────────────────────────────
+  // Move a session from sessions/ → archive/ (peer dir that the SDK never
+  // touches), so it's hidden from both TUI and GUI session lists.
+  async function archiveSession(id: string): Promise<boolean> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    roots.push(path.dirname(sdk.config.sessionDirectory)); // SDK session dir's parent
+    for (const projectRoot of roots) {
+      for (const item of await listStoredSessionFiles(projectRoot)) {
+        if (item.id !== id && item.storageId !== id) continue;
+        const archiveDir = path.join(projectRoot, 'archive');
+        await mkdir(archiveDir, { recursive: true });
+        await rename(item.filePath, path.join(archiveDir, item.storageId + '.json'));
+        const ckptSrc = path.join(projectRoot, 'sessions', '.checkpoints', item.storageId);
+        const ckptDst = path.join(archiveDir, '.checkpoints', item.storageId);
+        try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
+        // If the active chat was archived, open a fresh one.
+        if (session.id === id) {
+          session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        }
+        invalidateHeavyState();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function unarchiveSession(id: string): Promise<boolean> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    roots.push(path.dirname(sdk.config.sessionDirectory));
+    for (const projectRoot of roots) {
+      const archiveDir = path.join(projectRoot, 'archive');
+      try {
+        const files = await readdir(archiveDir);
+        for (const file of files) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          // Read the archived file to get the session id.
+          let sessionId: string | undefined;
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw === 'object' && raw !== null && typeof (raw as { id?: unknown }).id === 'string') {
+              sessionId = (raw as { id: string }).id;
+            }
+          } catch { /* skip unreadable */ }
+          if (sessionId !== id && storageId !== id) continue;
+          const sessionsDir = path.join(projectRoot, 'sessions');
+          await mkdir(sessionsDir, { recursive: true });
+          await rename(path.join(archiveDir, file), path.join(sessionsDir, file));
+          const ckptSrc = path.join(archiveDir, '.checkpoints', storageId);
+          const ckptDst = path.join(sessionsDir, '.checkpoints', storageId);
+          try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
+          invalidateHeavyState();
+          return true;
+        }
+      } catch { /* archive dir doesn't exist */ }
+    }
+    return false;
+  }
+
+  async function listArchivedSessions(): Promise<Array<{ id: string; storageId: string; title?: string; model?: string; messageCount: number; workDir?: string }>> {
+    const results: Array<{ id: string; storageId: string; title?: string; model?: string; messageCount: number; workDir?: string }> = [];
+    const addDir = async (archiveDir: string) => {
+      try {
+        for (const file of await readdir(archiveDir)) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw !== 'object' || raw === null) continue;
+            const obj = raw as { id?: unknown; title?: unknown; model?: unknown; messages?: unknown; metadata?: unknown };
+            const messages = Array.isArray(obj.messages) ? obj.messages : [];
+            results.push({
+              id: typeof obj.id === 'string' ? obj.id : storageId,
+              storageId,
+              title: typeof obj.title === 'string' ? obj.title : undefined,
+              model: typeof obj.model === 'string' ? obj.model : undefined,
+              messageCount: messages.length,
+              workDir: typeof obj.metadata === 'object' && obj.metadata !== null && typeof (obj.metadata as { __actoviqWorkDir?: unknown }).__actoviqWorkDir === 'string'
+                ? (obj.metadata as { __actoviqWorkDir: string }).__actoviqWorkDir : undefined,
+            });
+          } catch { /* skip unreadable */ }
+        }
+      } catch { /* archive dir doesn't exist */ }
+    };
+    // Check archive/ subdirs of all known project roots + the session dir's parent.
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    for (const projectRoot of roots) {
+      await addDir(path.join(projectRoot, 'archive'));
+    }
+    // Also check the parent of the session directory (SDK may store sessions directly there).
+    await addDir(path.resolve(sdk.config.sessionDirectory, '..', 'archive'));
+    await addDir(path.join(path.dirname(sdk.config.sessionDirectory), 'archive'));
+    // Fallback: scan any archive/ dir directly under ~/.actoviq/ (the SDK's data root).
+    try {
+      const dataRoot = path.join(os.homedir(), '.actoviq');
+      for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        await addDir(path.join(dataRoot, entry.name, 'archive'));
+      }
+    } catch { /* data dir may not exist */ }
+    return results;
   }
 
   async function forgetProject(targetPath: string): Promise<Record<string, unknown>> {
@@ -2014,6 +2146,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
         return json(res, 200, await deleteSession(id));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/archive') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        const ok = await archiveSession(id);
+        if (!ok) return json(res, 404, { error: 'Session not found' });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/unarchive') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        const ok = await unarchiveSession(id);
+        if (!ok) return json(res, 404, { error: 'Archived session not found' });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/sessions/archived') {
+        return json(res, 200, { sessions: await listArchivedSessions() });
       }
       if (req.method === 'POST' && url.pathname === '/api/project/forget') {
         const body = await readJson(req);
@@ -2495,6 +2646,11 @@ export function createActoviqGuiHtml(): string {
             <button type="button" id="settingsNewChatBtn" class="secondary-btn">New chat</button>
           </div>
           <div id="settingsSessionsList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Archived</h2>
+          <p class="muted">Archived chats are hidden from the session list but preserved on disk. Restore to make them visible again, or permanently delete them.</p>
+          <div id="settingsArchivedList" class="settings-card-list"></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="memory">
@@ -3341,6 +3497,7 @@ function renderProjects() {
       const cx = event.clientX;
       const cy = event.clientY;
       showContextMenu(cx, cy, [
+        { label: 'Archive chat', onClick: () => archiveChat(item.id) },
         { label: 'Delete chat', danger: true, onClick: () => dangerConfirmMenu(cx, cy, 'Confirm delete chat', () => deleteChat(item.id)) },
       ]);
     });
@@ -3972,6 +4129,71 @@ async function deleteChat(id) {
   }
   flashStatus('Chat deleted');
 }
+async function archiveChat(id) {
+  const wasActive = state.snapshot?.session?.id === id;
+  const res = await api('/api/session/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!res.ok) { flashStatus('Could not archive chat'); return; }
+  await loadState();
+  if (wasActive) {
+    transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    await hydrateTranscript();
+  }
+  flashStatus('Chat archived — restore from Settings → Chats → Archived');
+}
+async function unarchiveChat(id) {
+  const res = await api('/api/session/unarchive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!res.ok) { flashStatus('Could not restore chat'); return; }
+  await loadState();
+  renderArchived();
+  flashStatus('Chat restored');
+}
+async function loadArchived() {
+  try {
+    const res = await api('/api/sessions/archived');
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data && data.sessions) || [];
+  } catch { return []; }
+}
+async function renderArchived() {
+  const root = el('settingsArchivedList');
+  if (!root || root.closest('.settings-panel.active') !== root.closest('[data-settings-panel="sessions"]')) return;
+  const sessions = await loadArchived();
+  root.textContent = '';
+  if (sessions.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No archived chats.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const item of sessions) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = item.title || item.id;
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    p.textContent = [item.model, (item.messageCount || 0) + ' messages', item.workDir].filter(Boolean).join(' · ');
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.textContent = 'Restore';
+    restore.addEventListener('click', () => unarchiveChat(item.id));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => {
+      if (confirm('Permanently delete this archived chat?')) deleteChat(item.id).then(renderArchived);
+    });
+    footer.append(restore, del);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
 async function forgetWorkspace(projectPath) {
   const res = await api('/api/project/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
   if (!res.ok) { flashStatus('Could not forget workspace'); return; }
@@ -4229,6 +4451,7 @@ function showSettingsTab(tab) {
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
   if (tab === 'bridge') { renderBridgeConfigs(); refreshBridgeDetect().catch(() => undefined); }
   if (tab === 'mcp') renderMcpServers();
+  if (tab === 'sessions') renderArchived();
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
