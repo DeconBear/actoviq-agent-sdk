@@ -3569,7 +3569,7 @@ async function openLocation() {
   if (!res.ok) addMessage('error', await res.text());
 }
 function commandNeedsSpace(name) {
-  return ['model','effort','permissions','resume','dream','workflows','worktree','team'].includes(name);
+  return ['model','effort','permissions','resume','dream','workflows','worktree','team','goal','batch','plan','output-style','rewind','export','review','bridge'].includes(name);
 }
 function slashMatches() {
   const value = input.value.trim();
