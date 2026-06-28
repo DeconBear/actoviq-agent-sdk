@@ -9,6 +9,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   usage: 'Alias for /cost',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
+  'output-style': 'Select the response output style',
   permissions: 'Show or set the permission mode',
   sessions: 'List stored sessions',
   resume: 'Resume a stored session',

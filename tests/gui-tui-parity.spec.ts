@@ -26,6 +26,7 @@ describe('TUI and GUI parity', () => {
       'usage',
       'model',
       'effort',
+      'output-style',
       'permissions',
       'sessions',
       'resume',
