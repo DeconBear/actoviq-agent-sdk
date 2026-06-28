@@ -5,7 +5,7 @@
  * output, permission dialogs, and mid-run steering. Dependency-free ANSI
  * rendering (no React/Ink).
  */
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +53,7 @@ import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
+import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { pathToFileURL } from 'node:url';
 import {
@@ -1274,6 +1275,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       effort: '/effort [low|medium|high|max|auto]',
       'output-style': '/output-style [default|concise|explanatory|learning]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
+      plan: '/plan [off|open|view]',
       sessions: '/sessions',
       resume: '/resume [session-id]',
       tools: '/tools',
@@ -2152,6 +2154,45 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             ...formatInfoLine(`permissions: ${preset.label} — ${preset.mode}${preset.rules.length ? ` · ${preset.rules.length} deny rules` : ''}`),
             '',
           ]);
+          return;
+        }
+        case 'plan': {
+          // Plan mode (gap #6). The model can enter/exit via EnterPlanMode /
+          // ExitPlanMode tools; /plan toggles the permission mode and lets the
+          // user view/open the plan file the agent wrote.
+          const arg = args.trim().toLowerCase();
+          if (arg === 'off') {
+            await session.setPermissionContext({ mode: permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default', permissions: [], approver });
+            appendStatic([...formatInfoLine('plan mode off — back to default permissions'), '']);
+            return;
+          }
+          if (arg === 'open') {
+            const file = planFilePath(sdk.config.workDir);
+            try {
+              const editorBin = process.env.EDITOR || process.env.VISUAL || 'notepad';
+              spawnSync(editorBin, [file], { stdio: 'ignore', shell: false });
+            } catch {
+              appendStatic([...formatErrorLine(`could not open plan file: ${file}`), '']);
+            }
+            return;
+          }
+          // Default: enter plan mode (if not already) and show the current plan.
+          const current = session.permissionContext.mode;
+          if (current !== 'plan') {
+            await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+            appendStatic([...formatInfoLine('plan mode on — mutating tools blocked; research, then ExitPlanMode'), '']);
+          }
+          const plan = readPlanFile(sdk.config.workDir);
+          if (plan) {
+            appendStatic([
+              `${A.bold}Current plan${A.reset} ${A.dim}(${planFilePath(sdk.config.workDir)})${A.reset}`,
+              '',
+              ...renderRichText(plan, screen.width),
+              '',
+            ]);
+          } else {
+            appendStatic([...formatInfoLine('no plan yet — ask the agent to plan a task (it will call ExitPlanMode)'), '']);
+          }
           return;
         }
         case 'sessions': {
