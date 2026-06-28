@@ -103,6 +103,12 @@ const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
 
 export const TUI_SLASH_COMMANDS = ACTOVIQ_INTERACTIVE_COMMANDS;
 
+/** Mask an API key for display: show first 4 + last 4, hide the middle. */
+function maskKey(key: string): string {
+  if (key.length <= 8) return '****';
+  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
 export function filterSlashCommands(input: string): string[] {
   return filterInteractiveCommands(input);
 }
@@ -1208,6 +1214,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       context: '/context',
       cost: '/cost',
       usage: '/usage',
+      doctor: '/doctor',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       'output-style': '/output-style [default|concise|explanatory|learning]',
@@ -2167,6 +2174,42 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             `  ${A.dim}model${A.reset}    ${session.model}`,
             '',
           ]);
+          return;
+        }
+        case 'doctor': {
+          // Configuration diagnostics (gap #21, partial). Checks the things a
+          // user would actually need to fix to get a run working.
+          const cfg = sdk.config;
+          const ok = (b: boolean) => b ? `${A.green}✓${A.reset}` : `${A.red}✗${A.reset}`;
+          const lines: string[] = [`${A.bold}Actoviq diagnostics${A.reset}`];
+          // Model + provider
+          lines.push(`  ${ok(Boolean(cfg.model))} model ${A.dim}${cfg.model || '(unset)'}${A.reset}`);
+          lines.push(`  ${ok(Boolean(cfg.provider))} provider ${A.dim}${cfg.provider || '(unset)'}${A.reset}`);
+          // API key (env or settings)
+          const apiKey = cfg.apiKey ?? process.env.ACTOVIQ_API_KEY ?? process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY;
+          lines.push(`  ${ok(Boolean(apiKey))} api key ${A.dim}${apiKey ? 'set (' + maskKey(apiKey) + ')' : '(not set — set ACTOVIQ_API_KEY or configure via /model config)'}${A.reset}`);
+          if (cfg.baseURL) lines.push(`  ${A.dim}base url${A.reset} ${cfg.baseURL}`);
+          // Workspace + git
+          let isGit = false;
+          try { execSync('git rev-parse --is-inside-work-tree', { cwd: cfg.workDir, stdio: 'ignore' }); isGit = true; } catch { /* not git */ }
+          lines.push(`  ${ok(true)} workdir ${A.dim}${cfg.workDir}${A.reset}`);
+          lines.push(`  ${ok(isGit)} git repo ${A.dim}${isGit ? 'yes' : 'no'}${A.reset}`);
+          // Session + permissions
+          lines.push(`  ${ok(true)} session ${A.dim}${session.id}${A.reset} · ${session.messages.length} messages`);
+          lines.push(`  ${ok(true)} permission mode ${A.dim}${currentPermissionMode()}${A.reset}`);
+          lines.push(`  ${ok(toolMetadata.length > 0)} tools ${A.dim}${toolMetadata.length}${A.reset}`);
+          // Context memory
+          const project = loadProjectContext(cfg.workDir);
+          lines.push(`  ${ok(project.sources.length > 0)} CLAUDE.md ${A.dim}${project.sources.length ? project.sources.join(', ') : '(none)'}${A.reset}`);
+          // Bridge runtimes
+          const detections = await detectBridgeProviders();
+          const avail = detections.filter(d => d.available);
+          lines.push(`  ${ok(avail.length > 0)} bridge runtimes ${A.dim}${avail.length ? avail.map(d => d.id).join(', ') : '(none on PATH)'}${A.reset}`);
+          if (bridgeMode && bridgeProviderLabel) {
+            lines.push(`  ${A.dim}active bridge${A.reset} ${bridgeProviderLabel}${bridgeModelLabel ? ` · ${bridgeModelLabel}` : ''}`);
+          }
+          lines.push('');
+          appendStatic(lines);
           return;
         }
         case 'compact': {

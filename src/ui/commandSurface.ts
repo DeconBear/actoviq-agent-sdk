@@ -7,6 +7,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   context: 'Show what is in the context window',
   cost: 'Show running token + spend totals',
   usage: 'Alias for /cost',
+  doctor: 'Run configuration diagnostics',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
   'output-style': 'Select the response output style',
