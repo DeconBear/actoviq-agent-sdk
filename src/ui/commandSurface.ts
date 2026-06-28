@@ -19,6 +19,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   skills: 'Browse available skills',
   agents: 'Browse available subagents',
   mcp: 'Inspect MCP servers and tools',
+  hooks: 'List configured PreToolUse hooks',
   plugins: 'Browse discovered Clean plugins',
   dream: 'Inspect or run memory consolidation',
   workflows: 'Browse saved dynamic workflows',
