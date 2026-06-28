@@ -34,6 +34,7 @@ import {
   findExecutableOnPath,
   isExecutable,
   IS_WINDOWS,
+  pathExists,
 } from './bridgeExecResolver.js';
 
 function execFileAsync(
@@ -122,10 +123,14 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
    * Mirrors the `ACTOVIQ_BASH_PATH` precedent in src/tools/bash/BashTool.ts.
    */
   async resolveExecutable(explicitPath?: string): Promise<string> {
+    // For user-specified paths (explicit, env, settings block), just check
+    // existence — the user knows what they're pointing at, and scripts (.mjs,
+    // .js, …) often lack +x on Linux. Only PATH lookups need the stricter
+    // isExecutable check so we don't pick up non-runnable files.
     if (explicitPath) {
-      if (!(await isExecutable(explicitPath))) {
+      if (!(await pathExists(explicitPath))) {
         throw new ActoviqBridgeProcessError(
-          `The configured executable was not found or is not executable: ${explicitPath}`,
+          `The configured executable was not found: ${explicitPath}`,
         );
       }
       return explicitPath;
@@ -138,9 +143,9 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     const processEnvPath = process.env[envVar];
     const envPath = settingsEnvPath ?? processEnvPath;
     if (envPath) {
-      if (!(await isExecutable(envPath))) {
+      if (!(await pathExists(envPath))) {
         throw new ActoviqBridgeProcessError(
-          `${envVar} (${envPath}) was not found or is not executable.`,
+          `${envVar} (${envPath}) was not found.`,
         );
       }
       return envPath;
@@ -148,9 +153,9 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
 
     const settingsBlockPath = readSettingsBlockPath(loaded?.raw, this.id);
     if (settingsBlockPath) {
-      if (!(await isExecutable(settingsBlockPath))) {
+      if (!(await pathExists(settingsBlockPath))) {
         throw new ActoviqBridgeProcessError(
-          `Configured ${this.id} bridge path (${settingsBlockPath}) was not found or is not executable.`,
+          `Configured ${this.id} bridge path (${settingsBlockPath}) was not found.`,
         );
       }
       return settingsBlockPath;

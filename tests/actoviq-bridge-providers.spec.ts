@@ -89,7 +89,7 @@ describe('Bridge provider: resolveExecutable precedence', () => {
 
   it('rejects an explicitPath that is not executable / does not exist', async () => {
     await expect(claudeProvider.resolveExecutable('/no/such/claude-binary')).rejects.toThrow(
-      /not found or is not executable/,
+      /not found/,
     );
   });
 

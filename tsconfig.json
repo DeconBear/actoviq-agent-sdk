@@ -24,5 +24,8 @@
     "bench/**/*.ts",
     "scripts/**/*.ts",
     "vitest.config.ts"
+  ],
+  "exclude": [
+    "src/gui"            // electron is optional; electronMain.ts requires it
   ]
 }
