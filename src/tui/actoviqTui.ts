@@ -282,6 +282,41 @@ function buildSystemPrompt(workDir: string): string {
   ) + projectSection;
 }
 
+// First-run onboarding: guides the user through creating ~/.actoviq/settings.json
+// when no credential is found. Uses plain readline (no TTY required beyond stdin).
+async function onboardCredentials(configPath?: string): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
+
+  console.log('\n  Welcome to Actoviq! Let\'s set up your first connection.\n');
+
+  const provider = await ask('  Provider (anthropic/openai) [anthropic]: ');
+  const apiKey = await ask('  API Key: ');
+  const baseURL = await ask('  Base URL [https://api.deepseek.com]: ');
+  const model = await ask('  Model [deepseek-chat]: ');
+
+  rl.close();
+
+  const resolvedProvider = provider.trim() || 'anthropic';
+  const resolvedBaseURL = baseURL.trim() || 'https://api.deepseek.com';
+  const resolvedModel = model.trim() || 'deepseek-chat';
+
+  const home = os.homedir();
+  const dir = path.join(home, '.actoviq');
+  const file = configPath ?? path.join(dir, 'settings.json');
+
+  fs.mkdirSync(dir, { recursive: true });
+  const env: Record<string, string> = {
+    ACTOVIQ_API_KEY: apiKey.trim(),
+    ACTOVIQ_BASE_URL: resolvedBaseURL,
+    ACTOVIQ_MODEL: resolvedModel,
+  };
+  if (resolvedProvider === 'openai') env.ACTOVIQ_PROVIDER = 'openai';
+  const settings: Record<string, unknown> = { env };
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2), 'utf-8');
+  console.log(`\n  Config saved to ${file}. Starting TUI...\n`);
+}
+
 export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<void> {
   const workDir = path.resolve(options.workDir ?? process.cwd());
   const permissionMode: ActoviqPermissionMode = options.permissionMode ?? 'bypassPermissions';
@@ -311,8 +346,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       )),
       ...(options.model ? { model: options.model } : {}),
     });
-  let sdk = await createCleanSdk();
-  let toolMetadata = await sdk.listToolMetadata();
+  let sdk: Awaited<ReturnType<typeof createAgentSdk>>;
+  let toolMetadata: Awaited<ReturnType<typeof sdk.listToolMetadata>>;
+  while (true) {
+    try {
+      sdk = await createCleanSdk();
+      toolMetadata = await sdk.listToolMetadata();
+      break;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('No Actoviq credential')) {
+        // First-run onboarding: guide the user through creating ~/.actoviq/settings.json.
+        await onboardCredentials(options.configPath);
+        // After saving, retry SDK creation.
+        continue;
+      }
+      throw error;
+    }
+  }
 
   // Build a dynamic capabilities section injected into the system prompt each
   // turn (gap #16 vs claude-code) — subagents, MCP servers+tools, skills — so
