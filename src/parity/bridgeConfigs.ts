@@ -1,26 +1,28 @@
 /**
  * Named bridge connection configs (apiKey + baseURL presets).
  *
- * A persisted list of named connection profiles the user adds from the TUI
- * (`/bridge config`), stored at ~/.actoviq/bridge-configs.json. Each config
- * bundles a runtime provider plus the credentials that provider's CLI reads,
- * so the user can pre-configure e.g. one claude runtime pointed at DeepSeek
+ * Persisted to ~/.actoviq/bridge-configs.json. Each config bundles a provider
+ * (now 'anthropic'|'openai' — the in-process SDK enum) plus apiKey/baseURL/model
+ * so the user can pre-configure e.g. one anthropic profile pointed at DeepSeek
  * and another at Qwen, and switch between them by name.
  *
- * At activation the TUI injects the config's credentials into each bridge run
- * via the per-run `env` option, which flows through to the child process
- * (buildChildEnvironment → provider.buildChildEnv overrides, spread LAST) and
- * overrides whatever ~/.actoviq/settings.json supplies. Mirrors mcpServerConfig.
+ * At activation the TUI pre-builds a ModelApi via buildRouteModelApi and injects
+ * it per-run into session.stream({model, modelApi}) — same session, no child
+ * process, context naturally survives switching bridge↔hadamard.
+ *
+ * Legacy config files stored provider as RuntimeProviderId ('claude'|'pi'|…);
+ * readBridgeConfigs auto-migrates these to 'anthropic'|'openai'.
+ * Mirrors mcpServerConfig for persistence.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { RuntimeProviderId } from '../types.js';
+export type InProcessProvider = 'anthropic' | 'openai';
 
 export interface PersistedBridgeConfig {
   name: string;
-  provider: RuntimeProviderId;
+  provider: InProcessProvider;
   apiKey?: string;
   baseURL?: string;
   model?: string;
@@ -30,7 +32,25 @@ export interface PersistedBridgeConfigs {
   configs: PersistedBridgeConfig[];
 }
 
-const VALID_PROVIDERS: RuntimeProviderId[] = ['claude', 'pi', 'codex', 'codewhale', 'reasonix', 'crush'];
+const VALID_PROVIDERS: InProcessProvider[] = ['anthropic', 'openai'];
+
+// Legacy RuntimeProviderId → InProcessProvider migration (v0.6→v0.7).
+// The TUI used to spawn external CLIs keyed by these ids; now the bridge is
+// in-process and configs carry only 'anthropic'|'openai'. Best-effort mapping
+// preserves saved configs across the upgrade.
+const LEGACY_PROVIDER_MIGRATION: Record<string, InProcessProvider> = {
+  claude: 'anthropic',
+  codewhale: 'anthropic',
+  pi: 'openai',
+  codex: 'openai',
+  reasonix: 'anthropic',
+  crush: 'openai',
+};
+
+function migrateProvider(raw: string): InProcessProvider {
+  if ((VALID_PROVIDERS as string[]).includes(raw)) return raw as InProcessProvider;
+  return LEGACY_PROVIDER_MIGRATION[raw] ?? 'anthropic'; // fallback safe: unknown → anthropic
+}
 
 export function getBridgeConfigsPath(homeDir: string = os.homedir()): string {
   return path.join(homeDir, '.actoviq', 'bridge-configs.json');
@@ -39,11 +59,7 @@ export function getBridgeConfigsPath(homeDir: string = os.homedir()): string {
 function isValidConfig(value: unknown): value is PersistedBridgeConfig {
   if (typeof value !== 'object' || value === null) return false;
   const c = value as Record<string, unknown>;
-  return (
-    typeof c.name === 'string' &&
-    typeof c.provider === 'string' &&
-    (VALID_PROVIDERS as string[]).includes(c.provider)
-  );
+  return typeof c.name === 'string' && typeof c.provider === 'string';
 }
 
 export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBridgeConfigs {
@@ -53,13 +69,19 @@ export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBrid
     const parsed = JSON.parse(readFileSync(file, 'utf-8'));
     const configs = Array.isArray(parsed.configs)
       ? parsed.configs.filter(isValidConfig).map((c: PersistedBridgeConfig) => {
-          const out: PersistedBridgeConfig = { name: c.name, provider: c.provider };
+          const out: PersistedBridgeConfig = {
+            name: c.name,
+            provider: migrateProvider(c.provider),
+          };
           if (typeof c.apiKey === 'string' && c.apiKey) out.apiKey = c.apiKey;
           if (typeof c.baseURL === 'string' && c.baseURL) out.baseURL = c.baseURL;
           if (typeof c.model === 'string' && c.model) out.model = c.model;
           return out;
         })
       : [];
+    // Best-effort re-save: write the migrated configs back so the file stays
+    // current. Ignore failures (read-only fs, etc.).
+    try { writeFileSync(file, JSON.stringify({ configs }, null, 2), 'utf-8'); } catch { /* ignore */ }
     return { configs };
   } catch {
     return { configs: [] };
@@ -90,59 +112,6 @@ export function removeBridgeConfig(name: string, homeDir: string = os.homedir())
 
 export function findBridgeConfig(name: string, homeDir: string = os.homedir()): PersistedBridgeConfig | undefined {
   return readBridgeConfigs(homeDir).configs.find((c) => c.name === name);
-}
-
-/**
- * Map a config's credentials to the env vars its provider's CLI reads. These
- * become the per-run `env` overrides (spread LAST in provider.buildChildEnv, so
- * they win over settings.json). Empty fields are omitted so we never clobber an
- * inherited value with nothing.
- */
-export function buildConfigEnv(config: PersistedBridgeConfig): Record<string, string> {
-  const env: Record<string, string> = {};
-  const setIf = (key: string, value: string | undefined) => {
-    if (typeof value === 'string' && value.length > 0) env[key] = value;
-  };
-  switch (config.provider) {
-    case 'claude':
-      // claude maps ACTOVIQ_* → ANTHROPIC_* but our per-run overrides land last;
-      // set ANTHROPIC_* directly. ANTHROPIC_AUTH_TOKEN is the bearer form.
-      setIf('ANTHROPIC_API_KEY', config.apiKey);
-      setIf('ANTHROPIC_AUTH_TOKEN', config.apiKey);
-      setIf('ANTHROPIC_BASE_URL', config.baseURL);
-      setIf('ANTHROPIC_MODEL', config.model);
-      break;
-    case 'codewhale':
-      // stream-json passthrough, claude-compatible wire format.
-      setIf('ANTHROPIC_API_KEY', config.apiKey);
-      setIf('ANTHROPIC_BASE_URL', config.baseURL);
-      break;
-    case 'pi':
-      // pi supports OpenAI- and Anthropic-compatible backends; OPENAI_* is the
-      // common case. If the baseURL looks anthropic, prefer ANTHROPIC_*.
-      if (config.baseURL && /anthropic/i.test(config.baseURL)) {
-        setIf('ANTHROPIC_API_KEY', config.apiKey);
-        setIf('ANTHROPIC_BASE_URL', config.baseURL);
-      } else {
-        setIf('OPENAI_API_KEY', config.apiKey);
-        setIf('OPENAI_BASE_URL', config.baseURL);
-      }
-      break;
-    case 'codex':
-      setIf('OPENAI_API_KEY', config.apiKey);
-      setIf('OPENAI_BASE_URL', config.baseURL);
-      break;
-    case 'crush':
-      // multi-backend; OPENAI_API_KEY is the common read.
-      setIf('OPENAI_API_KEY', config.apiKey);
-      break;
-    case 'reasonix':
-      setIf('DEEPSEEK_API_KEY', config.apiKey);
-      break;
-    default:
-      break;
-  }
-  return env;
 }
 
 /** Mask an API key for display: first 4 + … + last 4. */
