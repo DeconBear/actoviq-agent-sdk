@@ -37,7 +37,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
  * menu and lets the user type freely.
  */
 export const SUBCOMMANDS: Record<string, string[]> = {
-  bridge: ['run', 'switch', 'model', 'setup', 'off', 'help'],
+  bridge: ['run', 'switch', 'model', 'config', 'setup', 'off', 'help'],
   model: ['router', 'config'],
   team: ['ask', 'list'],
   worktree: ['enter', 'exit', 'list'],
@@ -49,8 +49,9 @@ export const SUBCOMMANDS: Record<string, string[]> = {
 /** Description-column text for sub-commands, keyed by `${head} ${sub}`. */
 export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
   'bridge run': 'Run a prompt through the bridge CLI',
-  'bridge switch': 'Activate a different provider',
+  'bridge switch': 'Activate a saved config by name (or a raw provider id)',
   'bridge model': 'Set the model for the current provider',
+  'bridge config': 'Add / edit / remove named connection configs',
   'bridge setup': 'Detect + configure runtimes',
   'bridge off': 'Disable bridge mode',
   'bridge help': 'Show /bridge sub-commands',

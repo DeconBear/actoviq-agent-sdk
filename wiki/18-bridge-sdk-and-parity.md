@@ -164,6 +164,16 @@ appended to the Hadamard session store so the conversation survives switching
 bridge↔hadamard and a later `/resume`. (codex/reasonix remain one-shot — their CLIs
 expose no exec-mode resume.)
 
+**Named bridge configs** (`/bridge config`, persisted to `~/.actoviq/bridge-configs.json`):
+each config bundles {name, provider, apiKey, baseURL, model}. `/bridge` lists saved
+configs; selecting one activates the runtime and injects the config's credentials each
+turn via the per-run `env` option (`buildConfigEnv` → `buildChildEnvironment(provider,
+options.env)` → `provider.buildChildEnv` overrides, spread LAST → wins over settings.json).
+Provider→env mapping: claude/codewhale→`ANTHROPIC_*`, pi/codex→`OPENAI_*` (pi→`ANTHROPIC_*`
+when baseURL mentions anthropic), reasonix→`DEEPSEEK_API_KEY`, crush→`OPENAI_API_KEY`.
+`src/parity/bridgeConfigs.ts`. The `config` sub-command autocompletes alongside
+run/switch/model/setup/off/help.
+
 ### Compatibility Matrix
 
 ```typescript

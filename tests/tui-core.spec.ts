@@ -271,7 +271,9 @@ describe('StreamFlusher', () => {
 describe('slash command filtering', () => {
   it('matches prefixes and full names', () => {
     expect(filterSlashCommands('/')).toContain('help');
-    expect(filterSlashCommands('/co')).toEqual(['compact']);
+    // /co matches compact, context, cost (all start with "co").
+    expect(filterSlashCommands('/co')).toEqual(expect.arrayContaining(['compact', 'context', 'cost']));
+    expect(filterSlashCommands('/co').length).toBe(3);
     expect(filterSlashCommands('/help')).toEqual(['help']);
     expect(filterSlashCommands('plain text')).toEqual([]);
     expect(filterSlashCommands('/unknown')).toEqual([]);
