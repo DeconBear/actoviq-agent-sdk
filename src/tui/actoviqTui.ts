@@ -51,6 +51,7 @@ import type {
 import { isRecord } from '../runtime/helpers.js';
 import { createPreToolUseHookClassifier, readPreToolUseHooks } from '../hooks/userHooks.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
+import { addMcpServer, readMcpServerConfig, removeMcpServer } from '../mcp/mcpServerConfig.js';
 import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
@@ -283,6 +284,15 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       workDir,
       tools,
       permissionMode,
+      // Load user-managed stdio MCP servers from ~/.actoviq/mcp.json (gap #10).
+      mcpServers: readMcpServerConfig().servers.map(s => ({
+        kind: 'stdio' as const,
+        name: s.name,
+        command: s.command,
+        ...(s.args ? { args: s.args } : {}),
+        ...(s.env ? { env: s.env } : {}),
+        ...(s.cwd ? { cwd: s.cwd } : {}),
+      })),
       ...(options.model ? { model: options.model } : {}),
     });
   let sdk = await createCleanSdk();
@@ -1969,23 +1979,77 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       tools.push(tool);
       byServer.set(server, tools);
     }
-    if (byServer.size === 0) {
-      appendStatic([...formatInfoLine('no MCP servers are active'), '']);
+    const persisted = readMcpServerConfig();
+    const lines: string[] = [];
+    if (byServer.size > 0) {
+      lines.push(`${A.bold}Active MCP servers${A.reset} ${A.dim}(${byServer.size})${A.reset}`);
+      for (const [server, tools] of byServer) {
+        lines.push(`  ${A.green}●${A.reset} ${A.bold}${server}${A.reset} ${A.dim}— ${tools.length} tool${tools.length === 1 ? '' : 's'}${A.reset}`);
+      }
+    } else {
+      lines.push(`${A.dim}no MCP servers are active${A.reset}`);
+    }
+    if (persisted.servers.length > 0) {
+      lines.push(`${A.bold}Configured servers${A.reset} ${A.dim}(~/.actoviq/mcp.json)${A.reset}`);
+      for (const s of persisted.servers) {
+        lines.push(`  ${A.dim}·${A.reset} ${s.name} ${A.dim}→ ${s.command}${s.args?.length ? ' ' + s.args.join(' ') : ''}${A.reset}`);
+      }
+    }
+    lines.push('');
+    appendStatic(lines);
+
+    const choice = await selectItem({
+      title: 'MCP servers',
+      searchable: false,
+      items: [
+        { id: 'add', label: '+ Add stdio server…', description: 'persist a stdio MCP server to ~/.actoviq/mcp.json' },
+        ...(persisted.servers.length > 0
+          ? [{ id: 'remove', label: '− Remove server…', description: 'delete a configured server and reload' }]
+          : []),
+        { id: 'reload', label: '↻ Reload SDK', description: 'recreate the client to pick up config changes' },
+        ...(byServer.size > 0
+          ? [...byServer.entries()].map(([server, tools]) => ({
+              id: `view:${server}`,
+              label: server,
+              description: `${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.map(t => t.name).slice(0, 6).join(', ')}${tools.length > 6 ? '…' : ''}`,
+            }))
+          : []),
+      ],
+    });
+    if (!choice) return;
+    if (choice === 'add') {
+      const name = (await promptText({ title: 'MCP server name', label: 'name' }))?.trim();
+      if (!name) return;
+      const command = (await promptText({ title: `Command for ${name}`, label: 'command', description: 'e.g. npx or a binary path' }))?.trim();
+      if (!command) return;
+      const argsRaw = await promptText({ title: `Args for ${name}`, label: 'args', description: 'space-separated (optional)' });
+      addMcpServer({ name, command, ...(argsRaw?.trim() ? { args: argsRaw.trim().split(/\s+/) } : {}) });
+      appendStatic([...formatInfoLine(`added MCP server "${name}" — reloading SDK`), '']);
+      await reloadCleanSdk();
       return;
     }
-    const selected = await selectItem({
-      title: 'MCP servers',
-      items: [...byServer.entries()].map(([server, tools]) => ({
-        id: server,
-        label: server,
-        description: `${tools.length} tool${tools.length === 1 ? '' : 's'}`,
-        detail: tools.map(tool => tool.name).join(', '),
-      })),
-    });
-    if (selected) {
+    if (choice === 'remove') {
+      const name = await selectItem({
+        title: 'Remove MCP server',
+        searchable: false,
+        items: persisted.servers.map(s => ({ id: s.name, label: s.name, description: `${s.command}` })),
+      });
+      if (!name) return;
+      removeMcpServer(name);
+      appendStatic([...formatInfoLine(`removed MCP server "${name}" — reloading SDK`), '']);
+      await reloadCleanSdk();
+      return;
+    }
+    if (choice === 'reload') {
+      await reloadCleanSdk();
+      appendStatic([...formatInfoLine('SDK reloaded — MCP config re-read'), '']);
+      return;
+    }
+    if (choice.startsWith('view:')) {
+      const server = choice.slice('view:'.length);
       appendStatic([
-        `${A.cyan}${selected}${A.reset}`,
-        `${A.dim}${(byServer.get(selected) ?? []).map(tool => tool.name).join(', ')}${A.reset}`,
+        `${A.cyan}${server}${A.reset}`,
+        `${A.dim}${(byServer.get(server) ?? []).map(tool => tool.name).join(', ')}${A.reset}`,
         '',
       ]);
     }
