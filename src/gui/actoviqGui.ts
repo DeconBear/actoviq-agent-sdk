@@ -40,6 +40,7 @@ import { estimateCost } from '../team/pricing.js';
 import { createPlanModeTools, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
+import { recordTurn } from '../memory/sessionHistory.js';
 import {
   addMcpServer,
   readMcpServerConfig,
@@ -1759,6 +1760,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
       recordUsage(routed?.model ?? activeBridgeModelApi?.model ?? session.model, (result as any).usage);
+      // Lightweight global history — one JSONL line per user turn (mirrors Codex / Claude Code).
+      try {
+        recordTurn({
+          sessionId: session.id,
+          ts: Math.floor(Date.now() / 1000),
+          text: input.slice(0, 200),
+          model: routed?.model ?? activeBridgeModelApi?.model ?? session.model,
+        }, options.homeDir);
+      } catch { /* never fail a turn over a history write */ }
       toolMetadata = await sdk.listToolMetadata();
       invalidateHeavyState();
       send({ type: 'state', state: await state() });
