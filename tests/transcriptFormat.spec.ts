@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { stripAnsi } from '../src/tui/ansi.js';
 import { formatEditCall } from '../src/tui/transcript.js';
+import { renderRichText } from '../src/tui/actoviqTui.js';
 
 describe('formatEditCall', () => {
   it('renders a header with the file path plus removed/added lines', () => {
@@ -37,5 +38,30 @@ describe('formatEditCall', () => {
     const plain = lines.map(stripAnsi);
     expect(plain[0]).toContain('Edit');
     expect(plain.some(l => l.startsWith('+ new line'))).toBe(true);
+  });
+});
+
+describe('renderRichText', () => {
+  it('renders headings bold-cyan and wraps body text', () => {
+    const plain = renderRichText('# Title\nsome body text', 80).map(stripAnsi);
+    expect(plain[0]).toBe('Title');
+    expect(plain.some(l => l.includes('some body text'))).toBe(true);
+  });
+
+  it('renders fenced code blocks dim without word-wrapping the code', () => {
+    const md = 'intro\n```js\nconst x = 1;\n```\nafter';
+    const plain = renderRichText(md, 80).map(stripAnsi);
+    // Code line appears verbatim (not wrapped) and indented.
+    expect(plain.some(l => l.includes('const x = 1;'))).toBe(true);
+    // Surrounding prose survives.
+    expect(plain.some(l => l.includes('intro'))).toBe(true);
+    expect(plain.some(l => l.includes('after'))).toBe(true);
+  });
+
+  it('caps output at maxLines with a more-lines note', () => {
+    const md = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n');
+    const plain = renderRichText(md, 80, { maxLines: 5 }).map(stripAnsi);
+    expect(plain.length).toBe(6);
+    expect(plain[5]).toContain('more lines');
   });
 });
