@@ -171,12 +171,15 @@ bridge↔hadamard and a later `/resume`.
 
 ### Named bridge configs
 
-`/bridge config` opens a management screen where you add a named connection
-config: a **name**, the **provider** (runtime) to spawn, the **apiKey** and
-**baseURL** to inject, and an optional **model**. Saved configs persist in
-`~/.actoviq/bridge-configs.json`. Each config is a complete preset — e.g.
-`deepseek-claude` (provider `claude`, `ANTHROPIC_BASE_URL=https://api.deepseek.com`,
-`ANTHROPIC_API_KEY=…`, `model=deepseek-chat`) — so you can keep several backend
+`/bridge config` opens a management screen: **Add config** (or **Edit**/**Remove**
+an existing one) drops you into a single-page **config editor** that shows every
+field at once — **name**, **provider** (runtime), **apiKey**, **baseURL**, optional
+**model** — with each field's current value. You can edit any field in any order
+(e.g. set the key, then go back and change the name), then **Save** to commit or
+**Cancel** to discard. Saved configs persist in `~/.actoviq/bridge-configs.json`.
+Each config is a complete preset — e.g. `deepseek-claude` (provider `claude`,
+`ANTHROPIC_BASE_URL=https://api.deepseek.com`, `ANTHROPIC_API_KEY=…`,
+`model=deepseek-chat`) — so you can keep several backend
 profiles and switch by name.
 
 After that, `/bridge` lists your **saved configs**; selecting one (or

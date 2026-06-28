@@ -1853,10 +1853,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         title: 'Bridge configs',
         searchable: false,
         items: [
-          { id: 'add', label: '+ Add config…', description: 'name → provider → api key → base url → model' },
+          { id: 'add', label: '+ Add config…', description: 'open the config editor with empty fields' },
           ...(store.configs.length > 0
             ? [
-                { id: 'edit', label: '✎ Edit config…', description: 're-prompt a config\'s fields' },
+                { id: 'edit', label: '✎ Edit config…', description: 'modify any field of a saved config' },
                 { id: 'remove', label: '− Remove config…', description: 'delete a saved config' },
               ]
             : []),
@@ -1865,7 +1865,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       });
       if (!choice || choice === 'back') return;
       if (choice === 'add') {
-        const created = await promptBridgeConfig();
+        const created = await editBridgeConfig();
         if (created) {
           addBridgeConfig(created);
           appendStatic([...formatInfoLine(`saved config "${created.name}" — select it via /bridge to activate`), '']);
@@ -1880,15 +1880,15 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         });
         if (!name) continue;
         const existing = store.configs.find(c => c.name === name)!;
-        const updated = await promptBridgeConfig(existing);
+        const updated = await editBridgeConfig(existing);
         if (updated) {
           addBridgeConfig(updated); // dedupe-by-name replaces
           // If the edited config is active, refresh the live activeBridgeConfig.
-          if (activeBridgeConfig?.name === updated.name) {
+          if (activeBridgeConfig?.name === existing.name || activeBridgeConfig?.name === updated.name) {
             activeBridgeConfig = updated;
             appendStatic([...formatInfoLine(`active config "${updated.name}" updated — applies next turn`), '']);
           } else {
-            appendStatic([...formatInfoLine(`config "${updated.name}" updated`), '']);
+            appendStatic([...formatInfoLine(`config "${updated.name}" saved`), '']);
           }
         }
         continue;
@@ -1911,49 +1911,113 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
-  // Guided add/edit: name → provider → apiKey (masked) → baseURL → model → returns the config (undefined = cancelled).
-  async function promptBridgeConfig(existing?: PersistedBridgeConfig): Promise<PersistedBridgeConfig | undefined> {
-    const name = (await promptText({ title: existing ? 'Rename config' : 'New config name', label: 'name', initial: existing?.name, description: 'a label you pick, e.g. deepseek-claude' }))?.trim();
-    if (!name) return undefined;
+  // Single-page config editor: shows ALL fields at once (with current values),
+  // and the user can edit any field in any order — e.g. set the key, then go
+  // back and change the name — before Save / Cancel. A field is selected via the
+  // menu, re-prompted, then the loop re-renders the whole form with the new
+  // value. Returns the config on Save, undefined on Cancel.
+  async function editBridgeConfig(existing?: PersistedBridgeConfig): Promise<PersistedBridgeConfig | undefined> {
+    // Work on a local copy so Cancel discards all edits.
+    const draft: PersistedBridgeConfig = existing
+      ? { name: existing.name, provider: existing.provider, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
+      : { name: '', provider: 'claude' };
+
+    // Cache the detection list once (the provider picker uses it).
     const detections = await detectBridgeProviders();
-    const provider = await selectItem({
-      title: 'Provider (runtime)',
-      subtitle: 'which CLI to spawn',
-      searchable: false,
-      items: detections.map(d => ({
-        id: d.id,
-        label: `${d.id}${d.id === existing?.provider ? ' (current)' : ''}`,
-        description: d.available ? (d.version ? `v${d.version} · detected` : 'detected') : 'not on PATH (set a path via /bridge setup)',
-      })),
-    });
-    if (!provider) return undefined;
-    const apiKey = (await promptText({
-      title: `API key for ${name}`,
-      label: 'api key',
-      secret: true,
-      initial: existing?.apiKey,
-      description: 'injected as the provider credential each turn (leave empty to inherit from settings)',
-    }))?.trim() || undefined;
-    const baseURL = (await promptText({
-      title: `Base URL for ${name}`,
-      label: 'base url',
-      initial: existing?.baseURL,
-      description: 'the backend endpoint (e.g. https://api.deepseek.com); leave empty to inherit',
-    }))?.trim() || undefined;
-    const providerDef = resolveProvider(provider as any);
-    const suggested = providerDef.suggestedModels();
-    const modelInitial = existing?.model ?? (suggested.length > 0 ? suggested[0] : undefined);
-    const model = (await promptText({
-      title: `Model for ${name}`,
-      label: 'model',
-      initial: modelInitial,
-      description: suggested.length > 0 ? `suggested: ${suggested.slice(0, 4).join(', ')}` : 'a model id (optional)',
-    }))?.trim() || undefined;
-    const config: PersistedBridgeConfig = { name, provider: provider as RuntimeProviderId };
-    if (apiKey) config.apiKey = apiKey;
-    if (baseURL) config.baseURL = baseURL;
-    if (model) config.model = model;
-    return config;
+
+    while (true) {
+      // Render the live form.
+      const header = existing ? `Editing "${existing.name}"` : 'New bridge config';
+      const lines: string[] = [
+        `${A.bold}${header}${A.reset} — edit any field, then Save`,
+        ...formatDivider(screen.width),
+        `  ${A.bold}name${A.reset}     ${draft.name || `${A.dim}(unset)${A.reset}`}`,
+        `  ${A.bold}provider${A.reset} ${draft.provider}`,
+        `  ${A.bold}apiKey${A.reset}   ${maskApiKey(draft.apiKey)}`,
+        `  ${A.bold}baseURL${A.reset} ${draft.baseURL || `${A.dim}(inherit)${A.reset}`}`,
+        `  ${A.bold}model${A.reset}    ${draft.model || `${A.dim}(inherit)${A.reset}`}`,
+        '',
+      ];
+      appendStatic(lines);
+
+      const choice = await selectItem({
+        title: existing ? `Edit ${existing.name}` : 'New config',
+        subtitle: 'edit any field in any order · Save to commit',
+        searchable: false,
+        items: [
+          { id: 'name', label: `name: ${draft.name || '(unset)'}`, description: 'a label you pick, e.g. deepseek-claude' },
+          { id: 'provider', label: `provider: ${draft.provider}`, description: 'which runtime CLI to spawn' },
+          { id: 'apiKey', label: `apiKey: ${maskApiKey(draft.apiKey)}`, description: 'injected as the credential each turn (hidden input)' },
+          { id: 'baseURL', label: `baseURL: ${draft.baseURL || '(inherit)'}`, description: 'the backend endpoint (e.g. https://api.deepseek.com)' },
+          { id: 'model', label: `model: ${draft.model || '(inherit)'}`, description: 'optional model id' },
+          { id: 'save', label: '💾 Save config', description: draft.name ? `commit "${draft.name}"` : 'a name is required to save' },
+          { id: 'cancel', label: '✕ Cancel', description: 'discard changes' },
+        ],
+      });
+      if (!choice || choice === 'cancel') return undefined;
+      if (choice === 'save') {
+        const name = draft.name.trim();
+        if (!name) {
+          appendStatic([...formatErrorLine('cannot save — name is required (edit the name field first)'), '']);
+          continue;
+        }
+        const config: PersistedBridgeConfig = { name, provider: draft.provider };
+        if (draft.apiKey) config.apiKey = draft.apiKey;
+        if (draft.baseURL) config.baseURL = draft.baseURL;
+        if (draft.model) config.model = draft.model;
+        return config;
+      }
+      if (choice === 'name') {
+        const v = (await promptText({ title: 'Config name', label: 'name', initial: draft.name, description: 'a label you pick, e.g. deepseek-claude' }))?.trim();
+        if (v !== undefined) draft.name = v;
+        continue;
+      }
+      if (choice === 'provider') {
+        const v = await selectItem({
+          title: 'Provider (runtime)',
+          subtitle: `current: ${draft.provider}`,
+          searchable: false,
+          items: detections.map(d => ({
+            id: d.id,
+            label: `${d.id}${d.id === draft.provider ? ' ✓' : ''}`,
+            description: d.available ? (d.version ? `v${d.version} · detected` : 'detected') : 'not on PATH (set a path via /bridge setup)',
+          })),
+        });
+        if (v) draft.provider = v as RuntimeProviderId;
+        continue;
+      }
+      if (choice === 'apiKey') {
+        // Empty input on an existing key clears it; Enter keeps the current value
+        // (so a quick peek doesn't wipe the key).
+        const initial = draft.apiKey;
+        const v = await promptText({
+          title: 'API key',
+          label: 'api key',
+          secret: true,
+          initial,
+          description: 'hidden input · clear to inherit from settings',
+        });
+        if (v !== undefined) draft.apiKey = v.trim() || undefined;
+        continue;
+      }
+      if (choice === 'baseURL') {
+        const v = (await promptText({ title: 'Base URL', label: 'base url', initial: draft.baseURL, description: 'the backend endpoint; leave empty to inherit' }))?.trim();
+        if (v !== undefined) draft.baseURL = v || undefined;
+        continue;
+      }
+      if (choice === 'model') {
+        const providerDef = resolveProvider(draft.provider as any);
+        const suggested = providerDef.suggestedModels();
+        const v = (await promptText({
+          title: 'Model',
+          label: 'model',
+          initial: draft.model,
+          description: suggested.length > 0 ? `suggested: ${suggested.slice(0, 4).join(', ')}` : 'a model id (optional)',
+        }))?.trim();
+        if (v !== undefined) draft.model = v || undefined;
+        continue;
+      }
+    }
   }
 
   async function switchBridgeProvider(target: string): Promise<void> {
