@@ -16,6 +16,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   'output-style': 'Select the response output style',
   permissions: 'Show or set the permission mode',
   plan: 'Enter plan mode or view the current plan',
+  rewind: 'Rewind the conversation by N messages',
   sessions: 'List stored sessions',
   resume: 'Resume a stored session',
   tools: 'List available tools',

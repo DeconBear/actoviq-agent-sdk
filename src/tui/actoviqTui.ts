@@ -1356,6 +1356,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       'output-style': '/output-style [default|concise|explanatory|learning]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
       plan: '/plan [off|open|view]',
+      rewind: '/rewind <N>',
       sessions: '/sessions',
       resume: '/resume [session-id]',
       tools: '/tools',
@@ -2439,6 +2440,28 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           } else {
             appendStatic([...formatInfoLine('no plan yet — ask the agent to plan a task (it will call ExitPlanMode)'), '']);
           }
+          return;
+        }
+        case 'rewind': {
+          const n = parseInt(args, 10);
+          if (!n || n < 1) {
+            appendStatic([...formatErrorLine('usage: /rewind <N> — drops the last N messages (best-effort, no file restore)'), '']);
+            return;
+          }
+          const msgs = session.messages;
+          if (n >= msgs.length) {
+            appendStatic([...formatErrorLine('cannot rewind beyond session start'), '']);
+            return;
+          }
+          const kept = msgs.slice(0, msgs.length - n);
+          // Create a fresh session with only the kept messages.
+          const nextSession = await sdk.createSession({ title: session.title, model: session.model });
+          if (kept.length > 0) await nextSession.appendMessages(kept);
+          // Switch the active session.
+          const prevSession = session;
+          session = nextSession;
+          await prevSession.delete().catch(() => undefined);
+          appendStatic([...formatInfoLine(`rewound ${n} message${n === 1 ? '' : 's'} (session ${session.id}), files unchanged`), '']);
           return;
         }
         case 'sessions': {
