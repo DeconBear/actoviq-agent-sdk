@@ -8,6 +8,8 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   cost: 'Show running token + spend totals',
   usage: 'Alias for /cost',
   doctor: 'Run configuration diagnostics',
+  batch: 'Run multiple prompts from a file sequentially',
+  goal: 'Set or view a session goal with status tracking',
   review: 'Review the current git diff for correctness',
   stats: 'Show session statistics',
   export: 'Export the conversation as Markdown',
