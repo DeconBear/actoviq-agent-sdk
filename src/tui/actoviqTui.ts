@@ -49,6 +49,7 @@ import type {
   RouterProfile,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
+import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
@@ -988,6 +989,46 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
+  // Expand @<image-path> tokens into Anthropic image content blocks so the
+  // user can attach screenshots/designs inline (gap #4, partial — clipboard
+  // capture is platform-specific, so this is the @path route only). Returns a
+  // string when there are no image refs (the common case) so the run path is
+  // unchanged; otherwise a ContentBlockParam[] with text + base64 image blocks.
+  function expandImageRefs(text: string): string | ContentBlockParam[] {
+    const refs = text.match(/@([\w./\\-]+\.(?:png|jpe?g|gif|webp|bmp))/gi);
+    if (!refs) return text;
+    const blocks: ContentBlockParam[] = [];
+    let cursor = 0;
+    const seen = new Set<string>();
+    let imagesAdded = 0;
+    for (const ref of refs) {
+      const raw = ref.slice(1); // strip @
+      const resolved = path.resolve(workDir, raw);
+      if (seen.has(resolved)) continue;
+      let data: string;
+      try {
+        data = fs.readFileSync(resolved).toString('base64');
+      } catch {
+        continue; // not readable — leave the @token in the text below
+      }
+      const at = text.indexOf(ref, cursor);
+      if (at > cursor) blocks.push({ type: 'text', text: text.slice(cursor, at) });
+      const ext = path.extname(raw).slice(1).toLowerCase();
+      const mediaType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+      blocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: mediaType, data },
+      });
+      cursor = at + ref.length;
+      seen.add(resolved);
+      imagesAdded++;
+    }
+    if (cursor < text.length) blocks.push({ type: 'text', text: text.slice(cursor) });
+    // If no image actually loaded, fall back to the original string so the run
+    // path is unchanged (the @tokens stay literal for the model to ignore).
+    return imagesAdded > 0 ? blocks : text;
+  }
+
   async function startRun(text: string): Promise<void> {
     running = true;
     runStartedAt = Date.now();
@@ -1041,7 +1082,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         eventStream = adapted;
         resultPromise = adapted.result;
       } else {
-        const stream = session.stream(text, {
+        const stream = session.stream(expandImageRefs(text), {
           systemPrompt: applyOutputStyle(systemPrompt, outputStyle),
           signal: abortCtrl.signal,
           permissionMode: currentPermissionMode(),
