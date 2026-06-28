@@ -1324,6 +1324,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       doctor: '/doctor',
       review: '/review',
       stats: '/stats',
+      export: '/export [filename]',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
       'output-style': '/output-style [default|concise|explanatory|learning]',
@@ -2542,6 +2543,19 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             `  ${A.dim}plan mode${A.reset}   ${session.permissionContext.mode === 'plan' ? 'on' : 'off'}`,
             '',
           ]);
+          return;
+        }
+        case 'export': {
+          const file = args.trim() || `session-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
+          const md = session.messages
+            .map((m) => `## ${m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : m.role}\n\n${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+            .join('\n\n---\n\n');
+          try {
+            fs.writeFileSync(path.resolve(workDir, file), md, 'utf-8');
+            appendStatic([...formatInfoLine(`conversation exported to ${file}`), '']);
+          } catch (error) {
+            appendStatic([...formatErrorLine(`export failed: ${(error as Error).message}`), '']);
+          }
           return;
         }
         case 'compact': {

@@ -10,6 +10,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   doctor: 'Run configuration diagnostics',
   review: 'Review the current git diff for correctness',
   stats: 'Show session statistics',
+  export: 'Export the conversation as Markdown',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
   'output-style': 'Select the response output style',
