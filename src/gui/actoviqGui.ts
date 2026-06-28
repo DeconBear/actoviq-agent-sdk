@@ -32,6 +32,7 @@ import {
   maskApiKey,
   readBridgeConfigs,
   removeBridgeConfig,
+  type ModelModality,
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
@@ -2080,6 +2081,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         // the user cleared it intentionally (send as-is; empty → omitted).
         if (typeof body.baseURL === 'string' && body.baseURL.trim()) config.baseURL = body.baseURL.trim();
         if (typeof body.model === 'string' && body.model.trim()) config.model = body.model.trim();
+        // Models array (provider-specific model registry).
+        if (Array.isArray(body.models)) {
+          config.models = (body.models as Array<{ name?: unknown; context1M?: unknown; modality?: unknown }>)
+            .filter(m => typeof m.name === 'string' && m.name.trim())
+            .map(m => ({
+              name: (m.name as string).trim(),
+              context1M: m.context1M === true || false,
+              modality: (m.modality === 'multimodal' ? 'multimodal' : 'text') as ModelModality,
+            }));
+        }
         addBridgeConfig(config, options.homeDir);
         // If the saved config is the active one, refresh it so the next turn uses it.
         if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
@@ -2441,13 +2452,12 @@ export function createActoviqGuiHtml(): string {
             <button type="button" id="insertCommand" class="command-chip" title="Commands">/ Commands</button>
           </div>
           <div class="composer-right">
-            <select id="effortSelect" title="Reasoning effort">
-              <option value="auto">Auto</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="max">Max</option>
-            </select>
+            <div class="model-picker-wrapper">
+              <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Model &amp; effort">Auto ▾</button>
+              <div id="modelPickerMenu" class="model-picker-menu hidden">
+                <div id="modelPickerItems"></div>
+              </div>
+            </div>
             <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
           </div>
         </div>
@@ -2771,6 +2781,17 @@ export function createActoviqGuiHtml(): string {
             <button type="button" id="bridgeCfgReset" class="secondary-btn">Clear form</button>
           </div>
           <p id="bridgeCfgStatus" class="muted"></p>
+        </div>
+        <div class="settings-group">
+          <h2>Models</h2>
+          <p class="muted">Define the models available under this config. Each model shows in the composer's model picker.</p>
+          <div class="bridge-model-row">
+            <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)" style="flex:2">
+            <label class="check-row" style="flex:1"><input id="bridgeNewModel1M" type="checkbox">1 M ctx</label>
+            <select id="bridgeNewModelModality" style="flex:1"><option value="text">Text</option><option value="multimodal">Multimodal</option></select>
+            <button type="button" id="bridgeModelAdd" class="secondary-btn">+ Add</button>
+          </div>
+          <div id="bridgeModelsList" class="settings-card-list compact" style="margin-top:10px"></div>
         </div>
         <div class="settings-group">
           <h2>Saved configs</h2>
@@ -3125,6 +3146,27 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
 #todosList li.todo-in_progress { font-weight: 500; color: #2f5fa8; }
 .permission-actions { flex-wrap: wrap; justify-content: flex-end; }
 .permission-actions .danger { color: #c7392f; }
+.model-picker-wrapper { position: relative; }
+.model-picker-btn { min-height: 34px; border: 1px solid #dddddd; border-radius: 8px; background: #fff; color: #202124; padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
+.model-picker-btn:hover { background: #f5f5f5; }
+.model-picker-menu { position: absolute; right: 0; bottom: calc(100% + 6px); min-width: 280px; max-width: 420px; background: #fff; border: 1px solid #d8d8d8; border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.14); z-index: 15; padding: 6px; max-height: 420px; overflow-y: auto; }
+.model-picker-menu.hidden { display: none; }
+.model-picker-cat { font-size: 12px; font-weight: 600; color: #85888d; padding: 6px 10px 2px; text-transform: uppercase; letter-spacing: .04em; }
+.model-picker-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; border: 0; background: transparent; width: 100%; text-align: left; color: #2f3337; }
+.model-picker-item:hover { background: #f1f3f4; }
+.model-picker-item.selected { background: #e9f2fe; color: #1a56c4; }
+.model-picker-tags { display: flex; gap: 4px; font-size: 11px; color: #85888d; }
+.model-picker-tags span { border: 1px solid #e2e5e8; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+.model-picker-efforts { display: flex; gap: 3px; }
+.model-picker-effort { min-height: 22px; border: 1px solid #e2e5e8; border-radius: 5px; background: #fafbfc; font-size: 11px; color: #5f6368; padding: 1px 6px; cursor: pointer; }
+.model-picker-effort:hover, .model-picker-effort.active { background: #e9f2fe; color: #1a56c4; border-color: #bdd4f0; }
+body[data-theme="dark"] .model-picker-btn { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
+body[data-theme="dark"] .model-picker-menu { background: #26272b; border-color: #3b3d43; }
+body[data-theme="dark"] .model-picker-item { color: #e8eaed; }
+body[data-theme="dark"] .model-picker-item:hover { background: #33363c; }
+body[data-theme="dark"] .model-picker-item.selected { background: #1f2b3a; color: #8ab4f8; }
+body[data-theme="dark"] .model-picker-effort { background: #26272b; border-color: #3b3d43; color: #aab0b8; }
+body[data-theme="dark"] .model-picker-tags span { border-color: #3b3d43; }
 .bridge-detected { display: grid; gap: 4px; margin-top: 10px; }
 .bridge-provider { margin: 0; font-size: 13px; color: #5f6368; }
 body[data-theme="dark"] .context-bar, body[data-theme="dark"] .todos-panel { border-color: #3b3d43; }
@@ -3628,7 +3670,6 @@ async function loadState() {
   state.running = Boolean(state.snapshot.running);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
-  el('effortSelect').value = state.snapshot.effort || 'auto';
   renderProjects();
   renderStatusExtras();
   if (state.activeSurface) renderSurface(state.activeSurface);
@@ -3679,6 +3720,93 @@ function renderStatusExtras() {
     }
   }
   el('outputStyleSelect').value = snap.outputStyle || 'default';
+  renderModelPicker();
+}
+function renderModelPicker() {
+  const items = el('modelPickerItems');
+  items.textContent = '';
+  const snap = state.snapshot;
+  if (!snap) return;
+  const bs = snap.bridgeState || {};
+  const configs = bs.configs || [];
+  const activeConfig = bs.activeConfig;
+  const EFFORTS = ['auto','low','medium','high','max'];
+  // Default entry (current session model, no bridge).
+  const defItem = document.createElement('button');
+  defItem.className = 'model-picker-item' + (!bs.mode ? ' selected' : '');
+  defItem.type = 'button';
+  defItem.innerHTML = '<span>Default</span><span class="model-picker-tags"><span>' + (snap.session?.model || 'default') + '</span></span>';
+  defItem.addEventListener('click', () => { selectPickerModel(null, null, null); });
+  items.appendChild(defItem);
+  if (configs.length === 0) { el('modelPickerBtn').textContent = bs.mode ? (activeConfig?.name || 'Bridge') + ' ▾' : 'Auto ▾'; return; }
+  for (const cfg of configs) {
+    const cat = document.createElement('div');
+    cat.className = 'model-picker-cat';
+    cat.textContent = cfg.name + ' (' + cfg.provider + ')';
+    items.appendChild(cat);
+    const models = Array.isArray(cfg.models) && cfg.models.length > 0 ? cfg.models : [{ name: cfg.model || '(default)', modality: 'text' }];
+    for (const m of models) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'model-picker-item';
+      const isActive = activeConfig?.name === cfg.name && (!activeConfig.model || activeConfig.model === m.name);
+      if (isActive) row.classList.add('selected');
+      const tags = [m.context1M ? '1 M' : '', m.modality === 'multimodal' ? 'Vision' : ''].filter(Boolean);
+      row.innerHTML = '<span>' + m.name + '</span>' + (tags.length ? '<span class="model-picker-tags">' + tags.map(t => '<span>' + t + '</span>').join('') + '</span>' : '');
+      // Effort sub-picks for this model
+      const effortRow = document.createElement('div');
+      effortRow.className = 'model-picker-efforts';
+      effortRow.style.cssText = 'margin-left:10px;margin-bottom:4px';
+      for (const e of EFFORTS) {
+        const eb = document.createElement('button');
+        eb.type = 'button';
+        eb.className = 'model-picker-effort';
+        eb.textContent = e === 'auto' ? 'auto' : e;
+        eb.addEventListener('click', (ev) => { ev.stopPropagation(); selectPickerModel(cfg.name, m.name, e); });
+        effortRow.appendChild(eb);
+      }
+      row.addEventListener('click', () => { selectPickerModel(cfg.name, m.name, 'auto'); });
+      items.appendChild(row);
+      items.appendChild(effortRow);
+    }
+  }
+  const btn = el('modelPickerBtn');
+  if (bs.mode && activeConfig) {
+    const mLabel = activeConfig.model || '(default)';
+    btn.textContent = mLabel + ' ▾';
+    btn.title = activeConfig.name + ' · ' + mLabel;
+  } else {
+    btn.textContent = 'Auto ▾';
+    btn.title = 'Default model (no bridge)';
+  }
+}
+async function selectPickerModel(configName, modelName, effort) {
+  if (!configName) {
+    // Default: disable bridge
+    const res = await api('/api/bridge/off', { method: 'POST' });
+    if (res.ok) { state.snapshot = await res.json(); }
+  } else {
+    // Update the config's selected model if different from stored.
+    const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
+    if (cfg && cfg.model !== modelName) {
+      const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName, model: modelName || '' }) });
+      if (res.ok) { state.snapshot = await res.json(); }
+    }
+    const actRes = await api('/api/bridge/activate', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName }) });
+    if (actRes.ok) { state.snapshot = await actRes.json(); }
+  }
+  if (effort && effort !== 'auto') { submitText('/effort ' + effort); }
+  else { loadState().catch(console.error); }
+  el('modelPickerMenu').classList.add('hidden');
+}
+function toggleModelPicker() {
+  const menu = el('modelPickerMenu');
+  if (menu.classList.contains('hidden')) {
+    renderModelPicker();
+    menu.classList.remove('hidden');
+  } else {
+    menu.classList.add('hidden');
+  }
 }
 async function resumeSession(id) {
   await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -4332,7 +4460,8 @@ function renderBridgeConfigs() {
     strong.textContent = cfg.name + (isActive ? ' ●' : '');
     card.appendChild(strong);
     const p = document.createElement('p');
-    p.textContent = [cfg.provider, cfg.model || '(default model)', 'key ' + cfg.apiKeyMasked, cfg.baseURL].filter(Boolean).join(' · ');
+    const modelCount = Array.isArray(cfg.models) ? cfg.models.length : 0;
+    p.textContent = [cfg.provider, cfg.model || '(default model)', modelCount > 0 ? modelCount + ' models' : '', 'key ' + cfg.apiKeyMasked, cfg.baseURL].filter(Boolean).join(' · ');
     card.appendChild(p);
     const footer = document.createElement('footer');
     const actBtn = document.createElement('button');
@@ -4350,6 +4479,8 @@ function renderBridgeConfigs() {
       setField('bridgeCfgApiKey', '');
       setField('bridgeCfgBaseUrl', cfg.baseURL || '');
       el('bridgeCfgClearKey').checked = false;
+      draftBridgeModels = Array.isArray(cfg.models) ? cfg.models.map(m => ({name: m.name, context1M: m.context1M || false, modality: m.modality || 'text'})) : [];
+      renderBridgeModels();
       el('bridgeCfgStatus').textContent = 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.';
     });
     const delBtn = document.createElement('button');
@@ -4360,6 +4491,47 @@ function renderBridgeConfigs() {
     card.appendChild(footer);
     root.appendChild(card);
   }
+}
+let draftBridgeModels = [];
+function renderBridgeModels() {
+  const root = el('bridgeModelsList');
+  root.textContent = '';
+  if (draftBridgeModels.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'No models added yet.';
+    root.appendChild(p);
+    return;
+  }
+  for (const [index, m] of draftBridgeModels.entries()) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    card.style.cssText = 'display:flex;align-items:center;gap:10px;justify-content:space-between;padding:8px 12px';
+    const info = document.createElement('span');
+    const tags = [m.name, m.context1M ? '1 M ctx' : '', m.modality === 'multimodal' ? 'Multimodal' : 'Text'].filter(Boolean);
+    info.textContent = tags.join(' · ');
+    card.appendChild(info);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => { draftBridgeModels.splice(index, 1); renderBridgeModels(); });
+    card.appendChild(del);
+    root.appendChild(card);
+  }
+}
+function addBridgeModel() {
+  const name = el('bridgeNewModelName').value.trim();
+  if (!name) return;
+  const model = {
+    name,
+    context1M: el('bridgeNewModel1M').checked,
+    modality: el('bridgeNewModelModality').value || 'text',
+  };
+  draftBridgeModels.push(model);
+  el('bridgeNewModelName').value = '';
+  el('bridgeNewModel1M').checked = false;
+  el('bridgeNewModelModality').value = 'text';
+  renderBridgeModels();
 }
 async function saveBridgeConfig() {
   const name = el('bridgeCfgName').value.trim();
@@ -4372,6 +4544,7 @@ async function saveBridgeConfig() {
     clearApiKey: clearKey,
     baseURL: el('bridgeCfgBaseUrl').value.trim(),
     model: el('bridgeCfgModel').value.trim(),
+    models: draftBridgeModels.length > 0 ? draftBridgeModels : undefined,
   };
   el('bridgeCfgStatus').textContent = 'Saving...';
   const res = await api('/api/bridge/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -4381,6 +4554,8 @@ async function saveBridgeConfig() {
   el('bridgeCfgName').value = '';
   el('bridgeCfgApiKey').value = '';
   el('bridgeCfgClearKey').checked = false;
+  draftBridgeModels = [];
+  renderBridgeModels();
   renderBridgeConfigs();
 }
 async function deleteBridgeConfig(name) {
@@ -4675,17 +4850,26 @@ el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(c
 el('bridgeCfgReset').addEventListener('click', () => {
   ['bridgeCfgName', 'bridgeCfgApiKey', 'bridgeCfgBaseUrl', 'bridgeCfgModel'].forEach(id => { el(id).value = ''; });
   el('bridgeCfgClearKey').checked = false;
+  draftBridgeModels = [];
+  renderBridgeModels();
   el('bridgeCfgStatus').textContent = '';
 });
+el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
-document.addEventListener('click', hideContextMenu);
+document.addEventListener('click', (event) => {
+  hideContextMenu();
+  const menu = el('modelPickerMenu');
+  if (!menu.classList.contains('hidden') && !event.target.closest('#modelPickerBtn') && !event.target.closest('#modelPickerMenu')) {
+    menu.classList.add('hidden');
+  }
+});
 document.addEventListener('contextmenu', (event) => {
   const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
   if (!onTarget) hideContextMenu();
 });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
-el('effortSelect').addEventListener('change', (event) => submitText('/effort ' + event.target.value));
+el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('outputStyleSelect').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
