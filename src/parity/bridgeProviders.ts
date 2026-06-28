@@ -349,8 +349,11 @@ class PiProvider extends BaseRuntimeProvider {
 
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
     const args = ['-p', '--mode', 'json'];
-    // Ephemeral, non-interactive, no trust prompt — matches a headless bridge run.
-    args.push('--no-session', '--no-approve');
+    // Non-interactive, no trust prompt — matches a headless bridge run.
+    // (Previously --no-session made every turn ephemeral; we now persist so
+    // multi-turn works: first turn --session-id <uuid> creates, later turns
+    // --session <uuid> resumes. The PiNormalizer surfaces the same id back.)
+    args.push('--no-approve');
     if (options.model) {
       // pi accepts "provider/id"; pass through unchanged.
       args.push('--model', options.model);
@@ -359,6 +362,17 @@ class PiProvider extends BaseRuntimeProvider {
       args.push('--append-system-prompt', options.appendSystemPrompt);
     } else if (options.systemPrompt) {
       args.push('--system-prompt', options.systemPrompt);
+    }
+    // Multi-turn session threading. ActoviqBridgeSession sets sessionId on
+    // the first turn and resume: this.id afterwards.
+    if (typeof options.resume === 'string') {
+      args.push('--session', options.resume);
+    } else if (options.resume === true) {
+      args.push('--resume');
+    } else if (options.sessionId) {
+      args.push('--session-id', options.sessionId);
+    } else if (options.continueMostRecent) {
+      args.push('--continue');
     }
     // pi takes the prompt as the final positional argument.
     args.push(prompt);
@@ -658,8 +672,18 @@ class CodewhaleProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'codewhale';
   readonly displayName = 'CodeWhale CLI (codewhale)';
 
-  buildArgs(prompt: string, _options: ActoviqBridgeRunOptions): string[] {
-    return ['exec', '--auto', '--output-format', 'stream-json', prompt];
+  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+    const args = ['exec', '--auto', '--output-format', 'stream-json'];
+    // codewhale persists sessions per workspace. Its --session-id RESUMES by
+    // id rather than creating, and we can't reliably feed its native id back
+    // through ActoviqBridgeSession's uuid, so use --continue (most-recent) for
+    // resumed turns — correct for sequential same-provider turns and survives
+    // switching away and back.
+    if (options.resume || options.continueMostRecent) {
+      args.push('--continue');
+    }
+    args.push(prompt);
+    return args;
   }
 
   buildChildEnv(
@@ -718,6 +742,12 @@ class CrushProvider extends BaseRuntimeProvider {
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
     const args = ['run'];
     if (options.model) { args.push('-m', options.model); }
+    // crush persists sessions per workspace and emits plain text (no session
+    // id to capture), so resumed turns use --continue (most-recent). Correct
+    // for sequential turns and survives switching away and back.
+    if (options.resume || options.continueMostRecent) {
+      args.push('--continue');
+    }
     args.push(prompt);
     return args;
   }

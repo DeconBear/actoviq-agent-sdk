@@ -75,4 +75,29 @@ export async function findFirstExistingPath(candidates: string[]): Promise<strin
   return undefined;
 }
 
+const WINDOWS_SHELL_SAFE = /^[A-Za-z0-9@_+=:,./-]+$/;
+
+/**
+ * Quote a single argument for `cmd.exe` when `spawn(..., { shell: true })` is
+ * used (required for `.cmd`/`.bat` shims on Windows). Node's `shell: true`
+ * joins args with spaces and passes them to `cmd /c` UNquoted, so an arg
+ * containing a space — e.g. the prompt passed to `claude -p "<prompt>"` —
+ * gets split by cmd.exe into multiple tokens ("My favorite number…" → "My").
+ * This wraps space-containing args in double quotes and escapes internal
+ * quotes/backslashes per the cmd.exe command-line parsing rules.
+ *
+ * Only meaningful when spawning through a shell; argv-mode spawns pass each
+ * arg verbatim and must NOT be pre-quoted.
+ */
+export function quoteForWindowsShell(arg: string): string {
+  if (arg === '') return '""';
+  if (WINDOWS_SHELL_SAFE.test(arg)) return arg;
+  // Double backslashes that precede a quote, escape the quote, then double
+  // any trailing backslashes (so they don't escape the closing quote).
+  const escaped = arg
+    .replace(/(\\*)"/g, (_m, bs: string) => bs + bs + '\\"')
+    .replace(/(\\*)$/, (_m, bs: string) => bs + bs);
+  return `"${escaped}"`;
+}
+
 export { IS_WINDOWS };

@@ -161,9 +161,13 @@ row, or `/bridge switch <id>`) sets it as the active runtime: every prompt you t
 type normally runs through that bridge runtime, reusing the full TUI — live status
 spinner, streamed transcript, tool cards, Esc-to-interrupt, and input history.
 `/bridge off` switches back to the in-process Hadamard SDK. `/bridge run <prompt>`
-forces a single bridge turn without changing the toggle. Each bridge turn is
-one-shot: the runtime does not carry conversation context across turns (the bridge
-child is spawned fresh per prompt).
+forces a single bridge turn without changing the toggle. Each provider keeps a
+persistent multi-turn session: the first turn seeds it (`--session-id`), later
+turns resume it (`--resume` / `--continue`), so the runtime remembers prior turns
+— "like using claude code until you exit." Switching providers preserves each
+runtime's session (switching back resumes it), and bridge turns are also appended
+to the Hadamard session store so the visible conversation survives switching
+bridge↔hadamard and a later `/resume`.
 
 ## 1.4. Troubleshooting — no runtime detected?
 

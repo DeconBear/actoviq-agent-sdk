@@ -153,10 +153,16 @@ The TUI `/bridge` control board and the CLI `/bridge` wizard both drive
 activates a provider in one tap, and the `run`/`switch`/`model`/`setup`/`off`/`help`
 sub-commands autocomplete. Activating a provider routes every normal prompt through
 that runtime — `startRun` branches on `bridgeMode`, swapping only the event source
-(`session.stream` vs `adaptBridgeRun(bridgeClient.stream)`) while reusing the whole
+(`session.stream` vs `adaptBridgeRun(rt.session.stream)`) while reusing the whole
 run loop (status spinner, streamed transcript, tool cards, Esc interrupt, steering
-queue, history). `/bridge off` returns to the in-process SDK. Each bridge turn is
-one-shot (no cross-turn conversation context).
+queue, history). `/bridge off` returns to the in-process SDK. Each provider keeps a
+persistent `ActoviqBridgeSession`: the first turn seeds it (`--session-id <uuid>`),
+later turns resume it (`--resume <uuid>` for claude/pi, `--continue` for crush/codewhale),
+so the runtime remembers prior turns. One `{client, session}` per provider is held in
+a map, so switching providers preserves each runtime's context, and bridge turns are
+appended to the Hadamard session store so the conversation survives switching
+bridge↔hadamard and a later `/resume`. (codex/reasonix remain one-shot — their CLIs
+expose no exec-mode resume.)
 
 ### Compatibility Matrix
 

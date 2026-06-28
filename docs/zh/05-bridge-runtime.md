@@ -156,8 +156,11 @@ const providers = await detectBridgeProviders();
 `/bridge switch <id>`）会将其设为当前运行时：此后你直接输入的每条普通 prompt
 都会经该 bridge 运行时执行，并复用整个 TUI——实时状态 spinner、流式 transcript、
 工具卡片、Esc 中断、输入历史。`/bridge off` 切回进程内 Hadamard SDK。
-`/bridge run <prompt>` 不改变开关、强制执行单次 bridge 轮次。每个 bridge 轮次都是
-一次性的：运行时不跨轮次保留对话上下文（每条 prompt 都会新起一个 bridge 子进程）。
+`/bridge run <prompt>` 不改变开关、强制执行单次 bridge 轮次。每个 provider 都维护一个
+持久的多轮会话：首轮播种（`--session-id`），后续轮次恢复（`--resume`/`--continue`），
+因此运行时会记住之前的轮次——"相当于一直用 claude code，直到你退出"。切换 provider 会
+保留各运行时的会话（切回即恢复），且 bridge 轮次也会追加到 Hadamard 会话存储中，使可见
+对话在切换 bridge↔hadamard 及后续 `/resume` 时都不丢失。
 
 ## 1.4 问题排查——没有检测到 runtime？
 

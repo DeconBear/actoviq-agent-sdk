@@ -282,12 +282,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // /model router: when set, each user turn is classified and routed to a model.
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
-  // Bridge mode: when true, prompts spawn the configured bridge CLI instead of
-  // the in-process Hadamard SDK. Toggled via /bridge run / /bridge off.
+  // Bridge mode: when true, prompts run through the selected bridge runtime
+  // (a real multi-turn session, not a fresh child per prompt). Each provider
+  // keeps its own {client, session} entry in bridgeRuntimes so switching
+  // providers preserves that runtime's conversation; /bridge off only toggles
+  // the mode and keeps the sessions alive for resumption.
   let bridgeMode = false;
-  let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
+  type BridgeClient = Awaited<ReturnType<typeof createActoviqBridgeSdk>>;
+  type BridgeSessionInstance = Awaited<ReturnType<BridgeClient['createSession']>>;
+  interface BridgeRuntime { client: BridgeClient; session: BridgeSessionInstance; }
+  const bridgeRuntimes = new Map<string, BridgeRuntime>();
   let bridgeProviderLabel: string | null = null;
   let bridgeModelLabel: string | null = null;
+
+  function activeBridgeRuntime(): BridgeRuntime | null {
+    if (!bridgeMode || !bridgeProviderLabel) return null;
+    return bridgeRuntimes.get(bridgeProviderLabel) ?? null;
+  }
   let abortCtrl: AbortController | null = null;
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
@@ -907,10 +918,15 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       // run queues and becomes the next turn (handled by the tail below).
       let eventStream: AsyncIterable<AgentEvent>;
       let resultPromise: Promise<AgentRunResult>;
-      if (bridgeMode && bridgeClient) {
+      const bridgeRt = activeBridgeRuntime();
+      if (bridgeRt) {
+        // Bridge mode: run through the provider's persistent session (not a
+        // fresh child). ActoviqBridgeSession threads --resume/--session-id so
+        // the runtime keeps multi-turn context ("like using claude code until
+        // you exit"). The adapted events reuse the same AgentEvent pipeline.
         statusNote = `bridge:${bridgeProviderLabel ?? 'bridge'}`;
         const bridgeModel = bridgeModelLabel ?? session.model;
-        const bs = bridgeClient.stream(text, { model: bridgeModel, signal: abortCtrl.signal });
+        const bs = bridgeRt.session.stream(text, { model: bridgeModel, signal: abortCtrl.signal });
         const adapted = adaptBridgeRun(bs, bs.result, `tui-bridge-${runStartedAt}`, bridgeProviderLabel ?? 'bridge');
         eventStream = adapted;
         resultPromise = adapted.result;
@@ -943,6 +959,16 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       }
       if (result.incompleteReason) {
         appendStatic(formatInfoLine(`run incomplete: ${result.incompleteReason}`));
+      }
+      // Persist bridge turns into the Hadamard session store so the visible
+      // conversation survives switching bridge↔hadamard AND a later /resume —
+      // and so a subsequent Hadamard turn sees the bridge history in context.
+      // (The bridge runtime also keeps its own multi-turn session via resume.)
+      if (bridgeRt && result.text) {
+        await session.appendMessages([
+          { role: 'user', content: text },
+          { role: 'assistant', content: result.text },
+        ]).catch(() => undefined);
       }
       appendStatic(['']);
     } catch (error) {
@@ -1370,9 +1396,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     // /bridge run (and the board's "Run a prompt…") forces a bridge turn.
     // If the runtime toggle isn't already on, activate the first available
     // provider, then reuse the normal run loop — startRun honors bridgeMode
-    // and routes the turn through the bridge runtime with the full TUI
-    // (status, streaming, tool cards, steering, history).
-    if (!bridgeClient || !bridgeMode) {
+    // and routes the turn through the bridge runtime's persistent session.
+    if (!activeBridgeRuntime()) {
       const detections = await detectBridgeProviders();
       const available = detections.find(d => d.available);
       if (!available) {
@@ -1427,12 +1452,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   async function disableBridge(): Promise<void> {
+    // Switch back to the in-process SDK but KEEP the bridge sessions alive in
+    // bridgeRuntimes — re-activating a provider resumes its conversation
+    // (context isn't lost by toggling off). Clients only close at shutdown.
     bridgeMode = false;
-    await bridgeClient?.close().catch(() => undefined);
-    bridgeClient = null;
-    bridgeProviderLabel = null;
-    bridgeModelLabel = null;
-    appendStatic([...formatInfoLine('bridge mode disabled — back to in-process SDK'), '']);
+    appendStatic([
+      ...formatInfoLine('bridge mode off — back to in-process SDK (sessions retained)'),
+      '',
+    ]);
   }
 
   function printBridgeHelp(): void {
@@ -1446,8 +1473,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       `  ${A.dim}help${A.reset}       — show this list`,
       `  ${A.dim}(bare)${A.reset}     — open the bridge control board`,
       ...formatInfoLine('activating a provider (board row or /bridge switch) routes every normal'),
-      ...formatInfoLine('prompt through that runtime until /bridge off. each turn is one-shot —'),
-      ...formatInfoLine('the bridge runtime does not carry conversation across turns.'),
+      ...formatInfoLine('prompt through that runtime until /bridge off. each provider keeps a'),
+      ...formatInfoLine('persistent multi-turn session (claude/pi resume by id; crush/codewhale'),
+      ...formatInfoLine('continue most-recent); switching providers preserves each session,'),
+      ...formatInfoLine('and bridge turns are saved to the hadamard session too. (codex/reasonix'),
+      ...formatInfoLine('are one-shot — their CLI has no exec-mode resume.)'),
       '',
     ]);
   }
@@ -1519,9 +1549,18 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     raw.bridge = bridge;
     await persistActoviqSettingsStore(store.configPath, raw);
     await loadJsonConfigFile(store.configPath);
-    // Recreate the bridge client on the chosen provider.
-    await bridgeClient?.close().catch(() => undefined);
-    bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: id as any, workDir: sdk.config.workDir });
+    // Create-or-resume the provider's runtime. We keep one {client, session}
+    // per provider in bridgeRuntimes, so switching providers preserves each
+    // runtime's multi-turn context — switching back resumes where it left off.
+    // (Previously the client was recreated on every switch, losing the session.)
+    let rt = bridgeRuntimes.get(id);
+    const resumed = Boolean(rt);
+    if (!rt) {
+      const client = await createActoviqBridgeSdk({ directCli: true, directCliProvider: id as any, workDir: sdk.config.workDir });
+      const sess = await client.createSession({ title: `actoviq-tui-${id}` });
+      rt = { client, session: sess };
+      bridgeRuntimes.set(id, rt);
+    }
     bridgeProviderLabel = id;
     bridgeMode = true;
     // Sync the per-provider model label (null → falls back to the session model at run).
@@ -1536,8 +1575,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       appendStatic([...formatErrorLine(`warning: ${id} not detected on PATH — set a path via /bridge setup or install it before running`), '']);
     }
     appendStatic([
-      ...formatInfoLine(`bridge active — provider: ${id}${bpModel ? ` · model: ${bpModel}` : ' · model: session default'}`),
-      ...formatInfoLine(`normal prompts now run through ${id}; /bridge off switches back to the in-process SDK`),
+      ...formatInfoLine(`bridge active — provider: ${id}${bpModel ? ` · model: ${bpModel}` : ' · model: session default'}${resumed ? ' · resumed' : ''}`),
+      ...formatInfoLine(`normal prompts now run through ${id} (multi-turn); /bridge off switches back to the in-process SDK`),
       '',
     ]);
     return true;
@@ -2610,6 +2649,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     } catch {
       // best-effort close
     }
+    // Close any live bridge runtime clients (sessions were per-provider).
+    await Promise.all(
+      [...bridgeRuntimes.values()].map(rt => rt.client.close().catch(() => undefined)),
+    );
+    bridgeRuntimes.clear();
     process.exit(code);
   }
 

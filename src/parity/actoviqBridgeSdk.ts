@@ -11,6 +11,7 @@ import {
   isExecutable,
   IS_WINDOWS,
   pathExists,
+  quoteForWindowsShell,
 } from './bridgeExecResolver.js';
 import type { BridgeEventNormalizer, RuntimeProvider } from './bridgeProviders.js';
 import { resolveProvider } from './bridgeProviders.js';
@@ -1624,14 +1625,20 @@ export class ActoviqBridgeSdkClient {
     const args = this.directCli
       ? (this.cliPath ? [this.cliPath, ...cliArgs] : cliArgs)
       : [options.cliPath ?? this.cliPath, ...cliArgs];
-    const child = spawn(options.executable ?? this.executable, args, {
+    // Windows .cmd/.bat shims require shell:true (Node can't spawn them
+    // directly), but shell-mode joining splits args on spaces — so a prompt
+    // like "claude -p My favorite number…" reaches claude as just "My". When
+    // shelling, quote each arg so cmd.exe preserves multi-word values.
+    const shelled =
+      IS_WINDOWS &&
+      /\.(?:cmd|bat)$/i.test(options.executable ?? this.executable);
+    const spawnArgs = shelled ? args.map(quoteForWindowsShell) : args;
+    const child = spawn(options.executable ?? this.executable, spawnArgs, {
       cwd: options.workDir ?? this.defaults.workDir ?? process.cwd(),
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell:
-        IS_WINDOWS &&
-        /\.(?:cmd|bat)$/i.test(options.executable ?? this.executable),
+      shell: shelled,
     });
 
     const events: ActoviqBridgeJsonEvent[] = [];
