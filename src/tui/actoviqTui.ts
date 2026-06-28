@@ -398,11 +398,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let runStartedAt = 0;
   let runToolCount = 0;
   let lastTokenEstimate: number | undefined;
-  // Running token + USD totals for /cost and /usage (gap #20). input/output
-  // are summed across turns; costUsd is null when a model has no pricing.
+  // Running token + USD totals for /cost and /usage. Per-config breakdown
+  // shows spend by each bridge config so the user can compare backends.
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
-  let totalCostUsd: number | null = 0; // null = unknown pricing for some model
+  let totalCostUsd: number | null = 0;
+  const configUsage = new Map<string, { inputTokens: number; outputTokens: number; turns: number }>();
   function recordUsage(model: string, usage: { input_tokens?: number; output_tokens?: number } | undefined): void {
     const inT = usage?.input_tokens ?? 0;
     const outT = usage?.output_tokens ?? 0;
@@ -410,6 +411,20 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     totalOutputTokens += outT;
     const cost = estimateCost(model, inT, outT);
     totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
+    // Per-config tracking: attribute this turn to the active bridge config.
+    if (bridgeMode && activeBridgeConfig) {
+      const rec = configUsage.get(activeBridgeConfig.name) ?? { inputTokens: 0, outputTokens: 0, turns: 0 };
+      rec.inputTokens += inT;
+      rec.outputTokens += outT;
+      rec.turns += 1;
+      configUsage.set(activeBridgeConfig.name, rec);
+    }
+  }
+  function configCost(name: string, rec: { inputTokens: number; outputTokens: number }): string | null {
+    const cfg = findBridgeConfig(name);
+    if (!cfg?.model) return null;
+    const cost = estimateCost(cfg.model, rec.inputTokens, rec.outputTokens);
+    return cost !== null ? `$${cost.toFixed(4)}` : null;
   }
   let statusNote = '';
   // /output-style prompt prefix swap (gap #19). Applied to the base system
@@ -2586,13 +2601,25 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           const costStr = totalCostUsd === null
             ? `${A.dim}(unknown — model lacks pricing; set ~/.actoviq/pricing.json)${A.reset}`
             : `$${totalCostUsd.toFixed(4)}`;
-          appendStatic([
+          const lines = [
             `${A.bold}Session usage${A.reset}`,
             `  ${A.dim}tokens${A.reset}   ${fmtTok(totalInputTokens)} in · ${fmtTok(totalOutputTokens)} out`,
             `  ${A.dim}cost${A.reset}     ${costStr}`,
             `  ${A.dim}model${A.reset}    ${session.model}`,
-            '',
-          ]);
+          ];
+          // Per-config breakdown panel.
+          if (configUsage.size > 0) {
+            lines.push('');
+            lines.push(`${A.bold}By config${A.reset}`);
+            for (const [name, rec] of configUsage) {
+              const active = activeBridgeConfig?.name === name;
+              const star = active ? ` ${A.green}*${A.reset}` : '';
+              const cfgCost = configCost(name, rec);
+              lines.push(`  ${A.bold}${name}${star}${A.reset}  ${A.dim}${rec.turns} turn${rec.turns === 1 ? '' : 's'}${A.reset}  ${fmtTok(rec.inputTokens)} in · ${fmtTok(rec.outputTokens)} out${cfgCost ? `  ${cfgCost}` : ''}`);
+            }
+          }
+          lines.push('');
+          appendStatic(lines);
           return;
         }
         case 'doctor': {
