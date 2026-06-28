@@ -1,6 +1,7 @@
 export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   help: 'Show available commands',
   clear: 'Clear the screen',
+  init: 'Generate a CLAUDE.md for this project',
   compact: 'Compact the current session',
   memory: 'Show memory/compact state',
   model: 'Select a model or configure its provider',
