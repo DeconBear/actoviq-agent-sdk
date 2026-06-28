@@ -140,10 +140,11 @@ describe('detectBridgeProviders', () => {
 
     // getDefaultProviderId is used internally by resolveProvider and
     // ActoviqBridgeSdkClient.create. The detect API itself doesn't
-    // change — but we confirm the settings loads correctly.
+    // change — but we confirm settings load correctly (all six entries
+    // present, regardless of what's on PATH).
     const results = await detectBridgeProviders();
-    const codexResult = results.find(r => r.id === 'codex');
-    expect(codexResult?.available).toBe(true);
+    expect(results.find(r => r.id === 'codex')).toBeDefined();
+    expect(results).toHaveLength(6);
   });
 });
 
