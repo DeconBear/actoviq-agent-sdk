@@ -147,7 +147,6 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/settings');
     expect(js).toContain('/api/open-location');
     expect(js).toContain('/api/project/open');
-    expect(js).toContain('/api/sessions/cleanup');
     expect(js).toContain('createNewSession');
     expect(js).toContain('submitWorkspace');
     expect(js).toContain('renderWorkspaceChoices');

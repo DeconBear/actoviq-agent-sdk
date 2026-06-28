@@ -420,17 +420,6 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
   return sessions;
 }
 
-async function countStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
-  let count = 0;
-  for (const projectRoot of projectRoots) {
-    for (const item of await listStoredSessionFiles(projectRoot)) {
-      if (item.id === activeSessionId || item.storageId === activeSessionId || item.messageCount > 0) continue;
-      count += 1;
-    }
-  }
-  return count;
-}
-
 async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
   let deleted = 0;
   for (const projectRoot of projectRoots) {
@@ -773,7 +762,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     at: number;
     projects: Awaited<ReturnType<typeof listKnownProjects>>;
     plugins: Awaited<ReturnType<typeof discoverActoviqPlugins>>;
-    hiddenEmptySessionCount: number;
   };
   let heavyStateCache: HeavyState | null = null;
   const invalidateHeavyState = (): void => {
@@ -927,12 +915,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       : null;
     if (!heavy) {
       const sessionStoreRoots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
-      const [plugins, projects, hiddenEmptySessionCount] = await Promise.all([
+      const [plugins, projects] = await Promise.all([
         discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
         listKnownProjects(homeDir, workDir),
-        countStoredEmptySessions(sessionStoreRoots, session.id),
+        // Auto-clean empty sessions (except the active one) whenever the heavy
+        // state is recomputed — so abandoned empty chats never accumulate and
+        // no manual "Clean empty chats" action is needed.
+        cleanupStoredEmptySessions(sessionStoreRoots, session.id),
       ]);
-      heavy = { key: cacheKey, at: now, plugins, projects, hiddenEmptySessionCount };
+      heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
     }
     const [allSessions, workflows, teams, routers, skills, agents] = await Promise.all([
@@ -957,7 +948,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       tools: toolMetadata,
       projects: heavy.projects,
       sessions,
-      hiddenEmptySessionCount: heavy.hiddenEmptySessionCount,
       workflows,
       teams,
       routers,
@@ -1088,20 +1078,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ...await state(),
       settingsApplyError: applyError,
     };
-  }
-
-  async function cleanupEmptySessions(): Promise<Record<string, unknown>> {
-    const store = await resolveActoviqSettingsStore({
-      configPath: options.configPath,
-      homeDir: options.homeDir,
-    }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const deleted = await cleanupStoredEmptySessions(
-      await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory),
-      session.id,
-    );
-    invalidateHeavyState();
-    return { deleted, state: await state() };
   }
 
   async function setPermissionPreset(key: string): Promise<GuiRunEvent[]> {
@@ -2030,9 +2006,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!nextWorkDir) return json(res, 400, { error: 'Missing project path' });
         return json(res, 200, await switchProject(nextWorkDir));
       }
-      if (req.method === 'POST' && url.pathname === '/api/sessions/cleanup') {
-        return json(res, 200, await cleanupEmptySessions());
-      }
       if (req.method === 'GET' && url.pathname === '/api/git') {
         return json(res, 200, gitInfo());
       }
@@ -2257,7 +2230,6 @@ export function createActoviqGuiHtml(): string {
         <div id="projects" class="project-list"></div>
         <div class="project-actions">
           <button type="button" id="addProjectBtn" class="sidebar-link">Add workspace</button>
-          <button type="button" id="cleanupSessionsBtn" class="sidebar-link">Clean empty chats</button>
         </div>
         <div id="workspaceMeta" class="workspace-meta"></div>
       </section>
@@ -2521,7 +2493,6 @@ export function createActoviqGuiHtml(): string {
           <p id="settingsSessionSummary" class="muted"></p>
           <div class="settings-action-row">
             <button type="button" id="settingsNewChatBtn" class="secondary-btn">New chat</button>
-            <button type="button" id="settingsCleanChatsBtn" class="secondary-btn">Clean empty chats</button>
           </div>
           <div id="settingsSessionsList" class="settings-card-list"></div>
         </div>
@@ -2755,13 +2726,29 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .message.assistant { max-width: 840px; }
 .message.assistant a { color: #2f5fa8; }
 .message.assistant .md-h { margin: 14px 0 8px; line-height: 1.3; }
+.message.assistant p.md-p { margin: 0 0 12px; }
 .message.assistant ul.md-ul { margin: 8px 0; padding-left: 22px; }
-.message.assistant ul.md-ul li { margin: 2px 0; }
+.message.assistant ol.md-ol { margin: 8px 0; padding-left: 24px; }
+.message.assistant ul.md-ul li, .message.assistant ol.md-ol li { margin: 3px 0; }
+.message.assistant li.md-task { list-style: none; margin-left: -20px; }
+.message.assistant li.md-task input[type="checkbox"] { margin-right: 7px; accent-color: #4a90f7; }
+.message.assistant li.md-task-done { color: #9aa0a6; }
+.message.assistant li.md-task-done > :not(input) { text-decoration: line-through; }
+.message.assistant blockquote.md-quote { margin: 8px 0; padding: 4px 14px; border-left: 3px solid #d8d8d8; color: #5f6368; }
+.message.assistant hr.md-hr { border: 0; border-top: 1px solid #e2e2e2; margin: 16px 0; }
+.message.assistant del { color: #9aa0a6; }
+.message.assistant .md-table { border-collapse: collapse; margin: 10px 0; font-size: 13.5px; display: block; overflow-x: auto; }
+.message.assistant .md-table th, .message.assistant .md-table td { border: 1px solid #e2e2e2; padding: 6px 11px; text-align: left; }
+.message.assistant .md-table th { background: #f6f7f8; font-weight: 600; }
+.message.assistant .md-table tr:nth-child(even) td { background: #fafbfc; }
+.message.assistant .md-table :is(th, td) :where(.inline-code) { background: #eef0f1; }
 .message.assistant .inline-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; background: #f1f2f3; padding: 1px 5px; border-radius: 5px; }
 .code-block { position: relative; margin: 10px 0; padding: 12px; background: #1f2330; color: #e6e9ef; border-radius: 8px; overflow: auto; }
 .code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; white-space: pre; }
 .copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.08); color: #e6e9ef; padding: 0 8px; font-size: 12px; }
 .copy-btn:hover { background: rgba(255,255,255,.16); }
+.code-lang { position: absolute; top: 6px; left: 12px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; color: rgba(230,233,239,.5); letter-spacing: .04em; }
+.code-block:has(.code-lang) code { margin-top: 6px; display: block; }
 .message.notice, .message.tool, .message.error { max-width: 840px; color: #5f6368; border-left: 3px solid #d8d8d8; padding-left: 12px; font-size: 14px; }
 .message.error { border-left-color: #c7392f; color: #8c1d18; }
 .message.tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
@@ -2920,6 +2907,13 @@ body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-t
 body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
 body[data-theme="dark"] .settings-card { background: #1f2023; }
 body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
+body[data-theme="dark"] .message.assistant blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
+body[data-theme="dark"] .message.assistant hr.md-hr { border-top-color: #3b3d43; }
+body[data-theme="dark"] .message.assistant .md-table th, body[data-theme="dark"] .message.assistant .md-table td { border-color: #3b3d43; }
+body[data-theme="dark"] .message.assistant .md-table th { background: #26272b; }
+body[data-theme="dark"] .message.assistant .md-table tr:nth-child(even) td { background: #232529; }
+body[data-theme="dark"] .message.assistant del, body[data-theme="dark"] .message.assistant li.md-task-done { color: #6f7479; }
+body[data-theme="dark"] .message.assistant .md-table :is(th, td) :where(.inline-code) { background: #303238; }
 body[data-theme="dark"] .message.assistant a { color: #8ab4f8; }
 body[data-theme="dark"] .brand-name { color: #e8eaed; }
 body[data-theme="dark"] .context-menu { background: #26272b; border-color: #3b3d43; }
@@ -3319,7 +3313,6 @@ function renderSettingsCommandPanels() {
   el('settingsSessionSummary').textContent = describeParts([
     'Current: ' + (session.title || session.id || 'new chat'),
     (snapshot.sessions || []).length + ' visible chats',
-    (snapshot.hiddenEmptySessionCount || 0) + ' empty hidden',
   ]);
   renderSettingsCardList('settingsSessionsList', snapshot.sessions || [], (root, item) => {
     addSettingsCard(root, item.title || item.id, describeParts([item.model, item.status, (item.messageCount || 0) + ' messages']), item.id, [
@@ -3371,11 +3364,9 @@ function renderProjects() {
     chats.appendChild(empty);
   }
   root.appendChild(chats);
-  const hidden = state.snapshot?.hiddenEmptySessionCount || 0;
   const active = projects.find(project => project.active);
   const activeChats = active?.sessionCount ?? visibleSessions.filter(item => item.messageCount > 0).length;
-  el('workspaceMeta').textContent = activeChats + ' chats here' + (hidden > 0 ? ' - ' + hidden + ' empty hidden' : '');
-  el('cleanupSessionsBtn').textContent = hidden > 0 ? 'Clean ' + hidden + ' empty chats' : 'Clean empty chats';
+  el('workspaceMeta').textContent = activeChats + ' chats here';
 }
 function renderWorkspaceChoices() {
   const root = el('workspaceChoices');
@@ -3562,14 +3553,6 @@ async function submitWorkspace(event) {
   const ok = await switchProject(projectPath);
   el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
   if (ok) closeWorkspaceDialog();
-}
-async function cleanupSessions() {
-  const res = await api('/api/sessions/cleanup', { method: 'POST' });
-  if (!res.ok) { flashStatus('Could not clean empty chats'); return; }
-  const payload = await res.json();
-  state.snapshot = payload.state;
-  await loadState();
-  flashStatus(payload.deleted > 0 ? 'Cleaned ' + payload.deleted + ' empty chat' + (payload.deleted === 1 ? '' : 's') : 'No empty chats to clean');
 }
 async function createNewSession() {
   await api('/api/session/new', { method: 'POST' });
@@ -3759,7 +3742,7 @@ function surfaceData(kind) {
   };
   if (kind === 'sessions') return {
     title: 'Chats',
-    subtitle: (snapshot.hiddenEmptySessionCount || 0) + ' empty chats hidden',
+    subtitle: 'Browse and resume sessions',
     items: snapshot.sessions || [],
   };
   if (kind === 'workflows') return { title: 'Workflows', subtitle: 'Run saved workflow scripts', items: snapshot.workflows || [] };
@@ -3800,9 +3783,6 @@ function renderSurface(kind) {
   el('surfaceList').textContent = '';
   if (kind === 'projects') {
     addSurfaceAction('Add workspace', addWorkspace);
-  }
-  if (kind === 'sessions') {
-    addSurfaceAction('Clean empty chats', cleanupSessions);
   }
   if (kind === 'teams') {
     addSurfaceAction('No team', () => submitText('/team off'));
@@ -4413,7 +4393,6 @@ el('projectMenuBtn').addEventListener('click', () => { openSurface('projects').c
 el('newWorkspaceBtn').addEventListener('click', addWorkspace);
 el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
-el('cleanupSessionsBtn').addEventListener('click', cleanupSessions);
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
 el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
@@ -4446,12 +4425,6 @@ el('settingsNewChatBtn').addEventListener('click', async () => {
     renderSettingsCommandPanels();
     el('settingsStatus').textContent = 'New chat created';
   }
-});
-el('settingsCleanChatsBtn').addEventListener('click', async () => {
-  await cleanupSessions();
-  await loadState();
-  renderSettingsCommandPanels();
-  el('settingsStatus').textContent = 'Empty chats cleaned';
 });
 el('settingsMemoryStatusBtn').addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
 el('settingsCompactNowBtn').addEventListener('click', () => {
