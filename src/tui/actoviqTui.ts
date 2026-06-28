@@ -1909,7 +1909,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         `${A.bold}${header}${A.reset} — edit any field, then Save`,
         ...formatDivider(screen.width),
         `  ${A.bold}name${A.reset}     ${draft.name || `${A.dim}(unset)${A.reset}`}`,
-        `  ${A.bold}provider${A.reset} ${draft.provider}${draft.provider === 'anthropic' ? ` ${A.dim}(Claude / DeepSeek / vLLM)${A.reset}` : ` ${A.dim}(Qwen / GPT / vLLM)${A.reset}`}`,
+        `  ${A.bold}runtime${A.reset}   ${A.bold}${draft.provider === 'anthropic' ? 'claude / codewhale / reasonix' : 'pi / codex / crush'}${A.reset} ${A.dim}(${draft.provider})${A.reset}`,
         `  ${A.bold}apiKey${A.reset}   ${maskApiKey(draft.apiKey)}`,
         `  ${A.bold}baseURL${A.reset} ${draft.baseURL || `${A.dim}(inherit)${A.reset}`}`,
         `  ${A.bold}model${A.reset}    ${draft.model || `${A.dim}(inherit)${A.reset}`}`,
@@ -1923,7 +1923,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         searchable: false,
         items: [
           { id: 'name', label: `name: ${draft.name || '(unset)'}`, description: 'a label you pick, e.g. deepseek-claude' },
-          { id: 'provider', label: `provider: ${draft.provider}`, description: 'anthropic (claude, DeepSeek, …) or openai (Qwen, vLLM, …)' },
+          { id: 'provider', label: `runtime: ${draft.provider === 'anthropic' ? 'claude / codewhale / reasonix' : 'pi / codex / crush'}`, description: `${draft.provider} · pick from detected runtimes` },
           { id: 'apiKey', label: `apiKey: ${maskApiKey(draft.apiKey)}`, description: 'injected as the credential each turn (hidden input)' },
           { id: 'baseURL', label: `baseURL: ${draft.baseURL || '(inherit)'}`, description: 'the backend endpoint (e.g. https://api.deepseek.com)' },
           { id: 'model', label: `model: ${draft.model || '(inherit)'}`, description: 'optional model id' },
@@ -1950,17 +1950,35 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         continue;
       }
       if (choice === 'provider') {
-        const avail = detections.filter(d => d.available).map(d => d.id).join(', ');
+        // Show detected runtimes as the primary options; each maps to an
+        // in-process provider (anthropic/openai). The user picks a familiar
+        // runtime name (claude, pi, …); the provider is auto-set.
+        const RUNTIME_MAP: Record<string, { provider: InProcessProvider; label: string }> = {
+          claude: { provider: 'anthropic', label: 'claude' },
+          codewhale: { provider: 'anthropic', label: 'codewhale' },
+          reasonix: { provider: 'anthropic', label: 'reasonix' },
+          pi: { provider: 'openai', label: 'pi' },
+          codex: { provider: 'openai', label: 'codex' },
+          crush: { provider: 'openai', label: 'crush' },
+        };
+        const curProvider = draft.provider;
+        const curRuntime = Object.entries(RUNTIME_MAP).find(([, v]) => v.provider === curProvider)?.[0];
+        const items = detections.map(d => ({
+          id: d.id,
+          label: `${d.id}${d.id === curRuntime ? ' ✓' : ''}`,
+          description: `${RUNTIME_MAP[d.id]?.provider ?? '?'}${d.available ? (d.version ? ` · v${d.version}` : ' · detected') : ' · not found'}${d.id === 'reasonix' ? ' · DeepSeek' : d.id === 'crush' ? ' · multi-backend' : ''}`,
+        }));
+        // Always include all 6 even if not detected (user may set path manually).
         const v = await selectItem({
-          title: 'Provider / runtime',
-          subtitle: `${avail ? `detected on PATH: ${avail}` : 'no runtimes detected'} · current: ${draft.provider}`,
+          title: 'Runtime',
+          subtitle: curRuntime ? `current: ${curRuntime} (${curProvider})` : `current provider: ${curProvider}`,
           searchable: false,
-          items: [
-            { id: 'anthropic', label: `anthropic${draft.provider === 'anthropic' ? ' ✓' : ''}`, description: 'Anthropic-compatible — Claude, DeepSeek, vLLM / codewhale, reasonix' },
-            { id: 'openai', label: `openai${draft.provider === 'openai' ? ' ✓' : ''}`, description: 'OpenAI-compatible — Qwen, GPT, vLLM / pi, codex, crush' },
-          ],
+          items,
         });
-        if (v) draft.provider = v as InProcessProvider;
+        if (v) {
+          const mapped = RUNTIME_MAP[v] ?? { provider: 'anthropic' as InProcessProvider };
+          draft.provider = mapped.provider;
+        }
         continue;
       }
       if (choice === 'apiKey') {
