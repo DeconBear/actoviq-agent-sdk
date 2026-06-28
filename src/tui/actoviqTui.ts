@@ -49,6 +49,7 @@ import type {
   RouterProfile,
 } from '../types.js';
 import { isRecord } from '../runtime/helpers.js';
+import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { pathToFileURL } from 'node:url';
 import {
@@ -440,6 +441,17 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   const canUseTool: ActoviqCanUseTool | undefined =
     permissionMode === 'default'
       ? (context) => {
+          if (context.publicName === 'Bash') {
+            // Auto-allow read-only commands (ls, git status, cat, …) so the
+            // default mode isn't a prompt on every harmless call (gap #12 vs
+            // claude-code). Everything else still prompts. isReadOnlyBashCommand
+            // is conservative — anything ambiguous falls through to 'ask'.
+            const command = (context.input as { command?: unknown } | null)?.command;
+            if (typeof command === 'string' && isReadOnlyBashCommand(command)) {
+              return undefined;
+            }
+            return { behavior: 'ask', reason: 'Bash command may modify the workspace.' };
+          }
           if (MUTATING_TOOLS.has(context.publicName)) {
             return { behavior: 'ask', reason: `${context.publicName} mutates the workspace.` };
           }
