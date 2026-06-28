@@ -51,6 +51,7 @@ import type {
 import { isRecord } from '../runtime/helpers.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
+import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { pathToFileURL } from 'node:url';
 import {
@@ -350,6 +351,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
   }
   let statusNote = '';
+  // /output-style prompt prefix swap (gap #19). Applied to the base system
+  // prompt per turn; 'default' is a no-op.
+  let outputStyle: OutputStyleId = 'default';
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
@@ -1018,7 +1022,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         resultPromise = adapted.result;
       } else {
         const stream = session.stream(text, {
-          systemPrompt,
+          systemPrompt: applyOutputStyle(systemPrompt, outputStyle),
           signal: abortCtrl.signal,
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
@@ -1206,6 +1210,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       usage: '/usage',
       model: '/model [model|min|medium|max|default|config|router]',
       effort: '/effort [low|medium|high|max|auto]',
+      'output-style': '/output-style [default|concise|explanatory|learning]',
       permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
       sessions: '/sessions',
       resume: '/resume [session-id]',
@@ -1805,6 +1810,29 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     appendStatic([...formatInfoLine(`effort set to: ${currentEffort() ?? 'auto'}`), '']);
   }
 
+  async function chooseOutputStyle(arg: string): Promise<void> {
+    const valid = OUTPUT_STYLES.map(s => s.id);
+    if (arg) {
+      if (!valid.includes(arg as OutputStyleId)) {
+        appendStatic([...formatErrorLine(`unknown output style: ${arg}. Valid: ${valid.join(', ')}`), '']);
+        return;
+      }
+      outputStyle = arg as OutputStyleId;
+      appendStatic([...formatInfoLine(`output style → ${outputStyle}`), '']);
+      return;
+    }
+    const selected = await selectItem({
+      title: 'Select output style',
+      subtitle: `Current: ${outputStyle}`,
+      searchable: false,
+      items: OUTPUT_STYLES.map(s => ({ id: s.id, label: s.label, description: s.description })),
+    });
+    if (selected) {
+      outputStyle = selected as OutputStyleId;
+      appendStatic([...formatInfoLine(`output style → ${outputStyle}`), '']);
+    }
+  }
+
   async function showSkills(): Promise<void> {
     const skills = sdk.skills.listMetadata();
     if (skills.length === 0) {
@@ -2019,6 +2047,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'effort':
           if (!args) await chooseEffort();
           else await setEffort(args.toLowerCase());
+          return;
+        case 'output-style':
+          await chooseOutputStyle(args.toLowerCase());
           return;
         case 'permissions': {
           // Three presets, selectable or named directly:
