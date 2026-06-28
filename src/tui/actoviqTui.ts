@@ -160,8 +160,8 @@ export interface ActoviqTuiOptions {
 interface PermissionDialogState {
   toolName: string;
   summary: string;
-  selected: number; // 0 = yes, 1 = always, 2 = no
-  resolve: (outcome: 'allow' | 'always' | 'deny') => void;
+  selected: number; // 0 = yes, 1 = always (project), 2 = always (user), 3 = no
+  resolve: (outcome: 'allow' | 'always' | 'always-user' | 'deny') => void;
 }
 
 interface SelectionDialogState {
@@ -497,22 +497,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     });
     dialog = null;
     renderDynamic();
-    if (outcome === 'always') {
+    if (outcome === 'always' || outcome === 'always-user') {
       const state = session.permissionContext;
       const permissions = state.permissions.filter(
         rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
       );
+      const source: 'project' | 'user' = outcome === 'always-user' ? 'user' : 'project';
       permissions.push({
         toolName: context.publicName,
         behavior: 'allow',
-        source: 'tui-session',
+        source,
       });
       await session.setPermissionContext({
         mode: state.mode ?? permissionMode,
         permissions,
         approver,
       });
-      return { behavior: 'allow', reason: 'Approved (always) in TUI.' };
+      return { behavior: 'allow', reason: `Approved (always — ${source} scope) in TUI.` };
     }
     return outcome === 'allow'
       ? { behavior: 'allow', reason: 'Approved in TUI.' }
@@ -778,7 +779,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   function buildDialog(): string[] {
     if (!dialog) return [];
     const inner = Math.max(screen.width - 4, 8);
-    const options = ['Yes', `Yes, always allow ${dialog.toolName}`, 'No (esc)'];
+    const options = ['Yes', `Always ${dialog.toolName} (project)`, `Always ${dialog.toolName} (user)`, 'No (esc)'];
     const lines: string[] = [];
     lines.push(boxTop(A.yellow));
     lines.push(boxRow(`${A.bold}Permission required · ${dialog.toolName}${A.reset}`, A.yellow));
@@ -790,7 +791,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       );
     });
     lines.push(boxBottom(A.yellow));
-    lines.push(`${A.dim}  y/enter approve · a always · n/esc deny · ↑↓ select${A.reset}`);
+    lines.push(`${A.dim}  y/enter approve · a always (project) · n/esc deny · ↑↓ select${A.reset}`);
     return lines;
   }
 
@@ -2945,11 +2946,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     if (!dialog) return;
     const name = key.name ?? '';
     if (name === 'up') {
-      dialog.selected = (dialog.selected + 2) % 3;
+      dialog.selected = (dialog.selected + 3) % 4;
     } else if (name === 'down' || name === 'tab') {
-      dialog.selected = (dialog.selected + 1) % 3;
+      dialog.selected = (dialog.selected + 1) % 4;
     } else if (name === 'return' || name === 'enter') {
-      dialog.resolve(dialog.selected === 0 ? 'allow' : dialog.selected === 1 ? 'always' : 'deny');
+      dialog.resolve(dialog.selected === 0 ? 'allow' : dialog.selected === 1 ? 'always' : dialog.selected === 2 ? 'always-user' : 'deny');
       return;
     } else if (name === 'y') {
       dialog.resolve('allow');
