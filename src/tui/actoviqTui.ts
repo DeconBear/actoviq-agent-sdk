@@ -234,32 +234,6 @@ export function renderRichText(text: string, width: number, opts: { maxLines?: n
   return out;
 }
 
-// Build a dynamic capabilities section injected into the system prompt each
-// turn (gap #16 vs claude-code) — subagents, MCP servers+tools, skills — so
-// the model knows what it can delegate to/use beyond the core tool list.
-function buildAgentContext(): string {
-  const parts: string[] = [];
-  const agents = sdk.listAgentDefinitions();
-  if (agents.length > 0) {
-    parts.push(`Available subagents: ${agents.map(a => a.name).join(', ')}`);
-  }
-  const byServer = new Map<string, typeof toolMetadata>();
-  for (const tool of toolMetadata.filter(item => item.provider === 'mcp')) {
-    const server = tool.server ?? 'mcp';
-    if (!byServer.has(server)) byServer.set(server, []);
-    byServer.get(server)!.push(tool);
-  }
-  for (const [server, tools] of byServer) {
-    const names = tools.map(t => t.name).slice(0, 12).join(', ');
-    parts.push(`MCP server "${server}": ${names}${tools.length > 12 ? '…' : ''}`);
-  }
-  const skills = sdk.skills.listMetadata();
-  if (skills.length > 0) {
-    parts.push(`Skills: ${skills.map(s => s.name).slice(0, 12).join(', ')}${skills.length > 12 ? '…' : ''}`);
-  }
-  return parts.length > 0 ? `\n\n# Available capabilities\n\n${parts.join('\n')}\n` : '';
-}
-
 function buildSystemPrompt(workDir: string): string {
   let isGit = false;
   try {
@@ -330,6 +304,33 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     });
   let sdk = await createCleanSdk();
   let toolMetadata = await sdk.listToolMetadata();
+
+  // Build a dynamic capabilities section injected into the system prompt each
+  // turn (gap #16 vs claude-code) — subagents, MCP servers+tools, skills — so
+  // the model knows what it can delegate to/use beyond the core tool list.
+  function buildAgentContext(): string {
+    const parts: string[] = [];
+    const agents = sdk.listAgentDefinitions();
+    if (agents.length > 0) {
+      parts.push(`Available subagents: ${agents.map(a => a.name).join(', ')}`);
+    }
+    const byServer = new Map<string, typeof toolMetadata>();
+    for (const tool of toolMetadata.filter(item => item.provider === 'mcp')) {
+      const server = tool.server ?? 'mcp';
+      if (!byServer.has(server)) byServer.set(server, []);
+      byServer.get(server)!.push(tool);
+    }
+    for (const [server, tools] of byServer) {
+      const names = tools.map(t => t.name).slice(0, 12).join(', ');
+      parts.push(`MCP server "${server}": ${names}${tools.length > 12 ? '…' : ''}`);
+    }
+    const skills = sdk.skills.listMetadata();
+    if (skills.length > 0) {
+      parts.push(`Skills: ${skills.map(s => s.name).slice(0, 12).join(', ')}${skills.length > 12 ? '…' : ''}`);
+    }
+    return parts.length > 0 ? `\n\n# Available capabilities\n\n${parts.join('\n')}\n` : '';
+  }
+
   let session = options.resumeSessionId
     ? await sdk.resumeSession(options.resumeSessionId, {
         model: options.model,
