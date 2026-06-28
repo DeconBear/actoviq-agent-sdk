@@ -20,12 +20,26 @@ import path from 'node:path';
 
 export type InProcessProvider = 'anthropic' | 'openai';
 
+export type ModelModality = 'text' | 'multimodal';
+
+export interface ProviderModelEntry {
+  /** Model id (e.g. "deepseek-chat", "gpt-4o"). */
+  name: string;
+  /** Whether the model supports 1 M context. */
+  context1M?: boolean;
+  /** Text-only or multimodal (vision). */
+  modality?: ModelModality;
+}
+
 export interface PersistedBridgeConfig {
   name: string;
   provider: InProcessProvider;
   apiKey?: string;
   baseURL?: string;
+  /** The currently selected model for this config. */
   model?: string;
+  /** Registered models for this config (display + quick-switch). */
+  models?: ProviderModelEntry[];
 }
 
 export interface PersistedBridgeConfigs {
@@ -76,6 +90,12 @@ export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBrid
           if (typeof c.apiKey === 'string' && c.apiKey) out.apiKey = c.apiKey;
           if (typeof c.baseURL === 'string' && c.baseURL) out.baseURL = c.baseURL;
           if (typeof c.model === 'string' && c.model) out.model = c.model;
+          if (Array.isArray(c.models)) {
+            out.models = c.models.filter(
+              (m: unknown): m is ProviderModelEntry =>
+                typeof m === 'object' && m !== null && typeof (m as ProviderModelEntry).name === 'string',
+            );
+          }
           return out;
         })
       : [];
