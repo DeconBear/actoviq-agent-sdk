@@ -996,6 +996,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           model: c.model ?? '',
         })),
       },
+      mcpServers: readMcpServerConfig(options.homeDir).servers,
       goal: getGoal(),
       outputStyle,
       outputStyles: OUTPUT_STYLES,
@@ -1981,6 +1982,31 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         invalidateHeavyState();
         return json(res, 200, await state());
       }
+      if (req.method === 'GET' && url.pathname === '/api/mcp/list') {
+        return json(res, 200, readMcpServerConfig(options.homeDir));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mcp/add') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing server name' });
+        const server: PersistedMcpServer = { name };
+        if (typeof body.command === 'string' && body.command) server.command = body.command;
+        if (typeof body.url === 'string' && body.url) server.url = body.url;
+        if (Array.isArray(body.args)) server.args = body.args.filter((a: unknown) => typeof a === 'string') as string[];
+        addMcpServer(server, options.homeDir);
+        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mcp/remove') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing server name' });
+        removeMcpServer(name, options.homeDir);
+        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
       if (req.method === 'POST' && url.pathname === '/api/open-location') {
         openPathInSystem(workDir);
         return json(res, 200, { ok: true, path: workDir });
@@ -2510,6 +2536,23 @@ export function createActoviqGuiHtml(): string {
           <p>Inspect MCP-provided tools and open the full MCP drawer.</p>
           <button type="button" id="settingsMcpBtn" class="secondary-btn">Inspect MCP servers</button>
           <div id="settingsMcpList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Add MCP server</h2>
+          <p class="muted">stdio runs a local command; http connects to a remote streamable_http endpoint. Saved to <code>~/.actoviq/mcp.json</code>; the SDK reloads on add/remove.</p>
+          <div class="two-col">
+            <label>Name<input id="mcpCfgName" autocomplete="off" placeholder="filesystem"></label>
+            <label>Type<select id="mcpCfgType"><option value="stdio">stdio</option><option value="http">http</option></select></label>
+          </div>
+          <label class="inline-field">Command (stdio)<input id="mcpCfgCommand" autocomplete="off" placeholder="npx -y @modelcontextprotocol/server-filesystem ."></label>
+          <label class="inline-field">URL (http)<input id="mcpCfgUrl" autocomplete="off" placeholder="https://example.com/mcp"></label>
+          <label class="inline-field">Args (comma-separated, optional)<input id="mcpCfgArgs" autocomplete="off" placeholder="/path/to/dir, --flag"></label>
+          <p id="mcpCfgStatus" class="muted"></p>
+          <div class="settings-action-row"><button type="button" id="mcpCfgAdd" class="primary">Add server</button></div>
+        </div>
+        <div class="settings-group">
+          <h2>Configured servers</h2>
+          <div id="mcpServersList" class="settings-card-list"></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="browser">
@@ -4130,11 +4173,64 @@ async function disableBridge() {
   renderBridgeConfigs();
   addMessage('notice', 'bridge off — using default provider');
 }
+function renderMcpServers() {
+  const servers = (state.snapshot && state.snapshot.mcpServers) || [];
+  const root = el('mcpServersList');
+  root.textContent = '';
+  if (servers.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No MCP servers configured.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const s of servers) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = s.name + ' · ' + (s.url ? 'http' : 'stdio');
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    p.textContent = s.command || s.url || '';
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => removeMcpServerConfig(s.name));
+    footer.appendChild(del);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+async function addMcpServerConfig() {
+  const name = el('mcpCfgName').value.trim();
+  if (!name) { el('mcpCfgStatus').textContent = 'Name is required.'; return; }
+  const type = el('mcpCfgType').value;
+  const args = el('mcpCfgArgs').value.split(',').map(s => s.trim()).filter(Boolean);
+  const body = { name, args };
+  if (type === 'http') body.url = el('mcpCfgUrl').value.trim();
+  else body.command = el('mcpCfgCommand').value.trim();
+  el('mcpCfgStatus').textContent = 'Adding...';
+  const res = await api('/api/mcp/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { el('mcpCfgStatus').textContent = 'Add failed: ' + (await res.text()); return; }
+  state.snapshot = await res.json();
+  el('mcpCfgStatus').textContent = 'Added "' + name + '".';
+  ['mcpCfgName', 'mcpCfgCommand', 'mcpCfgUrl', 'mcpCfgArgs'].forEach(id => { el(id).value = ''; });
+  renderMcpServers();
+}
+async function removeMcpServerConfig(name) {
+  const res = await api('/api/mcp/remove', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Remove failed'); return; }
+  state.snapshot = await res.json();
+  renderMcpServers();
+}
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
   if (tab === 'bridge') { renderBridgeConfigs(); refreshBridgeDetect().catch(() => undefined); }
+  if (tab === 'mcp') renderMcpServers();
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
@@ -4165,6 +4261,7 @@ async function openSettings(tab = 'general') {
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
   renderBridgeConfigs();
+  renderMcpServers();
   el('settingsStatus').textContent = '';
   renderSettingsCommandPanels();
   el('settingsModal').classList.remove('hidden');
@@ -4346,6 +4443,7 @@ el('settingsCompactNowBtn').addEventListener('click', () => {
 el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsCommand('/dream status', 'Inspecting dream state...').catch(console.error); });
 el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
+el('mcpCfgAdd').addEventListener('click', () => { addMcpServerConfig().catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
 el('settingsBridgeDetectBtn').addEventListener('click', () => { refreshBridgeDetect().catch(console.error); });
 el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(console.error); });
