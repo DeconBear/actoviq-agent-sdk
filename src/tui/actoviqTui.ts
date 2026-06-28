@@ -197,6 +197,16 @@ interface Key {
  * expert-panel member reports so long output reads cleanly instead of dumping
  * raw lines. Optionally caps very long output with a "… (N more lines)" note.
  */
+// Apply inline markdown formatting to a single unwrapped line segment:
+// `code` → dim, **bold** → bold, *italic* → italic. Applied after wrapping
+// so ANSI codes never split mid-segment.
+function renderMarkdownInline(line: string): string {
+  return line
+    .replace(/`([^`]+)`/g, `${A.dim}$1${A.reset}`)
+    .replace(/\*\*([^*]+)\*\*/g, `${A.bold}$1${A.reset}`)
+    .replace(/\*([^*]+)\*/g, `${A.italic}$1${A.reset}`);
+}
+
 export function renderRichText(text: string, width: number, opts: { maxLines?: number } = {}): string[] {
   const cols = Math.max(20, width - 2);
   const out: string[] = [];
@@ -223,7 +233,9 @@ export function renderRichText(text: string, width: number, opts: { maxLines?: n
       out.push('');
       continue;
     }
-    for (const line of wrapToWidth(raw, cols)) out.push(line);
+    // Wrap first, then apply inline formatting per segment — avoids ANSI
+    // splitting by never putting styling codes mid-segment.
+    for (const line of wrapToWidth(raw, cols)) out.push(renderMarkdownInline(line));
   }
   const maxLines = opts.maxLines ?? 0;
   if (maxLines > 0 && out.length > maxLines) {
