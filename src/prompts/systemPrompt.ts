@@ -5,6 +5,8 @@
  * The conversation engine concatenates: base system prompt + all tool prompts.
  */
 
+import { loadProjectContext } from '../memory/projectContext.js';
+
 export function buildSystemPrompt(params: {
   workDir: string;
   model: string;
@@ -80,5 +82,13 @@ ${envSections.join('\n')}
     .filter(p => p.length > 0)
     .join('\n\n');
 
-  return toolSection ? `${base}\n\n# Tool-specific guidance\n\n${toolSection}` : base;
+  // Load the CLAUDE.md hierarchy (user + project, with @includes) so the agent
+  // picks up project-specific instructions — the canonical Claude Code behavior.
+  const project = loadProjectContext(params.workDir);
+  const projectSection = project.text
+    ? `\n\n# Project context (CLAUDE.md)\n\nThe following project instructions were loaded from CLAUDE.md files. Treat them as authoritative guidance for this workspace.\n\n${project.text}\n`
+    : '';
+
+  const withProject = `${base}${projectSection}`;
+  return toolSection ? `${withProject}\n\n# Tool-specific guidance\n\n${toolSection}` : withProject;
 }
