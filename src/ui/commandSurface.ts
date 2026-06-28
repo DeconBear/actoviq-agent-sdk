@@ -5,6 +5,8 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   compact: 'Compact the current session',
   memory: 'Show memory/compact state',
   context: 'Show what is in the context window',
+  cost: 'Show running token + spend totals',
+  usage: 'Alias for /cost',
   model: 'Select a model or configure its provider',
   effort: 'Select the reasoning effort',
   permissions: 'Show or set the permission mode',
