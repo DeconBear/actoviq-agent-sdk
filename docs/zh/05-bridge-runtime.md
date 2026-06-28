@@ -164,8 +164,10 @@ const providers = await detectBridgeProviders();
 
 ### 命名 bridge 配置
 
-`/bridge config` 打开配置管理界面，可以新增一个命名配置：填入**名称**、要启动的
-**provider**（运行时）、要注入的 **apiKey** 和 **baseURL**，以及可选的 **model**。配置保存在
+`/bridge config` 打开配置管理界面：**新增配置**（或对已有配置 **编辑**/**删除**）会进入一个
+单页**配置编辑器**，一次性显示所有字段——**名称**、**provider**（运行时）、**apiKey**、
+**baseURL**、可选的 **model**——并显示每个字段的当前值。你可以按任意顺序编辑任意字段（例如先
+配置好 key，再回去修改名称），然后**保存**提交或**取消**放弃。配置保存在
 `~/.actoviq/bridge-configs.json`。每个 config 是一个完整预设——例如
 `deepseek-claude`（provider=`claude`、`ANTHROPIC_BASE_URL=https://api.deepseek.com`、
 `ANTHROPIC_API_KEY=…`、`model=deepseek-chat`）——可以保留多个后端配置，按名称切换。
