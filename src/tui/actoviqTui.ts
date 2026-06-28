@@ -486,7 +486,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   const approver: ActoviqToolApprover = async (context) => {
-    const outcome = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
+    const outcome = await new Promise<'allow' | 'always' | 'always-user' | 'deny'>((resolve) => {
       dialog = {
         toolName: context.publicName,
         summary: summarizeForDialog(context.input),
