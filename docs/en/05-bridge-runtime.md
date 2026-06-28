@@ -156,18 +156,18 @@ Used by the CLI `/bridge` wizard, the TUI `/bridge` control board, and GUI Setti
 
 ### TUI runtime switching
 
-In the TUI, `/bridge` opens a control board. Activating a provider (selecting its
-row, or `/bridge switch <id>`) sets it as the active runtime: every prompt you then
-type normally runs through that bridge runtime, reusing the full TUI — live status
+In the TUI, `/bridge` opens a control board of saved connection configs. Selecting
+one activates it as the active runtime: every prompt you then type normally runs
+through that config's provider/apiKey/baseURL/model **in-process** — no child
+process is spawned. The pre-built model client is injected per-turn via
+`session.stream({model, modelApi})` (same mechanism the `/model` router uses),
+reusing the full TUI — live status
 spinner, streamed transcript, tool cards, Esc-to-interrupt, and input history.
-`/bridge off` switches back to the in-process Hadamard SDK. `/bridge run <prompt>`
-forces a single bridge turn without changing the toggle. Each provider keeps a
-persistent multi-turn session: the first turn seeds it (`--session-id`), later
-turns resume it (`--resume` / `--continue`), so the runtime remembers prior turns
-— "like using claude code until you exit." Switching providers preserves each
-runtime's session (switching back resumes it), and bridge turns are also appended
-to the Hadamard session store so the visible conversation survives switching
-bridge↔hadamard and a later `/resume`.
+`/bridge off` switches back to the SDK's default provider. `/bridge run <prompt>`
+forces a single bridge turn without changing the toggle. Since the same Hadamard
+session is used for both normal and bridge turns, context survives switching
+bridge↔hadamard and `/resume` sees the full conversation — the bridge is truly
+"like using claude code until you exit."
 
 ### Named bridge configs
 
@@ -190,10 +190,10 @@ conversation with all agent features. `/bridge off` returns to the in-process
 SDK. Edit/remove configs via `/bridge config`; editing the active config applies
 on the next turn.
 
-Per-provider credential mapping: `claude`/`codewhale` → `ANTHROPIC_*`;
-`pi`/`codex` → `OPENAI_*` (pi uses `ANTHROPIC_*` when the baseURL mentions
-anthropic); `reasonix` → `DEEPSEEK_API_KEY`; `crush` → `OPENAI_API_KEY`.
-Implementation: `src/parity/bridgeConfigs.ts` (`buildConfigEnv`).
+Provider is `'anthropic'` (Anthropic-compatible: Claude, DeepSeek, vLLM, …) or
+`'openai'` (OpenAI-compatible: Qwen, GPT, vLLM, …). The config's provider/apiKey/
+baseURL/model are passed directly to the SDK — no env vars, no credential mapping.
+Implementation: `src/parity/bridgeConfigs.ts`, `src/tui/actoviqTui.ts`.
 
 ## 1.4. Troubleshooting — no runtime detected?
 

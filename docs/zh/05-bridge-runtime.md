@@ -152,15 +152,13 @@ const providers = await detectBridgeProviders();
 
 ### TUI 运行时切换
 
-在 TUI 中，`/bridge` 打开控制面板。激活某个 provider（选中其所在行，或
-`/bridge switch <id>`）会将其设为当前运行时：此后你直接输入的每条普通 prompt
-都会经该 bridge 运行时执行，并复用整个 TUI——实时状态 spinner、流式 transcript、
-工具卡片、Esc 中断、输入历史。`/bridge off` 切回进程内 Hadamard SDK。
-`/bridge run <prompt>` 不改变开关、强制执行单次 bridge 轮次。每个 provider 都维护一个
-持久的多轮会话：首轮播种（`--session-id`），后续轮次恢复（`--resume`/`--continue`），
-因此运行时会记住之前的轮次——"相当于一直用 claude code，直到你退出"。切换 provider 会
-保留各运行时的会话（切回即恢复），且 bridge 轮次也会追加到 Hadamard 会话存储中，使可见
-对话在切换 bridge↔hadamard 及后续 `/resume` 时都不丢失。
+在 TUI 中，`/bridge` 打开已保存连接配置的控制面板。选中一个配置即将其激活为当前运行时：
+此后直接输入的每条普通 prompt 都会经该配置的 provider/apiKey/baseURL/model **在进程内**
+执行——不启动子进程。预构建的模型客户端按轮次通过 `session.stream({model, modelApi})`
+注入（`/model` 路由器使用的相同机制），复用整个 TUI——实时状态 spinner、流式 transcript、
+工具卡片、Esc 中断、输入历史。`/bridge off` 切回 SDK 默认 provider。由于 bridge 和普通
+轮次使用同一个 Hadamard session，切换 bridge↔hadamard 时上下文不丢失，`/resume` 可看到
+完整对话——"相当于一直用 claude code，直到你退出"。
 
 ### 命名 bridge 配置
 
