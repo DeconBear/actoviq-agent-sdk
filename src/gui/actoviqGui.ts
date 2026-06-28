@@ -1945,10 +1945,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         const provider = body.provider === 'openai' ? 'openai' : 'anthropic';
         if (!name) return json(res, 400, { error: 'Missing config name' });
+        // Merge with the existing config of the same name when editing. The form
+        // intentionally leaves the API-key field blank on edit (it's a secret),
+        // so a blank key must PRESERVE the saved one — not replace it with empty.
+        // clearApiKey:true explicitly drops the key.
+        const existing = findBridgeConfig(name, options.homeDir);
         const config: PersistedBridgeConfig = { name, provider };
-        if (typeof body.apiKey === 'string' && body.apiKey) config.apiKey = body.apiKey;
-        if (typeof body.baseURL === 'string' && body.baseURL) config.baseURL = body.baseURL;
-        if (typeof body.model === 'string' && body.model) config.model = body.model;
+        if (body.clearApiKey === true) {
+          // explicitly remove the saved key
+        } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+          config.apiKey = body.apiKey.trim();
+        } else if (existing?.apiKey) {
+          config.apiKey = existing.apiKey; // preserve on edit
+        }
+        // baseURL/model: the form loads existing values, so an empty field means
+        // the user cleared it intentionally (send as-is; empty → omitted).
+        if (typeof body.baseURL === 'string' && body.baseURL.trim()) config.baseURL = body.baseURL.trim();
+        if (typeof body.model === 'string' && body.model.trim()) config.model = body.model.trim();
         addBridgeConfig(config, options.homeDir);
         // If the saved config is the active one, refresh it so the next turn uses it.
         if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
@@ -2613,8 +2626,9 @@ export function createActoviqGuiHtml(): string {
             <label>Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
             <label>Model<input id="bridgeCfgModel" autocomplete="off" placeholder="deepseek-chat"></label>
           </div>
-          <label class="inline-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-…"></label>
+          <label class="inline-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-… (blank keeps the saved key on edit)"></label>
           <label class="inline-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
+          <label class="check-row"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
           <div class="settings-action-row">
             <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
             <button type="button" id="bridgeCfgReset" class="secondary-btn">Clear form</button>
@@ -4123,6 +4137,7 @@ function renderBridgeConfigs() {
       setField('bridgeCfgModel', cfg.model || '');
       setField('bridgeCfgApiKey', '');
       setField('bridgeCfgBaseUrl', cfg.baseURL || '');
+      el('bridgeCfgClearKey').checked = false;
       el('bridgeCfgStatus').textContent = 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.';
     });
     const delBtn = document.createElement('button');
@@ -4137,10 +4152,12 @@ function renderBridgeConfigs() {
 async function saveBridgeConfig() {
   const name = el('bridgeCfgName').value.trim();
   if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
+  const clearKey = el('bridgeCfgClearKey').checked;
   const body = {
     name,
     provider: el('bridgeCfgProvider').value || 'anthropic',
     apiKey: el('bridgeCfgApiKey').value,
+    clearApiKey: clearKey,
     baseURL: el('bridgeCfgBaseUrl').value.trim(),
     model: el('bridgeCfgModel').value.trim(),
   };
@@ -4148,9 +4165,10 @@ async function saveBridgeConfig() {
   const res = await api('/api/bridge/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) { el('bridgeCfgStatus').textContent = 'Save failed: ' + (await res.text()); return; }
   state.snapshot = await res.json();
-  el('bridgeCfgStatus').textContent = 'Saved "' + name + '".';
+  el('bridgeCfgStatus').textContent = 'Saved "' + name + '"' + (clearKey ? ' (key cleared).' : '.');
   el('bridgeCfgName').value = '';
   el('bridgeCfgApiKey').value = '';
+  el('bridgeCfgClearKey').checked = false;
   renderBridgeConfigs();
 }
 async function deleteBridgeConfig(name) {
@@ -4450,6 +4468,7 @@ el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
 el('bridgeCfgReset').addEventListener('click', () => {
   ['bridgeCfgName', 'bridgeCfgApiKey', 'bridgeCfgBaseUrl', 'bridgeCfgModel'].forEach(id => { el(id).value = ''; });
+  el('bridgeCfgClearKey').checked = false;
   el('bridgeCfgStatus').textContent = '';
 });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
