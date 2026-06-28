@@ -84,6 +84,15 @@ const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvid
 
 TUI 的 `/bridge` 控制面板与 CLI 的 `/bridge` 向导都驱动 `detectBridgeProviders()` + `resolveProvider()`。面板展示每个 provider 的 ✔/✘、版本、路径，以及凭证就绪提示（`BRIDGE_PROVIDER_CREDENTIALS`），可一键激活 provider；`run`/`switch`/`model`/`setup`/`off`/`help` 子命令支持自动补全。激活某个 provider 后，每条普通 prompt 都会经该运行时执行——`startRun` 按 `bridgeMode` 分支，只替换事件源（`session.stream` 与 `adaptBridgeRun(rt.session.stream)`），其余运行循环（状态 spinner、流式 transcript、工具卡片、Esc 中断、steering 队列、历史）全部复用。`/bridge off` 切回进程内 SDK。每个 provider 维护一个持久的 `ActoviqBridgeSession`：首轮播种（`--session-id <uuid>`），后续轮次恢复（claude/pi 用 `--resume <uuid>`，crush/codewhale 用 `--continue`），因此运行时会记住之前的轮次。每个 provider 的 `{client, session}` 存于一个 map 中，切换 provider 保留各运行时上下文，且 bridge 轮次会追加到 Hadamard 会话存储，使对话在切换 bridge↔hadamard 及后续 `/resume` 时都不丢失。（codex/reasonix 仍为单轮——其 CLI 无 exec 模式 resume。）
 
+**命名 bridge 配置**（`/bridge config`，持久化于 `~/.actoviq/bridge-configs.json`）：
+每个 config 包含 {name, provider, apiKey, baseURL, model}。`/bridge` 列出已保存的配置；
+选中一个即激活运行时，并逐轮注入该 config 的凭证（经 per-run `env` 选项：
+`buildConfigEnv` → `buildChildEnvironment(provider, options.env)` → `provider.buildChildEnv`
+overrides，最后展开 → 优先级高于 settings.json）。provider→env 映射：
+claude/codewhale→`ANTHROPIC_*`，pi/codex→`OPENAI_*`（baseURL 含 anthropic 时 pi→`ANTHROPIC_*`），
+reasonix→`DEEPSEEK_API_KEY`，crush→`OPENAI_API_KEY`。`src/parity/bridgeConfigs.ts`。
+`config` 子命令与 run/switch/model/setup/off/help 一并支持自动补全。
+
 ### 事件提取
 
 ```typescript

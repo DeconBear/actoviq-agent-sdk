@@ -26,6 +26,7 @@ describe('filterInteractiveCommands', () => {
       'bridge run',
       'bridge switch',
       'bridge model',
+      'bridge config',
       'bridge setup',
       'bridge off',
       'bridge help',

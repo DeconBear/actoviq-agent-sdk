@@ -162,6 +162,23 @@ const providers = await detectBridgeProviders();
 保留各运行时的会话（切回即恢复），且 bridge 轮次也会追加到 Hadamard 会话存储中，使可见
 对话在切换 bridge↔hadamard 及后续 `/resume` 时都不丢失。
 
+### 命名 bridge 配置
+
+`/bridge config` 打开配置管理界面，可以新增一个命名配置：填入**名称**、要启动的
+**provider**（运行时）、要注入的 **apiKey** 和 **baseURL**，以及可选的 **model**。配置保存在
+`~/.actoviq/bridge-configs.json`。每个 config 是一个完整预设——例如
+`deepseek-claude`（provider=`claude`、`ANTHROPIC_BASE_URL=https://api.deepseek.com`、
+`ANTHROPIC_API_KEY=…`、`model=deepseek-chat`）——可以保留多个后端配置，按名称切换。
+
+保存后，`/bridge` 会列出**已保存的配置**；选中一个（或 `/bridge switch <名称>`）即激活该
+运行时。config 的凭证会**逐轮注入**（作为 per-run env 覆盖，优先级高于
+`~/.actoviq/settings.json`），随后作为普通多轮对话运行，支持全部 agent 功能。`/bridge off`
+切回进程内 SDK。可在 `/bridge config` 中编辑/删除配置；编辑当前激活的配置将在下一轮生效。
+
+按 provider 的凭证映射：`claude`/`codewhale` → `ANTHROPIC_*`；`pi`/`codex` → `OPENAI_*`
+（baseURL 含 anthropic 时 pi 用 `ANTHROPIC_*`）；`reasonix` → `DEEPSEEK_API_KEY`；
+`crush` → `OPENAI_API_KEY`。实现：`src/parity/bridgeConfigs.ts`（`buildConfigEnv`）。
+
 ## 1.4 问题排查——没有检测到 runtime？
 
 1. **安装 CLI**（`npm i -g @anthropic-ai/claude-code`、`npm i -g codewhale`、…）

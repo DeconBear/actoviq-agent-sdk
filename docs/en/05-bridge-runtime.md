@@ -169,6 +169,29 @@ runtime's session (switching back resumes it), and bridge turns are also appende
 to the Hadamard session store so the visible conversation survives switching
 bridge↔hadamard and a later `/resume`.
 
+### Named bridge configs
+
+`/bridge config` opens a management screen where you add a named connection
+config: a **name**, the **provider** (runtime) to spawn, the **apiKey** and
+**baseURL** to inject, and an optional **model**. Saved configs persist in
+`~/.actoviq/bridge-configs.json`. Each config is a complete preset — e.g.
+`deepseek-claude` (provider `claude`, `ANTHROPIC_BASE_URL=https://api.deepseek.com`,
+`ANTHROPIC_API_KEY=…`, `model=deepseek-chat`) — so you can keep several backend
+profiles and switch by name.
+
+After that, `/bridge` lists your **saved configs**; selecting one (or
+`/bridge switch <name>`) activates that runtime. The config's credentials are
+**injected each turn** as per-run env overrides (they override
+`~/.actoviq/settings.json`), then the run proceeds as a normal multi-turn
+conversation with all agent features. `/bridge off` returns to the in-process
+SDK. Edit/remove configs via `/bridge config`; editing the active config applies
+on the next turn.
+
+Per-provider credential mapping: `claude`/`codewhale` → `ANTHROPIC_*`;
+`pi`/`codex` → `OPENAI_*` (pi uses `ANTHROPIC_*` when the baseURL mentions
+anthropic); `reasonix` → `DEEPSEEK_API_KEY`; `crush` → `OPENAI_API_KEY`.
+Implementation: `src/parity/bridgeConfigs.ts` (`buildConfigEnv`).
+
 ## 1.4. Troubleshooting — no runtime detected?
 
 1. **Install the CLI** (`npm i -g @anthropic-ai/claude-code`, `npm i -g codewhale`, …)
