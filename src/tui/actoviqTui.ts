@@ -618,16 +618,30 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const files = loadWorkspaceFiles();
     const query = token.toLowerCase();
     if (!query) return files.slice(0, 200);
-    const matches = files.filter((file) => file.toLowerCase().includes(query));
-    matches.sort((a, b) => {
-      const aBase = a.slice(a.lastIndexOf('/') + 1).toLowerCase();
-      const bBase = b.slice(b.lastIndexOf('/') + 1).toLowerCase();
-      const aScore = aBase.startsWith(query) ? 0 : aBase.includes(query) ? 1 : 2;
-      const bScore = bBase.startsWith(query) ? 0 : bBase.includes(query) ? 1 : 2;
-      if (aScore !== bScore) return aScore - bScore;
-      return a.length - b.length;
-    });
-    return matches.slice(0, 200);
+    // Subsequence fuzzy match with path-aware scoring: prefer basename hits,
+    // then prefix hits, then path depth (shorter = nearer the root = more
+    // likely the file the user wants). Falls back to substring for short
+    // tokens so exact-include still ranks well.
+    const scored: { file: string; score: number }[] = [];
+    for (const file of files) {
+      const lower = file.toLowerCase();
+      const slash = lower.lastIndexOf('/') + 1;
+      const base = lower.slice(slash);
+      let score = -1;
+      if (base.startsWith(query)) score = 1000 - base.length;
+      else if (lower.includes(query)) score = 800 - slash;
+      else {
+        // Subsequence fuzzy match: walk the path consuming the query in order.
+        let qi = 0;
+        for (let i = 0; i < lower.length && qi < query.length; i++) {
+          if (lower[i] === query[qi]) qi++;
+        }
+        if (qi === query.length) score = 400 - slash - (lower.length - query.length) * 0.1;
+      }
+      if (score >= 0) scored.push({ file, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 200).map((s) => s.file);
   }
 
   function buildAtMenu(): string[] {
