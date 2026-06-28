@@ -2242,6 +2242,8 @@ export function createActoviqGuiHtml(): string {
         </div>
       </header>
       <section id="statusbar" class="statusbar"></section>
+      <section id="contextBar" class="context-bar hidden"></section>
+      <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
       <section id="transcript" class="transcript"></section>
       <form id="composer" class="composer">
         <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
@@ -2257,6 +2259,12 @@ export function createActoviqGuiHtml(): string {
               <option value="full">Full access</option>
               <option value="workspace">Workspace</option>
               <option value="read-only">Read-only</option>
+            </select>
+            <select id="outputStyleSelect" title="Output style">
+              <option value="default">Default</option>
+              <option value="concise">Concise</option>
+              <option value="explanatory">Explanatory</option>
+              <option value="learning">Learning</option>
             </select>
             <button type="button" id="insertCommand" class="command-chip" title="Commands">/ Commands</button>
           </div>
@@ -2303,10 +2311,11 @@ export function createActoviqGuiHtml(): string {
       <h2>Permission required</h2>
       <p id="permissionTool"></p>
       <pre id="permissionSummary"></pre>
-      <div class="dialog-actions">
-        <button data-decision="deny">Deny</button>
-        <button data-decision="allow">Allow</button>
-        <button data-decision="always">Always</button>
+      <div class="dialog-actions permission-actions">
+        <button data-decision="deny" class="danger">Deny</button>
+        <button data-decision="allow">Allow once</button>
+        <button data-decision="always">Always (project)</button>
+        <button data-decision="always-user">Always (user)</button>
       </div>
     </div>
   </div>
@@ -2544,13 +2553,34 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="bridge">
         <h1>Bridge runtimes</h1>
-        <p>Spawn a locally installed agent CLI (claude / pi / codex) directly instead of the in-process Hadamard SDK. Each provider is auto-detected on PATH; you can also set explicit paths and pick a default.</p>
-        <div class="settings-group" id="bridgeDetected"><button type="button" id="settingsBridgeDetectBtn" class="secondary-btn">Detect runtimes</button></div>
+        <p>Switch the conversation to a different provider/model <strong>in-process</strong> — no child process. Save a named config (provider + API key + base URL + model), then activate it. The active config runs every prompt through its backend on the same chat, so context survives switching bridge↔default. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
         <div class="settings-group">
-          <label>Default provider<select id="settingsBridgeDefault"><option value="">claude</option></select></label>
-          <label>Claude Code path<input id="settingsBridgeClaudePath" placeholder="auto-detected on PATH" autocomplete="off"></label>
-          <label>pi path<input id="settingsBridgePiPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
-          <label>codex path<input id="settingsBridgeCodexPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
+          <h2>Active</h2>
+          <p id="bridgeActive" class="muted">No active bridge config — using the default provider.</p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable bridge</button>
+            <button type="button" id="settingsBridgeDetectBtn" class="secondary-btn">Detect installed runtimes</button>
+          </div>
+          <div id="bridgeDetected" class="bridge-detected"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Add / edit config</h2>
+          <label class="inline-field">Name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
+          <div class="two-col">
+            <label>Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+            <label>Model<input id="bridgeCfgModel" autocomplete="off" placeholder="deepseek-chat"></label>
+          </div>
+          <label class="inline-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-…"></label>
+          <label class="inline-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
+          <div class="settings-action-row">
+            <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
+            <button type="button" id="bridgeCfgReset" class="secondary-btn">Clear form</button>
+          </div>
+          <p id="bridgeCfgStatus" class="muted"></p>
+        </div>
+        <div class="settings-group">
+          <h2>Saved configs</h2>
+          <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
       </section>
       <div class="settings-savebar">
@@ -2859,6 +2889,34 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
   .settings-main { padding: 48px 22px 110px; }
+}
+.context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid #f0f0f0; font-size: 12.5px; color: #5f6368; }
+.context-bar.hidden { display: none; }
+.context-bar > span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #e2e5e8; border-radius: 999px; padding: 2px 10px; background: #fafbfc; white-space: nowrap; max-width: 50vw; overflow: hidden; text-overflow: ellipsis; }
+.ctx-goal { border-color: #cfe6d8; background: #f1f8f3; color: #1f6b3b; }
+.ctx-paused { color: #8a6d1b; border-color: #ecdfb8; background: #fbf6e6; }
+.ctx-complete { color: #5f6368; }
+.ctx-bridge { border-color: #cfd9ef; background: #f1f6fe; color: #2f5fa8; }
+.ctx-plan { border-color: #ead9ef; background: #f8f1fb; color: #6b2f7a; }
+.ctx-usage { border-color: #e2e5e8; color: #5f6368; }
+.todos-panel { margin: 0 max(22px, 12vw); padding: 8px 0 0; }
+.todos-panel.hidden { display: none; }
+.todos-panel > summary { cursor: pointer; font-size: 13px; color: #5f6368; user-select: none; }
+#todosList { margin: 6px 0 0; padding-left: 20px; max-height: 220px; overflow: auto; }
+#todosList li { font-size: 13px; line-height: 1.55; color: #4d5359; }
+#todosList li.todo-completed { color: #9aa0a6; text-decoration: line-through; }
+#todosList li.todo-in_progress { font-weight: 500; color: #2f5fa8; }
+.permission-actions { flex-wrap: wrap; justify-content: flex-end; }
+.permission-actions .danger { color: #c7392f; }
+.bridge-detected { display: grid; gap: 4px; margin-top: 10px; }
+.bridge-provider { margin: 0; font-size: 13px; color: #5f6368; }
+body[data-theme="dark"] .context-bar, body[data-theme="dark"] .todos-panel { border-color: #3b3d43; }
+body[data-theme="dark"] .context-bar > span { background: #26272b; border-color: #3b3d43; color: #c7ccd3; }
+body[data-theme="dark"] .ctx-goal { background: #1e2b22; border-color: #2f4a37; color: #8dd9a8; }
+body[data-theme="dark"] .ctx-bridge { background: #1f2b3a; border-color: #2f4a6b; color: #8ab4f8; }
+body[data-theme="dark"] .ctx-plan { background: #2b1f30; border-color: #4a2f5a; color: #d7a8e6; }
+body[data-theme="dark"] #todosList li { color: #c7ccd3; }
+body[data-theme="dark"] #todosList li.todo-completed { color: #6f7479; }
 }`;
 }
 
@@ -3357,9 +3415,55 @@ async function loadState() {
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
   el('effortSelect').value = state.snapshot.effort || 'auto';
   renderProjects();
+  renderStatusExtras();
   if (state.activeSurface) renderSurface(state.activeSurface);
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+}
+function renderStatusExtras() {
+  const snap = state.snapshot || {};
+  const bar = el('contextBar');
+  bar.textContent = '';
+  const addBadge = (cls, text, title) => {
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = text;
+    if (title) span.title = title;
+    bar.appendChild(span);
+  };
+  const goal = snap.goal;
+  if (goal && goal.objective) {
+    const mark = goal.status === 'active' ? '▶' : goal.status === 'paused' ? '‖' : '✓';
+    addBadge('ctx-goal ctx-' + (goal.status || 'active'), mark + ' ' + goal.objective, 'Goal: ' + goal.objective + ' (' + goal.status + ')');
+  }
+  const bs = snap.bridgeState || {};
+  if (bs.mode && bs.activeConfig) addBadge('ctx-bridge', '⇄ ' + bs.activeConfig.name, 'Bridge active: ' + bs.activeConfig.name);
+  if (snap.planMode) addBadge('ctx-plan', '◐ plan', 'Plan mode on — mutating tools blocked');
+  const usage = snap.usage || {};
+  const totalTok = Number(usage.inputTokens || 0) + Number(usage.outputTokens || 0);
+  if (totalTok > 0) {
+    const cost = usage.costUsd == null ? '' : ' · $' + Number(usage.costUsd).toFixed(4);
+    addBadge('ctx-usage', totalTok.toLocaleString() + ' tok' + cost, 'Session usage (/cost for detail)');
+  }
+  bar.classList.toggle('hidden', bar.children.length === 0);
+  const todos = snap.todos || [];
+  const panel = el('todosPanel');
+  if (todos.length === 0) {
+    panel.classList.add('hidden');
+  } else {
+    panel.classList.remove('hidden');
+    const done = todos.filter(t => t.status === 'completed').length;
+    el('todosSummary').textContent = 'Todos (' + done + '/' + todos.length + ')';
+    const list = el('todosList');
+    list.textContent = '';
+    for (const t of todos) {
+      const li = document.createElement('li');
+      li.className = 'todo-' + (t.status || 'pending');
+      li.textContent = (t.status === 'completed' ? '✓ ' : t.status === 'in_progress' ? '▶ ' : '○ ') + (t.activeForm || t.subject || '');
+      list.appendChild(li);
+    }
+  }
+  el('outputStyleSelect').value = snap.outputStyle || 'default';
 }
 async function resumeSession(id) {
   await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -3887,9 +3991,16 @@ function handleEvent(event) {
   else if (event.type === 'command.result') addResult(event);
   else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; }
   else if (event.type === 'permission.request') showPermission(event);
-  else if (event.type === 'settings.open') void openSettings('env').catch(console.error);
+  else if (event.type === 'agent.prompt') { if (event.text) { state.queue.push(String(event.text)); renderQueue(); } }
+  else if (event.type === 'batch.queue') {
+    const prompts = Array.isArray(event.prompts) ? event.prompts : [];
+    prompts.forEach(p => state.queue.push(String(p || '')));
+    renderQueue();
+    addMessage('notice', 'batch: queued ' + prompts.length + ' prompts — running in sequence');
+  }
+  else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
-  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); }
+  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
 }
 function showPermission(event) {
@@ -3928,11 +4039,102 @@ async function refreshBridgeDetect() {
     el.innerHTML = html || '<p class="muted">No providers detected.</p>';
   } catch { el.innerHTML = '<p class="muted">Detection failed.</p>'; }
 }
+function renderBridgeConfigs() {
+  const bs = (state.snapshot && state.snapshot.bridgeState) || {};
+  const active = bs.activeConfig;
+  const configs = bs.configs || [];
+  el('bridgeActive').innerHTML = active
+    ? \`<strong>\${active.name}</strong> · \${active.provider} · \${active.model || '(default model)'} · key \${active.apiKeyMasked}\${active.baseURL ? ' · ' + active.baseURL : ''}\`
+    : 'No active bridge config — using the default provider.';
+  const root = el('bridgeConfigsList');
+  root.textContent = '';
+  if (configs.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No saved configs yet — add one above.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const cfg of configs) {
+    const isActive = active && active.name === cfg.name;
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = cfg.name + (isActive ? ' ●' : '');
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    p.textContent = [cfg.provider, cfg.model || '(default model)', 'key ' + cfg.apiKeyMasked, cfg.baseURL].filter(Boolean).join(' · ');
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const actBtn = document.createElement('button');
+    actBtn.type = 'button';
+    actBtn.textContent = isActive ? 'Active' : 'Activate';
+    actBtn.disabled = isActive;
+    actBtn.addEventListener('click', () => activateBridgeConfig(cfg.name));
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => {
+      setField('bridgeCfgName', cfg.name);
+      setField('bridgeCfgProvider', cfg.provider);
+      setField('bridgeCfgModel', cfg.model || '');
+      setField('bridgeCfgApiKey', '');
+      setField('bridgeCfgBaseUrl', cfg.baseURL || '');
+      el('bridgeCfgStatus').textContent = 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.';
+    });
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.textContent = 'Remove';
+    delBtn.addEventListener('click', () => deleteBridgeConfig(cfg.name));
+    footer.append(actBtn, editBtn, delBtn);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+async function saveBridgeConfig() {
+  const name = el('bridgeCfgName').value.trim();
+  if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
+  const body = {
+    name,
+    provider: el('bridgeCfgProvider').value || 'anthropic',
+    apiKey: el('bridgeCfgApiKey').value,
+    baseURL: el('bridgeCfgBaseUrl').value.trim(),
+    model: el('bridgeCfgModel').value.trim(),
+  };
+  el('bridgeCfgStatus').textContent = 'Saving...';
+  const res = await api('/api/bridge/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { el('bridgeCfgStatus').textContent = 'Save failed: ' + (await res.text()); return; }
+  state.snapshot = await res.json();
+  el('bridgeCfgStatus').textContent = 'Saved "' + name + '".';
+  el('bridgeCfgName').value = '';
+  el('bridgeCfgApiKey').value = '';
+  renderBridgeConfigs();
+}
+async function deleteBridgeConfig(name) {
+  const res = await api('/api/bridge/config/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Remove failed'); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+}
+async function activateBridgeConfig(name) {
+  const res = await api('/api/bridge/activate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Activation failed: ' + (await res.text())); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+  addMessage('notice', 'bridge active: ' + name);
+}
+async function disableBridge() {
+  const res = await api('/api/bridge/off', { method: 'POST' });
+  if (!res.ok) { addMessage('error', 'Disable failed'); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+  addMessage('notice', 'bridge off — using default provider');
+}
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
-  if (tab === 'bridge') refreshBridgeDetect().catch(() => undefined);
+  if (tab === 'bridge') { renderBridgeConfigs(); refreshBridgeDetect().catch(() => undefined); }
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
@@ -3962,11 +4164,7 @@ async function openSettings(tab = 'general') {
   setField('settingsDensity', preferences.density || 'comfortable');
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
-  const bridge = settings.bridge || {};
-  setField('settingsBridgeDefault', bridge.defaultProvider || '');
-  setField('settingsBridgeClaudePath', (bridge.providers?.claude?.path) || '');
-  setField('settingsBridgePiPath', (bridge.providers?.pi?.path) || '');
-  setField('settingsBridgeCodexPath', (bridge.providers?.codex?.path) || '');
+  renderBridgeConfigs();
   el('settingsStatus').textContent = '';
   renderSettingsCommandPanels();
   el('settingsModal').classList.remove('hidden');
@@ -4001,14 +4199,6 @@ async function saveSettings(event) {
       density: el('settingsDensity').value,
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
-    },
-    bridge: {
-      defaultProvider: el('settingsBridgeDefault').value || undefined,
-      providers: {
-        claude: { path: el('settingsBridgeClaudePath').value || undefined },
-        pi: { path: el('settingsBridgePiPath').value || undefined },
-        codex: { path: el('settingsBridgeCodexPath').value || undefined },
-      },
     },
   };
   const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -4158,6 +4348,12 @@ el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
 el('settingsBridgeDetectBtn').addEventListener('click', () => { refreshBridgeDetect().catch(console.error); });
+el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(console.error); });
+el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
+el('bridgeCfgReset').addEventListener('click', () => {
+  ['bridgeCfgName', 'bridgeCfgApiKey', 'bridgeCfgBaseUrl', 'bridgeCfgModel'].forEach(id => { el(id).value = ''; });
+  el('bridgeCfgStatus').textContent = '';
+});
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 document.addEventListener('click', hideContextMenu);
 document.addEventListener('contextmenu', (event) => {
@@ -4167,6 +4363,7 @@ document.addEventListener('contextmenu', (event) => {
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('effortSelect').addEventListener('change', (event) => submitText('/effort ' + event.target.value));
+el('outputStyleSelect').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });
