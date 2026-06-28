@@ -1899,6 +1899,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       ? { name: existing.name, provider: existing.provider, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
       : { name: '', provider: 'anthropic' };
 
+    // Snapshot detected runtimes once (provider picker shows them as context).
+    const detections = await detectBridgeProviders();
+
     while (true) {
       // Render the live form.
       const header = existing ? `Editing "${existing.name}"` : 'New bridge config';
@@ -1906,7 +1909,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         `${A.bold}${header}${A.reset} — edit any field, then Save`,
         ...formatDivider(screen.width),
         `  ${A.bold}name${A.reset}     ${draft.name || `${A.dim}(unset)${A.reset}`}`,
-        `  ${A.bold}provider${A.reset} ${draft.provider}`,
+        `  ${A.bold}provider${A.reset} ${draft.provider}${draft.provider === 'anthropic' ? ` ${A.dim}(Claude / DeepSeek / vLLM)${A.reset}` : ` ${A.dim}(Qwen / GPT / vLLM)${A.reset}`}`,
         `  ${A.bold}apiKey${A.reset}   ${maskApiKey(draft.apiKey)}`,
         `  ${A.bold}baseURL${A.reset} ${draft.baseURL || `${A.dim}(inherit)${A.reset}`}`,
         `  ${A.bold}model${A.reset}    ${draft.model || `${A.dim}(inherit)${A.reset}`}`,
@@ -1947,13 +1950,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         continue;
       }
       if (choice === 'provider') {
+        const avail = detections.filter(d => d.available).map(d => d.id).join(', ');
         const v = await selectItem({
-          title: 'Provider',
-          subtitle: `current: ${draft.provider}`,
+          title: 'Provider / runtime',
+          subtitle: `${avail ? `detected on PATH: ${avail}` : 'no runtimes detected'} · current: ${draft.provider}`,
           searchable: false,
           items: [
-            { id: 'anthropic', label: `anthropic${draft.provider === 'anthropic' ? ' ✓' : ''}`, description: 'Anthropic-compatible (Claude, DeepSeek, vLLM, …)' },
-            { id: 'openai', label: `openai${draft.provider === 'openai' ? ' ✓' : ''}`, description: 'OpenAI-compatible (Qwen, GPT, vLLM, …)' },
+            { id: 'anthropic', label: `anthropic${draft.provider === 'anthropic' ? ' ✓' : ''}`, description: 'Anthropic-compatible — Claude, DeepSeek, vLLM / codewhale, reasonix' },
+            { id: 'openai', label: `openai${draft.provider === 'openai' ? ' ✓' : ''}`, description: 'OpenAI-compatible — Qwen, GPT, vLLM / pi, codex, crush' },
           ],
         });
         if (v) draft.provider = v as InProcessProvider;
