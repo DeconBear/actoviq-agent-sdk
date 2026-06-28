@@ -1007,6 +1007,35 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     screen.appendStatic(lines);
   }
 
+  // Inline CLI spinner for long async operations (probe, reload).
+  // Writes directly to stdout with \r — independent of the redrawable region.
+  const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let inlineSpinnerTimer: ReturnType<typeof setInterval> | null = null;
+  function showSpinner(message: string): void {
+    let i = 0;
+    inlineSpinnerTimer = setInterval(() => {
+      process.stdout.write(`\r${A.dim}${SPINNER[i++ % SPINNER.length]} ${message}${A.reset}`);
+    }, 80);
+  }
+  function stopSpinner(): void {
+    if (inlineSpinnerTimer) { clearInterval(inlineSpinnerTimer); inlineSpinnerTimer = null; }
+    process.stdout.write('\r\x1b[K');
+  }
+
+  /** Run an async operation with an inline spinner — no flicker for sub-100ms ops. */
+  async function withSpinner<T>(message: string, fn: () => Promise<T>): Promise<T> {
+    const start = Date.now();
+    showSpinner(message);
+    try {
+      const result = await fn();
+      const elapsed = Date.now() - start;
+      if (elapsed < 120) await new Promise(r => setTimeout(r, 120 - elapsed)); // min display
+      return result;
+    } finally {
+      stopSpinner();
+    }
+  }
+
   // ── Agent run ──────────────────────────────────────────────────────
 
   // /model router: pick a saved router profile (or turn routing off). When
@@ -1515,7 +1544,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         await persistActoviqSettingsStore(store.configPath, raw);
         await loadJsonConfigFile(store.configPath);
-        await reloadCleanSdk();
+        await withSpinner('reloading SDK', reloadCleanSdk);
         appendStatic([
           ...formatInfoLine(`model settings saved: ${store.configPath}`),
           '',
@@ -1955,8 +1984,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         // in-process provider. Detection is lazy — probed only when the user
         // opens this picker, so the form renders instantly.
         if (!detections) {
-          appendStatic([...formatInfoLine('scanning for runtimes…'), '']);
-          detections = await detectBridgeProviders();
+          detections = await withSpinner('scanning for runtimes', detectBridgeProviders);
         }
         const RUNTIME_MAP: Record<string, { provider: InProcessProvider; label: string }> = {
           claude: { provider: 'anthropic', label: 'claude' },
@@ -2222,7 +2250,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         addMcpServer({ name, url, ...(headers ? { headers } : {}) });
       }
       appendStatic([...formatInfoLine(`added MCP server "${name}" — reloading SDK`), '']);
-      await reloadCleanSdk();
+      await withSpinner('reloading SDK', reloadCleanSdk);
       return;
     }
     if (choice === 'remove') {
@@ -2234,11 +2262,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       if (!name) return;
       removeMcpServer(name);
       appendStatic([...formatInfoLine(`removed MCP server "${name}" — reloading SDK`), '']);
-      await reloadCleanSdk();
+      await withSpinner('reloading SDK', reloadCleanSdk);
       return;
     }
     if (choice === 'reload') {
-      await reloadCleanSdk();
+      await withSpinner('reloading SDK', reloadCleanSdk);
       appendStatic([...formatInfoLine('SDK reloaded — MCP config re-read'), '']);
       return;
     }
@@ -2593,7 +2621,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           const project = loadProjectContext(cfg.workDir);
           lines.push(`  ${ok(project.sources.length > 0)} CLAUDE.md ${A.dim}${project.sources.length ? project.sources.join(', ') : '(none)'}${A.reset}`);
           // Bridge runtimes
-          const detections = await detectBridgeProviders();
+          const detections = await withSpinner('detecting runtimes', detectBridgeProviders);
           const avail = detections.filter(d => d.available);
           lines.push(`  ${ok(avail.length > 0)} bridge runtimes ${A.dim}${avail.length ? avail.map(d => d.id).join(', ') : '(none on PATH)'}${A.reset}`);
           if (bridgeMode && activeBridgeConfig) {
