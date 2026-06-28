@@ -57,6 +57,40 @@ export function formatToolCall(name: string, input: unknown, width: number): str
   return [`${head}${A.dim}(${truncateToWidth(summary, Math.max(width - name.length - 6, 16))})${A.reset}`];
 }
 
+/**
+ * Render an Edit tool call as a small colored diff (old_string → new_string)
+ * instead of a one-line summary, so the user can see what changed at a glance
+ * — Claude Code shows structured diffs; the generic ⏺ Edit(path) line hid them.
+ */
+export function formatEditCall(input: unknown, width: number): string[] {
+  const rec = (typeof input === 'object' && input !== null ? input : {}) as {
+    file_path?: string;
+    old_string?: string;
+    new_string?: string;
+  };
+  const filePath = rec.file_path ?? '';
+  const head = `${A.green}⏺${A.reset} ${A.bold}Edit${A.reset}${
+    filePath ? `${A.dim} ${truncateToWidth(filePath, Math.max(width - 8, 16))}${A.reset}` : ''
+  }`;
+  const lines: string[] = [head];
+  const budget = Math.max(width - 4, 16);
+  const oldLines = (rec.old_string ?? '').split('\n');
+  const newLines = (rec.new_string ?? '').split('\n');
+  const max = 5;
+  const emit = (arr: string[], marker: string, color: string): void => {
+    const shown = arr.slice(0, max);
+    for (const l of shown) {
+      lines.push(`${color}${marker} ${truncateToWidth(l, budget)}${A.reset}`);
+    }
+    if (arr.length > max) {
+      lines.push(`${color}${marker} … +${arr.length - max} more${A.reset}`);
+    }
+  };
+  emit(oldLines, '-', A.red);
+  emit(newLines, '+', A.green);
+  return lines;
+}
+
 export function formatToolResult(
   result: { isError: boolean; durationMs?: number; outputText?: string },
   width: number,

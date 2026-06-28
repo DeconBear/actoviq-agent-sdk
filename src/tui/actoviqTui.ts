@@ -70,6 +70,7 @@ import {
   formatBanner,
   formatCompactNotice,
   formatDivider,
+  formatEditCall,
   formatErrorLine,
   formatInfoLine,
   formatQueuedPrompt,
@@ -1079,7 +1080,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         if (pending.length > 0) appendStatic(pending);
         runToolCount += 1;
         statusNote = event.call.publicName;
-        appendStatic(formatToolCall(event.call.publicName, event.call.input, screen.width));
+        // Render Edit calls as a colored old→new diff instead of a one-liner.
+        appendStatic(
+          event.call.publicName === 'Edit'
+            ? formatEditCall(event.call.input, screen.width)
+            : formatToolCall(event.call.publicName, event.call.input, screen.width),
+        );
         // Capture the live todo list from TodoWrite calls so the persistent
         // panel (renderDynamic) reflects the agent's current plan + progress.
         if (event.call.publicName === 'TodoWrite') {
