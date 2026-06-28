@@ -324,6 +324,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
+  // Live todo list (captured from TodoWrite tool calls). Rendered as a
+  // persistent panel in the dynamic region so the user can see what the agent
+  // is working on / what remains — Claude Code's main progress affordance.
+  let currentTodos: { content: string; status: string; activeForm?: string }[] = [];
   const queuedInputs: string[] = [];
   const currentPermissionMode = (): ActoviqPermissionMode =>
     session.permissionContext.mode ?? permissionMode;
@@ -794,12 +798,47 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return [`${A.dim}  ? shortcuts · / commands · @ files · \\↵ newline · ↑↓ history · ctrl+c clear/exit${A.reset}`];
   }
 
+  function buildTodoPanel(): string[] {
+    if (currentTodos.length === 0) return [];
+    const max = 8;
+    const visible = currentTodos.slice(0, max);
+    const done = currentTodos.filter(t => t.status === 'completed').length;
+    const lines: string[] = [
+      `${A.dim}  tasks (${done}/${currentTodos.length})${A.reset}`,
+    ];
+    for (const t of visible) {
+      let mark: string;
+      let body: string;
+      if (t.status === 'completed') {
+        mark = `${A.green}✓${A.reset}`;
+        body = `${A.dim}${truncateToWidth(t.content, screen.width - 6)}${A.reset}`;
+      } else if (t.status === 'in_progress') {
+        mark = `${A.cyan}▶${A.reset}`;
+        // Show the present-continuous form while a task is actively executing.
+        const text = t.activeForm ?? t.content;
+        body = `${A.bold}${truncateToWidth(text, screen.width - 6)}${A.reset}`;
+      } else {
+        mark = `${A.dim}○${A.reset}`;
+        body = `${truncateToWidth(t.content, screen.width - 6)}`;
+      }
+      lines.push(`  ${mark} ${body}`);
+    }
+    const more = currentTodos.length - max;
+    if (more > 0) lines.push(`${A.dim}  … ${more} more${A.reset}`);
+    return lines;
+  }
+
   function renderDynamic(): void {
     const lines: string[] = [];
     lines.push(...buildStatusLine());
     const tail = flusher.tail();
     if (running && tail) {
       lines.push(tail);
+    }
+    // Live todo panel — shown whenever the agent has a plan, unless a modal
+    // (permission/selection/text-input) is open (those take the region).
+    if (currentTodos.length > 0 && !dialog && !selectionDialog && !textInputDialog) {
+      lines.push(...buildTodoPanel());
     }
     if (dialog) {
       lines.push(...buildDialog());
@@ -1041,6 +1080,21 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         runToolCount += 1;
         statusNote = event.call.publicName;
         appendStatic(formatToolCall(event.call.publicName, event.call.input, screen.width));
+        // Capture the live todo list from TodoWrite calls so the persistent
+        // panel (renderDynamic) reflects the agent's current plan + progress.
+        if (event.call.publicName === 'TodoWrite') {
+          const todos = (event.call.input as { todos?: unknown } | null)?.todos;
+          if (Array.isArray(todos)) {
+            currentTodos = todos
+              .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
+              .map(t => ({
+                content: String(t.content ?? ''),
+                status: String(t.status ?? 'pending'),
+                activeForm: typeof t.activeForm === 'string' && t.activeForm ? t.activeForm : undefined,
+              }));
+            scheduleDynamicRender();
+          }
+        }
         renderDynamic();
         return;
       }
