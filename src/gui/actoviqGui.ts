@@ -26,6 +26,7 @@ import {
   loadWorkflow,
   resolveRoutedRun,
   WorktreeService,
+  type ActoviqAgentClient,
 } from '../index.js';
 import {
   addBridgeConfig,
@@ -742,23 +743,44 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       permissionMode,
       ...(options.model ? { model: options.model } : {}),
     });
-  let sdk = await createCleanSdk();
-  let toolMetadata = await sdk.listToolMetadata();
-  let session = options.resumeSessionId
-    ? await sdk.resumeSession(options.resumeSessionId, {
-        model: options.model,
-        permissionMode: options.permissionMode,
-      })
-    : options.continueMostRecent
-      ? await sdk.sessions.continueMostRecent({
+  // Credential-tolerant start: if no API key is configured (e.g. first run
+  // before the user enters one in Settings), boot the HTTP server anyway so the
+  // GUI can show a "needs credentials" hint instead of Fatal-quitting. The SDK
+  // + session are created once the user saves a key (saveSettings → reloadSdk).
+  let needsCredentials = false;
+  let sdk: ActoviqAgentClient | null;
+  let toolMetadata: Awaited<ReturnType<ActoviqAgentClient['listToolMetadata']>> = [];
+  let session: AgentSession;
+  try {
+    const createdSdk = await createCleanSdk();
+    sdk = createdSdk;
+    toolMetadata = await createdSdk.listToolMetadata();
+    session = options.resumeSessionId
+      ? await createdSdk.resumeSession(options.resumeSessionId, {
           model: options.model,
           permissionMode: options.permissionMode,
         })
-      : await sdk.createSession({
-          title: path.basename(workDir),
-          model: options.model,
-          permissionMode,
-        });
+      : options.continueMostRecent
+        ? await createdSdk.sessions.continueMostRecent({
+            model: options.model,
+            permissionMode: options.permissionMode,
+          })
+        : await createdSdk.createSession({
+            title: path.basename(workDir),
+            model: options.model,
+            permissionMode,
+          });
+  } catch (error) {
+    if (!/No Actoviq credential|credential was found/i.test((error as Error).message)) {
+      throw error; // genuine error → propagate (existing Fatal handler)
+    }
+    needsCredentials = true;
+    sdk = null;
+    // A throw from createAgentSdk happens before a session is created — synthesize
+    // a minimal session stub so the rest of the file's `session.` references don't
+    // crash. Real sessions are created on reloadSdk after the user adds a key.
+    session = { id: '', model: options.model ?? '', title: '', metadata: {} } as AgentSession;
+  }
 
   // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
   runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), workDir);
@@ -832,11 +854,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       });
       toolMetadata = await nextSdk.listToolMetadata();
       sdk = nextSdk;
+      needsCredentials = false;
     } catch (error) {
       await nextSdk.close().catch(() => undefined);
       throw error;
     }
-    await previousSdk.close().catch(() => undefined);
+    if (previousSdk) await previousSdk.close().catch(() => undefined);
   }
 
   async function switchProject(nextWorkDir: string): Promise<Record<string, unknown>> {
@@ -870,7 +893,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       await nextSdk.close().catch(() => undefined);
       throw error;
     }
-    await previousSdk.close().catch(() => undefined);
+    if (previousSdk) await previousSdk.close().catch(() => undefined);
     invalidateHeavyState();
     return state();
   }
@@ -880,7 +903,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const currentEffort = (): ActoviqRunEffort | undefined => {
     const stored = session.metadata.__actoviqEffort;
     if (stored === 'auto') return 'auto';
-    return isEffort(stored) ? stored : sdk.config.effort;
+    return isEffort(stored) ? stored : sdk!.config.effort;
   };
 
   const approver: ActoviqToolApprover = async (context) => {
@@ -968,25 +991,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ? heavyStateCache
       : null;
     if (!heavy) {
-      const sessionStoreRoots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+      const sessionStoreRoots = needsCredentials ? [] : await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
       const [plugins, projects] = await Promise.all([
         discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
         listKnownProjects(homeDir, workDir),
-        // Auto-clean empty sessions (except the active one) whenever the heavy
-        // state is recomputed — so abandoned empty chats never accumulate and
-        // no manual "Clean empty chats" action is needed.
-        cleanupStoredEmptySessions(sessionStoreRoots, session.id),
+        needsCredentials ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
       ]);
       heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
     }
     const [allSessions, workflows, teams, routers, skills, agents] = await Promise.all([
-      sdk.sessions.list(),
+      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).sessions.list(),
       Promise.resolve(listWorkflows(workDir)),
       Promise.resolve(listTeamDefinitions(workDir)),
       Promise.resolve(listRouterProfiles(workDir)),
-      Promise.resolve(sdk.skills.listMetadata()),
-      Promise.resolve(sdk.agents.list()),
+      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
+      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
     ]);
     const sessions = allSessions.filter(item => item.messageCount > 0 || item.id === session.id);
     return {
@@ -1010,7 +1030,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       plugins: heavy.plugins,
       settings: {
         configPath: store?.configPath ?? null,
-        provider: env.ACTOVIQ_PROVIDER ?? sdk.config.provider,
+        provider: env.ACTOVIQ_PROVIDER ?? sdk?.config.provider ?? 'anthropic',
         baseURL: env.ACTOVIQ_BASE_URL ?? '',
         defaultModel: env.ACTOVIQ_MODEL ?? '',
         minModel: env.ACTOVIQ_DEFAULT_MIN_MODEL ?? '',
@@ -1052,6 +1072,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       },
       mcpServers: readMcpServerConfig(options.homeDir).servers,
       goal: getGoal(),
+      needsCredentials,
       outputStyle,
       outputStyles: OUTPUT_STYLES,
       planMode: currentPermissionMode() === 'plan',
@@ -1322,7 +1343,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           routedModelLabel = null;
           return [{ type: 'notice', message: `router active: ${loaded.profile.name}` }];
         }
-        await session.setModel(args === 'default' ? sdk.config.model : args);
+        await session.setModel(args === 'default' ? sdk!.config.model : args);
         return [{ type: 'notice', message: `model set to: ${session.model}` }];
       }
       case 'effort': {
@@ -1337,7 +1358,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ? setPermissionPreset(args.toLowerCase().replace(/[ _]/g, '-'))
           : [{ type: 'command.result', title: 'Permissions', text: `current: ${currentPermissionMode()}` }];
       case 'sessions': {
-        const sessions = await sdk.sessions.list();
+        const sessions = await sdk!.sessions.list();
         return [{
           type: 'command.result',
           title: 'Sessions',
@@ -1349,7 +1370,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       case 'resume': {
         if (!args) return runSlashCommand('/sessions');
-        session = await sdk.resumeSession(args, { model: options.model, permissionMode: options.permissionMode });
+        session = await sdk!.resumeSession(args, { model: options.model, permissionMode: options.permissionMode });
         return [{ type: 'notice', message: `resumed session: ${session.id}` }, { type: 'state' }];
       }
       case 'tools':
@@ -1382,7 +1403,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return [{
           type: 'command.result',
           title: 'Skills',
-          items: sdk.skills.listMetadata().map(skill => ({
+          items: sdk!.skills.listMetadata().map(skill => ({
             label: skill.displayName ? `${skill.displayName} (${skill.name})` : skill.name,
             description: `${skill.source} · ${skill.context}${skill.version ? ` · v${skill.version}` : ''}`,
             detail: `${skill.description} ${skill.whenToUse ?? ''}`,
@@ -1392,7 +1413,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return [{
           type: 'command.result',
           title: 'Subagents',
-          items: sdk.agents.list().map(agent => ({
+          items: sdk!.agents.list().map(agent => ({
             label: agent.name,
             description: agent.model ?? 'inherits model',
             detail: agent.description,
@@ -1557,9 +1578,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const key = env.ACTOVIQ_API_KEY ? maskApiKey(env.ACTOVIQ_API_KEY) : env.ACTOVIQ_AUTH_TOKEN ? '(auth token)' : '(none)';
         const lines = [
           `Model: ${session.model}`,
-          `Provider: ${env.ACTOVIQ_PROVIDER ?? sdk.config.provider}`,
+          `Provider: ${env.ACTOVIQ_PROVIDER ?? sdk!.config.provider}`,
           `API key: ${key}`,
-          `Base URL: ${env.ACTOVIQ_BASE_URL ?? sdk.config.baseURL ?? '(default)'}`,
+          `Base URL: ${env.ACTOVIQ_BASE_URL ?? sdk!.config.baseURL ?? '(default)'}`,
           `Workdir: ${workDir}`,
           `Git repo: ${isGit ? 'Yes' : 'No'}`,
           `Session: ${session.id} (${session.messages.length} messages)`,
@@ -1631,7 +1652,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const n = parseInt(args || '1', 10);
         if (!Number.isFinite(n) || n < 1) return [{ type: 'error', message: 'usage: /rewind <N>' }];
         const kept = session.messages.slice(0, Math.max(0, session.messages.length - n));
-        const newSession = await sdk.createSession({ title: session.title, model: options.model, permissionMode });
+        const newSession = await sdk!.createSession({ title: session.title, model: options.model, permissionMode });
         if (kept.length > 0) await newSession.appendMessages(kept).catch(() => undefined);
         session = newSession;
         return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
@@ -1724,6 +1745,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       connection: 'keep-alive',
     });
     send({ type: 'user', text: input });
+
+    if (needsCredentials) {
+      send({ type: 'error', message: 'No API key configured — open Settings → General to add one.' });
+      send({ type: 'state', state: await state() });
+      send({ type: 'done' });
+      res.end();
+      return;
+    }
 
     if (input.startsWith('/')) {
       try {
@@ -1853,7 +1882,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           model: effectiveModel,
         }, options.homeDir);
       } catch { /* never fail a turn over a history write */ }
-      toolMetadata = await sdk.listToolMetadata();
+      toolMetadata = await sdk!.listToolMetadata();
       invalidateHeavyState();
       send({ type: 'state', state: await state() });
       send({ type: 'done', usage: (result as any).usage });
@@ -1911,9 +1940,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function deleteSession(id: string): Promise<Record<string, unknown>> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     // Also include the SDK session dir's parent (it may hold sessions/ directly).
-    roots.push(path.dirname(sdk.config.sessionDirectory));
+    roots.push(path.dirname(sdk!.config.sessionDirectory));
     let deleted = false;
     for (const projectRoot of roots) {
       // Check the active sessions directory.
@@ -1945,7 +1974,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     // If the active chat was deleted, open a fresh one so the UI stays consistent.
     if (session.id === id) {
-      session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+      session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
     }
     invalidateHeavyState();
     return { deleted, state: await state() };
@@ -1957,8 +1986,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function archiveSession(id: string): Promise<boolean> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
-    roots.push(path.dirname(sdk.config.sessionDirectory)); // SDK session dir's parent
+    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
+    roots.push(path.dirname(sdk!.config.sessionDirectory)); // SDK session dir's parent
     for (const projectRoot of roots) {
       for (const item of await listStoredSessionFiles(projectRoot)) {
         if (item.id !== id && item.storageId !== id) continue;
@@ -1970,7 +1999,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
         // If the active chat was archived, open a fresh one.
         if (session.id === id) {
-          session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+          session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
         }
         invalidateHeavyState();
         return true;
@@ -1982,8 +2011,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function unarchiveSession(id: string): Promise<boolean> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
-    roots.push(path.dirname(sdk.config.sessionDirectory));
+    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
+    roots.push(path.dirname(sdk!.config.sessionDirectory));
     for (const projectRoot of roots) {
       const archiveDir = path.join(projectRoot, 'archive');
       try {
@@ -2042,13 +2071,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Check archive/ subdirs of all known project roots + the session dir's parent.
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     for (const projectRoot of roots) {
       await addDir(path.join(projectRoot, 'archive'));
     }
     // Also check the parent of the session directory (SDK may store sessions directly there).
-    await addDir(path.resolve(sdk.config.sessionDirectory, '..', 'archive'));
-    await addDir(path.join(path.dirname(sdk.config.sessionDirectory), 'archive'));
+    await addDir(path.resolve(sdk!.config.sessionDirectory, '..', 'archive'));
+    await addDir(path.join(path.dirname(sdk!.config.sessionDirectory), 'archive'));
     // Fallback: scan any archive/ dir directly under ~/.actoviq/ (the SDK's data root).
     try {
       const dataRoot = path.join(os.homedir(), '.actoviq');
@@ -2067,7 +2096,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     let deleted = 0;
     for (const projectRoot of roots) {
       for (const item of await listStoredSessionFiles(projectRoot)) {
@@ -2290,14 +2319,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return streamRun(input, res);
       }
       if (req.method === 'POST' && url.pathname === '/api/session/new') {
-        session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/session/resume') {
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
-        session = await sdk.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/permission') {
@@ -2328,7 +2357,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const close = async () => {
     runAbort?.abort();
-    await sdk.close().catch(() => undefined);
+    if (sdk) await sdk.close().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
   return { url, token: authToken, close };
@@ -2518,6 +2547,7 @@ export function createActoviqGuiHtml(): string {
       <section id="contextBar" class="context-bar hidden"></section>
       <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
       <section id="transcript" class="transcript"></section>
+      <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
       <form id="composer" class="composer">
         <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
         <div id="attachmentTray" class="attachment-tray hidden"></div>
@@ -3237,6 +3267,11 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
 }
 .context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid #f0f0f0; font-size: 12.5px; color: #5f6368; }
 .context-bar.hidden { display: none; }
+.credential-hint { margin: 0 max(22px, 12vw) 6px; padding: 6px 14px; font-size: 13px; color: #c7392f; background: #fef2f2; border: 1px solid #e5b7b2; border-radius: 8px; }
+.credential-hint.hidden { display: none; }
+.credential-hint a { color: #c7392f; font-weight: 600; text-decoration: underline; }
+body[data-theme="dark"] .credential-hint { background: #2d1f1f; border-color: #6b3838; color: #f28b82; }
+body[data-theme="dark"] .credential-hint a { color: #f28b82; }
 .context-bar > span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #e2e5e8; border-radius: 999px; padding: 2px 10px; background: #fafbfc; white-space: nowrap; max-width: 50vw; overflow: hidden; text-overflow: ellipsis; }
 .ctx-goal { border-color: #cfe6d8; background: #f1f8f3; color: #1f6b3b; }
 .ctx-paused { color: #8a6d1b; border-color: #ecdfb8; background: #fbf6e6; }
@@ -3823,6 +3858,9 @@ async function loadState() {
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
   renderProjects();
   renderStatusExtras();
+  const hint = el('credentialHint');
+  const needsCreds = state.snapshot.needsCredentials;
+  hint.classList.toggle('hidden', !needsCreds);
   if (state.activeSurface) renderSurface(state.activeSurface);
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
@@ -5209,6 +5247,10 @@ el('settingsOutputStyle').addEventListener('change', (event) => submitText('/out
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });
+el('credentialHintLink').addEventListener('click', (event) => {
+  event.preventDefault();
+  void openSettings('general').catch(console.error);
+});
 el('backToAppBtn').addEventListener('click', closeSettings);
 el('cancelSettings').addEventListener('click', closeSettings);
 el('settingsForm').addEventListener('submit', saveSettings);

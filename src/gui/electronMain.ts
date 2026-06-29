@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +12,10 @@ import {
   type ActoviqGuiServer,
 } from './actoviqGui.js';
 import { readPackageVersion } from '../cli/version.js';
+import {
+  getDefaultActoviqSettingsPath,
+  persistActoviqSettingsStore,
+} from '../config/actoviqSettingsStore.js';
 
 let guiServer: ActoviqGuiServer | null = null;
 
@@ -85,6 +90,23 @@ function resolveIconPath(): string | undefined {
   return candidates.find((candidate) => existsSync(candidate));
 }
 
+/**
+ * First-launch init: ensure `~/.actoviq/` and a minimal `settings.json` exist
+ * so the app boots (and the dir is present even if the user hasn't configured
+ * a key yet). Idempotent — never overwrites an existing settings file, so a
+ * user who already has an npm-installed `~/.actoviq` is left untouched.
+ */
+async function ensureActoviqHomeInit(args: { homeDir?: string; configPath?: string }): Promise<void> {
+  const homeDir = args.homeDir ?? os.homedir();
+  const configPath = args.configPath ?? getDefaultActoviqSettingsPath(homeDir);
+  if (existsSync(configPath)) return;
+  try {
+    await persistActoviqSettingsStore(configPath, {});
+  } catch {
+    // best-effort — a failed init must not block app start.
+  }
+}
+
 async function createWindow(): Promise<void> {
   const args = parseActoviqGuiArgs(getUserArgs());
   if (args.version) {
@@ -114,6 +136,7 @@ async function createWindow(): Promise<void> {
     return;
   }
 
+  await ensureActoviqHomeInit(args);
   guiServer = await startActoviqGuiServer(args);
   installApplicationMenu();
   app.setAppUserModelId('com.actoviq.gui');
