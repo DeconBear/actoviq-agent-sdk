@@ -15,6 +15,37 @@
   "publishConfig": {
     "access": "public"
   },
+  "build": {
+    "appId": "com.actoviq.gui",
+    "productName": "Actoviq",
+    "copyright": "Copyright Actoviq",
+    "artifactName": "Actoviq-Setup-${version}-${arch}.${ext}",
+    "directories": { "output": "dist_electron" },
+    "extraMetadata": { "main": "dist/src/gui/electronMain.js" },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "vendor/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!**/node_modules/bun/**",
+      "!**/node_modules/@oven/**",
+      "!**/node_modules/electron/**",
+      "!**/node_modules/{typescript,vitepress,vitest,tsx,playwright,@types/**,@anthropic-ai/claude-agent-sdk}/**"
+    ],
+    "asar": true,
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Actoviq"
+    }
+  },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
@@ -50,6 +81,7 @@
     "prepare:public-runtime": "node scripts/prepare-public-runtime.mjs",
     "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64",
     "test": "vitest run",
     "test:watch": "vitest",
     "bench:standard": "tsx bench/standard/run-all.ts",
@@ -103,6 +135,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.161",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^22.0.0",
+    "electron-builder": "^26.0.0",
     "playwright": "^1.61.0",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3",
