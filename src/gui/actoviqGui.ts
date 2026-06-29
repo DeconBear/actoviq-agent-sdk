@@ -134,6 +134,7 @@ interface GuiPreferences {
   density: 'comfortable' | 'compact';
   enterToSend: boolean;
   autoScroll: boolean;
+  developerTools: boolean;
 }
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
@@ -142,6 +143,7 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   density: 'comfortable',
   enterToSend: true,
   autoScroll: true,
+  developerTools: false,
 };
 
 function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'coding'): string {
@@ -284,6 +286,7 @@ function guiIcon(name: string): string {
     code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/><path d="m14 4-4 16"/>',
     command: '<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0 0-6Z"/>',
     computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
+    dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
     environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
@@ -302,6 +305,7 @@ function guiIcon(name: string): string {
     profile: '<circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+    split: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/>',
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
     worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
@@ -348,6 +352,9 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     autoScroll: typeof source.autoScroll === 'boolean'
       ? source.autoScroll
       : DEFAULT_GUI_PREFERENCES.autoScroll,
+    developerTools: typeof source.developerTools === 'boolean'
+      ? source.developerTools
+      : DEFAULT_GUI_PREFERENCES.developerTools,
   };
 }
 
@@ -2548,38 +2555,52 @@ export function createActoviqGuiHtml(): string {
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
-      <section id="statusbar" class="statusbar"></section>
-      <section id="contextBar" class="context-bar hidden"></section>
-      <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
-      <section id="transcript" class="transcript"></section>
-      <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
-      <form id="composer" class="composer">
-        <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
-        <div id="attachmentTray" class="attachment-tray hidden"></div>
-        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
-        <div id="slashMenu" class="slash-menu hidden"></div>
-        <div id="queueList" class="queue-list hidden"></div>
-        <div class="composer-footer">
-          <div class="composer-left">
-            <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
-            <input id="fileInput" type="file" multiple class="hidden-file-input">
-            <select id="permissionSelect" title="Permission mode">
-              <option value="full">Full access</option>
-              <option value="workspace">Workspace</option>
-              <option value="read-only">Read-only</option>
-            </select>
-          </div>
-          <div class="composer-right">
-            <div class="model-picker-wrapper">
-              <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Model &amp; effort">Auto ▾</button>
-              <div id="modelPickerMenu" class="model-picker-menu hidden">
-                <div id="modelPickerItems"></div>
-              </div>
-            </div>
-            <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
+      <div class="workbench">
+        <div class="tabbar">
+          <div class="tabbar-tabs" id="tabbarTabs"></div>
+          <button type="button" id="tabbarAdd" class="tabbar-add" title="Add pane" aria-label="Add pane">${guiIcon('plus')}</button>
+          <div id="tabbarAddMenu" class="tabbar-add-menu hidden">
+            <button type="button" data-add-pane="terminal"><span class="add-icon">${guiIcon('terminal')}</span>Terminal</button>
+            <button type="button" data-add-pane="monitor"><span class="add-icon">${guiIcon('dashboard')}</span>Monitor</button>
           </div>
         </div>
-      </form>
+        <div class="pane-stack" id="paneStack">
+          <section class="pane pane-chat active" id="pane-chat-default">
+            <section id="statusbar" class="statusbar"></section>
+            <section id="contextBar" class="context-bar hidden"></section>
+            <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
+            <section id="transcript" class="transcript"></section>
+            <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
+            <form id="composer" class="composer">
+              <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
+              <div id="attachmentTray" class="attachment-tray hidden"></div>
+              <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
+              <div id="slashMenu" class="slash-menu hidden"></div>
+              <div id="queueList" class="queue-list hidden"></div>
+              <div class="composer-footer">
+                <div class="composer-left">
+                  <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
+                  <input id="fileInput" type="file" multiple class="hidden-file-input">
+                  <select id="permissionSelect" title="Permission mode">
+                    <option value="full">Full access</option>
+                    <option value="workspace">Workspace</option>
+                    <option value="read-only">Read-only</option>
+                  </select>
+                </div>
+                <div class="composer-right">
+                  <div class="model-picker-wrapper">
+                    <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Model &amp; effort">Auto ▾</button>
+                    <div id="modelPickerMenu" class="model-picker-menu hidden">
+                      <div id="modelPickerItems"></div>
+                    </div>
+                  </div>
+                  <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
+                </div>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
     </main>
   </div>
   <div id="surfaceDrawer" class="surface-drawer hidden">
@@ -2772,6 +2793,7 @@ export function createActoviqGuiHtml(): string {
           <label>Density<select id="settingsDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
           <label class="check-row"><input id="settingsEnterToSend" type="checkbox">Enter sends message</label>
           <label class="check-row"><input id="settingsAutoScroll" type="checkbox">Auto-scroll transcript</label>
+          <label class="check-row"><input id="settingsDeveloperTools" type="checkbox">Developer tools <span class="muted">(terminal &amp; monitor panes)</span></label>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="personalization">
@@ -3034,6 +3056,40 @@ button { cursor: pointer; }
 .icon-btn { width: 34px; height: 34px; display: inline-grid; place-items: center; }
 .icon-btn .ui-icon, .round-btn .ui-icon, .send-btn .ui-icon { width: 18px; height: 18px; }
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff; }
+.workbench { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tabbar { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #e7e7e7; background: #fafafa; min-height: 38px; flex: 0 0 auto; }
+.tabbar-tabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.tabbar-tabs::-webkit-scrollbar { height: 6px; }
+.tab { display: inline-flex; align-items: center; gap: 6px; max-width: 210px; padding: 5px 8px 5px 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #5f6368; font-size: 13px; flex: 0 0 auto; }
+.tab .tab-icon, .tab .tab-close { display: inline-grid; place-items: center; flex: 0 0 auto; color: #7a7e83; }
+.tab .tab-icon .ui-icon { width: 15px; height: 15px; }
+.tab .tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .tab-close { width: 17px; height: 17px; border-radius: 5px; margin-left: 2px; }
+.tab .tab-close .ui-icon { width: 12px; height: 12px; }
+.tab .tab-close:hover { background: rgba(0,0,0,.1); color: #c7392f; }
+.tab:hover { background: rgba(0,0,0,.05); }
+.tab.active { background: #fff; border-color: #e2e2e2; color: #2f3337; }
+.tabbar-add { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 7px; border: 1px solid transparent; flex: 0 0 auto; color: #5f6368; }
+.tabbar-add:hover { background: rgba(0,0,0,.06); }
+.tabbar-add .ui-icon { width: 16px; height: 16px; }
+.tabbar-add-menu { position: absolute; top: 100%; right: 8px; margin-top: 4px; z-index: 40; min-width: 160px; border: 1px solid #d8d8d8; border-radius: 8px; background: #fff; box-shadow: 0 6px 20px rgba(0,0,0,.14); padding: 4px; }
+.tabbar-add-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border-radius: 6px; text-align: left; color: #2f3337; font-size: 13px; }
+.tabbar-add-menu button:hover { background: rgba(0,0,0,.06); }
+.tabbar-add-menu .add-icon { display: inline-grid; place-items: center; color: #5f6368; }
+.tabbar-add-menu .add-icon .ui-icon { width: 16px; height: 16px; }
+.pane-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pane { display: none; min-height: 0; }
+.pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.pane-stub { flex: 1; display: grid; place-content: center; place-items: center; gap: 12px; text-align: center; color: #8a8d91; padding: 24px; }
+.pane-stub .stub-icon { display: inline-grid; place-items: center; color: #b5b8bd; }
+.pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
+.pane-stub p { margin: 0; font-size: 14px; }
+/* Developer-tools gate: the add button and the terminal/monitor entries are
+   hidden unless the user opts in via Settings → Appearance. Normal users
+   never see terminal/monitor entry points. */
+body:not([data-dev-tools="true"]) .tabbar-add,
+body:not([data-dev-tools="true"]) .tabbar-add-menu [data-add-pane="terminal"],
+body:not([data-dev-tools="true"]) .tabbar-add-menu [data-add-pane="monitor"] { display: none !important; }
 .topbar { min-height: 58px; border-bottom: 1px solid #e7e7e7; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; }
 .title-block { min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 8px; }
@@ -3345,8 +3401,14 @@ body[data-theme="dark"] #todosList li.todo-completed { color: #6f7479; }
 export function createActoviqGuiClientScript(): string {
   return `
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
-// Client-side icon helper (eye/eyeOff only — the rest are server-rendered).
+// Client-side icon helper. eye/eyeOff are runtime-toggled; the workbench tab
+// bar is rendered client-side, so the pane icons it needs live here too.
 const _ICONS = {
+  chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
+  terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
+  dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
 };
@@ -3374,7 +3436,12 @@ const state = {
   attachmentCounter: 0,
   lastUsageText: '',
   toolNodes: new Map(),
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true }
+  // Workbench: top-tab bar of chat / terminal / monitor panes. The single
+  // chat pane (pane-chat-default) is always present and non-closable; the
+  // terminal/monitor entry points are gated behind developer tools.
+  tabs: [{ id: 'pane-chat-default', type: 'chat', title: 'Chat', closable: false }],
+  activeTabId: 'pane-chat-default',
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
 };
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
@@ -3390,6 +3457,64 @@ function applyPreferences(preferences) {
     : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   document.body.dataset.theme = theme;
   document.body.dataset.density = state.preferences.density === 'compact' ? 'compact' : 'comfortable';
+  document.body.dataset.devTools = state.preferences.developerTools ? 'true' : 'false';
+}
+// --- Workbench tabs / panes ---
+function paneIconFor(type) {
+  if (type === 'terminal') return guiIcon('terminal');
+  if (type === 'monitor') return guiIcon('dashboard');
+  return guiIcon('chat');
+}
+function renderTabs() {
+  const host = el('tabbarTabs');
+  if (!host) return;
+  host.textContent = '';
+  for (const tab of state.tabs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
+    btn.dataset.tabId = tab.id;
+    btn.innerHTML = '<span class="tab-icon">' + paneIconFor(tab.type) + '</span>'
+      + '<span class="tab-label">' + tab.title + '</span>'
+      + (tab.closable ? '<span class="tab-close" title="Close">' + guiIcon('close') + '</span>' : '');
+    btn.addEventListener('click', (event) => {
+      if (tab.closable && event.target.closest('.tab-close')) closeTab(tab.id);
+      else switchTab(tab.id);
+    });
+    host.appendChild(btn);
+  }
+}
+function switchTab(id) {
+  state.activeTabId = id;
+  document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === id));
+  renderTabs();
+}
+let paneCounter = 0;
+function addPane(type) {
+  paneCounter += 1;
+  const id = 'pane-' + type + '-' + paneCounter;
+  const title = type === 'terminal' ? 'Terminal' : (type === 'monitor' ? 'Monitor' : 'Chat');
+  const pane = document.createElement('section');
+  pane.className = 'pane pane-' + type;
+  pane.id = id;
+  const stub = document.createElement('div');
+  stub.className = 'pane-stub';
+  const note = type === 'terminal' ? 'Terminal engine arrives in Phase 3.' : 'Live monitor arrives in Phase 4.';
+  stub.innerHTML = '<span class="stub-icon">' + paneIconFor(type) + '</span><p>' + note + '</p>';
+  pane.appendChild(stub);
+  el('paneStack').appendChild(pane);
+  state.tabs.push({ id, type, title, closable: true });
+  switchTab(id);
+  el('tabbarAddMenu').classList.add('hidden');
+}
+function closeTab(id) {
+  const index = state.tabs.findIndex((t) => t.id === id);
+  if (index === -1) return;
+  state.tabs.splice(index, 1);
+  const pane = document.getElementById(id);
+  if (pane) pane.remove();
+  if (state.activeTabId === id) switchTab(state.tabs[0] ? state.tabs[0].id : 'pane-chat-default');
+  else renderTabs();
 }
 const SEND_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
 const STOP_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
@@ -5046,6 +5171,7 @@ async function openSettings(tab = 'general') {
   setField('settingsDensity', preferences.density || 'comfortable');
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
+  setChecked('settingsDeveloperTools', preferences.developerTools === true);
   renderBridgeConfigs();
   renderMcpServers();
   el('settingsStatus').textContent = '';
@@ -5082,6 +5208,7 @@ async function saveSettings(event) {
       density: el('settingsDensity').value,
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
+      developerTools: el('settingsDeveloperTools').checked,
     },
   };
   const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -5240,6 +5367,10 @@ document.addEventListener('click', (event) => {
   if (!menu.classList.contains('hidden') && !event.target.closest('#modelPickerBtn') && !event.target.closest('#modelPickerMenu')) {
     menu.classList.add('hidden');
   }
+  const addMenu = el('tabbarAddMenu');
+  if (addMenu && !addMenu.classList.contains('hidden') && !event.target.closest('#tabbarAdd') && !event.target.closest('#tabbarAddMenu')) {
+    addMenu.classList.add('hidden');
+  }
 });
 document.addEventListener('contextmenu', (event) => {
   const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
@@ -5278,6 +5409,14 @@ transcript.addEventListener('click', (event) => {
     setTimeout(() => { button.textContent = original; }, 1200);
   }).catch(() => {});
 });
+el('tabbarAdd').addEventListener('click', (event) => {
+  event.stopPropagation();
+  el('tabbarAddMenu').classList.toggle('hidden');
+});
+document.querySelectorAll('#tabbarAddMenu [data-add-pane]').forEach((button) => {
+  button.addEventListener('click', () => addPane(button.dataset.addPane));
+});
+renderTabs();
 loadState().then(hydrateTranscript).catch(error => addMessage('error', error.message));
 `;
 }
