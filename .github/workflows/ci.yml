@@ -40,17 +40,19 @@ jobs:
       - name: Install Linux rolldown native binding
         run: npm install --no-save --package-lock=false @rolldown/binding-linux-x64-gnu@1.0.0-rc.12
 
-      - name: Install electron (for src/gui typecheck/build)
-        run: npm install --no-save --package-lock=false electron@42.4.1
-
       - name: Typecheck
         run: npm run typecheck
 
       - name: Test
         run: npm test
 
+      # electron 42 requires Node ≥22, so the src/gui build only runs there.
+      # The npm package ships gui sources; electron-builder compiles them in dist:win.
       - name: Build
-        run: npm run build
+        if: matrix.node == 22
+        run: |
+          npm install --no-save --package-lock=false electron@42.4.1
+          npm run build
 
   test-windows:
     name: Windows / Node 22
