@@ -36,8 +36,8 @@ describe('bridgeConfigs persistence', () => {
   it('writes then reads a config round-trip', async () => {
     const home = await makeHome();
     writeBridgeConfigs({ configs: [
-      { name: 'deepseek', provider: 'anthropic' as const, apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' },
-      { name: 'qwen', provider: 'openai' as const, apiKey: 'sk-q' },
+      { name: 'deepseek', runtime: 'claude', provider: 'anthropic' as const, apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' },
+      { name: 'qwen', runtime: 'claude', provider: 'openai' as const, apiKey: 'sk-q' },
     ] }, home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(2);
@@ -47,8 +47,8 @@ describe('bridgeConfigs persistence', () => {
 
   it('addBridgeConfig dedupes by name (replaces)', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'a', provider: 'anthropic', apiKey: 'old' }, home);
-    addBridgeConfig({ name: 'a', provider: 'anthropic', apiKey: 'new', baseURL: 'https://x' }, home);
+    addBridgeConfig({ name: 'a', runtime: 'claude', provider: 'anthropic', apiKey: 'old' }, home);
+    addBridgeConfig({ name: 'a', runtime: 'claude', provider: 'anthropic', apiKey: 'new', baseURL: 'https://x' }, home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(1);
     expect(read.configs[0]?.apiKey).toBe('new');
@@ -57,8 +57,8 @@ describe('bridgeConfigs persistence', () => {
 
   it('removeBridgeConfig deletes by name', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'a', provider: 'anthropic' }, home);
-    addBridgeConfig({ name: 'b', provider: 'openai' }, home);
+    addBridgeConfig({ name: 'a', runtime: 'claude', provider: 'anthropic' }, home);
+    addBridgeConfig({ name: 'b', runtime: 'claude', provider: 'openai' }, home);
     removeBridgeConfig('a', home);
     const read = readBridgeConfigs(home);
     expect(read.configs).toHaveLength(1);
@@ -67,7 +67,7 @@ describe('bridgeConfigs persistence', () => {
 
   it('findBridgeConfig looks up by name', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'deepseek', provider: 'anthropic' }, home);
+    addBridgeConfig({ name: 'deepseek', runtime: 'claude', provider: 'anthropic' }, home);
     expect(findBridgeConfig('deepseek', home)?.provider).toBe('anthropic');
     expect(findBridgeConfig('missing', home)).toBeUndefined();
   });
@@ -75,9 +75,9 @@ describe('bridgeConfigs persistence', () => {
   it('migrates unknown providers to anthropic and drops entries without a name', async () => {
     const home = await makeHome();
     writeBridgeConfigs({ configs: [
-      { name: 'ok', provider: 'anthropic' },
-      { name: 'migrated', provider: 'nope' } as never,
-      { provider: 'openai' } as never,
+      { name: 'ok', runtime: 'claude', provider: 'anthropic' },
+      { name: 'migrated', runtime: 'claude', provider: 'nope' } as never,
+      { provider: 'openai', runtime: 'claude' } as never,
     ] }, home);
     const read = readBridgeConfigs(home);
     // 'ok' + 'migrated' (nope→anthropic) both survive; nameless entry dropped.
@@ -121,8 +121,8 @@ describe('legacy provider migration', () => {
 
   it('leaves already-correct anthropic/openai untouched', async () => {
     const home = await makeHome();
-    addBridgeConfig({ name: 'a', provider: 'anthropic' }, home);
-    addBridgeConfig({ name: 'b', provider: 'openai' }, home);
+    addBridgeConfig({ name: 'a', runtime: 'claude', provider: 'anthropic' }, home);
+    addBridgeConfig({ name: 'b', runtime: 'claude', provider: 'openai' }, home);
     const read = readBridgeConfigs(home);
     expect(read.configs[0]?.provider).toBe('anthropic');
     expect(read.configs[1]?.provider).toBe('openai');
