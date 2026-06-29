@@ -2543,6 +2543,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const id = typeof body.id === 'string' ? body.id : '';
         return json(res, 200, { ok: terminalManager.kill(id) });
       }
+      // Command history persistence (plan phase 5). One JSONL line per command,
+      // under the project's session dir (~/.actoviq/projects/<hash>/terminals/).
+      if (req.method === 'POST' && url.pathname === '/api/terminal/history') {
+        const body = await readJson(req);
+        const command = typeof body.command === 'string' ? body.command.trim() : '';
+        if (!command || !sdk) return json(res, 200, { ok: false });
+        try {
+          const dir = path.join(sdk.config.sessionDirectory, 'terminals');
+          await mkdir(dir, { recursive: true });
+          await writeFile(path.join(dir, 'history.jsonl'), JSON.stringify({ ts: Math.floor(Date.now() / 1000), command }) + '\n', { flag: 'a' });
+          return json(res, 200, { ok: true });
+        } catch {
+          return json(res, 200, { ok: false }); // never block a command over a history write
+        }
+      }
+      if (req.method === 'GET' && url.pathname === '/api/terminal/history') {
+        if (!sdk) return json(res, 200, { lines: [] });
+        try {
+          const raw = await readFile(path.join(sdk.config.sessionDirectory, 'terminals', 'history.jsonl'), 'utf8').catch(() => '');
+          const lines = raw.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+            try { return JSON.parse(l); } catch { return null; }
+          }).filter(Boolean) as Array<{ ts: number; command: string }>;
+          return json(res, 200, { lines });
+        } catch {
+          return json(res, 200, { lines: [] });
+        }
+      }
       return json(res, 404, { error: 'Not found' });
     } catch (error) {
       return json(res, 500, { error: (error as Error).message });
@@ -3332,10 +3359,30 @@ button { cursor: pointer; }
 .pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
 .pane-stub p { margin: 0; font-size: 14px; }
 /* Terminal pane: xterm fills the pane on a dark surface. */
-.pane-terminal { background: #1f2330; color: #e6e9ef; }
-.pane-terminal .term-mount { flex: 1; min-height: 0; padding: 6px 8px; overflow: hidden; }
+.pane-terminal { background: #1f2330; color: #e6e9ef; display: flex; flex-direction: column; }
+.pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid #2c3142; background: #262b3b; }
+.pane-terminal .tb-toggle { min-height: 24px; padding: 0 10px; border-radius: 6px; border: 1px solid #3a4054; background: #2f3547; color: #c8cdd9; font-size: 12px; }
+.pane-terminal .tb-toggle:hover { background: #3a4054; }
+.pane-terminal .term-hint { font-size: 11px; color: #7a8094; }
+.pane-terminal .term-body { flex: 1; min-height: 0; display: flex; }
+.pane-terminal .term-mount { flex: 1; min-width: 0; padding: 6px 8px; overflow: hidden; }
 .pane-terminal .term-mount .xterm { height: 100%; }
 .pane-terminal .term-mount .xterm-viewport { background: #1f2330 !important; }
+/* Smart terminal blocks panel + history picker (plan phase 5). */
+.pane-terminal .term-blocks { flex: 0 0 320px; min-width: 0; overflow: auto; padding: 8px; background: #1a1e2b; border-left: 1px solid #2c3142; display: flex; flex-direction: column; gap: 8px; }
+.pane-terminal .term-blocks.hidden { display: none; }
+.pane-terminal .tb-empty { color: #6b7180; font-size: 12px; }
+.pane-terminal .term-block { border: 1px solid #2c3142; border-radius: 7px; background: #232838; padding: 7px 9px; }
+.pane-terminal .tb-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #6ad0a8; white-space: pre-wrap; word-break: break-all; }
+.pane-terminal .tb-out { margin: 5px 0 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #b9bec9; white-space: pre-wrap; word-break: break-word; max-height: 7em; overflow: hidden; }
+.pane-terminal .tb-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.pane-terminal .tb-btn { min-height: 22px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid #3a4054; background: #2f3547; color: #c8cdd9; }
+.pane-terminal .tb-btn:hover { background: #3a4054; }
+.history-picker { position: absolute; top: 38px; left: 50%; transform: translateX(-50%); z-index: 60; width: min(520px, 80%); background: #fff; border: 1px solid #d8d8d8; border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 8px; }
+.history-picker .hp-input { width: 100%; height: 32px; border: 1px solid #d8d8d8; border-radius: 7px; padding: 0 10px; outline: none; }
+.history-picker .hp-list { margin-top: 6px; max-height: 280px; overflow: auto; display: grid; gap: 2px; }
+.history-picker .hp-row { text-align: left; width: 100%; padding: 7px 9px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: #2f3337; }
+.history-picker .hp-row:hover { background: rgba(75,147,247,.12); }
 /* Monitor pane (plan phase 4): live cards for every active run. */
 .pane-monitor { background: #f6f7f8; overflow: auto; }
 .monitor-list { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
@@ -3892,20 +3939,112 @@ function makeStub(pane, type, note) {
   stub.innerHTML = '<span class="stub-icon">' + paneIconFor(type) + '</span><p>' + note + '</p>';
   pane.appendChild(stub);
 }
+// --- Smart terminal helpers (plan phase 5): blocks, history, output→agent ---
+function stripAnsiClient(s) { return String(s || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, ''); }
+function runTerminalCommand(terminalId, command) {
+  api('/api/terminal/input', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: terminalId, data: command + '\\r' }) }).catch(() => {});
+}
+function persistTerminalCommand(command) {
+  api('/api/terminal/history', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ command }) }).catch(() => {});
+}
+function copyText(text) { try { navigator.clipboard.writeText(String(text || '')); } catch (e) { /* clipboard unavailable */ } }
+function sendOutputToAgent(text) {
+  const ta = el('promptInput');
+  const body = String(text || '').trim();
+  if (!body) return;
+  const sep = ta.value && !ta.value.endsWith('\\n') ? '\\n\\n' : '';
+  ta.value = ta.value + sep + 'Terminal output:\\n---\\n' + stripAnsiClient(body) + '\\n---';
+  switchTab('pane-chat-default');
+  ta.focus();
+}
+function renderBlocksPanel(tab) {
+  const pane = document.getElementById(tab.id);
+  if (!pane) return;
+  const panel = pane.querySelector('.term-blocks');
+  if (!panel) return;
+  panel.textContent = '';
+  if (!tab.blocks || !tab.blocks.length) {
+    const e = document.createElement('p'); e.className = 'muted tb-empty'; e.textContent = 'No blocks yet — run a command.';
+    panel.appendChild(e); return;
+  }
+  for (const b of tab.blocks.slice().reverse()) {
+    const card = document.createElement('article'); card.className = 'term-block';
+    const cmd = document.createElement('div'); cmd.className = 'tb-cmd'; cmd.textContent = '$ ' + b.command; card.appendChild(cmd);
+    const out = document.createElement('pre'); out.className = 'tb-out'; out.textContent = stripAnsiClient(b.output || '').trim().slice(-800); card.appendChild(out);
+    const actions = document.createElement('div'); actions.className = 'tb-actions';
+    const mk = (label, title, fn) => { const x = document.createElement('button'); x.type = 'button'; x.className = 'tb-btn'; x.textContent = label; x.title = title; x.addEventListener('click', fn); return x; };
+    actions.appendChild(mk('Copy', 'Copy output', () => copyText(b.output || '')));
+    actions.appendChild(mk('Copy cmd', 'Copy command', () => copyText(b.command)));
+    actions.appendChild(mk('Re-run', 'Re-run command', () => runTerminalCommand(tab.terminalId, b.command)));
+    actions.appendChild(mk('→Agent', 'Send output to the chat agent', () => sendOutputToAgent(b.output || '')));
+    card.appendChild(actions);
+    panel.appendChild(card);
+  }
+}
+function closeHistoryPicker(tab) { if (tab && tab.picker) { tab.picker.remove(); tab.picker = null; } }
+async function openHistoryPicker(tab, term) {
+  closeHistoryPicker(tab);
+  let cmds = [];
+  try {
+    const r = await api('/api/terminal/history');
+    if (r.ok) { const j = await r.json(); cmds = (j.lines || []).map((l) => l.command).filter(Boolean); }
+  } catch (e) { /* no history yet */ }
+  const seen = new Set(); const ordered = [];
+  for (const c of cmds.slice().reverse()) { if (!seen.has(c)) { seen.add(c); ordered.push(c); } }
+  const host = document.getElementById(tab.id);
+  if (!host) return;
+  const pop = document.createElement('div'); pop.className = 'history-picker';
+  const input = document.createElement('input'); input.type = 'text'; input.className = 'hp-input'; input.placeholder = 'fuzzy search command history… (Esc to close)';
+  const list = document.createElement('div'); list.className = 'hp-list';
+  pop.appendChild(input); pop.appendChild(list);
+  const render = (q) => {
+    const ql = (q || '').toLowerCase(); list.textContent = '';
+    const matches = ordered.filter((c) => !ql || c.toLowerCase().indexOf(ql) !== -1).slice(0, 12);
+    if (!matches.length) { const e = document.createElement('p'); e.className = 'muted'; e.textContent = 'No matches.'; list.appendChild(e); return; }
+    for (const c of matches) {
+      const row = document.createElement('button'); row.type = 'button'; row.className = 'hp-row'; row.textContent = c;
+      row.addEventListener('click', () => { runTerminalCommand(tab.terminalId, c); closeHistoryPicker(tab); term.focus(); });
+      list.appendChild(row);
+    }
+  };
+  input.addEventListener('input', () => render(input.value));
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); closeHistoryPicker(tab); term.focus(); } });
+  render('');
+  host.appendChild(pop);
+  tab.picker = pop;
+  input.focus();
+}
 async function initTerminalPane(pane, tab) {
   const capable = state.snapshot && state.snapshot.terminalCapable;
   if (!capable) { makeStub(pane, 'terminal', 'Terminal unavailable on this platform (node-pty not loadable).'); return; }
   const ok = await loadXterm();
   if (!ok || !window.Terminal || !window.FitAddon) { makeStub(pane, 'terminal', 'Terminal assets missing — run "npm run prepare:xterm".'); return; }
   pane.textContent = '';
-  const mount = document.createElement('div');
-  mount.className = 'term-mount';
-  pane.appendChild(mount);
+  const header = document.createElement('div'); header.className = 'term-header';
+  const blocksToggle = document.createElement('button'); blocksToggle.type = 'button'; blocksToggle.className = 'tb-toggle'; blocksToggle.textContent = 'Blocks';
+  const hint = document.createElement('span'); hint.className = 'term-hint muted'; hint.textContent = 'Ctrl+R history · →Agent sends output to chat';
+  header.appendChild(blocksToggle); header.appendChild(hint);
+  const body = document.createElement('div'); body.className = 'term-body';
+  const mount = document.createElement('div'); mount.className = 'term-mount';
+  const blocksPanel = document.createElement('aside'); blocksPanel.className = 'term-blocks hidden';
+  body.appendChild(mount); body.appendChild(blocksPanel);
+  pane.appendChild(header); pane.appendChild(body);
   const term = new window.Terminal({ convertEol: true, cols: 80, rows: 24, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 13, cursorBlink: true });
   const fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(mount);
   try { fit.fit(); } catch (e) { /* layout not ready yet */ }
+  // Smart-terminal block tracking (plan phase 5): each Enter finalizes a
+  // command+output block for the Blocks panel and persists the command.
+  tab.inputBuf = ''; tab.outputBuf = ''; tab.blocks = []; tab.picker = null; tab.inEscape = false;
+  blocksToggle.addEventListener('click', () => {
+    blocksPanel.classList.toggle('hidden');
+    setTimeout(() => { try { fit.fit(); } catch (e) {} }, 20);
+  });
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R')) { openHistoryPicker(tab, term); return false; }
+    return true;
+  });
   let resizeTimer = null;
   const ro = new ResizeObserver(() => {
     if (resizeTimer) clearTimeout(resizeTimer);
@@ -3917,11 +4056,30 @@ async function initTerminalPane(pane, tab) {
   });
   ro.observe(mount);
   term.onData((data) => {
+    for (const ch of data) {
+      // Skip ANSI/SS3 escape sequences (arrow keys, focus events, etc.) so they
+      // don't pollute the command text — only printable input forms a command.
+      if (ch === '\\x1b') { tab.inEscape = true; continue; }
+      if (tab.inEscape) { if (/[A-Za-z~]/.test(ch)) tab.inEscape = false; continue; }
+      if (ch === '\\r') {
+        const cmd = tab.inputBuf.trim();
+        if (cmd) {
+          tab.blocks.push({ id: 'b' + Date.now() + Math.random().toString(36).slice(2, 6), command: cmd, output: tab.outputBuf || '', ts: Math.floor(Date.now() / 1000) });
+          if (tab.blocks.length > 50) tab.blocks.shift();
+          renderBlocksPanel(tab);
+          persistTerminalCommand(cmd);
+        }
+        tab.inputBuf = ''; tab.outputBuf = '';
+      } else if (ch === '\\x7f' || ch === '\\b') {
+        tab.inputBuf = tab.inputBuf.slice(0, -1);
+      } else if (ch === '\\t' || ch >= ' ') {
+        tab.inputBuf += ch;
+      }
+    }
     api('/api/terminal/input', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: tab.terminalId, data }) }).catch(() => {});
   });
-  // Open the output NDJSON stream (verbatim sendText reader pattern).
   const ctrl = new AbortController();
-  tab.dispose = () => { ctrl.abort(); ro.disconnect(); try { term.dispose(); } catch (e) {} };
+  tab.dispose = () => { ctrl.abort(); ro.disconnect(); closeHistoryPicker(tab); try { term.dispose(); } catch (e) {} };
   try {
     const res = await api('/api/terminal/output?id=' + encodeURIComponent(tab.terminalId), { signal: ctrl.signal });
     if (!res.ok || !res.body) { term.writeln('\\x1b[31mFailed to open terminal stream.\\x1b[0m'); return; }
@@ -3939,7 +4097,7 @@ async function initTerminalPane(pane, tab) {
           if (!line) continue;
           try {
             const ev = JSON.parse(line);
-            if (ev.type === 'output' && typeof ev.data === 'string') term.write(ev.data);
+            if (ev.type === 'output' && typeof ev.data === 'string') { term.write(ev.data); tab.outputBuf += ev.data; if (tab.outputBuf.length > 16384) tab.outputBuf = tab.outputBuf.slice(-8192); }
             else if (ev.type === 'exit') { term.writeln('\\r\\n\\x1b[2m[process exited code=' + (ev.code ?? '?') + ']\\x1b[0m'); }
           } catch (e) { /* ignore malformed line */ }
         }
