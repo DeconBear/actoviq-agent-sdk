@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, execSync, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -505,6 +506,51 @@ function openPathInSystem(targetPath: string): void {
   child.unref();
 }
 
+/**
+ * Open a native folder-picker dialog and return the selected directory path,
+ * or null if the user cancelled. Uses each platform's built-in dialog (no
+ * GUI dependency). Runs the picker as a detached child process so the Node
+ * main loop (and Electron) is NOT blocked while the dialog is open.
+ */
+const execFileAsync = promisify(execFile);
+async function pickFolder(): Promise<string | null> {
+  try {
+    if (process.platform === 'win32') {
+      // PowerShell FolderBrowserDialog — ships with Windows.
+      const ps = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = 'Select workspace folder'
+$d.ShowNewFolderButton = $true
+if ($d.ShowDialog() -eq 'OK') { Write-Output -NoNewline $d.SelectedPath }
+`;
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', windowsHide: true });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+    if (process.platform === 'darwin') {
+      // osascript — choose folder.
+      const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose folder with prompt "Select workspace folder")'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+    // Linux: prefer zenity, fall back to kdialog.
+    try {
+      const { stdout } = await execFileAsync('zenity', ['--file-selection', '--directory', '--title=Select workspace folder'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    } catch {
+      const { stdout } = await execFileAsync('kdialog', ['--getexistingdirectory', '.', '--title=Select workspace folder'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+  } catch {
+    // User cancelled, or the dialog tool isn't installed — no selection.
+    return null;
+  }
+}
+
 function sessionView(session: AgentSession) {
   return {
     id: session.id,
@@ -991,6 +1037,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           name: c.name,
           runtime: c.runtime,
           provider: c.provider,
+          apiKey: c.apiKey ?? '',
           apiKeyMasked: maskApiKey(c.apiKey),
           baseURL: c.baseURL ?? '',
           model: c.model ?? '',
@@ -2192,6 +2239,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         openPathInSystem(workDir);
         return json(res, 200, { ok: true, path: workDir });
       }
+      if (req.method === 'POST' && url.pathname === '/api/pick-folder') {
+        const folder = await pickFolder();
+        return json(res, 200, { ok: true, folder });
+      }
       if (req.method === 'POST' && url.pathname === '/api/project/open') {
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
@@ -2512,7 +2563,12 @@ export function createActoviqGuiHtml(): string {
       <h2>Workspace</h2>
       <p class="muted">Switch to an existing workspace or open a local project folder.</p>
       <div id="workspaceChoices" class="workspace-choice-list"></div>
-      <label class="dialog-field">Workspace path<input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project"></label>
+      <label class="dialog-field">Workspace path
+        <div class="api-key-row">
+          <input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project">
+          <button type="button" id="workspaceBrowseBtn" class="round-btn" title="Browse folders">${guiIcon('folder')}</button>
+        </div>
+      </label>
       <p id="workspaceStatus" class="muted"></p>
       <div class="dialog-actions">
         <button type="button" id="cancelWorkspace">Cancel</button>
@@ -4715,9 +4771,13 @@ function openBridgeEditor(cfg) {
   setField('bridgeCfgName', cfg ? cfg.name : '');
   setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
   setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
-  setField('bridgeCfgApiKey', '');
-  const keyPlaceholder = cfg && cfg.apiKeyMasked ? cfg.apiKeyMasked + ' (blank to keep the saved key)' : 'sk-…';
-  el('bridgeCfgApiKey').placeholder = keyPlaceholder;
+  setField('bridgeCfgApiKey', cfg ? (cfg.apiKey || '') : '');
+  // Editing an existing config: show the saved key in plain text (with the eye
+  // toggle starting visible) so the user can read and copy it directly. New
+  // configs start masked with the eye-closed default.
+  el('bridgeCfgApiKey').type = cfg && cfg.apiKey ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = (cfg && cfg.apiKey) ? guiIcon('eyeOff') : guiIcon('eye');
+  el('bridgeCfgApiKey').placeholder = cfg && cfg.apiKey ? 'API key (visible — edit to replace)' : 'sk-…';
   setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
   el('bridgeCfgClearKey').checked = false;
   el('bridgeClearKeyRow').style.display = cfg ? '' : 'none';
@@ -5043,6 +5103,15 @@ el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
+el('workspaceBrowseBtn').addEventListener('click', async () => {
+  try {
+    const res = await api('/api/pick-folder', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.folder) el('workspacePathInput').value = data.folder;
+    }
+  } catch { /* picker unavailable — user types path manually */ }
+});
 el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
 el('settingsOpenLocation').addEventListener('click', openLocation);
 el('settingsApplyRuntimeModel').addEventListener('click', () => {
