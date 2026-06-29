@@ -4070,7 +4070,7 @@ async function selectPickerModel(configName, modelName, effort) {
     if (cfg && cfg.model !== modelName) {
       const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({
         name: configName,
-        runtime: cfg.runtime || 'bridge',
+        runtime: cfg.runtime || 'claude',
         provider: cfg.provider,
         baseURL: cfg.baseURL || '',
         model: modelName || '',
