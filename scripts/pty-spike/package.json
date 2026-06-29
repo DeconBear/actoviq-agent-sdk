@@ -1,0 +1,17 @@
+{
+  "name": "actoviq-pty-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 0 de-risk smoke: node-pty N-API load + xterm render under CSP, run headlessly in Electron. Self-contained (installs its own Electron).",
+  "scripts": {
+    "smoke": "electron pty-xterm-smoke.cjs"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^42.4.1"
+  }
+}
