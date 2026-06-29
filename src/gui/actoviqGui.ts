@@ -303,6 +303,8 @@ function guiIcon(name: string): string {
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
     worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
+    eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
   };
   const body = icons[name] ?? icons.gear;
   return `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -2528,7 +2530,13 @@ export function createActoviqGuiHtml(): string {
       </div>
       <div id="bridgeCredentialFields">
         <label class="dialog-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
-        <label class="dialog-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-… (blank keeps the saved key on edit)"></label>
+        <div class="dialog-field">
+          <span>API key</span>
+          <div class="api-key-row">
+            <input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-…">
+            <button type="button" id="bridgeCfgApiKeyToggle" class="round-btn" title="Toggle API key visibility">${guiIcon('eye')}</button>
+          </div>
+        </div>
         <label class="check-row" id="bridgeClearKeyRow"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
       </div>
       <div class="bridge-models-section">
@@ -3212,6 +3220,8 @@ body[data-theme="dark"] .picker-item-tags { background: #33363c; }
 .settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .settings-group-head h2 { margin: 0; }
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
+.api-key-row { display: flex; align-items: center; gap: 6px; }
+.api-key-row input { flex: 1; }
 .bridge-models-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #ececec; }
 .bridge-models-section h3 { margin: 0 0 4px; font-size: 15px; }
 .bridge-models-section .muted { margin: 0 0 10px; font-size: 12px; }
@@ -4689,16 +4699,15 @@ function renderBridgeConfigs() {
 // ── Per-config editor modal ───────────────────────────────────────────────
 let editingBridgeConfigName = null;
 // runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
-const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'anthropic', pi:'openai', codex:'openai', crush:'openai' };
+const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'openai', pi:'openai', codex:'openai', crush:'openai' };
 function toggleCredentialFields() {
   const runtime = el('bridgeCfgRuntime').value;
   const isHadamard = runtime === 'hadamard';
   const fields = el('bridgeCredentialFields');
   if (fields) fields.style.display = isHadamard ? 'none' : '';
-  // Auto-select wire protocol from runtime (ineditable for bridge runtimes).
+  // Auto-select wire protocol from runtime (user can override).
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
   el('bridgeCfgProvider').value = pv;
-  el('bridgeCfgProvider').disabled = !isHadamard;
 }
 function openBridgeEditor(cfg) {
   editingBridgeConfigName = cfg ? cfg.name : null;
@@ -4707,6 +4716,8 @@ function openBridgeEditor(cfg) {
   setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
   setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
   setField('bridgeCfgApiKey', '');
+  const keyPlaceholder = cfg && cfg.apiKeyMasked ? cfg.apiKeyMasked + ' (blank to keep the saved key)' : 'sk-…';
+  el('bridgeCfgApiKey').placeholder = keyPlaceholder;
   setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
   el('bridgeCfgClearKey').checked = false;
   el('bridgeClearKeyRow').style.display = cfg ? '' : 'none';
@@ -5071,6 +5082,12 @@ el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); 
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
 el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
+  const inp = el('bridgeCfgApiKey');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = show ? guiIcon('eyeOff') : guiIcon('eye');
+});
 el('bridgeEditorModal').addEventListener('click', (event) => { if (event.target === el('bridgeEditorModal')) closeBridgeEditor(); });
 el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
