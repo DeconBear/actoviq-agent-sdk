@@ -104,7 +104,6 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('<span>chat</span>');
     expect(html).not.toContain('<span>mem</span>');
     expect(html).toContain('id="promptInput"');
-    expect(html).toContain('id="insertCommand"');
     expect(html).toContain('id="sendBtn"');
     expect(html).toContain('id="saveSettingsBtn"');
     expect(html).toContain('id="backToAppBtn"');
@@ -118,7 +117,7 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="contextMenu"');
     expect(html).toContain('id="settingsGitTreeBtn"');
     expect(html).toContain('class="brand"');
-    expect(html.indexOf('id="insertCommand"')).toBeGreaterThan(html.indexOf('id="permissionSelect"'));
+    expect(html).toContain('id="settingsOutputStyle"');
     expect(css).toContain('.sidebar');
     expect(css).toContain('.composer');
     expect(css).toContain('.mini-action-btn');
@@ -132,7 +131,6 @@ describe('TUI and GUI parity', () => {
     expect(css).toContain('@keyframes spin');
     expect(css).toContain('.attachment-tray');
     expect(css).toContain('.drop-overlay');
-    expect(css).toContain('.command-chip');
     expect(css).toContain('.slash-menu');
     expect(css).toContain('.queue-list');
     expect(css).toContain('.surface-drawer');

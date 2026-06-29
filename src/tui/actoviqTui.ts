@@ -1992,8 +1992,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   async function editBridgeConfig(existing?: PersistedBridgeConfig): Promise<PersistedBridgeConfig | undefined> {
     // Work on a local copy so Cancel discards all edits.
     const draft: PersistedBridgeConfig = existing
-      ? { name: existing.name, provider: existing.provider, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
-      : { name: '', provider: 'anthropic' };
+      ? { name: existing.name, provider: existing.provider, runtime: existing.runtime, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
+      : { name: '', provider: 'anthropic', runtime: 'claude' };
 
     // Lazy-detect: runtimes are probed only when the user opens the runtime
     // picker, so the form renders instantly. Cached after first probe.
@@ -2035,7 +2035,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           appendStatic([...formatErrorLine('cannot save — name is required (edit the name field first)'), '']);
           continue;
         }
-        const config: PersistedBridgeConfig = { name, provider: draft.provider };
+        const config: PersistedBridgeConfig = { name, provider: draft.provider, runtime: draft.runtime }; if (draft.apiKey) config.apiKey = draft.apiKey; if (draft.baseURL) config.baseURL = draft.baseURL; if (draft.model) config.model = draft.model;
         if (draft.apiKey) config.apiKey = draft.apiKey;
         if (draft.baseURL) config.baseURL = draft.baseURL;
         if (draft.model) config.model = draft.model;
