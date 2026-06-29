@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-import { execFileSync, execSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, execSync, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
-import { access, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
+import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 import {
-  createActoviqBridgeSdk,
   createActoviqCoreTools,
   createAgentSdk,
   createModelTeam,
@@ -24,7 +27,40 @@ import {
   resolveRoutedRun,
   WorktreeService,
 } from '../index.js';
-import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
+import {
+  addBridgeConfig,
+  findBridgeConfig,
+  maskApiKey,
+  readBridgeConfigs,
+  removeBridgeConfig,
+  runtimeToProvider,
+  VALID_RUNTIMES,
+  type BridgeRuntime,
+  type ModelModality,
+  type PersistedBridgeConfig,
+} from '../parity/bridgeConfigs.js';
+import { buildRouteModelApi } from '../router/modelRouter.js';
+import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
+import { estimateCost } from '../team/pricing.js';
+import { createPlanModeTools, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
+import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
+import { loadProjectContext } from '../memory/projectContext.js';
+import { recordTurn } from '../memory/sessionHistory.js';
+import {
+  addMcpServer,
+  readMcpServerConfig,
+  removeMcpServer,
+  type PersistedMcpServer,
+} from '../mcp/mcpServerConfig.js';
+import {
+  createPreToolUseHookClassifier,
+  readPostToolUseHooks,
+  readPreToolUseHooks,
+  readSessionStartHooks,
+  runPostToolUseHooks,
+  runSessionStartHooks,
+} from '../hooks/userHooks.js';
+import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -34,6 +70,7 @@ import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import { renderMarkdown } from './guiMarkdown.js';
 import type {
+  ActoviqCanUseTool,
   ActoviqEffort,
   ActoviqPermissionMode,
   ActoviqPermissionRule,
@@ -46,7 +83,7 @@ import type {
   TeamDefinition,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
-import type { ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
+import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
 
 const DEFAULT_PORT = 4174;
 const EFFORT_LEVELS: readonly ActoviqEffort[] = ['low', 'medium', 'high', 'max'];
@@ -87,7 +124,7 @@ interface PendingPermission {
   id: string;
   toolName: string;
   summary: string;
-  resolve: (outcome: 'allow' | 'always' | 'deny') => void;
+  resolve: (outcome: 'allow' | 'always' | 'always-user' | 'deny') => void;
 }
 
 interface GuiPreferences {
@@ -114,7 +151,13 @@ function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'c
   } catch {
     // Non-git workspaces are valid.
   }
-  return (
+  // Load the CLAUDE.md hierarchy (user + project, with @includes) so the agent
+  // picks up project-specific instructions — the canonical Claude Code behavior.
+  const project = loadProjectContext(workDir);
+  const projectSection = project.text
+    ? `\n\n# Project context (CLAUDE.md)\n\nThe following project instructions were loaded from CLAUDE.md files. Treat them as authoritative guidance for this workspace.\n\n${project.text}\n`
+    : '';
+  const base = (
     `You are Hadamard Agent, an interactive GUI agent. Working directory: ${workDir}\n\n` +
     `<env>\nWorking directory: ${workDir}\nIs git repo: ${isGit ? 'Yes' : 'No'}\nPlatform: ${process.platform}\nDate: ${new Date().toISOString().slice(0, 10)}\n</env>\n\n` +
     `# Tone and style\n` +
@@ -139,6 +182,7 @@ function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'c
         `- You are equally capable in this mode — only the presentation is less technical. Still use tools and do the real work; just summarize results in accessible terms.`
       : ``)
   );
+  return base + projectSection;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -176,6 +220,42 @@ function summarizeInput(input: unknown): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Expand @<image-path> tokens into Anthropic image content blocks so the user
+ * can attach screenshots/designs inline. Returns the string unchanged when no
+ * image actually loads (the @tokens stay literal). Mirrors the TUI's
+ * expandImageRefs — the @path route only (clipboard capture is platform-specific).
+ */
+function expandImageRefs(text: string, workDir: string): string | ContentBlockParam[] {
+  const refs = text.match(/@([\w./\\-]+\.(?:png|jpe?g|gif|webp|bmp))/gi);
+  if (!refs) return text;
+  const blocks: ContentBlockParam[] = [];
+  let cursor = 0;
+  const seen = new Set<string>();
+  let imagesAdded = 0;
+  for (const ref of refs) {
+    const raw = ref.slice(1); // strip @
+    const resolved = path.resolve(workDir, raw);
+    if (seen.has(resolved)) continue;
+    let data: string;
+    try {
+      data = readFileSync(resolved).toString('base64');
+    } catch {
+      continue; // not readable — leave the @token in the text below
+    }
+    const at = text.indexOf(ref, cursor);
+    if (at > cursor) blocks.push({ type: 'text', text: text.slice(cursor, at) });
+    const ext = path.extname(raw).slice(1).toLowerCase();
+    const mediaType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data } });
+    cursor = at + ref.length;
+    seen.add(resolved);
+    imagesAdded++;
+  }
+  if (cursor < text.length) blocks.push({ type: 'text', text: text.slice(cursor) });
+  return imagesAdded > 0 ? blocks : text;
 }
 
 function commandUsage(command: string): string {
@@ -224,6 +304,8 @@ function guiIcon(name: string): string {
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
     worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
+    eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
+    eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
   };
   const body = icons[name] ?? icons.gear;
   return `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -347,17 +429,6 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
   return sessions;
 }
 
-async function countStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
-  let count = 0;
-  for (const projectRoot of projectRoots) {
-    for (const item of await listStoredSessionFiles(projectRoot)) {
-      if (item.id === activeSessionId || item.storageId === activeSessionId || item.messageCount > 0) continue;
-      count += 1;
-    }
-  }
-  return count;
-}
-
 async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
   let deleted = 0;
   for (const projectRoot of projectRoots) {
@@ -433,6 +504,51 @@ function openPathInSystem(targetPath: string): void {
     windowsHide: false,
   });
   child.unref();
+}
+
+/**
+ * Open a native folder-picker dialog and return the selected directory path,
+ * or null if the user cancelled. Uses each platform's built-in dialog (no
+ * GUI dependency). Runs the picker as a detached child process so the Node
+ * main loop (and Electron) is NOT blocked while the dialog is open.
+ */
+const execFileAsync = promisify(execFile);
+async function pickFolder(): Promise<string | null> {
+  try {
+    if (process.platform === 'win32') {
+      // PowerShell FolderBrowserDialog — ships with Windows.
+      const ps = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = 'Select workspace folder'
+$d.ShowNewFolderButton = $true
+if ($d.ShowDialog() -eq 'OK') { Write-Output -NoNewline $d.SelectedPath }
+`;
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', windowsHide: true });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+    if (process.platform === 'darwin') {
+      // osascript — choose folder.
+      const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose folder with prompt "Select workspace folder")'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+    // Linux: prefer zenity, fall back to kdialog.
+    try {
+      const { stdout } = await execFileAsync('zenity', ['--file-selection', '--directory', '--title=Select workspace folder'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    } catch {
+      const { stdout } = await execFileAsync('kdialog', ['--getexistingdirectory', '.', '--title=Select workspace folder'], { encoding: 'utf-8' });
+      const trimmed = stdout.trim();
+      return trimmed ? trimmed : null;
+    }
+  } catch {
+    // User cancelled, or the dialog tool isn't installed — no selection.
+    return null;
+  }
 }
 
 function sessionView(session: AgentSession) {
@@ -606,7 +722,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Keep defaults when settings cannot be read.
   }
 
-  let tools = createActoviqCoreTools({ cwd: workDir });
+  // Plan mode tools (EnterPlanMode / ExitPlanMode) give the agent a structured
+  // research-then-propose flow. onPlanModeChange flips the session into plan
+  // permission mode so mutating tools are blocked while the agent researches;
+  // the holder is assigned after the session + approver exist.
+  let applyPlanPermission: (() => Promise<void>) | null = null;
+  const buildTools = () => [
+    ...createActoviqCoreTools({ cwd: workDir }),
+    ...createPlanModeTools(workDir, {
+      onPlanModeChange: async (mode) => { if (mode === 'plan') await applyPlanPermission?.(); },
+    }),
+  ];
+  let tools = buildTools();
   const createCleanSdk = () =>
     createAgentSdk({
       ...(options.homeDir ? { homeDir: options.homeDir } : {}),
@@ -633,6 +760,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           permissionMode,
         });
 
+  // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
+  runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), workDir);
+
   let activeTeamTool: AgentToolDefinition | null = null;
   let activeTeamName: string | null = null;
   let activeRouter: RouterProfile | null = null;
@@ -641,10 +771,43 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let eventSink: ((event: GuiRunEvent) => void) | null = null;
   const pendingPermissions = new Map<string, PendingPermission>();
 
-  // Bridge mode — toggles between in-process Hadamard SDK and spawn-based bridge.
+  // Bridge mode — in-process: a named config pre-builds a ModelApi via
+  // buildRouteModelApi and is injected per-run into session.stream({model, modelApi}).
+  // Same session → context survives switching bridge↔hadamard. No child process.
   let bridgeMode = false;
-  let bridgeClient: Awaited<ReturnType<typeof createActoviqBridgeSdk>> | null = null;
-  let bridgeProviderLabel: string | null = null;
+  let activeBridgeConfig: PersistedBridgeConfig | null = null;
+  let activeBridgeModelApi: Awaited<ReturnType<typeof buildRouteModelApi>> | null = null;
+  let bridgeModelLabel: string | null = null;
+  // /output-style prompt prefix swap (applied per turn; 'default' is a no-op).
+  let outputStyle: OutputStyleId = 'default';
+  // Usage totals for /cost, /usage, /stats. Per-config breakdown attributes spend
+  // to each bridge config so the user can compare backends (mirrors the TUI).
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostUsd: number | null = 0;
+  const configUsage = new Map<string, { inputTokens: number; outputTokens: number; turns: number }>();
+
+  function recordUsage(model: string, usage: { input_tokens?: number; output_tokens?: number } | undefined): void {
+    const inT = usage?.input_tokens ?? 0;
+    const outT = usage?.output_tokens ?? 0;
+    totalInputTokens += inT;
+    totalOutputTokens += outT;
+    const cost = estimateCost(model, inT, outT, options.homeDir);
+    totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
+    if (bridgeMode && activeBridgeConfig) {
+      const rec = configUsage.get(activeBridgeConfig.name) ?? { inputTokens: 0, outputTokens: 0, turns: 0 };
+      rec.inputTokens += inT;
+      rec.outputTokens += outT;
+      rec.turns += 1;
+      configUsage.set(activeBridgeConfig.name, rec);
+    }
+  }
+  function configCost(name: string, rec: { inputTokens: number; outputTokens: number }): string | null {
+    const cfg = findBridgeConfig(name, options.homeDir);
+    if (!cfg?.model) return null;
+    const cost = estimateCost(cfg.model, rec.inputTokens, rec.outputTokens, options.homeDir);
+    return cost !== null ? `$${cost.toFixed(4)}` : null;
+  }
 
   // The project/plugin/empty-session scans walk every project on disk. Cache them
   // briefly (and invalidate on mutations) so `/api/state` is cheap on every turn.
@@ -653,7 +816,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     at: number;
     projects: Awaited<ReturnType<typeof listKnownProjects>>;
     plugins: Awaited<ReturnType<typeof discoverActoviqPlugins>>;
-    hiddenEmptySessionCount: number;
   };
   let heavyStateCache: HeavyState | null = null;
   const invalidateHeavyState = (): void => {
@@ -688,7 +850,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const previousSdk = sdk;
     workDir = resolved;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
-    tools = createActoviqCoreTools({ cwd: workDir });
+    tools = buildTools();
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
@@ -723,7 +885,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const approver: ActoviqToolApprover = async (context) => {
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const pending = await new Promise<'allow' | 'always' | 'deny'>((resolve) => {
+    const pending = await new Promise<'allow' | 'always' | 'always-user' | 'deny'>((resolve) => {
       const request: PendingPermission = {
         id,
         toolName: context.publicName,
@@ -739,22 +901,55 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       });
     });
     pendingPermissions.delete(id);
-    if (pending === 'always') {
+    if (pending === 'always' || pending === 'always-user') {
       const state = session.permissionContext;
       const permissions = state.permissions.filter(
         rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
       );
-      permissions.push({ toolName: context.publicName, behavior: 'allow', source: 'gui-session' });
+      const source: 'project' | 'user' = pending === 'always-user' ? 'user' : 'project';
+      permissions.push({ toolName: context.publicName, behavior: 'allow', source });
       await session.setPermissionContext({
         mode: state.mode ?? permissionMode,
         permissions,
         approver,
       });
-      return { behavior: 'allow', reason: 'Approved (always) in GUI.' };
+      return { behavior: 'allow', reason: `Approved (always — ${source} scope) in GUI.` };
     }
     return pending === 'allow'
       ? { behavior: 'allow', reason: 'Approved in GUI.' }
       : { behavior: 'deny', reason: 'Denied in GUI permission dialog.' };
+  };
+
+  // Read-only Bash auto-allow + mutating-tool prompt (mirrors the TUI's
+  // canUseTool). Only active in the 'default' permission mode; returns undefined
+  // (no decision) otherwise so workspace/full modes keep their behavior.
+  const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit', 'PowerShell']);
+  const canUseTool: ActoviqCanUseTool = (context) => {
+    if (currentPermissionMode() !== 'default') return undefined;
+    if (context.publicName === 'Bash') {
+      const command = (context.input as { command?: unknown } | null)?.command;
+      if (typeof command === 'string' && isReadOnlyBashCommand(command)) {
+        return undefined; // auto-allow harmless read-only commands
+      }
+      return { behavior: 'ask', reason: 'Bash command may modify the workspace.' };
+    }
+    if (MUTATING_TOOLS.has(context.publicName)) {
+      return { behavior: 'ask', reason: `${context.publicName} mutates the workspace.` };
+    }
+    return undefined;
+  };
+
+  // User-configurable PreToolUse hooks from settings.json hooks.PreToolUse[].
+  // Lazily reads live settings so edits apply without a restart; a no-op when no
+  // hooks match (the common case), so the run path is unchanged.
+  const preToolUseHookClassifier = createPreToolUseHookClassifier(
+    () => readPreToolUseHooks(getLoadedJsonConfig()?.raw),
+  );
+
+  // Wire the plan-mode tools' onPlanModeChange to flip the session into plan
+  // permission mode so mutating tools are blocked while the agent researches.
+  applyPlanPermission = async () => {
+    await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
   };
 
   async function state() {
@@ -774,12 +969,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       : null;
     if (!heavy) {
       const sessionStoreRoots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
-      const [plugins, projects, hiddenEmptySessionCount] = await Promise.all([
+      const [plugins, projects] = await Promise.all([
         discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
         listKnownProjects(homeDir, workDir),
-        countStoredEmptySessions(sessionStoreRoots, session.id),
+        // Auto-clean empty sessions (except the active one) whenever the heavy
+        // state is recomputed — so abandoned empty chats never accumulate and
+        // no manual "Clean empty chats" action is needed.
+        cleanupStoredEmptySessions(sessionStoreRoots, session.id),
       ]);
-      heavy = { key: cacheKey, at: now, plugins, projects, hiddenEmptySessionCount };
+      heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
     }
     const [allSessions, workflows, teams, routers, skills, agents] = await Promise.all([
@@ -804,7 +1002,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       tools: toolMetadata,
       projects: heavy.projects,
       sessions,
-      hiddenEmptySessionCount: heavy.hiddenEmptySessionCount,
       workflows,
       teams,
       routers,
@@ -822,6 +1019,53 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
         bridge: store?.raw?.bridge ?? {},
+      },
+      bridgeState: {
+        mode: bridgeMode,
+        activeConfig: activeBridgeConfig
+          ? {
+              name: activeBridgeConfig.name,
+              runtime: activeBridgeConfig.runtime,
+              provider: activeBridgeConfig.provider,
+              apiKeyMasked: maskApiKey(activeBridgeConfig.apiKey),
+              baseURL: activeBridgeConfig.baseURL ?? '',
+              model: activeBridgeConfig.model ?? '',
+            }
+          : null,
+        activeModelLabel: bridgeModelLabel,
+        configs: readBridgeConfigs(options.homeDir).configs.map(c => ({
+          name: c.name,
+          runtime: c.runtime,
+          provider: c.provider,
+          apiKey: c.apiKey ?? '',
+          apiKeyMasked: maskApiKey(c.apiKey),
+          baseURL: c.baseURL ?? '',
+          model: c.model ?? '',
+          models: Array.isArray(c.models)
+            ? c.models.map(m => ({
+                name: m.name,
+                context1M: m.context1M === true,
+                modality: m.modality === 'multimodal' ? 'multimodal' : 'text',
+              }))
+            : [],
+        })),
+      },
+      mcpServers: readMcpServerConfig(options.homeDir).servers,
+      goal: getGoal(),
+      outputStyle,
+      outputStyles: OUTPUT_STYLES,
+      planMode: currentPermissionMode() === 'plan',
+      plan: readPlanFile(workDir),
+      todos,
+      usage: {
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        costUsd: totalCostUsd,
+        perConfig: Array.from(configUsage.entries()).map(([cfgName, rec]) => ({
+          name: cfgName,
+          ...rec,
+          costUsd: configCost(cfgName, rec),
+        })),
       },
       running: Boolean(runAbort),
     };
@@ -900,20 +1144,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     };
   }
 
-  async function cleanupEmptySessions(): Promise<Record<string, unknown>> {
-    const store = await resolveActoviqSettingsStore({
-      configPath: options.configPath,
-      homeDir: options.homeDir,
-    }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const deleted = await cleanupStoredEmptySessions(
-      await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory),
-      session.id,
-    );
-    invalidateHeavyState();
-    return { deleted, state: await state() };
-  }
-
   async function setPermissionPreset(key: string): Promise<GuiRunEvent[]> {
     const presets: Record<string, { mode: ActoviqPermissionMode; rules: ActoviqPermissionRule[]; label: string }> = {
       'read-only': {
@@ -952,6 +1182,96 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       events.push({ type: 'error', message: `${output.state.errors.length} errors during workflow execution` });
     }
     return events;
+  }
+
+  // Live todo list captured from TodoWrite tool calls; surfaced in state() so the
+  // frontend can render a persistent panel (mirrors the TUI's buildTodoPanel).
+  let todos: { subject: string; status: string; activeForm?: string }[] = [];
+
+  // ── Bridge: in-process named configs ─────────────────────────────────
+  // activateBridgeConfig pre-builds a ModelApi via buildRouteModelApi and stores
+  // it; streamRun injects {model, modelApi} per-run on the SAME session, so
+  // context survives switching bridge↔hadamard. No child process anywhere.
+  async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
+    if (config.runtime === 'hadamard') {
+      // hadamard configs run through the SDK's default provider — no separate
+      // ModelApi is built. Only the model is injected per-run.
+      activeBridgeConfig = config;
+      activeBridgeModelApi = null;
+      bridgeMode = false;
+      bridgeModelLabel = config.model || null;
+      return true;
+    }
+    // bridge config: pre-build the ModelApi from the config's credentials.
+    const routed = await buildRouteModelApi({
+      model: config.model || session.model,
+      provider: config.provider,
+      baseURL: config.baseURL,
+      apiKey: config.apiKey,
+      maxTokens: 32000,
+    });
+    activeBridgeModelApi = routed;
+    bridgeModelLabel = routed.model;
+    activeBridgeConfig = config;
+    bridgeMode = true;
+    return true;
+  }
+  function disableBridge(): void {
+    bridgeMode = false;
+    activeBridgeConfig = null;
+    activeBridgeModelApi = null;
+    bridgeModelLabel = null;
+    // session context stays intact — switching back to the default provider.
+  }
+
+  // ── Goal: session-scoped objective stored in session metadata ─────────
+  const GOAL_METADATA_KEY = '__actoviqGoal';
+  type GoalStatus = 'active' | 'paused' | 'complete';
+  interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
+  function getGoal(): SessionGoal | null {
+    const raw = session.metadata[GOAL_METADATA_KEY];
+    if (typeof raw === 'string') {
+      try { return JSON.parse(raw) as SessionGoal; } catch { /* ignore */ }
+    }
+    if (typeof raw === 'object' && raw !== null) return raw as SessionGoal;
+    return null;
+  }
+  async function setGoal(objective: string): Promise<SessionGoal> {
+    const goal: SessionGoal = { objective, status: 'active', setAt: new Date().toISOString() };
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+    return goal;
+  }
+  async function clearGoal(): Promise<void> {
+    // mergeMetadata can't delete a key; setting undefined clears it functionally
+    // (getGoal treats falsy as null) and JSON.stringify drops it on save.
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: undefined });
+  }
+  async function setGoalStatus(status: GoalStatus): Promise<SessionGoal | null> {
+    const goal = getGoal();
+    if (!goal) return null;
+    goal.status = status;
+    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+    return goal;
+  }
+
+  // ── Batch: read a file and return its prompts for sequential execution ─
+  async function runBatch(fileArg: string): Promise<GuiRunEvent[]> {
+    const filePath = path.resolve(workDir, fileArg);
+    let content: string;
+    try {
+      content = await readFile(filePath, 'utf8');
+    } catch {
+      return [{ type: 'error', message: `batch: cannot read ${filePath}` }];
+    }
+    const prompts = content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith('#'));
+    if (prompts.length === 0) return [{ type: 'error', message: 'batch: file has no prompts' }];
+    return [
+      { type: 'notice', message: `batch: ${prompts.length} prompts from ${path.basename(filePath)}` },
+      { type: 'batch.queue', prompts },
+    ];
   }
 
   async function runSlashCommand(raw: string): Promise<GuiRunEvent[]> {
@@ -1191,6 +1511,206 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>]' }];
       }
+      case 'init': {
+        const prompt = 'Explore this repository (read package.json, README, and CLAUDE.md if present; list the top-level structure), then write or improve a root CLAUDE.md documenting: what the project is, key commands (build/test/run), the high-level architecture, and important conventions. Keep it concise and accurate.';
+        return [{ type: 'agent.prompt', text: prompt }];
+      }
+      case 'context': {
+        const project = loadProjectContext(workDir);
+        const mcp = toolMetadata.filter(t => t.provider === 'mcp').length;
+        const lines = [
+          `Model: ${session.model}`,
+          `Effort: ${currentEffort() ?? 'auto'}`,
+          `Permission: ${currentPermissionMode()}`,
+          `Messages: ${session.messages.length}`,
+          `System prompt: ${systemPrompt.length} chars`,
+          `Tools: ${toolMetadata.length} (${mcp} MCP)`,
+          `Output style: ${outputStyle}`,
+          `Bridge: ${bridgeMode ? (activeBridgeConfig?.name ?? 'on') : 'off'}`,
+          `CLAUDE.md sources: ${project.sources.length ? project.sources.join(', ') : '(none)'}`,
+        ];
+        return [{ type: 'command.result', title: 'Context', text: lines.join('\n') }];
+      }
+      case 'cost':
+      case 'usage': {
+        const lines = [
+          `Input tokens: ${totalInputTokens.toLocaleString()}`,
+          `Output tokens: ${totalOutputTokens.toLocaleString()}`,
+          `Cost: ${totalCostUsd === null ? 'unknown' : '$' + totalCostUsd.toFixed(4)}`,
+          `Model: ${session.model}`,
+        ];
+        if (configUsage.size > 0) {
+          lines.push('', 'By config:');
+          for (const [cfgName, rec] of configUsage) {
+            const star = activeBridgeConfig?.name === cfgName ? ' *' : '';
+            const cost = configCost(cfgName, rec);
+            lines.push(`  ${cfgName}${star} — ${rec.turns} turns, ${(rec.inputTokens + rec.outputTokens).toLocaleString()} tokens${cost ? ', ' + cost : ''}`);
+          }
+        }
+        return [{ type: 'command.result', title: 'Usage', text: lines.join('\n') }];
+      }
+      case 'doctor': {
+        const env = readEnvFromSettings(getLoadedJsonConfig()?.raw ?? {});
+        const project = loadProjectContext(workDir);
+        let isGit = false;
+        try { execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' }); isGit = true; } catch { /* not a git repo */ }
+        const key = env.ACTOVIQ_API_KEY ? maskApiKey(env.ACTOVIQ_API_KEY) : env.ACTOVIQ_AUTH_TOKEN ? '(auth token)' : '(none)';
+        const lines = [
+          `Model: ${session.model}`,
+          `Provider: ${env.ACTOVIQ_PROVIDER ?? sdk.config.provider}`,
+          `API key: ${key}`,
+          `Base URL: ${env.ACTOVIQ_BASE_URL ?? sdk.config.baseURL ?? '(default)'}`,
+          `Workdir: ${workDir}`,
+          `Git repo: ${isGit ? 'Yes' : 'No'}`,
+          `Session: ${session.id} (${session.messages.length} messages)`,
+          `Permission: ${currentPermissionMode()}`,
+          `Tools: ${toolMetadata.length}`,
+          `CLAUDE.md: ${project.sources.length ? project.sources.join(', ') : '(none)'}`,
+          `Bridge: ${bridgeMode ? `${activeBridgeConfig?.name ?? 'on'} → ${bridgeModelLabel ?? '?'}` : 'off'}`,
+        ];
+        return [{ type: 'command.result', title: 'Doctor', text: lines.join('\n') }];
+      }
+      case 'batch':
+        if (!args) return [{ type: 'error', message: 'usage: /batch <file>' }];
+        return runBatch(args);
+      case 'goal': {
+        const goal = getGoal();
+        const mark = (s: GoalStatus) => (s === 'active' ? '▶' : s === 'paused' ? '‖' : '✓');
+        if (!args) {
+          return goal
+            ? [{ type: 'command.result', title: 'Goal', text: `${mark(goal.status)} ${goal.objective}\nstatus: ${goal.status} · set: ${goal.setAt}` }]
+            : [{ type: 'notice', message: 'no goal set — /goal <objective>' }];
+        }
+        if (args === 'clear') { await clearGoal(); return [{ type: 'notice', message: 'goal cleared' }, { type: 'state' }]; }
+        if (args === 'pause') { const g = await setGoalStatus('paused'); return g ? [{ type: 'notice', message: 'goal paused' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to pause' }]; }
+        if (args === 'resume') { const g = await setGoalStatus('active'); return g ? [{ type: 'notice', message: 'goal resumed' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to resume' }]; }
+        if (args === 'complete' || args === 'done') { const g = await setGoalStatus('complete'); return g ? [{ type: 'notice', message: 'goal complete' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to complete' }]; }
+        await setGoal(args);
+        return [{ type: 'notice', message: `goal set: ${args.slice(0, 60)}` }, { type: 'state' }];
+      }
+      case 'review': {
+        const diff = gitText(['--no-pager', 'diff']);
+        if (!diff) return [{ type: 'error', message: 'no git diff to review (stage/commit changes first)' }];
+        const capped = diff.length > 80000 ? diff.slice(0, 80000) + '\n…[diff truncated]' : diff;
+        const prompt = `Review the following git diff for correctness, security, and style issues. For each finding cite file:line and explain the problem and the fix. Be concise.\n\n\`\`\`diff\n${capped}\n\`\`\``;
+        return [{ type: 'agent.prompt', text: prompt }];
+      }
+      case 'stats': {
+        const mcp = toolMetadata.filter(t => t.provider === 'mcp').length;
+        const lines = [
+          `Messages: ${session.messages.length}`,
+          `Input tokens: ${totalInputTokens.toLocaleString()}`,
+          `Output tokens: ${totalOutputTokens.toLocaleString()}`,
+          `Tools: ${toolMetadata.length} (${mcp} MCP)`,
+          `Model: ${session.model}${bridgeMode ? ' (bridge:' + (activeBridgeConfig?.name ?? '?') + ')' : ''}`,
+          `Output style: ${outputStyle}`,
+          `Plan mode: ${currentPermissionMode() === 'plan' ? 'on' : 'off'}`,
+        ];
+        return [{ type: 'command.result', title: 'Stats', text: lines.join('\n') }];
+      }
+      case 'export': {
+        const lines: string[] = [];
+        for (const message of session.messages) {
+          const role = message.role === 'assistant' ? 'Assistant' : 'User';
+          const text = typeof message.content === 'string'
+            ? message.content
+            : Array.isArray(message.content)
+              ? message.content.map((b) => {
+                  const t = (b as { text?: unknown } | null)?.text;
+                  return typeof t === 'string' ? t : '';
+                }).join('\n')
+              : '';
+          if (text.trim()) { lines.push(`## ${role}`, '', text, '', '---', ''); }
+        }
+        const md = lines.join('\n');
+        const file = args ? path.resolve(workDir, args) : path.resolve(workDir, `session-${Date.now()}.md`);
+        try { await writeFile(file, md, 'utf8'); return [{ type: 'notice', message: `exported to ${file}` }]; }
+        catch (e) { return [{ type: 'error', message: `export failed: ${(e as Error).message}` }]; }
+      }
+      case 'rewind': {
+        const n = parseInt(args || '1', 10);
+        if (!Number.isFinite(n) || n < 1) return [{ type: 'error', message: 'usage: /rewind <N>' }];
+        const kept = session.messages.slice(0, Math.max(0, session.messages.length - n));
+        const newSession = await sdk.createSession({ title: session.title, model: options.model, permissionMode });
+        if (kept.length > 0) await newSession.appendMessages(kept).catch(() => undefined);
+        session = newSession;
+        return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
+      }
+      case 'output-style': {
+        const valid = OUTPUT_STYLES.map(s => s.id);
+        if (!args) return [{ type: 'command.result', title: 'Output style', text: `current: ${outputStyle}\navailable: ${valid.join(', ')}` }];
+        if (!valid.includes(args as OutputStyleId)) return [{ type: 'error', message: `usage: /output-style [${valid.join('|')}]` }];
+        outputStyle = args as OutputStyleId;
+        return [{ type: 'notice', message: `output style: ${outputStyle}` }, { type: 'state' }];
+      }
+      case 'hooks': {
+        const raw = getLoadedJsonConfig()?.raw;
+        const pre = readPreToolUseHooks(raw);
+        const post = readPostToolUseHooks(raw);
+        const start = readSessionStartHooks(raw);
+        const lines: string[] = [];
+        const fmt = (h: { matcher?: string; command?: string }) => `  ${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
+        lines.push(`PreToolUse (${pre.length}):`); pre.forEach(h => lines.push(fmt(h)));
+        lines.push(`PostToolUse (${post.length}):`); post.forEach(h => lines.push(fmt(h)));
+        lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(`  ${h.command}`));
+        if (pre.length + post.length + start.length === 0) {
+          lines.push('', 'No hooks configured. Add to settings.json:', '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $ACTOVIQ_HOOK_TOOL" }] } }');
+        }
+        return [{ type: 'command.result', title: 'Hooks', text: lines.join('\n') }];
+      }
+      case 'plan': {
+        if (args === 'off') {
+          const mode = permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default';
+          await session.setPermissionContext({ mode, permissions: [], approver });
+          return [{ type: 'notice', message: 'plan mode off' }, { type: 'state' }];
+        }
+        if (args === 'open') {
+          openPathInSystem(planFilePath(workDir));
+          return [{ type: 'notice', message: 'opened plan file' }];
+        }
+        if (currentPermissionMode() !== 'plan') {
+          await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+        }
+        const plan = readPlanFile(workDir);
+        return plan
+          ? [{ type: 'command.result', title: 'Plan', text: plan }, { type: 'state' }]
+          : [{ type: 'notice', message: 'plan mode on — research, then ExitPlanMode. No plan yet.' }, { type: 'state' }];
+      }
+      case 'bridge': {
+        if (args === 'off') { disableBridge(); return [{ type: 'notice', message: 'bridge off — using default provider' }, { type: 'state' }]; }
+        if (args === 'help') {
+          return [{ type: 'command.result', title: 'Bridge help', text: [
+            '/bridge — open the provider-config editor (Settings → Models & routing)',
+            '/bridge switch <name> — activate a named config',
+            '/bridge model [id] — set the active config model',
+            '/bridge config — manage named configs',
+            '/bridge off — return to the default provider',
+            '/bridge run <prompt> — run one prompt through the active config',
+            'Configs live in ~/.actoviq/bridge-configs.json',
+          ].join('\n') }];
+        }
+        if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
+        if (args.startsWith('switch ')) {
+          const cfgName = args.slice(7).trim();
+          const cfg = findBridgeConfig(cfgName, options.homeDir);
+          if (!cfg) return [{ type: 'error', message: `bridge config not found: ${cfgName}` }];
+          await activateBridgeConfig(cfg);
+          return [{ type: 'notice', message: `bridge active: ${cfg.name} → ${bridgeModelLabel} (provider ${cfg.provider})` }, { type: 'state' }];
+        }
+        if (args.startsWith('model')) {
+          const modelArg = args.slice(5).trim();
+          if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
+          if (!modelArg) return [{ type: 'command.result', title: 'Bridge model', text: `current: ${bridgeModelLabel ?? activeBridgeConfig.model ?? '(default)'}` }];
+          activeBridgeConfig = { ...activeBridgeConfig, model: modelArg };
+          await activateBridgeConfig(activeBridgeConfig);
+          return [{ type: 'notice', message: `bridge model set: ${modelArg}` }, { type: 'state' }];
+        }
+        if (args.startsWith('run ')) {
+          if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
+          return [{ type: 'agent.prompt', text: args.slice(4).trim() }];
+        }
+        return [{ type: 'settings.open', tab: 'models' }];
+      }
       default:
         return [{ type: 'error', message: `unknown command: /${name}` }];
     }
@@ -1228,8 +1748,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     eventSink = send;
     let streamedTextSeen = false;
     try {
+      // Router dispatch is skipped when a named config is active — the config's
+      // model and/or provider replaces per-turn routing.
+      const configActive = !!activeBridgeConfig;
       let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
-      if (activeRouter) {
+      if (activeRouter && !bridgeMode && !configActive) {
         try {
           const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
           routed = { model: decision.model, modelApi: decision.modelApi };
@@ -1239,57 +1762,99 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           send({ type: 'notice', message: `router classification failed: ${(error as Error).message}` });
         }
       }
+      // Three modes:
+      //  1. bridge config active → inject pre-built ModelApi (separate credentials)
+      //  2. hadamard config active → inject model only (use SDK default provider)
+      //  3. none active → in-process turn, optionally routed or teamed
+      const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
+      const hadamardModel = (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard')
+        ? (activeBridgeConfig.model || undefined)
+        : undefined;
       let stream: AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> };
-      let runModel = routed?.model ?? options.model ?? 'bridge';
-      if (bridgeMode) {
-        // Lazily create the bridge client on first bridge run.
-        if (!bridgeClient) {
-          const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-          const bridgeCfg: Record<string, unknown> = (store?.raw?.bridge as Record<string, unknown>) ?? {};
-          const provider = (typeof bridgeCfg.defaultProvider === 'string' ? bridgeCfg.defaultProvider : 'claude');
-          bridgeProviderLabel = provider;
-          bridgeClient = await createActoviqBridgeSdk({ directCli: true, directCliProvider: provider as any, workDir });
-          const mp = (provider as string)[0]?.toUpperCase() + (provider as string).slice(1);
-          runModel = `${mp} Code`;
-          send({ type: 'notice', message: `bridge -> ${provider} (${runModel})` });
-        }
-        const runId = `bridge-${Date.now()}`;
-        const bs = bridgeClient.stream(input, {
-          signal: runAbort.signal,
-          model: options.model,
-          systemPrompt,
-          appendSystemPrompt: undefined,
-        });
-        stream = adaptBridgeRun(bs, bs.result, runId, runModel);
-      } else {
-        stream = session.stream(input, {
-          systemPrompt,
+      if (bridgeMode && activeBridgeModelApi) {
+        const bridgeName = activeBridgeConfig?.name ?? 'bridge';
+        send({ type: 'notice', message: `bridge -> ${bridgeName} (${activeBridgeModelApi.model})` });
+        stream = session.stream(expandImageRefs(input, workDir), {
+          systemPrompt: systemPromptForRun,
           signal: runAbort.signal,
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
           approver,
+          classifier: preToolUseHookClassifier,
+          canUseTool,
+          model: activeBridgeModelApi.model,
+          modelApi: activeBridgeModelApi.modelApi,
+          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+        });
+      } else {
+        stream = session.stream(expandImageRefs(input, workDir), {
+          systemPrompt: systemPromptForRun,
+          signal: runAbort.signal,
+          permissionMode: currentPermissionMode(),
+          effort: currentEffort(),
+          approver,
+          classifier: preToolUseHookClassifier,
+          canUseTool,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
+          ...(hadamardModel ? { model: hadamardModel } : {}),
           ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
         });
       }
+
+      // If a hadamard config is active, send a brief notice (model-only, no credentials change).
+      if (hadamardModel && !bridgeMode) {
+        send({ type: 'notice', message: `hadamard model -> ${hadamardModel} (config: ${activeBridgeConfig!.name})` });
+      }
+      // Track tool call inputs so PostToolUse hooks (fire-and-forget) get both the
+      // input and the output for the matching result.
+      const toolCallInputs = new Map<string, { name: string; input: unknown }>();
       for await (const event of stream) {
         forwardAgentEvent(event, send);
+        if (event.type === 'tool.call') {
+          toolCallInputs.set(event.call.id, { name: event.call.publicName, input: event.call.input });
+          // Capture the live todo list from TodoWrite calls for the panel.
+          if (event.call.publicName === 'TodoWrite') {
+            const tasks = (event.call.input as { tasks?: unknown[] } | null)?.tasks;
+            if (Array.isArray(tasks)) {
+              todos = tasks.map((t) => {
+                const task = t as { subject?: string; status?: string; activeForm?: string };
+                return {
+                  subject: typeof task.subject === 'string' ? task.subject : '',
+                  status: typeof task.status === 'string' ? task.status : 'pending',
+                  ...(typeof task.activeForm === 'string' && task.activeForm ? { activeForm: task.activeForm } : {}),
+                };
+              }).filter(t => t.subject);
+            }
+          }
+        } else if (event.type === 'tool.result') {
+          const prev = toolCallInputs.get(event.result.id);
+          runPostToolUseHooks(
+            () => readPostToolUseHooks(getLoadedJsonConfig()?.raw),
+            event.result.publicName,
+            prev?.input,
+            event.result.outputText,
+            workDir,
+          );
+          toolCallInputs.delete(event.result.id);
+        }
         if (event.type === 'response.text.delta' && event.delta) streamedTextSeen = true;
       }
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
-      if (!bridgeMode) {
-        toolMetadata = await sdk.listToolMetadata();
-      }
+      const effectiveModel = hadamardModel ?? routed?.model ?? activeBridgeModelApi?.model ?? session.model;
+      recordUsage(effectiveModel, (result as any).usage);
+      // Lightweight global history — one JSONL line per user turn (mirrors Codex / Claude Code).
+      try {
+        recordTurn({
+          sessionId: session.id,
+          ts: Math.floor(Date.now() / 1000),
+          text: input.slice(0, 200),
+          model: effectiveModel,
+        }, options.homeDir);
+      } catch { /* never fail a turn over a history write */ }
+      toolMetadata = await sdk.listToolMetadata();
       invalidateHeavyState();
-      // Persist bridge turn to the chat transcript so it survives reload.
-      if (bridgeMode && result.text) {
-        await session.appendMessages([
-          { role: 'user', content: input },
-          { role: 'assistant', content: result.text },
-        ]).catch(() => undefined);
-      }
       send({ type: 'state', state: await state() });
       send({ type: 'done', usage: (result as any).usage });
     } catch (error) {
@@ -1347,14 +1912,36 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
     const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    // Also include the SDK session dir's parent (it may hold sessions/ directly).
+    roots.push(path.dirname(sdk.config.sessionDirectory));
     let deleted = false;
     for (const projectRoot of roots) {
+      // Check the active sessions directory.
       for (const item of await listStoredSessionFiles(projectRoot)) {
         if (item.id !== id && item.storageId !== id) continue;
         await rm(item.filePath, { force: true });
         await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), { recursive: true, force: true });
         deleted = true;
       }
+      // Also check the archive directory.
+      const archiveDir = path.join(projectRoot, 'archive');
+      try {
+        for (const file of await readdir(archiveDir)) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          let sessionId: string | undefined;
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw === 'object' && raw !== null && typeof (raw as { id?: unknown }).id === 'string') {
+              sessionId = (raw as { id: string }).id;
+            }
+          } catch { /* skip */ }
+          if (sessionId !== id && storageId !== id) continue;
+          await rm(path.join(archiveDir, file), { force: true });
+          await rm(path.join(archiveDir, '.checkpoints', storageId), { recursive: true, force: true });
+          deleted = true;
+        }
+      } catch { /* archive dir may not exist */ }
     }
     // If the active chat was deleted, open a fresh one so the UI stays consistent.
     if (session.id === id) {
@@ -1362,6 +1949,115 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     invalidateHeavyState();
     return { deleted, state: await state() };
+  }
+
+  // ── Archive / unarchive sessions ─────────────────────────────────────
+  // Move a session from sessions/ → archive/ (peer dir that the SDK never
+  // touches), so it's hidden from both TUI and GUI session lists.
+  async function archiveSession(id: string): Promise<boolean> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    roots.push(path.dirname(sdk.config.sessionDirectory)); // SDK session dir's parent
+    for (const projectRoot of roots) {
+      for (const item of await listStoredSessionFiles(projectRoot)) {
+        if (item.id !== id && item.storageId !== id) continue;
+        const archiveDir = path.join(projectRoot, 'archive');
+        await mkdir(archiveDir, { recursive: true });
+        await rename(item.filePath, path.join(archiveDir, item.storageId + '.json'));
+        const ckptSrc = path.join(projectRoot, 'sessions', '.checkpoints', item.storageId);
+        const ckptDst = path.join(archiveDir, '.checkpoints', item.storageId);
+        try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
+        // If the active chat was archived, open a fresh one.
+        if (session.id === id) {
+          session = await sdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        }
+        invalidateHeavyState();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function unarchiveSession(id: string): Promise<boolean> {
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    roots.push(path.dirname(sdk.config.sessionDirectory));
+    for (const projectRoot of roots) {
+      const archiveDir = path.join(projectRoot, 'archive');
+      try {
+        const files = await readdir(archiveDir);
+        for (const file of files) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          // Read the archived file to get the session id.
+          let sessionId: string | undefined;
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw === 'object' && raw !== null && typeof (raw as { id?: unknown }).id === 'string') {
+              sessionId = (raw as { id: string }).id;
+            }
+          } catch { /* skip unreadable */ }
+          if (sessionId !== id && storageId !== id) continue;
+          const sessionsDir = path.join(projectRoot, 'sessions');
+          await mkdir(sessionsDir, { recursive: true });
+          await rename(path.join(archiveDir, file), path.join(sessionsDir, file));
+          const ckptSrc = path.join(archiveDir, '.checkpoints', storageId);
+          const ckptDst = path.join(sessionsDir, '.checkpoints', storageId);
+          try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
+          invalidateHeavyState();
+          return true;
+        }
+      } catch { /* archive dir doesn't exist */ }
+    }
+    return false;
+  }
+
+  async function listArchivedSessions(): Promise<Array<{ id: string; storageId: string; title?: string; model?: string; messageCount: number; workDir?: string }>> {
+    const results: Array<{ id: string; storageId: string; title?: string; model?: string; messageCount: number; workDir?: string }> = [];
+    const addDir = async (archiveDir: string) => {
+      try {
+        for (const file of await readdir(archiveDir)) {
+          if (!file.endsWith('.json')) continue;
+          const storageId = file.slice(0, -'.json'.length);
+          try {
+            const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+            if (typeof raw !== 'object' || raw === null) continue;
+            const obj = raw as { id?: unknown; title?: unknown; model?: unknown; messages?: unknown; metadata?: unknown };
+            const messages = Array.isArray(obj.messages) ? obj.messages : [];
+            results.push({
+              id: typeof obj.id === 'string' ? obj.id : storageId,
+              storageId,
+              title: typeof obj.title === 'string' ? obj.title : undefined,
+              model: typeof obj.model === 'string' ? obj.model : undefined,
+              messageCount: messages.length,
+              workDir: typeof obj.metadata === 'object' && obj.metadata !== null && typeof (obj.metadata as { __actoviqWorkDir?: unknown }).__actoviqWorkDir === 'string'
+                ? (obj.metadata as { __actoviqWorkDir: string }).__actoviqWorkDir : undefined,
+            });
+          } catch { /* skip unreadable */ }
+        }
+      } catch { /* archive dir doesn't exist */ }
+    };
+    // Check archive/ subdirs of all known project roots + the session dir's parent.
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const roots = await collectSessionStoreRoots(homeDir, sdk.config.sessionDirectory);
+    for (const projectRoot of roots) {
+      await addDir(path.join(projectRoot, 'archive'));
+    }
+    // Also check the parent of the session directory (SDK may store sessions directly there).
+    await addDir(path.resolve(sdk.config.sessionDirectory, '..', 'archive'));
+    await addDir(path.join(path.dirname(sdk.config.sessionDirectory), 'archive'));
+    // Fallback: scan any archive/ dir directly under ~/.actoviq/ (the SDK's data root).
+    try {
+      const dataRoot = path.join(os.homedir(), '.actoviq');
+      for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        await addDir(path.join(dataRoot, entry.name, 'archive'));
+      }
+    } catch { /* data dir may not exist */ }
+    return results;
   }
 
   async function forgetProject(targetPath: string): Promise<Record<string, unknown>> {
@@ -1446,18 +2142,112 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
         return json(res, 200, { providers: await detectBridgeProviders() });
       }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/config') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const provider = body.provider === 'openai' ? 'openai' : 'anthropic';
+        const runtime: BridgeRuntime = (typeof body.runtime === 'string' && (VALID_RUNTIMES as string[]).includes(body.runtime))
+          ? (body.runtime as BridgeRuntime) : 'claude';
+        if (!name) return json(res, 400, { error: 'Missing config name' });
+        // Merge with the existing config of the same name when editing. The form
+        // intentionally leaves the API-key field blank on edit (it's a secret),
+        // so a blank key must PRESERVE the saved one — not replace it with empty.
+        // clearApiKey:true explicitly drops the key.
+        // For hadamard configs, apiKey/baseURL are unused (SDK default credentials).
+        const existing = findBridgeConfig(name, options.homeDir);
+        const config: PersistedBridgeConfig = { name, provider, runtime };
+        if (body.clearApiKey === true) {
+          // explicitly remove the saved key
+        } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+          config.apiKey = body.apiKey.trim();
+        } else if (existing?.apiKey) {
+          config.apiKey = existing.apiKey; // preserve on edit
+        }
+        // baseURL/model: the form loads existing values, so an empty field means
+        // the user cleared it intentionally (send as-is; empty → omitted).
+        if (typeof body.baseURL === 'string' && body.baseURL.trim()) config.baseURL = body.baseURL.trim();
+        if (typeof body.model === 'string' && body.model.trim()) config.model = body.model.trim();
+        // Models array (provider-specific model registry).
+        if (Array.isArray(body.models)) {
+          config.models = (body.models as Array<{ name?: unknown; context1M?: unknown; modality?: unknown }>)
+            .filter(m => typeof m.name === 'string' && m.name.trim())
+            .map(m => ({
+              name: (m.name as string).trim(),
+              context1M: m.context1M === true || false,
+              modality: (m.modality === 'multimodal' ? 'multimodal' : 'text') as ModelModality,
+            }));
+        }
+        addBridgeConfig(config, options.homeDir);
+        // If the saved config is the active one, refresh it so the next turn uses it.
+        if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/config/delete') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing config name' });
+        removeBridgeConfig(name, options.homeDir);
+        if (activeBridgeConfig?.name === name) disableBridge();
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/activate') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        const cfg = findBridgeConfig(name, options.homeDir);
+        if (!cfg) return json(res, 404, { error: `bridge config not found: ${name}` });
+        try {
+          await activateBridgeConfig(cfg);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/off') {
+        disableBridge();
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/mcp/list') {
+        return json(res, 200, readMcpServerConfig(options.homeDir));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mcp/add') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing server name' });
+        const server: PersistedMcpServer = { name };
+        if (typeof body.command === 'string' && body.command) server.command = body.command;
+        if (typeof body.url === 'string' && body.url) server.url = body.url;
+        if (Array.isArray(body.args)) server.args = body.args.filter((a: unknown) => typeof a === 'string') as string[];
+        addMcpServer(server, options.homeDir);
+        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mcp/remove') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing server name' });
+        removeMcpServer(name, options.homeDir);
+        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
       if (req.method === 'POST' && url.pathname === '/api/open-location') {
         openPathInSystem(workDir);
         return json(res, 200, { ok: true, path: workDir });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/pick-folder') {
+        const folder = await pickFolder();
+        return json(res, 200, { ok: true, folder });
       }
       if (req.method === 'POST' && url.pathname === '/api/project/open') {
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
         if (!nextWorkDir) return json(res, 400, { error: 'Missing project path' });
         return json(res, 200, await switchProject(nextWorkDir));
-      }
-      if (req.method === 'POST' && url.pathname === '/api/sessions/cleanup') {
-        return json(res, 200, await cleanupEmptySessions());
       }
       if (req.method === 'GET' && url.pathname === '/api/git') {
         return json(res, 200, gitInfo());
@@ -1467,6 +2257,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
         return json(res, 200, await deleteSession(id));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/archive') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        const ok = await archiveSession(id);
+        if (!ok) return json(res, 404, { error: 'Session not found' });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session/unarchive') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        if (!id) return json(res, 400, { error: 'Missing session id' });
+        const ok = await unarchiveSession(id);
+        if (!ok) return json(res, 404, { error: 'Archived session not found' });
+        return json(res, 200, await state());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/sessions/archived') {
+        return json(res, 200, { sessions: await listArchivedSessions() });
       }
       if (req.method === 'POST' && url.pathname === '/api/project/forget') {
         const body = await readJson(req);
@@ -1497,10 +2306,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const decision = body.decision;
         const pending = pendingPermissions.get(id);
         if (!pending) return json(res, 404, { error: 'Permission request not found' });
-        if (decision !== 'allow' && decision !== 'always' && decision !== 'deny') {
+        if (decision !== 'allow' && decision !== 'always' && decision !== 'always-user' && decision !== 'deny') {
           return json(res, 400, { error: 'Invalid decision' });
         }
-        pending.resolve(decision);
+        pending.resolve(decision as 'allow' | 'always' | 'always-user' | 'deny');
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
@@ -1525,8 +2334,47 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   return { url, token: authToken, close };
 }
 
+// First-run onboarding: guides the user through creating ~/.actoviq/settings.json
+// when no credential is found (mirrors the TUI's onboardCredentials). Uses plain
+// readline so it works in any terminal launching `actoviq-gui`.
+async function onboardCredentials(opts: { configPath?: string; homeDir?: string }): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
+  process.stdout.write('\n  Welcome to Actoviq! Let\'s set up your first connection.\n\n');
+  const provider = ((await ask('  Provider (anthropic/openai) [anthropic]: ')).trim().toLowerCase() || 'anthropic') as 'anthropic' | 'openai';
+  const apiKey = (await ask('  API key: ')).trim();
+  const baseURL = (await ask('  Base URL [https://api.deepseek.com]: ')).trim() || 'https://api.deepseek.com';
+  const model = (await ask('  Model [deepseek-chat]: ')).trim() || 'deepseek-chat';
+  rl.close();
+  if (!apiKey) {
+    process.stdout.write('  No API key entered. Set ACTOVIQ_API_KEY and rerun, or open Settings → Environment in the GUI.\n');
+    return;
+  }
+  const store = await resolveActoviqSettingsStore({ configPath: opts.configPath, homeDir: opts.homeDir });
+  const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
+  const env = isPlainRecord(raw.env) ? { ...raw.env } : {};
+  env.ACTOVIQ_API_KEY = apiKey;
+  env.ACTOVIQ_BASE_URL = baseURL;
+  env.ACTOVIQ_MODEL = model;
+  if (provider === 'openai') env.ACTOVIQ_PROVIDER = 'openai';
+  raw.env = env;
+  await persistActoviqSettingsStore(store.configPath, raw);
+  await loadJsonConfigFile(store.configPath);
+  process.stdout.write(`  Config saved to ${store.configPath}. Starting GUI…\n\n`);
+}
+
 export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<void> {
-  const handle = await startActoviqGuiServer(options);
+  let handle: ActoviqGuiServer;
+  try {
+    handle = await startActoviqGuiServer(options);
+  } catch (error) {
+    if (/(No Actoviq credential|credential was found)/i.test((error as Error).message)) {
+      await onboardCredentials(options);
+      handle = await startActoviqGuiServer(options);
+    } else {
+      throw error;
+    }
+  }
   process.once('SIGINT', () => { void close().finally(() => process.exit(0)); });
   process.once('SIGTERM', () => { void close().finally(() => process.exit(0)); });
   async function close(): Promise<void> {
@@ -1644,7 +2492,6 @@ export function createActoviqGuiHtml(): string {
         <div id="projects" class="project-list"></div>
         <div class="project-actions">
           <button type="button" id="addProjectBtn" class="sidebar-link">Add workspace</button>
-          <button type="button" id="cleanupSessionsBtn" class="sidebar-link">Clean empty chats</button>
         </div>
         <div id="workspaceMeta" class="workspace-meta"></div>
       </section>
@@ -1668,11 +2515,13 @@ export function createActoviqGuiHtml(): string {
         </div>
       </header>
       <section id="statusbar" class="statusbar"></section>
+      <section id="contextBar" class="context-bar hidden"></section>
+      <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
       <section id="transcript" class="transcript"></section>
       <form id="composer" class="composer">
         <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
         <div id="attachmentTray" class="attachment-tray hidden"></div>
-        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq or type /help"></textarea>
+        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
         <div id="slashMenu" class="slash-menu hidden"></div>
         <div id="queueList" class="queue-list hidden"></div>
         <div class="composer-footer">
@@ -1684,16 +2533,14 @@ export function createActoviqGuiHtml(): string {
               <option value="workspace">Workspace</option>
               <option value="read-only">Read-only</option>
             </select>
-            <button type="button" id="insertCommand" class="command-chip" title="Commands">/ Commands</button>
           </div>
           <div class="composer-right">
-            <select id="effortSelect" title="Reasoning effort">
-              <option value="auto">Auto</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="max">Max</option>
-            </select>
+            <div class="model-picker-wrapper">
+              <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Model &amp; effort">Auto ▾</button>
+              <div id="modelPickerMenu" class="model-picker-menu hidden">
+                <div id="modelPickerItems"></div>
+              </div>
+            </div>
             <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
           </div>
         </div>
@@ -1716,11 +2563,55 @@ export function createActoviqGuiHtml(): string {
       <h2>Workspace</h2>
       <p class="muted">Switch to an existing workspace or open a local project folder.</p>
       <div id="workspaceChoices" class="workspace-choice-list"></div>
-      <label class="dialog-field">Workspace path<input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project"></label>
+      <label class="dialog-field">Workspace path
+        <div class="api-key-row">
+          <input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project">
+          <button type="button" id="workspaceBrowseBtn" class="round-btn" title="Browse folders">${guiIcon('folder')}</button>
+        </div>
+      </label>
       <p id="workspaceStatus" class="muted"></p>
       <div class="dialog-actions">
         <button type="button" id="cancelWorkspace">Cancel</button>
         <button type="submit" id="openWorkspaceBtn" class="primary">Open workspace</button>
+      </div>
+    </form>
+  </div>
+  <div id="bridgeEditorModal" class="modal hidden">
+    <form id="bridgeEditorForm" class="dialog bridge-editor">
+      <h2 id="bridgeEditorTitle">New config</h2>
+      <label class="dialog-field">Config name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
+      <div class="two-col">
+        <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard (SDK default)</option><option value="claude">Claude</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
+        <label class="dialog-field">Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+      </div>
+      <div id="bridgeCredentialFields">
+        <label class="dialog-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
+        <div class="dialog-field">
+          <span>API key</span>
+          <div class="api-key-row">
+            <input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-…">
+            <button type="button" id="bridgeCfgApiKeyToggle" class="round-btn" title="Toggle API key visibility">${guiIcon('eye')}</button>
+          </div>
+        </div>
+        <label class="check-row" id="bridgeClearKeyRow"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
+      </div>
+      <div class="bridge-models-section">
+        <h3>Models</h3>
+        <p class="muted">Add one or more models for this config. The first is the default.</p>
+        <div class="bridge-model-row">
+          <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)">
+          <div class="bridge-model-controls">
+            <label class="check-row"><input id="bridgeNewModel1M" type="checkbox">1M ctx</label>
+            <select id="bridgeNewModelModality"><option value="text">Text</option><option value="multimodal">Multimodal</option></select>
+            <button type="button" id="bridgeModelAdd" class="secondary-btn">+ Add</button>
+          </div>
+        </div>
+        <div id="bridgeModelsList" class="settings-card-list compact"></div>
+      </div>
+      <p id="bridgeCfgStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="bridgeCfgReset" class="secondary-btn">Cancel</button>
+        <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
       </div>
     </form>
   </div>
@@ -1729,10 +2620,11 @@ export function createActoviqGuiHtml(): string {
       <h2>Permission required</h2>
       <p id="permissionTool"></p>
       <pre id="permissionSummary"></pre>
-      <div class="dialog-actions">
-        <button data-decision="deny">Deny</button>
-        <button data-decision="allow">Allow</button>
-        <button data-decision="always">Always</button>
+      <div class="dialog-actions permission-actions">
+        <button data-decision="deny" class="danger">Deny</button>
+        <button data-decision="allow">Allow once</button>
+        <button data-decision="always">Always (project)</button>
+        <button data-decision="always-user">Always (user)</button>
       </div>
     </div>
   </div>
@@ -1768,7 +2660,6 @@ export function createActoviqGuiHtml(): string {
         <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
         <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
         <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
-        <button type="button" class="settings-tab" data-settings-tab="bridge"><span class="settings-icon">${guiIcon('hooks')}</span>Bridge</button>
       </section>
     </aside>
     <form id="settingsForm" class="settings-main">
@@ -1799,6 +2690,18 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="models">
         <h1>Models & routing</h1>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <h2>Provider configs</h2>
+            <button type="button" id="bridgeNewConfig" class="primary">+ New config</button>
+          </div>
+          <p class="muted">Save named provider/model configs (provider + API key + base URL + models), then pick them from the composer's model menu. The active config runs every prompt through its backend on the same chat, so context survives switching. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
+          <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable active config</button>
+          </div>
+          <div id="bridgeConfigsList" class="settings-card-list"></div>
+        </div>
         <div class="settings-group">
           <h2>Current run</h2>
           <p id="settingsCurrentRun" class="muted"></p>
@@ -1838,6 +2741,18 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="personalization">
         <h1>Personalization</h1>
+        <div class="settings-group">
+          <h2>Output style</h2>
+          <p class="muted">Adjusts the agent's response shape. Applied per turn as a system-prompt prefix; <code>default</code> adds nothing.</p>
+          <label class="inline-field">Style
+            <select id="settingsOutputStyle">
+              <option value="default">default — standard responses</option>
+              <option value="concise">concise — terse, code-first, minimal prose</option>
+              <option value="explanatory">explanatory — explain reasoning and tradeoffs</option>
+              <option value="learning">learning — teach how/why, step by step</option>
+            </select>
+          </label>
+        </div>
         <div class="settings-group"><p>Personalization uses local settings plus Actoviq memory. Keep stable preferences in memory; keep credentials in configuration.</p></div>
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
@@ -1897,11 +2812,12 @@ export function createActoviqGuiHtml(): string {
         <div class="settings-group">
           <h2>Session management</h2>
           <p id="settingsSessionSummary" class="muted"></p>
-          <div class="settings-action-row">
-            <button type="button" id="settingsNewChatBtn" class="secondary-btn">New chat</button>
-            <button type="button" id="settingsCleanChatsBtn" class="secondary-btn">Clean empty chats</button>
-          </div>
           <div id="settingsSessionsList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Archived</h2>
+          <p class="muted">Archived chats are hidden from the session list but preserved on disk. Restore to make them visible again, or permanently delete them.</p>
+          <div id="settingsArchivedList" class="settings-card-list"></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="memory">
@@ -1927,6 +2843,23 @@ export function createActoviqGuiHtml(): string {
           <p>Inspect MCP-provided tools and open the full MCP drawer.</p>
           <button type="button" id="settingsMcpBtn" class="secondary-btn">Inspect MCP servers</button>
           <div id="settingsMcpList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Add MCP server</h2>
+          <p class="muted">stdio runs a local command; http connects to a remote streamable_http endpoint. Saved to <code>~/.actoviq/mcp.json</code>; the SDK reloads on add/remove.</p>
+          <div class="two-col">
+            <label>Name<input id="mcpCfgName" autocomplete="off" placeholder="filesystem"></label>
+            <label>Type<select id="mcpCfgType"><option value="stdio">stdio</option><option value="http">http</option></select></label>
+          </div>
+          <label class="inline-field">Command (stdio)<input id="mcpCfgCommand" autocomplete="off" placeholder="npx -y @modelcontextprotocol/server-filesystem ."></label>
+          <label class="inline-field">URL (http)<input id="mcpCfgUrl" autocomplete="off" placeholder="https://example.com/mcp"></label>
+          <label class="inline-field">Args (comma-separated, optional)<input id="mcpCfgArgs" autocomplete="off" placeholder="/path/to/dir, --flag"></label>
+          <p id="mcpCfgStatus" class="muted"></p>
+          <div class="settings-action-row"><button type="button" id="mcpCfgAdd" class="primary">Add server</button></div>
+        </div>
+        <div class="settings-group">
+          <h2>Configured servers</h2>
+          <div id="mcpServersList" class="settings-card-list"></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="browser">
@@ -1967,17 +2900,6 @@ export function createActoviqGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="worktree">
         <h1>Worktrees</h1>
         <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
-      </section>
-      <section class="settings-panel" data-settings-panel="bridge">
-        <h1>Bridge runtimes</h1>
-        <p>Spawn a locally installed agent CLI (claude / pi / codex) directly instead of the in-process Hadamard SDK. Each provider is auto-detected on PATH; you can also set explicit paths and pick a default.</p>
-        <div class="settings-group" id="bridgeDetected"><button type="button" id="settingsBridgeDetectBtn" class="secondary-btn">Detect runtimes</button></div>
-        <div class="settings-group">
-          <label>Default provider<select id="settingsBridgeDefault"><option value="">claude</option></select></label>
-          <label>Claude Code path<input id="settingsBridgeClaudePath" placeholder="auto-detected on PATH" autocomplete="off"></label>
-          <label>pi path<input id="settingsBridgePiPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
-          <label>codex path<input id="settingsBridgeCodexPath" placeholder="auto-detected on PATH" autocomplete="off"></label>
-        </div>
       </section>
       <div class="settings-savebar">
         <span id="settingsStatus" class="muted"></span>
@@ -2022,7 +2944,7 @@ button { cursor: pointer; }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
 .brand-name { font-weight: 650; font-size: 15px; letter-spacing: .2px; color: #2f3337; }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
-.nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn, .command-chip {
+.nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn {
   min-height: 34px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -2032,7 +2954,7 @@ button { cursor: pointer; }
 .nav-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0 10px; text-align: left; }
 .nav-icon, .folder-icon, .chevron, .settings-icon, .mini-icon { width: 22px; height: 22px; display: inline-grid; place-items: center; flex: 0 0 22px; color: #4e5358; }
 .nav-icon .ui-icon, .folder-icon .ui-icon, .chevron .ui-icon, .settings-icon .ui-icon, .mini-icon .ui-icon { width: 18px; height: 18px; }
-.nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover, .command-chip:hover { background: rgba(0,0,0,.055); }
+.nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover { background: rgba(0,0,0,.055); }
 .search { display: grid; gap: 6px; color: #777b80; font-size: 13px; }
 .search input, .settings-search input {
   width: 100%;
@@ -2094,13 +3016,29 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .message.assistant { max-width: 840px; }
 .message.assistant a { color: #2f5fa8; }
 .message.assistant .md-h { margin: 14px 0 8px; line-height: 1.3; }
+.message.assistant p.md-p { margin: 0 0 12px; }
 .message.assistant ul.md-ul { margin: 8px 0; padding-left: 22px; }
-.message.assistant ul.md-ul li { margin: 2px 0; }
+.message.assistant ol.md-ol { margin: 8px 0; padding-left: 24px; }
+.message.assistant ul.md-ul li, .message.assistant ol.md-ol li { margin: 3px 0; }
+.message.assistant li.md-task { list-style: none; margin-left: -20px; }
+.message.assistant li.md-task input[type="checkbox"] { margin-right: 7px; accent-color: #4a90f7; }
+.message.assistant li.md-task-done { color: #9aa0a6; }
+.message.assistant li.md-task-done > :not(input) { text-decoration: line-through; }
+.message.assistant blockquote.md-quote { margin: 8px 0; padding: 4px 14px; border-left: 3px solid #d8d8d8; color: #5f6368; }
+.message.assistant hr.md-hr { border: 0; border-top: 1px solid #e2e2e2; margin: 16px 0; }
+.message.assistant del { color: #9aa0a6; }
+.message.assistant .md-table { border-collapse: collapse; margin: 10px 0; font-size: 13.5px; display: block; overflow-x: auto; }
+.message.assistant .md-table th, .message.assistant .md-table td { border: 1px solid #e2e2e2; padding: 6px 11px; text-align: left; }
+.message.assistant .md-table th { background: #f6f7f8; font-weight: 600; }
+.message.assistant .md-table tr:nth-child(even) td { background: #fafbfc; }
+.message.assistant .md-table :is(th, td) :where(.inline-code) { background: #eef0f1; }
 .message.assistant .inline-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; background: #f1f2f3; padding: 1px 5px; border-radius: 5px; }
 .code-block { position: relative; margin: 10px 0; padding: 12px; background: #1f2330; color: #e6e9ef; border-radius: 8px; overflow: auto; }
 .code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; white-space: pre; }
 .copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.08); color: #e6e9ef; padding: 0 8px; font-size: 12px; }
 .copy-btn:hover { background: rgba(255,255,255,.16); }
+.code-lang { position: absolute; top: 6px; left: 12px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; color: rgba(230,233,239,.5); letter-spacing: .04em; }
+.code-block:has(.code-lang) code { margin-top: 6px; display: block; }
 .message.notice, .message.tool, .message.error { max-width: 840px; color: #5f6368; border-left: 3px solid #d8d8d8; padding-left: 12px; font-size: 14px; }
 .message.error { border-left-color: #c7392f; color: #8c1d18; }
 .message.tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
@@ -2115,6 +3053,11 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .tool-card.error .tool-spinner { background: #c7392f; }
 .tool-card.error .tool-spinner::before { content: "x"; }
 .tool-card pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #4d5359; background: #fff; }
+.tool-toggle { margin-left: auto; flex: 0 0 auto; background: transparent; border: 0; cursor: pointer; padding: 4px; color: #85888d; display: inline-grid; place-items: center; border-radius: 4px; }
+.tool-toggle:hover { background: rgba(0,0,0,.06); color: #4c5055; }
+.tool-card.collapsed .tool-body { display: none; }
+.tool-card.collapsed .tool-toggle svg { transform: rotate(-90deg); }
+.tool-toggle svg { transition: transform .15s ease; }
 .tool-card.running::after { content: ""; display: block; height: 2px; background: linear-gradient(90deg, transparent, #4b93f7, transparent); animation: sweep 1.15s infinite; }
 .tool-card.error { border-color: #e5b7b2; }
 .tool-card.success { border-color: #cfe6d8; }
@@ -2148,7 +3091,6 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .composer-left, .composer-right { display: flex; align-items: center; gap: 8px; }
 .round-btn, .send-btn { width: 34px; height: 34px; border-radius: 50%; display: inline-grid; place-items: center; }
 .round-btn { background: transparent; border: 1px solid #d8d8d8; color: #4c5055; }
-.command-chip { border-color: #d8d8d8; padding: 0 10px; color: #4c5055; }
 .send-btn { border: 0; background: #202124; color: #fff; }
 .send-btn.stopping { background: #c7392f; }
 .context-menu { position: fixed; z-index: 40; min-width: 168px; background: #fff; border: 1px solid #d8d8d8; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.18); padding: 4px; display: grid; gap: 2px; }
@@ -2222,7 +3164,7 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .inline-field { margin-top: 14px; max-width: 320px; }
 .inline-field.wide { max-width: 520px; }
 .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 0 10px; background: #fff; color: #202124; }
+.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select, .bridge-model-row input, .bridge-model-row select { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 0 10px; background: #fff; color: #202124; }
 .check-row { display: flex !important; align-items: center; gap: 10px; color: #2f3337 !important; }
 .shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 38px; }
 kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; padding: 2px 7px; background: #fafafa; }
@@ -2259,6 +3201,13 @@ body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-t
 body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
 body[data-theme="dark"] .settings-card { background: #1f2023; }
 body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
+body[data-theme="dark"] .message.assistant blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
+body[data-theme="dark"] .message.assistant hr.md-hr { border-top-color: #3b3d43; }
+body[data-theme="dark"] .message.assistant .md-table th, body[data-theme="dark"] .message.assistant .md-table td { border-color: #3b3d43; }
+body[data-theme="dark"] .message.assistant .md-table th { background: #26272b; }
+body[data-theme="dark"] .message.assistant .md-table tr:nth-child(even) td { background: #232529; }
+body[data-theme="dark"] .message.assistant del, body[data-theme="dark"] .message.assistant li.md-task-done { color: #6f7479; }
+body[data-theme="dark"] .message.assistant .md-table :is(th, td) :where(.inline-code) { background: #303238; }
 body[data-theme="dark"] .message.assistant a { color: #8ab4f8; }
 body[data-theme="dark"] .brand-name { color: #e8eaed; }
 body[data-theme="dark"] .context-menu { background: #26272b; border-color: #3b3d43; }
@@ -2285,12 +3234,86 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
   .settings-main { padding: 48px 22px 110px; }
+}
+.context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid #f0f0f0; font-size: 12.5px; color: #5f6368; }
+.context-bar.hidden { display: none; }
+.context-bar > span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #e2e5e8; border-radius: 999px; padding: 2px 10px; background: #fafbfc; white-space: nowrap; max-width: 50vw; overflow: hidden; text-overflow: ellipsis; }
+.ctx-goal { border-color: #cfe6d8; background: #f1f8f3; color: #1f6b3b; }
+.ctx-paused { color: #8a6d1b; border-color: #ecdfb8; background: #fbf6e6; }
+.ctx-complete { color: #5f6368; }
+.ctx-bridge { border-color: #cfd9ef; background: #f1f6fe; color: #2f5fa8; }
+.ctx-plan { border-color: #ead9ef; background: #f8f1fb; color: #6b2f7a; }
+.ctx-usage { border-color: #e2e5e8; color: #5f6368; }
+.todos-panel { margin: 0 max(22px, 12vw); padding: 8px 0 0; }
+.todos-panel.hidden { display: none; }
+.todos-panel > summary { cursor: pointer; font-size: 13px; color: #5f6368; user-select: none; }
+#todosList { margin: 6px 0 0; padding-left: 20px; max-height: 220px; overflow: auto; }
+#todosList li { font-size: 13px; line-height: 1.55; color: #4d5359; }
+#todosList li.todo-completed { color: #9aa0a6; text-decoration: line-through; }
+#todosList li.todo-in_progress { font-weight: 500; color: #2f5fa8; }
+.permission-actions { flex-wrap: wrap; justify-content: flex-end; }
+.permission-actions .danger { color: #c7392f; }
+.model-picker-wrapper { display: inline-flex; }
+.model-picker-btn { min-height: 34px; border: 1px solid #dddddd; border-radius: 8px; background: #fff; color: #202124; padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
+.model-picker-btn:hover { background: #f5f5f5; }
+.model-picker-menu { position: absolute; right: 0; bottom: calc(100% + 6px); background: #fff; border: 1px solid #d8d8d8; border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.14); z-index: 15; max-height: 380px; overflow: hidden; }
+.model-picker-menu.hidden { display: none; }
+.picker-cols { display: flex; flex-direction: row-reverse; align-items: flex-start; }
+.picker-col { min-width: 168px; max-height: 360px; overflow-y: auto; padding: 4px; }
+.picker-col + .picker-col { border-right: 1px solid #d4d7db; }
+.picker-col-hidden { display: none; }
+.picker-item { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; font: inherit; font-size: 13px; color: #2f3337; cursor: pointer; text-align: left; }
+.picker-item:hover, .picker-item.hover { background: #f1f3f4; }
+.picker-item.selected { background: #e9f2fe; color: #1a56c4; }
+.picker-check { flex: 0 0 14px; width: 14px; color: #1a56c4; font-weight: 700; text-align: center; }
+.picker-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-item-hint { font-size: 11px; color: #85888d; flex-shrink: 0; }
+.picker-item-tags { font-size: 10px; color: #85888d; background: #f1f3f4; border-radius: 3px; padding: 0 5px; flex-shrink: 0; }
+.picker-arrow { font-size: 10px; color: #b4b8bd; flex-shrink: 0; width: 12px; text-align: center; }
+.picker-placeholder { padding: 10px 12px; font-size: 12px; color: #b4b8bd; text-align: center; white-space: nowrap; }
+body[data-theme="dark"] .model-picker-btn { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
+body[data-theme="dark"] .model-picker-menu { background: #26272b; border-color: #3b3d43; }
+body[data-theme="dark"] .picker-col + .picker-col { border-right-color: #3b3d43; }
+body[data-theme="dark"] .picker-item { color: #e8eaed; }
+body[data-theme="dark"] .picker-item:hover, body[data-theme="dark"] .picker-item.hover { background: #33363c; }
+body[data-theme="dark"] .picker-item.selected { background: #1f2b3a; color: #8ab4f8; }
+body[data-theme="dark"] .picker-item-tags { background: #33363c; }
+.settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.settings-group-head h2 { margin: 0; }
+.bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
+.api-key-row { display: flex; align-items: center; gap: 6px; }
+.api-key-row input { flex: 1; }
+.bridge-models-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #ececec; }
+.bridge-models-section h3 { margin: 0 0 4px; font-size: 15px; }
+.bridge-models-section .muted { margin: 0 0 10px; font-size: 12px; }
+.bridge-model-row { display: flex; flex-direction: column; gap: 8px; }
+.bridge-model-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bridge-model-controls > .check-row { flex: 0 0 auto; }
+.bridge-model-controls > select { flex: 0 0 130px; }
+.bridge-model-controls > button { flex: 0 0 auto; }
+body[data-theme="dark"] .bridge-models-section { border-top-color: #3b3d43; }
+body[data-theme="dark"] .context-bar, body[data-theme="dark"] .todos-panel { border-color: #3b3d43; }
+body[data-theme="dark"] .context-bar > span { background: #26272b; border-color: #3b3d43; color: #c7ccd3; }
+body[data-theme="dark"] .ctx-goal { background: #1e2b22; border-color: #2f4a37; color: #8dd9a8; }
+body[data-theme="dark"] .ctx-bridge { background: #1f2b3a; border-color: #2f4a6b; color: #8ab4f8; }
+body[data-theme="dark"] .ctx-plan { background: #2b1f30; border-color: #4a2f5a; color: #d7a8e6; }
+body[data-theme="dark"] #todosList li { color: #c7ccd3; }
+body[data-theme="dark"] #todosList li.todo-completed { color: #6f7479; }
 }`;
 }
 
 export function createActoviqGuiClientScript(): string {
   return `
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
+// Client-side icon helper (eye/eyeOff only — the rest are server-rendered).
+const _ICONS = {
+  eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
+};
+function guiIcon(name) {
+  const body = _ICONS[name] || '';
+  return \`<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">\${body}</svg>\`;
+}
 function api(path, options = {}) {
   const headers = Object.assign({}, options.headers || {}, { 'x-actoviq-token': ACTOVIQ_TOKEN });
   return fetch(path, Object.assign({}, options, { headers }));
@@ -2457,12 +3480,27 @@ function addToolActivity(event) {
   status.textContent = 'Calling tool';
   labels.append(title, status);
   header.append(spinner, labels);
+  // Collapsible body: a toggle button (chevron) + the pre with input/output.
+  // While running the body shows; once complete it collapses (user can expand).
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'tool-toggle';
+  toggle.title = 'Show / hide details';
+  toggle.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  const body = document.createElement('div');
+  body.className = 'tool-body';
   const pre = document.createElement('pre');
   pre.textContent = summarizeToolInput(event.input);
   if (!pre.textContent) pre.classList.add('hidden');
-  card.append(header, pre);
+  body.append(pre);
+  toggle.addEventListener('click', () => {
+    const collapsed = card.classList.toggle('collapsed');
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  });
+  header.append(spinner, labels, toggle);
+  card.append(header, body);
   transcript.appendChild(card);
-  state.toolNodes.set(id, { card, status, pre });
+  state.toolNodes.set(id, { card, status, pre, body, toggle });
   setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
   scrollTranscript();
 }
@@ -2490,6 +3528,10 @@ function updateToolActivity(event) {
     node.pre.classList.remove('hidden');
     node.pre.textContent = output.length > 1400 ? output.slice(0, 1400) + '\\n...' : output;
   }
+  // Collapse the body once the tool finishes so the transcript stays compact;
+  // the toggle button (chevron) lets the user expand it again.
+  node.card.classList.add('collapsed');
+  node.toggle.setAttribute('aria-expanded', 'false');
   setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? '' : 'error');
   scrollTranscript();
 }
@@ -2630,7 +3672,6 @@ function renderSettingsCommandPanels() {
   el('settingsSessionSummary').textContent = describeParts([
     'Current: ' + (session.title || session.id || 'new chat'),
     (snapshot.sessions || []).length + ' visible chats',
-    (snapshot.hiddenEmptySessionCount || 0) + ' empty hidden',
   ]);
   renderSettingsCardList('settingsSessionsList', snapshot.sessions || [], (root, item) => {
     addSettingsCard(root, item.title || item.id, describeParts([item.model, item.status, (item.messageCount || 0) + ' messages']), item.id, [
@@ -2659,6 +3700,7 @@ function renderProjects() {
       const cx = event.clientX;
       const cy = event.clientY;
       showContextMenu(cx, cy, [
+        { label: 'Archive chat', onClick: () => archiveChat(item.id) },
         { label: 'Delete chat', danger: true, onClick: () => dangerConfirmMenu(cx, cy, 'Confirm delete chat', () => deleteChat(item.id)) },
       ]);
     });
@@ -2682,11 +3724,9 @@ function renderProjects() {
     chats.appendChild(empty);
   }
   root.appendChild(chats);
-  const hidden = state.snapshot?.hiddenEmptySessionCount || 0;
   const active = projects.find(project => project.active);
   const activeChats = active?.sessionCount ?? visibleSessions.filter(item => item.messageCount > 0).length;
-  el('workspaceMeta').textContent = activeChats + ' chats here' + (hidden > 0 ? ' - ' + hidden + ' empty hidden' : '');
-  el('cleanupSessionsBtn').textContent = hidden > 0 ? 'Clean ' + hidden + ' empty chats' : 'Clean empty chats';
+  el('workspaceMeta').textContent = activeChats + ' chats here';
 }
 function renderWorkspaceChoices() {
   const root = el('workspaceChoices');
@@ -2781,11 +3821,310 @@ async function loadState() {
   state.running = Boolean(state.snapshot.running);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
-  el('effortSelect').value = state.snapshot.effort || 'auto';
   renderProjects();
+  renderStatusExtras();
   if (state.activeSurface) renderSurface(state.activeSurface);
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+}
+function renderStatusExtras() {
+  const snap = state.snapshot || {};
+  const bar = el('contextBar');
+  bar.textContent = '';
+  const addBadge = (cls, text, title) => {
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = text;
+    if (title) span.title = title;
+    bar.appendChild(span);
+  };
+  const goal = snap.goal;
+  if (goal && goal.objective) {
+    const mark = goal.status === 'active' ? '▶' : goal.status === 'paused' ? '‖' : '✓';
+    addBadge('ctx-goal ctx-' + (goal.status || 'active'), mark + ' ' + goal.objective, 'Goal: ' + goal.objective + ' (' + goal.status + ')');
+  }
+  const bs = snap.bridgeState || {};
+  if (bs.mode && bs.activeConfig) addBadge('ctx-bridge', '⇄ ' + bs.activeConfig.name, 'Bridge active: ' + bs.activeConfig.name);
+  if (snap.planMode) addBadge('ctx-plan', '◐ plan', 'Plan mode on — mutating tools blocked');
+  const usage = snap.usage || {};
+  const totalTok = Number(usage.inputTokens || 0) + Number(usage.outputTokens || 0);
+  if (totalTok > 0) {
+    const cost = usage.costUsd == null ? '' : ' · $' + Number(usage.costUsd).toFixed(4);
+    addBadge('ctx-usage', totalTok.toLocaleString() + ' tok' + cost, 'Session usage (/cost for detail)');
+  }
+  bar.classList.toggle('hidden', bar.children.length === 0);
+  const todos = snap.todos || [];
+  const panel = el('todosPanel');
+  if (todos.length === 0) {
+    panel.classList.add('hidden');
+  } else {
+    panel.classList.remove('hidden');
+    const done = todos.filter(t => t.status === 'completed').length;
+    el('todosSummary').textContent = 'Todos (' + done + '/' + todos.length + ')';
+    const list = el('todosList');
+    list.textContent = '';
+    for (const t of todos) {
+      const li = document.createElement('li');
+      li.className = 'todo-' + (t.status || 'pending');
+      li.textContent = (t.status === 'completed' ? '✓ ' : t.status === 'in_progress' ? '▶ ' : '○ ') + (t.activeForm || t.subject || '');
+      list.appendChild(li);
+    }
+  }
+  const outStyleSel = el('settingsOutputStyle');
+  if (outStyleSel) outStyleSel.value = snap.outputStyle || 'default';
+  renderModelPicker();
+}
+// ── Cascading 3-level model picker ────────────────────────────────────────
+// Level 1: providers (Default + each bridge config)
+// Level 2: models (appears to the right on provider hover)
+// Level 3: effort (appears to the right on model hover)
+// Clicking an effort (or model for default effort) finalises the selection.
+
+const PICKER_EFFORTS = ['low','medium','high','max'];
+
+function updatePickerBtn() {
+  const btn = el('modelPickerBtn');
+  const bs = (state.snapshot?.bridgeState) || {};
+  const activeConfig = bs.activeConfig;
+  if (activeConfig) {
+    const mLabel = activeConfig.model || '(default)';
+    btn.textContent = mLabel + ' ▾';
+    btn.title = activeConfig.name + ' · ' + mLabel;
+  } else {
+    // No active config: show the first config's model as a hint (not yet activated),
+    // or leave blank when no configs exist.
+    const first = (bs.configs || [])[0];
+    if (first) {
+      const mLabel = first.model || '(default)';
+      btn.textContent = mLabel + ' ▾';
+      btn.title = first.name + ' · ' + mLabel + ' (not active)';
+    } else {
+      btn.textContent = '';
+      btn.title = 'Add a provider config in Settings';
+    }
+  }
+}
+
+function makePickerCheck() {
+  const c = document.createElement('span');
+  c.className = 'picker-check';
+  c.textContent = '✓';
+  return c;
+}
+
+function clearPickerCol(n) {
+  const col = el('pickerCol' + n);
+  if (!col) return;
+  col.textContent = '';
+  col.classList.add('picker-col-hidden');
+  if (n === 2) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a provider'; col.appendChild(ph); }
+  if (n === 3) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a model'; col.appendChild(ph); }
+}
+
+function renderPickerCol2(cfg, models, activeConfig) {
+  const col2 = el('pickerCol2');
+  if (!col2) return;
+  col2.textContent = '';
+  col2.classList.remove('picker-col-hidden');
+
+  for (const m of models) {
+    const item = document.createElement('button');
+    item.className = 'picker-item';
+    item.type = 'button';
+    const isActive = activeConfig?.name === cfg.name && (!activeConfig.model || activeConfig.model === m.name);
+
+    const arrow = document.createElement('span');
+    arrow.className = 'picker-arrow';
+    arrow.textContent = '◀';
+    item.appendChild(arrow);
+
+    if (isActive) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
+
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = m.name;
+    item.appendChild(label);
+
+    const tags = [m.context1M ? '1M' : '', m.modality === 'multimodal' ? 'Vision' : ''].filter(Boolean);
+    if (tags.length) {
+      const tagSpan = document.createElement('span');
+      tagSpan.className = 'picker-item-tags';
+      tagSpan.textContent = tags.join(' · ');
+      item.appendChild(tagSpan);
+    }
+
+    const expandModel = () => {
+      col2.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
+      item.classList.add('hover');
+      renderPickerCol3(cfg.name, m.name);
+    };
+    // Hover OR click reveals the effort list; the final selection happens by
+    // clicking an effort (auto/low/medium/high/max). Clicking the model does
+    // not pre-select — it opens the effort column.
+    item.addEventListener('mouseenter', expandModel);
+    item.addEventListener('click', expandModel);
+
+    col2.appendChild(item);
+  }
+}
+
+function renderPickerCol3(configName, modelName) {
+  const col3 = el('pickerCol3');
+  if (!col3) return;
+  col3.textContent = '';
+  col3.classList.remove('picker-col-hidden');
+
+  // Mark the active effort only when this row's model is the one actually
+  // running, so browsing a non-active model's efforts doesn't show a stale
+  // checkmark.
+  const ac = state.snapshot?.bridgeState?.activeConfig;
+  const modelIsActive = !!ac && ac.name === configName && (!ac.model || ac.model === modelName);
+  const curEffort = (state.snapshot?.effort) || 'auto';
+
+  for (const e of PICKER_EFFORTS) {
+    const item = document.createElement('button');
+    item.className = 'picker-item';
+    item.type = 'button';
+    if (modelIsActive && e === curEffort) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = e;
+    item.appendChild(label);
+    item.addEventListener('click', (ev) => { ev.stopPropagation(); selectPickerModel(configName, modelName, e); });
+    col3.appendChild(item);
+  }
+}
+
+function renderModelPicker() {
+  const items = el('modelPickerItems');
+  items.textContent = '';
+  const snap = state.snapshot;
+  if (!snap) return;
+  const bs = snap.bridgeState || {};
+  const configs = bs.configs || [];
+  const activeConfig = bs.activeConfig;
+
+  const cols = document.createElement('div');
+  cols.className = 'picker-cols';
+
+  // ── Column 1: Providers ──────────────────────────────────────────
+  const col1 = document.createElement('div');
+  col1.className = 'picker-col';
+  if (configs.length === 0) {
+    const ph = document.createElement('div');
+    ph.className = 'picker-placeholder';
+    ph.textContent = 'No configs — add one in Settings';
+    col1.appendChild(ph);
+  }
+
+  for (const cfg of configs) {
+    const provItem = document.createElement('button');
+    provItem.className = 'picker-item';
+    provItem.type = 'button';
+    const isActive = activeConfig?.name === cfg.name;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'picker-arrow';
+    arrow.textContent = '◀';
+    provItem.appendChild(arrow);
+
+    if (isActive) { provItem.classList.add('selected'); provItem.appendChild(makePickerCheck()); }
+
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = cfg.name;
+    provItem.appendChild(label);
+
+    const hint = document.createElement('span');
+    hint.className = 'picker-item-hint';
+    hint.textContent = cfg.runtime;
+    provItem.appendChild(hint);
+
+    const models = Array.isArray(cfg.models) && cfg.models.length > 0
+      ? cfg.models
+      : [{ name: cfg.model || '(default)', modality: 'text' }];
+
+    const expandProvider = () => {
+      col1.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
+      provItem.classList.add('hover');
+      renderPickerCol2(cfg, models, activeConfig);
+      clearPickerCol(3);
+    };
+    provItem.addEventListener('mouseenter', expandProvider);
+
+    // Click expands the model list (same as hover) so clickers aren't left
+    // with a dead row; providers with no registered models activate directly.
+    provItem.addEventListener('click', () => {
+      if (Array.isArray(cfg.models) && cfg.models.length > 0) expandProvider();
+      else selectPickerModel(cfg.name, cfg.model || null, 'medium');
+    });
+
+    col1.appendChild(provItem);
+  }
+
+  // ── Column 2: Models (filled on provider hover) ──────────────────
+  const col2 = document.createElement('div');
+  col2.className = 'picker-col picker-col-hidden';
+  col2.id = 'pickerCol2';
+  const ph2 = document.createElement('div');
+  ph2.className = 'picker-placeholder';
+  ph2.textContent = 'Hover a provider';
+  col2.appendChild(ph2);
+
+  // ── Column 3: Efforts (filled on model hover) ────────────────────
+  const col3 = document.createElement('div');
+  col3.className = 'picker-col picker-col-hidden';
+  col3.id = 'pickerCol3';
+  const ph3 = document.createElement('div');
+  ph3.className = 'picker-placeholder';
+  ph3.textContent = 'Hover a model';
+  col3.appendChild(ph3);
+
+  cols.appendChild(col1);
+  cols.appendChild(col2);
+  cols.appendChild(col3);
+  items.appendChild(cols);
+
+  updatePickerBtn();
+}
+
+async function selectPickerModel(configName, modelName, effort) {
+  if (!configName) {
+    // Default: disable bridge
+    const res = await api('/api/bridge/off', { method: 'POST' });
+    if (res.ok) { state.snapshot = await res.json(); }
+  } else {
+    // Update the config's selected model if different from stored. Send the
+    // full config (provider/baseURL/models preserved) so the server's merge
+    // doesn't drop those fields — only apiKey is omitted (blank → preserved).
+    const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
+    if (cfg && cfg.model !== modelName) {
+      const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({
+        name: configName,
+        runtime: cfg.runtime || 'claude',
+        provider: cfg.provider,
+        baseURL: cfg.baseURL || '',
+        model: modelName || '',
+        models: Array.isArray(cfg.models) ? cfg.models : [],
+      }) });
+      if (res.ok) { state.snapshot = await res.json(); }
+    }
+    const actRes = await api('/api/bridge/activate', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName }) });
+    if (actRes.ok) { state.snapshot = await actRes.json(); }
+  }
+  if (effort && effort !== 'auto') { submitText('/effort ' + effort); }
+  else { loadState().catch(console.error); }
+  el('modelPickerMenu').classList.add('hidden');
+}
+
+function toggleModelPicker() {
+  const menu = el('modelPickerMenu');
+  if (menu.classList.contains('hidden')) {
+    renderModelPicker();
+    menu.classList.remove('hidden');
+  } else {
+    menu.classList.add('hidden');
+  }
 }
 async function resumeSession(id) {
   await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -2828,14 +4167,6 @@ async function submitWorkspace(event) {
   el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
   if (ok) closeWorkspaceDialog();
 }
-async function cleanupSessions() {
-  const res = await api('/api/sessions/cleanup', { method: 'POST' });
-  if (!res.ok) { flashStatus('Could not clean empty chats'); return; }
-  const payload = await res.json();
-  state.snapshot = payload.state;
-  await loadState();
-  flashStatus(payload.deleted > 0 ? 'Cleaned ' + payload.deleted + ' empty chat' + (payload.deleted === 1 ? '' : 's') : 'No empty chats to clean');
-}
 async function createNewSession() {
   await api('/api/session/new', { method: 'POST' });
   transcript.textContent = '';
@@ -2848,7 +4179,7 @@ async function openLocation() {
   if (!res.ok) addMessage('error', await res.text());
 }
 function commandNeedsSpace(name) {
-  return ['model','effort','permissions','resume','dream','workflows','worktree','team'].includes(name);
+  return ['model','effort','permissions','resume','dream','workflows','worktree','team','goal','batch','plan','output-style','rewind','export','review','bridge'].includes(name);
 }
 function slashMatches() {
   const value = input.value.trim();
@@ -3024,7 +4355,7 @@ function surfaceData(kind) {
   };
   if (kind === 'sessions') return {
     title: 'Chats',
-    subtitle: (snapshot.hiddenEmptySessionCount || 0) + ' empty chats hidden',
+    subtitle: 'Browse and resume sessions',
     items: snapshot.sessions || [],
   };
   if (kind === 'workflows') return { title: 'Workflows', subtitle: 'Run saved workflow scripts', items: snapshot.workflows || [] };
@@ -3065,9 +4396,6 @@ function renderSurface(kind) {
   el('surfaceList').textContent = '';
   if (kind === 'projects') {
     addSurfaceAction('Add workspace', addWorkspace);
-  }
-  if (kind === 'sessions') {
-    addSurfaceAction('Clean empty chats', cleanupSessions);
   }
   if (kind === 'teams') {
     addSurfaceAction('No team', () => submitText('/team off'));
@@ -3257,6 +4585,71 @@ async function deleteChat(id) {
   }
   flashStatus('Chat deleted');
 }
+async function archiveChat(id) {
+  const wasActive = state.snapshot?.session?.id === id;
+  const res = await api('/api/session/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!res.ok) { flashStatus('Could not archive chat'); return; }
+  await loadState();
+  if (wasActive) {
+    transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    await hydrateTranscript();
+  }
+  flashStatus('Chat archived — restore from Settings → Chats → Archived');
+}
+async function unarchiveChat(id) {
+  const res = await api('/api/session/unarchive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  if (!res.ok) { flashStatus('Could not restore chat'); return; }
+  await loadState();
+  renderArchived();
+  flashStatus('Chat restored');
+}
+async function loadArchived() {
+  try {
+    const res = await api('/api/sessions/archived');
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data && data.sessions) || [];
+  } catch { return []; }
+}
+async function renderArchived() {
+  const root = el('settingsArchivedList');
+  if (!root || root.closest('.settings-panel.active') !== root.closest('[data-settings-panel="sessions"]')) return;
+  const sessions = await loadArchived();
+  root.textContent = '';
+  if (sessions.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No archived chats.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const item of sessions) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = item.title || item.id;
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    p.textContent = [item.model, (item.messageCount || 0) + ' messages', item.workDir].filter(Boolean).join(' · ');
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.textContent = 'Restore';
+    restore.addEventListener('click', () => unarchiveChat(item.id));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => {
+      if (confirm('Permanently delete this archived chat?')) deleteChat(item.id).then(renderArchived);
+    });
+    footer.append(restore, del);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
 async function forgetWorkspace(projectPath) {
   const res = await api('/api/project/forget', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
   if (!res.ok) { flashStatus('Could not forget workspace'); return; }
@@ -3313,9 +4706,16 @@ function handleEvent(event) {
   else if (event.type === 'command.result') addResult(event);
   else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; }
   else if (event.type === 'permission.request') showPermission(event);
-  else if (event.type === 'settings.open') void openSettings('env').catch(console.error);
+  else if (event.type === 'agent.prompt') { if (event.text) { state.queue.push(String(event.text)); renderQueue(); } }
+  else if (event.type === 'batch.queue') {
+    const prompts = Array.isArray(event.prompts) ? event.prompts : [];
+    prompts.forEach(p => state.queue.push(String(p || '')));
+    renderQueue();
+    addMessage('notice', 'batch: queued ' + prompts.length + ' prompts — running in sequence');
+  }
+  else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
-  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); }
+  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
 }
 function showPermission(event) {
@@ -3336,29 +4736,244 @@ function showNextPermission() {
 }
 function setField(id, value) { el(id).value = value == null ? '' : String(value); }
 function setChecked(id, value) { el(id).checked = Boolean(value); }
-async function refreshBridgeDetect() {
-  const el = document.getElementById('bridgeDetected');
-  if (!el) return;
-  el.innerHTML = '<span class="muted">Detecting...</span>';
-  try {
-    const res = await api('/api/bridge/detect');
-    const data = await res.json();
-    const providers = data.providers || [];
-    let html = '';
-    for (const p of providers) {
-      const mark = p.available ? '✔' : '✘';
-      const ver = p.version ? ' v' + p.version : '';
-      const path = p.path ? ' · ' + p.path : '';
-      html += \`<p class="bridge-provider"><strong>\${p.id}</strong> \${mark}\${ver}\${path}</p>\`;
-    }
-    el.innerHTML = html || '<p class="muted">No providers detected.</p>';
-  } catch { el.innerHTML = '<p class="muted">Detection failed.</p>'; }
+function renderBridgeConfigs() {
+  const bs = (state.snapshot && state.snapshot.bridgeState) || {};
+  const active = bs.activeConfig;
+  const configs = bs.configs || [];
+  el('bridgeActive').innerHTML = active
+    ? (active.runtime === 'hadamard'
+      ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`
+      : \`<strong>\${active.name}</strong> · \${active.runtime} · \${active.model || '(default model)'} · key \${active.apiKeyMasked}\${active.baseURL ? ' · ' + active.baseURL : ''}\`)
+    : 'No active provider config — using the default provider.';
+  const root = el('bridgeConfigsList');
+  root.textContent = '';
+  if (configs.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No saved configs yet — add one above.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const cfg of configs) {
+    const isActive = active && active.name === cfg.name;
+    const card = document.createElement('article');
+    card.className = 'settings-card' + (isActive ? ' active' : '');
+    const strong = document.createElement('strong');
+    strong.textContent = cfg.name + (isActive ? ' ●' : '');
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    const modelCount = Array.isArray(cfg.models) ? cfg.models.length : 0;
+    const modelSummary = modelCount > 0
+      ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
+      : (cfg.model ? cfg.model : 'no models');
+    p.textContent = [cfg.runtime, modelSummary, cfg.runtime !== 'hadamard' ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => openBridgeEditor(cfg));
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.textContent = 'Remove';
+    delBtn.addEventListener('click', () => deleteBridgeConfig(cfg.name));
+    footer.append(editBtn, delBtn);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+
+// ── Per-config editor modal ───────────────────────────────────────────────
+let editingBridgeConfigName = null;
+// runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
+const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'openai', pi:'openai', codex:'openai', crush:'openai' };
+function toggleCredentialFields() {
+  const runtime = el('bridgeCfgRuntime').value;
+  const isHadamard = runtime === 'hadamard';
+  const fields = el('bridgeCredentialFields');
+  if (fields) fields.style.display = isHadamard ? 'none' : '';
+  // Auto-select wire protocol from runtime (user can override).
+  const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
+  el('bridgeCfgProvider').value = pv;
+}
+function openBridgeEditor(cfg) {
+  editingBridgeConfigName = cfg ? cfg.name : null;
+  el('bridgeEditorTitle').textContent = cfg ? 'Edit config' : 'New config';
+  setField('bridgeCfgName', cfg ? cfg.name : '');
+  setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
+  setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
+  setField('bridgeCfgApiKey', cfg ? (cfg.apiKey || '') : '');
+  // Editing an existing config: show the saved key in plain text (with the eye
+  // toggle starting visible) so the user can read and copy it directly. New
+  // configs start masked with the eye-closed default.
+  el('bridgeCfgApiKey').type = cfg && cfg.apiKey ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = (cfg && cfg.apiKey) ? guiIcon('eyeOff') : guiIcon('eye');
+  el('bridgeCfgApiKey').placeholder = cfg && cfg.apiKey ? 'API key (visible — edit to replace)' : 'sk-…';
+  setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
+  el('bridgeCfgClearKey').checked = false;
+  el('bridgeClearKeyRow').style.display = cfg ? '' : 'none';
+  toggleCredentialFields();
+  draftBridgeModels = cfg && Array.isArray(cfg.models)
+    ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
+    : [];
+  renderBridgeModels();
+  el('bridgeNewModelName').value = '';
+  el('bridgeNewModel1M').checked = false;
+  el('bridgeNewModelModality').value = 'text';
+  el('bridgeCfgStatus').textContent = cfg ? 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.' : '';
+  el('bridgeEditorModal').classList.remove('hidden');
+  el('bridgeCfgName').focus();
+}
+function closeBridgeEditor() {
+  el('bridgeEditorModal').classList.add('hidden');
+  editingBridgeConfigName = null;
+}
+let draftBridgeModels = [];
+function renderBridgeModels() {
+  const root = el('bridgeModelsList');
+  root.textContent = '';
+  if (draftBridgeModels.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'No models added yet.';
+    root.appendChild(p);
+    return;
+  }
+  for (const [index, m] of draftBridgeModels.entries()) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    card.style.cssText = 'display:flex;align-items:center;gap:10px;justify-content:space-between;padding:8px 12px';
+    const info = document.createElement('span');
+    const tags = [m.name, m.context1M ? '1 M ctx' : '', m.modality === 'multimodal' ? 'Multimodal' : 'Text'].filter(Boolean);
+    info.textContent = tags.join(' · ');
+    card.appendChild(info);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => { draftBridgeModels.splice(index, 1); renderBridgeModels(); });
+    card.appendChild(del);
+    root.appendChild(card);
+  }
+}
+function addBridgeModel() {
+  const name = el('bridgeNewModelName').value.trim();
+  if (!name) return;
+  const model = {
+    name,
+    context1M: el('bridgeNewModel1M').checked,
+    modality: el('bridgeNewModelModality').value || 'text',
+  };
+  draftBridgeModels.push(model);
+  el('bridgeNewModelName').value = '';
+  el('bridgeNewModel1M').checked = false;
+  el('bridgeNewModelModality').value = 'text';
+  renderBridgeModels();
+}
+async function saveBridgeConfig() {
+  const name = el('bridgeCfgName').value.trim();
+  if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
+  const clearKey = el('bridgeCfgClearKey').checked;
+  // The first registered model is the config's default model. If models were
+  // added we prefer models[0]; otherwise keep any previously-selected model
+  // (carried in editingBridgeConfigName's stored config) so activation still
+  // has a target.
+  const defaultModel = draftBridgeModels.length > 0 ? draftBridgeModels[0].name : '';
+  const body = {
+    name,
+    runtime: el('bridgeCfgRuntime').value,
+    provider: el('bridgeCfgProvider').value || 'anthropic',
+    apiKey: el('bridgeCfgApiKey').value,
+    clearApiKey: clearKey,
+    baseURL: el('bridgeCfgBaseUrl').value.trim(),
+    model: defaultModel,
+    models: draftBridgeModels.length > 0 ? draftBridgeModels : undefined,
+  };
+  el('bridgeCfgStatus').textContent = 'Saving...';
+  const res = await api('/api/bridge/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { el('bridgeCfgStatus').textContent = 'Save failed: ' + (await res.text()); return; }
+  state.snapshot = await res.json();
+  closeBridgeEditor();
+  renderBridgeConfigs();
+}
+async function deleteBridgeConfig(name) {
+  const res = await api('/api/bridge/config/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Remove failed'); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+}
+async function activateBridgeConfig(name) {
+  const res = await api('/api/bridge/activate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Activation failed: ' + (await res.text())); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+  addMessage('notice', 'bridge active: ' + name);
+}
+async function disableBridge() {
+  const res = await api('/api/bridge/off', { method: 'POST' });
+  if (!res.ok) { addMessage('error', 'Disable failed'); return; }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+  addMessage('notice', 'bridge off — using default provider');
+}
+function renderMcpServers() {
+  const servers = (state.snapshot && state.snapshot.mcpServers) || [];
+  const root = el('mcpServersList');
+  root.textContent = '';
+  if (servers.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No MCP servers configured.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const s of servers) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = s.name + ' · ' + (s.url ? 'http' : 'stdio');
+    card.appendChild(strong);
+    const p = document.createElement('p');
+    p.textContent = s.command || s.url || '';
+    card.appendChild(p);
+    const footer = document.createElement('footer');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => removeMcpServerConfig(s.name));
+    footer.appendChild(del);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+async function addMcpServerConfig() {
+  const name = el('mcpCfgName').value.trim();
+  if (!name) { el('mcpCfgStatus').textContent = 'Name is required.'; return; }
+  const type = el('mcpCfgType').value;
+  const args = el('mcpCfgArgs').value.split(',').map(s => s.trim()).filter(Boolean);
+  const body = { name, args };
+  if (type === 'http') body.url = el('mcpCfgUrl').value.trim();
+  else body.command = el('mcpCfgCommand').value.trim();
+  el('mcpCfgStatus').textContent = 'Adding...';
+  const res = await api('/api/mcp/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { el('mcpCfgStatus').textContent = 'Add failed: ' + (await res.text()); return; }
+  state.snapshot = await res.json();
+  el('mcpCfgStatus').textContent = 'Added "' + name + '".';
+  ['mcpCfgName', 'mcpCfgCommand', 'mcpCfgUrl', 'mcpCfgArgs'].forEach(id => { el(id).value = ''; });
+  renderMcpServers();
+}
+async function removeMcpServerConfig(name) {
+  const res = await api('/api/mcp/remove', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) { addMessage('error', 'Remove failed'); return; }
+  state.snapshot = await res.json();
+  renderMcpServers();
 }
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
-  if (tab === 'bridge') refreshBridgeDetect().catch(() => undefined);
+  if (tab === 'models') renderBridgeConfigs();
+  if (tab === 'mcp') renderMcpServers();
+  if (tab === 'sessions') renderArchived();
 }
 async function openSettings(tab = 'general') {
   if (!state.snapshot) {
@@ -3388,11 +5003,8 @@ async function openSettings(tab = 'general') {
   setField('settingsDensity', preferences.density || 'comfortable');
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
-  const bridge = settings.bridge || {};
-  setField('settingsBridgeDefault', bridge.defaultProvider || '');
-  setField('settingsBridgeClaudePath', (bridge.providers?.claude?.path) || '');
-  setField('settingsBridgePiPath', (bridge.providers?.pi?.path) || '');
-  setField('settingsBridgeCodexPath', (bridge.providers?.codex?.path) || '');
+  renderBridgeConfigs();
+  renderMcpServers();
   el('settingsStatus').textContent = '';
   renderSettingsCommandPanels();
   el('settingsModal').classList.remove('hidden');
@@ -3427,14 +5039,6 @@ async function saveSettings(event) {
       density: el('settingsDensity').value,
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
-    },
-    bridge: {
-      defaultProvider: el('settingsBridgeDefault').value || undefined,
-      providers: {
-        claude: { path: el('settingsBridgeClaudePath').value || undefined },
-        pi: { path: el('settingsBridgePiPath').value || undefined },
-        codex: { path: el('settingsBridgeCodexPath').value || undefined },
-      },
     },
   };
   const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -3498,12 +5102,6 @@ el('fileInput').addEventListener('change', async (event) => {
   await addFiles(event.target.files);
   event.target.value = '';
 });
-el('insertCommand').addEventListener('click', async () => {
-  if (!state.snapshot?.commands) await loadState().catch(() => undefined);
-  input.value = input.value || '/';
-  input.focus();
-  renderSlashMenu();
-});
 el('composer').addEventListener('dragover', (event) => {
   if (!event.dataTransfer || Array.from(event.dataTransfer.types || []).indexOf('Files') === -1) return;
   event.preventDefault();
@@ -3534,9 +5132,17 @@ el('projectMenuBtn').addEventListener('click', () => { openSurface('projects').c
 el('newWorkspaceBtn').addEventListener('click', addWorkspace);
 el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
-el('cleanupSessionsBtn').addEventListener('click', cleanupSessions);
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
+el('workspaceBrowseBtn').addEventListener('click', async () => {
+  try {
+    const res = await api('/api/pick-folder', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.folder) el('workspacePathInput').value = data.folder;
+    }
+  } catch { /* picker unavailable — user types path manually */ }
+});
 el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
 el('settingsOpenLocation').addEventListener('click', openLocation);
 el('settingsApplyRuntimeModel').addEventListener('click', () => {
@@ -3561,19 +5167,6 @@ el('settingsEnterWorktree').addEventListener('click', () => {
 });
 el('settingsExitWorktree').addEventListener('click', () => { runSettingsCommand('/worktree exit', 'Exiting worktree...').catch(console.error); });
 el('settingsAutomationWorktreeList').addEventListener('click', () => { runSettingsCommand('/worktree list', 'Listing worktrees...').catch(console.error); });
-el('settingsNewChatBtn').addEventListener('click', async () => {
-  await createNewSession();
-  if (!el('settingsModal').classList.contains('hidden')) {
-    renderSettingsCommandPanels();
-    el('settingsStatus').textContent = 'New chat created';
-  }
-});
-el('settingsCleanChatsBtn').addEventListener('click', async () => {
-  await cleanupSessions();
-  await loadState();
-  renderSettingsCommandPanels();
-  el('settingsStatus').textContent = 'Empty chats cleaned';
-});
 el('settingsMemoryStatusBtn').addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
 el('settingsCompactNowBtn').addEventListener('click', () => {
   const instructions = el('settingsCompactInstructions').value.trim();
@@ -3582,17 +5175,37 @@ el('settingsCompactNowBtn').addEventListener('click', () => {
 el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsCommand('/dream status', 'Inspecting dream state...').catch(console.error); });
 el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
+el('mcpCfgAdd').addEventListener('click', () => { addMcpServerConfig().catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
-el('settingsBridgeDetectBtn').addEventListener('click', () => { refreshBridgeDetect().catch(console.error); });
+el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(console.error); });
+el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); });
+el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
+el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
+el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
+  const inp = el('bridgeCfgApiKey');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = show ? guiIcon('eyeOff') : guiIcon('eye');
+});
+el('bridgeEditorModal').addEventListener('click', (event) => { if (event.target === el('bridgeEditorModal')) closeBridgeEditor(); });
+el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
-document.addEventListener('click', hideContextMenu);
+document.addEventListener('click', (event) => {
+  hideContextMenu();
+  const menu = el('modelPickerMenu');
+  if (!menu.classList.contains('hidden') && !event.target.closest('#modelPickerBtn') && !event.target.closest('#modelPickerMenu')) {
+    menu.classList.add('hidden');
+  }
+});
 document.addEventListener('contextmenu', (event) => {
   const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
   if (!onTarget) hideContextMenu();
 });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
-el('effortSelect').addEventListener('change', (event) => submitText('/effort ' + event.target.value));
+el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
+el('settingsOutputStyle').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });
