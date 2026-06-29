@@ -778,8 +778,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     sdk = null;
     // A throw from createAgentSdk happens before a session is created — synthesize
     // a minimal session stub so the rest of the file's `session.` references don't
-    // crash. Real sessions are created on reloadSdk after the user adds a key.
-    session = { id: '', model: options.model ?? '', title: '', metadata: {} } as AgentSession;
+    // crash (sessionView reads .messages; /doctor reads .messages.length, etc.).
+    // A real session replaces this stub on reloadSdk once the user adds a key.
+    session = { id: '', model: options.model ?? '', title: '', messages: [], metadata: {} } as unknown as AgentSession;
   }
 
   // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
@@ -848,10 +849,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const previousSdk = sdk;
     const nextSdk = await createCleanSdk();
     try {
-      session = await nextSdk.resumeSession(session.id, {
-        model: options.model,
-        permissionMode: options.permissionMode,
-      });
+      // When recovering from a no-credential state the session is a stub (id: ''),
+      // so create a fresh session instead of trying to resume an empty id.
+      session = needsCredentials
+        ? await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode })
+        : await nextSdk.resumeSession(session.id, {
+          model: options.model,
+          permissionMode: options.permissionMode,
+        });
       toolMetadata = await nextSdk.listToolMetadata();
       sdk = nextSdk;
       needsCredentials = false;
