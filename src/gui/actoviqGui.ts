@@ -94,6 +94,7 @@ import type {
   AgentToolDefinition,
   RouterProfile,
   TeamDefinition,
+  TeamEvent,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
 import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
@@ -156,6 +157,12 @@ interface GuiRunDescriptor {
   tokenUsage: { input: number; output: number };
   currentTool?: string;
   lastText?: string;
+  // Team runs only: live member/round state for the Monitor pane (plan phase 4).
+  team?: {
+    mode: string;
+    round: number;
+    members: Array<{ id: string; model: string; status: string; role?: string; currentTool?: string }>;
+  };
 }
 interface GuiRunRecord {
   desc: GuiRunDescriptor;
@@ -1812,6 +1819,59 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       return;
     }
 
+    if (input.startsWith('/team ask ')) {
+      // Live team run (plan phase 4). Unlike array-returning slash commands,
+      // this streams member activity as it happens via onEvent → forwardTeamEvent,
+      // and registers a 'team' run so the Monitor pane shows it live.
+      const rest = input.slice('/team ask '.length).trim();
+      const split = rest.indexOf(' ');
+      if (split === -1) {
+        send({ type: 'error', message: 'usage: /team ask <name> <prompt>' });
+        send({ type: 'done' });
+        res.end();
+        return;
+      }
+      const teamName = rest.slice(0, split);
+      const prompt = rest.slice(split + 1).trim();
+      const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+      if (!definition) {
+        send({ type: 'error', message: `team not found: ${teamName}` });
+        send({ type: 'done' });
+        res.end();
+        return;
+      }
+      const teamRunId = 'r-team-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      const teamAbort = new AbortController();
+      const teamDesc: GuiRunDescriptor = {
+        runId: teamRunId, kind: 'team', label: `team:${definition.name}`,
+        sessionId: session.id, model: session.model || null, startedAt: Date.now(),
+        status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
+        team: { mode: definition.mode, round: 0, members: [] },
+      };
+      const teamRun: GuiRunRecord = { desc: teamDesc, abort: teamAbort, sink: send };
+      runs.set(teamRunId, teamRun);
+      try {
+        send({ type: 'run.started', runId: teamRunId, model: session.model || null });
+        const result = await createModelTeam(definition).ask(prompt, teamAbort.signal, {
+          onEvent: (e) => { forwardTeamEvent(e, teamRunId, send, teamDesc); },
+        });
+        teamDesc.status = 'done';
+        send({ type: 'command.result', title: `Team response · ${result.mode}`, text: result.answer, runId: teamRunId });
+        if (result.incompleteReason) send({ type: 'notice', message: `team incomplete: ${result.incompleteReason}` });
+        send({ type: 'state', state: await state() });
+        send({ type: 'done' });
+      } catch (error) {
+        const err = error as Error;
+        teamDesc.status = teamAbort.signal.aborted ? 'aborted' : 'error';
+        send({ type: 'error', message: teamAbort.signal.aborted ? 'interrupted' : err.message });
+      } finally {
+        runs.delete(teamRunId);
+        invalidateHeavyState();
+        res.end();
+      }
+      return;
+    }
+
     if (input.startsWith('/')) {
       try {
         for (const event of await runSlashCommand(input)) send(event);
@@ -2620,6 +2680,64 @@ function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void
   }
 }
 
+/**
+ * Maps the 7 TeamEvents to `team.*` GuiRunEvents (plan phase 4). A sibling of
+ * forwardAgentEvent — it does not touch the 12 chat-run cases. Each event
+ * carries runId so the client (and the Monitor pane) can address the team run.
+ * Also mirrors member/round state onto the run descriptor for the Monitor cards.
+ */
+function forwardTeamEvent(event: TeamEvent, runId: string, send: (event: GuiRunEvent) => void, desc?: GuiRunDescriptor): void {
+  switch (event.type) {
+    case 'team.started':
+      send({ type: 'team.started', runId, mode: event.mode, members: event.members });
+      if (desc) desc.team = {
+        mode: event.mode, round: 0,
+        members: event.members.map(m => ({ id: m.id, model: m.model, status: 'pending', role: m.role })),
+      };
+      return;
+    case 'team.member.started':
+      send({ type: 'team.member.started', runId, id: event.id, model: event.model, role: event.role, round: event.round });
+      upsertTeamMember(desc, event.id, { model: event.model, status: 'running', role: event.role });
+      if (desc?.team) desc.team.round = event.round;
+      return;
+    case 'team.member.tool':
+      send({ type: 'team.member.tool', runId, id: event.id, model: event.model, round: event.round, tool: event.tool });
+      upsertTeamMember(desc, event.id, { status: 'running', currentTool: event.tool });
+      if (desc) desc.currentTool = `${event.id}: ${event.tool}`;
+      return;
+    case 'team.member.completed':
+      send({ type: 'team.member.completed', runId, id: event.id, model: event.model, role: event.role, round: event.round, ok: event.ok, toolCalls: event.toolCalls, durationMs: event.durationMs, error: event.error });
+      upsertTeamMember(desc, event.id, { status: event.ok ? 'done' : 'error' });
+      if (desc) desc.toolCalls += event.toolCalls;
+      return;
+    case 'team.round.completed':
+      send({ type: 'team.round.completed', runId, round: event.round, reports: event.reports });
+      if (desc?.team) desc.team.round = event.round;
+      return;
+    case 'team.synthesis':
+      send({ type: 'team.synthesis', runId, round: event.round, decision: event.decision });
+      return;
+    case 'team.completed':
+      send({ type: 'team.completed', runId, mode: event.mode, rounds: event.rounds, incompleteReason: event.incompleteReason });
+      return;
+    default:
+      return;
+  }
+}
+
+function upsertTeamMember(desc: GuiRunDescriptor | undefined, id: string, patch: { model?: string; status?: string; role?: string; currentTool?: string }): void {
+  if (!desc?.team) return;
+  let m = desc.team.members.find(x => x.id === id);
+  if (!m) {
+    m = { id, model: patch.model ?? '', status: patch.status ?? 'pending' };
+    desc.team.members.push(m);
+  }
+  if (patch.model !== undefined) m.model = patch.model;
+  if (patch.status !== undefined) m.status = patch.status;
+  if (patch.role !== undefined) m.role = patch.role;
+  if (patch.currentTool !== undefined) m.currentTool = patch.currentTool;
+}
+
 export function createActoviqGuiHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -3218,6 +3336,31 @@ button { cursor: pointer; }
 .pane-terminal .term-mount { flex: 1; min-height: 0; padding: 6px 8px; overflow: hidden; }
 .pane-terminal .term-mount .xterm { height: 100%; }
 .pane-terminal .term-mount .xterm-viewport { background: #1f2330 !important; }
+/* Monitor pane (plan phase 4): live cards for every active run. */
+.pane-monitor { background: #f6f7f8; overflow: auto; }
+.monitor-list { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
+.monitor-empty { margin: 24px auto; color: #9aa0a6; }
+.monitor-card { border: 1px solid #e2e5e8; border-radius: 9px; background: #fff; padding: 10px 12px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+.monitor-card.clickable { cursor: pointer; }
+.monitor-card.clickable:hover { border-color: #b9c6e6; }
+.monitor-card.status-running { border-left: 3px solid #4b93f7; }
+.monitor-card.status-done { border-left: 3px solid #6ad0a8; }
+.monitor-card.status-aborted { border-left: 3px solid #e0a458; }
+.monitor-card.status-error { border-left: 3px solid #c7392f; }
+.monitor-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.mc-title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-kind { margin-left: auto; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #fff; background: #7a7e83; border-radius: 5px; padding: 1px 6px; }
+.monitor-card.kind-team .mc-kind { background: #6b5fc7; }
+.monitor-card.kind-chat .mc-kind { background: #4b93f7; }
+.mc-meta { color: #6b6f75; font-size: 12px; }
+.mc-tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #4b93f7; margin-top: 4px; }
+.mc-tail { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: #5f6368; background: #f4f5f6; border-radius: 5px; padding: 4px 7px; margin-top: 5px; white-space: pre-wrap; max-height: 7em; overflow: hidden; }
+.mc-team { font-size: 12px; color: #6b5fc7; margin-top: 5px; font-weight: 500; }
+.mc-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.mc-member { font-size: 11.5px; border-radius: 5px; padding: 2px 7px; background: #eef0f1; color: #5f6368; }
+.mc-member.status-running { background: #e7f0ff; color: #2f5fa8; }
+.mc-member.status-done { background: #e8f6ef; color: #2a7a5a; }
+.mc-member.status-error { background: #fbeceb; color: #8c1d18; }
 /* Developer-tools gate: the add button and the terminal/monitor entries are
    hidden unless the user opts in via Settings → Appearance. Normal users
    never see terminal/monitor entry points. */
@@ -3628,6 +3771,89 @@ function switchTab(id) {
   state.activeTabId = id;
   document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === id));
   renderTabs();
+  // Drive the Monitor pane's poller only while a monitor pane is visible.
+  const tab = state.tabs.find((t) => t.id === id);
+  if (tab && tab.type === 'monitor') startMonitorPolling(id);
+  else stopMonitorPolling();
+}
+// Monitor pane (plan phase 4): polls GET /api/state ~800ms and renders state.runs[]
+// as live cards — current tool, tail text, tokens, duration, status, team round/members.
+let monitorTimer = null;
+let monitorPaneId = null;
+function startMonitorPolling(paneId) {
+  stopMonitorPolling();
+  monitorPaneId = paneId;
+  refreshMonitor(paneId);
+  monitorTimer = setInterval(() => { if (monitorPaneId === paneId) refreshMonitor(paneId); }, 800);
+}
+function stopMonitorPolling() {
+  if (monitorTimer) { clearInterval(monitorTimer); monitorTimer = null; }
+  monitorPaneId = null;
+}
+async function refreshMonitor(paneId) {
+  const pane = document.getElementById(paneId);
+  if (!pane) { stopMonitorPolling(); return; }
+  const list = pane.querySelector('.monitor-list');
+  if (!list) return;
+  let runs = [];
+  try {
+    const res = await api('/api/state');
+    if (res.ok) { const st = await res.json(); runs = Array.isArray(st.runs) ? st.runs : []; }
+  } catch { /* transient — keep the last render */ return; }
+  renderMonitorCards(list, runs);
+}
+function renderMonitorCards(list, runs) {
+  list.textContent = '';
+  if (!runs.length) {
+    const empty = document.createElement('p');
+    empty.className = 'monitor-empty muted';
+    empty.textContent = 'No active runs.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const r of runs) {
+    const card = document.createElement('article');
+    card.className = 'monitor-card kind-' + r.kind + ' status-' + r.status;
+    const head = document.createElement('header');
+    const title = document.createElement('span');
+    title.className = 'mc-title';
+    title.textContent = r.label || r.runId;
+    const badge = document.createElement('span');
+    badge.className = 'mc-kind';
+    badge.textContent = r.kind;
+    head.appendChild(title); head.appendChild(badge);
+    card.appendChild(head);
+    const meta = document.createElement('div');
+    meta.className = 'mc-meta';
+    const dur = r.startedAt ? Math.max(0, Math.round((Date.now() - r.startedAt) / 1000)) + 's' : '';
+    const toks = (r.tokenUsage && ((r.tokenUsage.input || 0) + (r.tokenUsage.output || 0))) || 0;
+    meta.textContent = [r.status, r.model, dur, r.toolCalls ? r.toolCalls + ' tools' : '', toks ? '~' + toks + ' tok' : ''].filter(Boolean).join(' · ');
+    card.appendChild(meta);
+    if (r.currentTool) {
+      const t = document.createElement('div'); t.className = 'mc-tool'; t.textContent = '▸ ' + r.currentTool; card.appendChild(t);
+    }
+    if (r.lastText) {
+      const tail = document.createElement('div'); tail.className = 'mc-tail'; tail.textContent = String(r.lastText).slice(-160); card.appendChild(tail);
+    }
+    if (r.team) {
+      const tm = document.createElement('div'); tm.className = 'mc-team';
+      tm.textContent = 'round ' + r.team.round + ' · ' + r.team.members.length + ' members';
+      card.appendChild(tm);
+      const ml = document.createElement('div'); ml.className = 'mc-members';
+      for (const m of r.team.members) {
+        const mi = document.createElement('span');
+        mi.className = 'mc-member status-' + m.status;
+        mi.textContent = (m.role || m.id) + ' (' + m.model + ')' + (m.currentTool ? ' ▸ ' + m.currentTool : '');
+        ml.appendChild(mi);
+      }
+      card.appendChild(ml);
+    }
+    if (r.kind === 'chat') {
+      card.classList.add('clickable');
+      card.addEventListener('click', () => switchTab('pane-chat-default'));
+    }
+    list.appendChild(card);
+  }
 }
 let paneCounter = 0;
 // Lazily load the vendored xterm UMD assets (same-origin, allowed by script-src
@@ -3744,8 +3970,13 @@ function addPane(type) {
       })
       .catch(() => makeStub(pane, 'terminal', 'Terminal unavailable (node-pty not loadable).'));
     makeStub(pane, 'terminal', 'Starting terminal…');
+  } else if (type === 'monitor') {
+    const list = document.createElement('div');
+    list.className = 'monitor-list';
+    list.innerHTML = '<p class="monitor-empty muted">No active runs.</p>';
+    pane.appendChild(list);
   } else {
-    makeStub(pane, type, type === 'monitor' ? 'Live monitor arrives in Phase 4.' : 'Chat');
+    makeStub(pane, type, 'Chat');
   }
   state.tabs.push(tab);
   switchTab(id);
@@ -5136,6 +5367,14 @@ function handleEvent(event) {
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
   else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
+  // Live team events (plan phase 4): surface member activity in the transcript.
+  else if (event.type === 'team.started') addMessage('notice', 'team · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
+  else if (event.type === 'team.member.started') addMessage('notice', '▸ ' + (event.role || event.id) + ' (' + event.model + ') round ' + event.round);
+  else if (event.type === 'team.member.tool') addMessage('tool', '  ' + event.id + ': ' + event.tool);
+  else if (event.type === 'team.member.completed') addMessage('notice', '✓ ' + (event.role || event.id) + ' done · ' + event.toolCalls + ' tools · ' + formatDuration(event.durationMs) + (event.ok ? '' : ' (failed)'));
+  else if (event.type === 'team.round.completed') addMessage('notice', 'round ' + event.round + ' complete · ' + event.reports + ' reports');
+  else if (event.type === 'team.synthesis') addMessage('notice', 'synthesis: ' + event.decision);
+  else if (event.type === 'team.completed') addMessage('notice', 'team completed · ' + event.rounds + ' rounds');
 }
 function showPermission(event) {
   state.permissionQueue.push(event);
