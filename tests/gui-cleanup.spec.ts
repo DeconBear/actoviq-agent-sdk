@@ -26,26 +26,20 @@ async function createWorkspace(root: string, name: string): Promise<string> {
 }
 
 describe('GUI session cleanup', () => {
-  it('cleans empty chats across known workspaces and keeps non-empty chats', async () => {
-    const root = await tempDir('actoviq-gui-cleanup-');
+  it('auto-cleans empty sessions when state is recomputed, keeping non-empty ones', async () => {
+    const root = await tempDir('actoviq-gui-acln-');
     const homeDir = path.join(root, 'home');
     const workA = await createWorkspace(root, 'work-a');
-    const workB = await createWorkspace(root, 'work-b');
 
-    const storeA = new SessionStore(getActoviqProjectSessionDirectory(workA, homeDir));
-    const storeB = new SessionStore(getActoviqProjectSessionDirectory(workB, homeDir));
-    await storeA.create({ id: 'empty-a', metadata: { __actoviqWorkDir: workA } });
-    await storeA.create({
+    // Pre-seed: one empty session + one non-empty session.
+    const store = new SessionStore(getActoviqProjectSessionDirectory(workA, homeDir));
+    await store.create({ id: 'empty-a', metadata: { __actoviqWorkDir: workA } });
+    await store.create({
       id: 'keep-a',
       metadata: { __actoviqWorkDir: workA },
-      initialMessages: [{ role: 'user', content: 'keep this chat' }],
+      initialMessages: [{ role: 'user', content: 'keep me' }],
     });
-    await storeB.create({ id: 'empty-b', metadata: { __actoviqWorkDir: workB } });
-    await storeB.create({
-      id: 'keep-b',
-      metadata: { __actoviqWorkDir: workB },
-      initialMessages: [{ role: 'user', content: 'keep this other chat' }],
-    });
+
     const configPath = path.join(homeDir, '.actoviq', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
@@ -64,23 +58,23 @@ describe('GUI session cleanup', () => {
     });
     const authHeaders = { 'x-actoviq-token': server.token };
     try {
-      const before = await fetch(`${server.url}api/state`, { headers: authHeaders }).then((res) => res.json()) as {
-        hiddenEmptySessionCount: number;
-        projects: Array<{ path: string; sessionCount: number }>;
-      };
-      expect(before.hiddenEmptySessionCount).toBe(2);
-      expect(before.projects.find((project) => project.path === workA)?.sessionCount).toBe(1);
-      expect(before.projects.find((project) => project.path === workB)?.sessionCount).toBe(1);
+      // The first /api/state call recomputes the heavy cache → auto-cleans
+      // empty sessions (except the active one, which is the server's own fresh
+      // 0-message session, excluded from cleanup).
+      const state = await fetch(`${server.url}api/state`, { headers: authHeaders })
+        .then((res) => res.json()) as {
+          projects: Array<{ path: string; sessionCount: number }>;
+        };
 
-      const cleaned = await fetch(`${server.url}api/sessions/cleanup`, { method: 'POST', headers: authHeaders })
-        .then((res) => res.json()) as { deleted: number; state: { hiddenEmptySessionCount: number } };
-      expect(cleaned.deleted).toBe(2);
-      expect(cleaned.state.hiddenEmptySessionCount).toBe(0);
+      // hiddenEmptySessionCount is no longer in the state — auto-clean has
+      // already removed orphaned empty sessions.
+      expect(state).toHaveProperty('projects');
+      expect(state).not.toHaveProperty('hiddenEmptySessionCount');
 
-      await expect(storeA.load('empty-a')).rejects.toThrow();
-      await expect(storeB.load('empty-b')).rejects.toThrow();
-      expect((await storeA.load('keep-a')).messages).toHaveLength(1);
-      expect((await storeB.load('keep-b')).messages).toHaveLength(1);
+      // The empty session should be gone from disk.
+      await expect(store.load('empty-a')).rejects.toThrow();
+      // The non-empty session must survive.
+      expect((await store.load('keep-a')).messages).toHaveLength(1);
     } finally {
       await server.close();
     }
