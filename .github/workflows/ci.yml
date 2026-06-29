@@ -40,6 +40,9 @@ jobs:
       - name: Install Linux rolldown native binding
         run: npm install --no-save --package-lock=false @rolldown/binding-linux-x64-gnu@1.0.0-rc.12
 
+      - name: Install electron (for src/gui typecheck/build)
+        run: npm install --no-save --package-lock=false electron@42.4.1
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -96,6 +99,9 @@ jobs:
 
       - name: Install Linux rolldown native binding
         run: npm install --no-save --package-lock=false @rolldown/binding-linux-x64-gnu@1.0.0-rc.12
+
+      - name: Install electron (for src/gui typecheck/build)
+        run: npm install --no-save --package-lock=false electron@42.4.1
 
       - name: Build
         run: npm run build
