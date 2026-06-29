@@ -128,6 +128,29 @@ interface PendingPermission {
   resolve: (outcome: 'allow' | 'always' | 'always-user' | 'deny') => void;
 }
 
+// RunRegistry — tracks every active agent run so the GUI can host concurrent
+// runs (chat + future team/background) and the Monitor pane can show them live.
+// Replaces the single foreground runAbort/eventSink singletons (plan phase 2).
+type GuiRunKind = 'chat' | 'team' | 'background';
+interface GuiRunDescriptor {
+  runId: string;
+  kind: GuiRunKind;
+  label: string;
+  sessionId: string;
+  model: string | null;
+  startedAt: number;
+  status: 'running' | 'done' | 'aborted' | 'error';
+  toolCalls: number;
+  tokenUsage: { input: number; output: number };
+  currentTool?: string;
+  lastText?: string;
+}
+interface GuiRunRecord {
+  desc: GuiRunDescriptor;
+  abort: AbortController;
+  sink: (event: GuiRunEvent) => void;
+}
+
 interface GuiPreferences {
   workMode: 'coding' | 'daily';
   theme: 'system' | 'light' | 'dark';
@@ -797,8 +820,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let activeTeamName: string | null = null;
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
-  let runAbort: AbortController | null = null;
-  let eventSink: ((event: GuiRunEvent) => void) | null = null;
+  // RunRegistry: active runs keyed by runId. foregroundRunId is the chat run the
+  // main view tracks; permissions and /api/abort fall back to it for back-compat.
+  const runs = new Map<string, GuiRunRecord>();
+  let foregroundRunId: string | null = null;
+  const foregroundRun = (): GuiRunRecord | undefined => (foregroundRunId ? runs.get(foregroundRunId) : undefined);
   const pendingPermissions = new Map<string, PendingPermission>();
 
   // Bridge mode — in-process: a named config pre-builds a ModelApi via
@@ -875,7 +901,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function switchProject(nextWorkDir: string): Promise<Record<string, unknown>> {
-    if (runAbort) {
+    if (foregroundRun()) {
       throw new Error('Cannot switch projects while a run is active.');
     }
     const resolved = path.resolve(nextWorkDir);
@@ -928,7 +954,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         resolve,
       };
       pendingPermissions.set(id, request);
-      eventSink?.({
+      foregroundRun()?.sink({
         type: 'permission.request',
         id,
         toolName: request.toolName,
@@ -1100,7 +1126,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           costUsd: configCost(cfgName, rec),
         })),
       },
-      running: Boolean(runAbort),
+      running: runs.size > 0,
+      runs: [...runs.values()].map(r => r.desc),
+      foregroundRunId,
     };
   }
 
@@ -1779,14 +1807,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       return;
     }
 
-    if (runAbort) {
-      send({ type: 'error', message: 'A run is already active.' });
-      res.end();
-      return;
-    }
-
-    runAbort = new AbortController();
-    eventSink = send;
+    const runId = 'r-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const runAbort = new AbortController();
+    const desc: GuiRunDescriptor = {
+      runId,
+      kind: 'chat',
+      label: input.slice(0, 80) || 'chat',
+      sessionId: session.id,
+      model: session.model || null,
+      startedAt: Date.now(),
+      status: 'running',
+      toolCalls: 0,
+      tokenUsage: { input: 0, output: 0 },
+    };
+    const run: GuiRunRecord = { desc, abort: runAbort, sink: send };
+    runs.set(runId, run);
+    foregroundRunId = runId;
     let streamedTextSeen = false;
     try {
       // Router dispatch is skipped when a named config is active — the config's
@@ -1850,8 +1886,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       // input and the output for the matching result.
       const toolCallInputs = new Map<string, { name: string; input: unknown }>();
       for await (const event of stream) {
-        forwardAgentEvent(event, send);
+        forwardAgentEvent(event, send, runId);
         if (event.type === 'tool.call') {
+          desc.toolCalls += 1;
+          desc.currentTool = event.call.publicName;
           toolCallInputs.set(event.call.id, { name: event.call.publicName, input: event.call.input });
           // Capture the live todo list from TodoWrite calls for the panel.
           if (event.call.publicName === 'TodoWrite') {
@@ -1878,13 +1916,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           );
           toolCallInputs.delete(event.result.id);
         }
-        if (event.type === 'response.text.delta' && event.delta) streamedTextSeen = true;
+        if (event.type === 'response.text.delta' && event.delta) { streamedTextSeen = true; desc.lastText = (desc.lastText || '') + event.delta; }
       }
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
       const effectiveModel = hadamardModel ?? routed?.model ?? activeBridgeModelApi?.model ?? session.model;
       recordUsage(effectiveModel, (result as any).usage);
+      desc.status = 'done';
+      const runUsage = (result as any).usage;
+      if (runUsage) desc.tokenUsage = { input: runUsage.input_tokens ?? 0, output: runUsage.output_tokens ?? 0 };
       // Lightweight global history — one JSONL line per user turn (mirrors Codex / Claude Code).
       try {
         recordTurn({
@@ -1900,10 +1941,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       send({ type: 'done', usage: (result as any).usage });
     } catch (error) {
       const err = error as Error;
-      send({ type: 'error', message: runAbort?.signal.aborted ? 'interrupted' : err.message });
+      desc.status = runAbort.signal.aborted ? 'aborted' : 'error';
+      send({ type: 'error', message: runAbort.signal.aborted ? 'interrupted' : err.message });
     } finally {
-      runAbort = null;
-      eventSink = null;
+      runs.delete(runId);
+      if (foregroundRunId === runId) foregroundRunId = null;
       invalidateHeavyState();
       res.end();
     }
@@ -2354,8 +2396,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
-        runAbort?.abort();
-        return json(res, 200, { ok: true });
+        const body = await readJson(req);
+        const id = typeof body.runId === 'string' && body.runId ? body.runId : foregroundRunId;
+        const target = id ? runs.get(id) : undefined;
+        target?.abort.abort();
+        return json(res, 200, { ok: true, aborted: Boolean(target) });
       }
       return json(res, 404, { error: 'Not found' });
     } catch (error) {
@@ -2368,7 +2413,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   process.stdout.write(`actoviq-gui listening on ${url}\n`);
 
   const close = async () => {
-    runAbort?.abort();
+    for (const rec of runs.values()) rec.abort.abort();
+    runs.clear();
+    foregroundRunId = null;
     if (sdk) await sdk.close().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
@@ -2423,10 +2470,10 @@ export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<vo
   }
 }
 
-function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void): void {
+function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void, runId?: string): void {
   switch (event.type) {
     case 'run.started':
-      send({ type: 'run.started', model: event.model });
+      send({ type: 'run.started', runId, model: event.model });
       return;
     case 'request.started':
       send({ type: 'status', message: `request ${event.iteration}${event.requestTokenEstimate ? ` · ~${event.requestTokenEstimate} tokens` : ''}` });
@@ -3436,6 +3483,10 @@ const state = {
   attachmentCounter: 0,
   lastUsageText: '',
   toolNodes: new Map(),
+  // Active chat run id (from the run.started event). Sent with /api/abort so
+  // only this run is stopped; falls back to the server's foreground run when
+  // null (e.g. slash commands, which emit no run.started).
+  activeRunId: null,
   // Workbench: top-tab bar of chat / terminal / monitor panes. The single
   // chat pane (pane-chat-default) is always present and non-closable; the
   // terminal/monitor entry points are gated behind developer tools.
@@ -4829,6 +4880,7 @@ async function forgetWorkspace(projectPath) {
 }
 async function sendText(text) {
   state.running = true;
+  state.activeRunId = null;
   setRunStatus('Running', 'running');
   const res = await api('/api/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
   if (!res.ok || !res.body) {
@@ -4861,6 +4913,7 @@ async function sendText(text) {
 }
 function handleEvent(event) {
   if (event.type === 'user') { finalizeAssistant(); state.currentAssistant = null; addMessage('user', displayUserText(event.text)); }
+  else if (event.type === 'run.started') { if (event.runId) state.activeRunId = String(event.runId); }
   else if (event.type === 'delta') {
     if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
     state.currentAssistant.dataset.raw += event.text || '';
@@ -5230,7 +5283,10 @@ document.querySelectorAll('[data-decision]').forEach(button => {
 document.querySelectorAll('.settings-tab').forEach(button => button.addEventListener('click', () => showSettingsTab(button.dataset.settingsTab)));
 el('composer').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (state.running) { await api('/api/abort', { method: 'POST' }); return; }
+  if (state.running) {
+    await api('/api/abort', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ runId: state.activeRunId }) });
+    return;
+  }
   const text = input.value.trim();
   if (!text && state.attachments.length === 0) return;
   const submission = buildSubmissionText(text);
