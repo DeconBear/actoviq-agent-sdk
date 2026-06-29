@@ -32,6 +32,9 @@ import {
   maskApiKey,
   readBridgeConfigs,
   removeBridgeConfig,
+  runtimeToProvider,
+  VALID_RUNTIMES,
+  type BridgeRuntime,
   type ModelModality,
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
@@ -974,6 +977,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         activeConfig: activeBridgeConfig
           ? {
               name: activeBridgeConfig.name,
+              runtime: activeBridgeConfig.runtime,
               provider: activeBridgeConfig.provider,
               apiKeyMasked: maskApiKey(activeBridgeConfig.apiKey),
               baseURL: activeBridgeConfig.baseURL ?? '',
@@ -983,10 +987,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         activeModelLabel: bridgeModelLabel,
         configs: readBridgeConfigs(options.homeDir).configs.map(c => ({
           name: c.name,
+          runtime: c.runtime,
           provider: c.provider,
           apiKeyMasked: maskApiKey(c.apiKey),
           baseURL: c.baseURL ?? '',
           model: c.model ?? '',
+          models: Array.isArray(c.models)
+            ? c.models.map(m => ({
+                name: m.name,
+                context1M: m.context1M === true,
+                modality: m.modality === 'multimodal' ? 'multimodal' : 'text',
+              }))
+            : [],
         })),
       },
       mcpServers: readMcpServerConfig(options.homeDir).servers,
@@ -1132,6 +1144,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // it; streamRun injects {model, modelApi} per-run on the SAME session, so
   // context survives switching bridge↔hadamard. No child process anywhere.
   async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
+    if (config.runtime === 'hadamard') {
+      // hadamard configs run through the SDK's default provider — no separate
+      // ModelApi is built. Only the model is injected per-run.
+      activeBridgeConfig = config;
+      activeBridgeModelApi = null;
+      bridgeMode = false;
+      bridgeModelLabel = config.model || null;
+      return true;
+    }
+    // bridge config: pre-build the ModelApi from the config's credentials.
     const routed = await buildRouteModelApi({
       model: config.model || session.model,
       provider: config.provider,
@@ -1609,7 +1631,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (args === 'off') { disableBridge(); return [{ type: 'notice', message: 'bridge off — using default provider' }, { type: 'state' }]; }
         if (args === 'help') {
           return [{ type: 'command.result', title: 'Bridge help', text: [
-            '/bridge — open the bridge board (Settings → Bridge)',
+            '/bridge — open the provider-config editor (Settings → Models & routing)',
             '/bridge switch <name> — activate a named config',
             '/bridge model [id] — set the active config model',
             '/bridge config — manage named configs',
@@ -1618,7 +1640,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             'Configs live in ~/.actoviq/bridge-configs.json',
           ].join('\n') }];
         }
-        if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'bridge' }];
+        if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
         if (args.startsWith('switch ')) {
           const cfgName = args.slice(7).trim();
           const cfg = findBridgeConfig(cfgName, options.homeDir);
@@ -1638,7 +1660,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
           return [{ type: 'agent.prompt', text: args.slice(4).trim() }];
         }
-        return [{ type: 'settings.open', tab: 'bridge' }];
+        return [{ type: 'settings.open', tab: 'models' }];
       }
       default:
         return [{ type: 'error', message: `unknown command: /${name}` }];
@@ -1677,8 +1699,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     eventSink = send;
     let streamedTextSeen = false;
     try {
+      // Router dispatch is skipped when a named config is active — the config's
+      // model and/or provider replaces per-turn routing.
+      const configActive = !!activeBridgeConfig;
       let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
-      if (activeRouter && !bridgeMode) {
+      if (activeRouter && !bridgeMode && !configActive) {
         try {
           const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
           routed = { model: decision.model, modelApi: decision.modelApi };
@@ -1688,12 +1713,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           send({ type: 'notice', message: `router classification failed: ${(error as Error).message}` });
         }
       }
-      // Branch the event source. Bridge mode runs IN-PROCESS through the selected
-      // config's provider/apiKey/baseURL/model (no child process): inject the
-      // pre-built {model, modelApi} into session.stream — the /model router's
-      // proven cross-provider mechanism. Same session → context survives switching
-      // bridge↔hadamard. Otherwise a normal in-process turn (optionally routed).
+      // Three modes:
+      //  1. bridge config active → inject pre-built ModelApi (separate credentials)
+      //  2. hadamard config active → inject model only (use SDK default provider)
+      //  3. none active → in-process turn, optionally routed or teamed
       const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
+      const hadamardModel = (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard')
+        ? (activeBridgeConfig.model || undefined)
+        : undefined;
       let stream: AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> };
       if (bridgeMode && activeBridgeModelApi) {
         const bridgeName = activeBridgeConfig?.name ?? 'bridge';
@@ -1720,8 +1747,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           classifier: preToolUseHookClassifier,
           canUseTool,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
+          ...(hadamardModel ? { model: hadamardModel } : {}),
           ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
         });
+      }
+
+      // If a hadamard config is active, send a brief notice (model-only, no credentials change).
+      if (hadamardModel && !bridgeMode) {
+        send({ type: 'notice', message: `hadamard model -> ${hadamardModel} (config: ${activeBridgeConfig!.name})` });
       }
       // Track tool call inputs so PostToolUse hooks (fire-and-forget) get both the
       // input and the output for the matching result.
@@ -1760,14 +1793,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
-      recordUsage(routed?.model ?? activeBridgeModelApi?.model ?? session.model, (result as any).usage);
+      const effectiveModel = hadamardModel ?? routed?.model ?? activeBridgeModelApi?.model ?? session.model;
+      recordUsage(effectiveModel, (result as any).usage);
       // Lightweight global history — one JSONL line per user turn (mirrors Codex / Claude Code).
       try {
         recordTurn({
           sessionId: session.id,
           ts: Math.floor(Date.now() / 1000),
           text: input.slice(0, 200),
-          model: routed?.model ?? activeBridgeModelApi?.model ?? session.model,
+          model: effectiveModel,
         }, options.homeDir);
       } catch { /* never fail a turn over a history write */ }
       toolMetadata = await sdk.listToolMetadata();
@@ -2063,13 +2097,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         const provider = body.provider === 'openai' ? 'openai' : 'anthropic';
+        const runtime: BridgeRuntime = (typeof body.runtime === 'string' && (VALID_RUNTIMES as string[]).includes(body.runtime))
+          ? (body.runtime as BridgeRuntime) : 'claude';
         if (!name) return json(res, 400, { error: 'Missing config name' });
         // Merge with the existing config of the same name when editing. The form
         // intentionally leaves the API-key field blank on edit (it's a secret),
         // so a blank key must PRESERVE the saved one — not replace it with empty.
         // clearApiKey:true explicitly drops the key.
+        // For hadamard configs, apiKey/baseURL are unused (SDK default credentials).
         const existing = findBridgeConfig(name, options.homeDir);
-        const config: PersistedBridgeConfig = { name, provider };
+        const config: PersistedBridgeConfig = { name, provider, runtime };
         if (body.clearApiKey === true) {
           // explicitly remove the saved key
         } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
@@ -2431,7 +2468,7 @@ export function createActoviqGuiHtml(): string {
       <form id="composer" class="composer">
         <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
         <div id="attachmentTray" class="attachment-tray hidden"></div>
-        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq or type /help"></textarea>
+        <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
         <div id="slashMenu" class="slash-menu hidden"></div>
         <div id="queueList" class="queue-list hidden"></div>
         <div class="composer-footer">
@@ -2443,13 +2480,6 @@ export function createActoviqGuiHtml(): string {
               <option value="workspace">Workspace</option>
               <option value="read-only">Read-only</option>
             </select>
-            <select id="outputStyleSelect" title="Output style">
-              <option value="default">Default</option>
-              <option value="concise">Concise</option>
-              <option value="explanatory">Explanatory</option>
-              <option value="learning">Learning</option>
-            </select>
-            <button type="button" id="insertCommand" class="command-chip" title="Commands">/ Commands</button>
           </div>
           <div class="composer-right">
             <div class="model-picker-wrapper">
@@ -2485,6 +2515,39 @@ export function createActoviqGuiHtml(): string {
       <div class="dialog-actions">
         <button type="button" id="cancelWorkspace">Cancel</button>
         <button type="submit" id="openWorkspaceBtn" class="primary">Open workspace</button>
+      </div>
+    </form>
+  </div>
+  <div id="bridgeEditorModal" class="modal hidden">
+    <form id="bridgeEditorForm" class="dialog bridge-editor">
+      <h2 id="bridgeEditorTitle">New config</h2>
+      <label class="dialog-field">Config name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
+      <div class="two-col">
+        <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard (SDK default)</option><option value="claude">Claude</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
+        <label class="dialog-field">Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+      </div>
+      <div id="bridgeCredentialFields">
+        <label class="dialog-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
+        <label class="dialog-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-… (blank keeps the saved key on edit)"></label>
+        <label class="check-row" id="bridgeClearKeyRow"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
+      </div>
+      <div class="bridge-models-section">
+        <h3>Models</h3>
+        <p class="muted">Add one or more models for this config. The first is the default.</p>
+        <div class="bridge-model-row">
+          <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)">
+          <div class="bridge-model-controls">
+            <label class="check-row"><input id="bridgeNewModel1M" type="checkbox">1M ctx</label>
+            <select id="bridgeNewModelModality"><option value="text">Text</option><option value="multimodal">Multimodal</option></select>
+            <button type="button" id="bridgeModelAdd" class="secondary-btn">+ Add</button>
+          </div>
+        </div>
+        <div id="bridgeModelsList" class="settings-card-list compact"></div>
+      </div>
+      <p id="bridgeCfgStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="bridgeCfgReset" class="secondary-btn">Cancel</button>
+        <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
       </div>
     </form>
   </div>
@@ -2533,7 +2596,6 @@ export function createActoviqGuiHtml(): string {
         <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
         <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
         <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
-        <button type="button" class="settings-tab" data-settings-tab="bridge"><span class="settings-icon">${guiIcon('hooks')}</span>Bridge</button>
       </section>
     </aside>
     <form id="settingsForm" class="settings-main">
@@ -2564,6 +2626,18 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="models">
         <h1>Models & routing</h1>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <h2>Provider configs</h2>
+            <button type="button" id="bridgeNewConfig" class="primary">+ New config</button>
+          </div>
+          <p class="muted">Save named provider/model configs (provider + API key + base URL + models), then pick them from the composer's model menu. The active config runs every prompt through its backend on the same chat, so context survives switching. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
+          <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable active config</button>
+          </div>
+          <div id="bridgeConfigsList" class="settings-card-list"></div>
+        </div>
         <div class="settings-group">
           <h2>Current run</h2>
           <p id="settingsCurrentRun" class="muted"></p>
@@ -2603,6 +2677,18 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="personalization">
         <h1>Personalization</h1>
+        <div class="settings-group">
+          <h2>Output style</h2>
+          <p class="muted">Adjusts the agent's response shape. Applied per turn as a system-prompt prefix; <code>default</code> adds nothing.</p>
+          <label class="inline-field">Style
+            <select id="settingsOutputStyle">
+              <option value="default">default — standard responses</option>
+              <option value="concise">concise — terse, code-first, minimal prose</option>
+              <option value="explanatory">explanatory — explain reasoning and tradeoffs</option>
+              <option value="learning">learning — teach how/why, step by step</option>
+            </select>
+          </label>
+        </div>
         <div class="settings-group"><p>Personalization uses local settings plus Actoviq memory. Keep stable preferences in memory; keep credentials in configuration.</p></div>
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
@@ -2662,9 +2748,6 @@ export function createActoviqGuiHtml(): string {
         <div class="settings-group">
           <h2>Session management</h2>
           <p id="settingsSessionSummary" class="muted"></p>
-          <div class="settings-action-row">
-            <button type="button" id="settingsNewChatBtn" class="secondary-btn">New chat</button>
-          </div>
           <div id="settingsSessionsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
@@ -2754,50 +2837,6 @@ export function createActoviqGuiHtml(): string {
         <h1>Worktrees</h1>
         <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
       </section>
-      <section class="settings-panel" data-settings-panel="bridge">
-        <h1>Bridge runtimes</h1>
-        <p>Switch the conversation to a different provider/model <strong>in-process</strong> — no child process. Save a named config (provider + API key + base URL + model), then activate it. The active config runs every prompt through its backend on the same chat, so context survives switching bridge↔default. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
-        <div class="settings-group">
-          <h2>Active</h2>
-          <p id="bridgeActive" class="muted">No active bridge config — using the default provider.</p>
-          <div class="settings-action-row">
-            <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable bridge</button>
-            <button type="button" id="settingsBridgeDetectBtn" class="secondary-btn">Detect installed runtimes</button>
-          </div>
-          <div id="bridgeDetected" class="bridge-detected"></div>
-        </div>
-        <div class="settings-group">
-          <h2>Add / edit config</h2>
-          <label class="inline-field">Name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
-          <div class="two-col">
-            <label>Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
-            <label>Model<input id="bridgeCfgModel" autocomplete="off" placeholder="deepseek-chat"></label>
-          </div>
-          <label class="inline-field">API key<input id="bridgeCfgApiKey" type="password" autocomplete="new-password" placeholder="sk-… (blank keeps the saved key on edit)"></label>
-          <label class="inline-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
-          <label class="check-row"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
-          <div class="settings-action-row">
-            <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
-            <button type="button" id="bridgeCfgReset" class="secondary-btn">Clear form</button>
-          </div>
-          <p id="bridgeCfgStatus" class="muted"></p>
-        </div>
-        <div class="settings-group">
-          <h2>Models</h2>
-          <p class="muted">Define the models available under this config. Each model shows in the composer's model picker.</p>
-          <div class="bridge-model-row">
-            <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)" style="flex:2">
-            <label class="check-row" style="flex:1"><input id="bridgeNewModel1M" type="checkbox">1 M ctx</label>
-            <select id="bridgeNewModelModality" style="flex:1"><option value="text">Text</option><option value="multimodal">Multimodal</option></select>
-            <button type="button" id="bridgeModelAdd" class="secondary-btn">+ Add</button>
-          </div>
-          <div id="bridgeModelsList" class="settings-card-list compact" style="margin-top:10px"></div>
-        </div>
-        <div class="settings-group">
-          <h2>Saved configs</h2>
-          <div id="bridgeConfigsList" class="settings-card-list"></div>
-        </div>
-      </section>
       <div class="settings-savebar">
         <span id="settingsStatus" class="muted"></span>
         <button type="button" id="cancelSettings">Cancel</button>
@@ -2841,7 +2880,7 @@ button { cursor: pointer; }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
 .brand-name { font-weight: 650; font-size: 15px; letter-spacing: .2px; color: #2f3337; }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
-.nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn, .command-chip {
+.nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn {
   min-height: 34px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -2851,7 +2890,7 @@ button { cursor: pointer; }
 .nav-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0 10px; text-align: left; }
 .nav-icon, .folder-icon, .chevron, .settings-icon, .mini-icon { width: 22px; height: 22px; display: inline-grid; place-items: center; flex: 0 0 22px; color: #4e5358; }
 .nav-icon .ui-icon, .folder-icon .ui-icon, .chevron .ui-icon, .settings-icon .ui-icon, .mini-icon .ui-icon { width: 18px; height: 18px; }
-.nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover, .command-chip:hover { background: rgba(0,0,0,.055); }
+.nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover { background: rgba(0,0,0,.055); }
 .search { display: grid; gap: 6px; color: #777b80; font-size: 13px; }
 .search input, .settings-search input {
   width: 100%;
@@ -2983,7 +3022,6 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .composer-left, .composer-right { display: flex; align-items: center; gap: 8px; }
 .round-btn, .send-btn { width: 34px; height: 34px; border-radius: 50%; display: inline-grid; place-items: center; }
 .round-btn { background: transparent; border: 1px solid #d8d8d8; color: #4c5055; }
-.command-chip { border-color: #d8d8d8; padding: 0 10px; color: #4c5055; }
 .send-btn { border: 0; background: #202124; color: #fff; }
 .send-btn.stopping { background: #c7392f; }
 .context-menu { position: fixed; z-index: 40; min-width: 168px; background: #fff; border: 1px solid #d8d8d8; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.18); padding: 4px; display: grid; gap: 2px; }
@@ -3057,7 +3095,7 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .inline-field { margin-top: 14px; max-width: 320px; }
 .inline-field.wide { max-width: 520px; }
 .two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 0 10px; background: #fff; color: #202124; }
+.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select, .bridge-model-row input, .bridge-model-row select { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 0 10px; background: #fff; color: #202124; }
 .check-row { display: flex !important; align-items: center; gap: 10px; color: #2f3337 !important; }
 .shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 38px; }
 kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; padding: 2px 7px; background: #fafafa; }
@@ -3146,29 +3184,43 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
 #todosList li.todo-in_progress { font-weight: 500; color: #2f5fa8; }
 .permission-actions { flex-wrap: wrap; justify-content: flex-end; }
 .permission-actions .danger { color: #c7392f; }
-.model-picker-wrapper { position: relative; }
+.model-picker-wrapper { display: inline-flex; }
 .model-picker-btn { min-height: 34px; border: 1px solid #dddddd; border-radius: 8px; background: #fff; color: #202124; padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .model-picker-btn:hover { background: #f5f5f5; }
-.model-picker-menu { position: absolute; right: 0; bottom: calc(100% + 6px); min-width: 280px; max-width: 420px; background: #fff; border: 1px solid #d8d8d8; border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.14); z-index: 15; padding: 6px; max-height: 420px; overflow-y: auto; }
+.model-picker-menu { position: absolute; right: 0; bottom: calc(100% + 6px); background: #fff; border: 1px solid #d8d8d8; border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.14); z-index: 15; max-height: 380px; overflow: hidden; }
 .model-picker-menu.hidden { display: none; }
-.model-picker-cat { font-size: 12px; font-weight: 600; color: #85888d; padding: 6px 10px 2px; text-transform: uppercase; letter-spacing: .04em; }
-.model-picker-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 5px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; border: 0; background: transparent; width: 100%; text-align: left; color: #2f3337; }
-.model-picker-item:hover { background: #f1f3f4; }
-.model-picker-item.selected { background: #e9f2fe; color: #1a56c4; }
-.model-picker-tags { display: flex; gap: 4px; font-size: 11px; color: #85888d; }
-.model-picker-tags span { border: 1px solid #e2e5e8; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
-.model-picker-efforts { display: flex; gap: 3px; }
-.model-picker-effort { min-height: 22px; border: 1px solid #e2e5e8; border-radius: 5px; background: #fafbfc; font-size: 11px; color: #5f6368; padding: 1px 6px; cursor: pointer; }
-.model-picker-effort:hover, .model-picker-effort.active { background: #e9f2fe; color: #1a56c4; border-color: #bdd4f0; }
+.picker-cols { display: flex; flex-direction: row-reverse; align-items: flex-start; }
+.picker-col { min-width: 168px; max-height: 360px; overflow-y: auto; padding: 4px; }
+.picker-col + .picker-col { border-right: 1px solid #d4d7db; }
+.picker-col-hidden { display: none; }
+.picker-item { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; font: inherit; font-size: 13px; color: #2f3337; cursor: pointer; text-align: left; }
+.picker-item:hover, .picker-item.hover { background: #f1f3f4; }
+.picker-item.selected { background: #e9f2fe; color: #1a56c4; }
+.picker-check { flex: 0 0 14px; width: 14px; color: #1a56c4; font-weight: 700; text-align: center; }
+.picker-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-item-hint { font-size: 11px; color: #85888d; flex-shrink: 0; }
+.picker-item-tags { font-size: 10px; color: #85888d; background: #f1f3f4; border-radius: 3px; padding: 0 5px; flex-shrink: 0; }
+.picker-arrow { font-size: 10px; color: #b4b8bd; flex-shrink: 0; width: 12px; text-align: center; }
+.picker-placeholder { padding: 10px 12px; font-size: 12px; color: #b4b8bd; text-align: center; white-space: nowrap; }
 body[data-theme="dark"] .model-picker-btn { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
 body[data-theme="dark"] .model-picker-menu { background: #26272b; border-color: #3b3d43; }
-body[data-theme="dark"] .model-picker-item { color: #e8eaed; }
-body[data-theme="dark"] .model-picker-item:hover { background: #33363c; }
-body[data-theme="dark"] .model-picker-item.selected { background: #1f2b3a; color: #8ab4f8; }
-body[data-theme="dark"] .model-picker-effort { background: #26272b; border-color: #3b3d43; color: #aab0b8; }
-body[data-theme="dark"] .model-picker-tags span { border-color: #3b3d43; }
-.bridge-detected { display: grid; gap: 4px; margin-top: 10px; }
-.bridge-provider { margin: 0; font-size: 13px; color: #5f6368; }
+body[data-theme="dark"] .picker-col + .picker-col { border-right-color: #3b3d43; }
+body[data-theme="dark"] .picker-item { color: #e8eaed; }
+body[data-theme="dark"] .picker-item:hover, body[data-theme="dark"] .picker-item.hover { background: #33363c; }
+body[data-theme="dark"] .picker-item.selected { background: #1f2b3a; color: #8ab4f8; }
+body[data-theme="dark"] .picker-item-tags { background: #33363c; }
+.settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.settings-group-head h2 { margin: 0; }
+.bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
+.bridge-models-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid #ececec; }
+.bridge-models-section h3 { margin: 0 0 4px; font-size: 15px; }
+.bridge-models-section .muted { margin: 0 0 10px; font-size: 12px; }
+.bridge-model-row { display: flex; flex-direction: column; gap: 8px; }
+.bridge-model-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bridge-model-controls > .check-row { flex: 0 0 auto; }
+.bridge-model-controls > select { flex: 0 0 130px; }
+.bridge-model-controls > button { flex: 0 0 auto; }
+body[data-theme="dark"] .bridge-models-section { border-top-color: #3b3d43; }
 body[data-theme="dark"] .context-bar, body[data-theme="dark"] .todos-panel { border-color: #3b3d43; }
 body[data-theme="dark"] .context-bar > span { background: #26272b; border-color: #3b3d43; color: #c7ccd3; }
 body[data-theme="dark"] .ctx-goal { background: #1e2b22; border-color: #2f4a37; color: #8dd9a8; }
@@ -3719,59 +3771,23 @@ function renderStatusExtras() {
       list.appendChild(li);
     }
   }
-  el('outputStyleSelect').value = snap.outputStyle || 'default';
+  const outStyleSel = el('settingsOutputStyle');
+  if (outStyleSel) outStyleSel.value = snap.outputStyle || 'default';
   renderModelPicker();
 }
-function renderModelPicker() {
-  const items = el('modelPickerItems');
-  items.textContent = '';
-  const snap = state.snapshot;
-  if (!snap) return;
-  const bs = snap.bridgeState || {};
-  const configs = bs.configs || [];
-  const activeConfig = bs.activeConfig;
-  const EFFORTS = ['auto','low','medium','high','max'];
-  // Default entry (current session model, no bridge).
-  const defItem = document.createElement('button');
-  defItem.className = 'model-picker-item' + (!bs.mode ? ' selected' : '');
-  defItem.type = 'button';
-  defItem.innerHTML = '<span>Default</span><span class="model-picker-tags"><span>' + (snap.session?.model || 'default') + '</span></span>';
-  defItem.addEventListener('click', () => { selectPickerModel(null, null, null); });
-  items.appendChild(defItem);
-  if (configs.length === 0) { el('modelPickerBtn').textContent = bs.mode ? (activeConfig?.name || 'Bridge') + ' ▾' : 'Auto ▾'; return; }
-  for (const cfg of configs) {
-    const cat = document.createElement('div');
-    cat.className = 'model-picker-cat';
-    cat.textContent = cfg.name + ' (' + cfg.provider + ')';
-    items.appendChild(cat);
-    const models = Array.isArray(cfg.models) && cfg.models.length > 0 ? cfg.models : [{ name: cfg.model || '(default)', modality: 'text' }];
-    for (const m of models) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'model-picker-item';
-      const isActive = activeConfig?.name === cfg.name && (!activeConfig.model || activeConfig.model === m.name);
-      if (isActive) row.classList.add('selected');
-      const tags = [m.context1M ? '1 M' : '', m.modality === 'multimodal' ? 'Vision' : ''].filter(Boolean);
-      row.innerHTML = '<span>' + m.name + '</span>' + (tags.length ? '<span class="model-picker-tags">' + tags.map(t => '<span>' + t + '</span>').join('') + '</span>' : '');
-      // Effort sub-picks for this model
-      const effortRow = document.createElement('div');
-      effortRow.className = 'model-picker-efforts';
-      effortRow.style.cssText = 'margin-left:10px;margin-bottom:4px';
-      for (const e of EFFORTS) {
-        const eb = document.createElement('button');
-        eb.type = 'button';
-        eb.className = 'model-picker-effort';
-        eb.textContent = e === 'auto' ? 'auto' : e;
-        eb.addEventListener('click', (ev) => { ev.stopPropagation(); selectPickerModel(cfg.name, m.name, e); });
-        effortRow.appendChild(eb);
-      }
-      row.addEventListener('click', () => { selectPickerModel(cfg.name, m.name, 'auto'); });
-      items.appendChild(row);
-      items.appendChild(effortRow);
-    }
-  }
+// ── Cascading 3-level model picker ────────────────────────────────────────
+// Level 1: providers (Default + each bridge config)
+// Level 2: models (appears to the right on provider hover)
+// Level 3: effort (appears to the right on model hover)
+// Clicking an effort (or model for default effort) finalises the selection.
+
+const PICKER_EFFORTS = ['auto','low','medium','high','max'];
+
+function updatePickerBtn() {
   const btn = el('modelPickerBtn');
-  if (bs.mode && activeConfig) {
+  const bs = (state.snapshot?.bridgeState) || {};
+  const activeConfig = bs.activeConfig;
+  if (activeConfig) {
     const mLabel = activeConfig.model || '(default)';
     btn.textContent = mLabel + ' ▾';
     btn.title = activeConfig.name + ' · ' + mLabel;
@@ -3780,16 +3796,220 @@ function renderModelPicker() {
     btn.title = 'Default model (no bridge)';
   }
 }
+
+function makePickerCheck() {
+  const c = document.createElement('span');
+  c.className = 'picker-check';
+  c.textContent = '✓';
+  return c;
+}
+
+function clearPickerCol(n) {
+  const col = el('pickerCol' + n);
+  if (!col) return;
+  col.textContent = '';
+  col.classList.add('picker-col-hidden');
+  if (n === 2) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a provider'; col.appendChild(ph); }
+  if (n === 3) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a model'; col.appendChild(ph); }
+}
+
+function renderPickerCol2(cfg, models, activeConfig) {
+  const col2 = el('pickerCol2');
+  if (!col2) return;
+  col2.textContent = '';
+  col2.classList.remove('picker-col-hidden');
+
+  for (const m of models) {
+    const item = document.createElement('button');
+    item.className = 'picker-item';
+    item.type = 'button';
+    const isActive = activeConfig?.name === cfg.name && (!activeConfig.model || activeConfig.model === m.name);
+
+    const arrow = document.createElement('span');
+    arrow.className = 'picker-arrow';
+    arrow.textContent = '◀';
+    item.appendChild(arrow);
+
+    if (isActive) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
+
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = m.name;
+    item.appendChild(label);
+
+    const tags = [m.context1M ? '1M' : '', m.modality === 'multimodal' ? 'Vision' : ''].filter(Boolean);
+    if (tags.length) {
+      const tagSpan = document.createElement('span');
+      tagSpan.className = 'picker-item-tags';
+      tagSpan.textContent = tags.join(' · ');
+      item.appendChild(tagSpan);
+    }
+
+    const expandModel = () => {
+      col2.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
+      item.classList.add('hover');
+      renderPickerCol3(cfg.name, m.name);
+    };
+    // Hover OR click reveals the effort list; the final selection happens by
+    // clicking an effort (auto/low/medium/high/max). Clicking the model does
+    // not pre-select — it opens the effort column.
+    item.addEventListener('mouseenter', expandModel);
+    item.addEventListener('click', expandModel);
+
+    col2.appendChild(item);
+  }
+}
+
+function renderPickerCol3(configName, modelName) {
+  const col3 = el('pickerCol3');
+  if (!col3) return;
+  col3.textContent = '';
+  col3.classList.remove('picker-col-hidden');
+
+  // Mark the active effort only when this row's model is the one actually
+  // running, so browsing a non-active model's efforts doesn't show a stale
+  // checkmark.
+  const ac = state.snapshot?.bridgeState?.activeConfig;
+  const modelIsActive = !!ac && ac.name === configName && (!ac.model || ac.model === modelName);
+  const curEffort = (state.snapshot?.effort) || 'auto';
+
+  for (const e of PICKER_EFFORTS) {
+    const item = document.createElement('button');
+    item.className = 'picker-item';
+    item.type = 'button';
+    if (modelIsActive && e === curEffort) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = e;
+    item.appendChild(label);
+    item.addEventListener('click', (ev) => { ev.stopPropagation(); selectPickerModel(configName, modelName, e); });
+    col3.appendChild(item);
+  }
+}
+
+function renderModelPicker() {
+  const items = el('modelPickerItems');
+  items.textContent = '';
+  const snap = state.snapshot;
+  if (!snap) return;
+  const bs = snap.bridgeState || {};
+  const configs = bs.configs || [];
+  const activeConfig = bs.activeConfig;
+
+  const cols = document.createElement('div');
+  cols.className = 'picker-cols';
+
+  // ── Column 1: Providers ──────────────────────────────────────────
+  const col1 = document.createElement('div');
+  col1.className = 'picker-col';
+
+  // Default entry (no bridge — use the session's own model)
+  const defItem = document.createElement('button');
+  defItem.className = 'picker-item' + (!bs.mode && !activeConfig ? ' selected' : '');
+  defItem.type = 'button';
+  if (!bs.mode && !activeConfig) defItem.appendChild(makePickerCheck());
+  const defLabel = document.createElement('span');
+  defLabel.className = 'picker-item-label';
+  defLabel.textContent = 'Default';
+  const defHint = document.createElement('span');
+  defHint.className = 'picker-item-hint';
+  defHint.textContent = snap.session?.model || 'default';
+  defItem.appendChild(defLabel);
+  defItem.appendChild(defHint);
+  defItem.addEventListener('click', () => { selectPickerModel(null, null, null); });
+  defItem.addEventListener('mouseenter', () => { clearPickerCol(2); clearPickerCol(3); });
+  col1.appendChild(defItem);
+
+  for (const cfg of configs) {
+    const provItem = document.createElement('button');
+    provItem.className = 'picker-item';
+    provItem.type = 'button';
+    const isActive = activeConfig?.name === cfg.name;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'picker-arrow';
+    arrow.textContent = '◀';
+    provItem.appendChild(arrow);
+
+    if (isActive) { provItem.classList.add('selected'); provItem.appendChild(makePickerCheck()); }
+
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = cfg.name;
+    provItem.appendChild(label);
+
+    const hint = document.createElement('span');
+    hint.className = 'picker-item-hint';
+    hint.textContent = cfg.runtime;
+    provItem.appendChild(hint);
+
+    const models = Array.isArray(cfg.models) && cfg.models.length > 0
+      ? cfg.models
+      : [{ name: cfg.model || '(default)', modality: 'text' }];
+
+    const expandProvider = () => {
+      col1.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
+      provItem.classList.add('hover');
+      renderPickerCol2(cfg, models, activeConfig);
+      clearPickerCol(3);
+    };
+    provItem.addEventListener('mouseenter', expandProvider);
+
+    // Click expands the model list (same as hover) so clickers aren't left
+    // with a dead row; providers with no registered models activate directly.
+    provItem.addEventListener('click', () => {
+      if (Array.isArray(cfg.models) && cfg.models.length > 0) expandProvider();
+      else selectPickerModel(cfg.name, cfg.model || null, 'auto');
+    });
+
+    col1.appendChild(provItem);
+  }
+
+  // ── Column 2: Models (filled on provider hover) ──────────────────
+  const col2 = document.createElement('div');
+  col2.className = 'picker-col picker-col-hidden';
+  col2.id = 'pickerCol2';
+  const ph2 = document.createElement('div');
+  ph2.className = 'picker-placeholder';
+  ph2.textContent = 'Hover a provider';
+  col2.appendChild(ph2);
+
+  // ── Column 3: Efforts (filled on model hover) ────────────────────
+  const col3 = document.createElement('div');
+  col3.className = 'picker-col picker-col-hidden';
+  col3.id = 'pickerCol3';
+  const ph3 = document.createElement('div');
+  ph3.className = 'picker-placeholder';
+  ph3.textContent = 'Hover a model';
+  col3.appendChild(ph3);
+
+  cols.appendChild(col1);
+  cols.appendChild(col2);
+  cols.appendChild(col3);
+  items.appendChild(cols);
+
+  updatePickerBtn();
+}
+
 async function selectPickerModel(configName, modelName, effort) {
   if (!configName) {
     // Default: disable bridge
     const res = await api('/api/bridge/off', { method: 'POST' });
     if (res.ok) { state.snapshot = await res.json(); }
   } else {
-    // Update the config's selected model if different from stored.
+    // Update the config's selected model if different from stored. Send the
+    // full config (provider/baseURL/models preserved) so the server's merge
+    // doesn't drop those fields — only apiKey is omitted (blank → preserved).
     const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
     if (cfg && cfg.model !== modelName) {
-      const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName, model: modelName || '' }) });
+      const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({
+        name: configName,
+        runtime: cfg.runtime || 'bridge',
+        provider: cfg.provider,
+        baseURL: cfg.baseURL || '',
+        model: modelName || '',
+        models: Array.isArray(cfg.models) ? cfg.models : [],
+      }) });
       if (res.ok) { state.snapshot = await res.json(); }
     }
     const actRes = await api('/api/bridge/activate', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName }) });
@@ -3799,6 +4019,7 @@ async function selectPickerModel(configName, modelName, effort) {
   else { loadState().catch(console.error); }
   el('modelPickerMenu').classList.add('hidden');
 }
+
 function toggleModelPicker() {
   const menu = el('modelPickerMenu');
   if (menu.classList.contains('hidden')) {
@@ -4418,31 +4639,15 @@ function showNextPermission() {
 }
 function setField(id, value) { el(id).value = value == null ? '' : String(value); }
 function setChecked(id, value) { el(id).checked = Boolean(value); }
-async function refreshBridgeDetect() {
-  const el = document.getElementById('bridgeDetected');
-  if (!el) return;
-  el.innerHTML = '<span class="muted">Detecting...</span>';
-  try {
-    const res = await api('/api/bridge/detect');
-    const data = await res.json();
-    const providers = data.providers || [];
-    let html = '';
-    for (const p of providers) {
-      const mark = p.available ? '✔' : '✘';
-      const ver = p.version ? ' v' + p.version : '';
-      const path = p.path ? ' · ' + p.path : '';
-      html += \`<p class="bridge-provider"><strong>\${p.id}</strong> \${mark}\${ver}\${path}</p>\`;
-    }
-    el.innerHTML = html || '<p class="muted">No providers detected.</p>';
-  } catch { el.innerHTML = '<p class="muted">Detection failed.</p>'; }
-}
 function renderBridgeConfigs() {
   const bs = (state.snapshot && state.snapshot.bridgeState) || {};
   const active = bs.activeConfig;
   const configs = bs.configs || [];
   el('bridgeActive').innerHTML = active
-    ? \`<strong>\${active.name}</strong> · \${active.provider} · \${active.model || '(default model)'} · key \${active.apiKeyMasked}\${active.baseURL ? ' · ' + active.baseURL : ''}\`
-    : 'No active bridge config — using the default provider.';
+    ? (active.runtime === 'hadamard'
+      ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`
+      : \`<strong>\${active.name}</strong> · \${active.runtime} · \${active.model || '(default model)'} · key \${active.apiKeyMasked}\${active.baseURL ? ' · ' + active.baseURL : ''}\`)
+    : 'No active provider config — using the default provider.';
   const root = el('bridgeConfigsList');
   root.textContent = '';
   if (configs.length === 0) {
@@ -4455,42 +4660,71 @@ function renderBridgeConfigs() {
   for (const cfg of configs) {
     const isActive = active && active.name === cfg.name;
     const card = document.createElement('article');
-    card.className = 'settings-card';
+    card.className = 'settings-card' + (isActive ? ' active' : '');
     const strong = document.createElement('strong');
     strong.textContent = cfg.name + (isActive ? ' ●' : '');
     card.appendChild(strong);
     const p = document.createElement('p');
     const modelCount = Array.isArray(cfg.models) ? cfg.models.length : 0;
-    p.textContent = [cfg.provider, cfg.model || '(default model)', modelCount > 0 ? modelCount + ' models' : '', 'key ' + cfg.apiKeyMasked, cfg.baseURL].filter(Boolean).join(' · ');
+    const modelSummary = modelCount > 0
+      ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
+      : (cfg.model ? cfg.model : 'no models');
+    p.textContent = [cfg.runtime, modelSummary, cfg.runtime !== 'hadamard' ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
     card.appendChild(p);
     const footer = document.createElement('footer');
-    const actBtn = document.createElement('button');
-    actBtn.type = 'button';
-    actBtn.textContent = isActive ? 'Active' : 'Activate';
-    actBtn.disabled = isActive;
-    actBtn.addEventListener('click', () => activateBridgeConfig(cfg.name));
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.textContent = 'Edit';
-    editBtn.addEventListener('click', () => {
-      setField('bridgeCfgName', cfg.name);
-      setField('bridgeCfgProvider', cfg.provider);
-      setField('bridgeCfgModel', cfg.model || '');
-      setField('bridgeCfgApiKey', '');
-      setField('bridgeCfgBaseUrl', cfg.baseURL || '');
-      el('bridgeCfgClearKey').checked = false;
-      draftBridgeModels = Array.isArray(cfg.models) ? cfg.models.map(m => ({name: m.name, context1M: m.context1M || false, modality: m.modality || 'text'})) : [];
-      renderBridgeModels();
-      el('bridgeCfgStatus').textContent = 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.';
-    });
+    editBtn.addEventListener('click', () => openBridgeEditor(cfg));
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.textContent = 'Remove';
     delBtn.addEventListener('click', () => deleteBridgeConfig(cfg.name));
-    footer.append(actBtn, editBtn, delBtn);
+    footer.append(editBtn, delBtn);
     card.appendChild(footer);
     root.appendChild(card);
   }
+}
+
+// ── Per-config editor modal ───────────────────────────────────────────────
+let editingBridgeConfigName = null;
+// runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
+const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'anthropic', pi:'openai', codex:'openai', crush:'openai' };
+function toggleCredentialFields() {
+  const runtime = el('bridgeCfgRuntime').value;
+  const isHadamard = runtime === 'hadamard';
+  const fields = el('bridgeCredentialFields');
+  if (fields) fields.style.display = isHadamard ? 'none' : '';
+  // Auto-select wire protocol from runtime (ineditable for bridge runtimes).
+  const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
+  el('bridgeCfgProvider').value = pv;
+  el('bridgeCfgProvider').disabled = !isHadamard;
+}
+function openBridgeEditor(cfg) {
+  editingBridgeConfigName = cfg ? cfg.name : null;
+  el('bridgeEditorTitle').textContent = cfg ? 'Edit config' : 'New config';
+  setField('bridgeCfgName', cfg ? cfg.name : '');
+  setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
+  setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
+  setField('bridgeCfgApiKey', '');
+  setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
+  el('bridgeCfgClearKey').checked = false;
+  el('bridgeClearKeyRow').style.display = cfg ? '' : 'none';
+  toggleCredentialFields();
+  draftBridgeModels = cfg && Array.isArray(cfg.models)
+    ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
+    : [];
+  renderBridgeModels();
+  el('bridgeNewModelName').value = '';
+  el('bridgeNewModel1M').checked = false;
+  el('bridgeNewModelModality').value = 'text';
+  el('bridgeCfgStatus').textContent = cfg ? 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.' : '';
+  el('bridgeEditorModal').classList.remove('hidden');
+  el('bridgeCfgName').focus();
+}
+function closeBridgeEditor() {
+  el('bridgeEditorModal').classList.add('hidden');
+  editingBridgeConfigName = null;
 }
 let draftBridgeModels = [];
 function renderBridgeModels() {
@@ -4537,25 +4771,26 @@ async function saveBridgeConfig() {
   const name = el('bridgeCfgName').value.trim();
   if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
   const clearKey = el('bridgeCfgClearKey').checked;
+  // The first registered model is the config's default model. If models were
+  // added we prefer models[0]; otherwise keep any previously-selected model
+  // (carried in editingBridgeConfigName's stored config) so activation still
+  // has a target.
+  const defaultModel = draftBridgeModels.length > 0 ? draftBridgeModels[0].name : '';
   const body = {
     name,
+    runtime: el('bridgeCfgRuntime').value,
     provider: el('bridgeCfgProvider').value || 'anthropic',
     apiKey: el('bridgeCfgApiKey').value,
     clearApiKey: clearKey,
     baseURL: el('bridgeCfgBaseUrl').value.trim(),
-    model: el('bridgeCfgModel').value.trim(),
+    model: defaultModel,
     models: draftBridgeModels.length > 0 ? draftBridgeModels : undefined,
   };
   el('bridgeCfgStatus').textContent = 'Saving...';
   const res = await api('/api/bridge/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) { el('bridgeCfgStatus').textContent = 'Save failed: ' + (await res.text()); return; }
   state.snapshot = await res.json();
-  el('bridgeCfgStatus').textContent = 'Saved "' + name + '"' + (clearKey ? ' (key cleared).' : '.');
-  el('bridgeCfgName').value = '';
-  el('bridgeCfgApiKey').value = '';
-  el('bridgeCfgClearKey').checked = false;
-  draftBridgeModels = [];
-  renderBridgeModels();
+  closeBridgeEditor();
   renderBridgeConfigs();
 }
 async function deleteBridgeConfig(name) {
@@ -4634,7 +4869,7 @@ function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
-  if (tab === 'bridge') { renderBridgeConfigs(); refreshBridgeDetect().catch(() => undefined); }
+  if (tab === 'models') renderBridgeConfigs();
   if (tab === 'mcp') renderMcpServers();
   if (tab === 'sessions') renderArchived();
 }
@@ -4765,12 +5000,6 @@ el('fileInput').addEventListener('change', async (event) => {
   await addFiles(event.target.files);
   event.target.value = '';
 });
-el('insertCommand').addEventListener('click', async () => {
-  if (!state.snapshot?.commands) await loadState().catch(() => undefined);
-  input.value = input.value || '/';
-  input.focus();
-  renderSlashMenu();
-});
 el('composer').addEventListener('dragover', (event) => {
   if (!event.dataTransfer || Array.from(event.dataTransfer.types || []).indexOf('Files') === -1) return;
   event.preventDefault();
@@ -4827,13 +5056,6 @@ el('settingsEnterWorktree').addEventListener('click', () => {
 });
 el('settingsExitWorktree').addEventListener('click', () => { runSettingsCommand('/worktree exit', 'Exiting worktree...').catch(console.error); });
 el('settingsAutomationWorktreeList').addEventListener('click', () => { runSettingsCommand('/worktree list', 'Listing worktrees...').catch(console.error); });
-el('settingsNewChatBtn').addEventListener('click', async () => {
-  await createNewSession();
-  if (!el('settingsModal').classList.contains('hidden')) {
-    renderSettingsCommandPanels();
-    el('settingsStatus').textContent = 'New chat created';
-  }
-});
 el('settingsMemoryStatusBtn').addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
 el('settingsCompactNowBtn').addEventListener('click', () => {
   const instructions = el('settingsCompactInstructions').value.trim();
@@ -4844,16 +5066,12 @@ el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('mcpCfgAdd').addEventListener('click', () => { addMcpServerConfig().catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
-el('settingsBridgeDetectBtn').addEventListener('click', () => { refreshBridgeDetect().catch(console.error); });
 el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(console.error); });
+el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); });
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
-el('bridgeCfgReset').addEventListener('click', () => {
-  ['bridgeCfgName', 'bridgeCfgApiKey', 'bridgeCfgBaseUrl', 'bridgeCfgModel'].forEach(id => { el(id).value = ''; });
-  el('bridgeCfgClearKey').checked = false;
-  draftBridgeModels = [];
-  renderBridgeModels();
-  el('bridgeCfgStatus').textContent = '';
-});
+el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
+el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeEditorModal').addEventListener('click', (event) => { if (event.target === el('bridgeEditorModal')) closeBridgeEditor(); });
 el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 document.addEventListener('click', (event) => {
@@ -4870,7 +5088,7 @@ document.addEventListener('contextmenu', (event) => {
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
-el('outputStyleSelect').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
+el('settingsOutputStyle').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });

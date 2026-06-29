@@ -22,6 +22,41 @@ export type InProcessProvider = 'anthropic' | 'openai';
 
 export type ModelModality = 'text' | 'multimodal';
 
+/** Runtime kind — the product / endpoint the config connects to.
+ *
+ *  `hadamard`    — use the SDK's default provider (clean SDK, no separate credentials)
+ *  `claude`      — Anthropic / Claude API (Anthropic wire protocol)
+ *  `codewhale`   — CodeWhale API (Anthropic wire protocol)
+ *  `pi`          — Pi API (OpenAI wire protocol)
+ *  `codex`       — Codex API (OpenAI wire protocol)
+ *  `reasonix`    — Reasonix API (Anthropic wire protocol)
+ *  `crush`       — Crush API (OpenAI wire protocol)
+ */
+export type BridgeRuntime =
+  | 'hadamard'
+  | 'claude'
+  | 'codewhale'
+  | 'pi'
+  | 'codex'
+  | 'reasonix'
+  | 'crush';
+
+/** Map a runtime id to the wire protocol (in-process provider). */
+export function runtimeToProvider(rt: BridgeRuntime): InProcessProvider | null {
+  switch (rt) {
+    case 'claude':
+    case 'codewhale':
+    case 'reasonix':
+      return 'anthropic';
+    case 'pi':
+    case 'codex':
+    case 'crush':
+      return 'openai';
+    default:
+      return null; // hadamard — no separate provider
+  }
+}
+
 export interface ProviderModelEntry {
   /** Model id (e.g. "deepseek-chat", "gpt-4o"). */
   name: string;
@@ -33,6 +68,9 @@ export interface ProviderModelEntry {
 
 export interface PersistedBridgeConfig {
   name: string;
+  /** Runtime: 'hadamard' uses the SDK's default provider/credentials;
+   *  'bridge' uses this config's provider/apiKey/baseURL. */
+  runtime: BridgeRuntime;
   provider: InProcessProvider;
   apiKey?: string;
   baseURL?: string;
@@ -70,6 +108,12 @@ export function getBridgeConfigsPath(homeDir: string = os.homedir()): string {
   return path.join(homeDir, '.actoviq', 'bridge-configs.json');
 }
 
+export const VALID_RUNTIMES: BridgeRuntime[] = ['hadamard', 'claude', 'codewhale', 'pi', 'codex', 'reasonix', 'crush'];
+
+function isValidRuntime(raw: unknown): raw is BridgeRuntime {
+  return (VALID_RUNTIMES as string[]).includes(raw as string);
+}
+
 function isValidConfig(value: unknown): value is PersistedBridgeConfig {
   if (typeof value !== 'object' || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -86,6 +130,8 @@ export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBrid
           const out: PersistedBridgeConfig = {
             name: c.name,
             provider: migrateProvider(c.provider),
+            // Pre-v0.8 legacy: missing/unknown runtime defaults to 'claude'.
+            runtime: isValidRuntime(c.runtime) ? c.runtime : 'claude',
           };
           if (typeof c.apiKey === 'string' && c.apiKey) out.apiKey = c.apiKey;
           if (typeof c.baseURL === 'string' && c.baseURL) out.baseURL = c.baseURL;
