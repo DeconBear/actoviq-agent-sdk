@@ -114,7 +114,7 @@ describe('legacy provider migration', () => {
     expect(byName['legacy-pi']).toBe('openai');
     expect(byName['legacy-codex']).toBe('openai');
     expect(byName['legacy-codewhale']).toBe('anthropic');
-    expect(byName['legacy-reasonix']).toBe('anthropic');
+    expect(byName['legacy-reasonix']).toBe('openai');
     expect(byName['legacy-crush']).toBe('openai');
     // Migrated file is re-saved (best-effort).
   });

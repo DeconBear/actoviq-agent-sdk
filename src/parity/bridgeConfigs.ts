@@ -29,7 +29,7 @@ export type ModelModality = 'text' | 'multimodal';
  *  `codewhale`   — CodeWhale API (Anthropic wire protocol)
  *  `pi`          — Pi API (OpenAI wire protocol)
  *  `codex`       — Codex API (OpenAI wire protocol)
- *  `reasonix`    — Reasonix API (Anthropic wire protocol)
+ *  `reasonix`    — Reasonix API (OpenAI wire protocol)
  *  `crush`       — Crush API (OpenAI wire protocol)
  */
 export type BridgeRuntime =
@@ -46,8 +46,8 @@ export function runtimeToProvider(rt: BridgeRuntime): InProcessProvider | null {
   switch (rt) {
     case 'claude':
     case 'codewhale':
-    case 'reasonix':
       return 'anthropic';
+    case 'reasonix':
     case 'pi':
     case 'codex':
     case 'crush':
@@ -95,7 +95,7 @@ const LEGACY_PROVIDER_MIGRATION: Record<string, InProcessProvider> = {
   codewhale: 'anthropic',
   pi: 'openai',
   codex: 'openai',
-  reasonix: 'anthropic',
+  reasonix: 'openai',
   crush: 'openai',
 };
 
