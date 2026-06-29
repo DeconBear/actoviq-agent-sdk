@@ -3300,6 +3300,15 @@ body[data-theme="dark"] #todosList li.todo-completed { color: #6f7479; }
 export function createActoviqGuiClientScript(): string {
   return `
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
+// Client-side icon helper (eye/eyeOff only — the rest are server-rendered).
+const _ICONS = {
+  eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
+};
+function guiIcon(name) {
+  const body = _ICONS[name] || '';
+  return \`<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">\${body}</svg>\`;
+}
 function api(path, options = {}) {
   const headers = Object.assign({}, options.headers || {}, { 'x-actoviq-token': ACTOVIQ_TOKEN });
   return fetch(path, Object.assign({}, options, { headers }));
@@ -3847,7 +3856,7 @@ function renderStatusExtras() {
 // Level 3: effort (appears to the right on model hover)
 // Clicking an effort (or model for default effort) finalises the selection.
 
-const PICKER_EFFORTS = ['auto','low','medium','high','max'];
+const PICKER_EFFORTS = ['low','medium','high','max'];
 
 function updatePickerBtn() {
   const btn = el('modelPickerBtn');
@@ -3858,8 +3867,17 @@ function updatePickerBtn() {
     btn.textContent = mLabel + ' ▾';
     btn.title = activeConfig.name + ' · ' + mLabel;
   } else {
-    btn.textContent = 'Auto ▾';
-    btn.title = 'Default model (no bridge)';
+    // No active config: show the first config's model as a hint (not yet activated),
+    // or leave blank when no configs exist.
+    const first = (bs.configs || [])[0];
+    if (first) {
+      const mLabel = first.model || '(default)';
+      btn.textContent = mLabel + ' ▾';
+      btn.title = first.name + ' · ' + mLabel + ' (not active)';
+    } else {
+      btn.textContent = '';
+      btn.title = 'Add a provider config in Settings';
+    }
   }
 }
 
@@ -3968,23 +3986,12 @@ function renderModelPicker() {
   // ── Column 1: Providers ──────────────────────────────────────────
   const col1 = document.createElement('div');
   col1.className = 'picker-col';
-
-  // Default entry (no bridge — use the session's own model)
-  const defItem = document.createElement('button');
-  defItem.className = 'picker-item' + (!bs.mode && !activeConfig ? ' selected' : '');
-  defItem.type = 'button';
-  if (!bs.mode && !activeConfig) defItem.appendChild(makePickerCheck());
-  const defLabel = document.createElement('span');
-  defLabel.className = 'picker-item-label';
-  defLabel.textContent = 'Default';
-  const defHint = document.createElement('span');
-  defHint.className = 'picker-item-hint';
-  defHint.textContent = snap.session?.model || 'default';
-  defItem.appendChild(defLabel);
-  defItem.appendChild(defHint);
-  defItem.addEventListener('click', () => { selectPickerModel(null, null, null); });
-  defItem.addEventListener('mouseenter', () => { clearPickerCol(2); clearPickerCol(3); });
-  col1.appendChild(defItem);
+  if (configs.length === 0) {
+    const ph = document.createElement('div');
+    ph.className = 'picker-placeholder';
+    ph.textContent = 'No configs — add one in Settings';
+    col1.appendChild(ph);
+  }
 
   for (const cfg of configs) {
     const provItem = document.createElement('button');
@@ -4025,7 +4032,7 @@ function renderModelPicker() {
     // with a dead row; providers with no registered models activate directly.
     provItem.addEventListener('click', () => {
       if (Array.isArray(cfg.models) && cfg.models.length > 0) expandProvider();
-      else selectPickerModel(cfg.name, cfg.model || null, 'auto');
+      else selectPickerModel(cfg.name, cfg.model || null, 'medium');
     });
 
     col1.appendChild(provItem);
