@@ -32,6 +32,9 @@ jobs:
       - name: Install Linux rolldown native binding
         run: npm install --no-save --package-lock=false @rolldown/binding-linux-x64-gnu@1.0.0-rc.12
 
+      - name: Install electron (for src/gui build)
+        run: npm install --no-save --package-lock=false electron@42.4.1
+
       - name: Validate release tag matches package version
         if: github.event_name == 'release' || github.event_name == 'push'
         shell: bash
