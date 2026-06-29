@@ -81,7 +81,7 @@
     "prepare:public-runtime": "node scripts/prepare-public-runtime.mjs",
     "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --arm64",
+    "dist:win": "npm run build && electron-builder --win --x64 && electron-builder --win --arm64",
     "test": "vitest run",
     "test:watch": "vitest",
     "bench:standard": "tsx bench/standard/run-all.ts",
