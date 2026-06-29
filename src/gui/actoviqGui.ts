@@ -3053,6 +3053,11 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .tool-card.error .tool-spinner { background: #c7392f; }
 .tool-card.error .tool-spinner::before { content: "x"; }
 .tool-card pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #4d5359; background: #fff; }
+.tool-toggle { margin-left: auto; flex: 0 0 auto; background: transparent; border: 0; cursor: pointer; padding: 4px; color: #85888d; display: inline-grid; place-items: center; border-radius: 4px; }
+.tool-toggle:hover { background: rgba(0,0,0,.06); color: #4c5055; }
+.tool-card.collapsed .tool-body { display: none; }
+.tool-card.collapsed .tool-toggle svg { transform: rotate(-90deg); }
+.tool-toggle svg { transition: transform .15s ease; }
 .tool-card.running::after { content: ""; display: block; height: 2px; background: linear-gradient(90deg, transparent, #4b93f7, transparent); animation: sweep 1.15s infinite; }
 .tool-card.error { border-color: #e5b7b2; }
 .tool-card.success { border-color: #cfe6d8; }
@@ -3475,12 +3480,27 @@ function addToolActivity(event) {
   status.textContent = 'Calling tool';
   labels.append(title, status);
   header.append(spinner, labels);
+  // Collapsible body: a toggle button (chevron) + the pre with input/output.
+  // While running the body shows; once complete it collapses (user can expand).
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'tool-toggle';
+  toggle.title = 'Show / hide details';
+  toggle.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  const body = document.createElement('div');
+  body.className = 'tool-body';
   const pre = document.createElement('pre');
   pre.textContent = summarizeToolInput(event.input);
   if (!pre.textContent) pre.classList.add('hidden');
-  card.append(header, pre);
+  body.append(pre);
+  toggle.addEventListener('click', () => {
+    const collapsed = card.classList.toggle('collapsed');
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  });
+  header.append(spinner, labels, toggle);
+  card.append(header, body);
   transcript.appendChild(card);
-  state.toolNodes.set(id, { card, status, pre });
+  state.toolNodes.set(id, { card, status, pre, body, toggle });
   setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
   scrollTranscript();
 }
@@ -3508,6 +3528,10 @@ function updateToolActivity(event) {
     node.pre.classList.remove('hidden');
     node.pre.textContent = output.length > 1400 ? output.slice(0, 1400) + '\\n...' : output;
   }
+  // Collapse the body once the tool finishes so the transcript stays compact;
+  // the toggle button (chevron) lets the user expand it again.
+  node.card.classList.add('collapsed');
+  node.toggle.setAttribute('aria-expanded', 'false');
   setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? '' : 'error');
   scrollTranscript();
 }
