@@ -110,3 +110,41 @@ jobs:
 
       - name: Verify npm package contents
         run: npm pack --dry-run
+
+  # Phase 0 de-risk (workbench terminal engine): proves the native dependencies
+  # work inside Electron headlessly on every push. Self-contained harness under
+  # scripts/pty-spike/ (installs its own electron + node-pty + @xterm). arm64 is
+  # experimental — node-pty ships win32-arm64 N-API prebuilts (see
+  # scripts/pty-spike/README.md), but the windows-11-arm runner may be
+  # unavailable on some plans; a pending/failed arm64 leg is non-blocking.
+  pty-spike:
+    name: PTY/xterm smoke (${{ matrix.label }})
+    runs-on: ${{ matrix.runs-on }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: windows-latest
+            label: x64
+            experimental: false
+          - runs-on: windows-11-arm
+            label: arm64
+            experimental: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install harness dependencies
+        working-directory: scripts/pty-spike
+        run: npm ci
+
+      - name: Run PTY/xterm smoke
+        working-directory: scripts/pty-spike
+        run: npm run smoke
