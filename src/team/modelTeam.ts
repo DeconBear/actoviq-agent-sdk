@@ -62,6 +62,20 @@ async function createMemberApi(member: TeamMember): Promise<MemberApi> {
   return { api, model: resolved.model, maxTokens: member.maxTokens ?? 32000 };
 }
 
+function memberAssignmentPrompt(member: TeamMember): string {
+  const lines: string[] = [];
+  if (member.responsibility) lines.push(`Responsibility: ${member.responsibility}`);
+  if (member.dependsOn?.length) lines.push(`Coordinate after: ${member.dependsOn.join(', ')}`);
+  if (member.reviews?.length) lines.push(`Review these teammates' work: ${member.reviews.join(', ')}`);
+  if (member.toolScope?.length) lines.push(`Expected tool scope: ${member.toolScope.join(', ')}`);
+  if (member.runtime) lines.push(`Preferred runtime: ${member.runtime}`);
+  return lines.length ? ['## Team assignment', ...lines].join('\n') : '';
+}
+
+function buildMemberSystemPrompt(base: string, member: TeamMember): string {
+  return [base, memberAssignmentPrompt(member), member.systemPrompt].filter(Boolean).join('\n\n');
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Helpers
 // ═══════════════════════════════════════════════════════════════════
@@ -167,6 +181,7 @@ async function runReviewerMode(
   const systemPrompt = [
     reviewerFraming,
     context ? `\n## Context from the requesting agent (what it did and obtained)\n${context}` : '',
+    memberAssignmentPrompt(reviewer),
     reviewer.systemPrompt ? `\n${reviewer.systemPrompt}` : '',
   ].filter(Boolean).join('\n');
 
@@ -282,9 +297,7 @@ async function runPanelAnalysisMode(
           identity,
           member,
           task: memberPrompt,
-          systemPrompt: member.systemPrompt
-            ? `${analysisFraming}\n\n${member.systemPrompt}`
-            : analysisFraming,
+          systemPrompt: buildMemberSystemPrompt(analysisFraming, member),
           cwd,
           tools: readOnlyTools,
           maxIterations: memberMaxIterations,

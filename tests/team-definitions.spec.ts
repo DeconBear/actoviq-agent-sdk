@@ -48,6 +48,44 @@ describe('Team definitions from disk', () => {
     expect(loaded!.source).toBe('project');
   });
 
+  it('preserves member responsibilities and review edges', async () => {
+    const def: TeamDefinition = {
+      name: 'collab-team',
+      mode: 'panel-analysis',
+      members: [
+        {
+          id: 'planner',
+          name: 'Planner',
+          role: 'planner',
+          model: 'claude-sonnet-4-6',
+          responsibility: 'Break the task into implementation steps.',
+          reviews: ['coder'],
+          runtime: 'claude-code',
+          toolScope: ['Read', 'Grep'],
+        },
+        {
+          id: 'coder',
+          name: 'Coder',
+          role: 'coder',
+          model: 'deepseek-v4-pro',
+          responsibility: 'Implement the agreed changes.',
+        },
+      ],
+      reviewEdges: [{ from: 'planner', to: 'coder', kind: 'review' }],
+    };
+
+    await saveTeamDefinition(def, { projectDir: tmpDir });
+    const loaded = loadTeamDefinition('collab-team', tmpDir);
+
+    expect(loaded!.definition.members[0]).toMatchObject({
+      responsibility: 'Break the task into implementation steps.',
+      reviews: ['coder'],
+      runtime: 'claude-code',
+      toolScope: ['Read', 'Grep'],
+    });
+    expect(loaded!.definition.reviewEdges).toEqual([{ from: 'planner', to: 'coder', kind: 'review' }]);
+  });
+
   it('resolves $ENV_VAR apiKey references on load', async () => {
     process.env.TEST_TEAM_KEY = 'sk-resolved-123';
     const def: TeamDefinition = {
