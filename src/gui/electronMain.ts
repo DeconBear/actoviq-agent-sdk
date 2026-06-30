@@ -82,8 +82,15 @@ function getUserArgs(): string[] {
 
 function resolveIconPath(): string | undefined {
   const dir = path.dirname(fileURLToPath(import.meta.url));
-  // Windows prefers .ico (multi-resolution) for the taskbar and title bar;
-  // .png is a fallback for macOS/Linux. On win32, prefer .ico when present.
+  // When packaged, an asset inside app.asar is transparently readable from
+  // the app.asar/... virtual path, BUT Win32 LoadImage (used by setIcon and
+  // the BrowserWindow `icon` option to read .ico) can't read through asar's
+  // virtual FS — the icon silently fails to apply and falls back to the
+  // Electron default. Resolve asar paths to their real app.asar.unpacked/...
+  // location when the asset is unpacked (see package.json asarUnpack).
+  const realPath = (p: string): string => p.includes('\\app.asar\\')
+    ? p.replace('\\app.asar\\', '\\app.asar.unpacked\\')
+    : (p.includes('/app.asar/') ? p.replace('/app.asar/', '/app.asar.unpacked/') : p);
   const pngs = [
     path.join(dir, '../../../assets/actoviq-icon.png'), // dist/src/gui -> repo/assets
     path.join(dir, '../../assets/actoviq-icon.png'), // src/gui (tsx) -> repo/assets
@@ -94,10 +101,10 @@ function resolveIconPath(): string | undefined {
       path.join(dir, '../../../assets/actoviq-icon.ico'), // dist/src/gui -> repo/assets
       path.join(process.cwd(), 'assets', 'actoviq-icon.ico'),
     ];
-    const ico = icos.find((c) => existsSync(c));
-    if (ico) return ico;
+    const ico = icos.find((c) => existsSync(c) || existsSync(realPath(c)));
+    if (ico) return existsSync(realPath(ico)) ? realPath(ico) : ico;
   }
-  return pngs.find((candidate) => existsSync(candidate));
+  return pngs.find((candidate) => existsSync(candidate) || existsSync(realPath(candidate)));
 }
 
 /**
