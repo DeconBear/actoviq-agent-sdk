@@ -82,12 +82,22 @@ function getUserArgs(): string[] {
 
 function resolveIconPath(): string | undefined {
   const dir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
+  // Windows prefers .ico (multi-resolution) for the taskbar and title bar;
+  // .png is a fallback for macOS/Linux. On win32, prefer .ico when present.
+  const pngs = [
     path.join(dir, '../../../assets/actoviq-icon.png'), // dist/src/gui -> repo/assets
     path.join(dir, '../../assets/actoviq-icon.png'), // src/gui (tsx) -> repo/assets
     path.join(process.cwd(), 'assets', 'actoviq-icon.png'),
   ];
-  return candidates.find((candidate) => existsSync(candidate));
+  if (process.platform === 'win32') {
+    const icos = [
+      path.join(dir, '../../../assets/actoviq-icon.ico'), // dist/src/gui -> repo/assets
+      path.join(process.cwd(), 'assets', 'actoviq-icon.ico'),
+    ];
+    const ico = icos.find((c) => existsSync(c));
+    if (ico) return ico;
+  }
+  return pngs.find((candidate) => existsSync(candidate));
 }
 
 /**

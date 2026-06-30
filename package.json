@@ -22,6 +22,7 @@
     "artifactName": "Actoviq-Setup-${version}-${arch}.${ext}",
     "directories": { "output": "dist_electron" },
     "extraMetadata": { "main": "dist/src/gui/electronMain.js" },
+    "icon": "assets/actoviq-icon.ico",
     "files": [
       "dist/**/*",
       "assets/**/*",
@@ -84,6 +85,7 @@
     "prepack": "npm run build",
     "prepare:public-runtime": "node scripts/prepare-public-runtime.mjs",
     "prepare:xterm": "node scripts/prepare-xterm.mjs",
+    "make:ico": "python scripts/make-ico.py",
     "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist:win": "npm run prepare:xterm && npm run build && electron-builder --win --x64 && electron-builder --win --arm64",

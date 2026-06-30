@@ -617,13 +617,18 @@ async function pickFolder(): Promise<string | null> {
   try {
     if (process.platform === 'win32') {
       // PowerShell FolderBrowserDialog — ships with Windows.
+      // NB: use Write-Output WITHOUT -NoNewline. Windows PowerShell 5.1's
+      // Write-Output has no -NoNewline parameter (that's Write-Host), so the
+      // literal "-NoNewline" was emitted as a positional input object and
+      // corrupted the path ("...-NoNewlineC:\folder..."). The trailing newline
+      // Write-Output adds is stripped by the .trim() below.
       const ps = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
 $d.Description = 'Select workspace folder'
 $d.ShowNewFolderButton = $true
-if ($d.ShowDialog() -eq 'OK') { Write-Output -NoNewline $d.SelectedPath }
+if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }
 `;
       const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', windowsHide: true });
       const trimmed = stdout.trim();
