@@ -388,6 +388,7 @@ function guiIcon(name: string): string {
     globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
     hooks: '<path d="M9 18a5 5 0 0 1 0-10h1"/><path d="M15 6a5 5 0 0 1 0 10h-1"/><path d="M8 13h8"/>',
     keyboard: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01"/><path d="M11 9h.01"/><path d="M15 9h.01"/><path d="M7 13h10"/><path d="M8 17h8"/>',
+    list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
     logo: '<circle cx="12" cy="12" r="2.4"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M7.1 12h2.5"/><path d="M14.4 12h2.5"/><path d="M12 7.1v2.5"/><path d="M12 14.4v2.5"/><path d="m18.3 4.2.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
     memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
     mic: '<path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v4"/>',
@@ -2963,7 +2964,13 @@ export function createActoviqGuiHtml(): string {
           </div>
         </header>
         <div class="overview-toolbar">
-          <input id="overviewSearch" class="overview-search" placeholder="Search projects…" autocomplete="off">
+          <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="overviewSearch" class="overview-search" placeholder="Search projects..." autocomplete="off"></label>
+          <button type="button" class="toolbar-select">All status <span>v</span></button>
+          <button type="button" class="toolbar-select">Sort: Recent <span>v</span></button>
+          <div class="view-toggle" aria-label="View mode">
+            <button type="button" class="active" title="Grid view">${guiIcon('dashboard')}</button>
+            <button type="button" title="List view">${guiIcon('list')}</button>
+          </div>
         </div>
         <div class="overview-body" id="overviewBody"></div>
       </section>
@@ -2991,7 +2998,7 @@ export function createActoviqGuiHtml(): string {
           <p id="workspace"></p>
         </div>
         <div class="top-actions">
-          <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">← Back</button>
+          <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
@@ -3051,7 +3058,7 @@ export function createActoviqGuiHtml(): string {
           <p>Compose agent squads and runtime collaboration graphs</p>
         </div>
         <div class="region-actions">
-          <button type="button" id="teamRunSquadBtn" class="pill-btn">▶ Run squad</button>
+          <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
           <button type="button" id="teamEditToggleBtn" class="pill-btn">Edit</button>
           <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
         </div>
@@ -3516,7 +3523,7 @@ button { cursor: pointer; }
 .region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
 .region-header { min-height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; gap: 14px; flex: 0 0 auto; background: var(--bg-surface); }
 .region-header .region-titles { min-width: 0; }
-.region-header h1 { font-size: 22px; margin: 0; font-weight: 700; color: var(--text-1); letter-spacing: -.01em; }
+.region-header h1 { font-size: 22px; margin: 0; font-weight: 700; color: var(--text-1); letter-spacing: 0; }
 .region-header p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; }
 .region-header .region-actions { display: flex; gap: 8px; align-items: center; }
 .region-actions .primary { background: var(--accent); color: #fff; border-color: transparent; }
@@ -3553,7 +3560,7 @@ button { cursor: pointer; }
 .proj-card .pc-icon { width: 36px; height: 36px; border-radius: 9px; display: inline-grid; place-items: center; color: #fff; flex: 0 0 36px; }
 .proj-card .pc-icon .ui-icon { width: 18px; height: 18px; }
 .proj-card .pc-titles { min-width: 0; }
-.proj-card .pc-title { font-weight: 700; font-size: 16px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.005em; }
+.proj-card .pc-title { font-weight: 700; font-size: 16px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
 .proj-card .pc-path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card .pc-meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
 .pc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
@@ -3686,7 +3693,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .brand { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 8px; margin-bottom: 4px; }
 .brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: linear-gradient(135deg, #4b93f7 0%, #6ad0a8 100%); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
-.brand-name { font-weight: 700; font-size: 15px; letter-spacing: -.01em; color: var(--text-1); }
+.brand-name { font-weight: 700; font-size: 15px; letter-spacing: 0; color: var(--text-1); }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
 .nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn {
   min-height: 34px;
@@ -3923,6 +3930,169 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .round-btn { background: transparent; border: 1px solid #d8d8d8; color: #4c5055; }
 .send-btn { border: 0; background: #202124; color: #fff; }
 .send-btn.stopping { background: #c7392f; }
+/* --- UI plan visual polish (30 Jun 2026). --- */
+body { margin: 0; color: var(--text-1); background: var(--bg-app); }
+.app { border: 0; background: var(--bg-app); }
+.sidebar { padding: 18px 12px 14px; gap: 14px; box-shadow: 1px 0 0 rgba(17,24,39,.02); }
+body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
+.brand { height: 38px; margin-bottom: 8px; }
+.brand-mark { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%); }
+.brand-name, .region-header h1, .proj-card .pc-title { letter-spacing: 0; }
+.primary-nav { gap: 8px; }
+.nav-btn { min-height: 44px; border-radius: 10px; padding: 0 12px; font-size: 15px; }
+.region-nav.active { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+.sidebar-footer { padding-top: 8px; border-top: 1px solid rgba(229,231,235,.75); }
+.region, .chat, .project-overview, .project-detail, .project-conversation { background: var(--bg-app); }
+.region-header { min-height: 78px; padding: 18px 26px; background: rgba(255,255,255,.88); backdrop-filter: blur(12px); }
+.region-header h1 { font-size: 24px; }
+.region-actions { flex-wrap: wrap; justify-content: flex-end; }
+.pill-btn, .toolbar-select, .filter-chip, .view-toggle button { min-height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); padding: 0 14px; box-shadow: 0 1px 1px rgba(17,24,39,.02); }
+.pill-btn.primary, .region-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 7px 18px rgba(37,99,235,.18); }
+.pill-btn:hover, .toolbar-select:hover, .filter-chip:hover, .view-toggle button:hover { border-color: #C7D2FE; background: #F8FBFF; }
+.overview-toolbar { align-items: center; padding: 16px 26px; gap: 10px; background: var(--bg-surface); }
+.overview-search-wrap, .detail-search-wrap { height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 280px; flex: 1; max-width: 560px; }
+.overview-search-wrap .search-icon, .detail-search-wrap .ui-icon { color: #8A8D91; flex: 0 0 auto; }
+.overview-search { height: 100%; border: 0; padding: 0; max-width: none; background: transparent; }
+.toolbar-select { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
+.view-toggle { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 12px; background: #F8FAFC; }
+.view-toggle button { width: 34px; min-height: 32px; padding: 0; display: inline-grid; place-items: center; border-color: transparent; box-shadow: none; }
+.view-toggle button.active { background: var(--bg-surface); border-color: var(--border); color: var(--accent); }
+.overview-body { padding: 18px 26px 26px; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.proj-card { min-height: 164px; grid-template-columns: minmax(0, 1fr) minmax(260px, 31%); column-gap: 22px; padding: 18px 24px 16px 24px; border-radius: 12px; }
+.proj-card.active { border-color: #D6E4FF; }
+.proj-card .pc-accent { width: 5px; }
+.proj-card .pc-icon { width: 50px; height: 50px; border-radius: 11px; box-shadow: inset 0 -10px 18px rgba(0,0,0,.08); }
+.proj-card .pc-title { font-size: 18px; }
+.proj-card .pc-path { margin-top: 3px; font-size: 12px; }
+.pc-meta { gap: 12px; align-items: center; }
+.pc-percent { color: var(--text-2); }
+.pc-progress, .conv-progress { min-width: 180px; flex: 1; display: inline-flex; align-items: center; }
+.progress-track { width: 100%; height: 5px; border-radius: 999px; background: #E5E7EB; overflow: hidden; display: inline-block; }
+.progress-fill { height: 100%; border-radius: inherit; display: block; }
+.pc-info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+.pc-info-cell { min-width: 0; display: grid; gap: 5px; padding-left: 14px; border-left: 1px solid var(--border); }
+.pc-info-cell:first-child { padding-left: 0; border-left: 0; }
+.ui-label { font-size: 11px; font-weight: 600; color: #8A8D91; text-transform: uppercase; letter-spacing: 0; }
+.pc-info-cell strong, .context-row strong { font-size: 13px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-info-cell small, .context-row small { color: var(--text-2); font-size: 12px; }
+.avatar-stack { display: flex; align-items: center; min-height: 26px; }
+.avatar-dot, .avatar-more { width: 26px; height: 26px; border: 2px solid #fff; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; margin-left: -6px; box-shadow: 0 1px 2px rgba(17,24,39,.12); }
+.avatar-dot:first-child, .avatar-more:first-child { margin-left: 0; }
+.avatar-more { background: #E5E7EB; color: #4B5563; }
+.plan-preview { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; display: grid; align-content: start; gap: 8px; border-radius: 12px; padding: 14px; background: linear-gradient(145deg, rgba(234,242,255,.94), rgba(255,255,255,.82)); }
+.plan-preview-title { display: flex; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; font-weight: 700; }
+.plan-preview-title .ui-icon { width: 15px; height: 15px; }
+.plan-preview-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+.ppr-when { font-weight: 700; color: var(--text-1); }
+.ppr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.ppr-status { color: var(--accent); font-size: 11px; white-space: nowrap; }
+.detail-body { padding: 16px 20px 24px; }
+.detail-toolbar { display: flex; align-items: center; gap: 12px; }
+.detail-search-wrap input { border: 0; outline: 0; width: 100%; height: 100%; background: transparent; }
+.detail-filter-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.filter-chip { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; }
+.filter-chip b { min-width: 22px; min-height: 22px; border-radius: 999px; background: #EEF2FF; color: var(--accent); display: inline-grid; place-items: center; font-size: 12px; }
+.filter-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.detail-layout { grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; }
+.detail-conversations { gap: 14px; }
+.conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; }
+.conv-card.active { background: linear-gradient(180deg, #F8FBFF, #FFFFFF); box-shadow: 0 0 0 1px rgba(37,99,235,.2); }
+.conv-title { font-size: 17px; font-weight: 700; }
+.conv-preview { font-size: 13px; margin: 2px 0 8px; }
+.conv-meta { gap: 9px; align-items: center; }
+.conv-meta .chip { min-height: 24px; display: inline-flex; align-items: center; border-radius: 7px; background: #fff; }
+.conv-meta .avatar-stack { margin-right: 4px; }
+.conv-meta .avatar-dot, .conv-meta .avatar-more { width: 24px; height: 24px; font-size: 10px; }
+.conv-side { min-width: 150px; padding-left: 18px; border-left: 1px solid var(--border); align-content: center; }
+.conv-percent { font-weight: 700; color: var(--text-1); }
+.conv-progress { min-width: 128px; width: 128px; justify-self: end; }
+.detail-rail { display: grid; gap: 14px; align-content: start; }
+.project-context-card, .plan-panel { border-radius: 12px; }
+.project-context-card { border: 1px solid var(--border); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 16px; display: grid; gap: 16px; }
+.context-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.context-card-head h3 { margin: 0; font-size: 16px; }
+.context-card-head span { color: var(--ok); font-size: 12px; border-radius: 999px; background: #E8F7EF; padding: 3px 9px; }
+.context-progress { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.context-progress .progress-track { grid-column: 1 / -1; height: 7px; }
+.context-row { display: grid; gap: 5px; padding-top: 12px; border-top: 1px solid var(--border); }
+.context-checklist { display: grid; gap: 9px; }
+.checkline { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; }
+.checkline i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #93C5FD; flex: 0 0 auto; }
+.checkline.done i { background: var(--ok); border-color: var(--ok); box-shadow: inset 0 0 0 3px #fff; }
+.context-actions { display: flex; gap: 8px; }
+.message-row { max-width: 920px; margin: 0 auto 18px; display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: start; }
+.message-row.row-user { max-width: 920px; }
+.msg-avatar { width: 36px; height: 36px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--role-planner); color: #fff; font-weight: 700; box-shadow: 0 1px 2px rgba(17,24,39,.15); }
+.row-user .msg-avatar { background: linear-gradient(135deg, #CBD5E1, #64748B); }
+.row-tool .msg-avatar { background: var(--role-shell); }
+.row-error .msg-avatar { background: var(--err); }
+.row-notice .msg-avatar { background: var(--role-runtime); }
+.msg-wrap { min-width: 0; }
+.msg-head { display: flex; align-items: center; gap: 8px; margin: 0 0 5px; }
+.msg-head strong { font-size: 14px; }
+.role-chip { min-height: 20px; display: inline-flex; align-items: center; border-radius: 999px; background: #EAF2FF; color: var(--accent); padding: 0 8px; font-size: 11px; }
+.message { margin-bottom: 0; }
+.message.user { margin-left: 0; max-width: none; background: #F8FAFC; border: 1px solid var(--border); border-radius: 12px; }
+.message.assistant { max-width: none; background: transparent; }
+.message.notice, .message.tool, .message.error { max-width: none; border-left: 0; padding-left: 0; }
+.transcript { padding: 22px min(32px, 4vw) 18px; background: linear-gradient(180deg, #FFFFFF 0%, #FBFCFD 100%); }
+.topbar { min-height: 84px; padding: 14px 24px; background: rgba(255,255,255,.9); }
+.topbar h1 { font-size: 20px; font-weight: 700; }
+.workbench { background: #fff; }
+.tabbar { background: #FBFCFD; padding: 6px 12px; }
+.composer { max-width: 920px; width: calc(100% - 64px); margin: 0 auto 20px; border-radius: 16px; border-color: var(--border); box-shadow: 0 12px 32px rgba(17,24,39,.08); }
+.team-layout { flex: 1; min-height: 0; height: 100%; padding: 0; overflow: hidden; align-content: stretch; display: grid; grid-template-columns: minmax(0, 1fr) 340px; background: var(--bg-app); }
+.team-main { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: 100%; }
+.team-squad-bar { grid-row: 1 / span 2; grid-column: 1; display: grid; align-content: start; gap: 10px; padding: 18px 12px; border-right: 1px solid var(--border); border-bottom: 0; background: var(--bg-surface); overflow: auto; }
+.squad-chip { width: 100%; min-height: 78px; justify-content: flex-start; align-items: center; gap: 11px; padding: 12px; border-radius: 10px; color: var(--text-1); text-align: left; }
+.squad-chip.active { box-shadow: 0 0 0 1px rgba(37,99,235,.22); }
+.sq-dot { flex: 0 0 auto; }
+.sq-labels { display: grid; gap: 4px; min-width: 0; }
+.sq-labels strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sq-labels small { color: var(--text-2); font-size: 12px; }
+.team-editor { grid-column: 1 / -1; grid-row: 1 / -1; z-index: 2; margin: 14px; overflow: auto; }
+.team-graph { grid-column: 2; grid-row: 1 / span 2; min-height: 0; height: 100%; padding: 0; align-items: stretch; background: #F8FAFC; }
+.graph-toolbar { height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.graph-tabs, .graph-tools { display: flex; align-items: center; gap: 6px; }
+.graph-tabs button, .graph-tools button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 0 11px; color: var(--text-2); }
+.graph-tabs button.active { color: var(--accent); background: var(--accent-soft); border-color: #BFDBFE; }
+.graph-tools span { font-size: 12px; color: var(--text-2); }
+.graph-canvas { flex: 1; min-height: 0; overflow: auto; padding: 26px; display: grid; gap: 18px; align-content: start; justify-items: center; background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; }
+.graph-title { justify-self: start; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); }
+.graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
+.graph-row { gap: 22px; }
+.graph-edge-row { display: flex; justify-content: center; gap: 36px; width: min(720px, 100%); position: relative; }
+.graph-edge-row::before { content: ""; position: absolute; left: 6%; right: 6%; top: 50%; border-top: 1px solid #9CA3AF; z-index: 0; }
+.graph-edge { position: relative; z-index: 1; background: #F8FAFC; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 11px; }
+.graph-node { width: 210px; min-height: 116px; padding: 14px 14px 12px 18px; border-radius: 12px; background: rgba(255,255,255,.96); }
+.graph-node .gn-icon { width: 34px; height: 34px; border-radius: 10px; }
+.graph-node .gn-name { font-size: 15px; }
+.graph-node .gn-role { margin-top: 8px; font-size: 12px; }
+.graph-node .gn-model { margin-top: 4px; }
+.gn-tools { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
+.gn-tools span { border-radius: 999px; background: #F3F4F6; color: #4B5563; padding: 2px 7px; font-size: 10.5px; }
+.team-inspector { width: auto; flex: none; padding: 18px; background: var(--bg-surface); }
+.team-inspector .ins-head { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.team-inspector .ins-tabs { margin-top: 12px; }
+.context-rail { width: 340px; flex-basis: 340px; background: #F8FAFC; padding: 16px; }
+.rail-section h3 { letter-spacing: 0; }
+.rail-run { border-radius: 12px; padding: 12px; }
+.rail-run.status-planned { border-left-color: var(--warn); }
+.rail-run .rr-members { gap: 6px; }
+.rail-run .rr-member { border-radius: 999px; padding: 3px 8px; }
+.rail-task { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 9px 10px; margin-bottom: 8px; }
+.rail-task > span { color: var(--text-2); font-size: 12px; }
+.rail-task strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-task small { color: var(--text-2); font-size: 11.5px; }
+.rail-task.active { border-color: #BFDBFE; background: var(--accent-soft); }
+@media (max-width: 1120px) {
+  .proj-card { grid-template-columns: 1fr; }
+  .plan-preview { grid-column: 1; grid-row: auto; }
+  .detail-layout { grid-template-columns: 1fr; }
+  .team-layout { grid-template-columns: minmax(0, 1fr); }
+  .team-inspector { display: none; }
+  .context-rail { display: none; }
+}
 .context-menu { position: fixed; z-index: 40; min-width: 168px; background: #fff; border: 1px solid #d8d8d8; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.18); padding: 4px; display: grid; gap: 2px; }
 .context-menu.hidden { display: none; }
 .context-menu button { width: 100%; text-align: left; border: 0; background: transparent; border-radius: 6px; min-height: 32px; padding: 0 10px; color: #2f3337; cursor: pointer; }
@@ -4159,11 +4329,21 @@ const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
 // Client-side icon helper. eye/eyeOff are runtime-toggled; the workbench tab
 // bar is rendered client-side, so the pane icons it needs live here too.
 const _ICONS = {
+  agent: '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M9 13h.01"/><path d="M15 13h.01"/><path d="M10 17h4"/>',
+  automation: '<path d="M4 12a8 8 0 0 1 13.66-5.66"/><path d="M18 4v5h-5"/><path d="M20 12a8 8 0 0 1-13.66 5.66"/><path d="M6 20v-5h5"/>',
   chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
   terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
   dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
+  list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
+  plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
 };
@@ -4666,10 +4846,28 @@ function displayUserText(text) {
   return value.length > 1800 ? value.slice(0, 1800) + '\\n\\n[message truncated in UI; full prompt was sent]' : value;
 }
 function addMessage(kind, text) {
+  const row = document.createElement('div');
+  row.className = 'message-row row-' + kind;
+  const avatar = document.createElement('span');
+  avatar.className = 'msg-avatar';
+  const label = kind === 'user' ? 'User' : kind === 'assistant' ? 'Agent' : kind === 'tool' ? 'Tool' : kind === 'error' ? 'Error' : 'System';
+  avatar.textContent = label.slice(0, 1);
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-wrap';
+  const head = document.createElement('div');
+  head.className = 'msg-head';
+  const name = document.createElement('strong');
+  name.textContent = label;
+  const chip = document.createElement('span');
+  chip.className = 'role-chip';
+  chip.textContent = kind === 'user' ? 'You' : kind === 'assistant' ? 'Agent' : kind;
+  head.append(name, chip);
   const node = document.createElement('div');
   node.className = 'message ' + kind;
   node.textContent = text || '';
-  transcript.appendChild(node);
+  wrap.append(head, node);
+  row.append(avatar, wrap);
+  transcript.appendChild(row);
   scrollTranscript();
   return node;
 }
@@ -5440,6 +5638,73 @@ function projectAccent(name) {
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return PROJECT_ACCENTS[h % PROJECT_ACCENTS.length];
 }
+function compactPath(value) {
+  const raw = String(value || '');
+  const parts = raw.split(/[\\\\/]/).filter(Boolean);
+  if (parts.length <= 3) return raw;
+  const root = raw.match(/^[A-Za-z]:/) ? raw.slice(0, 2) : parts[0];
+  return root + '\\\\...\\\\' + parts.slice(-2).join('\\\\');
+}
+function planItemText(item) {
+  if (typeof item === 'string') return item;
+  return item?.text || item?.title || '';
+}
+function projectPlanRows(project) {
+  const plan = project.active ? (state.snapshot?.projectPlan || null) : null;
+  const rows = [];
+  const today = Array.isArray(plan?.today) ? plan.today : [];
+  const upcoming = Array.isArray(plan?.upcoming) ? plan.upcoming : [];
+  const milestones = Array.isArray(plan?.milestones) ? plan.milestones : [];
+  for (const item of today.slice(0, 2)) rows.push({ when: 'Today', title: planItemText(item), status: item?.done ? 'Done' : 'In progress' });
+  for (const item of upcoming.slice(0, Math.max(0, 3 - rows.length))) rows.push({ when: rows.length ? 'Upcoming' : 'Tomorrow', title: planItemText(item), status: item?.done ? 'Done' : 'Planned' });
+  for (const item of milestones.slice(0, Math.max(0, 3 - rows.length))) rows.push({ when: item.due || 'Milestone', title: item.title || 'Milestone', status: item.status || 'Planned' });
+  if (rows.length === 0) {
+    rows.push(
+      { when: 'Today', title: project.active ? 'Continue active workspace' : 'Review saved conversations', status: project.active ? 'In progress' : 'Ready' },
+      { when: 'Next', title: (project.sessionCount || 0) > 0 ? 'Resume latest conversation' : 'Create first conversation', status: 'Planned' },
+    );
+  }
+  return rows.slice(0, 3).filter(row => row.title);
+}
+function projectProgress(project, running) {
+  const plan = project.active ? state.snapshot?.projectPlan : null;
+  const items = [...(plan?.today || []), ...(plan?.upcoming || [])];
+  if (items.length) {
+    const done = items.filter(item => typeof item === 'object' && item.done).length;
+    return Math.max(12, Math.round((done / items.length) * 100));
+  }
+  if (project.active && running > 0) return 78;
+  return Math.min(86, Math.max(18, 24 + (project.sessionCount || 0) * 8));
+}
+function appendProgressBar(parent, percent, accent) {
+  const track = document.createElement('span');
+  track.className = 'progress-track';
+  const fill = document.createElement('span');
+  fill.className = 'progress-fill';
+  fill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+  fill.style.background = accent;
+  track.appendChild(fill);
+  parent.appendChild(track);
+}
+function avatarStack(labels) {
+  const stack = document.createElement('div');
+  stack.className = 'avatar-stack';
+  const list = labels.length ? labels : ['Agent'];
+  list.slice(0, 4).forEach((label, index) => {
+    const av = document.createElement('span');
+    av.className = 'avatar-dot';
+    av.style.background = PROJECT_ACCENTS[index % PROJECT_ACCENTS.length];
+    av.textContent = String(label || 'A').slice(0, 1).toUpperCase();
+    stack.appendChild(av);
+  });
+  if (list.length > 4) {
+    const more = document.createElement('span');
+    more.className = 'avatar-more';
+    more.textContent = '+' + (list.length - 4);
+    stack.appendChild(more);
+  }
+  return stack;
+}
 function switchProjectView(view) {
   state.projectView = view;
   const ov = el('projectOverview');
@@ -5469,14 +5734,18 @@ function renderOverview() {
   for (const p of projects) {
     const accent = projectAccent(p.name);
     const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
+    const percent = projectProgress(p, running);
+    const planRows = projectPlanRows(p);
     const card = document.createElement('article');
     card.className = 'proj-card';
+    if (p.active) card.classList.add('active');
     const title = document.createElement('div');
     title.className = 'pc-title';
     title.textContent = p.name;
     const pathEl = document.createElement('div');
     pathEl.className = 'pc-path';
-    pathEl.textContent = p.path;
+    pathEl.textContent = compactPath(p.path);
+    pathEl.title = p.path || '';
     const titles = document.createElement('div');
     titles.className = 'pc-titles';
     titles.append(title, pathEl);
@@ -5495,11 +5764,15 @@ function renderOverview() {
     const statusText = document.createElement('span');
     statusText.textContent = p.active ? 'Active' : 'Idle';
     status.append(dot, statusText);
-    const chats = document.createElement('span');
-    chats.textContent = (p.sessionCount || 0) + ' chats';
+    const pct = document.createElement('span');
+    pct.className = 'pc-percent';
+    pct.textContent = percent + '% complete';
+    const progress = document.createElement('span');
+    progress.className = 'pc-progress';
+    appendProgressBar(progress, percent, accent);
     const meta = document.createElement('div');
     meta.className = 'pc-meta';
-    meta.append(status, chats);
+    meta.append(status, pct, progress);
     if (running) {
       const r = document.createElement('span');
       r.className = 'pc-status';
@@ -5510,10 +5783,45 @@ function renderOverview() {
       r.append(rd, document.createTextNode(running + ' running'));
       meta.append(r);
     }
+    const info = document.createElement('div');
+    info.className = 'pc-info-grid';
+    const agents = document.createElement('div');
+    agents.className = 'pc-info-cell';
+    const activeTeam = state.snapshot?.activeTeamName;
+    const agentLabels = activeTeam ? ['Planner', 'Coder', 'Reviewer', 'Test'] : ['Main agent'];
+    agents.append(labelText('Active agents'), avatarStack(agentLabels));
+    const milestone = document.createElement('div');
+    milestone.className = 'pc-info-cell';
+    milestone.append(labelText('Next milestone'), strongText(planRows[0]?.title || 'Open conversation'), smallText(planRows[0]?.status || 'Ready'));
+    const recent = document.createElement('div');
+    recent.className = 'pc-info-cell';
+    recent.append(labelText('Recent activity'), strongText((p.sessionCount || 0) + ' conversations'), smallText(p.active ? 'Current workspace' : 'Saved workspace'));
+    info.append(agents, milestone, recent);
+    const preview = document.createElement('div');
+    preview.className = 'plan-preview';
+    const previewHead = document.createElement('div');
+    previewHead.className = 'plan-preview-title';
+    previewHead.innerHTML = guiIcon('memory') + '<span>Plan preview</span>';
+    preview.appendChild(previewHead);
+    for (const row of planRows) {
+      const line = document.createElement('div');
+      line.className = 'plan-preview-row';
+      const when = document.createElement('span');
+      when.className = 'ppr-when';
+      when.textContent = row.when;
+      const name = document.createElement('span');
+      name.className = 'ppr-title';
+      name.textContent = row.title;
+      const st = document.createElement('span');
+      st.className = 'ppr-status';
+      st.textContent = row.status;
+      line.append(when, name, st);
+      preview.appendChild(line);
+    }
     const accentBar = document.createElement('span');
     accentBar.className = 'pc-accent';
     accentBar.style.background = accent;
-    card.append(accentBar, head, meta);
+    card.append(accentBar, head, meta, info, preview);
     card.addEventListener('click', () => { void openProjectFromOverview(p); });
     body.appendChild(card);
   }
@@ -5523,6 +5831,22 @@ function renderOverview() {
     empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
+}
+function labelText(text) {
+  const node = document.createElement('span');
+  node.className = 'ui-label';
+  node.textContent = text;
+  return node;
+}
+function strongText(text) {
+  const node = document.createElement('strong');
+  node.textContent = text || '';
+  return node;
+}
+function smallText(text) {
+  const node = document.createElement('small');
+  node.textContent = text || '';
+  return node;
 }
 async function openProjectFromOverview(p) {
   if (!p.active) {
@@ -5569,13 +5893,42 @@ function renderProjectDetail() {
   const body = el('detailBody');
   if (!body) return;
   body.textContent = '';
+  const sessions = (state.snapshot?.sessions || []).slice();
+  const currentId = state.snapshot?.session?.id;
+  const toolbar = document.createElement('div');
+  toolbar.className = 'detail-toolbar';
+  const search = document.createElement('label');
+  search.className = 'detail-search-wrap';
+  search.innerHTML = guiIcon('search') + '<input placeholder="Search conversations..." autocomplete="off">';
+  const chips = document.createElement('div');
+  chips.className = 'detail-filter-chips';
+  const chipData = [
+    ['All', sessions.length],
+    ['Active', sessions.filter(item => item.id === currentId || item.status === 'active').length],
+    ['Plan', sessions.filter(item => /plan/i.test(item.title || '')).length],
+    ['Review', sessions.filter(item => /review/i.test(item.title || '')).length],
+    ['Done', sessions.filter(item => /done|closed|complete/i.test(item.status || '')).length],
+  ];
+  chipData.forEach(([label, count], index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'filter-chip' + (index === 0 ? ' active' : '');
+    chip.innerHTML = '<span>' + label + '</span><b>' + count + '</b>';
+    chips.appendChild(chip);
+  });
+  const filter = document.createElement('button');
+  filter.type = 'button';
+  filter.className = 'toolbar-select';
+  filter.textContent = 'Filter';
+  toolbar.append(search, chips, filter);
+  body.appendChild(toolbar);
   const layout = document.createElement('div');
   layout.className = 'detail-layout';
   const convCol = document.createElement('div');
   convCol.className = 'detail-conversations';
-  const sessions = (state.snapshot?.sessions || []).slice();
-  const currentId = state.snapshot?.session?.id;
-  for (const item of sessions) {
+  sessions.forEach((item, index) => {
+    const progressValue = conversationProgress(item, index, item.id === currentId);
+    const progressStatus = conversationStatus(item, item.id === currentId);
     const card = document.createElement('article');
     card.className = 'conv-card' + (item.id === currentId ? ' active' : '');
     const main = document.createElement('div');
@@ -5588,6 +5941,11 @@ function renderProjectDetail() {
     preview.textContent = item.preview || ((item.messageCount || 0) + ' messages');
     const meta = document.createElement('div');
     meta.className = 'conv-meta';
+    const squad = document.createElement('span');
+    squad.className = 'chip';
+    squad.textContent = state.snapshot?.activeTeamName || 'Core Squad';
+    meta.append(squad);
+    meta.append(avatarStack(['Planner', 'Coder', 'Reviewer']));
     if (item.model) {
       const m = document.createElement('span');
       m.className = 'chip';
@@ -5597,29 +5955,30 @@ function renderProjectDetail() {
     const mc = document.createElement('span');
     mc.textContent = (item.messageCount || 0) + ' messages';
     meta.append(mc);
-    if (item.updated) {
-      const u = document.createElement('span');
-      u.textContent = item.updated;
-      meta.append(u);
-    }
     main.append(title, preview, meta);
     const side = document.createElement('div');
     side.className = 'conv-side';
-    if (item.status) {
-      const st = document.createElement('span');
-      st.className = 'pc-status';
-      const dot = document.createElement('span');
-      dot.className = 'dot';
-      dot.style.background = statusDotColor(item.status);
-      const t = document.createElement('span');
-      t.textContent = item.status;
-      st.append(dot, t);
-      side.append(st);
-    }
+    const st = document.createElement('span');
+    st.className = 'pc-status';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = statusDotColor(progressStatus);
+    const t = document.createElement('span');
+    t.textContent = progressStatus;
+    st.append(dot, t);
+    const pct = document.createElement('span');
+    pct.className = 'conv-percent';
+    pct.textContent = progressValue + '%';
+    const bar = document.createElement('span');
+    bar.className = 'conv-progress';
+    appendProgressBar(bar, progressValue, statusDotColor(progressStatus));
+    const updated = document.createElement('small');
+    updated.textContent = item.updated || ((item.messageCount || 0) + ' messages');
+    side.append(st, pct, bar, updated);
     card.append(main, side);
     card.addEventListener('click', () => { void resumeSession(item.id); });
     convCol.appendChild(card);
-  }
+  });
   if (sessions.length === 0) {
     const e = document.createElement('p');
     e.className = 'region-empty';
@@ -5627,8 +5986,73 @@ function renderProjectDetail() {
     convCol.appendChild(e);
   }
   layout.appendChild(convCol);
-  layout.appendChild(buildPlanPanel(state.snapshot?.projectPlan));
+  const rail = document.createElement('aside');
+  rail.className = 'detail-rail';
+  rail.append(buildProjectContextPanel(sessions), buildPlanPanel(state.snapshot?.projectPlan));
+  layout.appendChild(rail);
   body.appendChild(layout);
+}
+function conversationProgress(item, index, active) {
+  if (/done|closed|complete/i.test(item.status || '')) return 100;
+  if (/review/i.test(item.status || item.title || '')) return 42;
+  if (active) return 68;
+  return Math.min(85, Math.max(24, 30 + ((item.messageCount || index + 1) % 8) * 7));
+}
+function conversationStatus(item, active) {
+  if (/done|closed|complete/i.test(item.status || '')) return 'Done';
+  if (/review/i.test(item.status || item.title || '')) return 'In Review';
+  if (/plan/i.test(item.title || '')) return 'In Plan';
+  return active ? 'In Progress' : 'Active';
+}
+function buildProjectContextPanel(sessions) {
+  const plan = state.snapshot?.projectPlan || { today: [], upcoming: [], milestones: [] };
+  const panel = document.createElement('div');
+  panel.className = 'project-context-card';
+  const heading = document.createElement('div');
+  heading.className = 'context-card-head';
+  heading.innerHTML = '<h3>Project context</h3><span>Active</span>';
+  panel.appendChild(heading);
+  const progress = projectProgress({ active: true, sessionCount: sessions.length }, (state.snapshot?.runs || []).length);
+  const stat = document.createElement('div');
+  stat.className = 'context-progress';
+  stat.append(labelText('Overall progress'));
+  const number = document.createElement('strong');
+  number.textContent = progress + '%';
+  stat.appendChild(number);
+  appendProgressBar(stat, progress, 'var(--ok)');
+  panel.appendChild(stat);
+  const milestone = (plan.milestones || [])[0];
+  const current = document.createElement('div');
+  current.className = 'context-row';
+  current.append(labelText('Current milestone'), strongText(milestone?.title || 'Conversation plan'), smallText(milestone?.due ? 'Target: ' + milestone.due : sessions.length + ' conversations'));
+  panel.appendChild(current);
+  const checks = document.createElement('div');
+  checks.className = 'context-checklist';
+  const rows = projectPlanRows({ active: true, sessionCount: sessions.length });
+  rows.forEach((row, index) => {
+    const item = document.createElement('span');
+    item.className = 'checkline' + (index === 0 ? ' done' : '');
+    const mark = document.createElement('i');
+    const text = document.createElement('span');
+    text.textContent = row.title;
+    item.append(mark, text);
+    checks.appendChild(item);
+  });
+  panel.appendChild(checks);
+  const actions = document.createElement('div');
+  actions.className = 'context-actions';
+  const continueBtn = document.createElement('button');
+  continueBtn.type = 'button';
+  continueBtn.className = 'pill-btn primary';
+  continueBtn.textContent = 'Continue chat';
+  continueBtn.addEventListener('click', () => switchProjectView('conversation'));
+  const viewPlan = document.createElement('button');
+  viewPlan.type = 'button';
+  viewPlan.className = 'pill-btn';
+  viewPlan.textContent = 'View plan';
+  actions.append(continueBtn, viewPlan);
+  panel.appendChild(actions);
+  return panel;
 }
 // --- Project plan panel (plan/UI_PLAN §4.2): editable today/upcoming checklist. ---
 function buildPlanPanel(plan) {
@@ -5752,17 +6176,24 @@ function renderContextRail() {
     return;
   }
   const runs = state.snapshot?.runs || [];
-  if (runs.length === 0) {
-    rail.classList.add('hidden');
-    return;
-  }
   rail.classList.remove('hidden');
   const section = document.createElement('div');
   section.className = 'rail-section';
   const h = document.createElement('h3');
-  h.textContent = 'Active runs';
+  h.textContent = runs.length ? 'Active runs' : 'Run state';
   section.appendChild(h);
-  for (const r of runs) {
+  const visibleRuns = runs.length ? runs : [{
+    status: 'planned',
+    label: state.snapshot?.session?.title || 'Conversation plan',
+    currentTool: state.snapshot?.activeTeamName ? 'Squad ready: ' + state.snapshot.activeTeamName : 'No active run',
+    team: { members: [
+      { id: 'Planner', status: 'ready' },
+      { id: 'Coder', status: 'ready' },
+      { id: 'Reviewer', status: 'ready' },
+      { id: 'Test Runner', status: 'ready' },
+    ] },
+  }];
+  for (const r of visibleRuns) {
     const card = document.createElement('div');
     card.className = 'rail-run status-' + (r.status || 'running');
     const t = document.createElement('div');
@@ -5790,6 +6221,25 @@ function renderContextRail() {
     section.appendChild(card);
   }
   rail.appendChild(section);
+  const tasks = document.createElement('div');
+  tasks.className = 'rail-section';
+  const th = document.createElement('h3');
+  th.textContent = 'Tasks';
+  tasks.appendChild(th);
+  const planRows = projectPlanRows({ active: true, sessionCount: (state.snapshot?.sessions || []).length });
+  planRows.forEach((row, index) => {
+    const item = document.createElement('div');
+    item.className = 'rail-task' + (index === 0 ? ' active' : '');
+    const number = document.createElement('span');
+    number.textContent = String(index + 1);
+    const title = document.createElement('strong');
+    title.textContent = row.title;
+    const status = document.createElement('small');
+    status.textContent = row.status;
+    item.append(number, title, status);
+    tasks.appendChild(item);
+  });
+  rail.appendChild(tasks);
 }
 // Live-poll /api/state.runs while a run is active so the rail stays current
 // (member status, current tool) without depending on the developer-tools
@@ -6138,6 +6588,23 @@ async function renderPluginsRegion(view) {
 // --- Team region (plan/UI_PLAN §5): read-only collaboration graph + inspector. ---
 const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#10B981', reviewer: '#F59E0B', coder: '#10B981', planner: '#3B82F6', docs: '#EC4899', test: '#F59E0B' };
 function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
+function firstTeamNode(def) {
+  if (!def) return null;
+  if (def.primary) return def.primary;
+  if ((def.members || []).length) return def.members[0];
+  if (def.reviewer) return def.reviewer;
+  return null;
+}
+function nodeSubtitle(node, isPrimary) {
+  const role = String(node?.role || node?.name || '').toLowerCase();
+  if (role.includes('review')) return 'Code review and quality';
+  if (role.includes('test')) return 'Execute tests';
+  if (role.includes('doc')) return 'Documentation';
+  if (role.includes('coder') || role.includes('code')) return 'Code generation';
+  if (role.includes('research')) return 'Information gathering';
+  if (isPrimary) return 'Strategic planning';
+  return node?.systemPrompt ? 'Specialist agent' : 'Runtime collaborator';
+}
 function teamListForRegion() {
   const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
   const names = new Set(saved.map((t) => t.name));
@@ -6158,9 +6625,14 @@ async function renderTeamRegion() {
       chip.dataset.name = t.name;
       const dot = document.createElement('span');
       dot.className = 'sq-dot';
-      const label = document.createElement('span');
+      const labels = document.createElement('span');
+      labels.className = 'sq-labels';
+      const label = document.createElement('strong');
       label.textContent = t.name;
-      chip.append(dot, label);
+      const small = document.createElement('small');
+      small.textContent = t.source === 'built-in' ? 'Built-in squad' : 'Project squad';
+      labels.append(label, small);
+      chip.append(dot, labels);
       chip.addEventListener('click', () => { state.teamSelected = t.name; state.teamEditing = false; void selectTeam(t.name); });
       bar.appendChild(chip);
     }
@@ -6182,11 +6654,11 @@ async function selectTeam(name) {
     if (res.ok) def = (await res.json()).definition || null;
   } catch { /* offline */ }
   state.teamDefinition = def;
-  state.teamSelectedNode = null;
+  state.teamSelectedNode = firstTeamNode(def);
   // Preserve the editor open-state across a re-select/save refresh so the
   // user keeps editing (saveTeamDefinition re-selects to refresh the list).
   renderTeamGraph(def, name);
-  renderTeamInspector(null, def);
+  renderTeamInspector(state.teamSelectedNode, def);
   renderTeamEditor();
 }
 // Run the selected squad (plan/UI_PLAN §6.3/§5): prompt → /team ask → stream
@@ -6349,11 +6821,18 @@ function graphNodeEl(node, def, isPrimary) {
   status.className = 'gn-status';
   const role = document.createElement('div');
   role.className = 'gn-role';
-  role.textContent = node.role || (isPrimary ? 'primary' : 'member');
+  role.textContent = nodeSubtitle(node, isPrimary);
   const model = document.createElement('div');
   model.className = 'gn-model';
-  model.textContent = node.model || '';
-  card.append(head, status, role, model);
+  model.textContent = node.model || 'inherits model';
+  const tools = document.createElement('div');
+  tools.className = 'gn-tools';
+  ['Read repository', 'Execute tools'].forEach((text) => {
+    const pill = document.createElement('span');
+    pill.textContent = text;
+    tools.appendChild(pill);
+  });
+  card.append(head, status, role, model, tools);
   card.addEventListener('click', () => {
     state.teamSelectedNode = node;
     document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
@@ -6374,37 +6853,59 @@ function renderTeamGraph(def, name) {
     return;
   }
   const members = def.members || [];
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graph-toolbar';
+  const left = document.createElement('div');
+  left.className = 'graph-tabs';
+  left.innerHTML = '<button class="active">Graph</button><button>List</button>';
+  const right = document.createElement('div');
+  right.className = 'graph-tools';
+  right.innerHTML = '<button>-</button><span>100%</span><button>+</button><button>Fit view</button>';
+  toolbar.append(left, right);
+  const canvas = document.createElement('div');
+  canvas.className = 'graph-canvas';
   const title = document.createElement('div');
-  title.style.cssText = 'font-weight:600;color:var(--text-1);font-size:14px;';
-  title.textContent = def.mode + (def.primary ? ' · panel → synthesizer' : def.reviewer ? ' · reviewer' : '');
-  g.appendChild(title);
+  title.className = 'graph-title';
+  title.textContent = (def.name || name) + ' · ' + def.mode;
+  canvas.appendChild(title);
+  const top = document.createElement('div');
+  top.className = 'graph-lane top';
+  if (def.primary) top.appendChild(graphNodeEl(def.primary, def, true));
+  else if (members[0]) top.appendChild(graphNodeEl(members[0], def, true));
+  if (top.children.length) canvas.appendChild(top);
+  if (top.children.length && members.length > 1) canvas.appendChild(edgeRow(['decompose', 'assign', 'review']));
   if (members.length) {
     const row = document.createElement('div');
-    row.className = 'graph-row';
-    for (const m of members) row.appendChild(graphNodeEl(m, def, false));
-    g.appendChild(row);
+    row.className = 'graph-row graph-lane';
+    const middleMembers = top.children.length && !def.primary ? members.slice(1) : members;
+    for (const m of middleMembers) row.appendChild(graphNodeEl(m, def, false));
+    if (middleMembers.length) canvas.appendChild(row);
   }
-  if (def.primary) {
-    const arr = document.createElement('div');
-    arr.className = 'graph-arrow';
-    arr.textContent = '↓';
-    g.appendChild(arr);
-    g.appendChild(graphNodeEl(def.primary, def, true));
-  } else if (def.reviewer) {
-    if (members.length) {
-      const arr = document.createElement('div');
-      arr.className = 'graph-arrow';
-      arr.textContent = '↓';
-      g.appendChild(arr);
-    }
-    g.appendChild(graphNodeEl(def.reviewer, def, true));
+  if (def.reviewer) {
+    canvas.appendChild(edgeRow(['handoff', 'verify', 'document']));
+    const bottom = document.createElement('div');
+    bottom.className = 'graph-lane bottom';
+    bottom.appendChild(graphNodeEl(def.reviewer, def, true));
+    canvas.appendChild(bottom);
   }
   if (!members.length && !def.primary && !def.reviewer) {
     const e = document.createElement('p');
     e.className = 'region-empty';
     e.textContent = 'This team has no members defined.';
-    g.appendChild(e);
+    canvas.appendChild(e);
   }
+  g.append(toolbar, canvas);
+}
+function edgeRow(labels) {
+  const row = document.createElement('div');
+  row.className = 'graph-edge-row';
+  labels.forEach((label) => {
+    const edge = document.createElement('span');
+    edge.className = 'graph-edge';
+    edge.textContent = label;
+    row.appendChild(edge);
+  });
+  return row;
 }
 function insField(lbl, val) {
   const f = document.createElement('div');
