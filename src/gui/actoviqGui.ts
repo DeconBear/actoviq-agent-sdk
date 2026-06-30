@@ -2984,6 +2984,7 @@ export function createActoviqGuiHtml(): string {
           <p>Compose agent squads and runtime collaboration graphs</p>
         </div>
         <div class="region-actions">
+          <button type="button" id="teamRunSquadBtn" class="pill-btn">▶ Run squad</button>
           <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
         </div>
       </header>
@@ -5283,6 +5284,8 @@ function switchProjectView(view) {
   if (view === 'detail') renderProjectDetail();
   renderConversationBreadcrumb();
   renderContextRail();
+  if (view === 'conversation' && state.running) startRailPolling();
+  else stopRailPolling();
 }
 function renderOverview() {
   const body = el('overviewBody');
@@ -5475,11 +5478,17 @@ function renderConversationBreadcrumb() {
   bc.append(c1, s1, c2, s2, c3);
 }
 // --- Right context rail (plan/UI_PLAN §3): live run/team status. ---
+// Shown only in the Project→conversation view (the rail's home). The Team
+// region has its own inspector; the overview/detail keep their own layout.
 function renderContextRail() {
   const rail = el('contextRail');
   if (!rail) return;
-  const runs = state.snapshot?.runs || [];
   rail.textContent = '';
+  if (state.activeRegion !== 'project' || state.projectView !== 'conversation') {
+    rail.classList.add('hidden');
+    return;
+  }
+  const runs = state.snapshot?.runs || [];
   if (runs.length === 0) {
     rail.classList.add('hidden');
     return;
@@ -5518,6 +5527,28 @@ function renderContextRail() {
     section.appendChild(card);
   }
   rail.appendChild(section);
+}
+// Live-poll /api/state.runs while a run is active so the rail stays current
+// (member status, current tool) without depending on the developer-tools
+// Monitor pane. Started on run.started, stopped on done.
+let railTimer = null;
+function startRailPolling() {
+  if (railTimer) return;
+  void refreshRail();
+  railTimer = setInterval(() => { void refreshRail(); }, 1000);
+}
+function stopRailPolling() {
+  if (railTimer) { clearInterval(railTimer); railTimer = null; }
+}
+async function refreshRail() {
+  try {
+    const res = await api('/api/state');
+    if (res.ok) {
+      const st = await res.json();
+      if (state.snapshot) state.snapshot.runs = Array.isArray(st.runs) ? st.runs : (state.snapshot.runs || []);
+      renderContextRail();
+    }
+  } catch { /* transient — keep last render */ }
 }
 async function openLocation() {
   const res = await api('/api/open-location', { method: 'POST' });
@@ -5874,6 +5905,17 @@ async function selectTeam(name) {
   state.teamSelectedNode = null;
   renderTeamGraph(def, name);
   renderTeamInspector(null, def);
+}
+// Run the selected squad (plan/UI_PLAN §6.3/§5): prompt → /team ask → stream
+// live member activity into the conversation + right rail.
+async function runSelectedSquad() {
+  const name = state.teamSelected;
+  if (!name) return;
+  const input = window.prompt('Run squad "' + name + '" with prompt:', '');
+  if (!input || !input.trim()) return;
+  await switchRegion('project');
+  switchProjectView('conversation');
+  submitText('/team ask ' + name + ' ' + input.trim()).catch(console.error);
 }
 function graphNodeEl(node, def, isPrimary) {
   const color = roleColor(node.role || node.name);
@@ -6298,7 +6340,7 @@ async function sendText(text) {
 }
 function handleEvent(event) {
   if (event.type === 'user') { finalizeAssistant(); state.currentAssistant = null; addMessage('user', displayUserText(event.text)); }
-  else if (event.type === 'run.started') { if (event.runId) state.activeRunId = String(event.runId); }
+  else if (event.type === 'run.started') { if (event.runId) state.activeRunId = String(event.runId); startRailPolling(); }
   else if (event.type === 'delta') {
     if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
     state.currentAssistant.dataset.raw += event.text || '';
@@ -6321,7 +6363,7 @@ function handleEvent(event) {
   }
   else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
-  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
+  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail(); if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
   // Live team events (plan phase 4): surface member activity in the transcript.
   else if (event.type === 'team.started') addMessage('notice', 'team · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
@@ -6330,7 +6372,7 @@ function handleEvent(event) {
   else if (event.type === 'team.member.completed') addMessage('notice', '✓ ' + (event.role || event.id) + ' done · ' + event.toolCalls + ' tools · ' + formatDuration(event.durationMs) + (event.ok ? '' : ' (failed)'));
   else if (event.type === 'team.round.completed') addMessage('notice', 'round ' + event.round + ' complete · ' + event.reports + ' reports');
   else if (event.type === 'team.synthesis') addMessage('notice', 'synthesis: ' + event.decision);
-  else if (event.type === 'team.completed') addMessage('notice', 'team completed · ' + event.rounds + ' rounds');
+  else if (event.type === 'team.completed') { addMessage('notice', 'team completed · ' + event.rounds + ' rounds'); void refreshRail(); }
 }
 function showPermission(event) {
   state.permissionQueue.push(event);
@@ -6746,6 +6788,7 @@ document.querySelectorAll('.region-nav').forEach((btn) => {
 el('automationRefreshBtn').addEventListener('click', () => { renderRegionList('workflows', 'regionAutomationBody').catch(console.error); });
 el('pluginsRefreshBtn').addEventListener('click', () => { renderRegionList('plugins', 'regionPluginsBody').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
+el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
