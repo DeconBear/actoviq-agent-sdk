@@ -3068,6 +3068,10 @@ export function createActoviqGuiHtml(): string {
           <p>Discovered plugins, tools, and skills</p>
         </div>
         <div class="region-actions">
+          <button type="button" id="pluginsViewPluginsBtn" class="pill-btn">Plugins</button>
+          <button type="button" id="pluginsViewToolsBtn" class="pill-btn">Tools</button>
+          <button type="button" id="pluginsViewSkillsBtn" class="pill-btn">Skills</button>
+          <button type="button" id="pluginsViewMcpBtn" class="pill-btn">MCP</button>
           <button type="button" id="pluginsRefreshBtn" class="pill-btn">Refresh</button>
         </div>
       </header>
@@ -3496,6 +3500,21 @@ button { cursor: pointer; }
 .region-actions .primary { background: var(--accent); color: #fff; border-color: transparent; }
 .region-actions .primary:hover { background: var(--accent-strong); }
 .region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
+/* Region list cards (Automation / Plugins). */
+.region-list-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.rl-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 13px 14px; display: grid; gap: 7px; }
+.rl-card .rl-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rl-card .rl-icon { width: 32px; height: 32px; border-radius: 8px; display: inline-grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: 0 0 32px; }
+.rl-card .rl-icon .ui-icon { width: 17px; height: 17px; }
+.rl-card .rl-title { font-weight: 600; font-size: 14px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-card .rl-source { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
+.rl-card .rl-desc { font-size: 12.5px; color: var(--text-2); min-width: 0; }
+.rl-card .rl-footer { display: flex; gap: 7px; flex-wrap: wrap; }
+.rl-card .rl-btn { min-height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; color: var(--text-1); }
+.rl-card .rl-btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.rl-card .rl-btn:hover { background: var(--bg-app); }
+.rl-card .rl-btn.primary:hover { background: var(--accent-strong); }
+.rl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; color: var(--text-2); }
 .region-empty { margin: 24px auto; color: #9aa0a6; font-size: 14px; }
 /* --- Project overview (plan/UI_PLAN §4.1): workspace card wall. --- */
 .project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -4126,6 +4145,8 @@ const state = {
   teamSelected: null,
   teamDefinition: null,
   teamSelectedNode: null,
+  // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
+  pluginsView: 'plugins',
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
 };
 const el = (id) => document.getElementById(id);
@@ -6020,8 +6041,20 @@ async function switchRegion(name) {
     btn.classList.toggle('active', btn.getAttribute('data-region') === name);
   });
   if (name === 'automation') await renderRegionList('workflows', 'regionAutomationBody');
-  else if (name === 'plugins') await renderRegionList('plugins', 'regionPluginsBody');
+  else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
+}
+async function renderPluginsRegion(view) {
+  state.pluginsView = view;
+  const kind = view === 'tools' ? 'tools' : view === 'skills' ? 'skills' : view === 'mcp' ? 'mcp' : 'plugins';
+  const bodyId = 'regionPluginsBody';
+  await renderRegionList(kind, bodyId);
+  // Highlight the active sub-view button.
+  const map = { plugins: 'pluginsViewPluginsBtn', tools: 'pluginsViewToolsBtn', skills: 'pluginsViewSkillsBtn', mcp: 'pluginsViewMcpBtn' };
+  for (const [v, id] of Object.entries(map)) {
+    const btn = el(id);
+    if (btn) btn.style.background = v === view ? 'var(--accent-soft)' : '';
+  }
 }
 // --- Team region (plan/UI_PLAN §5): read-only collaboration graph + inspector. ---
 const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#10B981', reviewer: '#F59E0B', coder: '#10B981', planner: '#3B82F6', docs: '#EC4899', test: '#F59E0B' };
@@ -6247,18 +6280,36 @@ async function renderRegionList(kind, bodyId) {
     body.appendChild(empty);
     return;
   }
+  const grid = document.createElement('div');
+  grid.className = 'region-list-grid';
   for (const item of data.items) {
     const card = document.createElement('article');
-    card.className = 'surface-card';
-    const strong = document.createElement('strong');
-    strong.textContent = itemTitle(item, kind);
+    card.className = 'rl-card';
+    const head = document.createElement('div');
+    head.className = 'rl-head';
+    const icon = document.createElement('span');
+    icon.className = 'rl-icon';
+    icon.innerHTML = guiIcon(regionListIcon(kind, item));
+    const titles = document.createElement('div');
+    titles.style.cssText = 'min-width:0;display:grid;gap:1px;';
+    const title = document.createElement('span');
+    title.className = 'rl-title';
+    title.textContent = itemTitle(item, kind);
+    const source = document.createElement('span');
+    source.className = 'rl-source';
+    source.textContent = item.source || (kind === 'plugins' ? 'plugin' : '');
+    titles.append(title, source);
+    head.append(icon, titles);
     const desc = document.createElement('p');
+    desc.className = 'rl-desc';
     desc.textContent = itemDescription(item, kind);
-    const footer = document.createElement('footer');
+    const footer = document.createElement('div');
+    footer.className = 'rl-footer';
     if (kind === 'workflows') {
       const run = document.createElement('button');
       run.type = 'button';
-      run.textContent = 'Run';
+      run.className = 'rl-btn primary';
+      run.textContent = '▶ Run';
       run.addEventListener('click', () => {
         const task = window.prompt('Workflow input', '');
         submitText('/workflows run ' + item.name + (task && task.trim() ? ' ' + task.trim() : ''));
@@ -6267,13 +6318,31 @@ async function renderRegionList(kind, bodyId) {
     } else if (kind === 'teams') {
       const attach = document.createElement('button');
       attach.type = 'button';
+      attach.className = 'rl-btn primary';
       attach.textContent = 'Attach';
       attach.addEventListener('click', () => submitText('/team attach ' + item.name));
       footer.appendChild(attach);
+    } else if (kind === 'plugins' || kind === 'tools') {
+      const cat = item.category || item.provider;
+      if (cat) {
+        const chip = document.createElement('span');
+        chip.className = 'rl-chip';
+        chip.textContent = cat;
+        footer.appendChild(chip);
+      }
     }
-    card.append(strong, desc, footer);
-    body.appendChild(card);
+    card.append(head, desc, footer);
+    grid.appendChild(card);
   }
+  body.appendChild(grid);
+}
+function regionListIcon(kind, item) {
+  if (kind === 'workflows') return 'automation';
+  if (kind === 'teams') return 'team';
+  if (kind === 'plugins') return 'plug';
+  if (kind === 'tools') return 'tools';
+  if (kind === 'sessions') return 'chat';
+  return 'plug';
 }
 async function gitData() {
   try {
@@ -6953,7 +7022,11 @@ document.querySelectorAll('.region-nav').forEach((btn) => {
   btn.addEventListener('click', () => { switchRegion(btn.getAttribute('data-region')).catch(console.error); });
 });
 el('automationRefreshBtn').addEventListener('click', () => { renderRegionList('workflows', 'regionAutomationBody').catch(console.error); });
-el('pluginsRefreshBtn').addEventListener('click', () => { renderRegionList('plugins', 'regionPluginsBody').catch(console.error); });
+el('pluginsRefreshBtn').addEventListener('click', () => { renderPluginsRegion(state.pluginsView || 'plugins').catch(console.error); });
+el('pluginsViewPluginsBtn').addEventListener('click', () => { renderPluginsRegion('plugins').catch(console.error); });
+el('pluginsViewToolsBtn').addEventListener('click', () => { renderPluginsRegion('tools').catch(console.error); });
+el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion('skills').catch(console.error); });
+el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
