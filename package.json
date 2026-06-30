@@ -36,7 +36,8 @@
     ],
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "assets/actoviq-icon.ico"
     ],
     "npmRebuild": false,
     "win": {
