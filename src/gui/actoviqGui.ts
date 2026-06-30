@@ -2893,9 +2893,23 @@ export function createActoviqGuiHtml(): string {
         </div>
         <div class="overview-body" id="overviewBody"></div>
       </section>
+      <section class="project-detail hidden" id="projectDetail">
+        <header class="region-header">
+          <div class="region-titles">
+            <div class="breadcrumb" id="detailBreadcrumb"></div>
+            <p id="detailProjectPath" class="pc-path"></p>
+          </div>
+          <div class="region-actions">
+            <button type="button" id="detailOpenLocationBtn" class="pill-btn">Open location</button>
+            <button type="button" id="detailNewConversationBtn" class="pill-btn primary">+ New conversation</button>
+          </div>
+        </header>
+        <div class="detail-body" id="detailBody"></div>
+      </section>
       <section class="project-conversation hidden" id="projectConversation">
       <header class="topbar">
         <div class="title-block">
+          <div class="breadcrumb" id="conversationBreadcrumb"></div>
           <div class="title-row">
             <h1 id="sessionTitle">Actoviq GUI</h1>
             <button id="conversationMenu" class="icon-btn" title="Conversation actions" aria-label="Conversation actions">${guiIcon('more')}</button>
@@ -2903,7 +2917,7 @@ export function createActoviqGuiHtml(): string {
           <p id="workspace"></p>
         </div>
         <div class="top-actions">
-          <button id="backToOverviewBtn" class="pill-btn" title="Back to projects">← Projects</button>
+          <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">← Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
@@ -3436,6 +3450,34 @@ button { cursor: pointer; }
 .proj-card .pc-meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
 .pc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
 .pc-status .dot { width: 7px; height: 7px; border-radius: 50%; }
+/* --- Project detail (plan/UI_PLAN §4.2/§4.3): conversation list + breadcrumb. --- */
+.project-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.detail-body { flex: 1; overflow: auto; padding: 14px 18px; display: grid; gap: 10px; align-content: start; }
+.breadcrumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); flex-wrap: wrap; }
+.breadcrumb .crumb { cursor: pointer; color: var(--accent); }
+.breadcrumb .crumb:hover { text-decoration: underline; }
+.breadcrumb .crumb-current { color: var(--text-1); font-weight: 600; font-size: 16px; cursor: default; }
+.breadcrumb .crumb-sep { color: #b5b8bd; }
+.conv-card { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 13px 15px; box-shadow: var(--shadow-card); cursor: pointer; }
+.conv-card:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.06); }
+.conv-card.active { border-color: var(--accent); background: var(--accent-soft); }
+.conv-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.conv-title { font-weight: 600; font-size: 14.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-preview { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #8a8d91; flex-wrap: wrap; }
+.conv-meta .chip { border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.conv-side { flex: 0 0 auto; display: grid; gap: 4px; align-items: start; text-align: right; }
+/* --- Right context rail (plan/UI_PLAN §3): live run/team status. --- */
+.rail-section { margin-bottom: 16px; }
+.rail-section h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
+.rail-run { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--bg-surface); padding: 9px 11px; margin-bottom: 8px; }
+.rail-run.status-done { border-left-color: var(--ok); }
+.rail-run.status-aborted { border-left-color: var(--warn); }
+.rail-run.status-error { border-left-color: var(--err); }
+.rail-run .rr-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-run .rr-tool { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); margin-top: 3px; }
+.rail-run .rr-members { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.rail-run .rr-member { font-size: 11px; border-radius: 4px; padding: 1px 6px; background: #eef0f1; color: #5f6368; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
 .sidebar {
@@ -4811,6 +4853,7 @@ async function loadState() {
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
   renderProjects();
   renderOverview();
+  renderContextRail();
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
@@ -5123,8 +5166,9 @@ async function resumeSession(id) {
   await loadState();
   await hydrateTranscript();
   closeSurface();
+  switchProjectView('conversation');
 }
-async function switchProject(projectPath) {
+async function switchProject(projectPath, view = 'conversation') {
   if (!projectPath) return false;
   const res = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
   if (!res.ok) { addMessage('error', await res.text()); return false; }
@@ -5135,7 +5179,7 @@ async function switchProject(projectPath) {
   await loadState();
   await hydrateTranscript();
   closeSurface();
-  switchProjectView('conversation');
+  switchProjectView(view);
   return true;
 }
 async function addWorkspace() {
@@ -5178,10 +5222,15 @@ function projectAccent(name) {
 function switchProjectView(view) {
   state.projectView = view;
   const ov = el('projectOverview');
+  const dt = el('projectDetail');
   const cv = el('projectConversation');
-  if (!ov || !cv) return;
+  if (!ov || !dt || !cv) return;
   ov.classList.toggle('hidden', view !== 'overview');
+  dt.classList.toggle('hidden', view !== 'detail');
   cv.classList.toggle('hidden', view !== 'conversation');
+  if (view === 'detail') renderProjectDetail();
+  renderConversationBreadcrumb();
+  renderContextRail();
 }
 function renderOverview() {
   const body = el('overviewBody');
@@ -5251,10 +5300,172 @@ function renderOverview() {
 }
 async function openProjectFromOverview(p) {
   if (!p.active) {
-    const ok = await switchProject(p.path);
+    const ok = await switchProject(p.path, 'detail');
     if (!ok) return;
+    return;
   }
-  switchProjectView('conversation');
+  switchProjectView('detail');
+}
+function projectNameFromSnapshot() {
+  const w = state.snapshot?.workDir || '';
+  const parts = w.split(/[\\\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || 'workspace';
+}
+function statusDotColor(status) {
+  const s = (status || '').toLowerCase();
+  if (s.includes('done') || s.includes('complete')) return 'var(--ok)';
+  if (s.includes('error') || s.includes('fail')) return 'var(--err)';
+  if (s.includes('review') || s.includes('plan')) return 'var(--warn)';
+  if (s.includes('run') || s.includes('active') || s.includes('progress')) return 'var(--accent)';
+  return '#9aa0a6';
+}
+// --- Project detail (plan/UI_PLAN §4.3): conversation list for a workspace. ---
+function renderProjectDetail() {
+  const name = projectNameFromSnapshot();
+  const w = state.snapshot?.workDir || '';
+  const bc = el('detailBreadcrumb');
+  if (bc) {
+    bc.textContent = '';
+    const crumb = document.createElement('span');
+    crumb.className = 'crumb';
+    crumb.textContent = 'Projects';
+    crumb.addEventListener('click', () => switchProjectView('overview'));
+    const sep = document.createElement('span');
+    sep.className = 'crumb-sep';
+    sep.textContent = '/';
+    const cur = document.createElement('span');
+    cur.className = 'crumb-current';
+    cur.textContent = name;
+    bc.append(crumb, sep, cur);
+  }
+  const pp = el('detailProjectPath');
+  if (pp) pp.textContent = w;
+  const body = el('detailBody');
+  if (!body) return;
+  body.textContent = '';
+  const sessions = (state.snapshot?.sessions || []).slice();
+  const currentId = state.snapshot?.session?.id;
+  for (const item of sessions) {
+    const card = document.createElement('article');
+    card.className = 'conv-card' + (item.id === currentId ? ' active' : '');
+    const main = document.createElement('div');
+    main.className = 'conv-main';
+    const title = document.createElement('div');
+    title.className = 'conv-title';
+    title.textContent = item.title || item.id || 'Untitled';
+    const preview = document.createElement('div');
+    preview.className = 'conv-preview';
+    preview.textContent = item.preview || ((item.messageCount || 0) + ' messages');
+    const meta = document.createElement('div');
+    meta.className = 'conv-meta';
+    if (item.model) {
+      const m = document.createElement('span');
+      m.className = 'chip';
+      m.textContent = item.model;
+      meta.append(m);
+    }
+    const mc = document.createElement('span');
+    mc.textContent = (item.messageCount || 0) + ' messages';
+    meta.append(mc);
+    if (item.updated) {
+      const u = document.createElement('span');
+      u.textContent = item.updated;
+      meta.append(u);
+    }
+    main.append(title, preview, meta);
+    const side = document.createElement('div');
+    side.className = 'conv-side';
+    if (item.status) {
+      const st = document.createElement('span');
+      st.className = 'pc-status';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = statusDotColor(item.status);
+      const t = document.createElement('span');
+      t.textContent = item.status;
+      st.append(dot, t);
+      side.append(st);
+    }
+    card.append(main, side);
+    card.addEventListener('click', () => { void resumeSession(item.id); });
+    body.appendChild(card);
+  }
+  if (sessions.length === 0) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'No conversations yet — click + New conversation to start one.';
+    body.appendChild(e);
+  }
+}
+function renderConversationBreadcrumb() {
+  const bc = el('conversationBreadcrumb');
+  if (!bc) return;
+  const name = projectNameFromSnapshot();
+  const sessionTitle = state.snapshot?.session?.title || 'Conversation';
+  bc.textContent = '';
+  const c1 = document.createElement('span');
+  c1.className = 'crumb';
+  c1.textContent = 'Projects';
+  c1.addEventListener('click', () => switchProjectView('overview'));
+  const s1 = document.createElement('span');
+  s1.className = 'crumb-sep';
+  s1.textContent = '/';
+  const c2 = document.createElement('span');
+  c2.className = 'crumb';
+  c2.textContent = name;
+  c2.addEventListener('click', () => switchProjectView('detail'));
+  const s2 = document.createElement('span');
+  s2.className = 'crumb-sep';
+  s2.textContent = '/';
+  const c3 = document.createElement('span');
+  c3.className = 'crumb-current';
+  c3.textContent = sessionTitle;
+  bc.append(c1, s1, c2, s2, c3);
+}
+// --- Right context rail (plan/UI_PLAN §3): live run/team status. ---
+function renderContextRail() {
+  const rail = el('contextRail');
+  if (!rail) return;
+  const runs = state.snapshot?.runs || [];
+  rail.textContent = '';
+  if (runs.length === 0) {
+    rail.classList.add('hidden');
+    return;
+  }
+  rail.classList.remove('hidden');
+  const section = document.createElement('div');
+  section.className = 'rail-section';
+  const h = document.createElement('h3');
+  h.textContent = 'Active runs';
+  section.appendChild(h);
+  for (const r of runs) {
+    const card = document.createElement('div');
+    card.className = 'rail-run status-' + (r.status || 'running');
+    const t = document.createElement('div');
+    t.className = 'rr-title';
+    t.textContent = r.label || r.kind || 'run';
+    card.appendChild(t);
+    if (r.currentTool) {
+      const tl = document.createElement('div');
+      tl.className = 'rr-tool';
+      tl.textContent = r.currentTool;
+      card.appendChild(tl);
+    }
+    const members = r.team?.members || [];
+    if (members.length) {
+      const mw = document.createElement('div');
+      mw.className = 'rr-members';
+      for (const m of members) {
+        const span = document.createElement('span');
+        span.className = 'rr-member';
+        span.textContent = m.id || m.role || m.model;
+        mw.appendChild(span);
+      }
+      card.appendChild(mw);
+    }
+    section.appendChild(card);
+  }
+  rail.appendChild(section);
 }
 async function openLocation() {
   const res = await api('/api/open-location', { method: 'POST' });
@@ -6295,7 +6506,9 @@ el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
 el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
 el('overviewSearch').addEventListener('input', () => renderOverview());
-el('backToOverviewBtn').addEventListener('click', () => switchProjectView('overview'));
+el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
+el('detailNewConversationBtn').addEventListener('click', () => createNewSession().catch(console.error));
+el('detailOpenLocationBtn').addEventListener('click', openLocation);
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
 el('workspaceBrowseBtn').addEventListener('click', async () => {
