@@ -3502,16 +3502,22 @@ button { cursor: pointer; }
   --shadow-card: 0 1px 2px rgba(0,0,0,.04);
 }
 /* --- App shell: 4-region navigation (plan/UI_PLAN §3). --- */
-.new-chat-btn { background: var(--accent); color: #fff; border-color: transparent; }
+.new-chat-btn { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
 .new-chat-btn:hover { background: var(--accent-strong); }
 .new-chat-btn .nav-icon { color: #fff; }
-.region-nav.active { background: var(--accent-soft); color: var(--accent); }
+.region-nav.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .region-nav.active .nav-icon { color: var(--accent); }
+.region-nav:not(.active):hover { background: var(--bg-app); }
 .region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
-.region-header { min-height: 58px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; flex: 0 0 auto; }
+.region-header { min-height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; gap: 14px; flex: 0 0 auto; background: var(--bg-surface); }
 .region-header .region-titles { min-width: 0; }
-.region-header h1 { font-size: 18px; margin: 0; font-weight: 650; color: var(--text-1); }
-.region-header p { margin: 3px 0 0; color: var(--text-2); font-size: 13px; }
+.region-header h1 { font-size: 22px; margin: 0; font-weight: 700; color: var(--text-1); letter-spacing: -.01em; }
+.region-header p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; }
 .region-header .region-actions { display: flex; gap: 8px; align-items: center; }
 .region-actions .primary { background: var(--accent); color: #fff; border-color: transparent; }
 .region-actions .primary:hover { background: var(--accent-strong); }
@@ -3547,7 +3553,7 @@ button { cursor: pointer; }
 .proj-card .pc-icon { width: 36px; height: 36px; border-radius: 9px; display: inline-grid; place-items: center; color: #fff; flex: 0 0 36px; }
 .proj-card .pc-icon .ui-icon { width: 18px; height: 18px; }
 .proj-card .pc-titles { min-width: 0; }
-.proj-card .pc-title { font-weight: 650; font-size: 15px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card .pc-title { font-weight: 700; font-size: 16px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.005em; }
 .proj-card .pc-path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proj-card .pc-meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
 .pc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
@@ -3657,22 +3663,30 @@ button { cursor: pointer; }
 .te-btn.primary:hover { background: var(--accent-strong); }
 .te-actions { display: flex; gap: 8px; margin-top: 6px; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
-.app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
+.app { height: 100vh; display: flex; overflow: hidden; border: 1px solid var(--border); background: var(--bg-app); }
 .sidebar {
-  width: 300px;
-  flex: 0 0 300px;
+  width: 240px;
+  flex: 0 0 240px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 10px 10px;
+  gap: 10px;
+  padding: 14px 10px 12px;
   overflow: hidden;
-  background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%);
-  border-right: 1px solid #dddddd;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 6px; }
-.brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: linear-gradient(135deg, #4b93f7 0%, #6ad0a8 100%); color: #fff; }
+/* Adaptive sidebar: when not in a project chat, hide the search + projects
+   list (the 4 reference designs all show a slim nav-only sidebar in those
+   modes; the rich sidebar appears only when actually browsing chats). */
+body[data-sidebar-mode="nav"] .sidebar .search,
+body[data-sidebar-mode="nav"] .sidebar .project-section,
+body[data-sidebar-mode="nav"] .sidebar .sidebar-link,
+body[data-sidebar-mode="nav"] .sidebar .workspace-meta { display: none; }
+body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-icon) { display: inline; }
+.brand { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 8px; margin-bottom: 4px; }
+.brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: linear-gradient(135deg, #4b93f7 0%, #6ad0a8 100%); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
-.brand-name { font-weight: 650; font-size: 15px; letter-spacing: .2px; color: #2f3337; }
+.brand-name { font-weight: 700; font-size: 15px; letter-spacing: -.01em; color: var(--text-1); }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
 .nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn {
   min-height: 34px;
@@ -5043,6 +5057,12 @@ async function loadState() {
   state.snapshot = await res.json();
   applyPreferences(state.snapshot.settings?.preferences);
   document.body.dataset.terminalCapable = state.snapshot.terminalCapable ? 'true' : 'false';
+  // Initial sidebar mode: the default landing view is the project overview
+  // (no chat selected), so use the slim 4-nav sidebar. switchProjectView will
+  // toggle this back to 'full' when the user enters a conversation.
+  if (!document.body.dataset.sidebarMode) {
+    document.body.dataset.sidebarMode = 'nav';
+  }
   const workDir = state.snapshot.workDir || '';
   const parts = workDir.split(/[\\\\/]/).filter(Boolean);
   el('projectName').textContent = parts[parts.length - 1] || 'workspace';
@@ -5429,6 +5449,9 @@ function switchProjectView(view) {
   ov.classList.toggle('hidden', view !== 'overview');
   dt.classList.toggle('hidden', view !== 'detail');
   cv.classList.toggle('hidden', view !== 'conversation');
+  // Adaptive sidebar (U9): the project overview & detail screens use a
+  // slim 4-nav sidebar; only the chat view shows the rich chat list.
+  document.body.dataset.sidebarMode = view === 'conversation' ? 'full' : 'nav';
   if (view === 'detail') renderProjectDetail();
   renderConversationBreadcrumb();
   renderContextRail();
@@ -6092,6 +6115,10 @@ async function switchRegion(name) {
   document.querySelectorAll('.region-nav').forEach((btn) => {
     btn.classList.toggle('active', btn.getAttribute('data-region') === name);
   });
+  // Adaptive sidebar: Team / Automation / Plugins use the slim 4-nav
+  // sidebar (matches the reference designs). Project reuses switchProjectView
+  // to drive its own sidebar mode (overview/detail → slim, chat → full).
+  if (name !== 'project') document.body.dataset.sidebarMode = 'nav';
   if (name === 'automation') await renderRegionList('workflows', 'regionAutomationBody');
   else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
