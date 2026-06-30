@@ -4009,6 +4009,22 @@ body[data-density="compact"] .message { margin-bottom: 10px; line-height: 1.42; 
 body[data-density="compact"] .transcript { padding-top: 14px; padding-bottom: 10px; }
 body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 body[data-theme="dark"] { color: #e8eaed; background: #1f2023; }
+/* Dark-theme reserves for the new workbench regions (plan/UI_PLAN §2 — U9). */
+body[data-theme="dark"] .region, body[data-theme="dark"] .project-overview, body[data-theme="dark"] .project-detail, body[data-theme="dark"] .project-conversation, body[data-theme="dark"] .team-graph, body[data-theme="dark"] .context-rail { background: #1f2023; color: #e8eaed; }
+body[data-theme="dark"] .region-header, body[data-theme="dark"] .overview-toolbar, body[data-theme="dark"] .team-squad-bar { border-color: #3b3d43; }
+body[data-theme="dark"] .proj-card, body[data-theme="dark"] .conv-card, body[data-theme="dark"] .plan-panel, body[data-theme="dark"] .graph-node, body[data-theme="dark"] .rl-card, body[data-theme="dark"] .rail-run, body[data-theme="dark"] .te-member-row, body[data-theme="dark"] .team-editor, body[data-theme="dark"] .team-inspector { background: #26272b; border-color: #3b3d43; }
+body[data-theme="dark"] .region-nav.active { background: rgba(138,180,248,.16); color: #8ab4f8; }
+body[data-theme="dark"] .region-nav.active .nav-icon { color: #8ab4f8; }
+body[data-theme="dark"] .squad-chip.active { background: rgba(138,180,248,.16); border-color: #8ab4f8; color: #8ab4f8; }
+body[data-theme="dark"] .conv-card.active, body[data-theme="dark"] .graph-node.selected { background: rgba(138,180,248,.14); border-color: #8ab4f8; }
+body[data-theme="dark"] .ins-tab.active { color: #8ab4f8; border-bottom-color: #8ab4f8; }
+body[data-theme="dark"] .plan-item.done .pi-label, body[data-theme="dark"] .rr-member.status-done { color: #6f7479; }
+body[data-theme="dark"] .pc-title, body[data-theme="dark"] .conv-title, body[data-theme="dark"] .gn-name, body[data-theme="dark"] .rl-title, body[data-theme="dark"] .rr-title, body[data-theme="dark"] h1, body[data-theme="dark"] .crumb-current { color: #e8eaed; }
+body[data-theme="dark"] .pc-path, body[data-theme="dark"] .conv-preview, body[data-theme="dark"] .gn-role, body[data-theme="dark"] .gn-model, body[data-theme="dark"] .rl-desc, body[data-theme="dark"] .rr-tool, body[data-theme="dark"] .pc-meta, body[data-theme="dark"] .conv-meta, body[data-theme="dark"] .breadcrumb, body[data-theme="dark"] .rr-member { color: #aab0b8; }
+body[data-theme="dark"] .crumb, body[data-theme="dark"] .crumb-sep { color: #8ab4f8; }
+body[data-theme="dark"] .squad-chip, body[data-theme="dark"] .te-field input, body[data-theme="dark"] .te-field textarea, body[data-theme="dark"] .plan-add input, body[data-theme="dark"] .overview-search { background: #1f2023; border-color: #3b3d43; color: #e8eaed; }
+body[data-theme="dark"] .team-graph { background: #171819; }
+body[data-theme="dark"] .graph-arrow { color: #5b5f66; }
 body[data-theme="dark"] .chat, body[data-theme="dark"] .composer, body[data-theme="dark"] .dialog, body[data-theme="dark"] .settings-view, body[data-theme="dark"] .settings-main, body[data-theme="dark"] .surface-panel, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card { background: #1f2023; color: #e8eaed; }
 body[data-theme="dark"] .sidebar, body[data-theme="dark"] .settings-sidebar { background: #202226; border-color: #3b3d43; }
 body[data-theme="dark"] input, body[data-theme="dark"] textarea, body[data-theme="dark"] select, body[data-theme="dark"] .pill-btn, body[data-theme="dark"] .dialog-actions button, body[data-theme="dark"] .settings-savebar button, body[data-theme="dark"] .secondary-btn, body[data-theme="dark"] .surface-actions button, body[data-theme="dark"] .surface-card button, body[data-theme="dark"] .settings-card button, body[data-theme="dark"] .command-chip { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
