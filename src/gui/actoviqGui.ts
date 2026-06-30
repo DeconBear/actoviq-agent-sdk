@@ -2878,6 +2878,22 @@ export function createActoviqGuiHtml(): string {
       </div>
     </aside>
     <main class="chat" data-region="project" id="regionProject">
+      <section class="project-overview" id="projectOverview">
+        <header class="region-header">
+          <div class="region-titles">
+            <h1>Projects</h1>
+            <p>Workspace overview and agent progress</p>
+          </div>
+          <div class="region-actions">
+            <button type="button" id="overviewNewWorkspaceBtn" class="pill-btn primary">+ New workspace</button>
+          </div>
+        </header>
+        <div class="overview-toolbar">
+          <input id="overviewSearch" class="overview-search" placeholder="Search projects…" autocomplete="off">
+        </div>
+        <div class="overview-body" id="overviewBody"></div>
+      </section>
+      <section class="project-conversation hidden" id="projectConversation">
       <header class="topbar">
         <div class="title-block">
           <div class="title-row">
@@ -2887,6 +2903,7 @@ export function createActoviqGuiHtml(): string {
           <p id="workspace"></p>
         </div>
         <div class="top-actions">
+          <button id="backToOverviewBtn" class="pill-btn" title="Back to projects">← Projects</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
@@ -2937,6 +2954,7 @@ export function createActoviqGuiHtml(): string {
           </section>
         </div>
       </div>
+      </section>
     </main>
     <section class="region hidden" data-region="team" id="regionTeam" aria-label="Team">
       <header class="region-header">
@@ -3398,6 +3416,26 @@ button { cursor: pointer; }
 .region-actions .primary:hover { background: var(--accent-strong); }
 .region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
 .region-empty { margin: 24px auto; color: #9aa0a6; font-size: 14px; }
+/* --- Project overview (plan/UI_PLAN §4.1): workspace card wall. --- */
+.project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* Conversation view wraps the existing topbar + workbench; it must be a flex
+   column so the workbench (flex:1) fills height and the composer docks bottom. */
+.project-conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.overview-toolbar { padding: 10px 18px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex: 0 0 auto; }
+.overview-search { height: 34px; border: 1px solid var(--border); border-radius: 10px; padding: 0 12px; background: #fff; outline: none; width: 100%; max-width: 360px; }
+.overview-body { flex: 1; overflow: auto; padding: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-content: start; }
+.proj-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 14px 14px 14px 18px; box-shadow: var(--shadow-card); display: grid; gap: 9px; cursor: pointer; overflow: hidden; }
+.proj-card:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.06); }
+.proj-card .pc-accent { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.proj-card .pc-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.proj-card .pc-icon { width: 36px; height: 36px; border-radius: 9px; display: inline-grid; place-items: center; color: #fff; flex: 0 0 36px; }
+.proj-card .pc-icon .ui-icon { width: 18px; height: 18px; }
+.proj-card .pc-titles { min-width: 0; }
+.proj-card .pc-title { font-weight: 650; font-size: 15px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card .pc-path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card .pc-meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
+.pc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.pc-status .dot { width: 7px; height: 7px; border-radius: 50%; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
 .sidebar {
@@ -3915,6 +3953,9 @@ const state = {
   // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
   // is visible. Project = the existing chat workbench (default).
   activeRegion: 'project',
+  // Within the Project region: 'overview' (workspace card wall) or
+  // 'conversation' (the chat workbench). Overview is the entry landing.
+  projectView: 'overview',
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
 };
 const el = (id) => document.getElementById(id);
@@ -4769,6 +4810,7 @@ async function loadState() {
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
   renderProjects();
+  renderOverview();
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
@@ -5093,6 +5135,7 @@ async function switchProject(projectPath) {
   await loadState();
   await hydrateTranscript();
   closeSurface();
+  switchProjectView('conversation');
   return true;
 }
 async function addWorkspace() {
@@ -5123,6 +5166,95 @@ async function createNewSession() {
   state.toolNodes.clear();
   state.currentAssistant = null;
   await loadState();
+  switchProjectView('conversation');
+}
+// --- Project overview (plan/UI_PLAN §4.1): workspace card wall. ---
+const PROJECT_ACCENTS = ['#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EC4899', '#0EA5E9'];
+function projectAccent(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return PROJECT_ACCENTS[h % PROJECT_ACCENTS.length];
+}
+function switchProjectView(view) {
+  state.projectView = view;
+  const ov = el('projectOverview');
+  const cv = el('projectConversation');
+  if (!ov || !cv) return;
+  ov.classList.toggle('hidden', view !== 'overview');
+  cv.classList.toggle('hidden', view !== 'conversation');
+}
+function renderOverview() {
+  const body = el('overviewBody');
+  if (!body) return;
+  body.textContent = '';
+  const query = (el('overviewSearch')?.value || '').trim().toLowerCase();
+  const projects = (state.snapshot?.projects || []).filter((p) =>
+    !query || (p.name || '').toLowerCase().includes(query) || (p.path || '').toLowerCase().includes(query));
+  const runs = state.snapshot?.runs || [];
+  for (const p of projects) {
+    const accent = projectAccent(p.name);
+    const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
+    const card = document.createElement('article');
+    card.className = 'proj-card';
+    const title = document.createElement('div');
+    title.className = 'pc-title';
+    title.textContent = p.name;
+    const pathEl = document.createElement('div');
+    pathEl.className = 'pc-path';
+    pathEl.textContent = p.path;
+    const titles = document.createElement('div');
+    titles.className = 'pc-titles';
+    titles.append(title, pathEl);
+    const icon = document.createElement('span');
+    icon.className = 'pc-icon';
+    icon.style.background = accent;
+    icon.innerHTML = guiIcon('folder');
+    const head = document.createElement('div');
+    head.className = 'pc-head';
+    head.append(icon, titles);
+    const status = document.createElement('span');
+    status.className = 'pc-status';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.style.background = p.active ? 'var(--ok)' : '#9aa0a6';
+    const statusText = document.createElement('span');
+    statusText.textContent = p.active ? 'Active' : 'Idle';
+    status.append(dot, statusText);
+    const chats = document.createElement('span');
+    chats.textContent = (p.sessionCount || 0) + ' chats';
+    const meta = document.createElement('div');
+    meta.className = 'pc-meta';
+    meta.append(status, chats);
+    if (running) {
+      const r = document.createElement('span');
+      r.className = 'pc-status';
+      r.style.color = 'var(--accent)';
+      const rd = document.createElement('span');
+      rd.className = 'dot';
+      rd.style.background = 'var(--accent)';
+      r.append(rd, document.createTextNode(running + ' running'));
+      meta.append(r);
+    }
+    const accentBar = document.createElement('span');
+    accentBar.className = 'pc-accent';
+    accentBar.style.background = accent;
+    card.append(accentBar, head, meta);
+    card.addEventListener('click', () => { void openProjectFromOverview(p); });
+    body.appendChild(card);
+  }
+  if (projects.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
+    body.appendChild(empty);
+  }
+}
+async function openProjectFromOverview(p) {
+  if (!p.active) {
+    const ok = await switchProject(p.path);
+    if (!ok) return;
+  }
+  switchProjectView('conversation');
 }
 async function openLocation() {
   const res = await api('/api/open-location', { method: 'POST' });
@@ -6161,6 +6293,9 @@ el('projectMenuBtn').addEventListener('click', () => { openSurface('projects').c
 el('newWorkspaceBtn').addEventListener('click', addWorkspace);
 el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
+el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
+el('overviewSearch').addEventListener('input', () => renderOverview());
+el('backToOverviewBtn').addEventListener('click', () => switchProjectView('overview'));
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
 el('workspaceBrowseBtn').addEventListener('click', async () => {
