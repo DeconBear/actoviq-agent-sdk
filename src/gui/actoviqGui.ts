@@ -3413,7 +3413,7 @@ button { cursor: pointer; }
 .pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
 .pane-stub p { margin: 0; font-size: 14px; }
 /* Terminal pane: xterm fills the pane on a dark surface. */
-.pane-terminal { background: #1f2330; color: #e6e9ef; display: flex; flex-direction: column; }
+.pane-terminal { background: #1f2330; color: #e6e9ef; }
 .pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid #2c3142; background: #262b3b; }
 .pane-terminal .tb-toggle { min-height: 24px; padding: 0 10px; border-radius: 6px; border: 1px solid #3a4054; background: #2f3547; color: #c8cdd9; font-size: 12px; }
 .pane-terminal .tb-toggle:hover { background: #3a4054; }
