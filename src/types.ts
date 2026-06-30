@@ -1976,6 +1976,39 @@ export interface TaskSchedulerOptions {
   defaultRetryDelayMs?: number;
 }
 
+export type ScheduledAutomationKind = 'workflow' | 'prompt';
+
+export interface ScheduledAutomationTask {
+  id: string;
+  name: string;
+  kind: ScheduledAutomationKind;
+  cron: string;
+  enabled: boolean;
+  description?: string;
+  workflowName?: string;
+  input?: string;
+  prompt?: string;
+  lastRunAt?: string;
+  lastResult?: ScheduledTaskRecord['lastResult'];
+  lastError?: string;
+  nextRunAt: string;
+  invocationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduledAutomationTaskInput {
+  id?: string;
+  name?: string;
+  kind?: ScheduledAutomationKind;
+  cron?: string;
+  enabled?: boolean;
+  description?: string;
+  workflowName?: string;
+  input?: string;
+  prompt?: string;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  Bridge SDK types — restored from f6d619a
 // ═══════════════════════════════════════════════════════════════════════

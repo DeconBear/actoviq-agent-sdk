@@ -87,8 +87,15 @@ import {
   loadRouterProfile,
   loadTeamDefinition,
   loadWorkflow,
+  listScheduledAutomationTasks,
   resolveRoutedRun,
+  recordScheduledAutomationRun,
   saveTeamDefinition,
+  setScheduledAutomationEnabled,
+  TaskScheduler,
+  upsertScheduledAutomationTask,
+  deleteScheduledAutomationTask,
+  getScheduledAutomationTask,
   WorktreeService,
   type ActoviqAgentClient,
 } from '../index.js';
@@ -146,6 +153,8 @@ import type {
   AgentRunResult,
   AgentToolDefinition,
   RouterProfile,
+  ScheduledAutomationTask,
+  ScheduledAutomationTaskInput,
   TeamDefinition,
   TeamEvent,
 } from '../types.js';
@@ -942,6 +951,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const runs = new Map<string, GuiRunRecord>();
   let foregroundRunId: string | null = null;
   const foregroundRun = (): GuiRunRecord | undefined => (foregroundRunId ? runs.get(foregroundRunId) : undefined);
+  const automationScheduler = new TaskScheduler({ defaultTimeoutMs: 30 * 60 * 1000 });
+  const scheduledAutomationIds = new Set<string>();
   const pendingPermissions = new Map<string, PendingPermission>();
   // Terminal engine (plan phase 3). node-pty is probed once; terminalCapable
   // tells the renderer whether to show the terminal tab (false hides it even when
@@ -1054,6 +1065,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     if (previousSdk) await previousSdk.close().catch(() => undefined);
     invalidateHeavyState();
+    await resyncAutomationScheduler();
     return state();
   }
 
@@ -1159,7 +1171,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
     }
-    const [allSessions, workflows, teams, routers, skills, agents, runtimeDiscovery] = await Promise.all([
+    const [allSessions, workflows, teams, routers, skills, agents, runtimeDiscovery, scheduledTasks] = await Promise.all([
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).sessions.list(),
       Promise.resolve(listWorkflows(workDir)),
       Promise.resolve(listTeamDefinitions(workDir)),
@@ -1167,6 +1179,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
       Promise.resolve(discoverAgentRuntimes({ homeDir })),
+      listScheduledAutomationTasks(workDir),
     ]);
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
     const sessions = allSessions.filter(item => item.messageCount > 0 || (session ? item.id === session.id : false));
@@ -1185,6 +1198,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       projectPlan: await readProjectPlan(workDir, homeDir),
       sessions,
       workflows,
+      scheduledTasks,
       teams,
       routers,
       skills,
@@ -1384,6 +1398,161 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       events.push({ type: 'error', message: `${output.state.errors.length} errors during workflow execution` });
     }
     return events;
+  }
+
+  async function resyncAutomationScheduler(): Promise<void> {
+    for (const id of scheduledAutomationIds) {
+      await automationScheduler.remove(id).catch(() => undefined);
+    }
+    scheduledAutomationIds.clear();
+    for (const task of await listScheduledAutomationTasks(workDir)) {
+      await automationScheduler.schedule({
+        id: task.id,
+        schedule: { cron: task.cron },
+        description: task.name,
+        enabled: task.enabled,
+        task: async () => {
+          const latest = await getScheduledAutomationTask(workDir, task.id);
+          if (!latest || !latest.enabled) return;
+          await executeScheduledAutomationTask(latest);
+        },
+      });
+      scheduledAutomationIds.add(task.id);
+    }
+    if (!automationScheduler.isRunning) automationScheduler.start();
+  }
+
+  async function saveScheduledAutomationTask(input: ScheduledAutomationTaskInput): Promise<ScheduledAutomationTask> {
+    const task = await upsertScheduledAutomationTask(workDir, input);
+    await resyncAutomationScheduler();
+    return task;
+  }
+
+  async function executeScheduledAutomationTask(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
+    const events: GuiRunEvent[] = [{ type: 'notice', message: `automation: ${task.name}` }];
+    try {
+      if (task.kind === 'workflow') {
+        if (!task.workflowName) throw new Error('Scheduled workflow task is missing workflowName');
+        const workflowEvents = await runWorkflow(task.workflowName, task.input);
+        events.push(...workflowEvents);
+        const failure = workflowEvents.find(event => event.type === 'error');
+        if (failure) throw new Error(String(failure.message ?? 'workflow failed'));
+      } else {
+        if (!task.prompt) throw new Error('Scheduled prompt task is missing prompt');
+        events.push(...await runAutomationPrompt(task));
+      }
+      await recordScheduledAutomationRun(workDir, task.id, 'success');
+    } catch (error) {
+      const message = (error as Error).message;
+      events.push({ type: 'error', message });
+      await recordScheduledAutomationRun(workDir, task.id, message.includes('timed out') ? 'timeout' : 'failure', message);
+    } finally {
+      await resyncAutomationScheduler();
+    }
+    return events;
+  }
+
+  async function runAutomationPrompt(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
+    if (needsCredentials || !sdk) {
+      throw new Error('No API key configured - open Settings > General to add one.');
+    }
+    const input = task.prompt?.trim() ?? '';
+    if (!input) throw new Error('Scheduled prompt is empty');
+
+    const events: GuiRunEvent[] = [];
+    const runId = 'r-auto-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const runAbort = new AbortController();
+    const desc: GuiRunDescriptor = {
+      runId,
+      kind: 'background',
+      label: `automation:${task.name}`,
+      sessionId: session.id,
+      model: session.model || null,
+      startedAt: Date.now(),
+      status: 'running',
+      toolCalls: 0,
+      tokenUsage: { input: 0, output: 0 },
+    };
+    const send = (event: GuiRunEvent) => { events.push(event); };
+    const backgroundApprover: ActoviqToolApprover = async () => ({ behavior: 'deny', reason: 'Scheduled background tasks cannot request interactive approval.' });
+    runs.set(runId, { desc, abort: runAbort, sink: send });
+    let streamedText = '';
+    try {
+      let routed: { model: string; modelApi: import('../types.js').CreateAgentSdkOptions['modelApi'] } | undefined;
+      const configActive = !!activeBridgeConfig;
+      if (activeRouter && !bridgeMode && !configActive) {
+        const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
+        routed = { model: decision.model, modelApi: decision.modelApi };
+      }
+      const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
+      const hadamardModel = (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard')
+        ? (activeBridgeConfig.model || undefined)
+        : undefined;
+      const stream = bridgeMode && activeBridgeModelApi
+        ? session.stream(expandImageRefs(input, workDir), {
+            systemPrompt: systemPromptForRun,
+            signal: runAbort.signal,
+            permissionMode: currentPermissionMode(),
+            effort: currentEffort(),
+            approver: backgroundApprover,
+            classifier: preToolUseHookClassifier,
+            canUseTool,
+            model: activeBridgeModelApi.model,
+            modelApi: activeBridgeModelApi.modelApi,
+            ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          })
+        : session.stream(expandImageRefs(input, workDir), {
+            systemPrompt: systemPromptForRun,
+            signal: runAbort.signal,
+            permissionMode: currentPermissionMode(),
+            effort: currentEffort(),
+            approver: backgroundApprover,
+            classifier: preToolUseHookClassifier,
+            canUseTool,
+            ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
+            ...(hadamardModel ? { model: hadamardModel } : {}),
+            ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          });
+
+      for await (const event of stream) {
+        if (event.type === 'tool.call') {
+          desc.toolCalls += 1;
+          desc.currentTool = event.call.publicName;
+        } else if (event.type === 'response.text.delta' && event.delta) {
+          streamedText += event.delta;
+          desc.lastText = streamedText;
+        }
+      }
+      const result = await stream.result;
+      const text = streamedText || result.text || '';
+      if (text.trim()) {
+        events.push({ type: 'command.result', title: `Automation result - ${task.name}`, text });
+      }
+      const effectiveModel = hadamardModel ?? routed?.model ?? activeBridgeModelApi?.model ?? session.model;
+      recordUsage(effectiveModel, (result as any).usage);
+      if ((result as any).usage) {
+        desc.tokenUsage = {
+          input: (result as any).usage.input_tokens ?? 0,
+          output: (result as any).usage.output_tokens ?? 0,
+        };
+      }
+      try {
+        recordTurn({
+          sessionId: session.id,
+          ts: Math.floor(Date.now() / 1000),
+          text: `automation:${task.name} ${input}`.slice(0, 200),
+          model: effectiveModel,
+        }, options.homeDir);
+      } catch { /* never fail automation over history */ }
+      desc.status = 'done';
+      return events;
+    } catch (error) {
+      desc.status = runAbort.signal.aborted ? 'aborted' : 'error';
+      throw error;
+    } finally {
+      runs.delete(runId);
+      invalidateHeavyState();
+    }
   }
 
   // Live todo list captured from TodoWrite tool calls; surfaced in state() so the
@@ -2611,6 +2780,56 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!target) return json(res, 400, { error: 'Missing project path' });
         return json(res, 200, await forgetProject(target));
       }
+      if (req.method === 'GET' && url.pathname === '/api/scheduled-tasks') {
+        return json(res, 200, { tasks: await listScheduledAutomationTasks(workDir) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks') {
+        const body = await readJson(req);
+        let task: ScheduledAutomationTask;
+        try {
+          task = await saveScheduledAutomationTask({
+            id: typeof body.id === 'string' ? body.id : undefined,
+            name: typeof body.name === 'string' ? body.name : undefined,
+            kind: body.kind === 'prompt' ? 'prompt' : 'workflow',
+            cron: typeof body.cron === 'string' ? body.cron : undefined,
+            enabled: body.enabled !== false,
+            description: typeof body.description === 'string' ? body.description : undefined,
+            workflowName: typeof body.workflowName === 'string' ? body.workflowName : undefined,
+            input: typeof body.input === 'string' ? body.input : undefined,
+            prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
+          });
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        invalidateHeavyState();
+        return json(res, 200, { task, state: await state() });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks/toggle') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id.trim() : '';
+        if (!id) return json(res, 400, { error: 'Missing task id' });
+        const task = await setScheduledAutomationEnabled(workDir, id, body.enabled === true);
+        if (!task) return json(res, 404, { error: `scheduled task not found: ${id}` });
+        await resyncAutomationScheduler();
+        return json(res, 200, { task, state: await state() });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks/delete') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id.trim() : '';
+        if (!id) return json(res, 400, { error: 'Missing task id' });
+        const deleted = await deleteScheduledAutomationTask(workDir, id);
+        await resyncAutomationScheduler();
+        return json(res, deleted ? 200 : 404, deleted ? { ok: true, state: await state() } : { error: `scheduled task not found: ${id}` });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks/run') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id.trim() : '';
+        if (!id) return json(res, 400, { error: 'Missing task id' });
+        const task = await getScheduledAutomationTask(workDir, id);
+        if (!task) return json(res, 404, { error: `scheduled task not found: ${id}` });
+        const events = await executeScheduledAutomationTask(task);
+        return json(res, 200, { events, state: await state() });
+      }
       if (req.method === 'POST' && url.pathname === '/api/send') {
         const body = await readJson(req);
         const input = typeof body.text === 'string' ? body.text.trim() : '';
@@ -2733,12 +2952,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const actualPort = await listenWithFallback(server, host, port);
   const url = `http://${host}:${actualPort}/`;
+  await resyncAutomationScheduler();
   process.stdout.write(`actoviq-gui listening on ${url}\n`);
 
   const close = async () => {
     for (const rec of runs.values()) rec.abort.abort();
     runs.clear();
     foregroundRunId = null;
+    await automationScheduler.dispose();
     terminalManager.closeAll();
     if (sdk) await sdk.close().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -3366,6 +3587,26 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="automation">
         <h1>Automation</h1>
+        <div class="settings-group">
+          <h2>Scheduled tasks</h2>
+          <p>Run a saved workflow or prompt on a local cron schedule for this workspace.</p>
+          <input id="settingsScheduleId" type="hidden">
+          <div class="automation-schedule-grid">
+            <label>Name<input id="settingsScheduleName" autocomplete="off" placeholder="daily review"></label>
+            <label>Cron<input id="settingsScheduleCron" autocomplete="off" placeholder="0 9 * * *"></label>
+            <label>Type<select id="settingsScheduleKind"><option value="workflow">Workflow</option><option value="prompt">Prompt</option></select></label>
+            <label>Workflow<input id="settingsScheduleWorkflow" list="settingsWorkflowNames" autocomplete="off" placeholder="workflow name"></label>
+          </div>
+          <label class="automation-schedule-payload">Input or prompt<textarea id="settingsScheduleInput" autocomplete="off" placeholder="workflow input, or the prompt to run"></textarea></label>
+          <datalist id="settingsWorkflowNames"></datalist>
+          <div class="settings-action-row">
+            <label class="check-row"><input id="settingsScheduleEnabled" type="checkbox" checked>Enabled</label>
+            <button type="button" id="settingsScheduleSave" class="primary">Save schedule</button>
+            <button type="button" id="settingsScheduleClear" class="secondary-btn">New schedule</button>
+          </div>
+          <p id="settingsScheduleStatus" class="muted"></p>
+          <div id="settingsScheduledTasksList" class="settings-card-list"></div>
+        </div>
         <div class="settings-group">
           <h2>Workflows</h2>
           <p>Run saved workflow scripts without typing /workflows.</p>
@@ -4196,6 +4437,16 @@ kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; p
 .secondary-btn { border-color: #d8d8d8; background: #fff; padding: 0 12px; }
 .settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin: 14px 0; }
 .settings-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.automation-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; gap: 10px; margin: 14px 0 10px; }
+.automation-schedule-grid label, .automation-schedule-payload { display: grid; gap: 7px; color: #5f6368; font-size: 13px; }
+.automation-schedule-grid input, .automation-schedule-grid select, .automation-schedule-payload textarea { min-height: 38px; border: 1px solid #dddddd; border-radius: 9px; padding: 8px 10px; background: #fff; color: #202124; }
+.automation-schedule-payload { max-width: 760px; }
+.automation-schedule-payload textarea { min-height: 76px; resize: vertical; }
+.automation-region-section { display: grid; gap: 12px; }
+.automation-region-section + .automation-region-section { margin-top: 8px; padding-top: 14px; border-top: 1px solid #eceff3; }
+.automation-region-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.automation-region-title h3 { margin: 0; font-size: 15px; color: #202124; }
+.automation-region-title small { color: #777b80; }
 .settings-help-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid #eee; }
 .settings-help-row:first-of-type { border-top: 0; }
 .settings-help-row > span { display: grid; gap: 3px; }
@@ -4256,6 +4507,7 @@ body[data-theme="dark"] .nav-btn, body[data-theme="dark"] .settings-tab, body[da
 body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .result h3, body[data-theme="dark"] .result .row, body[data-theme="dark"] .mode-card, body[data-theme="dark"] .settings-row, body[data-theme="dark"] .settings-card, body[data-theme="dark"] .surface-panel header, body[data-theme="dark"] .surface-card, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { border-color: #3b3d43; }
 body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
 body[data-theme="dark"] .settings-card { background: #1f2023; }
+body[data-theme="dark"] .automation-region-section + .automation-region-section { border-top-color: #3b3d43; }
 body[data-theme="dark"] .runtime-discovery-head { border-top-color: #3b3d43; }
 body[data-theme="dark"] .runtime-status.ready { background: #1e2b22; color: #8dd9a8; }
 body[data-theme="dark"] .runtime-status.detected { background: #1f2b3a; color: #8ab4f8; }
@@ -4294,6 +4546,7 @@ body.sidebar-collapsed .sidebar-footer { justify-content: center; }
   .composer { margin: 0 12px 12px; }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
+  .automation-schedule-grid { grid-template-columns: 1fr; }
   .settings-main { padding: 48px 22px 110px; }
 }
 .context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid #f0f0f0; font-size: 12.5px; color: #5f6368; }
@@ -5149,6 +5402,9 @@ function renderSettingsCommandPanels() {
       } },
     ]);
   });
+  renderWorkflowNameOptions(snapshot.workflows || []);
+  if (!el('settingsScheduleCron').value.trim()) setField('settingsScheduleCron', '0 9 * * *');
+  renderScheduledTasksList(snapshot.scheduledTasks || []);
   const builtInTeams = ['panel-analysis', 'analysis', 'reviewer'].map(name => ({ name, source: 'built-in', definition: { mode: 'built-in', members: [] } }));
   const savedTeamNames = new Set((snapshot.teams || []).map(team => team.name));
   const teams = [...(snapshot.teams || []), ...builtInTeams.filter(team => !savedTeamNames.has(team.name))];
@@ -5166,6 +5422,142 @@ function renderSettingsCommandPanels() {
       { label: item.id === session.id ? 'Current' : 'Resume', disabled: item.id === session.id, handler: () => runSettingsCommand('/resume ' + item.id, 'Resuming chat...') },
     ]);
   });
+}
+function renderWorkflowNameOptions(workflows) {
+  const root = el('settingsWorkflowNames');
+  if (!root) return;
+  root.textContent = '';
+  for (const workflow of workflows || []) {
+    const option = document.createElement('option');
+    option.value = workflow.name;
+    root.appendChild(option);
+  }
+}
+function clearScheduledTaskForm() {
+  setField('settingsScheduleId', '');
+  setField('settingsScheduleName', '');
+  setField('settingsScheduleCron', '0 9 * * *');
+  setField('settingsScheduleKind', 'workflow');
+  setField('settingsScheduleWorkflow', '');
+  setField('settingsScheduleInput', '');
+  setChecked('settingsScheduleEnabled', true);
+  el('settingsScheduleStatus').textContent = '';
+}
+function editScheduledTask(task) {
+  setField('settingsScheduleId', task.id || '');
+  setField('settingsScheduleName', task.name || '');
+  setField('settingsScheduleCron', task.cron || '0 9 * * *');
+  setField('settingsScheduleKind', task.kind || 'workflow');
+  setField('settingsScheduleWorkflow', task.workflowName || '');
+  setField('settingsScheduleInput', task.kind === 'prompt' ? (task.prompt || '') : (task.input || ''));
+  setChecked('settingsScheduleEnabled', task.enabled !== false);
+  el('settingsScheduleStatus').textContent = 'Editing ' + (task.name || task.id);
+}
+function scheduledTaskDetail(task) {
+  return [
+    task.kind,
+    task.kind === 'workflow' ? task.workflowName : 'prompt',
+    task.enabled ? 'enabled' : 'paused',
+    'next ' + formatScheduleTime(task.nextRunAt),
+    task.lastResult ? 'last ' + task.lastResult : '',
+  ].filter(Boolean).join(' - ');
+}
+function formatScheduleTime(value) {
+  if (!value) return 'not scheduled';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function renderScheduledTasksList(tasks) {
+  const root = el('settingsScheduledTasksList');
+  root.textContent = '';
+  if (!tasks || tasks.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No scheduled tasks yet.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const task of tasks) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = task.name || task.id;
+    const p = document.createElement('p');
+    p.textContent = describeParts([task.cron, scheduledTaskDetail(task), task.lastError]);
+    const footer = document.createElement('footer');
+    const run = document.createElement('button');
+    run.type = 'button';
+    run.textContent = 'Run now';
+    run.addEventListener('click', () => runScheduledTask(task.id));
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', () => editScheduledTask(task));
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.textContent = task.enabled ? 'Pause' : 'Enable';
+    toggle.addEventListener('click', () => toggleScheduledTask(task.id, !task.enabled));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => {
+      if (confirm('Delete scheduled task "' + (task.name || task.id) + '"?')) deleteScheduledTask(task.id);
+    });
+    footer.append(run, edit, toggle, del);
+    card.append(strong, p, footer);
+    root.appendChild(card);
+  }
+}
+async function refreshScheduledTaskUi(payload) {
+  if (payload && payload.state) state.snapshot = payload.state;
+  else await loadState();
+  if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+  if (!el('regionAutomation').classList.contains('hidden')) await renderAutomationRegion();
+}
+async function saveScheduledTaskFromSettings() {
+  const kind = el('settingsScheduleKind').value === 'prompt' ? 'prompt' : 'workflow';
+  const input = el('settingsScheduleInput').value.trim();
+  const body = {
+    id: el('settingsScheduleId').value.trim() || undefined,
+    name: el('settingsScheduleName').value.trim() || undefined,
+    cron: el('settingsScheduleCron').value.trim() || '0 9 * * *',
+    kind,
+    enabled: el('settingsScheduleEnabled').checked,
+    workflowName: kind === 'workflow' ? el('settingsScheduleWorkflow').value.trim() : undefined,
+    input: kind === 'workflow' ? input : undefined,
+    prompt: kind === 'prompt' ? input : undefined,
+  };
+  el('settingsScheduleStatus').textContent = 'Saving schedule...';
+  const res = await api('/api/scheduled-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    el('settingsScheduleStatus').textContent = payload.error || 'Could not save schedule';
+    return;
+  }
+  await refreshScheduledTaskUi(payload);
+  el('settingsScheduleStatus').textContent = 'Schedule saved';
+}
+async function toggleScheduledTask(id, enabled) {
+  const res = await api('/api/scheduled-tasks/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, enabled }) });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not update schedule'; return; }
+  await refreshScheduledTaskUi(payload);
+}
+async function deleteScheduledTask(id) {
+  const res = await api('/api/scheduled-tasks/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not delete schedule'; return; }
+  await refreshScheduledTaskUi(payload);
+}
+async function runScheduledTask(id) {
+  el('settingsScheduleStatus').textContent = 'Running scheduled task...';
+  const res = await api('/api/scheduled-tasks/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not run schedule'; return; }
+  for (const event of payload.events || []) handleEvent(event);
+  await refreshScheduledTaskUi(payload);
+  el('settingsScheduleStatus').textContent = 'Run complete';
 }
 function renderProjects() {
   const root = el('projects');
@@ -6615,9 +7007,133 @@ async function switchRegion(name) {
   // sidebar (matches the reference designs). Project reuses switchProjectView
   // to drive its own sidebar mode (overview/detail → slim, chat → full).
   if (name !== 'project') document.body.dataset.sidebarMode = 'nav';
-  if (name === 'automation') await renderRegionList('workflows', 'regionAutomationBody');
+  if (name === 'automation') await renderAutomationRegion();
   else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
+}
+async function renderAutomationRegion() {
+  await loadState();
+  const body = el('regionAutomationBody');
+  if (!body) return;
+  body.textContent = '';
+  const tasks = state.snapshot?.scheduledTasks || [];
+  const workflows = state.snapshot?.workflows || [];
+  body.appendChild(createAutomationSection('Scheduled tasks', tasks.length + ' configured', tasks, renderAutomationTaskCard));
+  body.appendChild(createAutomationSection('Workflows', workflows.length + ' saved scripts', workflows, renderAutomationWorkflowCard));
+}
+function createAutomationSection(title, subtitle, items, renderItem) {
+  const section = document.createElement('section');
+  section.className = 'automation-region-section';
+  const head = document.createElement('div');
+  head.className = 'automation-region-title';
+  const h = document.createElement('h3');
+  h.textContent = title;
+  const small = document.createElement('small');
+  small.textContent = subtitle;
+  head.append(h, small);
+  section.appendChild(head);
+  if (!items || items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = 'Nothing configured.';
+    section.appendChild(empty);
+    return section;
+  }
+  const grid = document.createElement('div');
+  grid.className = 'region-list-grid';
+  for (const item of items) grid.appendChild(renderItem(item));
+  section.appendChild(grid);
+  return section;
+}
+function renderAutomationTaskCard(task) {
+  const card = document.createElement('article');
+  card.className = 'rl-card';
+  const head = document.createElement('div');
+  head.className = 'rl-head';
+  const icon = document.createElement('span');
+  icon.className = 'rl-icon';
+  icon.innerHTML = guiIcon('automation');
+  const titles = document.createElement('div');
+  titles.style.cssText = 'min-width:0;display:grid;gap:1px;';
+  const title = document.createElement('span');
+  title.className = 'rl-title';
+  title.textContent = task.name || task.id;
+  const source = document.createElement('span');
+  source.className = 'rl-source';
+  source.textContent = task.cron || '';
+  titles.append(title, source);
+  head.append(icon, titles);
+  const desc = document.createElement('p');
+  desc.className = 'rl-desc';
+  desc.textContent = scheduledTaskDetail(task);
+  const footer = document.createElement('div');
+  footer.className = 'rl-footer';
+  const run = document.createElement('button');
+  run.type = 'button';
+  run.className = 'rl-btn primary';
+  run.textContent = 'Run';
+  run.addEventListener('click', () => runScheduledTask(task.id));
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'rl-btn';
+  toggle.textContent = task.enabled ? 'Pause' : 'Enable';
+  toggle.addEventListener('click', () => toggleScheduledTask(task.id, !task.enabled));
+  const edit = document.createElement('button');
+  edit.type = 'button';
+  edit.className = 'rl-btn';
+  edit.textContent = 'Edit';
+  edit.addEventListener('click', async () => {
+    await openSettings('automation');
+    editScheduledTask(task);
+  });
+  footer.append(run, toggle, edit);
+  card.append(head, desc, footer);
+  return card;
+}
+function renderAutomationWorkflowCard(workflow) {
+  const card = document.createElement('article');
+  card.className = 'rl-card';
+  const head = document.createElement('div');
+  head.className = 'rl-head';
+  const icon = document.createElement('span');
+  icon.className = 'rl-icon';
+  icon.innerHTML = guiIcon('automation');
+  const titles = document.createElement('div');
+  titles.style.cssText = 'min-width:0;display:grid;gap:1px;';
+  const title = document.createElement('span');
+  title.className = 'rl-title';
+  title.textContent = workflow.name || '(unnamed)';
+  const source = document.createElement('span');
+  source.className = 'rl-source';
+  source.textContent = workflow.source || '';
+  titles.append(title, source);
+  head.append(icon, titles);
+  const desc = document.createElement('p');
+  desc.className = 'rl-desc';
+  desc.textContent = workflow.description || '';
+  const footer = document.createElement('div');
+  footer.className = 'rl-footer';
+  const run = document.createElement('button');
+  run.type = 'button';
+  run.className = 'rl-btn primary';
+  run.textContent = 'Run';
+  run.addEventListener('click', () => {
+    const task = window.prompt('Workflow input', '');
+    submitText('/workflows run ' + workflow.name + (task && task.trim() ? ' ' + task.trim() : ''));
+  });
+  const schedule = document.createElement('button');
+  schedule.type = 'button';
+  schedule.className = 'rl-btn';
+  schedule.textContent = 'Schedule';
+  schedule.addEventListener('click', async () => {
+    await openSettings('automation');
+    clearScheduledTaskForm();
+    setField('settingsScheduleName', workflow.name);
+    setField('settingsScheduleWorkflow', workflow.name);
+  });
+  footer.append(run, schedule);
+  card.append(head, desc, footer);
+  return card;
 }
 async function renderPluginsRegion(view) {
   state.pluginsView = view;
@@ -7138,7 +7654,7 @@ async function renderRegionList(kind, bodyId) {
       const run = document.createElement('button');
       run.type = 'button';
       run.className = 'rl-btn primary';
-      run.textContent = '▶ Run';
+      run.textContent = 'Run';
       run.addEventListener('click', () => {
         const task = window.prompt('Workflow input', '');
         submitText('/workflows run ' + item.name + (task && task.trim() ? ' ' + task.trim() : ''));
@@ -7927,7 +8443,7 @@ el('newSession').addEventListener('click', createNewSession);
 document.querySelectorAll('.region-nav').forEach((btn) => {
   btn.addEventListener('click', () => { switchRegion(btn.getAttribute('data-region')).catch(console.error); });
 });
-el('automationRefreshBtn').addEventListener('click', () => { renderRegionList('workflows', 'regionAutomationBody').catch(console.error); });
+el('automationRefreshBtn').addEventListener('click', () => { renderAutomationRegion().catch(console.error); });
 el('pluginsRefreshBtn').addEventListener('click', () => { renderPluginsRegion(state.pluginsView || 'plugins').catch(console.error); });
 el('pluginsViewPluginsBtn').addEventListener('click', () => { renderPluginsRegion('plugins').catch(console.error); });
 el('pluginsViewToolsBtn').addEventListener('click', () => { renderPluginsRegion('tools').catch(console.error); });
@@ -7978,6 +8494,8 @@ el('settingsOpenTools').addEventListener('click', () => { closeSettings(); openS
 el('settingsOpenSkills').addEventListener('click', () => { closeSettings(); openSurface('skills').catch(console.error); });
 el('settingsOpenAgents').addEventListener('click', () => { closeSettings(); openSurface('agents').catch(console.error); });
 el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); openSurface('plugins').catch(console.error); });
+el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
+el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
 el('settingsEnterWorktree').addEventListener('click', () => {
   const name = el('settingsWorktreeName').value.trim();
