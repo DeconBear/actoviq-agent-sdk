@@ -124,6 +124,7 @@ import {
   runSessionStartHooks,
 } from '../hooks/userHooks.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
+import { encodeActoviqProjectPath, getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -551,6 +552,38 @@ async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory
     currentSessionDirectory,
     ...await listProjectSessionRoots(homeDir),
   ]);
+}
+
+// --- Project plan (plan/UI_PLAN §4.2): a light per-workspace plan.json. ---
+// Stored at ~/.actoviq/projects/<hash>/plan.json. The agent (TodoWrite / a
+// future PlanWrite) or the user maintains milestones + today/upcoming items;
+// the project-detail view renders the checklist. Schema stays intentionally
+// small: { milestones:[{title,due,status,notes}], today:[...], upcoming:[...] }.
+interface ProjectPlanMilestone { title: string; due?: string; status?: string; notes?: string; }
+interface ProjectPlan { milestones: ProjectPlanMilestone[]; today: string[]; upcoming: string[]; }
+
+function planJsonPath(workDir: string, homeDir: string): string {
+  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'plan.json');
+}
+
+async function readProjectPlan(workDir: string, homeDir: string): Promise<ProjectPlan> {
+  try {
+    const raw = await readFile(planJsonPath(workDir, homeDir), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<ProjectPlan>;
+    return {
+      milestones: Array.isArray(parsed.milestones) ? parsed.milestones : [],
+      today: Array.isArray(parsed.today) ? parsed.today : [],
+      upcoming: Array.isArray(parsed.upcoming) ? parsed.upcoming : [],
+    };
+  } catch {
+    return { milestones: [], today: [], upcoming: [] };
+  }
+}
+
+async function writeProjectPlan(workDir: string, homeDir: string, plan: ProjectPlan): Promise<void> {
+  const dir = path.dirname(planJsonPath(workDir, homeDir));
+  await mkdir(dir, { recursive: true });
+  await writeFile(planJsonPath(workDir, homeDir), JSON.stringify(plan, null, 2), 'utf8');
 }
 
 async function listKnownProjects(homeDir: string, currentWorkDir: string) {
@@ -1144,6 +1177,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       commandUsages: Object.fromEntries(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS).map(name => [name, commandUsage(name)])),
       tools: toolMetadata,
       projects: heavy.projects,
+      projectPlan: await readProjectPlan(workDir, homeDir),
       sessions,
       workflows,
       teams,
@@ -2376,6 +2410,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ?? null;
     return json(res, 200, { definition });
   }
+  if (req.method === 'GET' && url.pathname === '/api/plan') {
+    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    return json(res, 200, await readProjectPlan(workDir, hd));
+  }
+  if (req.method === 'POST' && url.pathname === '/api/plan') {
+    try {
+      const body = await readJson(req);
+      const next: ProjectPlan = {
+        milestones: Array.isArray(body.milestones) ? body.milestones : [],
+        today: Array.isArray(body.today) ? body.today : [],
+        upcoming: Array.isArray(body.upcoming) ? body.upcoming : [],
+      };
+      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      await writeProjectPlan(workDir, hd, next);
+      return json(res, 200, { ok: true, plan: next });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
       if (req.method === 'GET' && url.pathname === '/api/session/messages') return json(res, 200, { messages: renderableHistory(session) });
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         return json(res, 200, await saveSettings(await readJson(req)));
@@ -3481,6 +3534,28 @@ button { cursor: pointer; }
 .conv-meta { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: #8a8d91; flex-wrap: wrap; }
 .conv-meta .chip { border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
 .conv-side { flex: 0 0 auto; display: grid; gap: 4px; align-items: start; text-align: right; }
+/* --- Project plan checklist (plan/UI_PLAN §4.2). --- */
+.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.detail-conversations { display: grid; gap: 10px; }
+.plan-panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 14px; }
+.plan-panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
+.plan-add { display: flex; gap: 6px; margin-bottom: 10px; }
+.plan-add input { flex: 1; min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; padding: 0 10px; outline: none; }
+.plan-add button { flex: 0 0 auto; min-height: 32px; padding: 0 12px; border-radius: 8px; background: var(--accent); color: #fff; border: none; font-size: 13px; }
+.plan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.plan-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-1); padding: 5px 7px; border-radius: 6px; }
+.plan-item:hover { background: var(--bg-app); }
+.plan-item .pi-check { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 16px; }
+.plan-item.done .pi-label { text-decoration: line-through; color: #9aa0a6; }
+.plan-item .pi-label { flex: 1; min-width: 0; }
+.plan-item .pi-del { flex: 0 0 auto; color: #b5b8bd; background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; }
+.plan-item .pi-del:hover { color: var(--err); }
+.plan-milestone { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
+.plan-milestone:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.plan-milestone .pm-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.plan-milestone .pm-title { font-weight: 600; font-size: 13.5px; color: var(--text-1); }
+.plan-milestone .pm-due { font-size: 11.5px; color: var(--text-2); }
+.plan-empty { color: #9aa0a6; font-size: 12.5px; margin: 0; }
 /* --- Right context rail (plan/UI_PLAN §3): live run/team status. --- */
 .rail-section { margin-bottom: 16px; }
 .rail-section h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
@@ -5398,6 +5473,10 @@ function renderProjectDetail() {
   const body = el('detailBody');
   if (!body) return;
   body.textContent = '';
+  const layout = document.createElement('div');
+  layout.className = 'detail-layout';
+  const convCol = document.createElement('div');
+  convCol.className = 'detail-conversations';
   const sessions = (state.snapshot?.sessions || []).slice();
   const currentId = state.snapshot?.session?.id;
   for (const item of sessions) {
@@ -5443,14 +5522,102 @@ function renderProjectDetail() {
     }
     card.append(main, side);
     card.addEventListener('click', () => { void resumeSession(item.id); });
-    body.appendChild(card);
+    convCol.appendChild(card);
   }
   if (sessions.length === 0) {
     const e = document.createElement('p');
     e.className = 'region-empty';
     e.textContent = 'No conversations yet — click + New conversation to start one.';
-    body.appendChild(e);
+    convCol.appendChild(e);
   }
+  layout.appendChild(convCol);
+  layout.appendChild(buildPlanPanel(state.snapshot?.projectPlan));
+  body.appendChild(layout);
+}
+// --- Project plan panel (plan/UI_PLAN §4.2): editable today/upcoming checklist. ---
+function buildPlanPanel(plan) {
+  const p = plan || { milestones: [], today: [], upcoming: [] };
+  const panel = document.createElement('div');
+  panel.className = 'plan-panel';
+  const addSection = (list, key, heading) => {
+    const h = document.createElement('h3');
+    h.textContent = heading;
+    panel.appendChild(h);
+    const input = document.createElement('input');
+    input.placeholder = 'Add an item…';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+';
+    addBtn.addEventListener('click', () => { void addPlanItem(key, input.value); input.value = ''; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void addPlanItem(key, input.value); input.value = ''; } });
+    const add = document.createElement('div');
+    add.className = 'plan-add';
+    add.append(input, addBtn);
+    panel.appendChild(add);
+    const ul = document.createElement('ul');
+    ul.className = 'plan-list';
+    (Array.isArray(list) ? list : []).forEach((item, idx) => {
+      const text = typeof item === 'string' ? item : (item.text || item.title || '');
+      const done = typeof item === 'object' && item.done;
+      const li = document.createElement('li');
+      li.className = 'plan-item' + (done ? ' done' : '');
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.className = 'pi-check';
+      chk.checked = !!done;
+      chk.addEventListener('change', () => { void togglePlanItem(key, idx, chk.checked); });
+      const label = document.createElement('span');
+      label.className = 'pi-label';
+      label.textContent = text;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'pi-del';
+      del.textContent = '×';
+      del.title = 'Remove';
+      del.addEventListener('click', () => { void removePlanItem(key, idx); });
+      li.append(chk, label, del);
+      ul.appendChild(li);
+    });
+    if ((Array.isArray(list) ? list : []).length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'plan-empty';
+      empty.textContent = 'No items yet.';
+      ul.appendChild(empty);
+    }
+    panel.appendChild(ul);
+  };
+  addSection(p.today, 'today', 'Today');
+  addSection(p.upcoming, 'upcoming', 'Upcoming');
+  return panel;
+}
+async function mutatePlan(mutator) {
+  const plan = state.snapshot?.projectPlan || { milestones: [], today: [], upcoming: [] };
+  mutator(plan);
+  try {
+    const res = await api('/api/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
+    if (res.ok) {
+      const data = await res.json();
+      if (state.snapshot) state.snapshot.projectPlan = data.plan || plan;
+      renderProjectDetail();
+    }
+  } catch { /* transient */ }
+}
+function addPlanItem(key, text) {
+  const t = (text || '').trim();
+  if (!t) return;
+  void mutatePlan((plan) => { (plan[key] = plan[key] || []).push(t); });
+}
+function togglePlanItem(key, idx, done) {
+  void mutatePlan((plan) => {
+    const arr = plan[key] || [];
+    if (idx >= 0 && idx < arr.length) {
+      const item = arr[idx];
+      arr[idx] = typeof item === 'string' ? { text: item, done } : { ...item, done };
+    }
+  });
+}
+function removePlanItem(key, idx) {
+  void mutatePlan((plan) => { const arr = plan[key] || []; if (idx >= 0 && idx < arr.length) arr.splice(idx, 1); });
 }
 function renderConversationBreadcrumb() {
   const bc = el('conversationBreadcrumb');
