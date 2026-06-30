@@ -180,9 +180,10 @@ export function findBridgeConfig(name: string, homeDir: string = os.homedir()): 
   return readBridgeConfigs(homeDir).configs.find((c) => c.name === name);
 }
 
-/** Mask an API key for display: first 4 + … + last 4. */
-export function maskApiKey(key: string | undefined): string {
+/** Mask an API key for display: first 4 + ellipsis + last 4. */
+export function maskApiKey(rawKey: string | undefined): string {
+  const key = rawKey ?? '';
   if (!key) return '(none)';
   if (key.length <= 8) return '****';
-  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
