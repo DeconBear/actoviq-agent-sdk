@@ -78,6 +78,7 @@ import {
   createModelTeam,
   createTeamTool,
   detectBridgeProviders,
+  discoverAgentRuntimes,
   listRouterProfiles,
   listTeamDefinitions,
   listWorkflows,
@@ -1158,14 +1159,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
     }
-    const [allSessions, workflows, teams, routers, skills, agents] = await Promise.all([
+    const [allSessions, workflows, teams, routers, skills, agents, runtimeDiscovery] = await Promise.all([
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).sessions.list(),
       Promise.resolve(listWorkflows(workDir)),
       Promise.resolve(listTeamDefinitions(workDir)),
       Promise.resolve(listRouterProfiles(workDir)),
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
+      Promise.resolve(discoverAgentRuntimes({ homeDir })),
     ]);
+    const bridgeConfigs = readBridgeConfigs(homeDir).configs;
     const sessions = allSessions.filter(item => item.messageCount > 0 || (session ? item.id === session.id : false));
     return {
       workDir,
@@ -1212,7 +1215,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             }
           : null,
         activeModelLabel: bridgeModelLabel,
-        configs: readBridgeConfigs(options.homeDir).configs.map(c => ({
+        configs: bridgeConfigs.map(c => ({
           name: c.name,
           runtime: c.runtime,
           provider: c.provider,
@@ -1227,6 +1230,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
                 modality: m.modality === 'multimodal' ? 'multimodal' : 'text',
               }))
             : [],
+        })),
+        runtimeDiscovery: runtimeDiscovery.map(runtime => ({
+          id: runtime.id,
+          label: runtime.label,
+          runtime: runtime.runtime,
+          provider: runtime.provider,
+          status: runtime.status,
+          installed: runtime.installed,
+          configured: runtime.configured,
+          command: runtime.command ?? '',
+          commandPath: runtime.commandPath ?? '',
+          version: runtime.version ?? '',
+          versionError: runtime.versionError ?? '',
+          configNames: runtime.configNames,
+          reuseHint: runtime.reuseHint,
+          description: runtime.description,
         })),
       },
       mcpServers: readMcpServerConfig(options.homeDir).servers,
@@ -3256,6 +3275,11 @@ export function createActoviqGuiHtml(): string {
           <div class="settings-action-row">
             <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable active config</button>
           </div>
+          <div class="runtime-discovery-head">
+            <strong>Local runtimes</strong>
+            <small>PATH detection plus saved configs</small>
+          </div>
+          <div id="runtimeDiscoveryList" class="settings-card-list compact runtime-list"></div>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
@@ -4184,6 +4208,21 @@ kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; p
 .settings-card p { margin: 0; color: #6f7479; overflow-wrap: anywhere; }
 .settings-card footer { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-card button { min-height: 30px; border: 1px solid #d8d8d8; border-radius: 8px; background: #fff; padding: 0 10px; }
+.runtime-discovery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid #eeeeee; }
+.runtime-discovery-head small { color: #777b80; }
+.runtime-list { margin-bottom: 12px; }
+.runtime-card { border-left-width: 4px; }
+.runtime-card.status-ready { border-left-color: #1f8f4c; }
+.runtime-card.status-detected { border-left-color: #4b93f7; }
+.runtime-card.status-configured { border-left-color: #b7791f; }
+.runtime-card.status-missing { border-left-color: #b8bdc5; }
+.runtime-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.runtime-status { min-height: 22px; display: inline-flex; align-items: center; border-radius: 999px; padding: 0 9px; font-size: 11px; font-weight: 700; }
+.runtime-status.ready { background: #e8f7ef; color: #18794e; }
+.runtime-status.detected { background: #eaf2ff; color: #2f5fa8; }
+.runtime-status.configured { background: #fff7e6; color: #8a5a12; }
+.runtime-status.missing { background: #f1f3f4; color: #6f7479; }
+.runtime-hint { font-size: 12px; }
 .settings-savebar { position: fixed; right: min(11vw, 160px); bottom: 24px; display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.94); border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
 .muted { color: #777b80; font-size: 13px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -4217,6 +4256,11 @@ body[data-theme="dark"] .nav-btn, body[data-theme="dark"] .settings-tab, body[da
 body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .result h3, body[data-theme="dark"] .result .row, body[data-theme="dark"] .mode-card, body[data-theme="dark"] .settings-row, body[data-theme="dark"] .settings-card, body[data-theme="dark"] .surface-panel header, body[data-theme="dark"] .surface-card, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { border-color: #3b3d43; }
 body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
 body[data-theme="dark"] .settings-card { background: #1f2023; }
+body[data-theme="dark"] .runtime-discovery-head { border-top-color: #3b3d43; }
+body[data-theme="dark"] .runtime-status.ready { background: #1e2b22; color: #8dd9a8; }
+body[data-theme="dark"] .runtime-status.detected { background: #1f2b3a; color: #8ab4f8; }
+body[data-theme="dark"] .runtime-status.configured { background: #302719; color: #f4c779; }
+body[data-theme="dark"] .runtime-status.missing { background: #33363c; color: #aab0b8; }
 body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
 body[data-theme="dark"] .message.assistant blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
 body[data-theme="dark"] .message.assistant hr.md-hr { border-top-color: #3b3d43; }
@@ -7346,10 +7390,87 @@ function showNextPermission() {
 }
 function setField(id, value) { el(id).value = value == null ? '' : String(value); }
 function setChecked(id, value) { el(id).checked = Boolean(value); }
+function renderRuntimeDiscovery() {
+  const root = document.getElementById('runtimeDiscoveryList');
+  if (!root) return;
+  const items = (state.snapshot && state.snapshot.bridgeState && state.snapshot.bridgeState.runtimeDiscovery) || [];
+  root.textContent = '';
+  if (items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No runtime scan results yet.';
+    root.appendChild(empty);
+    return;
+  }
+  const labels = { ready: 'Ready', detected: 'Detected', configured: 'Configured', missing: 'Missing' };
+  for (const runtime of items) {
+    const card = document.createElement('article');
+    card.className = 'settings-card runtime-card status-' + runtime.status;
+    const head = document.createElement('div');
+    head.className = 'runtime-card-head';
+    const strong = document.createElement('strong');
+    strong.textContent = runtime.label;
+    const status = document.createElement('span');
+    status.className = 'runtime-status ' + runtime.status;
+    status.textContent = labels[runtime.status] || runtime.status;
+    head.append(strong, status);
+    card.appendChild(head);
+    const detail = document.createElement('p');
+    const configText = runtime.configNames && runtime.configNames.length > 0
+      ? 'configs: ' + runtime.configNames.join(', ')
+      : 'no saved config';
+    const commandText = runtime.runtime === 'hadamard'
+      ? 'built in'
+      : (runtime.command ? 'command: ' + runtime.command : 'not on PATH');
+    detail.textContent = [
+      runtime.description,
+      commandText,
+      runtime.version,
+      configText,
+    ].filter(Boolean).join(' · ');
+    if (runtime.commandPath) detail.title = runtime.commandPath;
+    card.appendChild(detail);
+    const hint = document.createElement('p');
+    hint.className = 'runtime-hint';
+    hint.textContent = runtime.reuseHint || '';
+    card.appendChild(hint);
+    const footer = document.createElement('footer');
+    if (runtime.configNames && runtime.configNames.length > 0) {
+      const activateBtn = document.createElement('button');
+      activateBtn.type = 'button';
+      activateBtn.textContent = 'Activate';
+      activateBtn.addEventListener('click', () => activateBridgeConfig(runtime.configNames[0]));
+      footer.appendChild(activateBtn);
+    }
+    if (runtime.runtime !== 'hadamard') {
+      const cfgBtn = document.createElement('button');
+      cfgBtn.type = 'button';
+      cfgBtn.textContent = runtime.configNames && runtime.configNames.length > 0 ? 'Edit config' : 'Configure';
+      cfgBtn.addEventListener('click', () => {
+        const existing = runtime.configNames && runtime.configNames.length > 0
+          ? ((state.snapshot?.bridgeState?.configs || []).find(c => c.name === runtime.configNames[0]) || null)
+          : null;
+        openBridgeEditor(existing || {
+          name: runtime.id,
+          runtime: runtime.runtime,
+          provider: runtime.provider || RUNTIME_PROVIDER[runtime.runtime] || 'anthropic',
+          apiKey: '',
+          baseURL: '',
+          model: '',
+          models: [],
+        });
+      });
+      footer.appendChild(cfgBtn);
+    }
+    if (footer.children.length > 0) card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
 function renderBridgeConfigs() {
   const bs = (state.snapshot && state.snapshot.bridgeState) || {};
   const active = bs.activeConfig;
   const configs = bs.configs || [];
+  renderRuntimeDiscovery();
   el('bridgeActive').innerHTML = active
     ? (active.runtime === 'hadamard'
       ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`

@@ -131,7 +131,7 @@ describe('legacy provider migration', () => {
 
 describe('maskApiKey', () => {
   it('masks the middle of a long key', () => {
-    expect(maskApiKey('sk-1234567890abcdef')).toBe('sk-1…cdef');
+    expect(maskApiKey('sk-1234567890abcdef')).toBe('sk-1...cdef');
   });
   it('fully masks short keys', () => {
     expect(maskApiKey('short')).toBe('****');
