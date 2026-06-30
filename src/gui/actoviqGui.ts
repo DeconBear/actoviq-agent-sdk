@@ -398,6 +398,7 @@ function guiIcon(name: string): string {
     search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
     split: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/>',
+    team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
     worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
@@ -656,7 +657,8 @@ if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }
   }
 }
 
-function sessionView(session: AgentSession) {
+function sessionView(session: AgentSession | undefined) {
+  if (!session) return null;
   return {
     id: session.id,
     title: session.title,
@@ -1020,11 +1022,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   const currentPermissionMode = (): ActoviqPermissionMode =>
-    session.permissionContext.mode ?? permissionMode;
+    session?.permissionContext?.mode ?? permissionMode;
   const currentEffort = (): ActoviqRunEffort | undefined => {
-    const stored = session.metadata.__actoviqEffort;
+    const stored = session?.metadata?.__actoviqEffort;
     if (stored === 'auto') return 'auto';
-    return isEffort(stored) ? stored : sdk!.config.effort;
+    return isEffort(stored) ? stored : sdk?.config.effort;
   };
 
   const approver: ActoviqToolApprover = async (context) => {
@@ -1106,7 +1108,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
       : [];
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const cacheKey = `${workDir}|${session.id}`;
+    const cacheKey = `${workDir}|${session?.id ?? 'none'}`;
     const now = Date.now();
     let heavy = heavyStateCache && heavyStateCache.key === cacheKey && now - heavyStateCache.at < 4000
       ? heavyStateCache
@@ -1116,7 +1118,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const [plugins, projects] = await Promise.all([
         discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
         listKnownProjects(homeDir, workDir),
-        needsCredentials ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
+        needsCredentials || !session ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
       ]);
       heavy = { key: cacheKey, at: now, plugins, projects };
       heavyStateCache = heavy;
@@ -1129,7 +1131,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
     ]);
-    const sessions = allSessions.filter(item => item.messageCount > 0 || item.id === session.id);
+    const sessions = allSessions.filter(item => item.messageCount > 0 || (session ? item.id === session.id : false));
     return {
       workDir,
       session: sessionView(session),
@@ -2840,11 +2842,12 @@ export function createActoviqGuiHtml(): string {
         <span class="brand-mark">${guiIcon('logo')}</span>
         <span class="brand-name">Actoviq</span>
       </div>
+      <button id="newSession" class="nav-btn new-chat-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
       <nav class="primary-nav" aria-label="Primary">
-        <button id="newSession" class="nav-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
-        <button id="searchNav" class="nav-btn"><span class="nav-icon">${guiIcon('search')}</span><span>Search</span></button>
-        <button id="pluginsNav" class="nav-btn"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
-        <button id="automationNav" class="nav-btn"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
+        <button id="navProject" class="nav-btn region-nav active" data-region="project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
+        <button id="navTeam" class="nav-btn region-nav" data-region="team"><span class="nav-icon">${guiIcon('team')}</span><span>Team</span></button>
+        <button id="navAutomation" class="nav-btn region-nav" data-region="automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
+        <button id="navPlugins" class="nav-btn region-nav" data-region="plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
       </nav>
       <label class="search"><span>Search</span><input id="commandSearch" placeholder="Search chats"></label>
       <section class="project-section">
@@ -2874,7 +2877,7 @@ export function createActoviqGuiHtml(): string {
         <button id="collapseSidebar" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">${guiIcon('chevronDown')}</button>
       </div>
     </aside>
-    <main class="chat">
+    <main class="chat" data-region="project" id="regionProject">
       <header class="topbar">
         <div class="title-block">
           <div class="title-row">
@@ -2935,6 +2938,43 @@ export function createActoviqGuiHtml(): string {
         </div>
       </div>
     </main>
+    <section class="region hidden" data-region="team" id="regionTeam" aria-label="Team">
+      <header class="region-header">
+        <div class="region-titles">
+          <h1>Team</h1>
+          <p>Compose agent squads and runtime collaboration graphs</p>
+        </div>
+        <div class="region-actions">
+          <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
+        </div>
+      </header>
+      <div class="region-body" id="regionTeamBody"></div>
+    </section>
+    <section class="region hidden" data-region="automation" id="regionAutomation" aria-label="Automation">
+      <header class="region-header">
+        <div class="region-titles">
+          <h1>Automation</h1>
+          <p>Workflow scripts and scheduled runs</p>
+        </div>
+        <div class="region-actions">
+          <button type="button" id="automationRefreshBtn" class="pill-btn">Refresh</button>
+        </div>
+      </header>
+      <div class="region-body" id="regionAutomationBody"></div>
+    </section>
+    <section class="region hidden" data-region="plugins" id="regionPlugins" aria-label="Plugins">
+      <header class="region-header">
+        <div class="region-titles">
+          <h1>Plugins</h1>
+          <p>Discovered plugins, tools, and skills</p>
+        </div>
+        <div class="region-actions">
+          <button type="button" id="pluginsRefreshBtn" class="pill-btn">Refresh</button>
+        </div>
+      </header>
+      <div class="region-body" id="regionPluginsBody"></div>
+    </section>
+    <aside class="context-rail hidden" id="contextRail" aria-label="Context panel"></aside>
   </div>
   <div id="surfaceDrawer" class="surface-drawer hidden">
     <div class="surface-panel">
@@ -3317,6 +3357,48 @@ button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 .hidden { display: none !important; }
 .ui-icon { width: 18px; height: 18px; display: block; flex: 0 0 auto; }
+/* --- Design tokens (plan/UI_PLAN §2.2). Light theme; dark reserved for U9. --- */
+:root {
+  --bg-app: #F5F6F7;
+  --bg-surface: #FFFFFF;
+  --bg-sidebar: #FFFFFF;
+  --border: #E5E7EB;
+  --text-1: #111827;
+  --text-2: #6B7280;
+  --accent: #2563EB;
+  --accent-soft: #EAF2FF;
+  --accent-strong: #1D4ED8;
+  --role-planner: #3B82F6;
+  --role-coder: #10B981;
+  --role-reviewer: #8B5CF6;
+  --role-test: #F59E0B;
+  --role-docs: #EC4899;
+  --role-shell: #1F2330;
+  --role-runtime: #0EA5E9;
+  --ok: #10B981;
+  --warn: #F59E0B;
+  --err: #EF4444;
+  --radius-sm: 8px;
+  --radius: 12px;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.04);
+}
+/* --- App shell: 4-region navigation (plan/UI_PLAN §3). --- */
+.new-chat-btn { background: var(--accent); color: #fff; border-color: transparent; }
+.new-chat-btn:hover { background: var(--accent-strong); }
+.new-chat-btn .nav-icon { color: #fff; }
+.region-nav.active { background: var(--accent-soft); color: var(--accent); }
+.region-nav.active .nav-icon { color: var(--accent); }
+.region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
+.region-header { min-height: 58px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; flex: 0 0 auto; }
+.region-header .region-titles { min-width: 0; }
+.region-header h1 { font-size: 18px; margin: 0; font-weight: 650; color: var(--text-1); }
+.region-header p { margin: 3px 0 0; color: var(--text-2); font-size: 13px; }
+.region-header .region-actions { display: flex; gap: 8px; align-items: center; }
+.region-actions .primary { background: var(--accent); color: #fff; border-color: transparent; }
+.region-actions .primary:hover { background: var(--accent-strong); }
+.region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
+.region-empty { margin: 24px auto; color: #9aa0a6; font-size: 14px; }
+.context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
 .sidebar {
   width: 300px;
@@ -3830,6 +3912,9 @@ const state = {
   // terminal/monitor entry points are gated behind developer tools.
   tabs: [{ id: 'pane-chat-default', type: 'chat', title: 'Chat', closable: false }],
   activeTabId: 'pane-chat-default',
+  // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
+  // is visible. Project = the existing chat workbench (default).
+  activeRegion: 'project',
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
 };
 const el = (id) => document.getElementById(id);
@@ -4679,7 +4764,7 @@ async function loadState() {
   el('projectName').textContent = parts[parts.length - 1] || 'workspace';
   el('projectPath').textContent = workDir;
   el('sessionTitle').textContent = state.snapshot.session?.title || 'Actoviq GUI';
-  el('workspace').textContent = workDir + ' - ' + state.snapshot.session.model + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
+  el('workspace').textContent = workDir + ' - ' + (state.snapshot.session?.model || 'default') + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
   state.running = Boolean(state.snapshot.running);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
@@ -5326,6 +5411,67 @@ function renderSurface(kind) {
 async function openSurface(kind) {
   await loadState();
   renderSurface(kind);
+}
+// --- App shell: 4-region navigation (plan/UI_PLAN §3). ---
+// Regions share the .app flex row with the sidebar. Only the active region
+// is visible; the others carry .hidden. Project is the existing chat workbench
+// (data-region="project" on <main class="chat">); the other three render
+// their content inline here. The surface DRAWER remains for browse-style
+// surfaces (sessions, git, tools, skills, agents, mcp, routers, projects).
+async function switchRegion(name) {
+  state.activeRegion = name;
+  document.querySelectorAll('[data-region]:not(.region-nav)').forEach((node) => {
+    node.classList.toggle('hidden', node.getAttribute('data-region') !== name);
+  });
+  document.querySelectorAll('.region-nav').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-region') === name);
+  });
+  if (name === 'automation') await renderRegionList('workflows', 'regionAutomationBody');
+  else if (name === 'plugins') await renderRegionList('plugins', 'regionPluginsBody');
+  else if (name === 'team') await renderRegionList('teams', 'regionTeamBody');
+}
+// Renders a surface-data list inline into a region body (reuses surfaceData/
+// itemTitle/itemDescription so the region and the drawer stay in sync).
+async function renderRegionList(kind, bodyId) {
+  await loadState();
+  const body = el(bodyId);
+  if (!body) return;
+  body.textContent = '';
+  const data = surfaceData(kind);
+  if (!data.items || data.items.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = 'Nothing to show.';
+    body.appendChild(empty);
+    return;
+  }
+  for (const item of data.items) {
+    const card = document.createElement('article');
+    card.className = 'surface-card';
+    const strong = document.createElement('strong');
+    strong.textContent = itemTitle(item, kind);
+    const desc = document.createElement('p');
+    desc.textContent = itemDescription(item, kind);
+    const footer = document.createElement('footer');
+    if (kind === 'workflows') {
+      const run = document.createElement('button');
+      run.type = 'button';
+      run.textContent = 'Run';
+      run.addEventListener('click', () => {
+        const task = window.prompt('Workflow input', '');
+        submitText('/workflows run ' + item.name + (task && task.trim() ? ' ' + task.trim() : ''));
+      });
+      footer.appendChild(run);
+    } else if (kind === 'teams') {
+      const attach = document.createElement('button');
+      attach.type = 'button';
+      attach.textContent = 'Attach';
+      attach.addEventListener('click', () => submitText('/team attach ' + item.name));
+      footer.appendChild(attach);
+    }
+    card.append(strong, desc, footer);
+    body.appendChild(card);
+  }
 }
 async function gitData() {
   try {
@@ -6001,9 +6147,12 @@ el('composer').addEventListener('drop', async (event) => {
   await addFiles(event.dataTransfer.files);
 });
 el('newSession').addEventListener('click', createNewSession);
-el('searchNav').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
-el('pluginsNav').addEventListener('click', () => { openSurface('plugins').catch(console.error); });
-el('automationNav').addEventListener('click', () => { openSurface('workflows').catch(console.error); });
+document.querySelectorAll('.region-nav').forEach((btn) => {
+  btn.addEventListener('click', () => { switchRegion(btn.getAttribute('data-region')).catch(console.error); });
+});
+el('automationRefreshBtn').addEventListener('click', () => { renderRegionList('workflows', 'regionAutomationBody').catch(console.error); });
+el('pluginsRefreshBtn').addEventListener('click', () => { renderRegionList('plugins', 'regionPluginsBody').catch(console.error); });
+el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
