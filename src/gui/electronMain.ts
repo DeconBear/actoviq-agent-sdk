@@ -167,6 +167,12 @@ async function createWindow(): Promise<void> {
     },
   });
   window.setMenuBarVisibility(true);
+  // Explicitly set the taskbar + title-bar icon. The BrowserWindow `icon`
+  // option alone does NOT change the Windows taskbar icon when the app is
+  // launched via the raw electron.exe (the taskbar shows the exe's own icon,
+  // cached by path). window.setIcon() updates the taskbar reliably across
+  // dev (electron.exe) and packaged (Actoviq.exe) launches.
+  if (iconPath) window.setIcon(iconPath);
   window.once('ready-to-show', () => window.show());
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
