@@ -87,6 +87,7 @@ import {
   loadTeamDefinition,
   loadWorkflow,
   resolveRoutedRun,
+  saveTeamDefinition,
   WorktreeService,
   type ActoviqAgentClient,
 } from '../index.js';
@@ -2410,6 +2411,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ?? null;
     return json(res, 200, { definition });
   }
+  if (req.method === 'POST' && url.pathname === '/api/team/save') {
+    try {
+      const body = await readJson(req);
+      const def = body.definition as TeamDefinition;
+      if (!def || typeof def.name !== 'string' || !def.name) {
+        return json(res, 400, { error: 'definition.name is required' });
+      }
+      const filePath = await saveTeamDefinition(def, { projectDir: workDir, homeDir: options.homeDir, overwrite: true });
+      return json(res, 200, { ok: true, filePath });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
     const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
     return json(res, 200, await readProjectPlan(workDir, hd));
@@ -3038,12 +3052,14 @@ export function createActoviqGuiHtml(): string {
         </div>
         <div class="region-actions">
           <button type="button" id="teamRunSquadBtn" class="pill-btn">▶ Run squad</button>
+          <button type="button" id="teamEditToggleBtn" class="pill-btn">Edit</button>
           <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
         </div>
       </header>
       <div class="region-body team-layout">
         <div class="team-main">
           <div class="team-squad-bar" id="teamSquadBar"></div>
+          <div class="team-editor hidden" id="teamEditor"></div>
           <div class="team-graph" id="teamGraph"></div>
         </div>
         <aside class="team-inspector" id="teamInspector"></aside>
@@ -3621,6 +3637,25 @@ button { cursor: pointer; }
 .team-inspector .ins-field .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
 .team-inspector .ins-field .val { font-size: 13px; color: var(--text-1); word-break: break-word; }
 .team-inspector .ins-empty-tab { color: #9aa0a6; font-size: 12.5px; }
+/* --- Team editor (plan/UI_PLAN §5.3 / U6): add/remove members + save. --- */
+.team-editor { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 14px; margin-bottom: 14px; }
+.team-editor h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
+.te-field { display: grid; gap: 3px; margin-bottom: 9px; }
+.te-field label { font-size: 11px; color: #8a8d91; }
+.te-field input, .te-field textarea, .te-field select { width: 100%; border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px; font: inherit; font-size: 12.5px; outline: none; background: #fff; }
+.te-field textarea { resize: vertical; min-height: 48px; }
+.te-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.te-member-row { border: 1px solid var(--border); border-radius: 8px; padding: 9px; margin-bottom: 7px; }
+.te-member-row .te-mhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.te-member-row .te-mhead strong { font-size: 13px; color: var(--text-1); }
+.te-add { display: flex; gap: 7px; margin-bottom: 8px; }
+.te-add input { flex: 1; min-width: 0; }
+.te-btn { min-height: 30px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; color: var(--text-1); }
+.te-btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.te-btn.danger { color: var(--err); }
+.te-btn:hover { background: var(--bg-app); }
+.te-btn.primary:hover { background: var(--accent-strong); }
+.te-actions { display: flex; gap: 8px; margin-top: 6px; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
 .sidebar {
@@ -4145,6 +4180,7 @@ const state = {
   teamSelected: null,
   teamDefinition: null,
   teamSelectedNode: null,
+  teamEditing: false,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
   pluginsView: 'plugins',
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
@@ -6067,6 +6103,7 @@ function teamListForRegion() {
 }
 async function renderTeamRegion() {
   await loadState();
+  state.teamEditing = false;
   const teams = teamListForRegion();
   const bar = el('teamSquadBar');
   if (bar) {
@@ -6081,7 +6118,7 @@ async function renderTeamRegion() {
       const label = document.createElement('span');
       label.textContent = t.name;
       chip.append(dot, label);
-      chip.addEventListener('click', () => { state.teamSelected = t.name; void selectTeam(t.name); });
+      chip.addEventListener('click', () => { state.teamSelected = t.name; state.teamEditing = false; void selectTeam(t.name); });
       bar.appendChild(chip);
     }
   }
@@ -6103,8 +6140,11 @@ async function selectTeam(name) {
   } catch { /* offline */ }
   state.teamDefinition = def;
   state.teamSelectedNode = null;
+  // Preserve the editor open-state across a re-select/save refresh so the
+  // user keeps editing (saveTeamDefinition re-selects to refresh the list).
   renderTeamGraph(def, name);
   renderTeamInspector(null, def);
+  renderTeamEditor();
 }
 // Run the selected squad (plan/UI_PLAN §6.3/§5): prompt → /team ask → stream
 // live member activity into the conversation + right rail.
@@ -6116,6 +6156,133 @@ async function runSelectedSquad() {
   await switchRegion('project');
   switchProjectView('conversation');
   submitText('/team ask ' + name + ' ' + input.trim()).catch(console.error);
+}
+// --- Team editor (plan/UI_PLAN §5.3 / U6): add/remove members + save. ---
+function renderTeamEditor() {
+  const host = el('teamEditor');
+  if (!host) return;
+  host.classList.toggle('hidden', !state.teamEditing);
+  if (!state.teamEditing) return;
+  const def = state.teamDefinition;
+  host.textContent = '';
+  if (!def) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'No squad selected.';
+    host.appendChild(e);
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'team-editor';
+  const h = document.createElement('h3');
+  h.textContent = 'Edit squad: ' + (def.name || '(unnamed)');
+  wrap.appendChild(h);
+  // Add-member form.
+  const addRow = document.createElement('div');
+  addRow.className = 'te-add';
+  const nameInput = document.createElement('input');
+  nameInput.placeholder = 'Member name (e.g. security)';
+  const modelInput = document.createElement('input');
+  modelInput.placeholder = 'Model (e.g. claude-sonnet-4-6)';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'te-btn primary';
+  addBtn.textContent = '+ Add member';
+  const doAdd = () => {
+    const n = nameInput.value.trim();
+    const m = modelInput.value.trim();
+    if (!n) return;
+    def.members = def.members || [];
+    def.members.push({ name: n, role: n, model: m || (state.snapshot?.session?.model || '') || '', systemPrompt: '' });
+    nameInput.value = ''; modelInput.value = '';
+    void saveTeamDefinition();
+  };
+  addBtn.addEventListener('click', doAdd);
+  addRow.append(nameInput, modelInput, addBtn);
+  wrap.appendChild(addRow);
+  // Member rows.
+  (def.members || []).forEach((member, idx) => {
+    const row = document.createElement('div');
+    row.className = 'te-member-row';
+    const head = document.createElement('div');
+    head.className = 'te-mhead';
+    const title = document.createElement('strong');
+    title.textContent = member.name || member.role || ('member ' + (idx + 1));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'te-btn danger';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => { def.members.splice(idx, 1); void saveTeamDefinition(); });
+    head.append(title, del);
+    const fieldsRow = document.createElement('div');
+    fieldsRow.className = 'te-row';
+    const fRole = teField('Role', member.role || '', (v) => { member.role = v; member.name = member.name || v; });
+    const fModel = teField('Model', member.model || '', (v) => { member.model = v; });
+    fieldsRow.append(fRole, fModel);
+    const fPrompt = teField('System prompt', member.systemPrompt || '', (v) => { member.systemPrompt = v; }, true);
+    row.append(head, fieldsRow, fPrompt);
+    wrap.appendChild(row);
+  });
+  if (!(def.members || []).length) {
+    const e = document.createElement('p');
+    e.className = 'plan-empty';
+    e.textContent = 'No members yet.';
+    wrap.appendChild(e);
+  }
+  // Squad config.
+  const cfg = document.createElement('div');
+  cfg.style.marginTop = '10px';
+  const cfgRow = document.createElement('div');
+  cfgRow.className = 'te-row';
+  cfgRow.appendChild(teField('Max rounds', String(def.maxRounds ?? 100), (v) => { def.maxRounds = Number(v) || 100; }));
+  cfgRow.appendChild(teField('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
+  cfg.appendChild(cfgRow);
+  wrap.appendChild(cfg);
+  // Save / cancel.
+  const actions = document.createElement('div');
+  actions.className = 'te-actions';
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'te-btn primary';
+  save.textContent = 'Save squad';
+  save.addEventListener('click', () => { void saveTeamDefinition(); });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'te-btn';
+  close.textContent = 'Done';
+  close.addEventListener('click', () => { state.teamEditing = false; renderTeamEditor(); });
+  actions.append(save, close);
+  wrap.appendChild(actions);
+  host.appendChild(wrap);
+}
+function teField(label, value, onChange, textarea) {
+  const f = document.createElement('div');
+  f.className = 'te-field';
+  const l = document.createElement('label');
+  l.textContent = label;
+  const inp = textarea ? document.createElement('textarea') : document.createElement('input');
+  inp.value = value;
+  inp.addEventListener('change', () => onChange(inp.value));
+  f.append(l, inp);
+  return f;
+}
+async function saveTeamDefinition() {
+  const def = state.teamDefinition;
+  if (!def || !def.name) return;
+  try {
+    const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def }) });
+    if (res.ok) {
+      addMessage('notice', 'Saved squad: ' + def.name);
+      // Refresh the squad list + re-select.
+      await loadState();
+      await selectTeam(def.name);
+      renderTeamGraph(def, def.name);
+    } else {
+      addMessage('error', 'Save failed: ' + await res.text());
+    }
+  } catch (err) {
+    addMessage('error', 'Save failed: ' + (err && err.message || err));
+  }
 }
 function graphNodeEl(node, def, isPrimary) {
   const color = roleColor(node.role || node.name);
@@ -7029,6 +7196,7 @@ el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion
 el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
+el('teamEditToggleBtn').addEventListener('click', () => { state.teamEditing = !state.teamEditing; renderTeamEditor(); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
