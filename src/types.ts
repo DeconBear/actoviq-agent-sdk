@@ -2440,6 +2440,25 @@ export interface TeamMember {
   name?: string;
   /** The member's role/specialty (e.g. "security", "skeptic"). */
   role?: string;
+  /** User-facing task ownership for this member inside a team run. */
+  responsibility?: string;
+  /** Member ids/names/roles this member should review after they work. */
+  reviews?: string[];
+  /** Member ids/names/roles this member depends on before it should work. */
+  dependsOn?: string[];
+  /** Preferred local/runtime label for this member, if it should use a named runtime. */
+  runtime?: string;
+  /** Tool families this member is expected to use, shown in GUI planning surfaces. */
+  toolScope?: string[];
+}
+
+export interface TeamReviewEdge {
+  /** Reviewer member id/name/role. */
+  from: string;
+  /** Reviewed member id/name/role. */
+  to: string;
+  kind?: 'review' | 'handoff' | 'support';
+  note?: string;
 }
 
 export interface TeamDefinition {
@@ -2452,6 +2471,8 @@ export interface TeamDefinition {
   primary?: TeamMember;
   /** The reviewer model (reviewer / its `executor-reviewer` alias). */
   reviewer?: TeamMember;
+  /** Explicit collaboration edges used by GUI/team planners. */
+  reviewEdges?: TeamReviewEdge[];
   /** Max panel members dispatched concurrently within this team (still bounded by the global AgentPool). Default: all members. */
   maxParallel?: number;
   /** Per-member, per-call timeout in ms. */

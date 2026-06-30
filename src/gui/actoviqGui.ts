@@ -6642,6 +6642,7 @@ function firstTeamNode(def) {
   return null;
 }
 function nodeSubtitle(node, isPrimary) {
+  if (node?.responsibility) return node.responsibility;
   const role = String(node?.role || node?.name || '').toLowerCase();
   if (role.includes('review')) return 'Code review and quality';
   if (role.includes('test')) return 'Execute tests';
@@ -6650,6 +6651,46 @@ function nodeSubtitle(node, isPrimary) {
   if (role.includes('research')) return 'Information gathering';
   if (isPrimary) return 'Strategic planning';
   return node?.systemPrompt ? 'Specialist agent' : 'Runtime collaborator';
+}
+function splitCsv(value) {
+  return String(value || '').split(',').map((part) => part.trim()).filter(Boolean);
+}
+function memberRef(member) {
+  return String(member?.id || member?.name || member?.role || member?.model || '').trim();
+}
+function reviewTargetsForMember(def, member) {
+  const ref = memberRef(member);
+  const direct = Array.isArray(member?.reviews) ? member.reviews : [];
+  const fromEdges = Array.isArray(def?.reviewEdges)
+    ? def.reviewEdges.filter((edge) => edge && edge.from === ref).map((edge) => edge.to).filter(Boolean)
+    : [];
+  return [...new Set([...direct, ...fromEdges])];
+}
+function normalizeTeamCollaboration(def) {
+  if (!def) return;
+  const edges = [];
+  const existingEdges = Array.isArray(def.reviewEdges) ? def.reviewEdges : [];
+  for (const member of def.members || []) {
+    const from = memberRef(member);
+    if (!from) continue;
+    const edgeReviews = existingEdges
+      .filter((edge) => edge && edge.from === from && edge.to)
+      .map((edge) => edge.to);
+    const reviews = [...new Set([...(Array.isArray(member.reviews) ? member.reviews : []), ...edgeReviews].filter(Boolean))];
+    member.reviews = reviews;
+    for (const to of reviews) edges.push({ from, to, kind: 'review' });
+  }
+  if (edges.length) def.reviewEdges = edges;
+  else delete def.reviewEdges;
+}
+function reviewEdgeLabels(def) {
+  const labels = [];
+  const edges = Array.isArray(def?.reviewEdges) ? def.reviewEdges : [];
+  for (const edge of edges) {
+    if (!edge || !edge.from || !edge.to) continue;
+    labels.push(edge.from + ' reviews ' + edge.to);
+  }
+  return labels.slice(0, 4);
 }
 function teamListForRegion() {
   const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
@@ -6759,7 +6800,7 @@ function renderTeamEditor() {
     const m = modelInput.value.trim();
     if (!n) return;
     def.members = def.members || [];
-    def.members.push({ name: n, role: n, model: m || (state.snapshot?.session?.model || '') || '', systemPrompt: '' });
+    def.members.push({ name: n, role: n, model: m || (state.snapshot?.session?.model || '') || '', systemPrompt: '', responsibility: '', reviews: [] });
     nameInput.value = ''; modelInput.value = '';
     void saveTeamDefinition();
   };
@@ -6785,8 +6826,18 @@ function renderTeamEditor() {
     const fRole = teField('Role', member.role || '', (v) => { member.role = v; member.name = member.name || v; });
     const fModel = teField('Model', member.model || '', (v) => { member.model = v; });
     fieldsRow.append(fRole, fModel);
+    const planRow = document.createElement('div');
+    planRow.className = 'te-row';
+    const fReviews = teField('Reviews', reviewTargetsForMember(def, member).join(', '), (v) => { member.reviews = splitCsv(v); normalizeTeamCollaboration(def); });
+    const fRuntime = teField('Runtime', member.runtime || '', (v) => { member.runtime = v; });
+    planRow.append(fReviews, fRuntime);
+    const scopeRow = document.createElement('div');
+    scopeRow.className = 'te-row';
+    const fTools = teField('Tool scope', Array.isArray(member.toolScope) ? member.toolScope.join(', ') : '', (v) => { member.toolScope = splitCsv(v); });
+    scopeRow.append(fTools);
+    const fResponsibility = teField('Responsibility', member.responsibility || '', (v) => { member.responsibility = v; }, true);
     const fPrompt = teField('System prompt', member.systemPrompt || '', (v) => { member.systemPrompt = v; }, true);
-    row.append(head, fieldsRow, fPrompt);
+    row.append(head, fieldsRow, planRow, scopeRow, fResponsibility, fPrompt);
     wrap.appendChild(row);
   });
   if (!(def.members || []).length) {
@@ -6835,6 +6886,7 @@ function teField(label, value, onChange, textarea) {
 async function saveTeamDefinition() {
   const def = state.teamDefinition;
   if (!def || !def.name) return;
+  normalizeTeamCollaboration(def);
   try {
     const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def }) });
     if (res.ok) {
@@ -6878,11 +6930,19 @@ function graphNodeEl(node, def, isPrimary) {
   model.textContent = node.model || 'inherits model';
   const tools = document.createElement('div');
   tools.className = 'gn-tools';
-  ['Read repository', 'Execute tools'].forEach((text) => {
+  const toolLabels = Array.isArray(node.toolScope) && node.toolScope.length > 0
+    ? node.toolScope
+    : ['Read repository', 'Execute tools'];
+  toolLabels.slice(0, 4).forEach((text) => {
     const pill = document.createElement('span');
     pill.textContent = text;
     tools.appendChild(pill);
   });
+  if (node.runtime) {
+    const runtime = document.createElement('span');
+    runtime.textContent = node.runtime;
+    tools.appendChild(runtime);
+  }
   card.append(head, status, role, model, tools);
   card.addEventListener('click', () => {
     state.teamSelectedNode = node;
@@ -6904,6 +6964,8 @@ function renderTeamGraph(def, name) {
     return;
   }
   const members = def.members || [];
+  normalizeTeamCollaboration(def);
+  const reviewLabels = reviewEdgeLabels(def);
   const toolbar = document.createElement('div');
   toolbar.className = 'graph-toolbar';
   const left = document.createElement('div');
@@ -6924,7 +6986,7 @@ function renderTeamGraph(def, name) {
   if (def.primary) top.appendChild(graphNodeEl(def.primary, def, true));
   else if (members[0]) top.appendChild(graphNodeEl(members[0], def, true));
   if (top.children.length) canvas.appendChild(top);
-  if (top.children.length && members.length > 1) canvas.appendChild(edgeRow(['decompose', 'assign', 'review']));
+  if (top.children.length && members.length > 1) canvas.appendChild(edgeRow(reviewLabels.length ? reviewLabels : ['decompose', 'assign', 'review']));
   if (members.length) {
     const row = document.createElement('div');
     row.className = 'graph-row graph-lane';
@@ -7011,9 +7073,14 @@ function renderTeamInspector(node, def) {
     if (tn === 'Details') {
       body.appendChild(insField('Role', node.role || (def?.primary === node ? 'primary' : 'member')));
       body.appendChild(insField('Model', node.model || '—'));
+      if (node.responsibility) body.appendChild(insField('Responsibility', node.responsibility));
+      const reviews = reviewTargetsForMember(def, node);
+      if (reviews.length) body.appendChild(insField('Reviews', reviews.join(', ')));
       if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
     } else if (tn === 'Config') {
       body.appendChild(insField('Mode', def?.mode || '—'));
+      if (node.runtime) body.appendChild(insField('Runtime', node.runtime));
+      if (Array.isArray(node.toolScope) && node.toolScope.length) body.appendChild(insField('Tool scope', node.toolScope.join(', ')));
       body.appendChild(insField('Timeout', def?.timeoutMs ? def.timeoutMs + 'ms' : 'default'));
       body.appendChild(insField('Max iterations', String(def?.maxIterations ?? 'default')));
     } else {
