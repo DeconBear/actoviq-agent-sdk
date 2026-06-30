@@ -3000,6 +3000,7 @@ export function createActoviqGuiHtml(): string {
         <div class="top-actions">
           <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
+          <button id="conversationRunSquadBtn" class="pill-btn primary" title="Run selected squad">Run squad</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
@@ -4355,6 +4356,7 @@ function api(path, options = {}) {
   const headers = Object.assign({}, options.headers || {}, { 'x-actoviq-token': ACTOVIQ_TOKEN });
   return fetch(path, Object.assign({}, options, { headers }));
 }
+const __name = (target) => target;
 ${renderMarkdown.toString()}
 function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
 const state = {
@@ -6664,8 +6666,13 @@ async function selectTeam(name) {
 // Run the selected squad (plan/UI_PLAN §6.3/§5): prompt → /team ask → stream
 // live member activity into the conversation + right rail.
 async function runSelectedSquad() {
-  const name = state.teamSelected;
-  if (!name) return;
+  const firstTeam = Array.isArray(state.snapshot?.teams) ? state.snapshot.teams[0]?.name : '';
+  const name = state.teamSelected || state.snapshot?.activeTeamName || firstTeam;
+  if (!name) {
+    window.alert('No squad available. Create or attach a team first.');
+    return;
+  }
+  state.teamSelected = name;
   const input = window.prompt('Run squad "' + name + '" with prompt:', '');
   if (!input || !input.trim()) return;
   await switchRegion('project');
@@ -7741,6 +7748,7 @@ el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('m
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('teamEditToggleBtn').addEventListener('click', () => { state.teamEditing = !state.teamEditing; renderTeamEditor(); });
+el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
