@@ -2369,6 +2369,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         catch { return text(res, 404, 'Not found'); } // prepare:xterm not run yet
       }
       if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await state());
+  if (req.method === 'GET' && url.pathname === '/api/team/definition') {
+    const name = url.searchParams.get('name') || '';
+    const definition = loadTeamDefinition(name, workDir)?.definition
+      ?? buildDefaultTeam(name, session?.model ?? '')
+      ?? null;
+    return json(res, 200, { definition });
+  }
       if (req.method === 'GET' && url.pathname === '/api/session/messages') return json(res, 200, { messages: renderableHistory(session) });
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         return json(res, 200, await saveSettings(await readJson(req)));
@@ -2980,7 +2987,13 @@ export function createActoviqGuiHtml(): string {
           <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
         </div>
       </header>
-      <div class="region-body" id="regionTeamBody"></div>
+      <div class="region-body team-layout">
+        <div class="team-main">
+          <div class="team-squad-bar" id="teamSquadBar"></div>
+          <div class="team-graph" id="teamGraph"></div>
+        </div>
+        <aside class="team-inspector" id="teamInspector"></aside>
+      </div>
     </section>
     <section class="region hidden" data-region="automation" id="regionAutomation" aria-label="Automation">
       <header class="region-header">
@@ -3478,6 +3491,41 @@ button { cursor: pointer; }
 .rail-run .rr-tool { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); margin-top: 3px; }
 .rail-run .rr-members { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .rail-run .rr-member { font-size: 11px; border-radius: 4px; padding: 1px 6px; background: #eef0f1; color: #5f6368; }
+/* --- Team region (plan/UI_PLAN §5): squad bar + collaboration graph + inspector. --- */
+.team-layout { display: flex; padding: 0; overflow: hidden; }
+.team-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.team-squad-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.squad-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 5px 11px; font-size: 12.5px; cursor: pointer; color: var(--text-2); }
+.squad-chip:hover { border-color: #b9c6e6; }
+.squad-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.squad-chip .sq-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.team-graph { flex: 1; overflow: auto; padding: 28px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 16px; background: #fafbfc; }
+.graph-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.graph-arrow { color: #b5b8bd; font-size: 22px; line-height: 1; }
+.graph-node { width: 184px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 11px 13px 11px 17px; cursor: pointer; position: relative; }
+.graph-node:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.graph-node.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.graph-node .gn-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 12px 0 0 12px; }
+.graph-node .gn-head { display: flex; align-items: center; gap: 8px; }
+.graph-node .gn-icon { width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; color: #fff; flex: 0 0 26px; }
+.graph-node .gn-icon .ui-icon { width: 15px; height: 15px; }
+.graph-node .gn-name { font-weight: 600; font-size: 13.5px; color: var(--text-1); }
+.graph-node .gn-role { font-size: 11.5px; color: var(--text-2); margin-top: 4px; }
+.graph-node .gn-model { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #8a8d91; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-node .gn-status { position: absolute; top: 10px; right: 11px; width: 8px; height: 8px; border-radius: 50%; background: #c5c8cc; }
+.graph-node.primary .gn-name { font-weight: 700; }
+.team-inspector { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-surface); overflow: auto; padding: 14px; }
+.team-inspector .ins-empty { color: #9aa0a6; font-size: 13px; margin-top: 24px; }
+.team-inspector .ins-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.team-inspector .ins-head .gn-icon { width: 30px; height: 30px; }
+.team-inspector h3 { margin: 0; font-size: 15px; color: var(--text-1); }
+.team-inspector .ins-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.team-inspector .ins-tab { padding: 6px 10px; font-size: 12.5px; border: none; background: none; border-bottom: 2px solid transparent; color: var(--text-2); cursor: pointer; }
+.team-inspector .ins-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.team-inspector .ins-field { display: grid; gap: 2px; margin-bottom: 11px; }
+.team-inspector .ins-field .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
+.team-inspector .ins-field .val { font-size: 13px; color: var(--text-1); word-break: break-word; }
+.team-inspector .ins-empty-tab { color: #9aa0a6; font-size: 12.5px; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid #cfcfcf; background: #fff; }
 .sidebar {
@@ -3998,6 +4046,10 @@ const state = {
   // Within the Project region: 'overview' (workspace card wall) or
   // 'conversation' (the chat workbench). Overview is the entry landing.
   projectView: 'overview',
+  // Team region: selected squad + its expanded definition + selected graph node.
+  teamSelected: null,
+  teamDefinition: null,
+  teamSelectedNode: null,
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
 };
 const el = (id) => document.getElementById(id);
@@ -5771,7 +5823,205 @@ async function switchRegion(name) {
   });
   if (name === 'automation') await renderRegionList('workflows', 'regionAutomationBody');
   else if (name === 'plugins') await renderRegionList('plugins', 'regionPluginsBody');
-  else if (name === 'team') await renderRegionList('teams', 'regionTeamBody');
+  else if (name === 'team') await renderTeamRegion();
+}
+// --- Team region (plan/UI_PLAN §5): read-only collaboration graph + inspector. ---
+const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#10B981', reviewer: '#F59E0B', coder: '#10B981', planner: '#3B82F6', docs: '#EC4899', test: '#F59E0B' };
+function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
+function teamListForRegion() {
+  const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
+  const names = new Set(saved.map((t) => t.name));
+  const builtins = ['panel-analysis', 'analysis', 'reviewer'].filter((n) => !names.has(n)).map((n) => ({ name: n, source: 'built-in' }));
+  return [...saved, ...builtins];
+}
+async function renderTeamRegion() {
+  await loadState();
+  const teams = teamListForRegion();
+  const bar = el('teamSquadBar');
+  if (bar) {
+    bar.textContent = '';
+    for (const t of teams) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'squad-chip' + (t.name === state.teamSelected ? ' active' : '');
+      chip.dataset.name = t.name;
+      const dot = document.createElement('span');
+      dot.className = 'sq-dot';
+      const label = document.createElement('span');
+      label.textContent = t.name;
+      chip.append(dot, label);
+      chip.addEventListener('click', () => { state.teamSelected = t.name; void selectTeam(t.name); });
+      bar.appendChild(chip);
+    }
+  }
+  const target = state.teamSelected || teams[0]?.name;
+  if (target) { state.teamSelected = target; await selectTeam(target); }
+  else {
+    const g = el('teamGraph');
+    if (g) { g.textContent = ''; const e = document.createElement('p'); e.className = 'region-empty'; e.textContent = 'No squads — click + New squad.'; g.appendChild(e); }
+    renderTeamInspector(null, null);
+  }
+}
+async function selectTeam(name) {
+  state.teamSelected = name;
+  document.querySelectorAll('.squad-chip').forEach((c) => c.classList.toggle('active', c.dataset.name === name));
+  let def = null;
+  try {
+    const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
+    if (res.ok) def = (await res.json()).definition || null;
+  } catch { /* offline */ }
+  state.teamDefinition = def;
+  state.teamSelectedNode = null;
+  renderTeamGraph(def, name);
+  renderTeamInspector(null, def);
+}
+function graphNodeEl(node, def, isPrimary) {
+  const color = roleColor(node.role || node.name);
+  const card = document.createElement('div');
+  card.className = 'graph-node' + (isPrimary ? ' primary' : '') + (node === state.teamSelectedNode ? ' selected' : '');
+  const bar = document.createElement('span');
+  bar.className = 'gn-bar';
+  bar.style.background = color;
+  card.appendChild(bar);
+  const head = document.createElement('div');
+  head.className = 'gn-head';
+  const icon = document.createElement('span');
+  icon.className = 'gn-icon';
+  icon.style.background = color;
+  icon.innerHTML = guiIcon('agent');
+  const nameEl = document.createElement('span');
+  nameEl.className = 'gn-name';
+  nameEl.textContent = node.name || node.role || 'agent';
+  head.append(icon, nameEl);
+  const status = document.createElement('span');
+  status.className = 'gn-status';
+  const role = document.createElement('div');
+  role.className = 'gn-role';
+  role.textContent = node.role || (isPrimary ? 'primary' : 'member');
+  const model = document.createElement('div');
+  model.className = 'gn-model';
+  model.textContent = node.model || '';
+  card.append(head, status, role, model);
+  card.addEventListener('click', () => {
+    state.teamSelectedNode = node;
+    document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
+    card.classList.add('selected');
+    renderTeamInspector(node, state.teamDefinition);
+  });
+  return card;
+}
+function renderTeamGraph(def, name) {
+  const g = el('teamGraph');
+  if (!g) return;
+  g.textContent = '';
+  if (!def) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'No definition for ' + name + '.';
+    g.appendChild(e);
+    return;
+  }
+  const members = def.members || [];
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight:600;color:var(--text-1);font-size:14px;';
+  title.textContent = def.mode + (def.primary ? ' · panel → synthesizer' : def.reviewer ? ' · reviewer' : '');
+  g.appendChild(title);
+  if (members.length) {
+    const row = document.createElement('div');
+    row.className = 'graph-row';
+    for (const m of members) row.appendChild(graphNodeEl(m, def, false));
+    g.appendChild(row);
+  }
+  if (def.primary) {
+    const arr = document.createElement('div');
+    arr.className = 'graph-arrow';
+    arr.textContent = '↓';
+    g.appendChild(arr);
+    g.appendChild(graphNodeEl(def.primary, def, true));
+  } else if (def.reviewer) {
+    if (members.length) {
+      const arr = document.createElement('div');
+      arr.className = 'graph-arrow';
+      arr.textContent = '↓';
+      g.appendChild(arr);
+    }
+    g.appendChild(graphNodeEl(def.reviewer, def, true));
+  }
+  if (!members.length && !def.primary && !def.reviewer) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'This team has no members defined.';
+    g.appendChild(e);
+  }
+}
+function insField(lbl, val) {
+  const f = document.createElement('div');
+  f.className = 'ins-field';
+  const l = document.createElement('div');
+  l.className = 'lbl';
+  l.textContent = lbl;
+  const v = document.createElement('div');
+  v.className = 'val';
+  v.textContent = val;
+  f.append(l, v);
+  return f;
+}
+function renderTeamInspector(node, def) {
+  const ins = el('teamInspector');
+  if (!ins) return;
+  ins.textContent = '';
+  if (!node) {
+    const e = document.createElement('p');
+    e.className = 'ins-empty';
+    e.textContent = 'Select a node to inspect.';
+    ins.appendChild(e);
+    return;
+  }
+  const color = roleColor(node.role || node.name);
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  const icon = document.createElement('span');
+  icon.className = 'gn-icon';
+  icon.style.background = color;
+  icon.innerHTML = guiIcon('agent');
+  const h = document.createElement('h3');
+  h.textContent = node.name || node.role || 'agent';
+  head.append(icon, h);
+  ins.appendChild(head);
+  const tabs = document.createElement('div');
+  tabs.className = 'ins-tabs';
+  const bodies = document.createElement('div');
+  const tabNames = ['Details', 'Config', 'Metrics', 'Logs'];
+  tabNames.forEach((tn, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ins-tab' + (i === 0 ? ' active' : '');
+    b.textContent = tn;
+    b.addEventListener('click', () => {
+      [...tabs.children].forEach((x, j) => x.classList.toggle('active', j === i));
+      [...bodies.children].forEach((x, j) => x.classList.toggle('hidden', j !== i));
+    });
+    tabs.appendChild(b);
+    const body = document.createElement('div');
+    body.className = 'ins-body' + (i !== 0 ? ' hidden' : '');
+    if (tn === 'Details') {
+      body.appendChild(insField('Role', node.role || (def?.primary === node ? 'primary' : 'member')));
+      body.appendChild(insField('Model', node.model || '—'));
+      if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
+    } else if (tn === 'Config') {
+      body.appendChild(insField('Mode', def?.mode || '—'));
+      body.appendChild(insField('Timeout', def?.timeoutMs ? def.timeoutMs + 'ms' : 'default'));
+      body.appendChild(insField('Max iterations', String(def?.maxIterations ?? 'default')));
+    } else {
+      const p = document.createElement('p');
+      p.className = 'ins-empty-tab';
+      p.textContent = 'No active run. ' + (tn === 'Metrics' ? 'Metrics' : 'Member logs') + ' appear when this squad runs.';
+      body.appendChild(p);
+    }
+    bodies.appendChild(body);
+  });
+  ins.appendChild(tabs);
+  ins.appendChild(bodies);
 }
 // Renders a surface-data list inline into a region body (reuses surfaceData/
 // itemTitle/itemDescription so the region and the drawer stay in sync).
