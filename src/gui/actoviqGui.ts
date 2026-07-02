@@ -3301,6 +3301,8 @@ export function createActoviqGuiHtml(): string {
           <p>Compose agent squads and runtime collaboration graphs</p>
         </div>
         <div class="region-actions">
+          <select id="teamEnvSelect" class="team-env-select" title="Environment"><option value="dev">Dev</option><option value="staging">Staging</option><option value="prod">Prod</option></select>
+          <span id="teamSavedStatus" class="team-saved-status saved">${guiIcon('gear')}<span>Saved</span></span>
           <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
           <button type="button" id="teamEditToggleBtn" class="pill-btn">Edit</button>
           <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
@@ -4359,7 +4361,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-title { justify-self: start; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); }
 .graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
 .graph-row { gap: 22px; }
-.graph-edge-row { display: flex; justify-content: center; gap: 36px; width: min(720px, 100%); position: relative; }
+.graph-edge-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 18px 36px; width: min(720px, 100%); position: relative; }
 .graph-edge-row::before { content: ""; position: absolute; left: 6%; right: 6%; top: 50%; border-top: 1px solid #9CA3AF; z-index: 0; }
 .graph-edge { position: relative; z-index: 1; background: #F8FAFC; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 11px; }
 .graph-node { width: 210px; min-height: 116px; padding: 14px 14px 12px 18px; border-radius: 12px; background: rgba(255,255,255,.96); }
@@ -4369,6 +4371,36 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-node .gn-model { margin-top: 4px; }
 .gn-tools { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
 .gn-tools span { border-radius: 999px; background: #F3F4F6; color: #4B5563; padding: 2px 7px; font-size: 10.5px; }
+/* Runtime nodes (plan/UI_PLAN §5.2): visually distinct from agent nodes. */
+.graph-node.runtime { background: #1F2330; border-color: #2C313D; }
+.graph-node.runtime .gn-bar { background: var(--role-runtime); }
+.graph-node.runtime .gn-name { color: #F3F4F6; }
+.graph-node.runtime .gn-role { color: #9CA3AF; }
+.graph-node.runtime .gn-model { color: #6B7280; }
+.graph-node.runtime .gn-icon { background: var(--role-runtime); }
+.graph-node.runtime .gn-tools span { background: rgba(14,165,233,.18); color: #7DD3FC; }
+.graph-node.runtime .gn-status { background: var(--ok); }
+.graph-edge.from-to { font-size: 10.5px; }
+.graph-edge.from-to .ge-from, .graph-edge.from-to .ge-to { font-weight: 600; }
+.graph-edge.from-to .ge-arrow { color: #9CA3AF; margin: 0 4px; }
+/* Inspector permission pills + tools (§5.2). */
+.ins-perms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ins-perm { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 9px; font-size: 11px; border: 1px solid var(--border); }
+.ins-perm.allow { background: #E8F7EF; color: var(--ok); border-color: rgba(16,185,129,.3); }
+.ins-perm.deny { background: #F3F4F6; color: #9aa0a6; border-color: var(--border); text-decoration: line-through; }
+.ins-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.ins-tools span { border-radius: 999px; background: #F3F4F6; color: #4B5563; padding: 2px 8px; font-size: 11px; }
+.ins-io { display: grid; gap: 4px; margin-top: 6px; }
+.ins-io .io-row { display: flex; gap: 6px; font-size: 12px; color: var(--text-1); }
+.ins-io .io-row .io-label { color: var(--text-2); min-width: 64px; }
+.ins-queue { display: flex; gap: 10px; margin-top: 6px; }
+.ins-queue .q-stat { flex: 1; text-align: center; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+.ins-queue .q-stat strong { display: block; font-size: 16px; color: var(--text-1); }
+.ins-queue .q-stat small { color: var(--text-2); font-size: 10.5px; }
+/* Team top bar: environment + saved status (§5). */
+.team-env-select, .team-saved-status { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 0 11px; color: var(--text-2); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+.team-saved-status.saved { color: var(--ok); border-color: rgba(16,185,129,.3); background: #F0FDF4; }
+.team-saved-status.unsaved { color: var(--warn); border-color: rgba(245,158,11,.3); background: #FFFBEB; }
 .team-inspector { width: auto; flex: none; padding: 18px; background: var(--bg-surface); }
 .team-inspector .ins-head { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .team-inspector .ins-tabs { margin-top: 12px; }
@@ -7551,15 +7583,6 @@ function normalizeTeamCollaboration(def) {
   if (edges.length) def.reviewEdges = edges;
   else delete def.reviewEdges;
 }
-function reviewEdgeLabels(def) {
-  const labels = [];
-  const edges = Array.isArray(def?.reviewEdges) ? def.reviewEdges : [];
-  for (const edge of edges) {
-    if (!edge || !edge.from || !edge.to) continue;
-    labels.push(edge.from + ' reviews ' + edge.to);
-  }
-  return labels.slice(0, 4);
-}
 function teamListForRegion() {
   const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
   const names = new Set(saved.map((t) => t.name));
@@ -7759,6 +7782,7 @@ async function saveTeamDefinition() {
     const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def }) });
     if (res.ok) {
       addMessage('notice', 'Saved squad: ' + def.name);
+      setTeamSavedStatus(true);
       // Refresh the squad list + re-select.
       await loadState();
       await selectTeam(def.name);
@@ -7769,6 +7793,12 @@ async function saveTeamDefinition() {
   } catch (err) {
     addMessage('error', 'Save failed: ' + (err && err.message || err));
   }
+}
+function setTeamSavedStatus(saved) {
+  const el2 = el('teamSavedStatus');
+  if (!el2) return;
+  el2.className = 'team-saved-status ' + (saved ? 'saved' : 'unsaved');
+  el2.innerHTML = guiIcon(saved ? 'gear' : 'automation') + '<span>' + (saved ? 'Saved' : 'Unsaved') + '</span>';
 }
 function graphNodeEl(node, def, isPrimary) {
   const color = roleColor(node.role || node.name);
@@ -7820,6 +7850,63 @@ function graphNodeEl(node, def, isPrimary) {
   });
   return card;
 }
+// Runtime nodes (plan/UI_PLAN §5.2): Local Shell / CI / Browser — visually
+// distinct dark cards representing execution runtimes, not agents.
+function runtimeIcon(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.includes('browser')) return 'browser';
+  if (n.includes('shell') || n.includes('terminal') || n.includes('bash')) return 'terminal';
+  if (n.includes('ci') || n.includes('runtime')) return 'automation';
+  return 'computer';
+}
+function runtimeNodeEl(name) {
+  const card = document.createElement('div');
+  card.className = 'graph-node runtime';
+  const bar = document.createElement('span');
+  bar.className = 'gn-bar';
+  card.appendChild(bar);
+  const head = document.createElement('div');
+  head.className = 'gn-head';
+  const icon = document.createElement('span');
+  icon.className = 'gn-icon';
+  icon.innerHTML = guiIcon(runtimeIcon(name));
+  const nameEl = document.createElement('span');
+  nameEl.className = 'gn-name';
+  nameEl.textContent = name;
+  head.append(icon, nameEl);
+  const status = document.createElement('span');
+  status.className = 'gn-status';
+  const role = document.createElement('div');
+  role.className = 'gn-role';
+  const n = String(name).toLowerCase();
+  role.textContent = n.includes('shell') ? 'Command execution' : n.includes('browser') ? 'Browser automation' : n.includes('ci') ? 'CI pipeline' : 'Runtime';
+  const model = document.createElement('div');
+  model.className = 'gn-model';
+  model.textContent = n.includes('shell') ? 'Bash' : n.includes('browser') ? 'Playwright' : n.includes('ci') ? 'GitHub Actions' : 'runtime';
+  card.append(head, status, role, model);
+  return card;
+}
+// Specific from→to edge chip (§5.2): "Planner → Coder: assign".
+function graphEdgeFromTo(from, to, label) {
+  const edge = document.createElement('span');
+  edge.className = 'graph-edge from-to';
+  const f = document.createElement('span');
+  f.className = 'ge-from';
+  f.textContent = from;
+  const arrow = document.createElement('span');
+  arrow.className = 'ge-arrow';
+  arrow.textContent = '→';
+  const t = document.createElement('span');
+  t.className = 'ge-to';
+  t.textContent = to;
+  const sep = document.createElement('span');
+  sep.className = 'ge-arrow';
+  sep.textContent = '·';
+  const l = document.createElement('span');
+  l.textContent = label;
+  edge.append(f, arrow, t, sep, l);
+  return edge;
+}
 function renderTeamGraph(def, name) {
   const g = el('teamGraph');
   if (!g) return;
@@ -7833,7 +7920,16 @@ function renderTeamGraph(def, name) {
   }
   const members = def.members || [];
   normalizeTeamCollaboration(def);
-  const reviewLabels = reviewEdgeLabels(def);
+  const edges = Array.isArray(def.reviewEdges) ? def.reviewEdges : [];
+  // Build specific from→to edge chips. Fall back to generic verb labels when
+  // the team definition carries no explicit collaboration edges.
+  const primaryRef = def.primary ? memberRef(def.primary) : (members[0] ? memberRef(members[0]) : '');
+  const topEdgeLabels = edges.length
+    ? edges.slice(0, 4).map((e) => graphEdgeFromTo(e.from, e.to, e.kind || 'review'))
+    : ['decompose', 'assign', 'review'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; });
+  const bottomEdgeLabels = def.reviewer
+    ? (edges.length ? edges.filter(e => e.to === memberRef(def.reviewer)).slice(0, 3).map((e) => graphEdgeFromTo(e.from, e.to, e.kind || 'handoff')) : ['handoff', 'verify', 'document'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; }))
+    : [];
   const toolbar = document.createElement('div');
   toolbar.className = 'graph-toolbar';
   const left = document.createElement('div');
@@ -7854,7 +7950,7 @@ function renderTeamGraph(def, name) {
   if (def.primary) top.appendChild(graphNodeEl(def.primary, def, true));
   else if (members[0]) top.appendChild(graphNodeEl(members[0], def, true));
   if (top.children.length) canvas.appendChild(top);
-  if (top.children.length && members.length > 1) canvas.appendChild(edgeRow(reviewLabels.length ? reviewLabels : ['decompose', 'assign', 'review']));
+  if (top.children.length && members.length > 1) canvas.appendChild(edgeRowFromChips(topEdgeLabels));
   if (members.length) {
     const row = document.createElement('div');
     row.className = 'graph-row graph-lane';
@@ -7863,11 +7959,26 @@ function renderTeamGraph(def, name) {
     if (middleMembers.length) canvas.appendChild(row);
   }
   if (def.reviewer) {
-    canvas.appendChild(edgeRow(['handoff', 'verify', 'document']));
+    canvas.appendChild(edgeRowFromChips(bottomEdgeLabels));
     const bottom = document.createElement('div');
     bottom.className = 'graph-lane bottom';
     bottom.appendChild(graphNodeEl(def.reviewer, def, true));
     canvas.appendChild(bottom);
+  }
+  // Runtime lane (§5.2): Local Shell always present (TerminalManager); plus
+  // any member.runtime values. Visually distinct dark nodes below agents.
+  const runtimeNames = new Set(['Local Shell']);
+  for (const m of members) {
+    if (m.runtime) runtimeNames.add(m.runtime);
+  }
+  const runtimeList = [...runtimeNames];
+  if (runtimeList.length) {
+    const edgeLabels = ['execute', 'trigger', 'publish'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; });
+    canvas.appendChild(edgeRowFromChips(edgeLabels));
+    const rtLane = document.createElement('div');
+    rtLane.className = 'graph-lane runtime-lane';
+    for (const rt of runtimeList) rtLane.appendChild(runtimeNodeEl(rt));
+    canvas.appendChild(rtLane);
   }
   if (!members.length && !def.primary && !def.reviewer) {
     const e = document.createElement('p');
@@ -7877,15 +7988,10 @@ function renderTeamGraph(def, name) {
   }
   g.append(toolbar, canvas);
 }
-function edgeRow(labels) {
+function edgeRowFromChips(chips) {
   const row = document.createElement('div');
   row.className = 'graph-edge-row';
-  labels.forEach((label) => {
-    const edge = document.createElement('span');
-    edge.className = 'graph-edge';
-    edge.textContent = label;
-    row.appendChild(edge);
-  });
+  chips.forEach((chip) => row.appendChild(chip));
   return row;
 }
 function insField(lbl, val) {
@@ -7899,6 +8005,88 @@ function insField(lbl, val) {
   v.textContent = val;
   f.append(l, v);
   return f;
+}
+function insFieldNode(lbl, content) {
+  const f = document.createElement('div');
+  f.className = 'ins-field';
+  const l = document.createElement('div');
+  l.className = 'lbl';
+  l.textContent = lbl;
+  f.append(l, content);
+  return f;
+}
+// Permission pills (§5.2): team members are read-only ReAct agents, so the
+// permission set is fixed (Read ✓, Execute ✓, Edit ✗, Bash ✗). The main
+// agent keeps full access — reflected when inspecting the primary node.
+function insPerms(node, def) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ins-perms';
+  const isPrimary = def?.primary === node;
+  const perms = [
+    { label: 'Read repository', allow: true },
+    { label: 'Execute tools', allow: true },
+    { label: 'Edit files', allow: isPrimary },
+    { label: 'Bash', allow: isPrimary },
+  ];
+  for (const p of perms) {
+    const pill = document.createElement('span');
+    pill.className = 'ins-perm ' + (p.allow ? 'allow' : 'deny');
+    pill.textContent = (p.allow ? '✓ ' : '✗ ') + p.label;
+    wrap.appendChild(pill);
+  }
+  return wrap;
+}
+function insTools(node) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ins-tools';
+  const labels = Array.isArray(node.toolScope) && node.toolScope.length > 0
+    ? node.toolScope
+    : ['Read', 'Glob', 'Grep', 'TavilySearch', 'WebFetch'];
+  for (const t of labels.slice(0, 6)) {
+    const chip = document.createElement('span');
+    chip.textContent = t;
+    wrap.appendChild(chip);
+  }
+  return wrap;
+}
+// Inputs (who sends to this node) + Outputs (who this node sends to) from
+// the collaboration edges (§5.2).
+function insIO(def, node) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ins-io';
+  const ref = memberRef(node);
+  const edges = Array.isArray(def?.reviewEdges) ? def.reviewEdges : [];
+  const inputs = [...new Set(edges.filter(e => e.to === ref).map(e => e.from))].filter(Boolean);
+  const outputs = reviewTargetsForMember(def, node);
+  const inRow = document.createElement('div');
+  inRow.className = 'io-row';
+  const inLabel = document.createElement('span');
+  inLabel.className = 'io-label';
+  inLabel.textContent = 'Inputs';
+  inRow.append(inLabel, document.createTextNode(inputs.length ? inputs.join(', ') : '—'));
+  const outRow = document.createElement('div');
+  outRow.className = 'io-row';
+  const outLabel = document.createElement('span');
+  outLabel.className = 'io-label';
+  outLabel.textContent = 'Outputs';
+  outRow.append(outLabel, document.createTextNode(outputs.length ? outputs.join(', ') : '—'));
+  wrap.append(inRow, outRow);
+  return wrap;
+}
+function insQueue() {
+  const wrap = document.createElement('div');
+  wrap.className = 'ins-queue';
+  for (const [label, val] of [['Waiting', 0], ['Running', 0], ['Completed', 0]]) {
+    const stat = document.createElement('div');
+    stat.className = 'q-stat';
+    const strong = document.createElement('strong');
+    strong.textContent = String(val);
+    const small = document.createElement('small');
+    small.textContent = label;
+    stat.append(strong, small);
+    wrap.appendChild(stat);
+  }
+  return wrap;
 }
 function renderTeamInspector(node, def) {
   const ins = el('teamInspector');
@@ -7942,8 +8130,8 @@ function renderTeamInspector(node, def) {
       body.appendChild(insField('Role', node.role || (def?.primary === node ? 'primary' : 'member')));
       body.appendChild(insField('Model', node.model || '—'));
       if (node.responsibility) body.appendChild(insField('Responsibility', node.responsibility));
-      const reviews = reviewTargetsForMember(def, node);
-      if (reviews.length) body.appendChild(insField('Reviews', reviews.join(', ')));
+      body.appendChild(insFieldNode('Permissions', insPerms(node, def)));
+      body.appendChild(insFieldNode('Tools', insTools(node)));
       if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
     } else if (tn === 'Config') {
       body.appendChild(insField('Mode', def?.mode || '—'));
@@ -7951,6 +8139,8 @@ function renderTeamInspector(node, def) {
       if (Array.isArray(node.toolScope) && node.toolScope.length) body.appendChild(insField('Tool scope', node.toolScope.join(', ')));
       body.appendChild(insField('Timeout', def?.timeoutMs ? def.timeoutMs + 'ms' : 'default'));
       body.appendChild(insField('Max iterations', String(def?.maxIterations ?? 'default')));
+      body.appendChild(insFieldNode('Inputs / Outputs', insIO(def, node)));
+      body.appendChild(insFieldNode('Queue', insQueue()));
     } else {
       const p = document.createElement('p');
       p.className = 'ins-empty-tab';
@@ -8828,7 +9018,7 @@ el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion
 el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
-el('teamEditToggleBtn').addEventListener('click', () => { state.teamEditing = !state.teamEditing; renderTeamEditor(); });
+el('teamEditToggleBtn').addEventListener('click', () => { state.teamEditing = !state.teamEditing; if (state.teamEditing) setTeamSavedStatus(false); renderTeamEditor(); });
 el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
