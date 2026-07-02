@@ -4383,6 +4383,38 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .rail-task strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-task small { color: var(--text-2); font-size: 11.5px; }
 .rail-task.active { border-color: #BFDBFE; background: var(--accent-soft); }
+/* Overview + conversation rail sections (plan/UI_PLAN §3/§4.1/§6). */
+.rail-section { margin-bottom: 16px; }
+.rail-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+.rail-section h3 .count { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 7px; font-size: 11px; }
+.rail-section h3 .count.err { background: #FEE2E2; color: var(--err); }
+.rail-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 12.5px; color: var(--text-1); }
+.rail-row:hover { background: var(--bg-app); }
+.rail-row .r-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--text-2); }
+.rail-row .r-dot.ok { background: var(--ok); }
+.rail-row .r-dot.warn { background: var(--warn); }
+.rail-row .r-dot.err { background: var(--err); }
+.rail-row .r-dot.accent { background: var(--accent); }
+.rail-row .r-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row .r-meta { color: var(--text-2); font-size: 11px; flex: 0 0 auto; }
+.rail-link { display: block; margin-top: 4px; color: var(--accent); font-size: 12px; cursor: pointer; }
+.rail-link:hover { text-decoration: underline; }
+.rail-empty { color: #9aa0a6; font-size: 12.5px; padding: 4px 8px; }
+.rail-agent { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 10px; background: #fff; margin-bottom: 7px; }
+.rail-agent .ra-badge { width: 24px; height: 24px; border-radius: 7px; display: inline-grid; place-items: center; color: #fff; flex: 0 0 24px; }
+.rail-agent .ra-badge .ui-icon { width: 13px; height: 13px; }
+.rail-agent .ra-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text-1); }
+.rail-agent .ra-state { font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 2px 8px; background: #F3F4F6; color: var(--text-2); }
+.rail-agent .ra-state.live { background: var(--accent-soft); color: var(--accent); }
+.rail-agent .ra-state.done { background: #E8F7EF; color: var(--ok); }
+.rail-approval { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid rgba(245,158,11,.35); border-radius: 10px; background: #FFFBEB; margin-bottom: 7px; }
+.rail-approval .ra-icon { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--warn); color: #fff; flex: 0 0 22px; font-size: 11px; }
+.rail-approval .ra-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-1); }
+.rail-approval .ra-text strong { display: block; font-size: 12.5px; }
+.rail-approval .ra-text small { color: var(--text-2); }
+.rail-artifact { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 12px; color: var(--text-1); }
+.rail-artifact .ra-icon { color: var(--text-2); flex: 0 0 auto; }
+.rail-artifact .ra-icon .ui-icon { width: 14px; height: 14px; }
 @media (max-width: 1120px) {
   .proj-card { grid-template-columns: 1fr; }
   .plan-preview { grid-column: 1; grid-row: auto; }
@@ -6771,28 +6803,111 @@ function renderConversationBreadcrumb() {
     setConversationStatus(null);
   }
 }
-// --- Right context rail (plan/UI_PLAN §3): live run/team status. ---
-// Shown only in the Project→conversation view (the rail's home). The Team
-// region has its own inspector; the overview/detail keep their own layout.
+// --- Right context rail (plan/UI_PLAN §3/§4.1/§6). ---
+// Overview: Today / Upcoming plans / Blockers (§4.1).
+// Conversation: Run state / Active agents / Tasks / Artifacts / Approvals (§6).
+// Detail has its own inline rail; Team/Automation/Plugins keep their layout.
 function renderContextRail() {
   const rail = el('contextRail');
   if (!rail) return;
   rail.textContent = '';
-  if (state.activeRegion !== 'project' || state.projectView !== 'conversation') {
-    rail.classList.add('hidden');
-    return;
-  }
-  const runs = state.snapshot?.runs || [];
-  rail.classList.remove('hidden');
+  if (state.activeRegion !== 'project') { rail.classList.add('hidden'); return; }
+  if (state.projectView === 'overview') renderOverviewRail(rail);
+  else if (state.projectView === 'conversation') renderConversationRail(rail);
+  else rail.classList.add('hidden');
+}
+function railSection(title, count, countKind) {
   const section = document.createElement('div');
   section.className = 'rail-section';
   const h = document.createElement('h3');
-  h.textContent = runs.length ? 'Active runs' : 'Run state';
+  const label = document.createElement('span');
+  label.textContent = title;
+  h.appendChild(label);
+  if (count != null) {
+    const c = document.createElement('span');
+    c.className = 'count' + (countKind === 'err' ? ' err' : '');
+    c.textContent = String(count);
+    h.appendChild(c);
+  }
   section.appendChild(h);
+  return section;
+}
+function railRow(label, meta, dotClass) {
+  const row = document.createElement('div');
+  row.className = 'rail-row';
+  const dot = document.createElement('span');
+  dot.className = 'r-dot ' + (dotClass || '');
+  const text = document.createElement('span');
+  text.className = 'r-label';
+  text.textContent = label;
+  row.append(dot, text);
+  if (meta) {
+    const m = document.createElement('span');
+    m.className = 'r-meta';
+    m.textContent = meta;
+    row.appendChild(m);
+  }
+  return row;
+}
+function renderOverviewRail(rail) {
+  rail.classList.remove('hidden');
+  const plan = state.snapshot?.projectPlan || { milestones: [], today: [], upcoming: [] };
+  const runs = state.snapshot?.runs || [];
+  // Today
+  const todayItems = (plan.today || []).map(item => ({ text: planItemText(item), done: item?.done }));
+  const todaySection = railSection('Today', todayItems.length || null);
+  if (todayItems.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = 'No items scheduled.';
+    todaySection.appendChild(empty);
+  } else {
+    for (const item of todayItems) todaySection.appendChild(railRow(item.text, item.done ? 'Done' : 'In progress', item.done ? 'ok' : 'accent'));
+  }
+  rail.appendChild(todaySection);
+  // Upcoming plans
+  const upcomingCount = (plan.upcoming || []).length;
+  const milestoneCount = (plan.milestones || []).length;
+  const upcomingSection = railSection('Upcoming plans', upcomingCount + milestoneCount || null);
+  const dueByStatus = { week: 0, next: 0 };
+  for (const m of plan.milestones || []) {
+    const st = (m.status || '').toLowerCase();
+    if (st.includes('next') || st.includes('soon')) dueByStatus.week++;
+    else if (st.includes('plan')) dueByStatus.next++;
+  }
+  upcomingSection.appendChild(railRow('Due this week', String(dueByStatus.week || upcomingCount), 'warn'));
+  upcomingSection.appendChild(railRow('Due next week', String(dueByStatus.next || milestoneCount), ''));
+  rail.appendChild(upcomingSection);
+  // Blockers (derive from error runs + blocked milestones)
+  const blockers = [];
+  for (const r of runs) {
+    if (r.status === 'error' || r.status === 'blocked') blockers.push({ label: r.label || r.kind || 'Run', meta: r.currentTool || 'Error' });
+  }
+  for (const m of plan.milestones || []) {
+    const st = (m.status || '').toLowerCase();
+    if (st.includes('block') || st.includes('wait') || st.includes('error')) blockers.push({ label: m.title, meta: m.status });
+  }
+  const blockerSection = railSection('Blockers', blockers.length || null, blockers.length ? 'err' : null);
+  if (blockers.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = 'No blockers.';
+    blockerSection.appendChild(empty);
+  } else {
+    for (const b of blockers) blockerSection.appendChild(railRow(b.label, b.meta, 'err'));
+  }
+  rail.appendChild(blockerSection);
+}
+function renderConversationRail(rail) {
+  rail.classList.remove('hidden');
+  const runs = state.snapshot?.runs || [];
+  const activeTeamName = state.snapshot?.activeTeamName;
+  // Run state
+  const runSection = railSection(runs.length ? 'Active runs' : 'Run state');
   const visibleRuns = runs.length ? runs : [{
     status: 'planned',
     label: state.snapshot?.session?.title || 'Conversation plan',
-    currentTool: state.snapshot?.activeTeamName ? 'Squad ready: ' + state.snapshot.activeTeamName : 'No active run',
+    currentTool: activeTeamName ? 'Squad ready: ' + activeTeamName : 'No active run',
     team: { members: [
       { id: 'Planner', status: 'ready' },
       { id: 'Coder', status: 'ready' },
@@ -6813,26 +6928,37 @@ function renderContextRail() {
       tl.textContent = r.currentTool;
       card.appendChild(tl);
     }
-    const members = r.team?.members || [];
-    if (members.length) {
-      const mw = document.createElement('div');
-      mw.className = 'rr-members';
-      for (const m of members) {
-        const span = document.createElement('span');
-        span.className = 'rr-member';
-        span.textContent = m.id || m.role || m.model;
-        mw.appendChild(span);
-      }
-      card.appendChild(mw);
-    }
-    section.appendChild(card);
+    runSection.appendChild(card);
   }
-  rail.appendChild(section);
-  const tasks = document.createElement('div');
-  tasks.className = 'rail-section';
-  const th = document.createElement('h3');
-  th.textContent = 'Tasks';
-  tasks.appendChild(th);
+  rail.appendChild(runSection);
+  // Active agents (role-colored badges + state pills)
+  const teamRun = visibleRuns.find(r => r.team?.members?.length);
+  const members = teamRun?.team?.members || [];
+  if (members.length) {
+    const agentSection = railSection('Active agents', members.length + '/' + members.length);
+    for (const m of members) {
+      const role = m.role || m.id || 'agent';
+      const color = roleColor(role);
+      const row = document.createElement('div');
+      row.className = 'rail-agent';
+      const badge = document.createElement('span');
+      badge.className = 'ra-badge';
+      badge.style.background = color;
+      badge.innerHTML = guiIcon('agent');
+      const name = document.createElement('span');
+      name.className = 'ra-name';
+      name.textContent = roleLabel(m.role, m.id);
+      const statePill = document.createElement('span');
+      const st = (m.status || 'ready').toLowerCase();
+      statePill.className = 'ra-state' + (st === 'running' || st === 'active' ? ' live' : st === 'done' || st === 'completed' ? ' done' : '');
+      statePill.textContent = st.charAt(0).toUpperCase() + st.slice(1);
+      row.append(badge, name, statePill);
+      agentSection.appendChild(row);
+    }
+    rail.appendChild(agentSection);
+  }
+  // Tasks
+  const taskSection = railSection('Tasks');
   const planRows = projectPlanRows({ active: true, sessionCount: (state.snapshot?.sessions || []).length });
   planRows.forEach((row, index) => {
     const item = document.createElement('div');
@@ -6844,9 +6970,66 @@ function renderContextRail() {
     const status = document.createElement('small');
     status.textContent = row.status;
     item.append(number, title, status);
-    tasks.appendChild(item);
+    taskSection.appendChild(item);
   });
-  rail.appendChild(tasks);
+  rail.appendChild(taskSection);
+  // Artifacts (derived from completed tool calls with file-related names)
+  const fileTools = [];
+  for (const [id, node] of state.toolNodes) {
+    const card = node.card;
+    const name = card.querySelector('strong')?.textContent || '';
+    if (card.classList.contains('success') && /^(Edit|Write|Read|Glob|Grep|Bash)/i.test(name)) {
+      fileTools.push(name);
+    }
+  }
+  const artifactSection = railSection('Artifacts', fileTools.length || null);
+  if (fileTools.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = 'No artifacts yet.';
+    artifactSection.appendChild(empty);
+  } else {
+    for (const name of fileTools.slice(0, 6)) {
+      const row = document.createElement('div');
+      row.className = 'rail-artifact';
+      const icon = document.createElement('span');
+      icon.className = 'ra-icon';
+      icon.innerHTML = guiIcon('code');
+      const label = document.createElement('span');
+      label.className = 'r-label';
+      label.textContent = name;
+      row.append(icon, label);
+      artifactSection.appendChild(row);
+    }
+  }
+  rail.appendChild(artifactSection);
+  // Approvals (from pending permission requests)
+  const pending = state.permissionQueue || [];
+  const approvalSection = railSection('Approvals', pending.length || null, pending.length ? 'err' : null);
+  if (pending.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = 'No pending approvals.';
+    approvalSection.appendChild(empty);
+  } else {
+    for (const p of pending) {
+      const row = document.createElement('div');
+      row.className = 'rail-approval';
+      const icon = document.createElement('span');
+      icon.className = 'ra-icon';
+      icon.textContent = '!';
+      const text = document.createElement('div');
+      text.className = 'ra-text';
+      const strong = document.createElement('strong');
+      strong.textContent = p.toolName || 'Permission';
+      const small = document.createElement('small');
+      small.textContent = p.summary || '';
+      text.append(strong, small);
+      row.append(icon, text);
+      approvalSection.appendChild(row);
+    }
+  }
+  rail.appendChild(approvalSection);
 }
 // Live-poll /api/state.runs while a run is active so the rail stays current
 // (member status, current tool) without depending on the developer-tools
