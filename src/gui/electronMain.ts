@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, Menu, nativeImage, shell } from 'electron';
 
 import {
   parseActoviqGuiArgs,
@@ -158,6 +158,13 @@ async function createWindow(): Promise<void> {
   installApplicationMenu();
   app.setAppUserModelId('com.actoviq.gui');
   const iconPath = resolveIconPath();
+  // Build a NativeImage once and reuse it. On Windows, passing a path string
+  // to setIcon / the `icon` option is unreliable for the taskbar (Win32 LoadImage
+  // + icon caching by exe path can leave the electron.exe icon showing). A
+  // NativeImage decoded from the .ico applies consistently to both the title
+  // bar and the taskbar, in dev (electron.exe) and packaged (Actoviq.exe) runs.
+  const iconImage = iconPath ? nativeImage.createFromPath(iconPath) : null;
+  const hasIcon = iconImage && !iconImage.isEmpty();
   const window = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -166,7 +173,7 @@ async function createWindow(): Promise<void> {
     title: 'Actoviq',
     backgroundColor: '#f3f3f3',
     show: false,
-    ...(iconPath ? { icon: iconPath } : {}),
+    ...(hasIcon ? { icon: iconImage } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -174,13 +181,13 @@ async function createWindow(): Promise<void> {
     },
   });
   window.setMenuBarVisibility(true);
-  // Explicitly set the taskbar + title-bar icon. The BrowserWindow `icon`
-  // option alone does NOT change the Windows taskbar icon when the app is
-  // launched via the raw electron.exe (the taskbar shows the exe's own icon,
-  // cached by path). window.setIcon() updates the taskbar reliably across
-  // dev (electron.exe) and packaged (Actoviq.exe) launches.
-  if (iconPath) window.setIcon(iconPath);
-  window.once('ready-to-show', () => window.show());
+  if (hasIcon) window.setIcon(iconImage);
+  window.once('ready-to-show', () => {
+    window.show();
+    // Re-apply after the window is visible: Windows sometimes drops the
+    // taskbar icon that was set before the window was shown.
+    if (hasIcon) window.setIcon(iconImage);
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: 'deny' };
