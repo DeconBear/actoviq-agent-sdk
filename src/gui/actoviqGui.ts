@@ -6335,10 +6335,12 @@ function projectProgress(project, running) {
   const items = [...(plan?.today || []), ...(plan?.upcoming || [])];
   if (items.length) {
     const done = items.filter(item => typeof item === 'object' && item.done).length;
-    return Math.max(12, Math.round((done / items.length) * 100));
+    return Math.max(0, Math.round((done / items.length) * 100));
   }
-  if (project.active && running > 0) return 78;
-  return Math.min(86, Math.max(18, 24 + (project.sessionCount || 0) * 8));
+  // No plan data → no progress to report. Don't fabricate a percentage from
+  // session count (it misleadingly showed 86% for workspaces with many chats
+  // but no plan, including 0-message conversations).
+  return 0;
 }
 function appendProgressBar(parent, percent, accent) {
   const track = document.createElement('span');
@@ -6378,9 +6380,11 @@ function switchProjectView(view) {
   ov.classList.toggle('hidden', view !== 'overview');
   dt.classList.toggle('hidden', view !== 'detail');
   cv.classList.toggle('hidden', view !== 'conversation');
-  // Adaptive sidebar (U9): the project overview & detail screens use a
-  // slim 4-nav sidebar; only the chat view shows the rich chat list.
-  document.body.dataset.sidebarMode = view === 'conversation' ? 'full' : 'nav';
+  // Adaptive sidebar (U9): the overview landing keeps the slim 4-nav sidebar
+  // (matches the reference). Detail + conversation views use the full sidebar
+  // so the workspace's chat list stays visible for quick switching — otherwise
+  // switching conversations required going back to the detail card list.
+  document.body.dataset.sidebarMode = view === 'overview' ? 'nav' : 'full';
   if (view === 'detail') renderProjectDetail();
   renderConversationBreadcrumb();
   renderContextRail();
@@ -6659,8 +6663,12 @@ function renderProjectDetail() {
 function conversationProgress(item, index, active) {
   if (/done|closed|complete/i.test(item.status || '')) return 100;
   if (/review/i.test(item.status || item.title || '')) return 42;
-  if (active) return 68;
-  return Math.min(85, Math.max(24, 30 + ((item.messageCount || index + 1) % 8) * 7));
+  const mc = item.messageCount || 0;
+  // A 0-message conversation has no progress. Don't fabricate a percentage
+  // from the list index (it showed 30–85% for empty chats).
+  if (mc === 0) return 0;
+  if (active) return Math.min(68, 20 + mc * 4);
+  return Math.min(85, Math.max(24, 30 + (mc % 8) * 7));
 }
 function conversationStatus(item, active) {
   if (/done|closed|complete/i.test(item.status || '')) return 'Done';
