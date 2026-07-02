@@ -3233,6 +3233,7 @@ export function createActoviqGuiHtml(): string {
           <div class="breadcrumb" id="conversationBreadcrumb"></div>
           <div class="title-row">
             <h1 id="sessionTitle">Actoviq GUI</h1>
+            <span id="conversationStatusPill" class="conv-status-pill hidden"></span>
             <button id="conversationMenu" class="icon-btn" title="Conversation actions" aria-label="Conversation actions">${guiIcon('more')}</button>
           </div>
           <p id="workspace"></p>
@@ -3258,6 +3259,7 @@ export function createActoviqGuiHtml(): string {
             <section id="statusbar" class="statusbar"></section>
             <section id="contextBar" class="context-bar hidden"></section>
             <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
+            <div id="squadRoster" class="squad-roster hidden"></div>
             <section id="transcript" class="transcript"></section>
             <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
             <form id="composer" class="composer">
@@ -4302,6 +4304,36 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .message.assistant { max-width: none; background: transparent; }
 .message.notice, .message.tool, .message.error { max-width: none; border-left: 0; padding-left: 0; }
 .transcript { padding: 22px min(32px, 4vw) 18px; background: linear-gradient(180deg, #FFFFFF 0%, #FBFCFD 100%); }
+/* --- Multi-agent transcript (plan/UI_PLAN §6). --- */
+.conv-status-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: #E8F7EF; color: var(--ok); border: 1px solid rgba(16,185,129,.25); }
+.conv-status-pill.running { background: var(--accent-soft); color: var(--accent); border-color: rgba(37,99,235,.25); }
+.conv-status-pill.error { background: #FEE2E2; color: var(--err); border-color: rgba(239,68,68,.25); }
+.conv-status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.squad-roster { display: flex; flex-wrap: wrap; gap: 7px; max-width: 920px; margin: 0 auto 14px; padding: 0 min(32px, 4vw); }
+.squad-roster.hidden { display: none; }
+.roster-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 11px 4px 4px; font-size: 12px; font-weight: 600; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); }
+.roster-chip .rc-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; flex: 0 0 20px; }
+.roster-chip .rc-avatar .ui-icon { width: 12px; height: 12px; }
+.roster-chip .rc-state { font-size: 10.5px; font-weight: 500; color: var(--text-2); }
+.system-event { display: flex; align-items: center; gap: 10px; max-width: 920px; margin: 14px auto; color: var(--text-2); font-size: 12px; }
+.system-event::before, .system-event::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.system-event .se-icon { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--bg-app); border: 1px solid var(--border); color: var(--text-2); flex: 0 0 22px; }
+.system-event .se-icon .ui-icon { width: 12px; height: 12px; }
+.system-event .se-text { font-weight: 500; }
+.system-event .se-time { color: #9aa0a6; font-size: 11px; }
+.message-row.row-member .msg-avatar { background: var(--role-planner); }
+.message-row.row-member .msg-avatar .ui-icon { width: 16px; height: 16px; }
+.role-chip.rp-planner { background: rgba(59,130,246,.12); color: var(--role-planner); }
+.role-chip.rp-coder { background: rgba(16,185,129,.12); color: var(--role-coder); }
+.role-chip.rp-reviewer { background: rgba(139,92,246,.12); color: var(--role-reviewer); }
+.role-chip.rp-test { background: rgba(245,158,11,.12); color: var(--role-test); }
+.role-chip.rp-docs { background: rgba(236,72,153,.12); color: var(--role-docs); }
+.role-chip.rp-default { background: rgba(14,165,233,.12); color: var(--role-runtime); }
+.msg-meta { margin-left: auto; color: #9aa0a6; font-size: 11px; }
+.member-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
+.member-summary .ms-chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 2px 7px; font-size: 11px; background: #F3F4F6; color: var(--text-2); }
+.member-summary .ms-chip.ok { background: #E8F7EF; color: var(--ok); }
+.member-summary .ms-chip.fail { background: #FEE2E2; color: var(--err); }
 .topbar { min-height: 84px; padding: 14px 24px; background: rgba(255,255,255,.9); }
 .topbar h1 { font-size: 20px; font-weight: 700; }
 .workbench { background: #fff; }
@@ -5169,6 +5201,136 @@ function addMessage(kind, text) {
   transcript.appendChild(row);
   scrollTranscript();
   return node;
+}
+// --- Multi-agent transcript helpers (plan/UI_PLAN §6). ---
+function roleClass(role) {
+  const r = (role || '').toLowerCase();
+  if (r === 'planner' || r === 'researcher') return 'rp-planner';
+  if (r === 'coder' || r === 'synthesizer') return 'rp-coder';
+  if (r === 'reviewer' || r === 'skeptic') return 'rp-reviewer';
+  if (r === 'test') return 'rp-test';
+  if (r === 'docs') return 'rp-docs';
+  return 'rp-default';
+}
+function roleLabel(role, id) {
+  const r = (role || '').trim();
+  if (r) return r.charAt(0).toUpperCase() + r.slice(1);
+  return id || 'Agent';
+}
+function addSystemEvent(text, timeStr) {
+  const row = document.createElement('div');
+  row.className = 'system-event';
+  const icon = document.createElement('span');
+  icon.className = 'se-icon';
+  icon.innerHTML = guiIcon('team');
+  const t = document.createElement('span');
+  t.className = 'se-text';
+  t.textContent = text;
+  row.append(icon, t);
+  if (timeStr) {
+    const time = document.createElement('span');
+    time.className = 'se-time';
+    time.textContent = timeStr;
+    row.appendChild(time);
+  }
+  transcript.appendChild(row);
+  scrollTranscript();
+}
+function addMemberMessage(event) {
+  const role = event.role || event.id || 'agent';
+  const color = roleColor(role);
+  const row = document.createElement('div');
+  row.className = 'message-row row-member';
+  const avatar = document.createElement('span');
+  avatar.className = 'msg-avatar';
+  avatar.style.background = color;
+  avatar.innerHTML = guiIcon('agent');
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-wrap';
+  const head = document.createElement('div');
+  head.className = 'msg-head';
+  const name = document.createElement('strong');
+  name.textContent = roleLabel(event.role, event.id);
+  const chip = document.createElement('span');
+  chip.className = 'role-chip ' + roleClass(event.role);
+  chip.textContent = 'Agent';
+  const meta = document.createElement('span');
+  meta.className = 'msg-meta';
+  meta.textContent = formatDuration(event.durationMs);
+  head.append(name, chip, meta);
+  const body = document.createElement('div');
+  body.className = 'message member';
+  body.textContent = event.ok
+    ? 'Completed · ' + event.toolCalls + ' tool call' + (event.toolCalls === 1 ? '' : 's')
+    : 'Failed' + (event.error ? ' — ' + event.error : '');
+  const summary = document.createElement('div');
+  summary.className = 'member-summary';
+  const toolChip = document.createElement('span');
+  toolChip.className = 'ms-chip ' + (event.ok ? 'ok' : 'fail');
+  toolChip.textContent = event.toolCalls + ' tools';
+  const durChip = document.createElement('span');
+  durChip.className = 'ms-chip';
+  durChip.textContent = formatDuration(event.durationMs);
+  summary.append(toolChip, durChip);
+  body.appendChild(summary);
+  wrap.append(head, body);
+  row.append(avatar, wrap);
+  transcript.appendChild(row);
+  scrollTranscript();
+}
+function addMemberToolCard(event) {
+  const role = event.role || event.id || 'agent';
+  const color = roleColor(role);
+  const card = document.createElement('article');
+  card.className = 'tool-card member-tool running';
+  const header = document.createElement('header');
+  const dot = document.createElement('span');
+  dot.className = 'tool-spinner';
+  dot.style.borderColor = color;
+  const labels = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = event.tool || 'Tool';
+  const status = document.createElement('small');
+  status.textContent = roleLabel(event.role, event.id) + ' · round ' + event.round;
+  status.style.color = color;
+  labels.append(title, status);
+  header.append(dot, labels);
+  card.appendChild(header);
+  transcript.appendChild(card);
+  scrollTranscript();
+}
+function renderSquadRoster(members) {
+  const roster = el('squadRoster');
+  if (!roster) return;
+  roster.textContent = '';
+  if (!Array.isArray(members) || members.length === 0) { roster.classList.add('hidden'); return; }
+  roster.classList.remove('hidden');
+  for (const m of members) {
+    const role = m.role || m.id || 'agent';
+    const color = roleColor(role);
+    const chip = document.createElement('span');
+    chip.className = 'roster-chip';
+    const avatar = document.createElement('span');
+    avatar.className = 'rc-avatar';
+    avatar.style.background = color;
+    avatar.innerHTML = guiIcon('agent');
+    const label = document.createElement('span');
+    label.textContent = roleLabel(m.role, m.id);
+    chip.append(avatar, label);
+    roster.appendChild(chip);
+  }
+}
+function clearSquadRoster() {
+  const roster = el('squadRoster');
+  if (roster) { roster.textContent = ''; roster.classList.add('hidden'); }
+}
+function setConversationStatus(text, kind) {
+  const pill = el('conversationStatusPill');
+  if (!pill) return;
+  if (!text) { pill.classList.add('hidden'); pill.textContent = ''; return; }
+  pill.classList.remove('hidden');
+  pill.className = 'conv-status-pill' + (kind ? ' ' + kind : '');
+  pill.innerHTML = '<span class="dot"></span>' + text;
 }
 function addResult(event) {
   const box = document.createElement('div');
@@ -6601,6 +6763,13 @@ function renderConversationBreadcrumb() {
   c3.className = 'crumb-current';
   c3.textContent = sessionTitle;
   bc.append(c1, s1, c2, s2, c3);
+  // Persistent status pill: show "Squad ready" when a team is attached and no
+  // run is in flight. During a run, team.* events override with "Squad running".
+  if (!state.running && state.snapshot?.activeTeamName) {
+    setConversationStatus('Squad ready', null);
+  } else if (!state.running) {
+    setConversationStatus(null);
+  }
 }
 // --- Right context rail (plan/UI_PLAN §3): live run/team status. ---
 // Shown only in the Project→conversation view (the rail's home). The Team
@@ -7148,7 +7317,7 @@ async function renderPluginsRegion(view) {
   }
 }
 // --- Team region (plan/UI_PLAN §5): read-only collaboration graph + inspector. ---
-const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#10B981', reviewer: '#F59E0B', coder: '#10B981', planner: '#3B82F6', docs: '#EC4899', test: '#F59E0B' };
+const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#10B981', reviewer: '#8B5CF6', coder: '#10B981', planner: '#3B82F6', docs: '#EC4899', test: '#F59E0B' };
 function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
 function firstTeamNode(def) {
   if (!def) return null;
@@ -7933,7 +8102,7 @@ function handleEvent(event) {
   else if (event.type === 'tool.progress') updateToolProgress(event);
   else if (event.type === 'tool.result') updateToolActivity(event);
   else if (event.type === 'command.result') addResult(event);
-  else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; }
+  else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; clearSquadRoster(); setConversationStatus(null); }
   else if (event.type === 'permission.request') showPermission(event);
   else if (event.type === 'agent.prompt') { if (event.text) { state.queue.push(String(event.text)); renderQueue(); } }
   else if (event.type === 'batch.queue') {
@@ -7944,16 +8113,41 @@ function handleEvent(event) {
   }
   else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
-  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail(); if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); void processQueue(); }
+  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail(); if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); setConversationStatus(null); void processQueue(); }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
-  // Live team events (plan phase 4): surface member activity in the transcript.
-  else if (event.type === 'team.started') addMessage('notice', 'team · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
-  else if (event.type === 'team.member.started') addMessage('notice', '▸ ' + (event.role || event.id) + ' (' + event.model + ') round ' + event.round);
-  else if (event.type === 'team.member.tool') addMessage('tool', '  ' + event.id + ': ' + event.tool);
-  else if (event.type === 'team.member.completed') addMessage('notice', '✓ ' + (event.role || event.id) + ' done · ' + event.toolCalls + ' tools · ' + formatDuration(event.durationMs) + (event.ok ? '' : ' (failed)'));
-  else if (event.type === 'team.round.completed') addMessage('notice', 'round ' + event.round + ' complete · ' + event.reports + ' reports');
-  else if (event.type === 'team.synthesis') addMessage('notice', 'synthesis: ' + event.decision);
-  else if (event.type === 'team.completed') { addMessage('notice', 'team completed · ' + event.rounds + ' rounds'); void refreshRail(); }
+  // Live team events (plan/UI_PLAN §6): render as role-colored message rows +
+  // SystemEventDivider handoff lines + squad roster, not plain text notices.
+  else if (event.type === 'team.started') {
+    finalizeAssistant(); state.currentAssistant = null;
+    setConversationStatus('Squad running', 'running');
+    renderSquadRoster(event.members);
+    addSystemEvent('Squad started · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
+  }
+  else if (event.type === 'team.member.started') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addSystemEvent(roleLabel(event.role, event.id) + ' started · round ' + event.round);
+  }
+  else if (event.type === 'team.member.tool') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addMemberToolCard(event);
+  }
+  else if (event.type === 'team.member.completed') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addMemberMessage(event);
+  }
+  else if (event.type === 'team.round.completed') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addSystemEvent('Round ' + event.round + ' complete · ' + event.reports + ' report' + (event.reports === 1 ? '' : 's'));
+  }
+  else if (event.type === 'team.synthesis') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addSystemEvent('Synthesis · ' + event.decision);
+  }
+  else if (event.type === 'team.completed') {
+    finalizeAssistant(); state.currentAssistant = null;
+    addSystemEvent('Squad completed · ' + event.rounds + ' round' + (event.rounds === 1 ? '' : 's'));
+    void refreshRail();
+  }
 }
 function showPermission(event) {
   state.permissionQueue.push(event);
