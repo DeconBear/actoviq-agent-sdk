@@ -79,6 +79,7 @@ import {
   createTeamTool,
   detectBridgeProviders,
   discoverAgentRuntimes,
+  detectRuntimeLocalConfig,
   listRouterProfiles,
   listTeamDefinitions,
   listWorkflows,
@@ -2641,6 +2642,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
         return json(res, 200, { providers: await detectBridgeProviders() });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/bridge/detect-local') {
+        const runtime = url.searchParams.get('runtime') || '';
+        const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+        return json(res, 200, detectRuntimeLocalConfig(runtime, hd) || {});
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/config') {
         const body = await readJson(req);
@@ -8811,16 +8817,52 @@ function populateReuseDropdown(runtime) {
     opt.textContent = c.name + (c.baseURL ? ' · ' + c.baseURL : '') + (Array.isArray(c.models) && c.models.length ? ' · ' + c.models.length + ' model' + (c.models.length === 1 ? '' : 's') : '');
     select.appendChild(opt);
   }
+  // Detect the CLI's own local config (e.g. ~/.claude/settings.json) so the
+  // user can reuse whatever model/provider they already configured locally —
+  // no need to re-enter base URL / API key / model by hand.
+  api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime))
+    .then(r => r.ok ? r.json() : null)
+    .then(local => {
+      if (!local || (!local.model && !local.baseURL && !local.apiKey)) return;
+      const opt = document.createElement('option');
+      opt.value = '__local__';
+      opt.textContent = 'Local CLI config' + (local.model ? ' · ' + local.model : '') + (local.baseURL ? ' · ' + local.baseURL : '');
+      opt.title = 'Read from ' + (local.source || 'local CLI config');
+      select.appendChild(opt);
+      row.classList.remove('hidden');
+      if (hint) hint.textContent = (configs.length ? configs.length + ' config(s), ' : '') + 'local CLI detected for ' + runtime;
+    })
+    .catch(() => { /* offline / unknown runtime — ignore */ });
   if (configs.length > 0) {
     row.classList.remove('hidden');
     if (hint) hint.textContent = configs.length + ' existing config' + (configs.length === 1 ? '' : 's') + ' for ' + runtime;
   } else {
+    // Keep hidden until the local-config fetch resolves; if it finds
+    // something it unhides the row itself.
     row.classList.add('hidden');
   }
   select.value = '';
 }
-function applyReuseConfig(configName) {
+async function applyReuseConfig(configName) {
   if (!configName) return; // manual — leave fields as-is
+  if (configName === '__local__') {
+    // Re-fetch the local CLI config (cheap) and apply it.
+    try {
+      const runtime = el('bridgeCfgRuntime').value;
+      const res = await api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime));
+      const local = res.ok ? await res.json() : null;
+      if (!local) return;
+      if (local.provider) setField('bridgeCfgProvider', local.provider);
+      setField('bridgeCfgBaseUrl', local.baseURL || '');
+      setField('bridgeCfgApiKey', local.apiKey || '');
+      el('bridgeCfgApiKey').type = local.apiKey ? 'text' : 'password';
+      el('bridgeCfgApiKeyToggle').innerHTML = local.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
+      draftBridgeModels = local.model ? [{ name: local.model, context1M: false, modality: 'text' }] : [];
+      renderBridgeModels();
+      el('bridgeCfgStatus').textContent = 'Reused local CLI config' + (local.source ? ' (' + local.source + ')' : '') + '. Edit as needed, then Save.';
+    } catch { /* ignore */ }
+    return;
+  }
   const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
   if (!cfg) return;
   setField('bridgeCfgProvider', cfg.provider || el('bridgeCfgProvider').value);

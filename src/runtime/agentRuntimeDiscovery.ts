@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { findExecutableOnPath } from '../parity/bridgeExecResolver.js';
@@ -193,4 +195,97 @@ async function readRuntimeVersion(commandPath: string, args: string[]): Promise<
 
 function sanitizeVersion(value: string): string {
   return value.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+/**
+ * A runtime's own local CLI config — the model/provider/credentials the user
+ * already configured the CLI with on disk (e.g. `~/.claude/settings.json`).
+ * Used by the bridge config editor to offer "reuse the local CLI config" so
+ * the user doesn't re-enter what they already set up locally.
+ */
+export interface RuntimeLocalConfig {
+  runtime: string;
+  model?: string;
+  baseURL?: string;
+  apiKey?: string;
+  provider?: InProcessProvider;
+  /** Human-readable source path so the UI can show where the values came from. */
+  source?: string;
+}
+
+/**
+ * Read a runtime's local CLI config and extract the model / base URL /
+ * API key the user already configured locally. Returns null when the runtime
+ * has no detectable local config (unknown runtime, file missing, or no
+ * relevant fields populated).
+ */
+export function detectRuntimeLocalConfig(
+  runtime: string,
+  homeDir?: string,
+): RuntimeLocalConfig | null {
+  const home = homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
+  if (runtime === 'claude' || runtime === 'codewhale' || runtime === 'crush') {
+    return detectClaudeStyleLocalConfig(home, runtime);
+  }
+  if (runtime === 'codex') {
+    return detectCodexLocalConfig(home);
+  }
+  // pi / reasonix / hadamard have no standard local config file to reuse.
+  return null;
+}
+
+/**
+ * Claude Code (and Claude-Code-compatible runtimes like CodeWhale / Crush)
+ * store their config in `~/.claude/settings.json` with an `env` block
+ * carrying ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL.
+ */
+function detectClaudeStyleLocalConfig(home: string, runtime: string): RuntimeLocalConfig | null {
+  const settingsPath = path.join(home, '.claude', 'settings.json');
+  if (!existsSync(settingsPath)) return null;
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+  const env = (raw && typeof raw.env === 'object' ? raw.env : {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  const model = str(env.ANTHROPIC_MODEL) ?? str(env.ANTHROPIC_DEFAULT_SONNET_MODEL) ?? str(raw.model);
+  const baseURL = str(env.ANTHROPIC_BASE_URL);
+  const apiKey = str(env.ANTHROPIC_AUTH_TOKEN) ?? str(env.ANTHROPIC_API_KEY);
+  if (!model && !baseURL && !apiKey) return null;
+  return {
+    runtime,
+    model,
+    baseURL,
+    apiKey,
+    provider: 'anthropic',
+    source: '~/.claude/settings.json',
+  };
+}
+
+/**
+ * Codex CLI stores its config in `~/.codex/config.toml`. We only extract the
+ * `model` (best-effort, single-line) — TOML parsing is intentionally minimal
+ * since the file's schema varies across Codex versions.
+ */
+function detectCodexLocalConfig(home: string): RuntimeLocalConfig | null {
+  const configPath = path.join(home, '.codex', 'config.toml');
+  if (!existsSync(configPath)) return null;
+  let text: string;
+  try {
+    text = readFileSync(configPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const match = text.match(/^model\s*=\s*"([^"]+)"/m);
+  const model = match?.[1]?.trim();
+  if (!model) return null;
+  return {
+    runtime: 'codex',
+    model,
+    provider: 'openai',
+    source: '~/.codex/config.toml',
+  };
 }
