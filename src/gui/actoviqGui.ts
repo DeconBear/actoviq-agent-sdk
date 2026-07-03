@@ -4269,6 +4269,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .conv-card.active { background: linear-gradient(180deg, #F8FBFF, #FFFFFF); box-shadow: 0 0 0 1px rgba(37,99,235,.2); }
 .conv-title { font-size: 17px; font-weight: 700; }
 .conv-preview { font-size: 13px; margin: 2px 0 8px; }
+.conv-preview-text { font-size: 13px; color: var(--text-1); line-height: 1.45; max-height: 8em; overflow: auto; background: #F8FAFC; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
 .conv-meta { gap: 9px; align-items: center; }
 .conv-meta .chip { min-height: 24px; display: inline-flex; align-items: center; border-radius: 7px; background: #fff; }
 .conv-meta .avatar-stack { margin-right: 4px; }
@@ -4781,6 +4782,12 @@ const state = {
   // Within the Project region: 'overview' (workspace card wall) or
   // 'conversation' (the chat workbench). Overview is the entry landing.
   projectView: 'overview',
+  // Detail view: the conversation selected for preview (not yet loaded).
+  // Clicking a card selects it and shows a preview in the right rail; the
+  // user then clicks "Continue chat" to actually resume the session (which
+  // is the slow step — hydrating the transcript). This avoids the lag of
+  // loading a full chat on every card click.
+  detailSelectedId: null,
   // Team region: selected squad + its expanded definition + selected graph node.
   teamSelected: null,
   teamDefinition: null,
@@ -5431,6 +5438,20 @@ function summarizeToolInput(inputValue) {
 function formatDuration(ms) {
   if (typeof ms !== 'number') return '';
   return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+}
+function formatRelativeTime(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diff = Date.now() - t;
+  const sec = Math.round(diff / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return min + 'm ago';
+  const hr = Math.round(min / 60);
+  if (hr < 24) return hr + 'h ago';
+  const day = Math.round(hr / 24);
+  if (day < 30) return day + 'd ago';
+  return new Date(iso).toLocaleDateString();
 }
 function addToolActivity(event) {
   const id = event.id || ('tool-' + Date.now() + '-' + Math.random());
@@ -6322,12 +6343,9 @@ function projectPlanRows(project) {
   for (const item of today.slice(0, 2)) rows.push({ when: 'Today', title: planItemText(item), status: item?.done ? 'Done' : 'In progress' });
   for (const item of upcoming.slice(0, Math.max(0, 3 - rows.length))) rows.push({ when: rows.length ? 'Upcoming' : 'Tomorrow', title: planItemText(item), status: item?.done ? 'Done' : 'Planned' });
   for (const item of milestones.slice(0, Math.max(0, 3 - rows.length))) rows.push({ when: item.due || 'Milestone', title: item.title || 'Milestone', status: item.status || 'Planned' });
-  if (rows.length === 0) {
-    rows.push(
-      { when: 'Today', title: project.active ? 'Continue active workspace' : 'Review saved conversations', status: project.active ? 'In progress' : 'Ready' },
-      { when: 'Next', title: (project.sessionCount || 0) > 0 ? 'Resume latest conversation' : 'Create first conversation', status: 'Planned' },
-    );
-  }
+  // No plan data → return empty. The previous fallback rows ("Continue active
+  // workspace" / "Resume latest conversation") were static placeholders with
+  // no real meaning; showing nothing is clearer than fake plan items.
   return rows.slice(0, 3).filter(row => row.title);
 }
 function projectProgress(project, running) {
@@ -6373,6 +6391,9 @@ function avatarStack(labels) {
 }
 function switchProjectView(view) {
   state.projectView = view;
+  // Clear the detail preview selection when leaving the detail view so a
+  // stale preview doesn't persist across navigation.
+  if (view !== 'detail') state.detailSelectedId = null;
   const ov = el('projectOverview');
   const dt = el('projectDetail');
   const cv = el('projectConversation');
@@ -6641,10 +6662,16 @@ function renderProjectDetail() {
     bar.className = 'conv-progress';
     appendProgressBar(bar, progressValue, statusDotColor(progressStatus));
     const updated = document.createElement('small');
-    updated.textContent = item.updated || ((item.messageCount || 0) + ' messages');
+    updated.textContent = (item.updatedAt ? formatRelativeTime(item.updatedAt) : '') || ((item.messageCount || 0) + ' messages');
     side.append(st, pct, bar, updated);
     card.append(main, side);
-    card.addEventListener('click', () => { void resumeSession(item.id); });
+    card.dataset.sessionId = item.id;
+    if (item.id === state.detailSelectedId) card.classList.add('active');
+    // Single click selects the conversation for preview in the right rail
+    // (instant — no session load). Double-click or "Continue chat" resumes
+    // the session (loads the transcript, switches to the chat view).
+    card.addEventListener('click', () => { selectDetailConversation(item.id); });
+    card.addEventListener('dblclick', () => { void resumeSession(item.id); });
     convCol.appendChild(card);
   });
   if (sessions.length === 0) {
@@ -6656,9 +6683,91 @@ function renderProjectDetail() {
   layout.appendChild(convCol);
   const rail = document.createElement('aside');
   rail.className = 'detail-rail';
-  rail.append(buildProjectContextPanel(sessions), buildPlanPanel(state.snapshot?.projectPlan));
+  rail.appendChild(renderDetailRail(sessions));
   layout.appendChild(rail);
   body.appendChild(layout);
+}
+// Right rail of the detail view: shows a conversation preview when one is
+// selected (instant — no session load), otherwise the project context +
+// plan checklist.
+function renderDetailRail(sessions) {
+  const selected = state.detailSelectedId ? sessions.find(s => s.id === state.detailSelectedId) : null;
+  if (selected) return buildConversationPreviewPanel(selected, sessions);
+  const frag = document.createDocumentFragment();
+  const plan = state.snapshot?.projectPlan || { milestones: [], today: [], upcoming: [] };
+  // Only show the project context panel when there's a plan to summarize;
+  // without plan.json the "Current milestone / Conversation plan / N
+  // conversations" placeholders carry no real information.
+  if ((plan.milestones || []).length || (plan.today || []).length || (plan.upcoming || []).length) {
+    frag.appendChild(buildProjectContextPanel(sessions));
+  }
+  frag.appendChild(buildPlanPanel(plan));
+  return frag;
+}
+function selectDetailConversation(id) {
+  state.detailSelectedId = id;
+  // Highlight the selected card, clear the others.
+  document.querySelectorAll('.conv-card').forEach((c) => {
+    c.classList.toggle('active', c.dataset.sessionId === id);
+  });
+  // Re-render only the rail (cheap) so the preview appears without rebuilding
+  // the whole conversation list.
+  const rail = el('detailBody')?.querySelector('.detail-rail');
+  if (rail) {
+    const sessions = state.snapshot?.sessions || [];
+    rail.textContent = '';
+    rail.appendChild(renderDetailRail(sessions));
+  }
+}
+function buildConversationPreviewPanel(item, sessions) {
+  const panel = document.createElement('div');
+  panel.className = 'project-context-card';
+  const heading = document.createElement('div');
+  heading.className = 'context-card-head';
+  const status = conversationStatus(item, item.id === state.snapshot?.session?.id);
+  heading.innerHTML = '<h3>Conversation preview</h3><span>' + status + '</span>';
+  panel.appendChild(heading);
+  const title = document.createElement('div');
+  title.className = 'context-row';
+  title.append(labelText('Title'), strongText(item.title || item.id || 'Untitled'));
+  panel.appendChild(title);
+  const meta = document.createElement('div');
+  meta.className = 'context-row';
+  const when = item.updatedAt || item.updated || item.lastActiveAt || '';
+  const metaText = [item.model, (item.messageCount || 0) + ' messages', when ? formatRelativeTime(when) : ''].filter(Boolean).join(' · ');
+  meta.append(labelText('Details'), smallText(metaText));
+  panel.appendChild(meta);
+  if (item.preview) {
+    const preview = document.createElement('div');
+    preview.className = 'context-row';
+    preview.append(labelText('Last message'));
+    const previewText = document.createElement('div');
+    previewText.className = 'conv-preview-text';
+    previewText.textContent = item.preview;
+    preview.appendChild(previewText);
+    panel.appendChild(preview);
+  }
+  if (Array.isArray(item.tags) && item.tags.length) {
+    const tags = document.createElement('div');
+    tags.className = 'context-row';
+    tags.append(labelText('Tags'), smallText(item.tags.join(', ')));
+    panel.appendChild(tags);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'context-actions';
+  const continueBtn = document.createElement('button');
+  continueBtn.type = 'button';
+  continueBtn.className = 'pill-btn primary';
+  continueBtn.textContent = 'Continue chat';
+  continueBtn.addEventListener('click', () => { void resumeSession(item.id); });
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.className = 'pill-btn';
+  backBtn.textContent = 'Deselect';
+  backBtn.addEventListener('click', () => { state.detailSelectedId = null; const r = el('detailBody')?.querySelector('.detail-rail'); if (r) { r.textContent = ''; r.appendChild(renderDetailRail(sessions)); } document.querySelectorAll('.conv-card').forEach((c) => c.classList.remove('active')); });
+  actions.append(continueBtn, backBtn);
+  panel.appendChild(actions);
+  return panel;
 }
 function conversationProgress(item, index, active) {
   if (/done|closed|complete/i.test(item.status || '')) return 100;
