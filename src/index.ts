@@ -64,12 +64,14 @@ export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
   DEFAULT_AGENT_RUNTIME_CANDIDATES,
   discoverAgentRuntimes,
+  detectRuntimeLocalConfig,
 } from './runtime/agentRuntimeDiscovery.js';
 export type {
   AgentRuntimeCandidate,
   AgentRuntimeStatus,
   DiscoverAgentRuntimesOptions,
   DiscoveredAgentRuntime,
+  RuntimeLocalConfig,
 } from './runtime/agentRuntimeDiscovery.js';
 export {
   encodeActoviqProjectPath,
