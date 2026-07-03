@@ -1182,7 +1182,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       listScheduledAutomationTasks(workDir),
     ]);
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
-    const sessions = allSessions.filter(item => item.messageCount > 0 || (session ? item.id === session.id : false));
+    // Hide 0-message conversations entirely — they're auto-cleaned on the
+    // backend (cleanupStoredEmptySessions), and showing empty chats in the
+    // list is noise. The active session is still resumable via the chat view.
+    const sessions = allSessions.filter(item => item.messageCount > 0);
     return {
       workDir,
       session: sessionView(session),
@@ -3189,7 +3192,6 @@ export function createActoviqGuiHtml(): string {
       </section>
       <div class="sidebar-footer">
         <button id="settingsBtn" class="nav-btn"><span class="nav-icon">${guiIcon('gear')}</span><span>Settings</span></button>
-        <button id="collapseSidebar" class="icon-btn" title="Collapse sidebar" aria-label="Collapse sidebar">${guiIcon('chevronDown')}</button>
       </div>
     </aside>
     <main class="chat" data-region="project" id="regionProject">
@@ -3383,6 +3385,10 @@ export function createActoviqGuiHtml(): string {
       <div class="two-col">
         <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard (SDK default)</option><option value="claude">Claude</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
         <label class="dialog-field">Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+      </div>
+      <div id="bridgeReuseRow" class="dialog-field hidden">
+        <span>Reuse an existing config <small class="muted" id="bridgeReuseHint"></small></span>
+        <select id="bridgeCfgReuse"><option value="">— Manual configuration —</option></select>
       </div>
       <div id="bridgeCredentialFields">
         <label class="dialog-field">Base URL<input id="bridgeCfgBaseUrl" autocomplete="off" placeholder="https://api.deepseek.com"></label>
@@ -4628,14 +4634,6 @@ body[data-theme="dark"] .git-badge { border-color: #3b3d43; color: #aab0b8; }
 body[data-theme="dark"] .tool-card pre { background: #1f2023; color: #c7ccd3; }
 body[data-theme="dark"] .drop-overlay { background: rgba(35,42,52,.95); color: #b8d2ff; }
 body[data-theme="dark"] .muted, body[data-theme="dark"] small, body[data-theme="dark"] .topbar p, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .settings-group p, body[data-theme="dark"] .workspace-meta { color: #aab0b8; }
-body.sidebar-collapsed .sidebar { width: 72px; flex-basis: 72px; }
-body.sidebar-collapsed .sidebar .search,
-body.sidebar-collapsed .project-section,
-body.sidebar-collapsed .command-section,
-body.sidebar-collapsed .sidebar-link,
-body.sidebar-collapsed .brand-name,
-body.sidebar-collapsed .nav-btn span:not(.nav-icon) { display: none; }
-body.sidebar-collapsed .sidebar-footer { justify-content: center; }
 @media (max-width: 860px) {
   .sidebar, .settings-sidebar { width: 86px; flex-basis: 86px; }
   .sidebar .search, .command-section, .project-section h2, .project-session-list, .sidebar-link, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
@@ -6705,10 +6703,11 @@ function renderDetailRail(sessions) {
   return frag;
 }
 function selectDetailConversation(id) {
-  state.detailSelectedId = id;
-  // Highlight the selected card, clear the others.
+  // Toggle: clicking the already-selected conversation deselects it (no need
+  // for a dedicated Deselect button).
+  state.detailSelectedId = state.detailSelectedId === id ? null : id;
   document.querySelectorAll('.conv-card').forEach((c) => {
-    c.classList.toggle('active', c.dataset.sessionId === id);
+    c.classList.toggle('active', c.dataset.sessionId === state.detailSelectedId);
   });
   // Re-render only the rail (cheap) so the preview appears without rebuilding
   // the whole conversation list.
@@ -6760,12 +6759,7 @@ function buildConversationPreviewPanel(item, sessions) {
   continueBtn.className = 'pill-btn primary';
   continueBtn.textContent = 'Continue chat';
   continueBtn.addEventListener('click', () => { void resumeSession(item.id); });
-  const backBtn = document.createElement('button');
-  backBtn.type = 'button';
-  backBtn.className = 'pill-btn';
-  backBtn.textContent = 'Deselect';
-  backBtn.addEventListener('click', () => { state.detailSelectedId = null; const r = el('detailBody')?.querySelector('.detail-rail'); if (r) { r.textContent = ''; r.appendChild(renderDetailRail(sessions)); } document.querySelectorAll('.conv-card').forEach((c) => c.classList.remove('active')); });
-  actions.append(continueBtn, backBtn);
+  actions.appendChild(continueBtn);
   panel.appendChild(actions);
   return panel;
 }
@@ -8793,6 +8787,52 @@ function toggleCredentialFields() {
   // Auto-select wire protocol from runtime (user can override).
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
   el('bridgeCfgProvider').value = pv;
+  populateReuseDropdown(runtime);
+}
+// Auto-detect existing bridge configs for the selected runtime and offer to
+// reuse their base URL / API key / provider / models. The user can still pick
+// "Manual configuration" and fill everything in by hand.
+function populateReuseDropdown(runtime) {
+  const row = el('bridgeReuseRow');
+  const select = el('bridgeCfgReuse');
+  const hint = el('bridgeReuseHint');
+  if (!row || !select) return;
+  const configs = (state.snapshot?.bridgeState?.configs || []).filter(
+    c => c.runtime === runtime && c.name !== editingBridgeConfigName,
+  );
+  select.textContent = '';
+  const manual = document.createElement('option');
+  manual.value = '';
+  manual.textContent = '— Manual configuration —';
+  select.appendChild(manual);
+  for (const c of configs) {
+    const opt = document.createElement('option');
+    opt.value = c.name;
+    opt.textContent = c.name + (c.baseURL ? ' · ' + c.baseURL : '') + (Array.isArray(c.models) && c.models.length ? ' · ' + c.models.length + ' model' + (c.models.length === 1 ? '' : 's') : '');
+    select.appendChild(opt);
+  }
+  if (configs.length > 0) {
+    row.classList.remove('hidden');
+    if (hint) hint.textContent = configs.length + ' existing config' + (configs.length === 1 ? '' : 's') + ' for ' + runtime;
+  } else {
+    row.classList.add('hidden');
+  }
+  select.value = '';
+}
+function applyReuseConfig(configName) {
+  if (!configName) return; // manual — leave fields as-is
+  const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
+  if (!cfg) return;
+  setField('bridgeCfgProvider', cfg.provider || el('bridgeCfgProvider').value);
+  setField('bridgeCfgBaseUrl', cfg.baseURL || '');
+  setField('bridgeCfgApiKey', cfg.apiKey || '');
+  el('bridgeCfgApiKey').type = cfg.apiKey ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = cfg.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
+  draftBridgeModels = Array.isArray(cfg.models)
+    ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
+    : [];
+  renderBridgeModels();
+  el('bridgeCfgStatus').textContent = 'Reused settings from "' + cfg.name + '". Edit as needed, then Save.';
 }
 function openBridgeEditor(cfg) {
   editingBridgeConfigName = cfg ? cfg.name : null;
@@ -9202,13 +9242,16 @@ el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); 
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
 el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeCfgReuse').addEventListener('change', () => { applyReuseConfig(el('bridgeCfgReuse').value); });
 el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
   const inp = el('bridgeCfgApiKey');
   const show = inp.type === 'password';
   inp.type = show ? 'text' : 'password';
   el('bridgeCfgApiKeyToggle').innerHTML = show ? guiIcon('eyeOff') : guiIcon('eye');
 });
-el('bridgeEditorModal').addEventListener('click', (event) => { if (event.target === el('bridgeEditorModal')) closeBridgeEditor(); });
+// The bridge config modal only closes via Save / Cancel — clicking the
+// overlay (outside the dialog) is ignored so the user doesn't lose draft
+// edits by an accidental click.
 el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 document.addEventListener('click', (event) => {
@@ -9247,7 +9290,6 @@ el('settingsSearch').addEventListener('input', (event) => {
   });
 });
 el('commandSearch').addEventListener('input', () => { renderProjects(); });
-el('collapseSidebar').addEventListener('click', () => document.body.classList.toggle('sidebar-collapsed'));
 transcript.addEventListener('click', (event) => {
   const button = event.target.closest ? event.target.closest('.copy-btn') : null;
   if (!button) return;
