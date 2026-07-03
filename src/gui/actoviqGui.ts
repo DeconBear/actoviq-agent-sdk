@@ -9014,9 +9014,11 @@ function showSettingsTab(tab) {
   if (tab === 'sessions') renderArchived();
 }
 async function openSettings(tab = 'general') {
-  if (!state.snapshot) {
-    await loadState();
-  }
+  // Always fetch fresh state so the bridge config list / runtime discovery
+  // reflect configs added since the last loadState (the cached snapshot can
+  // be stale, which previously made the Models tab show "No saved configs"
+  // even when ~/.actoviq/bridge-configs.json had entries).
+  await loadState();
   const settings = state.snapshot?.settings || {};
   const preferences = settings.preferences || {};
   el('settingsPath').textContent = settings.configPath ? 'Saved locally: ' + settings.configPath : 'Settings path unavailable';
