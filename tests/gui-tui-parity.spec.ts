@@ -103,7 +103,9 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('<span>cap</span>');
     expect(html).not.toContain('<span>chat</span>');
     expect(html).not.toContain('<span>mem</span>');
-    expect(html).toContain('id="promptInput"');
+    expect(html).toContain('id="squadRoster"');
+    expect(html).toContain('id="convActionBar"');
+    expect(html).toContain('id="contextRail"');
     expect(html).toContain('id="sendBtn"');
     expect(html).toContain('id="saveSettingsBtn"');
     expect(html).toContain('id="backToAppBtn"');
@@ -175,6 +177,12 @@ describe('TUI and GUI parity', () => {
     expect(css).toContain('.context-menu');
     expect(css).toContain('.git-section');
     expect(css).toContain('.brand ');
-    expect(css).toContain('.settings-help-row');
+    expect(css).toContain('.conv-action-bar');
+    expect(css).toContain('.system-event');
+    expect(css).toContain('.context-rail');
+    expect(js).toContain('renderContextRail');
+    expect(js).toContain('renderSquadRoster');
+    expect(js).toContain('addMemberMessage');
+    expect(js).toContain('updateLocalBridgeConfig');
   });
 });
