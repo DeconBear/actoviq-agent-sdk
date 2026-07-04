@@ -3,8 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { discoverAgentRuntimes } from '../src/runtime/agentRuntimeDiscovery.js';
+import {
+  detectRuntimeLocalConfig,
+  discoverAgentRuntimes,
+  updateRuntimeLocalConfig,
+} from '../src/runtime/agentRuntimeDiscovery.js';
 import { addBridgeConfig } from '../src/parity/bridgeConfigs.js';
 
 const tempHomes: string[] = [];
@@ -76,5 +81,65 @@ describe('discoverAgentRuntimes', () => {
       installed: false,
       configured: false,
     });
+  });
+});
+
+describe('runtime local config', () => {
+  it('detects and updates Claude-style local config', async () => {
+    const homeDir = await makeHome();
+    const settingsDir = path.join(homeDir, '.claude');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      path.join(settingsDir, 'settings.json'),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_MODEL: 'glm-5.2',
+          ANTHROPIC_BASE_URL: 'https://example.com',
+          ANTHROPIC_AUTH_TOKEN: 'secret-key',
+        },
+      }),
+      'utf-8',
+    );
+
+    expect(detectRuntimeLocalConfig('claude', homeDir)).toMatchObject({
+      runtime: 'claude',
+      model: 'glm-5.2',
+      baseURL: 'https://example.com',
+      apiKey: 'secret-key',
+      provider: 'anthropic',
+      source: '~/.claude/settings.json',
+    });
+
+    const result = updateRuntimeLocalConfig('claude', {
+      model: 'glm-5.2[1M]',
+      baseURL: 'https://ark.example.com/api',
+      apiKey: 'new-secret',
+    }, homeDir);
+    expect(result).toEqual({ ok: true, source: '~/.claude/settings.json' });
+
+    const saved = JSON.parse(readFileSync(path.join(settingsDir, 'settings.json'), 'utf-8'));
+    expect(saved.env).toMatchObject({
+      ANTHROPIC_MODEL: 'glm-5.2[1M]',
+      ANTHROPIC_BASE_URL: 'https://ark.example.com/api',
+      ANTHROPIC_AUTH_TOKEN: 'new-secret',
+    });
+    expect(saved.model).toBe('glm-5.2[1M]');
+  });
+
+  it('detects and updates Codex local config', async () => {
+    const homeDir = await makeHome();
+    const codexDir = path.join(homeDir, '.codex');
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(path.join(codexDir, 'config.toml'), 'model = "gpt-4"\n', 'utf-8');
+
+    expect(detectRuntimeLocalConfig('codex', homeDir)).toMatchObject({
+      runtime: 'codex',
+      model: 'gpt-4',
+      provider: 'openai',
+    });
+
+    const result = updateRuntimeLocalConfig('codex', { model: 'gpt-5' }, homeDir);
+    expect(result).toEqual({ ok: true, source: '~/.codex/config.toml' });
+    expect(readFileSync(path.join(codexDir, 'config.toml'), 'utf-8')).toContain('model = "gpt-5"');
   });
 });

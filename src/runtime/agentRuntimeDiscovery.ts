@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -288,4 +288,107 @@ function detectCodexLocalConfig(home: string): RuntimeLocalConfig | null {
     provider: 'openai',
     source: '~/.codex/config.toml',
   };
+}
+
+export interface RuntimeLocalConfigUpdate {
+  model?: string;
+  baseURL?: string;
+  apiKey?: string;
+}
+
+export type RuntimeLocalConfigUpdateResult =
+  | { ok: true; source: string }
+  | { ok: false; error: string };
+
+/**
+ * Write model / base URL / API key back to a runtime's local CLI config file
+ * (e.g. `~/.claude/settings.json`). Returns an error when the runtime has no
+ * known writable config location.
+ */
+export function updateRuntimeLocalConfig(
+  runtime: string,
+  update: RuntimeLocalConfigUpdate,
+  homeDir?: string,
+): RuntimeLocalConfigUpdateResult {
+  const home = homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
+  if (runtime === 'claude' || runtime === 'codewhale' || runtime === 'crush') {
+    return updateClaudeStyleLocalConfig(home, update);
+  }
+  if (runtime === 'codex') {
+    return updateCodexLocalConfig(home, update);
+  }
+  return { ok: false, error: `Runtime "${runtime}" has no writable local config file.` };
+}
+
+function updateClaudeStyleLocalConfig(
+  home: string,
+  update: RuntimeLocalConfigUpdate,
+): RuntimeLocalConfigUpdateResult {
+  const settingsPath = path.join(home, '.claude', 'settings.json');
+  let raw: Record<string, unknown>;
+  if (existsSync(settingsPath)) {
+    try {
+      raw = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      return { ok: false, error: 'Failed to parse ~/.claude/settings.json' };
+    }
+  } else {
+    raw = {};
+  }
+  const env = (raw.env && typeof raw.env === 'object' ? raw.env : {}) as Record<string, unknown>;
+  if (typeof update.model === 'string' && update.model.trim()) {
+    const model = update.model.trim();
+    env.ANTHROPIC_MODEL = model;
+    raw.model = model;
+  }
+  if (typeof update.baseURL === 'string' && update.baseURL.trim()) {
+    env.ANTHROPIC_BASE_URL = update.baseURL.trim();
+  }
+  if (typeof update.apiKey === 'string' && update.apiKey.trim()) {
+    const key = update.apiKey.trim();
+    if (typeof env.ANTHROPIC_AUTH_TOKEN === 'string') {
+      env.ANTHROPIC_AUTH_TOKEN = key;
+    } else if (typeof env.ANTHROPIC_API_KEY === 'string') {
+      env.ANTHROPIC_API_KEY = key;
+    } else {
+      env.ANTHROPIC_AUTH_TOKEN = key;
+    }
+  }
+  raw.env = env;
+  try {
+    writeFileSync(settingsPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf-8');
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  return { ok: true, source: '~/.claude/settings.json' };
+}
+
+function updateCodexLocalConfig(
+  home: string,
+  update: RuntimeLocalConfigUpdate,
+): RuntimeLocalConfigUpdateResult {
+  if (!update.model?.trim()) {
+    return { ok: false, error: 'Codex local config only supports updating the model field.' };
+  }
+  const configPath = path.join(home, '.codex', 'config.toml');
+  let text = '';
+  if (existsSync(configPath)) {
+    try {
+      text = readFileSync(configPath, 'utf-8');
+    } catch {
+      return { ok: false, error: 'Failed to read ~/.codex/config.toml' };
+    }
+  }
+  const model = update.model.trim();
+  if (/^model\s*=/m.test(text)) {
+    text = text.replace(/^model\s*=\s*"[^"]*"/m, `model = "${model}"`);
+  } else {
+    text = `${text.trimEnd()}${text ? '\n' : ''}model = "${model}"\n`;
+  }
+  try {
+    writeFileSync(configPath, text, 'utf-8');
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  return { ok: true, source: '~/.codex/config.toml' };
 }

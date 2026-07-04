@@ -65,6 +65,7 @@ export {
   DEFAULT_AGENT_RUNTIME_CANDIDATES,
   discoverAgentRuntimes,
   detectRuntimeLocalConfig,
+  updateRuntimeLocalConfig,
 } from './runtime/agentRuntimeDiscovery.js';
 export type {
   AgentRuntimeCandidate,
@@ -72,6 +73,8 @@ export type {
   DiscoverAgentRuntimesOptions,
   DiscoveredAgentRuntime,
   RuntimeLocalConfig,
+  RuntimeLocalConfigUpdate,
+  RuntimeLocalConfigUpdateResult,
 } from './runtime/agentRuntimeDiscovery.js';
 export {
   encodeActoviqProjectPath,
