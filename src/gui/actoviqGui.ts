@@ -80,6 +80,7 @@ import {
   detectBridgeProviders,
   discoverAgentRuntimes,
   detectRuntimeLocalConfig,
+  updateRuntimeLocalConfig,
   listRouterProfiles,
   listTeamDefinitions,
   listWorkflows,
@@ -1249,22 +1250,35 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
               }))
             : [],
         })),
-        runtimeDiscovery: runtimeDiscovery.map(runtime => ({
-          id: runtime.id,
-          label: runtime.label,
-          runtime: runtime.runtime,
-          provider: runtime.provider,
-          status: runtime.status,
-          installed: runtime.installed,
-          configured: runtime.configured,
-          command: runtime.command ?? '',
-          commandPath: runtime.commandPath ?? '',
-          version: runtime.version ?? '',
-          versionError: runtime.versionError ?? '',
-          configNames: runtime.configNames,
-          reuseHint: runtime.reuseHint,
-          description: runtime.description,
-        })),
+        runtimeDiscovery: runtimeDiscovery.map(runtime => {
+          const local = runtime.runtime !== 'hadamard'
+            ? detectRuntimeLocalConfig(runtime.runtime, homeDir)
+            : null;
+          return {
+            id: runtime.id,
+            label: runtime.label,
+            runtime: runtime.runtime,
+            provider: runtime.provider,
+            status: runtime.status,
+            installed: runtime.installed,
+            configured: runtime.configured,
+            command: runtime.command ?? '',
+            commandPath: runtime.commandPath ?? '',
+            version: runtime.version ?? '',
+            versionError: runtime.versionError ?? '',
+            configNames: runtime.configNames,
+            reuseHint: runtime.reuseHint,
+            description: runtime.description,
+            localConfig: local
+              ? {
+                  model: local.model ?? '',
+                  baseURL: local.baseURL ?? '',
+                  hasApiKey: Boolean(local.apiKey),
+                  source: local.source ?? '',
+                }
+              : null,
+          };
+        }),
       },
       mcpServers: readMcpServerConfig(options.homeDir).servers,
       goal: getGoal(),
@@ -2648,6 +2662,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
         return json(res, 200, detectRuntimeLocalConfig(runtime, hd) || {});
       }
+      if (req.method === 'POST' && url.pathname === '/api/bridge/update-local') {
+        try {
+          const body = await readJson(req);
+          const runtime = typeof body.runtime === 'string' ? body.runtime.trim() : '';
+          if (!runtime) return json(res, 400, { error: 'Missing runtime' });
+          const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+          const result = updateRuntimeLocalConfig(runtime, {
+            model: typeof body.model === 'string' ? body.model : undefined,
+            baseURL: typeof body.baseURL === 'string' ? body.baseURL : undefined,
+            apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
+          }, hd);
+          if (!result.ok) return json(res, 400, { error: result.error });
+          return json(res, 200, result);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/bridge/config') {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -3268,6 +3299,12 @@ export function createActoviqGuiHtml(): string {
             <section id="contextBar" class="context-bar hidden"></section>
             <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
             <div id="squadRoster" class="squad-roster hidden"></div>
+            <div id="convActionBar" class="conv-action-bar hidden" aria-label="Conversation actions">
+              <button type="button" data-conv-action="summarize" class="conv-action-btn">Summarize</button>
+              <button type="button" data-conv-action="update-plan" class="conv-action-btn">Update plan</button>
+              <button type="button" data-conv-action="run-tests" class="conv-action-btn">Run tests</button>
+              <button type="button" data-conv-action="create-pr" class="conv-action-btn">Create PR suggestion</button>
+            </div>
             <section id="transcript" class="transcript"></section>
             <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
             <form id="composer" class="composer">
@@ -3423,6 +3460,7 @@ export function createActoviqGuiHtml(): string {
       <p id="bridgeCfgStatus" class="muted"></p>
       <div class="dialog-actions">
         <button type="button" id="bridgeCfgReset" class="secondary-btn">Cancel</button>
+        <button type="button" id="bridgeCfgUpdateLocal" class="secondary-btn hidden">Update local CLI config</button>
         <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
       </div>
     </form>
@@ -3512,11 +3550,6 @@ export function createActoviqGuiHtml(): string {
           <div class="settings-action-row">
             <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable active config</button>
           </div>
-          <div class="runtime-discovery-head">
-            <strong>Local runtimes</strong>
-            <small>PATH detection plus saved configs</small>
-          </div>
-          <div id="runtimeDiscoveryList" class="settings-card-list compact runtime-list"></div>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
@@ -3541,6 +3574,13 @@ export function createActoviqGuiHtml(): string {
             <button type="button" id="settingsDisableRouter" class="secondary-btn">Disable</button>
           </div>
           <div id="settingsRoutersList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <div class="runtime-discovery-head">
+            <strong>Local runtimes</strong>
+            <small>PATH detection and readable local CLI config</small>
+          </div>
+          <div id="runtimeDiscoveryList" class="settings-card-list compact runtime-list"></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="profile">
@@ -4326,6 +4366,10 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .conv-status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .squad-roster { display: flex; flex-wrap: wrap; gap: 7px; max-width: 920px; margin: 0 auto 14px; padding: 0 min(32px, 4vw); }
 .squad-roster.hidden { display: none; }
+.conv-action-bar { display: flex; flex-wrap: wrap; gap: 8px; max-width: 920px; margin: 0 auto 12px; padding: 0 min(32px, 4vw); }
+.conv-action-bar.hidden { display: none; }
+.conv-action-btn { min-height: 30px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); color: var(--text-1); padding: 0 12px; font-size: 12px; font-weight: 600; }
+.conv-action-btn:hover { background: var(--accent-soft); border-color: #BFDBFE; color: var(--accent); }
 .roster-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 11px 4px 4px; font-size: 12px; font-weight: 600; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); }
 .roster-chip .rc-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; flex: 0 0 20px; }
 .roster-chip .rc-avatar .ui-icon { width: 12px; height: 12px; }
@@ -4338,6 +4382,14 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .system-event .se-time { color: #9aa0a6; font-size: 11px; }
 .message-row.row-member .msg-avatar { background: var(--role-planner); }
 .message-row.row-member .msg-avatar .ui-icon { width: 16px; height: 16px; }
+.message.member { border-radius: 12px; padding: 10px 12px; border: 1px solid var(--border); }
+.msg-attach-card, .msg-pr-card { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); padding: 10px 12px; font-size: 12px; }
+.msg-attach-card strong, .msg-pr-card strong { display: block; margin-bottom: 4px; font-size: 13px; }
+.msg-change-strip { display: inline-flex; gap: 6px; margin-top: 8px; }
+.msg-change-strip span { border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+.msg-change-strip .add { background: #E8F7EF; color: var(--ok); }
+.msg-change-strip .del { background: #FEE2E2; color: var(--err); }
+.msg-pr-card .pr-review { display: inline-flex; margin-left: 8px; border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 700; background: var(--accent-soft); color: var(--accent); }
 .role-chip.rp-planner { background: rgba(59,130,246,.12); color: var(--role-planner); }
 .role-chip.rp-coder { background: rgba(16,185,129,.12); color: var(--role-coder); }
 .role-chip.rp-reviewer { background: rgba(139,92,246,.12); color: var(--role-reviewer); }
@@ -4377,6 +4429,8 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-edge-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 18px 36px; width: min(720px, 100%); position: relative; }
 .graph-edge-row::before { content: ""; position: absolute; left: 6%; right: 6%; top: 50%; border-top: 1px solid #9CA3AF; z-index: 0; }
 .graph-edge { position: relative; z-index: 1; background: #F8FAFC; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 11px; }
+.graph-edge.dashed { border-style: dashed; background: transparent; }
+.graph-edge-row.dashed::before { border-top-style: dashed; }
 .graph-node { width: 210px; min-height: 116px; padding: 14px 14px 12px 18px; border-radius: 12px; background: rgba(255,255,255,.96); }
 .graph-node .gn-icon { width: 34px; height: 34px; border-radius: 10px; }
 .graph-node .gn-name { font-size: 15px; }
@@ -4797,6 +4851,8 @@ const state = {
   teamDefinition: null,
   teamSelectedNode: null,
   teamEditing: false,
+  lastTeamMemberId: null,
+  lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
   pluginsView: 'plugins',
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
@@ -5292,6 +5348,68 @@ function roleLabel(role, id) {
   if (r) return r.charAt(0).toUpperCase() + r.slice(1);
   return id || 'Agent';
 }
+function formatTimeNow() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function appendAttachmentCard(parent, title, meta) {
+  const card = document.createElement('div');
+  card.className = 'msg-attach-card';
+  const strong = document.createElement('strong');
+  strong.textContent = title;
+  card.appendChild(strong);
+  if (meta) {
+    const small = document.createElement('small');
+    small.textContent = meta;
+    card.appendChild(small);
+  }
+  parent.appendChild(card);
+}
+function appendFileChangeStrip(parent, added, removed) {
+  if (!added && !removed) return;
+  const strip = document.createElement('div');
+  strip.className = 'msg-change-strip';
+  if (added > 0) {
+    const node = document.createElement('span');
+    node.className = 'add';
+    node.textContent = '+' + added;
+    strip.appendChild(node);
+  }
+  if (removed > 0) {
+    const node = document.createElement('span');
+    node.className = 'del';
+    node.textContent = '-' + removed;
+    strip.appendChild(node);
+  }
+  parent.appendChild(strip);
+}
+function appendPrCard(parent, title, comments) {
+  const card = document.createElement('div');
+  card.className = 'msg-pr-card';
+  const strong = document.createElement('strong');
+  strong.textContent = title;
+  const review = document.createElement('span');
+  review.className = 'pr-review';
+  review.textContent = 'Review';
+  strong.appendChild(review);
+  card.appendChild(strong);
+  if (comments != null) {
+    const meta = document.createElement('small');
+    meta.textContent = comments + ' comment' + (comments === 1 ? '' : 's');
+    card.appendChild(meta);
+  }
+  parent.appendChild(card);
+}
+function parseDiffStats(text) {
+  const added = Number(text.match(/\+(\d+)(?:\s*line)?/i)?.[1] || 0);
+  const removed = Number(text.match(/(?:^|\s)-(\d+)(?:\s*line)?/im)?.[1] || 0);
+  return { added, removed };
+}
+function updateConversationActionBar() {
+  const bar = el('convActionBar');
+  if (!bar) return;
+  const show = state.activeRegion === 'project' && state.projectView === 'conversation';
+  bar.classList.toggle('hidden', !show);
+}
 function addSystemEvent(text, timeStr) {
   const row = document.createElement('div');
   row.className = 'system-event';
@@ -5302,10 +5420,11 @@ function addSystemEvent(text, timeStr) {
   t.className = 'se-text';
   t.textContent = text;
   row.append(icon, t);
-  if (timeStr) {
+  const stamp = timeStr || formatTimeNow();
+  if (stamp) {
     const time = document.createElement('span');
     time.className = 'se-time';
-    time.textContent = timeStr;
+    time.textContent = stamp;
     row.appendChild(time);
   }
   transcript.appendChild(row);
@@ -5328,13 +5447,15 @@ function addMemberMessage(event) {
   name.textContent = roleLabel(event.role, event.id);
   const chip = document.createElement('span');
   chip.className = 'role-chip ' + roleClass(event.role);
-  chip.textContent = 'Agent';
+  chip.textContent = roleLabel(event.role, event.id);
   const meta = document.createElement('span');
   meta.className = 'msg-meta';
   meta.textContent = formatDuration(event.durationMs);
   head.append(name, chip, meta);
   const body = document.createElement('div');
   body.className = 'message member';
+  body.style.background = color + '14';
+  body.style.borderColor = color + '33';
   body.textContent = event.ok
     ? 'Completed · ' + event.toolCalls + ' tool call' + (event.toolCalls === 1 ? '' : 's')
     : 'Failed' + (event.error ? ' — ' + event.error : '');
@@ -5524,6 +5645,17 @@ function updateToolActivity(event) {
   // the toggle button (chevron) lets the user expand it again.
   node.card.classList.add('collapsed');
   node.toggle.setAttribute('aria-expanded', 'false');
+  const toolName = String(event.name || '').toLowerCase();
+  if (event.ok && (toolName === 'edit' || toolName === 'write')) {
+    const stats = parseDiffStats(output);
+    if (stats.added || stats.removed) appendFileChangeStrip(node.body, stats.added, stats.removed);
+    const fileMatch = output.match(/(?:file|path)[:\s]+([^\\n]+)/i);
+    if (fileMatch) appendAttachmentCard(node.body, fileMatch[1].trim(), toolName === 'write' ? 'Written' : 'Edited');
+  }
+  if (event.ok && toolName === 'bash' && /pull request|gh pr|create pr/i.test(output)) {
+    const prMatch = output.match(/pull request #?(\d+)/i);
+    appendPrCard(node.body, prMatch ? 'Pull Request #' + prMatch[1] : 'Pull Request', (output.match(/comment/gi) || []).length || null);
+  }
   setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? '' : 'error');
   scrollTranscript();
 }
@@ -5962,6 +6094,7 @@ async function loadState() {
   renderProjects();
   renderOverview();
   renderContextRail();
+  updateConversationActionBar();
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
@@ -6413,6 +6546,7 @@ function switchProjectView(view) {
   if (view === 'detail') renderProjectDetail();
   renderConversationBreadcrumb();
   renderContextRail();
+  updateConversationActionBar();
   if (view === 'conversation' && state.running) startRailPolling();
   else stopRailPolling();
 }
@@ -6524,6 +6658,7 @@ function renderOverview() {
     empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
+  renderContextRail();
 }
 function labelText(text) {
   const node = document.createElement('span');
@@ -8004,9 +8139,11 @@ function runtimeNodeEl(name) {
   return card;
 }
 // Specific from→to edge chip (§5.2): "Planner → Coder: assign".
+const ASYNC_EDGE_LABELS = new Set(['handoff', 'trigger', 'publish', 'verify', 'document']);
 function graphEdgeFromTo(from, to, label) {
   const edge = document.createElement('span');
   edge.className = 'graph-edge from-to';
+  if (ASYNC_EDGE_LABELS.has(String(label || '').toLowerCase())) edge.classList.add('dashed');
   const f = document.createElement('span');
   f.className = 'ge-from';
   f.textContent = from;
@@ -8084,14 +8221,19 @@ function renderTeamGraph(def, name) {
   }
   // Runtime lane (§5.2): Local Shell always present (TerminalManager); plus
   // any member.runtime values. Visually distinct dark nodes below agents.
-  const runtimeNames = new Set(['Local Shell']);
+  const runtimeNames = new Set(['Local Shell', 'CI Runtime', 'Browser Runtime']);
   for (const m of members) {
     if (m.runtime) runtimeNames.add(m.runtime);
   }
   const runtimeList = [...runtimeNames];
   if (runtimeList.length) {
-    const edgeLabels = ['execute', 'trigger', 'publish'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; });
-    canvas.appendChild(edgeRowFromChips(edgeLabels));
+    const edgeLabels = ['execute', 'trigger', 'publish'].map((l) => {
+      const span = document.createElement('span');
+      span.className = 'graph-edge' + (ASYNC_EDGE_LABELS.has(l) ? ' dashed' : '');
+      span.textContent = l;
+      return span;
+    });
+    canvas.appendChild(edgeRowFromChips(edgeLabels, true));
     const rtLane = document.createElement('div');
     rtLane.className = 'graph-lane runtime-lane';
     for (const rt of runtimeList) rtLane.appendChild(runtimeNodeEl(rt));
@@ -8105,9 +8247,9 @@ function renderTeamGraph(def, name) {
   }
   g.append(toolbar, canvas);
 }
-function edgeRowFromChips(chips) {
+function edgeRowFromChips(chips, dashedRow) {
   const row = document.createElement('div');
-  row.className = 'graph-edge-row';
+  row.className = 'graph-edge-row' + (dashedRow ? ' dashed' : '');
   chips.forEach((chip) => row.appendChild(chip));
   return row;
 }
@@ -8609,13 +8751,22 @@ function handleEvent(event) {
   // SystemEventDivider handoff lines + squad roster, not plain text notices.
   else if (event.type === 'team.started') {
     finalizeAssistant(); state.currentAssistant = null;
+    state.lastTeamMemberId = null;
+    state.lastTeamMemberRole = null;
     setConversationStatus('Squad running', 'running');
     renderSquadRoster(event.members);
     addSystemEvent('Squad started · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
   }
   else if (event.type === 'team.member.started') {
     finalizeAssistant(); state.currentAssistant = null;
-    addSystemEvent(roleLabel(event.role, event.id) + ' started · round ' + event.round);
+    const label = roleLabel(event.role, event.id);
+    if (state.lastTeamMemberId && state.lastTeamMemberId !== event.id) {
+      addSystemEvent(roleLabel(state.lastTeamMemberRole, state.lastTeamMemberId) + ' assigned ' + label);
+    } else {
+      addSystemEvent(label + ' started · round ' + event.round);
+    }
+    state.lastTeamMemberId = event.id;
+    state.lastTeamMemberRole = event.role;
   }
   else if (event.type === 'team.member.tool') {
     finalizeAssistant(); state.currentAssistant = null;
@@ -8635,6 +8786,8 @@ function handleEvent(event) {
   }
   else if (event.type === 'team.completed') {
     finalizeAssistant(); state.currentAssistant = null;
+    state.lastTeamMemberId = null;
+    state.lastTeamMemberRole = null;
     addSystemEvent('Squad completed · ' + event.rounds + ' round' + (event.rounds === 1 ? '' : 's'));
     void refreshRail();
   }
@@ -8701,35 +8854,21 @@ function renderRuntimeDiscovery() {
     hint.className = 'runtime-hint';
     hint.textContent = runtime.reuseHint || '';
     card.appendChild(hint);
-    const footer = document.createElement('footer');
-    if (runtime.configNames && runtime.configNames.length > 0) {
-      const activateBtn = document.createElement('button');
-      activateBtn.type = 'button';
-      activateBtn.textContent = 'Activate';
-      activateBtn.addEventListener('click', () => activateBridgeConfig(runtime.configNames[0]));
-      footer.appendChild(activateBtn);
+    const localLine = document.createElement('p');
+    localLine.className = 'runtime-local muted';
+    if (runtime.localConfig) {
+      const parts = [];
+      if (runtime.localConfig.model) parts.push('model: ' + runtime.localConfig.model);
+      if (runtime.localConfig.baseURL) parts.push(runtime.localConfig.baseURL);
+      if (runtime.localConfig.hasApiKey) parts.push('key configured');
+      localLine.textContent = 'Local CLI: ' + (parts.length ? parts.join(' · ') : 'readable')
+        + (runtime.localConfig.source ? ' (' + runtime.localConfig.source + ')' : '');
+    } else if (runtime.runtime !== 'hadamard') {
+      localLine.textContent = 'Local CLI: not detected';
+    } else {
+      localLine.textContent = 'Local CLI: built in';
     }
-    if (runtime.runtime !== 'hadamard') {
-      const cfgBtn = document.createElement('button');
-      cfgBtn.type = 'button';
-      cfgBtn.textContent = runtime.configNames && runtime.configNames.length > 0 ? 'Edit config' : 'Configure';
-      cfgBtn.addEventListener('click', () => {
-        const existing = runtime.configNames && runtime.configNames.length > 0
-          ? ((state.snapshot?.bridgeState?.configs || []).find(c => c.name === runtime.configNames[0]) || null)
-          : null;
-        openBridgeEditor(existing || {
-          name: runtime.id,
-          runtime: runtime.runtime,
-          provider: runtime.provider || RUNTIME_PROVIDER[runtime.runtime] || 'anthropic',
-          apiKey: '',
-          baseURL: '',
-          model: '',
-          models: [],
-        });
-      });
-      footer.appendChild(cfgBtn);
-    }
-    if (footer.children.length > 0) card.appendChild(footer);
+    card.appendChild(localLine);
     root.appendChild(card);
   }
 }
@@ -8783,8 +8922,11 @@ function renderBridgeConfigs() {
 
 // ── Per-config editor modal ───────────────────────────────────────────────
 let editingBridgeConfigName = null;
+let bridgeEditorUsesLocalConfig = false;
+const localRuntimeConfigCache = {};
 // runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
 const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'openai', pi:'openai', codex:'openai', crush:'openai' };
+const WRITABLE_LOCAL_RUNTIMES = new Set(['claude', 'codewhale', 'crush', 'codex']);
 function toggleCredentialFields() {
   const runtime = el('bridgeCfgRuntime').value;
   const isHadamard = runtime === 'hadamard';
@@ -8794,6 +8936,29 @@ function toggleCredentialFields() {
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
   el('bridgeCfgProvider').value = pv;
   populateReuseDropdown(runtime);
+  updateBridgeLocalConfigButton();
+}
+function updateBridgeLocalConfigButton() {
+  const btn = el('bridgeCfgUpdateLocal');
+  if (!btn) return;
+  const runtime = el('bridgeCfgRuntime').value;
+  btn.classList.toggle('hidden', !bridgeEditorUsesLocalConfig || !WRITABLE_LOCAL_RUNTIMES.has(runtime));
+}
+function applyLocalRuntimeConfig(local) {
+  if (!local) return;
+  if (local.provider) setField('bridgeCfgProvider', local.provider);
+  setField('bridgeCfgBaseUrl', local.baseURL || '');
+  setField('bridgeCfgApiKey', local.apiKey || '');
+  el('bridgeCfgApiKey').type = local.apiKey ? 'text' : 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = local.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
+  if (local.model) {
+    draftBridgeModels = [{ name: local.model, context1M: false, modality: 'text' }];
+    el('bridgeNewModelName').value = local.model;
+  } else {
+    draftBridgeModels = [];
+    el('bridgeNewModelName').value = '';
+  }
+  renderBridgeModels();
 }
 // Auto-detect existing bridge configs for the selected runtime and offer to
 // reuse their base URL / API key / provider / models. The user can still pick
@@ -8823,6 +8988,7 @@ function populateReuseDropdown(runtime) {
   api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime))
     .then(r => r.ok ? r.json() : null)
     .then(local => {
+      localRuntimeConfigCache[runtime] = local;
       if (!local || (!local.model && !local.baseURL && !local.apiKey)) return;
       const opt = document.createElement('option');
       opt.value = '__local__';
@@ -8844,23 +9010,22 @@ function populateReuseDropdown(runtime) {
   select.value = '';
 }
 async function applyReuseConfig(configName) {
+  bridgeEditorUsesLocalConfig = configName === '__local__';
+  updateBridgeLocalConfigButton();
   if (!configName) return; // manual — leave fields as-is
   if (configName === '__local__') {
-    // Re-fetch the local CLI config (cheap) and apply it.
-    try {
-      const runtime = el('bridgeCfgRuntime').value;
-      const res = await api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime));
-      const local = res.ok ? await res.json() : null;
-      if (!local) return;
-      if (local.provider) setField('bridgeCfgProvider', local.provider);
-      setField('bridgeCfgBaseUrl', local.baseURL || '');
-      setField('bridgeCfgApiKey', local.apiKey || '');
-      el('bridgeCfgApiKey').type = local.apiKey ? 'text' : 'password';
-      el('bridgeCfgApiKeyToggle').innerHTML = local.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
-      draftBridgeModels = local.model ? [{ name: local.model, context1M: false, modality: 'text' }] : [];
-      renderBridgeModels();
-      el('bridgeCfgStatus').textContent = 'Reused local CLI config' + (local.source ? ' (' + local.source + ')' : '') + '. Edit as needed, then Save.';
-    } catch { /* ignore */ }
+    const runtime = el('bridgeCfgRuntime').value;
+    let local = localRuntimeConfigCache[runtime];
+    if (!local || (!local.model && !local.baseURL && !local.apiKey)) {
+      try {
+        const res = await api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime));
+        local = res.ok ? await res.json() : null;
+        localRuntimeConfigCache[runtime] = local;
+      } catch { /* ignore */ }
+    }
+    if (!local) return;
+    applyLocalRuntimeConfig(local);
+    el('bridgeCfgStatus').textContent = 'Reused local CLI config' + (local.source ? ' (' + local.source + ')' : '') + '. Edit as needed, then Save or Update local CLI config.';
     return;
   }
   const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
@@ -8878,6 +9043,7 @@ async function applyReuseConfig(configName) {
 }
 function openBridgeEditor(cfg) {
   editingBridgeConfigName = cfg ? cfg.name : null;
+  bridgeEditorUsesLocalConfig = false;
   el('bridgeEditorTitle').textContent = cfg ? 'Edit config' : 'New config';
   setField('bridgeCfgName', cfg ? cfg.name : '');
   setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
@@ -8901,12 +9067,15 @@ function openBridgeEditor(cfg) {
   el('bridgeNewModel1M').checked = false;
   el('bridgeNewModelModality').value = 'text';
   el('bridgeCfgStatus').textContent = cfg ? 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.' : '';
+  updateBridgeLocalConfigButton();
   el('bridgeEditorModal').classList.remove('hidden');
   el('bridgeCfgName').focus();
 }
 function closeBridgeEditor() {
   el('bridgeEditorModal').classList.add('hidden');
   editingBridgeConfigName = null;
+  bridgeEditorUsesLocalConfig = false;
+  updateBridgeLocalConfigButton();
 }
 let draftBridgeModels = [];
 function renderBridgeModels() {
@@ -8948,6 +9117,46 @@ function addBridgeModel() {
   el('bridgeNewModel1M').checked = false;
   el('bridgeNewModelModality').value = 'text';
   renderBridgeModels();
+}
+async function updateLocalBridgeConfig() {
+  const runtime = el('bridgeCfgRuntime').value;
+  if (!WRITABLE_LOCAL_RUNTIMES.has(runtime)) {
+    el('bridgeCfgStatus').textContent = 'This runtime has no writable local CLI config.';
+    return;
+  }
+  const defaultModel = draftBridgeModels.length > 0
+    ? draftBridgeModels[0].name
+    : el('bridgeNewModelName').value.trim();
+  try {
+    const res = await api('/api/bridge/update-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        runtime,
+        model: defaultModel || undefined,
+        baseURL: el('bridgeCfgBaseUrl').value.trim() || undefined,
+        apiKey: el('bridgeCfgApiKey').value.trim() || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      el('bridgeCfgStatus').textContent = data.error || 'Failed to update local CLI config.';
+      return;
+    }
+    localRuntimeConfigCache[runtime] = {
+      runtime,
+      model: defaultModel || undefined,
+      baseURL: el('bridgeCfgBaseUrl').value.trim() || undefined,
+      apiKey: el('bridgeCfgApiKey').value.trim() || undefined,
+      provider: el('bridgeCfgProvider').value,
+      source: data.source,
+    };
+    el('bridgeCfgStatus').textContent = 'Updated local CLI config' + (data.source ? ' (' + data.source + ')' : '') + '.';
+    await loadState();
+    renderBridgeConfigs();
+  } catch (error) {
+    el('bridgeCfgStatus').textContent = error instanceof Error ? error.message : String(error);
+  }
 }
 async function saveBridgeConfig() {
   const name = el('bridgeCfgName').value.trim();
@@ -9287,6 +9496,20 @@ el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(c
 el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
 el('bridgeCfgReuse').addEventListener('change', () => { applyReuseConfig(el('bridgeCfgReuse').value); });
+el('bridgeCfgUpdateLocal').addEventListener('click', () => { updateLocalBridgeConfig().catch(console.error); });
+document.getElementById('convActionBar')?.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-conv-action]');
+  if (!btn) return;
+  const action = btn.getAttribute('data-conv-action');
+  const prompts = {
+    summarize: 'Summarize this conversation and the current project status.',
+    'update-plan': 'Review the project plan and update milestones based on our latest progress.',
+    'run-tests': 'Run the relevant project tests and report failures with suggested fixes.',
+    'create-pr': 'Draft a pull request summary with title, description, and review checklist for the current changes.',
+  };
+  const prompt = prompts[action];
+  if (prompt) submitText(prompt);
+});
 el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
   const inp = el('bridgeCfgApiKey');
   const show = inp.type === 'password';
