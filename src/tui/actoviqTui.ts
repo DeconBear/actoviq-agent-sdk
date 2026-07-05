@@ -29,6 +29,8 @@ import {
   createManagerTools,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
+  formatManagerUpdatePreview,
+  resolveGitHubDigestForUpdate,
   readManagerConfig,
   writeManagerConfig,
   readProjectPlanFile,
@@ -3423,10 +3425,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
                   .join('\n');
                 const plan = await readProjectPlanFile(sdk.config.workDir, homeDir);
                 const progress = await readProgressFile(sdk.config.workDir, homeDir);
+                appendStatic([...formatInfoLine(formatManagerUpdatePreview(plan, progress).split('\n').slice(0, 2).join(' · ')), '']);
+                const githubDigest = await resolveGitHubDigestForUpdate(sdk.config.workDir, arg || undefined);
                 prompt = buildUpdateProgressPrompt({
                   instruction: arg || undefined,
                   gitSummary,
                   conversationSummaries,
+                  githubDigest,
                   currentPlanJson: JSON.stringify(plan, null, 2),
                   currentProgress: progress ?? undefined,
                 });
