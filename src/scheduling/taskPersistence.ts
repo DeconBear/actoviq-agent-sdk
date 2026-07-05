@@ -107,6 +107,7 @@ function normalizeScheduledAutomationTask(
     || existing?.name
     || workflowName
     || (prompt ? prompt.slice(0, 48) : undefined)
+    || (kind === 'manager' ? 'Manager progress update' : undefined)
     || 'Scheduled task';
 
   if (kind === 'workflow' && !workflowName) {
@@ -126,9 +127,10 @@ function normalizeScheduledAutomationTask(
       ? { description: normalizeText(input.description) || existing?.description }
       : {}),
     ...(workflowName ? { workflowName } : {}),
-    ...(kind === 'workflow' && input.input !== undefined
+    // `input` is the workflow input, or the optional Manager update instruction.
+    ...((kind === 'workflow' || kind === 'manager') && input.input !== undefined
       ? { input: String(input.input) }
-      : kind === 'workflow' && existing?.input !== undefined
+      : (kind === 'workflow' || kind === 'manager') && existing?.input !== undefined
         ? { input: existing.input }
         : {}),
     ...(prompt ? { prompt } : {}),
@@ -174,7 +176,7 @@ function coerceTask(value: unknown): ScheduledAutomationTask | undefined {
   const id = normalizeText(value.id);
   const name = normalizeText(value.name);
   const cron = normalizeText(value.cron);
-  const kind = value.kind === 'prompt' ? 'prompt' : value.kind === 'workflow' ? 'workflow' : undefined;
+  const kind = value.kind === 'prompt' || value.kind === 'workflow' || value.kind === 'manager' ? value.kind : undefined;
   if (!id || !name || !cron || !kind) return undefined;
   try {
     nextCronTime(cron);

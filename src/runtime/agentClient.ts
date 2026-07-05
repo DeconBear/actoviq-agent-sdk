@@ -311,7 +311,8 @@ export class AgentSessionsApi {
 
   async continueMostRecent(options: SessionResumeOptions = {}): Promise<AgentSession> {
     const sessions = await this.store.list();
-    const mostRecent = sessions.find(session => session.status !== 'closed') ?? sessions[0];
+    const chatSessions = sessions.filter(session => session.kind !== 'manager');
+    const mostRecent = chatSessions.find(session => session.status !== 'closed') ?? chatSessions[0];
     if (!mostRecent) {
       throw new Error('No stored sessions are available to resume.');
     }

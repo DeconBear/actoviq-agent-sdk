@@ -21,8 +21,20 @@ import {
   loadWorkflow,
   listTeamDefinitions,
   loadTeamDefinition,
+  cloneTeamDefinition,
+  instantiateTeamDefinition,
   createModelTeam,
   createTeamTool,
+  readTeamPreferences,
+  createManagerTools,
+  buildManagerSystemPrompt,
+  buildUpdateProgressPrompt,
+  readManagerConfig,
+  writeManagerConfig,
+  readProjectPlanFile,
+  readProgressFile,
+  managerProgressPath,
+  listScheduledAutomationTasks,
   listRouterProfiles,
   loadRouterProfile,
   resolveRoutedRun,
@@ -62,6 +74,7 @@ import { addMcpServer, readMcpServerConfig, removeMcpServer } from '../mcp/mcpSe
 import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
+import { applyTeamRunEvent, createTeamRunViewState, formatTeamRunTreeLines } from '../team/teamRunView.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { loadProjectContext } from '../memory/projectContext.js';
@@ -416,8 +429,24 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let commandBusy = false;
   let shuttingDown = false;
   // Active team tool the main agent may call (toggled via /team). null = no team.
+  // The tool is only injected into runs when preferences.team.autoInvoke is on;
+  // otherwise attach is a selection and /team ask stays the manual path.
+  const teamPrefs = readTeamPreferences(getLoadedJsonConfig()?.raw);
   let activeTeamTool: AgentToolDefinition | null = null;
   let activeTeamName: string | null = null;
+  let lastTeamRunSummary: string | null = null;
+  const attachTeamByName = (name: string): TeamDefinition | null => {
+    const loaded = loadTeamDefinition(name, sdk.config.workDir);
+    if (!loaded) return null;
+    const definition = instantiateTeamDefinition(loaded.definition, session.model);
+    activeTeamTool = createTeamTool(definition);
+    activeTeamName = definition.name;
+    return definition;
+  };
+  if (teamPrefs.defaultAttached) {
+    // Unresolvable default names are ignored; /team status surfaces the hint.
+    try { attachTeamByName(teamPrefs.defaultAttached); } catch { /* ignore */ }
+  }
   // /model router: when set, each user turn is classified and routed to a model.
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
@@ -435,6 +464,31 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // Display labels (model is set from the config on activation).
   let bridgeModelLabel: string | null = null;
   let abortCtrl: AbortController | null = null;
+  // Persistent Manager session (kind: 'manager') — reused across /manager
+  // update/chat turns so the Manager keeps its own conversation context.
+  let managerTuiSession: Awaited<ReturnType<typeof sdk.createSession>> | null = null;
+  async function resolveManagerTuiSession() {
+    if (managerTuiSession) return managerTuiSession;
+    const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
+    managers.sort((a, b) => {
+      if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
+      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+    });
+    for (const dup of managers.slice(1)) {
+      await sdk.sessions.delete(dup.id).catch(() => undefined);
+    }
+    const existing = managers[0];
+    if (existing) {
+      managerTuiSession = await sdk.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      return managerTuiSession;
+    }
+    managerTuiSession = await sdk.createSession({
+      title: 'Manager',
+      metadata: { __actoviqKind: 'manager' },
+      permissionMode: 'bypassPermissions',
+    });
+    return managerTuiSession;
+  }
   let dialog: PermissionDialogState | null = null;
   let selectionDialog: SelectionDialogState | null = null;
   let textInputDialog: TextInputDialogState | null = null;
@@ -969,7 +1023,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const bridgeTag = bridgeMode && activeBridgeConfig
       ? ` · bridge:${activeBridgeConfig.name}${bridgeModelLabel ? ` · ${bridgeModelLabel}` : ''}`
       : '';
-    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · team:${activeTeamName ?? 'none'}${bridgeTag}${goalContextLine()} · `;
+    const teamLabel = activeTeamName
+      ? `team:${activeTeamName}${teamPrefs.autoInvoke ? '' : ' (manual)'}`
+      : 'team:none';
+    const left = `${modelLabel} · ${permissionLabel()} · effort:${currentEffort() ?? 'auto'} · ${teamLabel}${bridgeTag}${goalContextLine()} · `;
     return `${A.dim}  ${left}${A.reset}${ctxColor}ctx ${pct}% (${usedK})${A.reset}`;
   }
 
@@ -1244,7 +1301,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           classifier: preToolUseHookClassifier,
           model: activeBridgeModelApi.model,
           modelApi: activeBridgeModelApi.modelApi,
-          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           ...(canUseTool ? { canUseTool } : {}),
           drainQueuedInputs: () => {
             const drained = queuedInputs.splice(0);
@@ -1262,7 +1319,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           approver,
           classifier: preToolUseHookClassifier,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
-          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           ...(canUseTool ? { canUseTool } : {}),
           drainQueuedInputs: () => {
             const drained = queuedInputs.splice(0);
@@ -1471,6 +1528,12 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   async function resumeSession(sessionId: string): Promise<void> {
+    const listed = await sdk.sessions.list();
+    const target = listed.find(item => item.id === sessionId);
+    if (target?.kind === 'manager') {
+      appendStatic([...formatErrorLine('Manager sessions live in the Project Manager panel only.'), '']);
+      return;
+    }
     session = await sdk.resumeSession(sessionId);
     appendStatic([
       ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
@@ -1479,7 +1542,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   async function chooseSessionToResume(): Promise<void> {
-    const sessions = (await sdk.sessions.list()).filter(item => item.id !== session.id);
+    const sessions = (await sdk.sessions.list()).filter(item => item.id !== session.id && item.kind !== 'manager');
     if (sessions.length === 0) {
       appendStatic([...formatInfoLine('no other project sessions to resume'), '']);
       return;
@@ -2618,7 +2681,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         case 'sessions': {
-          const sessions = await sdk.sessions.list();
+          const sessions = (await sdk.sessions.list()).filter(item => item.kind !== 'manager');
           appendStatic([
             ...(sessions.length > 0
               ? sessions.map(item =>
@@ -3101,6 +3164,61 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         // ── v0.5.0: Model Team ───────────────────────────────────
         case 'team': {
+          if (args === 'status') {
+            appendStatic([
+              `${A.bold}Team status${A.reset}`,
+              `${A.dim}attached: ${activeTeamName ?? 'none'}${A.reset}`,
+              `${A.dim}autoInvoke: ${teamPrefs.autoInvoke ? 'on — the main agent can call the team as a tool' : 'off — manual /team ask only'}${A.reset}`,
+              `${A.dim}defaultAttached: ${teamPrefs.defaultAttached ?? 'none'}${teamPrefs.defaultAttached && !activeTeamName ? ' (not found)' : ''}${A.reset}`,
+              `${A.dim}last run: ${lastTeamRunSummary ?? 'none'}${A.reset}`,
+              '',
+            ]);
+            return;
+          }
+          if (args === 'off') {
+            activeTeamTool = null;
+            activeTeamName = null;
+            appendStatic([...formatInfoLine('team: none — the agent works individually'), '']);
+            return;
+          }
+          if (args === 'list') {
+            const teams = listTeamDefinitions(sdk.config.workDir);
+            appendStatic([
+              `${A.bold}Teams${A.reset}`,
+              ...teams.map((t) =>
+                `${t.name === activeTeamName ? `${A.green}*${A.reset}` : ' '}${A.cyan}${t.name}${A.reset}${A.dim} · ${t.definition.mode} · ${t.source} · ${t.definition.members?.length ?? 0} members${A.reset}`),
+              `${A.dim}/team attach <name> · /team ask <name> <prompt> · /team off · /team status${A.reset}`,
+              '',
+            ]);
+            return;
+          }
+          if (args.startsWith('attach ')) {
+            const teamName = args.slice(7).trim();
+            const definition = attachTeamByName(teamName);
+            if (!definition) {
+              appendStatic([...formatErrorLine(`team not found: ${teamName}`), '']);
+              return;
+            }
+            appendStatic([
+              ...formatInfoLine(`team attached: ${definition.name} (${definition.mode}) · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — run /team ask <name> <prompt> to use it'}`),
+              '',
+            ]);
+            return;
+          }
+          if (args.startsWith('clone ')) {
+            const parts = args.slice(6).trim().split(/\s+/);
+            if (parts.length !== 2) {
+              appendStatic([...formatErrorLine('usage: /team clone <source> <new-name>'), '']);
+              return;
+            }
+            try {
+              const clone = await cloneTeamDefinition(parts[0]!, parts[1]!, { projectDir: sdk.config.workDir });
+              appendStatic([...formatInfoLine(`team cloned: ${parts[0]} → ${clone.name} (${clone.filePath})`), '']);
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(`clone failed: ${error.message}`), '']);
+            }
+            return;
+          }
           if (args.startsWith('ask ')) {
             const rest = args.slice(4).trim();
             const spaceIdx = rest.indexOf(' ');
@@ -3115,14 +3233,52 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               appendStatic([...formatErrorLine(`team not found: ${teamName}`), '']);
               return;
             }
+            const definition = instantiateTeamDefinition(loaded.definition, session.model);
+            const memberModels = [
+              ...(definition.members ?? []),
+              ...(definition.reviewer ? [definition.reviewer] : []),
+            ].map((m) => m.name ?? m.role ?? m.model);
+            if (teamPrefs.confirmBeforeRun) {
+              const go = await selectItem({
+                title: `Run team "${definition.name}"?`,
+                subtitle: `${definition.mode} · members: ${memberModels.join(', ') || '(none)'}`,
+                items: [
+                  { id: 'run', label: 'Run', description: 'convene the team now' },
+                  { id: 'cancel', label: 'Cancel', description: 'do nothing' },
+                ],
+              });
+              if (go !== 'run') return;
+            }
             appendStatic([
-              ...formatInfoLine(`asking team "${teamName}" (${loaded.definition.mode} mode)`),
-              `${A.dim}convening: ${loaded.definition.members?.map((m) => m.model).join(', ') ?? 'configured members'}${A.reset}`,
+              ...formatInfoLine(`asking team "${teamName}" (${definition.mode} mode)`),
+              `${A.dim}convening: ${memberModels.join(', ') || 'configured members'}${A.reset}`,
               '',
             ]);
             try {
-              const team = createModelTeam(loaded.definition);
-              const result = await team.ask(prompt);
+              const team = createModelTeam(definition);
+              const teamRunView = createTeamRunViewState(definition.name);
+              const printTeamRunTree = () => {
+                const lines = formatTeamRunTreeLines(teamRunView);
+                if (!lines.length) return;
+                appendStatic([...lines.map((line) => `${A.dim}${line}${A.reset}`), '']);
+              };
+              const result = await team.ask(prompt, undefined, {
+                workDir: sdk.config.workDir,
+                onEvent: (e) => {
+                  applyTeamRunEvent(teamRunView, e);
+                  if (e.type === 'team.synthesis') {
+                    appendStatic([`${A.dim}  ◈ synthesis round ${e.round}: ${e.decision}${A.reset}`]);
+                  } else if (
+                    e.type === 'team.started'
+                    || e.type === 'team.member.completed'
+                    || e.type === 'team.edge.triggered'
+                    || e.type === 'team.completed'
+                  ) {
+                    printTeamRunTree();
+                  }
+                },
+              });
+              lastTeamRunSummary = `${teamName} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s`;
               appendStatic([
                 `${A.green}✓ team response${A.reset}${A.dim} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s${A.reset}`,
                 `${A.dim}cost: ${result.cost.estimatedCost !== null ? `$${result.cost.estimatedCost.toFixed(4)}` : 'N/A'} · ${result.cost.totalInputTokens + result.cost.totalOutputTokens} tokens${A.reset}`,
@@ -3137,27 +3293,16 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           }
 
           // No sub-command → picker that toggles which team the agent may call.
-          const member = (sp: string) => ({ model: session.model, systemPrompt: sp });
-          const buildDefault = (mode: string): TeamDefinition | undefined => {
-            switch (mode) {
-              case 'panel-analysis':
-                return { name: 'panel-analysis', mode: 'panel-analysis', members: [member('Expert researcher. Investigate with read-only tools; cite sources.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], primary: member('Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.'), timeoutMs: 300000, maxIterations: 12 };
-              case 'analysis':
-                return { name: 'analysis-panel', mode: 'analysis', members: [member('Expert researcher. Deep, source-grounded analysis.'), member('Rigorous skeptic. Verify with sources; challenge assumptions.')], timeoutMs: 300000, maxIterations: 12 };
-              case 'reviewer':
-                return { name: 'reviewer', mode: 'reviewer', members: [], reviewer: member('Meticulous reviewer. Surface only genuine, verifiable issues with file:line evidence; never speculate.'), timeoutMs: 300000, maxIterations: 16 };
-              default:
-                return undefined;
-            }
-          };
-
-          const saved = listTeamDefinitions(sdk.config.workDir);
+          const teams = listTeamDefinitions(sdk.config.workDir);
           const items = [
-            { id: '__none__', label: activeTeamTool ? `No team — remove "${activeTeamName}"` : 'No team (individual) — current', description: 'the agent works solo, no team tool attached' },
-            ...saved.map((t) => ({ id: `saved:${t.name}`, label: t.name, description: `saved · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members` })),
-            ...['panel-analysis', 'analysis', 'reviewer'].map((m) => ({ id: `mode:${m}`, label: `+ new ${m} team`, description: `built-in ${m} mode · default ${session.model} members` })),
+            { id: '__none__', label: activeTeamTool ? `No team — remove "${activeTeamName}"` : 'No team (individual) — current', description: 'the agent works solo, no team attached' },
+            ...teams.map((t) => ({
+              id: `team:${t.name}`,
+              label: `${t.name}${t.name === activeTeamName ? ' — attached' : ''}`,
+              description: `${t.source} · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members`,
+            })),
           ];
-          const choice = await selectItem({ title: 'Team', subtitle: 'attach a team the agent can call as a tool, or remove it', items });
+          const choice = await selectItem({ title: 'Team', subtitle: `attach a team (autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off'} — settings preferences.team)`, items });
           if (!choice) return;
           if (choice === '__none__') {
             activeTeamTool = null;
@@ -3165,20 +3310,156 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             appendStatic([...formatInfoLine('team: none — the agent works individually'), '']);
             return;
           }
-          let def: TeamDefinition | undefined;
-          if (choice.startsWith('saved:')) def = loadTeamDefinition(choice.slice('saved:'.length), sdk.config.workDir)?.definition;
-          else if (choice.startsWith('mode:')) def = buildDefault(choice.slice('mode:'.length));
-          if (!def) {
-            appendStatic([...formatErrorLine('could not load team definition'), '']);
-            return;
-          }
           try {
-            activeTeamTool = createTeamTool(def);
-            activeTeamName = def.name;
-            appendStatic([...formatInfoLine(`team active: ${def.name} (${def.mode}) — the agent can now call "${def.name}" as a tool when it helps`), '']);
+            const definition = attachTeamByName(choice.slice('team:'.length));
+            if (!definition) {
+              appendStatic([...formatErrorLine('could not load team definition'), '']);
+              return;
+            }
+            appendStatic([
+              ...formatInfoLine(
+                teamPrefs.autoInvoke
+                  ? `team active: ${definition.name} (${definition.mode}) — the agent can now call "${definition.name}" as a tool when it helps`
+                  : `team attached: ${definition.name} (${definition.mode}) — run /team ask ${definition.name} <prompt> (autoInvoke off)`,
+              ),
+              '',
+            ]);
           } catch (error: any) {
             appendStatic([...formatErrorLine(`team error: ${error.message}`), '']);
           }
+          return;
+        }
+        // ── Project Manager ──────────────────────────────────────
+        case 'manager': {
+          const homeDir = os.homedir();
+          if (!args || args === 'status') {
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            const plan = await readProjectPlanFile(sdk.config.workDir, homeDir);
+            const progress = await readProgressFile(sdk.config.workDir, homeDir);
+            appendStatic([
+              `${A.bold}Manager${A.reset}`,
+              `${A.dim}model: ${cfg.model ?? `${session.model} (session default)`}${A.reset}`,
+              `${A.dim}readScope: ${cfg.readScope}${A.reset}`,
+              `${A.dim}mirror to workspace: ${cfg.mirrorProgressToWorkspace ? 'on' : 'off'}${A.reset}`,
+              `${A.dim}plan.json: ${plan.milestones.length} milestones · ${plan.today.length} today · ${plan.upcoming.length} upcoming${A.reset}`,
+              `${A.dim}PROGRESS.md: ${progress ? `${progress.length} chars` : '(none yet — /manager update)'}${A.reset}`,
+              '',
+            ]);
+            return;
+          }
+          if (args === 'config') {
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            appendStatic([
+              ...JSON.stringify(cfg, null, 2).split('\n').map((l) => `${A.dim}${l}${A.reset}`),
+              `${A.dim}Set: /manager config set <model|readScope|mirror|allow> <value>${A.reset}`,
+              `${A.dim}The Manager always runs read-only regardless of model.${A.reset}`,
+              '',
+            ]);
+            return;
+          }
+          if (args.startsWith('config set ')) {
+            const rest = args.slice('config set '.length).trim();
+            const spIdx = rest.indexOf(' ');
+            const key = spIdx === -1 ? rest : rest.slice(0, spIdx);
+            const value = spIdx === -1 ? '' : rest.slice(spIdx + 1).trim();
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            if (key === 'model') cfg.model = value || undefined;
+            else if (key === 'readScope') {
+              if (value !== 'workspace-only' && value !== 'workspace+docs' && value !== 'explicit-allowlist') {
+                appendStatic([...formatErrorLine('readScope must be workspace-only | workspace+docs | explicit-allowlist'), '']);
+                return;
+              }
+              cfg.readScope = value;
+            } else if (key === 'mirror') cfg.mirrorProgressToWorkspace = value === 'on' || value === 'true';
+            else if (key === 'allow') cfg.allowedReadPaths = value ? value.split(',').map((p) => p.trim()).filter(Boolean) : [];
+            else {
+              appendStatic([...formatErrorLine('usage: /manager config set <model|readScope|mirror|allow> <value>'), '']);
+              return;
+            }
+            await writeManagerConfig(sdk.config.workDir, homeDir, cfg);
+            appendStatic([...formatInfoLine(`Manager config updated: ${key}`), '']);
+            return;
+          }
+          if (args === 'schedule') {
+            const tasks = (await listScheduledAutomationTasks(sdk.config.workDir)).filter((task) => task.kind === 'manager');
+            appendStatic([
+              `${A.bold}Manager schedules${A.reset}`,
+              ...(tasks.length === 0
+                ? [`${A.dim}none — add kind:"manager" tasks to .actoviq/scheduled-tasks.json${A.reset}`]
+                : tasks.map((task) => `${A.cyan}${task.name}${A.reset}${A.dim} · ${task.cron} · ${task.enabled ? 'enabled' : 'paused'}${A.reset}`)),
+              '',
+            ]);
+            return;
+          }
+          const isUpdate = args === 'update' || args.startsWith('update ');
+          const isChat = args === 'chat' || args.startsWith('chat ');
+          if (isUpdate || isChat) {
+            const arg = isUpdate
+              ? (args === 'update' ? '' : args.slice('update'.length).trim())
+              : args.slice('chat'.length).trim();
+            if (isChat && !arg) {
+              appendStatic([...formatErrorLine('usage: /manager chat <message>'), '']);
+              return;
+            }
+            if (isUpdate) appendStatic([...formatInfoLine('Manager: updating progress documents…'), '']);
+            try {
+              const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+              const managerTools = await createManagerTools({ workDir: sdk.config.workDir, homeDir, config: cfg });
+              let prompt: string;
+              if (isUpdate) {
+                // Host-collected context — the Manager itself has no shell.
+                let gitSummary = '';
+                try {
+                  const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: sdk.config.workDir, encoding: 'utf8' }).trim();
+                  const dirty = execSync('git status --porcelain', { cwd: sdk.config.workDir, encoding: 'utf8' }).trim();
+                  const log = execSync('git log --oneline -10', { cwd: sdk.config.workDir, encoding: 'utf8' }).trim();
+                  gitSummary = `branch: ${branch}\ndirty files: ${dirty ? dirty.split('\n').length : 0}\nrecent commits:\n${log}`;
+                } catch { /* not a git repo */ }
+                const stored = await sdk.sessions.list();
+                const conversationSummaries = stored
+                  .filter((s) => s.kind !== 'manager')
+                  .slice(0, 20)
+                  .map((s) => `- [${s.updatedAt.slice(0, 10)}] ${s.title} (${s.messageCount} msgs): ${s.preview}`)
+                  .join('\n');
+                const plan = await readProjectPlanFile(sdk.config.workDir, homeDir);
+                const progress = await readProgressFile(sdk.config.workDir, homeDir);
+                prompt = buildUpdateProgressPrompt({
+                  instruction: arg || undefined,
+                  gitSummary,
+                  conversationSummaries,
+                  currentPlanJson: JSON.stringify(plan, null, 2),
+                  currentProgress: progress ?? undefined,
+                });
+              } else {
+                prompt = arg;
+              }
+              managerTuiSession = await resolveManagerTuiSession();
+              try {
+                const compactResult = await managerTuiSession.compact({});
+                if (compactResult.compacted) {
+                  appendStatic([...formatInfoLine(`manager compacted ${compactResult.messagesRemoved ?? '?'} older messages`), '']);
+                }
+              } catch { /* auto-compact is best-effort */ }
+              const runOptions = {
+                systemPrompt: buildManagerSystemPrompt(sdk.config.workDir, cfg),
+                tools: managerTools,
+                ...(cfg.model ? { model: cfg.model } : {}),
+                __actoviqUseDefaultTools: false,
+                __actoviqAllowedTools: managerTools.map((tool) => tool.name),
+              } as Parameters<typeof managerTuiSession.stream>[1];
+              const stream = managerTuiSession.stream(prompt, runOptions);
+              for await (const event of stream) {
+                if (event.type === 'tool.call') appendStatic([`${A.dim}  ⚡ ${event.call.name}${A.reset}`]);
+              }
+              const result = await stream.result;
+              if (result.text) appendStatic([...renderRichText(result.text, screen.width), '']);
+              if (isUpdate) appendStatic([...formatInfoLine(`progress updated · ${managerProgressPath(sdk.config.workDir, homeDir)}`), '']);
+            } catch (error: any) {
+              appendStatic([...formatErrorLine(`manager error: ${error.message}`), '']);
+            }
+            return;
+          }
+          appendStatic([...formatErrorLine('usage: /manager [status|chat <message>|update [instruction]|config|schedule]'), '']);
           return;
         }
         default:

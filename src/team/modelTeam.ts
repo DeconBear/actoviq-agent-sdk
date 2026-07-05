@@ -14,6 +14,7 @@ import type {
   TeamCost,
   AnalysisResult,
   ExpertPanelReport,
+  GraphTeamResult,
   MemberStatus,
   ModelTeamResult,
   AgentToolDefinition,
@@ -34,6 +35,7 @@ import {
   resolveApiKey,
   runMemberAgent,
 } from './teamRuntime.js';
+import { assertValidTeamGraph, buildGraphNodeTools, createNotifyTeammateTool, orchestrateGraph } from './teamGraph.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Per-member ModelApi instantiation
@@ -452,6 +454,124 @@ export async function orchestratePanel(opts: {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Graph Mode — DAG of nodes wired by on_complete edges (wait-all joins)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Execute a version-2 graph definition. Entry nodes investigate the prompt in
+ * parallel; each completed node fires its `on_complete` edges (streamed as
+ * `team.edge.triggered`), and downstream nodes wake once ALL their in-edges
+ * delivered (AND-join), receiving the prompt plus rendered upstream payloads.
+ * Failures propagate fail-soft as `[FAILED …]` payload markers. Nodes default
+ * to the read-only expert toolset; `allowedTools` opts specific core tools in
+ * per node. The scheduling loop itself is `orchestrateGraph` (unit-tested with
+ * injected runners, same approach as `orchestratePanel`).
+ */
+async function runGraphMode(
+  prompt: string,
+  definition: TeamDefinition,
+  signal?: AbortSignal,
+  workDir?: string,
+  onEvent?: (event: TeamEvent) => void,
+): Promise<GraphTeamResult> {
+  const startedAt = Date.now();
+  const cwd = workDir ?? process.cwd();
+  const nodes = definition.nodes ?? [];
+  const identities = buildMemberIdentities(nodes);
+  const memberMaxIterations = definition.maxIterations ?? 16;
+
+  const perModelTokens = new Map<string, { input: number; output: number }>();
+  const memberStatuses: MemberStatus[] = [];
+  const reportsById = new Map<string, ExpertPanelReport>();
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  const graphFraming = [
+    'You are an agent node in a collaboration graph of specialist agents.',
+    'Work the task you are given; upstream teammates\' outputs (when present) appear as',
+    '"Input from <id>" sections — build on them instead of re-deriving their work.',
+    'A failed upstream appears as a [FAILED …] marker: proceed with what you have and',
+    'note the gap. Produce a focused, decision-useful report for your downstream teammates.',
+    'If you have a NotifyTeammate tool, use it to hand off work or push findings to the',
+    'listed teammates when your findings are ready for them.',
+  ].join(' ');
+
+  onEvent?.({
+    type: 'team.started',
+    mode: 'graph',
+    members: identities.map((identity) => ({ id: identity.id, model: identity.model, role: identity.role })),
+  });
+
+  const { answer, skipped } = await orchestrateGraph({
+    prompt,
+    definition,
+    onEvent,
+    runNode: async (node, identity, task, ctx) => {
+      const tools = await buildGraphNodeTools(node, cwd);
+      if (ctx.commTargets.length > 0) {
+        tools.push(await createNotifyTeammateTool(ctx));
+      }
+      const run = await runMemberAgent({
+        identity,
+        member: node,
+        task,
+        systemPrompt: buildMemberSystemPrompt(graphFraming, node),
+        cwd,
+        tools,
+        maxIterations: memberMaxIterations,
+        timeoutMs: definition.timeoutMs,
+        signal,
+        round: 1,
+        onEvent,
+      });
+      const ex = perModelTokens.get(node.model) ?? { input: 0, output: 0 };
+      ex.input += run.inputTokens;
+      ex.output += run.outputTokens;
+      perModelTokens.set(node.model, ex);
+      totalInput += run.inputTokens;
+      totalOutput += run.outputTokens;
+      memberStatuses.push(run.status);
+      reportsById.set(identity.id, {
+        id: identity.id,
+        role: identity.role,
+        model: identity.model,
+        report: run.report,
+        toolCalls: run.status.toolCalls ?? 0,
+        durationMs: run.status.durationMs ?? 0,
+        round: 1,
+      });
+      return { report: run.report, ok: run.status.ok, error: run.status.error };
+    },
+  });
+
+  // Nodes that never woke (manual-only in-edges / unreachable) get a skipped status.
+  for (const id of skipped) {
+    const identity = identities.find((x) => x.id === id)!;
+    memberStatuses.push({ id, model: identity.model, role: identity.role, ok: false, skipped: true, error: 'never triggered (no on_complete path from an entry node)', toolCalls: 0, durationMs: 0 });
+  }
+
+  const failed = memberStatuses.filter((status) => !status.ok && !status.skipped);
+  const incompleteReason = failed.length > 0
+    ? `${failed.length} of ${memberStatuses.length} node run(s) failed`
+    : skipped.length > 0
+      ? `${skipped.length} node(s) never triggered: ${skipped.join(', ')}`
+      : undefined;
+  onEvent?.({ type: 'team.completed', mode: 'graph', rounds: 1, incompleteReason });
+
+  const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
+  return {
+    answer,
+    mode: 'graph',
+    reports: [...reportsById.values()],
+    skippedNodes: skipped,
+    cost,
+    durationMs: Date.now() - startedAt,
+    memberStatuses,
+    incompleteReason,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  ModelTeam class
 // ═══════════════════════════════════════════════════════════════════
 
@@ -478,6 +598,8 @@ export class ModelTeam {
       case 'analysis':
       case 'panel-analysis':
         return runPanelAnalysisMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent);
+      case 'graph':
+        return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent);
       default:
         throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
     }
@@ -510,6 +632,9 @@ function validateTeamDefinition(def: TeamDefinition): void {
       if (!def.members || def.members.length === 0) throw new Error('Panel-analysis mode requires at least one panel member.');
       if (def.members.length > 8) throw new Error('Panel-analysis mode supports at most 8 members.');
       break;
+    case 'graph':
+      assertValidTeamGraph(def);
+      break;
   }
 }
 
@@ -523,6 +648,7 @@ export function createTeamTool(
   const team = createModelTeam(definition);
   const isReviewer = definition.mode === 'reviewer' || definition.mode === 'executor-reviewer';
   const isPanel = definition.mode === 'analysis' || definition.mode === 'panel-analysis';
+  const isGraph = definition.mode === 'graph';
 
   return {
     kind: 'local',
@@ -533,7 +659,9 @@ export function createTeamTool(
         ? 'Reviewer: a single read-only agent inspects the project and reports only genuine, verifiable issues. Pass { task } (what to check) and optional { context } (what you did + the results). It advises; you decide.'
         : isPanel
           ? 'Expert panel: independent read-only multi-model analysis (advisory; optional primary-driven convergence). You decide what to do with the findings.'
-          : `Multi-model team (${definition.mode} mode)`),
+          : isGraph
+            ? 'Agent collaboration graph: entry nodes investigate in parallel and hand off downstream along on_complete edges (wait-all joins). Pass { prompt }; the terminal node reports come back as the answer.'
+            : `Multi-model team (${definition.mode} mode)`),
     inputSchema: {
       parse: (input: unknown) => input as { prompt: string },
       _type: undefined,
@@ -608,7 +736,9 @@ export function createTeamTool(
           : 'Call this tool with a { prompt } to get a multi-model synthesized answer.',
       isReviewer
         ? `Reviewer: ${definition.reviewer?.model ?? 'configured via definition'}`
-        : `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
+        : isGraph
+          ? `Nodes: ${definition.nodes?.map((n) => n.id ?? n.name ?? n.role ?? n.model).join(' → ') ?? 'configured via definition'}`
+          : `Members: ${definition.members?.map((m) => m.model).join(', ') ?? 'configured via definition'}`,
     ].join('\n'),
   };
 }

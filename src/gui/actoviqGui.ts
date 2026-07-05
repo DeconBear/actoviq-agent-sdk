@@ -2,7 +2,7 @@
 import { execFile, execFileSync, execSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
-import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -88,6 +88,21 @@ import {
   loadJsonConfigFile,
   loadRouterProfile,
   loadTeamDefinition,
+  cloneTeamDefinition,
+  instantiateTeamDefinition,
+  validateTeamGraph,
+  migrateTeamDefinitionToV2,
+  readTeamPreferences,
+  writeTeamPreferences,
+  createManagerTools,
+  buildManagerSystemPrompt,
+  buildUpdateProgressPrompt,
+  readManagerConfig,
+  writeManagerConfig,
+  readProjectPlanFile,
+  writeProjectPlanFile,
+  readProgressFile,
+  managerProgressPath,
   loadWorkflow,
   listScheduledAutomationTasks,
   resolveRoutedRun,
@@ -100,6 +115,7 @@ import {
   getScheduledAutomationTask,
   WorktreeService,
   type ActoviqAgentClient,
+  type ManagerConfig,
 } from '../index.js';
 import {
   addBridgeConfig,
@@ -144,6 +160,7 @@ import { readPackageVersion } from '../cli/version.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import { renderMarkdown } from './guiMarkdown.js';
+import { resolveGuiAssetsDir } from './guiAssets.js';
 import type {
   ActoviqCanUseTool,
   ActoviqEffort,
@@ -159,8 +176,11 @@ import type {
   ScheduledAutomationTaskInput,
   TeamDefinition,
   TeamEvent,
+  SessionSummary,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
+import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
+import { truncateText } from '../runtime/helpers.js';
 import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
 
 const DEFAULT_PORT = 4174;
@@ -208,7 +228,7 @@ interface PendingPermission {
 // RunRegistry — tracks every active agent run so the GUI can host concurrent
 // runs (chat + future team/background) and the Monitor pane can show them live.
 // Replaces the single foreground runAbort/eventSink singletons (plan phase 2).
-type GuiRunKind = 'chat' | 'team' | 'background';
+type GuiRunKind = 'chat' | 'team' | 'background' | 'manager';
 interface GuiRunDescriptor {
   runId: string;
   kind: GuiRunKind;
@@ -221,11 +241,15 @@ interface GuiRunDescriptor {
   tokenUsage: { input: number; output: number };
   currentTool?: string;
   lastText?: string;
-  // Team runs only: live member/round state for the Monitor pane (plan phase 4).
+  // Team runs only: live member/round state for the Monitor pane and the
+  // conversation rail's Team Run tree (plan phase 4/5).
   team?: {
     mode: string;
     round: number;
-    members: Array<{ id: string; model: string; status: string; role?: string; currentTool?: string }>;
+    members: Array<{ id: string; model: string; status: string; role?: string; currentTool?: string; error?: string; toolCalls?: number; durationMs?: number }>;
+    /** Fired graph/communication edges, in trigger order (Team Run tree structure). */
+    edges?: Array<{ from: string; to: string; trigger: string; channel: string }>;
+    incompleteReason?: string;
   };
 }
 interface GuiRunRecord {
@@ -310,6 +334,15 @@ function text(res: ServerResponse, status: number, body: string, type = 'text/pl
   res.end(body);
 }
 
+function bytes(res: ServerResponse, status: number, body: Buffer, type: string): void {
+  res.writeHead(status, {
+    'content-type': type,
+    'content-length': body.length,
+    'cache-control': 'public, max-age=86400',
+  });
+  res.end(body);
+}
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -376,7 +409,7 @@ function commandUsage(command: string): string {
     case 'dream': return '/dream [status|run]';
     case 'workflows': return '/workflows [run <name> [input]]';
     case 'worktree': return '/worktree [enter <name>|exit|list]';
-    case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>]';
+    case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]';
     default: return `/${command}`;
   }
 }
@@ -388,10 +421,12 @@ function guiIcon(name: string): string {
     browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8h.01"/><path d="M12 8h.01"/><path d="M3 10h18"/>',
     chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    chevronUp: '<path d="m18 15-6-6-6 6"/>',
     close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/><path d="m14 4-4 16"/>',
     command: '<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0 0-6Z"/>',
     computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
+    drive: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/>',
     dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
     environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
@@ -409,6 +444,7 @@ function guiIcon(name: string): string {
     palette: '<circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2a10 10 0 0 0 0 20h1.5a2.5 2.5 0 0 0 0-5H12a2 2 0 0 1 0-4h3a7 7 0 0 0 0-11Z"/>',
     plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
     plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
     profile: '<circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
@@ -486,6 +522,12 @@ interface StoredSessionFile {
   filePath: string;
   messageCount: number;
   workDir?: string;
+  kind?: SessionSummary['kind'];
+}
+
+/** Manager sessions belong to the corner panel only — never the chat list. */
+function isVisibleChatSession(item: Pick<SessionSummary, 'kind'>): boolean {
+  return item.kind !== 'manager';
 }
 
 async function listProjectSessionRoots(homeDir: string): Promise<string[]> {
@@ -530,6 +572,8 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
       const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown;
       const metadata = isPlainRecord(raw) && isPlainRecord(raw.metadata) ? raw.metadata : {};
       const messages = isPlainRecord(raw) && Array.isArray(raw.messages) ? raw.messages : [];
+      const kindRaw = isPlainRecord(raw) && typeof raw.kind === 'string' ? raw.kind : metadata.__actoviqKind;
+      const kind = kindRaw === 'manager' || kindRaw === 'worktree' || kindRaw === 'main' ? kindRaw : undefined;
       const storageId = file.slice(0, -'.json'.length);
       sessions.push({
         id: isPlainRecord(raw) && typeof raw.id === 'string' ? raw.id : storageId,
@@ -537,11 +581,86 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
         filePath,
         messageCount: messages.length,
         workDir: typeof metadata.__actoviqWorkDir === 'string' ? metadata.__actoviqWorkDir : undefined,
+        ...(kind ? { kind } : {}),
       });
     } catch {
       // Ignore unreadable historical sessions while building GUI state.
     }
   }
+  return sessions;
+}
+
+function storedJsonToSessionSummary(raw: unknown, archived = false): SessionSummary | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const session = raw as {
+    id?: unknown;
+    title?: unknown;
+    titleSource?: unknown;
+    model?: unknown;
+    metadata?: Record<string, unknown>;
+    createdAt?: unknown;
+    updatedAt?: unknown;
+    lastRunAt?: unknown;
+    lastActiveAt?: unknown;
+    status?: unknown;
+    tags?: unknown;
+    messages?: unknown;
+    runs?: unknown;
+    kind?: unknown;
+  };
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const runs = Array.isArray(session.runs) ? session.runs : [];
+  const runtimeRaw = session.metadata?.__actoviqRuntime;
+  const configRaw = session.metadata?.__actoviqConfigName;
+  const kindRaw = session.kind ?? session.metadata?.__actoviqKind;
+  const kind = kindRaw === 'manager' || kindRaw === 'worktree' || kindRaw === 'main' ? kindRaw : undefined;
+  const id = typeof session.id === 'string' ? session.id : '';
+  if (!id) return null;
+  return {
+    id,
+    title: typeof session.title === 'string' ? session.title : 'Untitled',
+    titleSource: session.titleSource === 'manual' ? 'manual' : 'auto',
+    model: typeof session.model === 'string' ? session.model : 'unknown',
+    runtime: typeof runtimeRaw === 'string' && runtimeRaw.trim() ? runtimeRaw.trim() : 'hadamard',
+    configName: typeof configRaw === 'string' && configRaw.trim() ? configRaw.trim() : null,
+    createdAt: typeof session.createdAt === 'string' ? session.createdAt : '',
+    updatedAt: typeof session.updatedAt === 'string' ? session.updatedAt : '',
+    lastRunAt: typeof session.lastRunAt === 'string' ? session.lastRunAt : undefined,
+    lastActiveAt: typeof session.lastActiveAt === 'string' ? session.lastActiveAt : undefined,
+    status: session.status === 'idle' || session.status === 'closed' ? session.status : 'active',
+    tags: Array.isArray(session.tags) ? session.tags.filter((t): t is string => typeof t === 'string') : [],
+    preview: truncateText(extractPreviewFromMessages(messages as import('../provider/types.js').MessageParam[]), 160),
+    messageCount: messages.length,
+    runCount: runs.length,
+    archived,
+    ...(kind ? { kind } : {}),
+  };
+}
+
+async function listArchivedSessionsForWorkDir(
+  projectWorkDir: string,
+  homeDir: string,
+): Promise<SessionSummary[]> {
+  const projectRoot = getActoviqProjectSessionDirectory(projectWorkDir, homeDir);
+  const archiveDir = path.join(projectRoot, 'archive');
+  const sessions: SessionSummary[] = [];
+  let files: string[];
+  try {
+    files = await readdir(archiveDir);
+  } catch {
+    return [];
+  }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
+      const summary = storedJsonToSessionSummary(raw, true);
+      if (summary && summary.messageCount > 0 && isVisibleChatSession(summary)) sessions.push(summary);
+    } catch {
+      // Skip unreadable archived sessions.
+    }
+  }
+  sessions.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   return sessions;
 }
 
@@ -569,36 +688,13 @@ async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory
 }
 
 // --- Project plan (plan/UI_PLAN §4.2): a light per-workspace plan.json. ---
-// Stored at ~/.actoviq/projects/<hash>/plan.json. The agent (TodoWrite / a
-// future PlanWrite) or the user maintains milestones + today/upcoming items;
-// the project-detail view renders the checklist. Schema stays intentionally
-// small: { milestones:[{title,due,status,notes}], today:[...], upcoming:[...] }.
-interface ProjectPlanMilestone { title: string; due?: string; status?: string; notes?: string; }
-interface ProjectPlan { milestones: ProjectPlanMilestone[]; today: string[]; upcoming: string[]; }
+// Stored at ~/.actoviq/projects/<hash>/plan.json. Shared read/write helpers
+// live in src/manager/projectManager.ts (the Manager's PlanWrite tool writes
+// the same file); the GUI delegates so both stay schema-compatible.
+type ProjectPlan = import('../manager/projectManager.js').ProjectPlan;
 
-function planJsonPath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'plan.json');
-}
-
-async function readProjectPlan(workDir: string, homeDir: string): Promise<ProjectPlan> {
-  try {
-    const raw = await readFile(planJsonPath(workDir, homeDir), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<ProjectPlan>;
-    return {
-      milestones: Array.isArray(parsed.milestones) ? parsed.milestones : [],
-      today: Array.isArray(parsed.today) ? parsed.today : [],
-      upcoming: Array.isArray(parsed.upcoming) ? parsed.upcoming : [],
-    };
-  } catch {
-    return { milestones: [], today: [], upcoming: [] };
-  }
-}
-
-async function writeProjectPlan(workDir: string, homeDir: string, plan: ProjectPlan): Promise<void> {
-  const dir = path.dirname(planJsonPath(workDir, homeDir));
-  await mkdir(dir, { recursive: true });
-  await writeFile(planJsonPath(workDir, homeDir), JSON.stringify(plan, null, 2), 'utf8');
-}
+const readProjectPlan = readProjectPlanFile;
+const writeProjectPlan = writeProjectPlanFile;
 
 async function listKnownProjects(homeDir: string, currentWorkDir: string) {
   const current = path.resolve(currentWorkDir);
@@ -625,6 +721,7 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     const countsByWorkDir = new Map<string, { path: string; count: number }>();
     for (const item of await listStoredSessionFiles(projectRoot)) {
       if (item.messageCount === 0 || !item.workDir || !(await pathExists(item.workDir))) continue;
+      if (item.kind === 'manager') continue;
       const key = normalizeFsPath(item.workDir);
       const existing = countsByWorkDir.get(key);
       countsByWorkDir.set(key, { path: item.workDir, count: (existing?.count ?? 0) + 1 });
@@ -704,6 +801,90 @@ if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }
   }
 }
 
+export type BrowseEntryKind = 'drive' | 'folder';
+export type BrowseEntry = { name: string; path: string; kind: BrowseEntryKind };
+export type BrowseDirectoryResult = {
+  path: string;
+  parent: string | null;
+  entries: BrowseEntry[];
+};
+
+function isWindowsDriveRoot(value: string): boolean {
+  return /^[A-Za-z]:[\\/]?$/.test(value.replace(/\\/g, '/'));
+}
+
+async function listWindowsDrives(): Promise<BrowseEntry[]> {
+  const drives: BrowseEntry[] = [];
+  for (let code = 65; code <= 90; code++) {
+    const letter = String.fromCharCode(code);
+    const drivePath = `${letter}:\\`;
+    try {
+      await access(drivePath);
+      drives.push({ name: `${letter}:`, path: drivePath, kind: 'drive' });
+    } catch {
+      // drive letter not mounted
+    }
+  }
+  return drives;
+}
+
+function browseParentPath(resolved: string): string | null {
+  if (process.platform === 'win32' && isWindowsDriveRoot(resolved)) {
+    return '';
+  }
+  const parent = path.dirname(resolved);
+  if (parent === resolved) return null;
+  return parent;
+}
+
+/** List folders for the in-app workspace browser (GET /api/browse). */
+export async function browseDirectory(requestPath?: string): Promise<BrowseDirectoryResult> {
+  const trimmed = requestPath?.trim() ?? '';
+  if (!trimmed) {
+    if (process.platform === 'win32') {
+      return { path: '', parent: null, entries: await listWindowsDrives() };
+    }
+    const home = os.homedir();
+    return { path: '', parent: null, entries: [{ name: path.basename(home) || home, path: home, kind: 'folder' }] };
+  }
+
+  const resolved = path.resolve(trimmed);
+  let stats;
+  try {
+    stats = await stat(resolved);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === 'ENOENT') throw new Error(`Folder not found: ${resolved}`);
+    throw error;
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Not a directory: ${resolved}`);
+  }
+
+  const parent = browseParentPath(resolved);
+  const entries: BrowseEntry[] = [];
+  if (parent !== null) {
+    entries.push({ name: '..', path: parent, kind: 'folder' });
+  }
+
+  const children = await readdir(resolved, { withFileTypes: true });
+  for (const entry of children) {
+    if (!entry.isDirectory()) continue;
+    entries.push({
+      name: entry.name,
+      path: path.join(resolved, entry.name),
+      kind: 'folder',
+    });
+  }
+  entries.sort((left, right) => {
+    if (left.name === '..') return -1;
+    if (right.name === '..') return 1;
+    return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+  });
+
+  return { path: resolved, parent, entries };
+}
+
 function sessionView(session: AgentSession | undefined) {
   if (!session) return null;
   return {
@@ -781,46 +962,28 @@ function renderableHistory(session: AgentSession): GuiRunEvent[] {
   return events;
 }
 
-function buildDefaultTeam(mode: string, model: string): TeamDefinition | undefined {
-  // `role` gives each member a stable identity so panel members that share a
-  // model stay distinguishable in reports/events/status.
-  const member = (role: string, systemPrompt: string) => ({ model, role, name: role, systemPrompt });
-  switch (mode) {
-    case 'panel-analysis':
-      return {
-        name: 'panel-analysis',
-        mode: 'panel-analysis',
-        members: [
-          member('researcher', 'Expert researcher. Investigate with read-only tools; cite sources.'),
-          member('skeptic', 'Rigorous skeptic. Verify with sources; challenge assumptions.'),
-        ],
-        primary: member('synthesizer', 'Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.'),
-        timeoutMs: 300000,
-        maxIterations: 12,
-      };
-    case 'analysis':
-      return {
-        name: 'analysis-panel',
-        mode: 'analysis',
-        members: [
-          member('researcher', 'Expert researcher. Deep, source-grounded analysis.'),
-          member('skeptic', 'Rigorous skeptic. Verify with sources; challenge assumptions.'),
-        ],
-        timeoutMs: 300000,
-        maxIterations: 12,
-      };
-    case 'reviewer':
-      return {
-        name: 'reviewer',
-        mode: 'reviewer',
-        members: [],
-        reviewer: member('reviewer', 'Meticulous reviewer. Surface only genuine, verifiable issues with file:line evidence; never speculate.'),
-        timeoutMs: 300000,
-        maxIterations: 16,
-      };
-    default:
-      return undefined;
+/** Flatten a manager session into panel rows (user/assistant/tool), newest capped. */
+function managerPanelTranscript(session: AgentSession, limit = 48): Array<{ kind: string; text: string }> {
+  const items: Array<{ kind: string; text: string }> = [];
+  for (const event of renderableHistory(session)) {
+    if (event.type === 'user') items.push({ kind: 'user', text: typeof event.text === 'string' ? event.text : '' });
+    else if (event.type === 'assistant') items.push({ kind: 'assistant', text: typeof event.text === 'string' ? event.text : '' });
+    else if (event.type === 'tool') items.push({ kind: 'tool', text: `manager · ${typeof event.name === 'string' ? event.name : 'tool'}` });
   }
+  return items.slice(-limit);
+}
+
+/**
+ * Resolve a team definition by name (project → personal → built-in presets)
+ * and fill `model: ''` placeholders with the session model. Replaces the old
+ * GUI-local buildDefaultTeam — built-ins now live in
+ * BUILT_IN_TEAM_DEFINITIONS (src/team/teamDefinitions.ts) shared by all
+ * surfaces.
+ */
+function resolveTeamDefinition(name: string, workDir: string, model: string): TeamDefinition | undefined {
+  const loaded = loadTeamDefinition(name, workDir);
+  if (!loaded) return undefined;
+  return instantiateTeamDefinition(loaded.definition, model);
 }
 
 async function listenWithFallback(
@@ -944,8 +1107,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
   runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), workDir);
 
+  // Team state. The attached team's tool is only injected into main-agent runs
+  // when preferences.team.autoInvoke is on; otherwise attach is a selection and
+  // /team ask stays the manual run path.
+  let teamPrefs = readTeamPreferences(getLoadedJsonConfig()?.raw);
   let activeTeamTool: AgentToolDefinition | null = null;
   let activeTeamName: string | null = null;
+  let lastTeamRunSummary: string | null = null;
+  const attachTeamByName = (name: string): TeamDefinition | undefined => {
+    const definition = resolveTeamDefinition(name, workDir, session.model);
+    if (!definition) return undefined;
+    activeTeamTool = createTeamTool(definition);
+    activeTeamName = definition.name;
+    session.metadata.__actoviqLastTeamName = definition.name;
+    return definition;
+  };
+  if (!needsCredentials && teamPrefs.defaultAttached) {
+    // Unresolvable default names are ignored; /team status surfaces the hint.
+    try { attachTeamByName(teamPrefs.defaultAttached); } catch { /* ignore */ }
+  }
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
   // RunRegistry: active runs keyed by runId. foregroundRunId is the chat run the
@@ -1050,12 +1230,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     activeTeamName = null;
     activeRouter = null;
     routedModelLabel = null;
+    managerGuiSession = null;
+    managerDedupeTriggered = false;
     const nextSdk = await createCleanSdk();
     try {
       const sessions = await nextSdk.sessions.list();
-      const resumable = sessions.find(item => item.messageCount > 0 && item.status !== 'closed')
-        ?? sessions.find(item => item.messageCount > 0)
-        ?? sessions.find(item => item.status !== 'closed');
+      const resumable = sessions.find(item => item.messageCount > 0 && item.status !== 'closed' && isVisibleChatSession(item))
+        ?? sessions.find(item => item.messageCount > 0 && isVisibleChatSession(item))
+        ?? sessions.find(item => item.status !== 'closed' && isVisibleChatSession(item));
       session = resumable
         ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
         : await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
@@ -1187,13 +1369,17 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Hide 0-message conversations entirely — they're auto-cleaned on the
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
     // list is noise. The active session is still resumable via the chat view.
-    const sessions = allSessions.filter(item => item.messageCount > 0);
+    const sessions = allSessions.filter(item => item.messageCount > 0 && isVisibleChatSession(item));
+    const archivedSessions = needsCredentials
+      ? []
+      : await listArchivedSessionsForWorkDir(workDir, homeDir);
     return {
       workDir,
       session: sessionView(session),
       permissionMode: currentPermissionMode(),
       effort: currentEffort() ?? 'auto',
       activeTeamName,
+      teamPreferences: teamPrefs,
       activeRouterName: activeRouter?.name ?? null,
       routedModelLabel,
       commands: ACTOVIQ_INTERACTIVE_COMMANDS,
@@ -1202,6 +1388,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       projects: heavy.projects,
       projectPlan: await readProjectPlan(workDir, homeDir),
       sessions,
+      archivedSessions,
       workflows,
       scheduledTasks,
       teams,
@@ -1418,6 +1605,166 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return events;
   }
 
+  // ── Project Manager (plan M0/M1) ─────────────────────────────────
+  // The Manager is a per-project governance agent with a hard-restricted tool
+  // surface (createManagerTools: Read/Glob/Grep + WebFetch + PlanWrite +
+  // ProgressWrite — no shell, no Team, no Task). It runs on a dedicated
+  // kind='manager' session so it never touches the main chat context, and the
+  // host (this GUI process) collects git/conversation context itself.
+  let managerGuiSession: AgentSession | null = null;
+  let managerDedupeTriggered = false;
+
+  function managerHomeDir(): string {
+    return options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+  }
+
+  async function dedupeManagerSessions(): Promise<string | undefined> {
+    if (!sdk) return undefined;
+    const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
+    if (managers.length === 0) return undefined;
+    managers.sort((a, b) => {
+      if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
+      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+    });
+    const keep = managers[0]!;
+    for (const dup of managers.slice(1)) {
+      await sdk.sessions.delete(dup.id).catch(() => undefined);
+    }
+    return keep.id;
+  }
+
+  async function getManagerSession(): Promise<AgentSession> {
+    if (managerGuiSession) return managerGuiSession;
+    await dedupeManagerSessions();
+    const stored = await sdk!.sessions.list();
+    const existing = stored
+      .filter(item => item.kind === 'manager')
+      .sort((a, b) => {
+        if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
+        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+      })[0];
+    if (existing) {
+      managerGuiSession = await sdk!.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      return managerGuiSession;
+    }
+    managerGuiSession = await sdk!.createSession({
+      title: 'Manager',
+      metadata: { __actoviqKind: 'manager' },
+      permissionMode: 'bypassPermissions',
+    });
+    return managerGuiSession;
+  }
+
+  /** Host-collected read-only context for Manager runs (the Manager has no shell). */
+  async function collectManagerHostContext(): Promise<{ gitSummary: string; conversationSummaries: string }> {
+    let gitSummary = '';
+    try {
+      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: workDir, encoding: 'utf8' }).trim();
+      const dirty = execSync('git status --porcelain', { cwd: workDir, encoding: 'utf8' }).trim();
+      const log = execSync('git log --oneline -10', { cwd: workDir, encoding: 'utf8' }).trim();
+      gitSummary = `branch: ${branch}\ndirty files: ${dirty ? dirty.split('\n').length : 0}\nrecent commits:\n${log}`;
+    } catch { /* not a git repo */ }
+    let conversationSummaries = '';
+    try {
+      const stored = await sdk!.sessions.list();
+      conversationSummaries = stored
+        .filter(s => s.kind !== 'manager')
+        .slice(0, 20)
+        .map(s => `- [${s.updatedAt.slice(0, 10)}] ${s.title} (${s.messageCount} msgs): ${s.preview}`)
+        .join('\n');
+    } catch { /* session listing unavailable */ }
+    return { gitSummary, conversationSummaries };
+  }
+
+  /**
+   * Run one Manager turn ('update' = progress-doc sync, 'chat' = free-form
+   * governance chat). Registers a RunRegistry kind='manager' run (single
+   * instance per project) and streams tool activity through `send`.
+   * Returns the Manager's final text.
+   */
+  async function runManagerTurn(opts: {
+    mode: 'update' | 'chat';
+    instruction?: string;
+    text?: string;
+    send: (event: GuiRunEvent) => void;
+  }): Promise<string> {
+    if (needsCredentials || !sdk) throw new Error('No API key configured — open Settings → General to add one.');
+    for (const run of runs.values()) {
+      if (run.desc.kind === 'manager' && run.desc.status === 'running') {
+        throw new Error('A Manager run is already in progress for this project.');
+      }
+    }
+    const homeDir = managerHomeDir();
+    const cfg = await readManagerConfig(workDir, homeDir);
+    const managerTools = await createManagerTools({ workDir, homeDir, config: cfg });
+    let prompt: string;
+    if (opts.mode === 'update') {
+      const { gitSummary, conversationSummaries } = await collectManagerHostContext();
+      const plan = await readProjectPlanFile(workDir, homeDir);
+      const progress = await readProgressFile(workDir, homeDir);
+      prompt = buildUpdateProgressPrompt({
+        instruction: opts.instruction,
+        gitSummary,
+        conversationSummaries,
+        currentPlanJson: JSON.stringify(plan, null, 2),
+        currentProgress: progress ?? undefined,
+      });
+    } else {
+      prompt = opts.text?.trim() ?? '';
+      if (!prompt) throw new Error('Empty manager message.');
+    }
+    const managerSession = await getManagerSession();
+    const runId = 'r-mgr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const abort = new AbortController();
+    const desc: GuiRunDescriptor = {
+      runId, kind: 'manager', label: opts.mode === 'update' ? 'manager:update' : 'manager:chat',
+      sessionId: managerSession.id, model: cfg.model ?? session.model ?? null, startedAt: Date.now(),
+      status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
+    };
+    runs.set(runId, { desc, abort, sink: opts.send });
+    try {
+      opts.send({ type: 'run.started', runId, model: desc.model });
+      try {
+        const compactResult = await managerSession.compact({});
+        if (compactResult.compacted) {
+          opts.send({
+            type: 'status',
+            message: `manager · compacted ${compactResult.messagesRemoved ?? '?'} older messages`,
+            runId,
+          });
+        }
+      } catch { /* auto-compact is best-effort */ }
+      const runOptions = {
+        systemPrompt: buildManagerSystemPrompt(workDir, cfg),
+        tools: managerTools,
+        signal: abort.signal,
+        ...(cfg.model ? { model: cfg.model } : {}),
+        __actoviqUseDefaultTools: false,
+        __actoviqAllowedTools: managerTools.map(tool => tool.name),
+      } as Parameters<typeof managerSession.stream>[1];
+      const stream = managerSession.stream(prompt, runOptions);
+      for await (const event of stream) {
+        if (event.type === 'tool.call') {
+          desc.toolCalls += 1;
+          desc.currentTool = event.call.name;
+          opts.send({ type: 'status', message: `manager · ${event.call.name}`, runId });
+        } else if (event.type === 'tool.result') {
+          desc.currentTool = undefined;
+        }
+      }
+      const result = await stream.result;
+      desc.status = 'done';
+      recordUsage(desc.model ?? session.model, result.usage as { input_tokens?: number; output_tokens?: number } | undefined);
+      return result.text ?? '';
+    } catch (error) {
+      desc.status = abort.signal.aborted ? 'aborted' : 'error';
+      throw error;
+    } finally {
+      runs.delete(runId);
+      invalidateHeavyState();
+    }
+  }
+
   async function resyncAutomationScheduler(): Promise<void> {
     for (const id of scheduledAutomationIds) {
       await automationScheduler.remove(id).catch(() => undefined);
@@ -1455,6 +1802,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         events.push(...workflowEvents);
         const failure = workflowEvents.find(event => event.type === 'error');
         if (failure) throw new Error(String(failure.message ?? 'workflow failed'));
+      } else if (task.kind === 'manager') {
+        // Scheduled Manager progress update (plan M2). `input` is an optional
+        // instruction; the run streams into the collected events.
+        const text = await runManagerTurn({
+          mode: 'update',
+          instruction: task.input?.trim() || undefined,
+          send: (event) => { events.push(event); },
+        });
+        events.push({ type: 'command.result', title: 'Manager · progress updated', text });
       } else {
         if (!task.prompt) throw new Error('Scheduled prompt task is missing prompt');
         events.push(...await runAutomationPrompt(task));
@@ -1517,7 +1873,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             canUseTool,
             model: activeBridgeModelApi.model,
             modelApi: activeBridgeModelApi.modelApi,
-            ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+            ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           })
         : session.stream(expandImageRefs(input, workDir), {
             systemPrompt: systemPromptForRun,
@@ -1529,7 +1885,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             canUseTool,
             ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
             ...(hadamardModel ? { model: hadamardModel } : {}),
-            ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+            ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           });
 
       for await (const event of stream) {
@@ -1615,6 +1971,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   // ── Goal: session-scoped objective stored in session metadata ─────────
   const GOAL_METADATA_KEY = '__actoviqGoal';
+  const RUNTIME_METADATA_KEY = '__actoviqRuntime';
+  const CONFIG_NAME_METADATA_KEY = '__actoviqConfigName';
+  async function persistSessionRuntimeMetadata(): Promise<void> {
+    try {
+      await session.mergeMetadata({
+        [RUNTIME_METADATA_KEY]: activeBridgeConfig?.runtime ?? 'hadamard',
+        [CONFIG_NAME_METADATA_KEY]: activeBridgeConfig?.name ?? null,
+      });
+    } catch {
+      // never fail a turn over metadata write
+    }
+  }
   type GoalStatus = 'active' | 'paused' | 'complete';
   interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
   function getGoal(): SessionGoal | null {
@@ -1730,7 +2098,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return [{
           type: 'command.result',
           title: 'Sessions',
-          items: sessions.map(item => ({
+          items: sessions.filter(isVisibleChatSession).map(item => ({
             label: item.id === session.id ? `${item.id} (current)` : item.id,
             description: `${item.title} · ${item.model} · ${item.status}`,
           })),
@@ -1738,6 +2106,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       case 'resume': {
         if (!args) return runSlashCommand('/sessions');
+        const listed = await sdk!.sessions.list();
+        const target = listed.find(item => item.id === args);
+        if (target?.kind === 'manager') {
+          return [{ type: 'error', message: 'Manager sessions live in the Project Manager panel only.' }];
+        }
         session = await sdk!.resumeSession(args, { model: options.model, permissionMode: options.permissionMode });
         return [{ type: 'notice', message: `resumed session: ${session.id}` }, { type: 'state' }];
       }
@@ -1857,35 +2230,53 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       case 'team': {
         if (!args || args === 'list') {
-          const saved = listTeamDefinitions(workDir);
+          const teams = listTeamDefinitions(workDir);
           return [{
             type: 'command.result',
             title: 'Teams',
-            items: [
-              ...saved.map(team => ({
-                label: team.name,
-                description: `${team.definition.mode} · ${team.definition.members?.length ?? 0} members`,
-                detail: team.source,
-              })),
-              ...['panel-analysis', 'analysis', 'reviewer'].map(mode => ({
-                label: mode,
-                description: 'built-in',
-              })),
-            ],
+            items: teams.map(team => ({
+              label: `${team.name === activeTeamName ? '* ' : ''}${team.name}`,
+              description: `${team.definition.mode} · ${team.definition.members?.length ?? 0} members`,
+              detail: team.source,
+            })),
           }];
+        }
+        if (args === 'status') {
+          const lines = [
+            `attached: ${activeTeamName ?? 'none'}`,
+            `autoInvoke: ${teamPrefs.autoInvoke ? 'on — the main agent can call the team as a tool' : 'off — manual /team ask only'}`,
+            `defaultAttached: ${teamPrefs.defaultAttached ?? 'none'}${teamPrefs.defaultAttached && !activeTeamName ? ' (not found)' : ''}`,
+            `confirmBeforeRun: ${teamPrefs.confirmBeforeRun ? 'on' : 'off'}`,
+            `last run: ${lastTeamRunSummary ?? 'none'}`,
+          ];
+          return [{ type: 'command.result', title: 'Team status', text: lines.join('\n') }];
         }
         if (args === 'off') {
           activeTeamTool = null;
           activeTeamName = null;
-          return [{ type: 'notice', message: 'team: none' }];
+          return [{ type: 'notice', message: 'team: none' }, { type: 'state' }];
         }
         if (args.startsWith('attach ')) {
           const teamName = args.slice(7).trim();
-          const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+          const definition = attachTeamByName(teamName);
           if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
-          activeTeamTool = createTeamTool(definition);
-          activeTeamName = definition.name;
-          return [{ type: 'notice', message: `team active: ${definition.name}` }];
+          return [{
+            type: 'notice',
+            message: `team attached: ${definition.name} · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — use Run squad or /team ask'}`,
+          }, { type: 'state' }];
+        }
+        if (args.startsWith('clone ')) {
+          const parts = args.slice(6).trim().split(/\s+/);
+          if (parts.length !== 2) return [{ type: 'error', message: 'usage: /team clone <source> <new-name>' }];
+          try {
+            const clone = await cloneTeamDefinition(parts[0]!, parts[1]!, { projectDir: workDir });
+            return [
+              { type: 'notice', message: `team cloned: ${parts[0]} → ${clone.name} (${clone.filePath})` },
+              { type: 'state' },
+            ];
+          } catch (error: any) {
+            return [{ type: 'error', message: `clone failed: ${error.message}` }];
+          }
         }
         if (args.startsWith('ask ')) {
           const rest = args.slice(4).trim();
@@ -1893,12 +2284,57 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           if (split === -1) return [{ type: 'error', message: 'usage: /team ask <name> <prompt>' }];
           const teamName = rest.slice(0, split);
           const prompt = rest.slice(split + 1).trim();
-          const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+          const definition = resolveTeamDefinition(teamName, workDir, session.model);
           if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
-          const result = await createModelTeam(definition).ask(prompt);
+          session.metadata.__actoviqLastTeamName = definition.name;
+          const result = await createModelTeam(definition).ask(prompt, undefined, { workDir });
+          lastTeamRunSummary = `${teamName} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s`;
           return [{ type: 'command.result', title: `Team response · ${result.mode}`, text: result.answer }];
         }
-        return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>]' }];
+        return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]' }];
+      }
+      case 'manager': {
+        // `/manager update` and `/manager chat <msg>` are intercepted by the
+        // streaming path in /api/send (they register a RunRegistry
+        // kind='manager' run); the synchronous sub-commands are handled here.
+        const homeDir = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+        if (!args || args === 'status') {
+          const cfg = await readManagerConfig(workDir, homeDir);
+          const plan = await readProjectPlanFile(workDir, homeDir);
+          const progress = await readProgressFile(workDir, homeDir);
+          const lines = [
+            `model: ${cfg.model ?? `${session.model} (session default)`}`,
+            `readScope: ${cfg.readScope}`,
+            `mirror to workspace: ${cfg.mirrorProgressToWorkspace ? 'on' : 'off'}`,
+            `plan.json: ${plan.milestones.length} milestones · ${plan.today.length} today · ${plan.upcoming.length} upcoming`,
+            `PROGRESS.md: ${progress ? `${progress.length} chars · ${managerProgressPath(workDir, homeDir)}` : '(none yet — /manager update)'}`,
+          ];
+          return [{ type: 'command.result', title: 'Manager', text: lines.join('\n') }];
+        }
+        if (args === 'config') {
+          const cfg = await readManagerConfig(workDir, homeDir);
+          return [{
+            type: 'command.result',
+            title: 'Manager config',
+            text: JSON.stringify(cfg, null, 2) + '\nEdit: ~/.actoviq/projects/<hash>/manager.json',
+          }];
+        }
+        if (args === 'schedule') {
+          const tasks = (await listScheduledAutomationTasks(workDir)).filter(task => task.kind === 'manager');
+          return [{
+            type: 'command.result',
+            title: 'Manager schedules',
+            items: tasks.map(task => ({
+              label: task.name,
+              description: `${task.cron} · ${task.enabled ? 'enabled' : 'paused'}`,
+            })),
+            text: tasks.length === 0 ? 'none — add kind:"manager" tasks in the Automation area' : undefined,
+          }];
+        }
+        if (args === 'chat') {
+          return [{ type: 'error', message: 'usage: /manager chat <message>' }];
+        }
+        return [{ type: 'error', message: 'usage: /manager [status|chat <message>|update [instruction]|config|schedule]' }];
       }
       case 'init': {
         const prompt = 'Explore this repository (read package.json, README, and CLAUDE.md if present; list the top-level structure), then write or improve a root CLAUDE.md documenting: what the project is, key commands (build/test/run), the high-level architecture, and important conventions. Keep it concise and accurate.';
@@ -2136,13 +2572,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       const teamName = rest.slice(0, split);
       const prompt = rest.slice(split + 1).trim();
-      const definition = loadTeamDefinition(teamName, workDir)?.definition ?? buildDefaultTeam(teamName, session.model);
+      const definition = resolveTeamDefinition(teamName, workDir, session.model);
       if (!definition) {
         send({ type: 'error', message: `team not found: ${teamName}` });
         send({ type: 'done' });
         res.end();
         return;
       }
+      session.metadata.__actoviqLastTeamName = definition.name;
       const teamRunId = 'r-team-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const teamAbort = new AbortController();
       const teamDesc: GuiRunDescriptor = {
@@ -2156,9 +2593,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       try {
         send({ type: 'run.started', runId: teamRunId, model: session.model || null });
         const result = await createModelTeam(definition).ask(prompt, teamAbort.signal, {
+          workDir,
           onEvent: (e) => { forwardTeamEvent(e, teamRunId, send, teamDesc); },
         });
         teamDesc.status = 'done';
+        lastTeamRunSummary = `${definition.name} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s`;
         send({ type: 'command.result', title: `Team response · ${result.mode}`, text: result.answer, runId: teamRunId });
         if (result.incompleteReason) send({ type: 'notice', message: `team incomplete: ${result.incompleteReason}` });
         send({ type: 'state', state: await state() });
@@ -2170,6 +2609,36 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       } finally {
         runs.delete(teamRunId);
         invalidateHeavyState();
+        res.end();
+      }
+      return;
+    }
+
+    if (input === '/manager update' || input.startsWith('/manager update ')
+      || input.startsWith('/manager chat ')) {
+      // Streamed Manager run (plan M1): registers a RunRegistry kind='manager'
+      // run so the Monitor shows it live. Single-instance per project.
+      const isUpdate = input === '/manager update' || input.startsWith('/manager update ');
+      try {
+        let result: string;
+        if (isUpdate) {
+          const instruction = input.slice('/manager update'.length).trim() || undefined;
+          result = await runManagerTurn({ mode: 'update', instruction, send });
+        } else {
+          const text = input.slice('/manager chat'.length).trim();
+          result = await runManagerTurn({ mode: 'chat', text, send });
+        }
+        send({
+          type: 'command.result',
+          title: isUpdate ? 'Manager · progress updated' : 'Manager',
+          text: result,
+          runId: undefined,
+        });
+        send({ type: 'state', state: await state() });
+        send({ type: 'done' });
+      } catch (error) {
+        send({ type: 'error', message: (error as Error).message });
+      } finally {
         res.end();
       }
       return;
@@ -2205,6 +2674,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     runs.set(runId, run);
     foregroundRunId = runId;
     let streamedTextSeen = false;
+    void persistSessionRuntimeMetadata();
     try {
       // Router dispatch is skipped when a named config is active — the config's
       // model and/or provider replaces per-turn routing.
@@ -2242,7 +2712,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           canUseTool,
           model: activeBridgeModelApi.model,
           modelApi: activeBridgeModelApi.modelApi,
-          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
         });
       } else {
         stream = session.stream(expandImageRefs(input, workDir), {
@@ -2255,7 +2725,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           canUseTool,
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
           ...(hadamardModel ? { model: hadamardModel } : {}),
-          ...(activeTeamTool ? { tools: [...tools, activeTeamTool] } : {}),
+          ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
         });
       }
 
@@ -2602,6 +3072,17 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'GET' && url.pathname === '/app.css') return text(res, 200, createActoviqGuiStyles(), 'text/css');
       if (req.method === 'GET' && url.pathname === '/app.js') return text(res, 200, createActoviqGuiClientScript(), 'text/javascript');
+      if (req.method === 'GET' && (url.pathname === '/favicon.ico' || url.pathname === '/app-icon.png')) {
+        const assetsDir = resolveGuiAssetsDir();
+        if (!assetsDir) return text(res, 404, 'Not found');
+        const file = url.pathname === '/favicon.ico' ? 'actoviq-icon.ico' : 'actoviq-icon.png';
+        const type = url.pathname === '/favicon.ico' ? 'image/x-icon' : 'image/png';
+        try {
+          return bytes(res, 200, readFileSync(path.join(assetsDir, file)), type);
+        } catch {
+          return text(res, 404, 'Not found');
+        }
+      }
       // Vendored xterm static assets (loaded by the terminal pane via <script src>/<link>).
       if (req.method === 'GET' && url.pathname.startsWith('/assets/xterm/')) {
         const name = path.basename(url.pathname);
@@ -2610,12 +3091,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         try { return text(res, 200, readFileSync(path.join(xtermAssetsDir, name), 'utf8'), type); }
         catch { return text(res, 404, 'Not found'); } // prepare:xterm not run yet
       }
-      if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await state());
+      if (req.method === 'GET' && url.pathname === '/api/state') {
+        if (!managerDedupeTriggered && sdk) {
+          managerDedupeTriggered = true;
+          await dedupeManagerSessions().catch(() => undefined);
+        }
+        return json(res, 200, await state());
+      }
   if (req.method === 'GET' && url.pathname === '/api/team/definition') {
     const name = url.searchParams.get('name') || '';
-    const definition = loadTeamDefinition(name, workDir)?.definition
-      ?? buildDefaultTeam(name, session?.model ?? '')
-      ?? null;
+    const definition = resolveTeamDefinition(name, workDir, session?.model ?? '') ?? null;
     return json(res, 200, { definition });
   }
   if (req.method === 'POST' && url.pathname === '/api/team/save') {
@@ -2625,11 +3110,135 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (!def || typeof def.name !== 'string' || !def.name) {
         return json(res, 400, { error: 'definition.name is required' });
       }
-      const filePath = await saveTeamDefinition(def, { projectDir: workDir, homeDir: options.homeDir, overwrite: true });
-      return json(res, 200, { ok: true, filePath });
+      // Graph definitions are validated with the engine's own validator before
+      // touching disk — an editor can never save a graph the engine rejects.
+      if (def.mode === 'graph' || def.orchestration === 'graph') {
+        const problems = validateTeamGraph(def);
+        if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+      }
+      // target: 'project' (default, .actoviq/teams/) or 'personal' (~/.actoviq/teams/).
+      const target = body.target === 'personal' ? 'personal' : 'project';
+      const filePath = await saveTeamDefinition(def, {
+        projectDir: target === 'project' ? workDir : undefined,
+        homeDir: options.homeDir,
+        overwrite: true,
+      });
+      return json(res, 200, { ok: true, filePath, target });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/team/upgrade') {
+    // Migrate a legacy (v1) definition to graph orchestration (v2) — returns
+    // the migrated definition for editing; nothing is saved until /api/team/save.
+    try {
+      const body = await readJson(req);
+      const name = typeof body.name === 'string' ? body.name : '';
+      const definition = resolveTeamDefinition(name, workDir, session?.model ?? '');
+      if (!definition) return json(res, 404, { error: `team not found: ${name}` });
+      return json(res, 200, { definition: migrateTeamDefinitionToV2(definition) });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/team/preferences') {
+    // Persist preferences.team (autoInvoke / defaultAttached / confirmBeforeRun)
+    // into settings.json — the same block the TUI/REPL read.
+    try {
+      const body = await readJson(req);
+      const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir });
+      const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
+      const next = {
+        autoInvoke: typeof body.autoInvoke === 'boolean' ? body.autoInvoke : teamPrefs.autoInvoke,
+        defaultAttached: typeof body.defaultAttached === 'string'
+          ? (body.defaultAttached.trim() || null)
+          : teamPrefs.defaultAttached,
+        confirmBeforeRun: typeof body.confirmBeforeRun === 'boolean' ? body.confirmBeforeRun : teamPrefs.confirmBeforeRun,
+      };
+      writeTeamPreferences(raw, next);
+      await persistActoviqSettingsStore(store.configPath, raw);
+      await loadJsonConfigFile(store.configPath);
+      teamPrefs = next;
+      return json(res, 200, { ok: true, teamPreferences: teamPrefs });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/manager/state') {
+    const homeDir = managerHomeDir();
+    const cfg = await readManagerConfig(workDir, homeDir);
+    const plan = await readProjectPlanFile(workDir, homeDir);
+    const progress = await readProgressFile(workDir, homeDir);
+    const progressPath = managerProgressPath(workDir, homeDir);
+    let progressUpdatedAt: string | null = null;
+    try { progressUpdatedAt = (await stat(progressPath)).mtime.toISOString(); } catch { /* none yet */ }
+    const running = [...runs.values()].some(run => run.desc.kind === 'manager' && run.desc.status === 'running');
+    let transcript: Array<{ kind: string; text: string }> = [];
+    try {
+      if (!needsCredentials && sdk) transcript = managerPanelTranscript(await getManagerSession());
+    } catch { /* panel hydration is best-effort */ }
+    return json(res, 200, {
+      config: cfg,
+      plan: { milestones: plan.milestones.length, today: plan.today.length, upcoming: plan.upcoming.length },
+      progressChars: progress?.length ?? 0,
+      progressPreview: progress ? progress.slice(0, 2000) : null,
+      progressPath,
+      progressUpdatedAt,
+      running,
+      transcript,
+      schedules: (await listScheduledAutomationTasks(workDir))
+        .filter(task => task.kind === 'manager')
+        .map(task => ({ name: task.name, cron: task.cron, enabled: task.enabled })),
+    });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/manager/config') {
+    // Manager settings (plan M0/M3): model override, read-scope allowlist,
+    // and the PROGRESS.md workspace mirror toggle.
+    try {
+      const body = await readJson(req);
+      const homeDir = managerHomeDir();
+      const current = await readManagerConfig(workDir, homeDir);
+      const next: ManagerConfig = {
+        ...current,
+        model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
+        readScope: body.readScope === 'workspace+docs' || body.readScope === 'explicit-allowlist' || body.readScope === 'workspace-only'
+          ? body.readScope
+          : current.readScope,
+        allowedReadPaths: Array.isArray(body.allowedReadPaths)
+          ? body.allowedReadPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
+          : current.allowedReadPaths,
+        mirrorProgressToWorkspace: typeof body.mirrorProgressToWorkspace === 'boolean'
+          ? body.mirrorProgressToWorkspace
+          : current.mirrorProgressToWorkspace,
+      };
+      await writeManagerConfig(workDir, homeDir, next);
+      return json(res, 200, { ok: true, config: next });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && (url.pathname === '/api/manager/chat' || url.pathname === '/api/manager/update')) {
+    // NDJSON stream for the Project-view Manager panel (plan M0/M1).
+    const body = await readJson(req);
+    res.writeHead(200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'keep-alive',
+    });
+    const send = (event: GuiRunEvent) => { res.write(JSON.stringify(event) + '\n'); };
+    try {
+      const isUpdate = url.pathname === '/api/manager/update';
+      const text = await runManagerTurn(isUpdate
+        ? { mode: 'update', instruction: typeof body.instruction === 'string' ? body.instruction : undefined, send }
+        : { mode: 'chat', text: typeof body.text === 'string' ? body.text : '', send });
+      send({ type: 'manager.result', text, updated: isUpdate });
+      send({ type: 'done' });
+    } catch (error) {
+      send({ type: 'error', message: (error as Error).message });
+    } finally {
+      res.end();
+    }
+    return;
   }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
     const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
@@ -2780,6 +3389,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const folder = await pickFolder();
         return json(res, 200, { ok: true, folder });
       }
+      if (req.method === 'GET' && url.pathname === '/api/browse') {
+        try {
+          const rawPath = url.searchParams.get('path');
+          return json(res, 200, await browseDirectory(rawPath ?? undefined));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/project/open') {
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
@@ -2884,7 +3501,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
-        session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        const listed = await sdk!.sessions.list();
+        const target = listed.find(item => item.id === id);
+        if (target?.kind === 'manager') {
+          return json(res, 400, { error: 'Manager sessions live in the Project Manager panel only.' });
+        }
+        try {
+          session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        } catch {
+          const restored = await unarchiveSession(id);
+          if (!restored) return json(res, 404, { error: 'Session not found' });
+          session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        }
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/permission') {
@@ -3150,7 +3778,7 @@ function forwardTeamEvent(event: TeamEvent, runId: string, send: (event: GuiRunE
       return;
     case 'team.member.completed':
       send({ type: 'team.member.completed', runId, id: event.id, model: event.model, role: event.role, round: event.round, ok: event.ok, toolCalls: event.toolCalls, durationMs: event.durationMs, error: event.error });
-      upsertTeamMember(desc, event.id, { status: event.ok ? 'done' : 'error' });
+      upsertTeamMember(desc, event.id, { status: event.ok ? 'done' : 'error', error: event.error, toolCalls: event.toolCalls, durationMs: event.durationMs });
       if (desc) desc.toolCalls += event.toolCalls;
       return;
     case 'team.round.completed':
@@ -3160,15 +3788,23 @@ function forwardTeamEvent(event: TeamEvent, runId: string, send: (event: GuiRunE
     case 'team.synthesis':
       send({ type: 'team.synthesis', runId, round: event.round, decision: event.decision });
       return;
+    case 'team.edge.triggered':
+      send({ type: 'team.edge.triggered', runId, from: event.from, to: event.to, trigger: event.trigger, channel: event.channel });
+      if (desc?.team) {
+        if (!desc.team.edges) desc.team.edges = [];
+        desc.team.edges.push({ from: event.from, to: event.to, trigger: event.trigger, channel: event.channel });
+      }
+      return;
     case 'team.completed':
       send({ type: 'team.completed', runId, mode: event.mode, rounds: event.rounds, incompleteReason: event.incompleteReason });
+      if (desc?.team) desc.team.incompleteReason = event.incompleteReason;
       return;
     default:
       return;
   }
 }
 
-function upsertTeamMember(desc: GuiRunDescriptor | undefined, id: string, patch: { model?: string; status?: string; role?: string; currentTool?: string }): void {
+function upsertTeamMember(desc: GuiRunDescriptor | undefined, id: string, patch: { model?: string; status?: string; role?: string; currentTool?: string; error?: string; toolCalls?: number; durationMs?: number }): void {
   if (!desc?.team) return;
   let m = desc.team.members.find(x => x.id === id);
   if (!m) {
@@ -3179,6 +3815,9 @@ function upsertTeamMember(desc: GuiRunDescriptor | undefined, id: string, patch:
   if (patch.status !== undefined) m.status = patch.status;
   if (patch.role !== undefined) m.role = patch.role;
   if (patch.currentTool !== undefined) m.currentTool = patch.currentTool;
+  if (patch.error !== undefined) m.error = patch.error;
+  if (patch.toolCalls !== undefined) m.toolCalls = patch.toolCalls;
+  if (patch.durationMs !== undefined) m.durationMs = patch.durationMs;
 }
 
 export function createActoviqGuiHtml(): string {
@@ -3188,6 +3827,8 @@ export function createActoviqGuiHtml(): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Actoviq GUI</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="apple-touch-icon" href="/app-icon.png">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -3266,6 +3907,48 @@ export function createActoviqGuiHtml(): string {
         </header>
         <div class="detail-body" id="detailBody"></div>
       </section>
+      <aside class="manager-panel collapsed hidden" id="managerPanel" aria-label="Project Manager">
+        <header class="manager-panel-header" id="managerPanelHeader">
+          <span class="manager-panel-title">${guiIcon('gear')}<strong>Manager</strong><span id="managerPanelMeta" class="manager-panel-meta"></span></span>
+          <button type="button" id="managerPanelToggle" class="icon-btn" title="Expand / collapse">${guiIcon('chevronDown')}</button>
+        </header>
+        <div class="manager-panel-body">
+          <div id="managerStatusLine" class="manager-status-line muted"></div>
+          <div id="managerTranscript" class="manager-transcript"></div>
+          <div class="manager-actions">
+            <button type="button" id="managerUpdateBtn" class="pill-btn primary">Update progress</button>
+            <button type="button" id="managerSchedulesLink" class="pill-btn" title="Manager scheduled tasks">Schedules</button>
+            <button type="button" id="managerConfigBtn" class="pill-btn" title="Manager settings (model, read scope, mirror)">Settings</button>
+          </div>
+          <form id="managerConfigForm" class="manager-config-form hidden">
+            <label>Model
+              <input id="managerCfgModel" autocomplete="off" placeholder="session default">
+            </label>
+            <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files.</p>
+            <label>Read scope
+              <select id="managerCfgScope">
+                <option value="workspace-only">workspace-only</option>
+                <option value="workspace+docs">workspace+docs</option>
+                <option value="explicit-allowlist">explicit-allowlist</option>
+              </select>
+            </label>
+            <label id="managerCfgPathsLabel">Allowed read paths (one per line)
+              <textarea id="managerCfgPaths" rows="3" placeholder="D:\\docs\\project-notes"></textarea>
+            </label>
+            <label class="manager-cfg-check">
+              <input type="checkbox" id="managerCfgMirror"> Mirror PROGRESS.md into workspace (.actoviq/PROGRESS.md)
+            </label>
+            <div class="manager-actions">
+              <button type="submit" class="pill-btn primary">Save settings</button>
+              <button type="button" id="managerCfgCancel" class="pill-btn">Cancel</button>
+            </div>
+          </form>
+          <form id="managerChatForm" class="manager-chat-form">
+            <input id="managerChatInput" autocomplete="off" placeholder="Ask the Manager… (progress, priorities, milestones)">
+            <button type="submit" id="managerChatSend" class="pill-btn primary">Send</button>
+          </form>
+        </div>
+      </aside>
       <section class="project-conversation hidden" id="projectConversation">
       <header class="topbar">
         <div class="title-block">
@@ -3295,16 +3978,12 @@ export function createActoviqGuiHtml(): string {
         </div>
         <div class="pane-stack" id="paneStack">
           <section class="pane pane-chat active" id="pane-chat-default">
-            <section id="statusbar" class="statusbar"></section>
+            <div class="chat-chrome">
+              <section id="statusbar" class="statusbar"></section>
+              <div id="squadRoster" class="squad-roster hidden"></div>
+            </div>
             <section id="contextBar" class="context-bar hidden"></section>
             <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
-            <div id="squadRoster" class="squad-roster hidden"></div>
-            <div id="convActionBar" class="conv-action-bar hidden" aria-label="Conversation actions">
-              <button type="button" data-conv-action="summarize" class="conv-action-btn">Summarize</button>
-              <button type="button" data-conv-action="update-plan" class="conv-action-btn">Update plan</button>
-              <button type="button" data-conv-action="run-tests" class="conv-action-btn">Run tests</button>
-              <button type="button" data-conv-action="create-pr" class="conv-action-btn">Create PR suggestion</button>
-            </div>
             <section id="transcript" class="transcript"></section>
             <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
             <form id="composer" class="composer">
@@ -3405,15 +4084,13 @@ export function createActoviqGuiHtml(): string {
   <div id="contextMenu" class="context-menu hidden"></div>
   <div id="workspaceModal" class="modal hidden">
     <form id="workspaceForm" class="dialog workspace-dialog">
-      <h2>Workspace</h2>
-      <p class="muted">Switch to an existing workspace or open a local project folder.</p>
+      <h2>Open workspace</h2>
+      <p class="muted">Choose a folder with the system picker, paste a path, or pick a recent workspace.</p>
       <div id="workspaceChoices" class="workspace-choice-list"></div>
-      <label class="dialog-field">Workspace path
-        <div class="api-key-row">
-          <input id="workspacePathInput" autocomplete="off" placeholder="C:\\path\\to\\project">
-          <button type="button" id="workspaceBrowseBtn" class="round-btn" title="Browse folders">${guiIcon('folder')}</button>
-        </div>
-      </label>
+      <div class="workspace-path-row">
+        <input id="workspacePathInput" class="workspace-path-input" autocomplete="off" spellcheck="false" placeholder="C:\\path\\to\\project">
+        <button type="button" id="workspaceBrowseBtn" class="secondary-btn">Browse…</button>
+      </div>
       <p id="workspaceStatus" class="muted"></p>
       <div class="dialog-actions">
         <button type="button" id="cancelWorkspace">Cancel</button>
@@ -3650,7 +4327,7 @@ export function createActoviqGuiHtml(): string {
           <div class="automation-schedule-grid">
             <label>Name<input id="settingsScheduleName" autocomplete="off" placeholder="daily review"></label>
             <label>Cron<input id="settingsScheduleCron" autocomplete="off" placeholder="0 9 * * *"></label>
-            <label>Type<select id="settingsScheduleKind"><option value="workflow">Workflow</option><option value="prompt">Prompt</option></select></label>
+            <label>Type<select id="settingsScheduleKind"><option value="workflow">Workflow</option><option value="prompt">Prompt</option><option value="manager">Manager update</option></select></label>
             <label>Workflow<input id="settingsScheduleWorkflow" list="settingsWorkflowNames" autocomplete="off" placeholder="workflow name"></label>
           </div>
           <label class="automation-schedule-payload">Input or prompt<textarea id="settingsScheduleInput" autocomplete="off" placeholder="workflow input, or the prompt to run"></textarea></label>
@@ -3672,7 +4349,13 @@ export function createActoviqGuiHtml(): string {
         <div class="settings-group">
           <h2>Teams</h2>
           <p>Attach a model team or disable team orchestration.</p>
-          <div class="settings-action-row"><button type="button" id="settingsTeamOff" class="secondary-btn">No team</button></div>
+          <div class="settings-help-row"><span><strong>Auto-invoke</strong><small>When a team is attached, let the main agent call it as a tool. Off = manual /team ask only.</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamAutoInvoke"></label></div>
+          <div class="settings-help-row"><span><strong>Confirm before run</strong><small>Ask before /team ask starts (members + models).</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamConfirm"></label></div>
+          <label class="inline-field wide">Default team for new conversations<select id="settingsTeamDefaultAttached"></select></label>
+          <div class="settings-action-row">
+            <button type="button" id="settingsTeamPrefsSave" class="secondary-btn">Save team preferences</button>
+            <button type="button" id="settingsTeamOff" class="secondary-btn">No team</button>
+          </div>
           <div id="settingsTeamsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
@@ -3926,6 +4609,55 @@ button { cursor: pointer; }
 .plan-milestone .pm-title { font-weight: 600; font-size: 13.5px; color: var(--text-1); }
 .plan-milestone .pm-due { font-size: 11.5px; color: var(--text-2); }
 .plan-empty { color: #9aa0a6; font-size: 12.5px; margin: 0; }
+/* --- Project Manager panel (plan M0): collapsible bottom-right governance chat. --- */
+.manager-panel { position: absolute; right: 18px; bottom: 18px; width: 360px; max-height: 520px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-surface); box-shadow: 0 10px 34px rgba(0,0,0,.14); overflow: hidden; z-index: 40; }
+.manager-panel.collapsed { max-height: none; }
+.manager-panel.collapsed .manager-panel-body { display: none; }
+.manager-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; cursor: pointer; background: var(--bg-surface); border-bottom: 1px solid transparent; }
+.manager-panel:not(.collapsed) .manager-panel-header { border-bottom-color: var(--border); }
+.manager-panel-title { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--text-1); }
+.manager-panel-title .ui-icon { width: 15px; height: 15px; color: var(--accent); }
+.manager-panel-meta { font-size: 11.5px; color: #8a8d91; font-weight: 400; }
+.manager-panel-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; min-height: 0; }
+.manager-status-line { font-size: 11.5px; line-height: 1.5; }
+.manager-transcript { flex: 1; min-height: 120px; max-height: 260px; overflow: auto; display: grid; gap: 6px; align-content: start; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-app); padding: 8px; }
+.manager-transcript:empty::before { content: 'No messages yet — ask the Manager about progress, or click Update progress.'; color: #9aa0a6; font-size: 12px; padding: 4px; }
+.manager-msg { font-size: 12.5px; line-height: 1.5; border-radius: 8px; padding: 6px 9px; white-space: pre-wrap; word-break: break-word; }
+.manager-msg.user { background: var(--accent-soft); color: var(--text-1); justify-self: end; max-width: 92%; }
+.manager-msg.assistant { background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); justify-self: start; max-width: 92%; }
+.manager-msg.tool { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent); background: none; padding: 0 4px; }
+.manager-msg.error { color: var(--err); background: none; padding: 0 4px; }
+.manager-transcript .manager-msg.md-prose { white-space: normal; }
+.manager-transcript .manager-msg.md-prose .md-h:first-child { margin-top: 0; }
+.manager-transcript .manager-msg.md-prose h1.md-h { font-size: 1.15em; font-weight: 650; margin: .85em 0 .35em; line-height: 1.35; color: var(--text-1); }
+.manager-transcript .manager-msg.md-prose h2.md-h { font-size: 1.05em; font-weight: 650; margin: .75em 0 .3em; line-height: 1.35; color: var(--text-1); }
+.manager-transcript .manager-msg.md-prose h3.md-h, .manager-transcript .manager-msg.md-prose h4.md-h { font-size: .98em; font-weight: 650; margin: .65em 0 .25em; color: var(--text-1); }
+.manager-transcript .manager-msg.md-prose p.md-p { margin: 0 0 .65em; }
+.manager-transcript .manager-msg.md-prose p.md-p:last-child { margin-bottom: 0; }
+.manager-transcript .manager-msg.md-prose ul.md-ul, .manager-transcript .manager-msg.md-prose ol.md-ol { margin: .35em 0 .65em; padding-left: 1.25em; }
+.manager-transcript .manager-msg.md-prose ul.md-ul li, .manager-transcript .manager-msg.md-prose ol.md-ol li { margin: .2em 0; }
+.manager-transcript .manager-msg.md-prose blockquote.md-quote { margin: .55em 0; padding: .35em .75em; border-left: 3px solid var(--border); color: var(--text-2); }
+.manager-transcript .manager-msg.md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .75em 0; }
+.manager-transcript .manager-msg.md-prose strong { font-weight: 650; color: var(--text-1); }
+.manager-transcript .manager-msg.md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .92em; background: var(--bg-app); border: 1px solid var(--border); border-radius: 5px; padding: .05em .35em; }
+.manager-transcript .manager-msg.md-prose .code-block { margin: .55em 0; border-radius: 8px; overflow: auto; background: #0f172a; border: 1px solid #1e293b; }
+.manager-transcript .manager-msg.md-prose .code-block code { display: block; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45; color: #e2e8f0; white-space: pre; }
+.manager-transcript .manager-msg.md-prose a { color: var(--accent); text-decoration: none; }
+.manager-transcript .manager-msg.md-prose a:hover { text-decoration: underline; }
+.manager-actions { display: flex; gap: 8px; align-items: center; }
+.manager-chat-form { display: flex; gap: 6px; }
+.manager-chat-form input { flex: 1; min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; outline: none; font-size: 13px; background: var(--bg-app); color: var(--text-1); }
+.manager-chat-form input:focus { border-color: var(--accent); }
+.manager-panel .pill-btn { font-size: 12.5px; }
+.manager-panel.running .manager-panel-title strong::after { content: ' · running'; color: var(--accent); font-weight: 500; }
+/* Manager settings form (plan M0/M3): model / read scope / mirror. */
+.manager-config-form { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); padding: 10px 12px; margin-bottom: 8px; }
+.manager-config-form.hidden { display: none; }
+.manager-config-form label { display: grid; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.manager-config-form input[type="text"], .manager-config-form input:not([type]), .manager-config-form select, .manager-config-form textarea { border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; background: var(--bg-app); color: var(--text-1); font-weight: 400; }
+.manager-config-form .manager-cfg-check { display: flex; align-items: center; gap: 7px; font-weight: 500; cursor: pointer; }
+.manager-cfg-hint { font-size: 11.5px; color: var(--text-2); margin: 0; line-height: 1.45; font-weight: 400; }
+#managerCfgPathsLabel.hidden { display: none; }
 /* --- Right context rail (plan/UI_PLAN §3): live run/team status. --- */
 .rail-section { margin-bottom: 16px; }
 .rail-section h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
@@ -3937,6 +4669,14 @@ button { cursor: pointer; }
 .rail-run .rr-tool { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); margin-top: 3px; }
 .rail-run .rr-members { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .rail-run .rr-member { font-size: 11px; border-radius: 4px; padding: 1px 6px; background: #eef0f1; color: #5f6368; }
+/* --- Team Run tree (plan §3.6 / Phase 5): live member tree in the rail. --- */
+.team-tree-head { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 2px 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 7px; font-size: 12.5px; }
+.team-tree-row:hover { background: var(--bg-surface); }
+.team-tree-row .r-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.team-tree-row .r-meta { max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-2); }
+.team-tree-row .r-meta.err { color: var(--err); }
+.team-tree-warn { font-size: 11.5px; color: var(--warn); margin: 5px 2px 0; }
 /* --- Team region (plan/UI_PLAN §5): squad bar + collaboration graph + inspector. --- */
 .team-layout { display: flex; padding: 0; overflow: hidden; }
 .team-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -3990,7 +4730,16 @@ button { cursor: pointer; }
 .te-btn.danger { color: var(--err); }
 .te-btn:hover { background: var(--bg-app); }
 .te-btn.primary:hover { background: var(--accent-strong); }
-.te-actions { display: flex; gap: 8px; margin-top: 6px; }
+.te-actions { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; flex-wrap: wrap; }
+.te-hint { font-size: 12px; color: var(--text-2); margin: 0 0 8px; line-height: 1.5; }
+.te-check label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-1); cursor: pointer; }
+.te-target select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; padding: 0 8px; }
+.te-field select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; padding: 0 8px; width: 100%; }
+.te-edge-row { background: var(--bg-surface); }
+.te-problems { border: 1px solid rgba(220,38,38,.35); background: #FEF2F2; color: var(--err); border-radius: 8px; padding: 9px 11px; margin-top: 8px; font-size: 12px; display: grid; gap: 3px; }
+.te-problems.hidden { display: none; }
+.graph-mode-pill { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 10px; background: var(--accent-soft); color: var(--accent); }
+.graph-unreachable { opacity: .65; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid var(--border); background: var(--bg-app); }
 .sidebar {
@@ -4071,7 +4820,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .sidebar-footer .nav-btn { flex: 1; }
 .icon-btn { width: 34px; height: 34px; display: inline-grid; place-items: center; }
 .icon-btn .ui-icon, .round-btn .ui-icon, .send-btn .ui-icon { width: 18px; height: 18px; }
-.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff; }
+.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff; position: relative; }
 .workbench { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tabbar { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #e7e7e7; background: #fafafa; min-height: 38px; flex: 0 0 auto; }
 .tabbar-tabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
@@ -4169,31 +4918,9 @@ select { border: 1px solid #dddddd; background: #fff; color: #202124; border-rad
 .statusbar { min-height: 34px; padding: 8px 18px; color: #6b6f75; font-size: 13px; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
 .statusbar.running::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #4b93f7; box-shadow: 0 0 0 0 rgba(75,147,247,.45); animation: pulse 1.2s infinite; }
 .statusbar.error::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #c7392f; }
-.transcript { flex: 1; overflow: auto; padding: 24px max(22px, 12vw) 18px; }
-.message { margin: 0 0 18px; line-height: 1.55; white-space: pre-wrap; }
-.message.user { margin-left: auto; max-width: 68%; background: #f1f2f3; padding: 10px 14px; border-radius: 16px; }
-.message.assistant { max-width: 840px; }
-.message.assistant a { color: #2f5fa8; }
-.message.assistant .md-h { margin: 14px 0 8px; line-height: 1.3; }
-.message.assistant p.md-p { margin: 0 0 12px; }
-.message.assistant ul.md-ul { margin: 8px 0; padding-left: 22px; }
-.message.assistant ol.md-ol { margin: 8px 0; padding-left: 24px; }
-.message.assistant ul.md-ul li, .message.assistant ol.md-ol li { margin: 3px 0; }
-.message.assistant li.md-task { list-style: none; margin-left: -20px; }
-.message.assistant li.md-task input[type="checkbox"] { margin-right: 7px; accent-color: #4a90f7; }
-.message.assistant li.md-task-done { color: #9aa0a6; }
-.message.assistant li.md-task-done > :not(input) { text-decoration: line-through; }
-.message.assistant blockquote.md-quote { margin: 8px 0; padding: 4px 14px; border-left: 3px solid #d8d8d8; color: #5f6368; }
-.message.assistant hr.md-hr { border: 0; border-top: 1px solid #e2e2e2; margin: 16px 0; }
-.message.assistant del { color: #9aa0a6; }
-.message.assistant .md-table { border-collapse: collapse; margin: 10px 0; font-size: 13.5px; display: block; overflow-x: auto; }
-.message.assistant .md-table th, .message.assistant .md-table td { border: 1px solid #e2e2e2; padding: 6px 11px; text-align: left; }
-.message.assistant .md-table th { background: #f6f7f8; font-weight: 600; }
-.message.assistant .md-table tr:nth-child(even) td { background: #fafbfc; }
-.message.assistant .md-table :is(th, td) :where(.inline-code) { background: #eef0f1; }
-.message.assistant .inline-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; background: #f1f2f3; padding: 1px 5px; border-radius: 5px; }
-.code-block { position: relative; margin: 10px 0; padding: 12px; background: #1f2330; color: #e6e9ef; border-radius: 8px; overflow: auto; }
-.code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; white-space: pre; }
+.transcript { flex: 1; overflow: auto; }
+.code-block { position: relative; margin: 10px 0; padding: 12px 14px; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; overflow: auto; border: 1px solid #2d2d2d; }
+.code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.5; white-space: pre; }
 .copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.08); color: #e6e9ef; padding: 0 8px; font-size: 12px; }
 .copy-btn:hover { background: rgba(255,255,255,.16); }
 .code-lang { position: absolute; top: 6px; left: 12px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; color: rgba(230,233,239,.5); letter-spacing: .04em; }
@@ -4271,6 +4998,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .pill-btn, .toolbar-select, .filter-chip, .view-toggle button { min-height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); padding: 0 14px; box-shadow: 0 1px 1px rgba(17,24,39,.02); }
 .pill-btn.primary, .region-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 7px 18px rgba(37,99,235,.18); }
 .pill-btn:hover, .toolbar-select:hover, .filter-chip:hover, .view-toggle button:hover { border-color: #C7D2FE; background: #F8FBFF; }
+.pill-btn.primary:hover, .region-actions .primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; box-shadow: 0 7px 18px rgba(37,99,235,.28); }
 .overview-toolbar { align-items: center; padding: 16px 26px; gap: 10px; background: var(--bg-surface); }
 .overview-search-wrap, .detail-search-wrap { height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 280px; flex: 1; max-width: 560px; }
 .overview-search-wrap .search-icon, .detail-search-wrap .ui-icon { color: #8A8D91; flex: 0 0 auto; }
@@ -4317,8 +5045,17 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .filter-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .detail-layout { grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; }
 .detail-conversations { gap: 14px; }
-.conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; }
+.conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; position: relative; }
 .conv-card.active { background: linear-gradient(180deg, #F8FBFF, #FFFFFF); box-shadow: 0 0 0 1px rgba(37,99,235,.2); }
+.conv-card.archived { opacity: .92; }
+.conv-archive-btn { position: absolute; top: 12px; right: 12px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-muted); border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; z-index: 1; }
+.conv-archive-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.detail-archived-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.detail-archived-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-muted); padding: 10px 14px; cursor: pointer; font: inherit; color: inherit; }
+.detail-archived-toggle:hover { border-color: #b9c6e6; }
+.detail-archived-toggle .count { color: var(--text-muted); font-size: 12px; }
+.detail-archived-list { display: grid; gap: 12px; margin-top: 12px; }
+.detail-archived-list.hidden { display: none; }
 .conv-title { font-size: 17px; font-weight: 700; }
 .conv-preview { font-size: 13px; margin: 2px 0 8px; }
 .conv-preview-text { font-size: 13px; color: var(--text-1); line-height: 1.45; max-height: 8em; overflow: auto; background: #F8FAFC; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
@@ -4343,33 +5080,173 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .checkline i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #93C5FD; flex: 0 0 auto; }
 .checkline.done i { background: var(--ok); border-color: var(--ok); box-shadow: inset 0 0 0 3px #fff; }
 .context-actions { display: flex; gap: 8px; }
-.message-row { max-width: 920px; margin: 0 auto 18px; display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; align-items: start; }
-.message-row.row-user { max-width: 920px; }
-.msg-avatar { width: 36px; height: 36px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--role-planner); color: #fff; font-weight: 700; box-shadow: 0 1px 2px rgba(17,24,39,.15); }
-.row-user .msg-avatar { background: linear-gradient(135deg, #CBD5E1, #64748B); }
-.row-tool .msg-avatar { background: var(--role-shell); }
-.row-error .msg-avatar { background: var(--err); }
-.row-notice .msg-avatar { background: var(--role-runtime); }
+/* --- Chat pane chrome + transcript column (plan/UI_PLAN §6). --- */
+.pane-chat { background: var(--bg-app); }
+.chat-chrome {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: calc(920px + min(64px, 8vw));
+  margin: 0 auto;
+  padding: 10px min(32px, 4vw) 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,.92);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+.chat-chrome .statusbar {
+  flex: 1 1 120px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.chat-chrome .squad-roster {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+/* --- Cursor-like transcript (markdown prose, no bubble chrome). --- */
+.message-row {
+  max-width: 820px;
+  margin: 0 auto 24px;
+  display: block;
+}
+.message-row.row-user { margin-bottom: 18px; }
 .msg-wrap { min-width: 0; }
+.msg-error-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #b42318;
+  margin: 0 0 6px;
+}
+.message-row .message {
+  margin: 0;
+  white-space: normal;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #374151;
+}
+.message-row .message.user {
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04);
+}
+.message-row .message.assistant {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: #374151;
+}
+.message-row .message.error {
+  padding: 0;
+  border: 0;
+  color: #b42318;
+  white-space: pre-wrap;
+}
+.message-row .message.notice {
+  padding: 0;
+  border: 0;
+  color: #6b7280;
+  white-space: pre-wrap;
+}
+.message-row .md-prose .md-h:first-child { margin-top: 0; }
+.message-row .md-prose h1.md-h { font-size: 1.35em; font-weight: 650; margin: 1.1em 0 .45em; line-height: 1.35; color: #111827; }
+.message-row .md-prose h2.md-h { font-size: 1.2em; font-weight: 650; margin: 1em 0 .4em; line-height: 1.35; color: #111827; }
+.message-row .md-prose h3.md-h, .message-row .md-prose h4.md-h, .message-row .md-prose h5.md-h, .message-row .md-prose h6.md-h {
+  font-size: 1.02em; font-weight: 650; margin: .9em 0 .35em; line-height: 1.4; color: #111827;
+}
+.message-row .md-prose p.md-p { margin: 0 0 .85em; }
+.message-row .md-prose p.md-p:last-child { margin-bottom: 0; }
+.message-row .md-prose ul.md-ul, .message-row .md-prose ol.md-ol { margin: .45em 0 .85em; padding-left: 1.45em; }
+.message-row .md-prose ul.md-ul li, .message-row .md-prose ol.md-ol li { margin: .28em 0; }
+.message-row .md-prose li.md-task { list-style: none; margin-left: -1.2em; }
+.message-row .md-prose li.md-task input[type="checkbox"] { margin-right: .45em; accent-color: #2563eb; vertical-align: middle; }
+.message-row .md-prose li.md-task-done { color: #9ca3af; }
+.message-row .md-prose li.md-task-done > :not(input) { text-decoration: line-through; }
+.message-row .md-prose blockquote.md-quote {
+  margin: .75em 0;
+  padding: .15em 0 .15em 12px;
+  border-left: 3px solid #e5e7eb;
+  color: #6b7280;
+}
+.message-row .md-prose hr.md-hr { border: 0; border-top: 1px solid #e5e7eb; margin: 1.1em 0; }
+.message-row .md-prose del { color: #9ca3af; }
+.message-row .md-prose strong { font-weight: 650; color: #111827; }
+.message-row .md-prose em { color: #374151; }
+.message-row .md-prose .md-table { border-collapse: collapse; margin: .75em 0; font-size: 13px; display: block; overflow-x: auto; width: 100%; }
+.message-row .md-prose .md-table th, .message-row .md-prose .md-table td { border: 1px solid #e5e7eb; padding: 7px 10px; text-align: left; vertical-align: top; }
+.message-row .md-prose .md-table th { background: #f9fafb; font-weight: 650; color: #111827; }
+.message-row .md-prose .md-table tr:nth-child(even) td { background: #fcfcfd; }
+.message-row .md-prose .md-table :is(th, td) :where(.inline-code) { background: #f3f4f6; }
+.message-row .md-prose .inline-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .88em;
+  background: #f3f4f6;
+  color: #1f2937;
+  padding: .12em .35em;
+  border-radius: 4px;
+}
+.message-row .md-prose a { color: #2563eb; text-decoration: none; }
+.message-row .md-prose a:hover { text-decoration: underline; }
+.message-row .md-prose .code-block {
+  margin: .8em 0;
+  padding: 12px 14px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 8px;
+  border: 1px solid #2d2d2d;
+}
+.message-row .md-prose .code-block code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.message-row .message.user .code-block {
+  background: #f6f8fa;
+  color: #24292f;
+  border-color: #d0d7de;
+}
+.message-row .message.user .code-block .copy-btn {
+  border-color: rgba(27,31,36,.15);
+  background: rgba(255,255,255,.75);
+  color: #57606a;
+}
+.message-row .message.user .code-block .code-lang { color: rgba(87,96,106,.75); }
+.message-row.row-member {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.msg-avatar { width: 36px; height: 36px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--role-planner); color: #fff; font-weight: 700; box-shadow: 0 1px 2px rgba(17,24,39,.15); }
 .msg-head { display: flex; align-items: center; gap: 8px; margin: 0 0 5px; }
 .msg-head strong { font-size: 14px; }
 .role-chip { min-height: 20px; display: inline-flex; align-items: center; border-radius: 999px; background: #EAF2FF; color: var(--accent); padding: 0 8px; font-size: 11px; }
-.message { margin-bottom: 0; }
-.message.user { margin-left: 0; max-width: none; background: #F8FAFC; border: 1px solid var(--border); border-radius: 12px; }
-.message.assistant { max-width: none; background: transparent; }
-.message.notice, .message.tool, .message.error { max-width: none; border-left: 0; padding-left: 0; }
-.transcript { padding: 22px min(32px, 4vw) 18px; background: linear-gradient(180deg, #FFFFFF 0%, #FBFCFD 100%); }
-/* --- Multi-agent transcript (plan/UI_PLAN §6). --- */
+.transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px min(32px, 5vw) 28px;
+  background: #f7f7f8;
+}
+.transcript > .tool-card,
+.transcript > .system-event { max-width: 820px; margin-left: auto; margin-right: auto; }
+.pane-chat .composer { flex: 0 0 auto; margin-top: 0; }
 .conv-status-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: #E8F7EF; color: var(--ok); border: 1px solid rgba(16,185,129,.25); }
 .conv-status-pill.running { background: var(--accent-soft); color: var(--accent); border-color: rgba(37,99,235,.25); }
 .conv-status-pill.error { background: #FEE2E2; color: var(--err); border-color: rgba(239,68,68,.25); }
 .conv-status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.squad-roster { display: flex; flex-wrap: wrap; gap: 7px; max-width: 920px; margin: 0 auto 14px; padding: 0 min(32px, 4vw); }
+.squad-roster { display: flex; flex-wrap: wrap; gap: 7px; }
 .squad-roster.hidden { display: none; }
-.conv-action-bar { display: flex; flex-wrap: wrap; gap: 8px; max-width: 920px; margin: 0 auto 12px; padding: 0 min(32px, 4vw); }
-.conv-action-bar.hidden { display: none; }
-.conv-action-btn { min-height: 30px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); color: var(--text-1); padding: 0 12px; font-size: 12px; font-weight: 600; }
-.conv-action-btn:hover { background: var(--accent-soft); border-color: #BFDBFE; color: var(--accent); }
 .roster-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 11px 4px 4px; font-size: 12px; font-weight: 600; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); }
 .roster-chip .rc-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; flex: 0 0 20px; }
 .roster-chip .rc-avatar .ui-icon { width: 12px; height: 12px; }
@@ -4554,10 +5431,26 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.18); display: grid; place-items: center; padding: 20px; z-index: 30; }
 .modal.hidden, .settings-view.hidden { display: none; }
 .dialog { width: min(520px, 100%); background: #fff; border-radius: 8px; border: 1px solid #d8d8d8; padding: 18px; box-shadow: 0 20px 55px rgba(0,0,0,.14); }
+.dialog.workspace-dialog { width: min(760px, 100%); }
+.workspace-choice-list { display: grid; gap: 4px; max-height: 160px; overflow: auto; margin: 10px 0 12px; padding: 2px; }
+.workspace-path-row { display: flex; align-items: stretch; gap: 8px; margin-top: 4px; }
+.workspace-path-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  border: 1px solid #d8d8d8;
+  border-radius: 8px;
+  padding: 0 12px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12.5px;
+  background: #fff;
+}
+.workspace-path-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.workspace-path-row .secondary-btn { flex: 0 0 auto; min-height: 38px; padding: 0 14px; white-space: nowrap; }
 .dialog h2 { margin: 0 0 8px; font-size: 18px; }
 .dialog-field { display: grid; gap: 6px; margin: 14px 0 8px; color: #5f6368; font-size: 13px; }
 .dialog-field input { min-height: 38px; border: 1px solid #d8d8d8; border-radius: 9px; padding: 0 10px; outline: none; }
-.workspace-choice-list { display: grid; gap: 4px; max-height: 220px; overflow: auto; margin: 12px 0; padding: 2px; }
 .workspace-choice { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; padding: 9px 10px; cursor: pointer; font: inherit; }
 .workspace-choice:hover, .workspace-choice.active { background: #f1f1ef; border-color: #e1e1df; }
 .workspace-choice strong, .workspace-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4615,6 +5508,8 @@ kbd { border: 1px solid #d8d8d8; border-bottom-width: 2px; border-radius: 6px; p
 .settings-help-row > span { display: grid; gap: 3px; }
 .settings-help-row small { color: #777b80; }
 .settings-help-row .secondary-btn { white-space: nowrap; }
+.switch-field { display: inline-flex; align-items: center; }
+.switch-field input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
 .settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; }
 .settings-card-list.compact { max-height: 260px; }
 .settings-card { border: 1px solid #e3e5e7; border-radius: 8px; padding: 12px; display: grid; gap: 8px; background: #fff; }
@@ -4668,7 +5563,33 @@ body[data-theme="dark"] .sidebar, body[data-theme="dark"] .settings-sidebar { ba
 body[data-theme="dark"] input, body[data-theme="dark"] textarea, body[data-theme="dark"] select, body[data-theme="dark"] .pill-btn, body[data-theme="dark"] .dialog-actions button, body[data-theme="dark"] .settings-savebar button, body[data-theme="dark"] .secondary-btn, body[data-theme="dark"] .surface-actions button, body[data-theme="dark"] .surface-card button, body[data-theme="dark"] .settings-card button, body[data-theme="dark"] .command-chip { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
 body[data-theme="dark"] .nav-btn, body[data-theme="dark"] .settings-tab, body[data-theme="dark"] .project-row, body[data-theme="dark"] .project-list button, body[data-theme="dark"] .command-list button, body[data-theme="dark"] .icon-btn, body[data-theme="dark"] .round-btn, body[data-theme="dark"] .mini-action-btn, body[data-theme="dark"] .check-row, body[data-theme="dark"] .slash-menu button { color: #e8eaed !important; }
 body[data-theme="dark"] .topbar, body[data-theme="dark"] .statusbar, body[data-theme="dark"] .result h3, body[data-theme="dark"] .result .row, body[data-theme="dark"] .mode-card, body[data-theme="dark"] .settings-row, body[data-theme="dark"] .settings-card, body[data-theme="dark"] .surface-panel header, body[data-theme="dark"] .surface-card, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { border-color: #3b3d43; }
-body[data-theme="dark"] .message.user, body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
+body[data-theme="dark"] .chat-chrome { background: #1f2023; border-color: #3b3d43; }
+body[data-theme="dark"] .transcript { background: #18191c; }
+body[data-theme="dark"] .message-row .message { color: #d1d5db; }
+body[data-theme="dark"] .message-row .message.user {
+  background: #26272b;
+  border-color: #3b3d43;
+  color: #e8eaed;
+  box-shadow: none;
+}
+body[data-theme="dark"] .message-row .message.assistant { background: transparent; border: 0; color: #d1d5db; }
+body[data-theme="dark"] .message-row .md-prose strong,
+body[data-theme="dark"] .message-row .md-prose h1.md-h,
+body[data-theme="dark"] .message-row .md-prose h2.md-h,
+body[data-theme="dark"] .message-row .md-prose h3.md-h,
+body[data-theme="dark"] .message-row .md-prose h4.md-h,
+body[data-theme="dark"] .message-row .md-prose h5.md-h,
+body[data-theme="dark"] .message-row .md-prose h6.md-h { color: #e8eaed; }
+body[data-theme="dark"] .message-row .md-prose .inline-code { background: #303238; color: #e8eaed; }
+body[data-theme="dark"] .message-row .md-prose blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
+body[data-theme="dark"] .message-row .md-prose hr.md-hr { border-top-color: #3b3d43; }
+body[data-theme="dark"] .message-row .md-prose .md-table th, body[data-theme="dark"] .message-row .md-prose .md-table td { border-color: #3b3d43; }
+body[data-theme="dark"] .message-row .md-prose .md-table th { background: #26272b; }
+body[data-theme="dark"] .message-row .md-prose .md-table tr:nth-child(even) td { background: #232529; }
+body[data-theme="dark"] .message-row .md-prose del, body[data-theme="dark"] .message-row .md-prose li.md-task-done { color: #6f7479; }
+body[data-theme="dark"] .message-row .md-prose .md-table :is(th, td) :where(.inline-code) { background: #303238; }
+body[data-theme="dark"] .message-row .message.user .code-block { background: #1f2023; color: #c7ccd3; border-color: #3b3d43; }
+body[data-theme="dark"] .result h3, body[data-theme="dark"] kbd, body[data-theme="dark"] .slash-menu button.active, body[data-theme="dark"] .tool-card header, body[data-theme="dark"] .attachment-chip { background: #303238; }
 body[data-theme="dark"] .settings-card { background: #1f2023; }
 body[data-theme="dark"] .automation-region-section + .automation-region-section { border-top-color: #3b3d43; }
 body[data-theme="dark"] .runtime-discovery-head { border-top-color: #3b3d43; }
@@ -4676,15 +5597,7 @@ body[data-theme="dark"] .runtime-status.ready { background: #1e2b22; color: #8dd
 body[data-theme="dark"] .runtime-status.detected { background: #1f2b3a; color: #8ab4f8; }
 body[data-theme="dark"] .runtime-status.configured { background: #302719; color: #f4c779; }
 body[data-theme="dark"] .runtime-status.missing { background: #33363c; color: #aab0b8; }
-body[data-theme="dark"] .message.assistant .inline-code { background: #303238; }
-body[data-theme="dark"] .message.assistant blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
-body[data-theme="dark"] .message.assistant hr.md-hr { border-top-color: #3b3d43; }
-body[data-theme="dark"] .message.assistant .md-table th, body[data-theme="dark"] .message.assistant .md-table td { border-color: #3b3d43; }
-body[data-theme="dark"] .message.assistant .md-table th { background: #26272b; }
-body[data-theme="dark"] .message.assistant .md-table tr:nth-child(even) td { background: #232529; }
-body[data-theme="dark"] .message.assistant del, body[data-theme="dark"] .message.assistant li.md-task-done { color: #6f7479; }
-body[data-theme="dark"] .message.assistant .md-table :is(th, td) :where(.inline-code) { background: #303238; }
-body[data-theme="dark"] .message.assistant a { color: #8ab4f8; }
+body[data-theme="dark"] .message-row .md-prose a { color: #8ab4f8; }
 body[data-theme="dark"] .brand-name { color: #e8eaed; }
 body[data-theme="dark"] .context-menu { background: #26272b; border-color: #3b3d43; }
 body[data-theme="dark"] .context-menu button { color: #e8eaed; }
@@ -4789,6 +5702,9 @@ const _ICONS = {
   dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  drive: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/>',
+  chevronUp: '<path d="m18 15-6-6-6 6"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
   memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
@@ -4811,6 +5727,23 @@ function api(path, options = {}) {
 const __name = (target) => target;
 ${renderMarkdown.toString()}
 function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
+let markdownRenderTimer = null;
+function scheduleMarkdownRender(node) {
+  if (!node) return;
+  if (markdownRenderTimer) return;
+  markdownRenderTimer = setTimeout(() => {
+    markdownRenderTimer = null;
+    if (node && node.dataset.raw != null) renderMarkdownInto(node, node.dataset.raw);
+    scrollTranscript();
+  }, 80);
+}
+function setMessageContent(node, kind, text) {
+  if (kind === 'user' || kind === 'assistant') {
+    renderMarkdownInto(node, text || '');
+  } else {
+    node.textContent = text || '';
+  }
+}
 const state = {
   currentAssistant: null,
   pendingPermissionId: null,
@@ -4846,11 +5779,16 @@ const state = {
   // is the slow step — hydrating the transcript). This avoids the lag of
   // loading a full chat on every card click.
   detailSelectedId: null,
+  detailArchivedExpanded: false,
+  activeSessionId: null,
+  lastHydratedMessages: null,
+  transcriptCache: {},
   // Team region: selected squad + its expanded definition + selected graph node.
   teamSelected: null,
   teamDefinition: null,
   teamSelectedNode: null,
   teamEditing: false,
+  teamSaveTarget: 'project',
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
@@ -5298,6 +6236,7 @@ function readyLabel() {
   return 'Ready' + (state.lastUsageText ? ' - ' + state.lastUsageText : '');
 }
 function finalizeAssistant() {
+  if (markdownRenderTimer) { clearTimeout(markdownRenderTimer); markdownRenderTimer = null; }
   if (state.currentAssistant && state.currentAssistant.dataset.raw) {
     renderMarkdownInto(state.currentAssistant, state.currentAssistant.dataset.raw);
     scrollTranscript();
@@ -5310,25 +6249,20 @@ function displayUserText(text) {
 function addMessage(kind, text) {
   const row = document.createElement('div');
   row.className = 'message-row row-' + kind;
-  const avatar = document.createElement('span');
-  avatar.className = 'msg-avatar';
-  const label = kind === 'user' ? 'User' : kind === 'assistant' ? 'Agent' : kind === 'tool' ? 'Tool' : kind === 'error' ? 'Error' : 'System';
-  avatar.textContent = label.slice(0, 1);
   const wrap = document.createElement('div');
   wrap.className = 'msg-wrap';
-  const head = document.createElement('div');
-  head.className = 'msg-head';
-  const name = document.createElement('strong');
-  name.textContent = label;
-  const chip = document.createElement('span');
-  chip.className = 'role-chip';
-  chip.textContent = kind === 'user' ? 'You' : kind === 'assistant' ? 'Agent' : kind;
-  head.append(name, chip);
+  if (kind === 'error') {
+    const label = document.createElement('div');
+    label.className = 'msg-error-label';
+    label.textContent = 'Error';
+    wrap.appendChild(label);
+  }
   const node = document.createElement('div');
-  node.className = 'message ' + kind;
-  node.textContent = text || '';
-  wrap.append(head, node);
-  row.append(avatar, wrap);
+  node.className = 'message ' + kind + ((kind === 'user' || kind === 'assistant') ? ' md-prose' : '');
+  if (kind === 'assistant' && !text) node.dataset.raw = '';
+  setMessageContent(node, kind, text || '');
+  wrap.appendChild(node);
+  row.appendChild(wrap);
   transcript.appendChild(row);
   scrollTranscript();
   return node;
@@ -5400,16 +6334,11 @@ function appendPrCard(parent, title, comments) {
   parent.appendChild(card);
 }
 function parseDiffStats(text) {
-  const added = Number(text.match(/\+(\d+)(?:\s*line)?/i)?.[1] || 0);
-  const removed = Number(text.match(/(?:^|\s)-(\d+)(?:\s*line)?/im)?.[1] || 0);
+  const added = Number(text.match(/\\+(\\d+)(?:\\s*line)?/i)?.[1] || 0);
+  const removed = Number(text.match(/(?:^|\\s)-(\\d+)(?:\\s*line)?/im)?.[1] || 0);
   return { added, removed };
 }
-function updateConversationActionBar() {
-  const bar = el('convActionBar');
-  if (!bar) return;
-  const show = state.activeRegion === 'project' && state.projectView === 'conversation';
-  bar.classList.toggle('hidden', !show);
-}
+
 function addSystemEvent(text, timeStr) {
   const row = document.createElement('div');
   row.className = 'system-event';
@@ -5649,11 +6578,11 @@ function updateToolActivity(event) {
   if (event.ok && (toolName === 'edit' || toolName === 'write')) {
     const stats = parseDiffStats(output);
     if (stats.added || stats.removed) appendFileChangeStrip(node.body, stats.added, stats.removed);
-    const fileMatch = output.match(/(?:file|path)[:\s]+([^\\n]+)/i);
+    const fileMatch = output.match(/(?:file|path)[:\\s]+([^\\n]+)/i);
     if (fileMatch) appendAttachmentCard(node.body, fileMatch[1].trim(), toolName === 'write' ? 'Written' : 'Edited');
   }
   if (event.ok && toolName === 'bash' && /pull request|gh pr|create pr/i.test(output)) {
-    const prMatch = output.match(/pull request #?(\d+)/i);
+    const prMatch = output.match(/pull request #?(\\d+)/i);
     appendPrCard(node.body, prMatch ? 'Pull Request #' + prMatch[1] : 'Pull Request', (output.match(/comment/gi) || []).length || null);
   }
   setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? '' : 'error');
@@ -5788,14 +6717,24 @@ function renderSettingsCommandPanels() {
   renderWorkflowNameOptions(snapshot.workflows || []);
   if (!el('settingsScheduleCron').value.trim()) setField('settingsScheduleCron', '0 9 * * *');
   renderScheduledTasksList(snapshot.scheduledTasks || []);
-  const builtInTeams = ['panel-analysis', 'analysis', 'reviewer'].map(name => ({ name, source: 'built-in', definition: { mode: 'built-in', members: [] } }));
-  const savedTeamNames = new Set((snapshot.teams || []).map(team => team.name));
-  const teams = [...(snapshot.teams || []), ...builtInTeams.filter(team => !savedTeamNames.has(team.name))];
+  // snapshot.teams already includes the built-in presets (shadowed by any
+  // same-named user file) — no client-side placeholder list.
+  const teams = snapshot.teams || [];
   renderSettingsCardList('settingsTeamsList', teams, (root, team) => {
-    addSettingsCard(root, team.name, describeParts([team.definition?.mode, team.definition?.members ? team.definition.members.length + ' members' : '', team.source]), '', [
+    addSettingsCard(root, team.name, describeParts([team.definition?.mode, team.definition?.members ? team.definition.members.length + ' members' : '', team.source]), team.definition?.description || '', [
       { label: team.name === snapshot.activeTeamName ? 'Active' : 'Attach', disabled: team.name === snapshot.activeTeamName, handler: () => runSettingsCommand('/team attach ' + team.name, 'Attaching team...') },
     ]);
   });
+  // Team preferences (plan §3.3): autoInvoke / defaultAttached / confirmBeforeRun.
+  const teamPrefs = snapshot.teamPreferences || { autoInvoke: false, defaultAttached: null, confirmBeforeRun: true };
+  setChecked('settingsTeamAutoInvoke', !!teamPrefs.autoInvoke);
+  setChecked('settingsTeamConfirm', teamPrefs.confirmBeforeRun !== false);
+  renderSelectOptions(
+    'settingsTeamDefaultAttached',
+    teams.map(team => ({ value: team.name, label: team.name + ' (' + (team.source || '') + ')' })),
+    teamPrefs.defaultAttached || '',
+    'None',
+  );
   el('settingsSessionSummary').textContent = describeParts([
     'Current: ' + (session.title || session.id || 'new chat'),
     (snapshot.sessions || []).length + ' visible chats',
@@ -5899,7 +6838,8 @@ async function refreshScheduledTaskUi(payload) {
   if (!el('regionAutomation').classList.contains('hidden')) await renderAutomationRegion();
 }
 async function saveScheduledTaskFromSettings() {
-  const kind = el('settingsScheduleKind').value === 'prompt' ? 'prompt' : 'workflow';
+  const kindValue = el('settingsScheduleKind').value;
+  const kind = kindValue === 'prompt' ? 'prompt' : kindValue === 'manager' ? 'manager' : 'workflow';
   const input = el('settingsScheduleInput').value.trim();
   const body = {
     id: el('settingsScheduleId').value.trim() || undefined,
@@ -5908,7 +6848,8 @@ async function saveScheduledTaskFromSettings() {
     kind,
     enabled: el('settingsScheduleEnabled').checked,
     workflowName: kind === 'workflow' ? el('settingsScheduleWorkflow').value.trim() : undefined,
-    input: kind === 'workflow' ? input : undefined,
+    // manager tasks reuse "input" as the optional update instruction
+    input: kind === 'workflow' || kind === 'manager' ? input : undefined,
     prompt: kind === 'prompt' ? input : undefined,
   };
   el('settingsScheduleStatus').textContent = 'Saving schedule...';
@@ -5948,6 +6889,7 @@ function renderProjects() {
   const projects = state.snapshot?.projects || [];
   const query = el('commandSearch').value.trim().toLowerCase();
   const visibleSessions = (state.snapshot?.sessions || []).filter(item => {
+    if (item.kind === 'manager') return false;
     const haystack = [item.id, item.title, item.model, item.status].filter(Boolean).join(' ').toLowerCase();
     return !query || haystack.includes(query);
   });
@@ -6043,6 +6985,78 @@ function permissionSelectValue(mode) {
   if (mode === 'acceptEdits') return 'workspace';
   return 'read-only';
 }
+const TRANSCRIPT_CACHE_TTL_MS = 10 * 60 * 1000;
+const TRANSCRIPT_CACHE_MAX = 16;
+function transcriptCacheFresh(entry) {
+  return Boolean(entry && (Date.now() - entry.cachedAt) < TRANSCRIPT_CACHE_TTL_MS);
+}
+function trimTranscriptCache() {
+  const keys = Object.keys(state.transcriptCache);
+  if (keys.length <= TRANSCRIPT_CACHE_MAX) return;
+  keys.sort((a, b) => state.transcriptCache[a].cachedAt - state.transcriptCache[b].cachedAt);
+  for (let i = 0; i < keys.length - TRANSCRIPT_CACHE_MAX; i++) delete state.transcriptCache[keys[i]];
+}
+function saveTranscriptCache(sessionId, messages, snapshot) {
+  if (!sessionId) return;
+  state.transcriptCache[sessionId] = {
+    messages: Array.isArray(messages) ? messages : [],
+    snapshot,
+    cachedAt: Date.now(),
+  };
+  trimTranscriptCache();
+}
+function invalidateTranscriptCache(sessionId) {
+  if (sessionId) delete state.transcriptCache[sessionId];
+}
+function stashCurrentSessionCache() {
+  const id = state.activeSessionId || state.snapshot?.session?.id;
+  if (!id || !state.snapshot) return;
+  if (Array.isArray(state.lastHydratedMessages)) {
+    saveTranscriptCache(id, state.lastHydratedMessages, state.snapshot);
+  }
+}
+function renderTranscriptFromMessages(messages) {
+  transcript.textContent = '';
+  state.toolNodes.clear();
+  state.currentAssistant = null;
+  for (const entry of (messages || [])) {
+    if (entry.type === 'user') {
+      addMessage('user', displayUserText(entry.text));
+    } else if (entry.type === 'assistant') {
+      const node = addMessage('assistant', '');
+      node.dataset.raw = entry.text || '';
+      renderMarkdownInto(node, entry.text || '');
+    } else if (entry.type === 'tool') {
+      const toolId = 'hist-' + Math.random().toString(36).slice(2);
+      addToolActivity({ id: toolId, name: entry.name, input: entry.input });
+      updateToolActivity({ id: toolId, name: entry.name, ok: entry.ok, text: entry.text });
+    }
+  }
+  setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
+  scrollTranscript();
+}
+async function refreshSessionInBackground(id) {
+  try {
+    const res = await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    if (!res.ok) return;
+    const snapshot = await res.json();
+    if (state.activeSessionId !== id) return;
+    state.snapshot = snapshot;
+    applyLoadedState();
+    const msgRes = await api('/api/session/messages');
+    if (!msgRes.ok) return;
+    const data = await msgRes.json();
+    if (state.activeSessionId !== id) return;
+    state.lastHydratedMessages = data.messages || [];
+    saveTranscriptCache(id, state.lastHydratedMessages, snapshot);
+    const cachedLen = state.transcriptCache[id]?.messages?.length ?? 0;
+    if (state.lastHydratedMessages.length !== cachedLen) {
+      renderTranscriptFromMessages(state.lastHydratedMessages);
+    }
+  } catch {
+    // Background sync only — ignore failures.
+  }
+}
 async function hydrateTranscript() {
   let data;
   try {
@@ -6052,28 +7066,20 @@ async function hydrateTranscript() {
   } catch {
     return;
   }
-  transcript.textContent = '';
-  state.toolNodes.clear();
-  state.currentAssistant = null;
-  for (const entry of (data.messages || [])) {
-    if (entry.type === 'user') {
-      addMessage('user', displayUserText(entry.text));
-    } else if (entry.type === 'assistant') {
-      const node = addMessage('assistant', '');
-      node.dataset.raw = entry.text || '';
-      renderMarkdownInto(node, entry.text || '');
-    } else if (entry.type === 'tool') {
-      const id = 'hist-' + Math.random().toString(36).slice(2);
-      addToolActivity({ id, name: entry.name, input: entry.input });
-      updateToolActivity({ id, name: entry.name, ok: entry.ok, text: entry.text });
-    }
+  state.lastHydratedMessages = data.messages || [];
+  const sessionId = state.snapshot?.session?.id;
+  if (sessionId) {
+    state.activeSessionId = sessionId;
+    saveTranscriptCache(sessionId, state.lastHydratedMessages, state.snapshot);
   }
-  setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
-  scrollTranscript();
+  renderTranscriptFromMessages(state.lastHydratedMessages);
 }
 async function loadState() {
   const res = await api('/api/state');
   state.snapshot = await res.json();
+  applyLoadedState();
+}
+function applyLoadedState() {
   applyPreferences(state.snapshot.settings?.preferences);
   document.body.dataset.terminalCapable = state.snapshot.terminalCapable ? 'true' : 'false';
   // Initial sidebar mode: the default landing view is the project overview
@@ -6094,7 +7100,6 @@ async function loadState() {
   renderProjects();
   renderOverview();
   renderContextRail();
-  updateConversationActionBar();
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
@@ -6403,14 +7408,50 @@ function toggleModelPicker() {
   }
 }
 async function resumeSession(id) {
-  await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-  await loadState();
-  await hydrateTranscript();
   closeSurface();
   switchProjectView('conversation');
+  if (state.activeSessionId === id && transcript.childElementCount > 0) return;
+  const cached = state.transcriptCache[id];
+  if (transcriptCacheFresh(cached)) {
+    stashCurrentSessionCache();
+    state.activeSessionId = id;
+    state.snapshot = cached.snapshot;
+    state.lastHydratedMessages = cached.messages;
+    applyLoadedState();
+    renderTranscriptFromMessages(cached.messages);
+    void refreshSessionInBackground(id);
+    return;
+  }
+  stashCurrentSessionCache();
+  transcript.textContent = '';
+  state.toolNodes.clear();
+  state.currentAssistant = null;
+  setRunStatus('Loading conversation…', 'running');
+  try {
+    const res = await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    if (!res.ok) {
+      addMessage('error', await res.text());
+      setRunStatus(readyLabel(), '');
+      return;
+    }
+    state.snapshot = await res.json();
+    state.activeSessionId = id;
+    applyLoadedState();
+    await hydrateTranscript();
+  } catch {
+    addMessage('error', 'Could not resume this conversation.');
+    setRunStatus(readyLabel(), '');
+  }
 }
 async function switchProject(projectPath, view = 'conversation') {
   if (!projectPath) return false;
+  stashCurrentSessionCache();
+  state.transcriptCache = {};
+  state.activeSessionId = null;
+  state.lastHydratedMessages = null;
+  managerTranscriptHydrated = false;
+  const t = el('managerTranscript');
+  if (t) t.textContent = '';
   const res = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
   if (!res.ok) { addMessage('error', await res.text()); return false; }
   state.snapshot = await res.json();
@@ -6423,15 +7464,41 @@ async function switchProject(projectPath, view = 'conversation') {
   switchProjectView(view);
   return true;
 }
-async function addWorkspace() {
-  el('workspacePathInput').value = '';
+async function pickFolderViaApi() {
+  const res = await api('/api/pick-folder', { method: 'POST' });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.folder ? String(data.folder) : null;
+}
+function openWorkspaceDialog() {
+  el('workspacePathInput').value = state.snapshot?.workDir || '';
   el('workspaceStatus').textContent = '';
   renderWorkspaceChoices();
   el('workspaceModal').classList.remove('hidden');
   el('workspacePathInput').focus();
+  el('workspacePathInput').select();
+}
+async function addWorkspace() {
+  const picked = await pickFolderViaApi();
+  if (picked) {
+    const ok = await switchProject(picked);
+    if (!ok) {
+      openWorkspaceDialog();
+      el('workspacePathInput').value = picked;
+      el('workspaceStatus').textContent = 'Could not open this workspace.';
+    }
+    return;
+  }
+  openWorkspaceDialog();
 }
 function closeWorkspaceDialog() {
   el('workspaceModal').classList.add('hidden');
+}
+async function browseWorkspaceFolder() {
+  const picked = await pickFolderViaApi();
+  if (!picked) return;
+  el('workspacePathInput').value = picked;
+  el('workspaceStatus').textContent = '';
 }
 async function submitWorkspace(event) {
   event.preventDefault();
@@ -6446,11 +7513,14 @@ async function submitWorkspace(event) {
   if (ok) closeWorkspaceDialog();
 }
 async function createNewSession() {
+  stashCurrentSessionCache();
   await api('/api/session/new', { method: 'POST' });
   transcript.textContent = '';
   state.toolNodes.clear();
   state.currentAssistant = null;
+  state.lastHydratedMessages = [];
   await loadState();
+  state.activeSessionId = state.snapshot?.session?.id || null;
   switchProjectView('conversation');
 }
 // --- Project overview (plan/UI_PLAN §4.1): workspace card wall. ---
@@ -6544,9 +7614,15 @@ function switchProjectView(view) {
   // switching conversations required going back to the detail card list.
   document.body.dataset.sidebarMode = view === 'overview' ? 'nav' : 'full';
   if (view === 'detail') renderProjectDetail();
+  // Manager panel (plan M0): available on the project overview + detail views,
+  // hidden inside a conversation so it never overlaps the composer.
+  const mp = el('managerPanel');
+  if (mp) {
+    mp.classList.toggle('hidden', view === 'conversation');
+    if (view !== 'conversation') refreshManagerState();
+  }
   renderConversationBreadcrumb();
   renderContextRail();
-  updateConversationActionBar();
   if (view === 'conversation' && state.running) startRailPolling();
   else stopRailPolling();
 }
@@ -6698,6 +7774,92 @@ function statusDotColor(status) {
   return '#9aa0a6';
 }
 // --- Project detail (plan/UI_PLAN §4.3): conversation list for a workspace. ---
+function allDetailSessions() {
+  return [
+    ...(state.snapshot?.sessions || []),
+    ...(state.snapshot?.archivedSessions || []),
+  ];
+}
+function detailListStatus(item, archived) {
+  if (archived || item.archived) return 'Completed';
+  return 'In progress';
+}
+function buildDetailConvCard(item, opts) {
+  const archived = Boolean(opts?.archived || item.archived);
+  const progressStatus = detailListStatus(item, archived);
+  const card = document.createElement('article');
+  card.className = 'conv-card' + (item.id === state.snapshot?.session?.id && !archived ? ' active' : '') + (archived ? ' archived' : '');
+  const main = document.createElement('div');
+  main.className = 'conv-main';
+  const title = document.createElement('div');
+  title.className = 'conv-title';
+  title.textContent = item.title || item.id || 'Untitled';
+  const preview = document.createElement('div');
+  preview.className = 'conv-preview';
+  preview.textContent = item.preview || ((item.messageCount || 0) + ' messages');
+  const meta = document.createElement('div');
+  meta.className = 'conv-meta';
+  const runtimeChip = document.createElement('span');
+  runtimeChip.className = 'chip';
+  runtimeChip.textContent = formatRuntimeDisplay(item.runtime);
+  meta.append(runtimeChip);
+  const configChip = document.createElement('span');
+  configChip.className = 'chip';
+  configChip.textContent = sessionConfigDisplay(item);
+  meta.append(configChip);
+  if (item.model) {
+    const m = document.createElement('span');
+    m.className = 'chip';
+    m.textContent = item.model;
+    meta.append(m);
+  }
+  const mc = document.createElement('span');
+  mc.textContent = (item.messageCount || 0) + ' messages';
+  meta.append(mc);
+  main.append(title, preview, meta);
+  const side = document.createElement('div');
+  side.className = 'conv-side';
+  const st = document.createElement('span');
+  st.className = 'pc-status';
+  const dot = document.createElement('span');
+  dot.className = 'dot';
+  dot.style.background = statusDotColor(progressStatus);
+  const t = document.createElement('span');
+  t.textContent = progressStatus;
+  st.append(dot, t);
+  const updated = document.createElement('small');
+  updated.textContent = (item.updatedAt ? formatRelativeTime(item.updatedAt) : '') || ((item.messageCount || 0) + ' messages');
+  side.append(st, updated);
+  card.append(main, side);
+  card.dataset.sessionId = item.id;
+  if (item.id === state.detailSelectedId) card.classList.add('active');
+  if (!archived) {
+    const archiveBtn = document.createElement('button');
+    archiveBtn.type = 'button';
+    archiveBtn.className = 'conv-archive-btn';
+    archiveBtn.textContent = 'Archive';
+    archiveBtn.title = 'Archive conversation';
+    archiveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void archiveDetailChat(item.id);
+    });
+    card.appendChild(archiveBtn);
+  } else {
+    const restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'conv-archive-btn';
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.title = 'Restore conversation';
+    restoreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void unarchiveDetailChat(item.id);
+    });
+    card.appendChild(restoreBtn);
+  }
+  card.addEventListener('click', () => { selectDetailConversation(item.id); });
+  card.addEventListener('dblclick', () => { void resumeSession(item.id); });
+  return card;
+}
 function renderProjectDetail() {
   const name = projectNameFromSnapshot();
   const w = state.snapshot?.workDir || '';
@@ -6722,7 +7884,7 @@ function renderProjectDetail() {
   if (!body) return;
   body.textContent = '';
   const sessions = (state.snapshot?.sessions || []).slice();
-  const currentId = state.snapshot?.session?.id;
+  const archivedSessions = (state.snapshot?.archivedSessions || []).slice();
   const toolbar = document.createElement('div');
   toolbar.className = 'detail-toolbar';
   const search = document.createElement('label');
@@ -6731,98 +7893,66 @@ function renderProjectDetail() {
   const chips = document.createElement('div');
   chips.className = 'detail-filter-chips';
   const chipData = [
-    ['All', sessions.length],
-    ['Active', sessions.filter(item => item.id === currentId || item.status === 'active').length],
-    ['Plan', sessions.filter(item => /plan/i.test(item.title || '')).length],
-    ['Review', sessions.filter(item => /review/i.test(item.title || '')).length],
-    ['Done', sessions.filter(item => /done|closed|complete/i.test(item.status || '')).length],
+    ['In progress', sessions.length],
+    ['Completed', archivedSessions.length],
   ];
   chipData.forEach(([label, count], index) => {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'filter-chip' + (index === 0 ? ' active' : '');
     chip.innerHTML = '<span>' + label + '</span><b>' + count + '</b>';
+    if (index === 1 && archivedSessions.length) {
+      chip.addEventListener('click', () => {
+        state.detailArchivedExpanded = !state.detailArchivedExpanded;
+        renderProjectDetail();
+      });
+    }
     chips.appendChild(chip);
   });
-  const filter = document.createElement('button');
-  filter.type = 'button';
-  filter.className = 'toolbar-select';
-  filter.textContent = 'Filter';
-  toolbar.append(search, chips, filter);
+  toolbar.append(search, chips);
   body.appendChild(toolbar);
   const layout = document.createElement('div');
   layout.className = 'detail-layout';
   const convCol = document.createElement('div');
   convCol.className = 'detail-conversations';
-  sessions.forEach((item, index) => {
-    const progressValue = conversationProgress(item, index, item.id === currentId);
-    const progressStatus = conversationStatus(item, item.id === currentId);
-    const card = document.createElement('article');
-    card.className = 'conv-card' + (item.id === currentId ? ' active' : '');
-    const main = document.createElement('div');
-    main.className = 'conv-main';
-    const title = document.createElement('div');
-    title.className = 'conv-title';
-    title.textContent = item.title || item.id || 'Untitled';
-    const preview = document.createElement('div');
-    preview.className = 'conv-preview';
-    preview.textContent = item.preview || ((item.messageCount || 0) + ' messages');
-    const meta = document.createElement('div');
-    meta.className = 'conv-meta';
-    const squad = document.createElement('span');
-    squad.className = 'chip';
-    squad.textContent = state.snapshot?.activeTeamName || 'Core Squad';
-    meta.append(squad);
-    meta.append(avatarStack(['Planner', 'Coder', 'Reviewer']));
-    if (item.model) {
-      const m = document.createElement('span');
-      m.className = 'chip';
-      m.textContent = item.model;
-      meta.append(m);
-    }
-    const mc = document.createElement('span');
-    mc.textContent = (item.messageCount || 0) + ' messages';
-    meta.append(mc);
-    main.append(title, preview, meta);
-    const side = document.createElement('div');
-    side.className = 'conv-side';
-    const st = document.createElement('span');
-    st.className = 'pc-status';
-    const dot = document.createElement('span');
-    dot.className = 'dot';
-    dot.style.background = statusDotColor(progressStatus);
-    const t = document.createElement('span');
-    t.textContent = progressStatus;
-    st.append(dot, t);
-    const pct = document.createElement('span');
-    pct.className = 'conv-percent';
-    pct.textContent = progressValue + '%';
-    const bar = document.createElement('span');
-    bar.className = 'conv-progress';
-    appendProgressBar(bar, progressValue, statusDotColor(progressStatus));
-    const updated = document.createElement('small');
-    updated.textContent = (item.updatedAt ? formatRelativeTime(item.updatedAt) : '') || ((item.messageCount || 0) + ' messages');
-    side.append(st, pct, bar, updated);
-    card.append(main, side);
-    card.dataset.sessionId = item.id;
-    if (item.id === state.detailSelectedId) card.classList.add('active');
-    // Single click selects the conversation for preview in the right rail
-    // (instant — no session load). Double-click or "Continue chat" resumes
-    // the session (loads the transcript, switches to the chat view).
-    card.addEventListener('click', () => { selectDetailConversation(item.id); });
-    card.addEventListener('dblclick', () => { void resumeSession(item.id); });
-    convCol.appendChild(card);
-  });
-  if (sessions.length === 0) {
+  for (const item of sessions) {
+    convCol.appendChild(buildDetailConvCard(item, { archived: false }));
+  }
+  if (sessions.length === 0 && archivedSessions.length === 0) {
     const e = document.createElement('p');
     e.className = 'region-empty';
     e.textContent = 'No conversations yet — click + New conversation to start one.';
     convCol.appendChild(e);
+  } else if (sessions.length === 0) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'No conversations in progress.';
+    convCol.appendChild(e);
+  }
+  if (archivedSessions.length) {
+    const section = document.createElement('section');
+    section.className = 'detail-archived-section';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'detail-archived-toggle';
+    toggle.innerHTML = '<span><strong>Completed</strong> · archived conversations</span><span class="count">' + archivedSessions.length + ' · ' + (state.detailArchivedExpanded ? 'Hide' : 'Show') + '</span>';
+    toggle.addEventListener('click', () => {
+      state.detailArchivedExpanded = !state.detailArchivedExpanded;
+      renderProjectDetail();
+    });
+    section.appendChild(toggle);
+    const list = document.createElement('div');
+    list.className = 'detail-archived-list' + (state.detailArchivedExpanded ? '' : ' hidden');
+    for (const item of archivedSessions) {
+      list.appendChild(buildDetailConvCard(item, { archived: true }));
+    }
+    section.appendChild(list);
+    convCol.appendChild(section);
   }
   layout.appendChild(convCol);
   const rail = document.createElement('aside');
   rail.className = 'detail-rail';
-  rail.appendChild(renderDetailRail(sessions));
+  rail.appendChild(renderDetailRail(allDetailSessions()));
   layout.appendChild(rail);
   body.appendChild(layout);
 }
@@ -6854,23 +7984,31 @@ function selectDetailConversation(id) {
   // the whole conversation list.
   const rail = el('detailBody')?.querySelector('.detail-rail');
   if (rail) {
-    const sessions = state.snapshot?.sessions || [];
     rail.textContent = '';
-    rail.appendChild(renderDetailRail(sessions));
+    rail.appendChild(renderDetailRail(allDetailSessions()));
   }
 }
 function buildConversationPreviewPanel(item, sessions) {
+  const archived = Boolean(item.archived);
   const panel = document.createElement('div');
   panel.className = 'project-context-card';
   const heading = document.createElement('div');
   heading.className = 'context-card-head';
-  const status = conversationStatus(item, item.id === state.snapshot?.session?.id);
+  const status = detailListStatus(item, archived);
   heading.innerHTML = '<h3>Conversation preview</h3><span>' + status + '</span>';
   panel.appendChild(heading);
   const title = document.createElement('div');
   title.className = 'context-row';
   title.append(labelText('Title'), strongText(item.title || item.id || 'Untitled'));
   panel.appendChild(title);
+  const runtimeRow = document.createElement('div');
+  runtimeRow.className = 'context-row';
+  runtimeRow.append(labelText('Runtime'), strongText(formatRuntimeDisplay(item.runtime)));
+  panel.appendChild(runtimeRow);
+  const configRow = document.createElement('div');
+  configRow.className = 'context-row';
+  configRow.append(labelText('Config'), strongText(sessionConfigDisplay(item)));
+  panel.appendChild(configRow);
   const meta = document.createElement('div');
   meta.className = 'context-row';
   const when = item.updatedAt || item.updated || item.lastActiveAt || '';
@@ -6898,27 +8036,45 @@ function buildConversationPreviewPanel(item, sessions) {
   const continueBtn = document.createElement('button');
   continueBtn.type = 'button';
   continueBtn.className = 'pill-btn primary';
-  continueBtn.textContent = 'Continue chat';
-  continueBtn.addEventListener('click', () => { void resumeSession(item.id); });
+  continueBtn.textContent = archived ? 'Restore & continue' : 'Continue chat';
+  continueBtn.addEventListener('click', () => {
+    if (archived) void unarchiveDetailChat(item.id, true);
+    else void resumeSession(item.id);
+  });
   actions.appendChild(continueBtn);
+  if (!archived) {
+    const archiveBtn = document.createElement('button');
+    archiveBtn.type = 'button';
+    archiveBtn.className = 'pill-btn';
+    archiveBtn.textContent = 'Archive';
+    archiveBtn.addEventListener('click', () => { void archiveDetailChat(item.id); });
+    actions.appendChild(archiveBtn);
+  } else {
+    const restoreBtn = document.createElement('button');
+    restoreBtn.type = 'button';
+    restoreBtn.className = 'pill-btn';
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.addEventListener('click', () => { void unarchiveDetailChat(item.id); });
+    actions.appendChild(restoreBtn);
+  }
   panel.appendChild(actions);
   return panel;
 }
-function conversationProgress(item, index, active) {
-  if (/done|closed|complete/i.test(item.status || '')) return 100;
-  if (/review/i.test(item.status || item.title || '')) return 42;
-  const mc = item.messageCount || 0;
-  // A 0-message conversation has no progress. Don't fabricate a percentage
-  // from the list index (it showed 30–85% for empty chats).
-  if (mc === 0) return 0;
-  if (active) return Math.min(68, 20 + mc * 4);
-  return Math.min(85, Math.max(24, 30 + (mc % 8) * 7));
+function formatRuntimeDisplay(runtime) {
+  const key = String(runtime || 'hadamard').toLowerCase();
+  const labels = {
+    hadamard: 'Hadamard',
+    claude: 'Claude Code',
+    codewhale: 'Codewhale',
+    pi: 'Pi',
+    codex: 'Codex',
+    reasonix: 'Reasonix',
+    crush: 'Crush',
+  };
+  return labels[key] || key;
 }
-function conversationStatus(item, active) {
-  if (/done|closed|complete/i.test(item.status || '')) return 'Done';
-  if (/review/i.test(item.status || item.title || '')) return 'In Review';
-  if (/plan/i.test(item.title || '')) return 'In Plan';
-  return active ? 'In Progress' : 'Active';
+function sessionConfigDisplay(item) {
+  return item && item.configName ? item.configName : 'default';
 }
 function buildProjectContextPanel(sessions) {
   const plan = state.snapshot?.projectPlan || { today: [], upcoming: [], milestones: [] };
@@ -7185,21 +8341,8 @@ function renderOverviewRail(rail) {
 function renderConversationRail(rail) {
   rail.classList.remove('hidden');
   const runs = state.snapshot?.runs || [];
-  const activeTeamName = state.snapshot?.activeTeamName;
-  // Run state
   const runSection = railSection(runs.length ? 'Active runs' : 'Run state');
-  const visibleRuns = runs.length ? runs : [{
-    status: 'planned',
-    label: state.snapshot?.session?.title || 'Conversation plan',
-    currentTool: activeTeamName ? 'Squad ready: ' + activeTeamName : 'No active run',
-    team: { members: [
-      { id: 'Planner', status: 'ready' },
-      { id: 'Coder', status: 'ready' },
-      { id: 'Reviewer', status: 'ready' },
-      { id: 'Test Runner', status: 'ready' },
-    ] },
-  }];
-  for (const r of visibleRuns) {
+  for (const r of runs) {
     const card = document.createElement('div');
     card.className = 'rail-run status-' + (r.status || 'running');
     const t = document.createElement('div');
@@ -7215,31 +8358,11 @@ function renderConversationRail(rail) {
     runSection.appendChild(card);
   }
   rail.appendChild(runSection);
-  // Active agents (role-colored badges + state pills)
-  const teamRun = visibleRuns.find(r => r.team?.members?.length);
-  const members = teamRun?.team?.members || [];
-  if (members.length) {
-    const agentSection = railSection('Active agents', members.length + '/' + members.length);
-    for (const m of members) {
-      const role = m.role || m.id || 'agent';
-      const color = roleColor(role);
-      const row = document.createElement('div');
-      row.className = 'rail-agent';
-      const badge = document.createElement('span');
-      badge.className = 'ra-badge';
-      badge.style.background = color;
-      badge.innerHTML = guiIcon('agent');
-      const name = document.createElement('span');
-      name.className = 'ra-name';
-      name.textContent = roleLabel(m.role, m.id);
-      const statePill = document.createElement('span');
-      const st = (m.status || 'ready').toLowerCase();
-      statePill.className = 'ra-state' + (st === 'running' || st === 'active' ? ' live' : st === 'done' || st === 'completed' ? ' done' : '');
-      statePill.textContent = st.charAt(0).toUpperCase() + st.slice(1);
-      row.append(badge, name, statePill);
-      agentSection.appendChild(row);
-    }
-    rail.appendChild(agentSection);
+  // Team Run tree (plan §3.6 / Phase 5): entries at the root, downstream
+  // nodes nested under the edges that woke them. Hidden when no team run.
+  const teamRun = runs.find(r => r.team?.members?.length);
+  if (teamRun?.team?.members?.length) {
+    rail.appendChild(renderTeamRunTree(teamRun));
   }
   // Tasks
   const taskSection = railSection('Tasks');
@@ -7314,6 +8437,81 @@ function renderConversationRail(rail) {
     }
   }
   rail.appendChild(approvalSection);
+}
+// --- Team Run tree (plan §3.6 / Phase 5). ---
+// One event source with the transcript handoff lines: TeamEvents mirrored
+// onto the run descriptor (members + fired edges). Legacy panel/reviewer runs
+// have no edges → flat roster; graph runs nest children under the edges that
+// delivered to them. Statuses: pending / running / done / error.
+function teamStatusDot(status) {
+  const st = (status || 'pending').toLowerCase();
+  if (st === 'running' || st === 'active') return 'accent';
+  if (st === 'done' || st === 'completed') return 'ok';
+  if (st === 'error') return 'err';
+  return '';
+}
+function renderTeamRunTree(teamRun) {
+  const team = teamRun.team;
+  const members = team.members || [];
+  const edges = team.edges || [];
+  const running = members.some(m => (m.status || '') === 'running') || teamRun.status === 'running';
+  const section = railSection('Team run', members.length || null);
+  const title = document.createElement('div');
+  title.className = 'team-tree-head';
+  title.textContent = (teamRun.label || 'team') + ' · ' + (team.mode || '') + (running ? ' · running' : '');
+  section.appendChild(title);
+
+  // children[id] = ids delivered to from id (first-delivery wins for placement).
+  const placed = new Set();
+  const children = new Map();
+  for (const e of edges) {
+    if (placed.has(e.to)) continue;
+    placed.add(e.to);
+    if (!children.has(e.from)) children.set(e.from, []);
+    children.get(e.from).push({ id: e.to, channel: e.channel, trigger: e.trigger });
+  }
+  const byId = new Map(members.map(m => [m.id, m]));
+  const rendered = new Set();
+  const renderNode = (id, depth, edgeMeta) => {
+    if (rendered.has(id)) return;
+    rendered.add(id);
+    const m = byId.get(id) || { id, status: 'pending' };
+    const row = document.createElement('div');
+    row.className = 'team-tree-row';
+    row.style.paddingLeft = (depth * 14) + 'px';
+    const dot = document.createElement('span');
+    dot.className = 'r-dot ' + teamStatusDot(m.status);
+    const label = document.createElement('span');
+    label.className = 'r-label';
+    label.textContent = (depth > 0 ? '↳ ' : '') + roleLabel(m.role, m.id);
+    row.append(dot, label);
+    const metaBits = [];
+    if (edgeMeta && edgeMeta.channel && edgeMeta.channel !== 'message') metaBits.push(edgeMeta.channel);
+    const st = (m.status || 'pending').toLowerCase();
+    if (st === 'running' && m.currentTool) metaBits.push(m.currentTool);
+    else if (st === 'done' && m.toolCalls != null) metaBits.push(m.toolCalls + ' tools' + (m.durationMs != null ? ' · ' + Math.round(m.durationMs / 1000) + 's' : ''));
+    else if (st === 'error') metaBits.push(m.error ? String(m.error).slice(0, 60) : 'failed');
+    else if (st === 'pending') metaBits.push('pending');
+    if (metaBits.length) {
+      const meta = document.createElement('span');
+      meta.className = 'r-meta' + (st === 'error' ? ' err' : '');
+      meta.textContent = metaBits.join(' · ');
+      row.appendChild(meta);
+    }
+    section.appendChild(row);
+    for (const child of children.get(id) || []) renderNode(child.id, depth + 1, child);
+  };
+  // Roots: members never delivered-to by a fired edge (entries + flat legacy roster).
+  for (const m of members) { if (!placed.has(m.id)) renderNode(m.id, 0, null); }
+  // Safety: anything left (edge targets whose member row never materialized).
+  for (const m of members) renderNode(m.id, 0, null);
+  if (team.incompleteReason) {
+    const warn = document.createElement('p');
+    warn.className = 'team-tree-warn';
+    warn.textContent = team.incompleteReason;
+    section.appendChild(warn);
+  }
+  return section;
 }
 // Live-poll /api/state.runs while a run is active so the rail stays current
 // (member status, current tool) without depending on the developer-tools
@@ -7603,6 +8801,14 @@ function renderSurface(kind) {
       attach.textContent = 'Attach';
       attach.addEventListener('click', () => submitText('/team attach ' + item.name));
       footer.appendChild(attach);
+      const clone = document.createElement('button');
+      clone.type = 'button';
+      clone.textContent = 'Clone';
+      clone.addEventListener('click', () => {
+        const newName = window.prompt('Clone "' + item.name + '" as', item.name + '-copy');
+        if (newName && newName.trim()) submitText('/team clone ' + item.name + ' ' + newName.trim());
+      });
+      footer.appendChild(clone);
     } else if (kind === 'routers') {
       const select = document.createElement('button');
       select.type = 'button';
@@ -7788,6 +8994,7 @@ const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#
 function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
 function firstTeamNode(def) {
   if (!def) return null;
+  if (def.mode === 'graph') return (def.nodes || [])[0] || null;
   if (def.primary) return def.primary;
   if ((def.members || []).length) return def.members[0];
   if (def.reviewer) return def.reviewer;
@@ -7907,7 +9114,8 @@ async function runSelectedSquad() {
   switchProjectView('conversation');
   submitText('/team ask ' + name + ' ' + input.trim()).catch(console.error);
 }
-// --- Team editor (plan/UI_PLAN §5.3 / U6): add/remove members + save. ---
+// --- Team editor (plan/UI_PLAN §5.3 / U6 + plan Phase 4): members (legacy)
+// or nodes+edges (graph), with save validation and Personal/Project target. ---
 function renderTeamEditor() {
   const host = el('teamEditor');
   if (!host) return;
@@ -7922,6 +9130,7 @@ function renderTeamEditor() {
     host.appendChild(e);
     return;
   }
+  if (def.mode === 'graph') { renderGraphTeamEditor(host, def); return; }
   const wrap = document.createElement('div');
   wrap.className = 'team-editor';
   const h = document.createElement('h3');
@@ -7998,9 +9207,245 @@ function renderTeamEditor() {
   cfgRow.appendChild(teField('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
   cfg.appendChild(cfgRow);
   wrap.appendChild(cfg);
-  // Save / cancel.
+  // Save / upgrade / cancel.
   const actions = document.createElement('div');
   actions.className = 'te-actions';
+  actions.appendChild(saveTargetField());
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'te-btn primary';
+  save.textContent = 'Save squad';
+  save.addEventListener('click', () => { void saveTeamDefinition(); });
+  const upgrade = document.createElement('button');
+  upgrade.type = 'button';
+  upgrade.className = 'te-btn';
+  upgrade.textContent = 'Upgrade to graph mode';
+  upgrade.title = 'Convert members/primary/reviewer into graph nodes + on_complete edges (v2). Nothing is saved until you press Save.';
+  upgrade.addEventListener('click', () => { void upgradeTeamToGraph(def.name); });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'te-btn';
+  close.textContent = 'Done';
+  close.addEventListener('click', () => { state.teamEditing = false; renderTeamEditor(); });
+  actions.append(save, upgrade, close);
+  wrap.appendChild(actions);
+  host.appendChild(wrap);
+}
+// --- Graph editor (plan Phase 4): nodes + edges, engine-validated on save. ---
+const RISKY_NODE_TOOLS = ['Write', 'Edit', 'Bash', 'NotebookEdit'];
+function graphRefOf(node) {
+  return String(node?.id || node?.name || node?.role || node?.model || '').trim();
+}
+function graphNodeRefs(def) {
+  return (def.nodes || []).map(graphRefOf).filter(Boolean);
+}
+async function upgradeTeamToGraph(name) {
+  try {
+    const res = await api('/api/team/upgrade', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+    if (!res.ok) { addMessage('error', 'Upgrade failed: ' + await res.text()); return; }
+    const data = await res.json();
+    state.teamDefinition = data.definition;
+    setTeamSavedStatus(false);
+    addMessage('notice', 'Converted to graph mode (unsaved) — review nodes/edges, then Save.');
+    renderTeamGraph(state.teamDefinition, state.teamDefinition.name);
+    renderTeamEditor();
+  } catch (err) {
+    addMessage('error', 'Upgrade failed: ' + (err && err.message || err));
+  }
+}
+function saveTargetField() {
+  const f = document.createElement('div');
+  f.className = 'te-field te-target';
+  const l = document.createElement('label');
+  l.textContent = 'Save to';
+  const sel = document.createElement('select');
+  for (const [value, label] of [['project', 'Project (.actoviq/teams)'], ['personal', 'Personal (~/.actoviq/teams)']]) {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label;
+    if ((state.teamSaveTarget || 'project') === value) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => { state.teamSaveTarget = sel.value; });
+  f.append(l, sel);
+  return f;
+}
+function teSelect(label, value, options, onChange) {
+  const f = document.createElement('div');
+  f.className = 'te-field';
+  const l = document.createElement('label');
+  l.textContent = label;
+  const sel = document.createElement('select');
+  for (const opt of options) {
+    const o = document.createElement('option');
+    o.value = opt; o.textContent = opt || '(none)';
+    if (opt === (value || options[0])) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => onChange(sel.value));
+  f.append(l, sel);
+  return f;
+}
+function teCheck(label, checked, onChange) {
+  const f = document.createElement('div');
+  f.className = 'te-field te-check';
+  const l = document.createElement('label');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = Boolean(checked);
+  box.addEventListener('change', () => onChange(box.checked));
+  l.append(box, document.createTextNode(' ' + label));
+  f.appendChild(l);
+  return f;
+}
+function renderGraphTeamEditor(host, def) {
+  const wrap = document.createElement('div');
+  wrap.className = 'team-editor';
+  const h = document.createElement('h3');
+  h.textContent = 'Edit graph squad: ' + (def.name || '(unnamed)');
+  wrap.appendChild(h);
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.textContent = 'Nodes run as read-only agents unless you grant tools. Entry nodes start in parallel; on_complete edges wake downstream nodes (wait-all; join: any = first input wins).';
+  wrap.appendChild(hint);
+
+  // Add-node form.
+  const addRow = document.createElement('div');
+  addRow.className = 'te-add';
+  const idInput = document.createElement('input');
+  idInput.placeholder = 'Node id (e.g. planner)';
+  const modelInput = document.createElement('input');
+  modelInput.placeholder = 'Model (blank = session model)';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'te-btn primary';
+  addBtn.textContent = '+ Add node';
+  addBtn.addEventListener('click', () => {
+    const id = idInput.value.trim();
+    if (!id) return;
+    def.nodes = def.nodes || [];
+    def.nodes.push({ id, role: id, model: modelInput.value.trim() || (state.snapshot?.session?.model || ''), entry: (def.nodes.length === 0), systemPrompt: '', responsibility: '' });
+    idInput.value = ''; modelInput.value = '';
+    setTeamSavedStatus(false);
+    renderTeamGraph(def, def.name);
+    renderTeamEditor();
+  });
+  addRow.append(idInput, modelInput, addBtn);
+  wrap.appendChild(addRow);
+
+  // Node rows.
+  (def.nodes || []).forEach((node, idx) => {
+    const row = document.createElement('div');
+    row.className = 'te-member-row';
+    const head = document.createElement('div');
+    head.className = 'te-mhead';
+    const title = document.createElement('strong');
+    title.textContent = graphRefOf(node) || ('node ' + (idx + 1));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'te-btn danger';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => {
+      const ref = graphRefOf(node);
+      def.nodes.splice(idx, 1);
+      def.edges = (def.edges || []).filter((e) => e.from !== ref && e.to !== ref);
+      setTeamSavedStatus(false);
+      renderTeamGraph(def, def.name);
+      renderTeamEditor();
+    });
+    head.append(title, del);
+    const idRow = document.createElement('div');
+    idRow.className = 'te-row';
+    idRow.append(
+      teField('Id', node.id || '', (v) => { node.id = v.trim(); }),
+      teField('Role', node.role || '', (v) => { node.role = v; }),
+      teField('Model', node.model || '', (v) => { node.model = v; }),
+    );
+    const flagRow = document.createElement('div');
+    flagRow.className = 'te-row';
+    flagRow.append(
+      teCheck('Entry node (starts the run)', node.entry, (v) => { node.entry = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
+      teSelect('Join', node.join || 'all', ['all', 'any'], (v) => { node.join = v === 'any' ? 'any' : undefined; }),
+    );
+    // allowedTools with the Write/Bash second-confirmation gate (plan §3.5.1).
+    const toolsRow = document.createElement('div');
+    toolsRow.className = 'te-row';
+    toolsRow.appendChild(teField('Allowed tools (blank = read-only expert set)', Array.isArray(node.allowedTools) ? node.allowedTools.join(', ') : '', (v) => {
+      const next = splitCsv(v);
+      const prev = Array.isArray(node.allowedTools) ? node.allowedTools : [];
+      const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !prev.includes(t));
+      if (added.length) {
+        const ok = window.confirm('Grant ' + added.join(' + ') + ' to node "' + graphRefOf(node) + '"?\\n\\nThis lets the node modify files or run shell commands during a team run.');
+        if (!ok) { renderTeamEditor(); return; }
+      }
+      node.allowedTools = next.length ? next : undefined;
+      setTeamSavedStatus(false);
+    }));
+    const fResponsibility = teField('Responsibility', node.responsibility || '', (v) => { node.responsibility = v; }, true);
+    const fPrompt = teField('System prompt', node.systemPrompt || '', (v) => { node.systemPrompt = v; }, true);
+    row.append(head, idRow, flagRow, toolsRow, fResponsibility, fPrompt);
+    wrap.appendChild(row);
+  });
+  if (!(def.nodes || []).length) {
+    const e = document.createElement('p');
+    e.className = 'plan-empty';
+    e.textContent = 'No nodes yet — add the first one above.';
+    wrap.appendChild(e);
+  }
+
+  // Edges.
+  const eh = document.createElement('h3');
+  eh.textContent = 'Edges';
+  wrap.appendChild(eh);
+  const refs = graphNodeRefs(def);
+  (def.edges || []).forEach((edge, idx) => {
+    const row = document.createElement('div');
+    row.className = 'te-member-row te-edge-row';
+    const line = document.createElement('div');
+    line.className = 'te-row';
+    line.append(
+      teSelect('From', edge.from, refs, (v) => { edge.from = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
+      teSelect('To', edge.to, refs, (v) => { edge.to = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
+      teSelect('Trigger', edge.trigger || 'on_complete', ['on_complete', 'on_tool_call', 'on_handoff', 'on_review_request', 'manual'], (v) => { edge.trigger = v === 'on_complete' ? undefined : v; }),
+      teSelect('Channel', edge.channel || 'message', ['message', 'handoff', 'review', 'broadcast'], (v) => { edge.channel = v === 'message' ? undefined : v; }),
+    );
+    const line2 = document.createElement('div');
+    line2.className = 'te-row';
+    line2.appendChild(teField('Condition (substring or /regex/, blank = always)', edge.condition || '', (v) => { edge.condition = v.trim() || undefined; }));
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'te-btn danger';
+    del.textContent = 'Remove edge';
+    del.addEventListener('click', () => { def.edges.splice(idx, 1); setTeamSavedStatus(false); renderTeamGraph(def, def.name); renderTeamEditor(); });
+    row.append(line, line2, del);
+    wrap.appendChild(row);
+  });
+  const addEdge = document.createElement('button');
+  addEdge.type = 'button';
+  addEdge.className = 'te-btn';
+  addEdge.textContent = '+ Add edge';
+  addEdge.disabled = refs.length < 2;
+  addEdge.addEventListener('click', () => {
+    def.edges = def.edges || [];
+    def.edges.push({ from: refs[0], to: refs[1] });
+    setTeamSavedStatus(false);
+    renderTeamGraph(def, def.name);
+    renderTeamEditor();
+  });
+  wrap.appendChild(addEdge);
+
+  // Squad config + save.
+  const cfgRow = document.createElement('div');
+  cfgRow.className = 'te-row';
+  cfgRow.appendChild(teField('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
+  cfgRow.appendChild(teField('Member max iterations', String(def.maxIterations ?? 16), (v) => { def.maxIterations = Number(v) || 16; }));
+  wrap.appendChild(cfgRow);
+  const problems = document.createElement('div');
+  problems.id = 'teamGraphProblems';
+  problems.className = 'te-problems hidden';
+  wrap.appendChild(problems);
+  const actions = document.createElement('div');
+  actions.className = 'te-actions';
+  actions.appendChild(saveTargetField());
   const save = document.createElement('button');
   save.type = 'button';
   save.className = 'te-btn primary';
@@ -8029,21 +9474,50 @@ function teField(label, value, onChange, textarea) {
 async function saveTeamDefinition() {
   const def = state.teamDefinition;
   if (!def || !def.name) return;
-  normalizeTeamCollaboration(def);
+  if (def.mode !== 'graph') normalizeTeamCollaboration(def);
   try {
-    const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def }) });
+    const res = await api('/api/team/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ definition: def, target: state.teamSaveTarget || 'project' }),
+    });
     if (res.ok) {
       addMessage('notice', 'Saved squad: ' + def.name);
       setTeamSavedStatus(true);
+      showTeamGraphProblems(null);
       // Refresh the squad list + re-select.
       await loadState();
       await selectTeam(def.name);
       renderTeamGraph(def, def.name);
     } else {
-      addMessage('error', 'Save failed: ' + await res.text());
+      let problems = null;
+      let message = '';
+      try {
+        const data = await res.json();
+        problems = Array.isArray(data.problems) ? data.problems : null;
+        message = data.error || '';
+      } catch { /* non-JSON error body */ }
+      showTeamGraphProblems(problems);
+      addMessage('error', 'Save failed: ' + (message || res.status));
     }
   } catch (err) {
     addMessage('error', 'Save failed: ' + (err && err.message || err));
+  }
+}
+// Inline validation problems (from the engine's validateTeamGraph) in the editor.
+function showTeamGraphProblems(problems) {
+  const box = document.getElementById('teamGraphProblems');
+  if (!box) return;
+  box.textContent = '';
+  if (!problems || !problems.length) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const title = document.createElement('strong');
+  title.textContent = 'The engine rejected this graph:';
+  box.appendChild(title);
+  for (const p of problems) {
+    const li = document.createElement('div');
+    li.textContent = '• ' + p;
+    box.appendChild(li);
   }
 }
 function setTeamSavedStatus(saved) {
@@ -8172,6 +9646,7 @@ function renderTeamGraph(def, name) {
     g.appendChild(e);
     return;
   }
+  if (def.mode === 'graph') { renderGraphModeCanvas(g, def, name); return; }
   const members = def.members || [];
   normalizeTeamCollaboration(def);
   const edges = Array.isArray(def.reviewEdges) ? def.reviewEdges : [];
@@ -8253,6 +9728,98 @@ function edgeRowFromChips(chips, dashedRow) {
   chips.forEach((chip) => row.appendChild(chip));
   return row;
 }
+// --- Graph-mode canvas (plan Phase 4/§3.5): topological layers + real edges. ---
+// Layer 0 = entry nodes; each next layer = nodes whose every on_complete
+// upstream sits in an earlier layer. Edge chips between layers carry the real
+// from→to plus trigger/channel (dashed for communication/manual triggers).
+function renderGraphModeCanvas(g, def, name) {
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graph-toolbar';
+  const left = document.createElement('div');
+  left.className = 'graph-tabs';
+  left.innerHTML = '<button class="active">Graph</button><button>List</button>';
+  const right = document.createElement('div');
+  right.className = 'graph-tools';
+  right.innerHTML = '<span class="graph-mode-pill">graph · v2</span>';
+  toolbar.append(left, right);
+  const canvas = document.createElement('div');
+  canvas.className = 'graph-canvas';
+  const title = document.createElement('div');
+  title.className = 'graph-title';
+  title.textContent = (def.name || name) + ' · graph orchestration';
+  canvas.appendChild(title);
+  if (!nodes.length) {
+    const e = document.createElement('p');
+    e.className = 'region-empty';
+    e.textContent = 'This graph has no nodes — open the editor to add some.';
+    canvas.appendChild(e);
+    g.append(toolbar, canvas);
+    return;
+  }
+  const refs = nodes.map(graphRefOf);
+  const indexOfRef = new Map(refs.map((r, i) => [r, i]));
+  const entrySet = new Set();
+  nodes.forEach((n, i) => { if (n.entry) entrySet.add(i); });
+  for (const r of def.entryNodeIds || []) { const i = indexOfRef.get(String(r).trim()); if (i != null) entrySet.add(i); }
+  const autoIn = new Map();
+  for (const e of edges) {
+    if ((e.trigger || 'on_complete') !== 'on_complete') continue;
+    const to = indexOfRef.get(String(e.to).trim());
+    const from = indexOfRef.get(String(e.from).trim());
+    if (to == null || from == null) continue;
+    if (!autoIn.has(to)) autoIn.set(to, []);
+    autoIn.get(to).push(from);
+  }
+  // Assign layers (bounded loop — validation guarantees a DAG, but stay safe).
+  const layer = new Array(nodes.length).fill(-1);
+  entrySet.forEach((i) => { layer[i] = 0; });
+  for (let pass = 0; pass < nodes.length; pass++) {
+    let changed = false;
+    nodes.forEach((_, i) => {
+      if (layer[i] >= 0) return;
+      const ups = autoIn.get(i) || [];
+      if (ups.length && ups.every((u) => layer[u] >= 0)) {
+        layer[i] = 1 + Math.max(...ups.map((u) => layer[u]));
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+  const maxLayer = Math.max(0, ...layer);
+  const unplaced = nodes.map((_, i) => i).filter((i) => layer[i] < 0);
+  for (let d = 0; d <= maxLayer; d++) {
+    const lane = document.createElement('div');
+    lane.className = 'graph-row graph-lane';
+    nodes.forEach((n, i) => { if (layer[i] === d) lane.appendChild(graphNodeEl(n, def, entrySet.has(i))); });
+    canvas.appendChild(lane);
+    const chips = edges
+      .filter((e) => {
+        const from = indexOfRef.get(String(e.from).trim());
+        return from != null && layer[from] === d;
+      })
+      .slice(0, 6)
+      .map((e) => {
+        const label = (e.trigger && e.trigger !== 'on_complete' ? e.trigger : (e.channel || 'message')) + (e.condition ? ' ?' : '');
+        const chip = graphEdgeFromTo(e.from, e.to, label);
+        if (e.trigger && e.trigger !== 'on_complete') chip.classList.add('dashed');
+        return chip;
+      });
+    if (chips.length) canvas.appendChild(edgeRowFromChips(chips));
+  }
+  if (unplaced.length) {
+    const lane = document.createElement('div');
+    lane.className = 'graph-row graph-lane graph-unreachable';
+    for (const i of unplaced) lane.appendChild(graphNodeEl(nodes[i], def, false));
+    const note = document.createElement('p');
+    note.className = 'region-empty';
+    note.textContent = 'Not reachable from an entry over on_complete edges (communication/manual only).';
+    canvas.appendChild(note);
+    canvas.appendChild(lane);
+  }
+  g.append(toolbar, canvas);
+}
 function insField(lbl, val) {
   const f = document.createElement('div');
   f.className = 'ins-field';
@@ -8277,15 +9844,17 @@ function insFieldNode(lbl, content) {
 // Permission pills (§5.2): team members are read-only ReAct agents, so the
 // permission set is fixed (Read ✓, Execute ✓, Edit ✗, Bash ✗). The main
 // agent keeps full access — reflected when inspecting the primary node.
+// Graph nodes reflect their explicit allowedTools grants (plan §3.5.1).
 function insPerms(node, def) {
   const wrap = document.createElement('div');
   wrap.className = 'ins-perms';
   const isPrimary = def?.primary === node;
+  const granted = def?.mode === 'graph' && Array.isArray(node.allowedTools) ? node.allowedTools : null;
   const perms = [
-    { label: 'Read repository', allow: true },
+    { label: 'Read repository', allow: !granted || granted.some((t) => ['Read', 'Glob', 'Grep'].includes(t)) },
     { label: 'Execute tools', allow: true },
-    { label: 'Edit files', allow: isPrimary },
-    { label: 'Bash', allow: isPrimary },
+    { label: 'Edit files', allow: granted ? granted.some((t) => t === 'Write' || t === 'Edit') : isPrimary },
+    { label: 'Bash', allow: granted ? granted.includes('Bash') : isPrimary },
   ];
   for (const p of perms) {
     const pill = document.createElement('span');
@@ -8388,12 +9957,25 @@ function renderTeamInspector(node, def) {
     if (tn === 'Details') {
       body.appendChild(insField('Role', node.role || (def?.primary === node ? 'primary' : 'member')));
       body.appendChild(insField('Model', node.model || '—'));
+      if (def?.mode === 'graph') {
+        body.appendChild(insField('Entry', node.entry ? 'yes — starts the run' : 'no'));
+        body.appendChild(insField('Join', node.join === 'any' ? 'any (OR-join: first input wins)' : 'all (wait-all)'));
+        const ref = graphRefOf(node);
+        const inbound = (def.edges || []).filter((e) => String(e.to).trim() === ref);
+        const outbound = (def.edges || []).filter((e) => String(e.from).trim() === ref);
+        const fmt = (e) => e.from + ' → ' + e.to + ' (' + (e.trigger || 'on_complete') + (e.condition ? ' ? ' + e.condition : '') + ')';
+        if (inbound.length) body.appendChild(insField('In edges', inbound.map(fmt).join('\\n')));
+        if (outbound.length) body.appendChild(insField('Out edges', outbound.map(fmt).join('\\n')));
+      }
       if (node.responsibility) body.appendChild(insField('Responsibility', node.responsibility));
       body.appendChild(insFieldNode('Permissions', insPerms(node, def)));
       body.appendChild(insFieldNode('Tools', insTools(node)));
       if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
     } else if (tn === 'Config') {
       body.appendChild(insField('Mode', def?.mode || '—'));
+      if (def?.mode === 'graph' && Array.isArray(node.allowedTools) && node.allowedTools.length) {
+        body.appendChild(insField('Allowed tools', node.allowedTools.join(', ')));
+      }
       if (node.runtime) body.appendChild(insField('Runtime', node.runtime));
       if (Array.isArray(node.toolScope) && node.toolScope.length) body.appendChild(insField('Tool scope', node.toolScope.join(', ')));
       body.appendChild(insField('Timeout', def?.timeoutMs ? def.timeoutMs + 'ms' : 'default'));
@@ -8468,6 +10050,15 @@ async function renderRegionList(kind, bodyId) {
       attach.textContent = 'Attach';
       attach.addEventListener('click', () => submitText('/team attach ' + item.name));
       footer.appendChild(attach);
+      const clone = document.createElement('button');
+      clone.type = 'button';
+      clone.className = 'rl-btn';
+      clone.textContent = 'Clone';
+      clone.addEventListener('click', () => {
+        const newName = window.prompt('Clone "' + item.name + '" as', item.name + '-copy');
+        if (newName && newName.trim()) submitText('/team clone ' + item.name + ' ' + newName.trim());
+      });
+      footer.appendChild(clone);
     } else if (kind === 'plugins' || kind === 'tools') {
       const cat = item.category || item.provider;
       if (cat) {
@@ -8602,6 +10193,7 @@ async function refreshGitSettingsSummary() {
 }
 async function deleteChat(id) {
   const wasActive = state.snapshot?.session?.id === id;
+  invalidateTranscriptCache(id);
   const res = await api('/api/session/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!res.ok) { flashStatus('Could not delete chat'); return; }
   await loadState();
@@ -8613,25 +10205,37 @@ async function deleteChat(id) {
   }
   flashStatus('Chat deleted');
 }
+async function archiveDetailChat(id) {
+  await archiveChat(id);
+  if (state.detailSelectedId === id) state.detailSelectedId = null;
+  if (state.projectView === 'detail') renderProjectDetail();
+}
+async function unarchiveDetailChat(id, resumeAfter) {
+  await unarchiveChat(id);
+  if (state.projectView === 'detail') renderProjectDetail();
+  if (resumeAfter) await resumeSession(id);
+}
 async function archiveChat(id) {
   const wasActive = state.snapshot?.session?.id === id;
   const res = await api('/api/session/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!res.ok) { flashStatus('Could not archive chat'); return; }
-  await loadState();
+  state.snapshot = await res.json();
+  applyLoadedState();
   if (wasActive) {
     transcript.textContent = '';
     state.toolNodes.clear();
     state.currentAssistant = null;
     await hydrateTranscript();
   }
-  flashStatus('Chat archived — restore from Settings → Chats → Archived');
+  flashStatus('Conversation archived');
 }
 async function unarchiveChat(id) {
   const res = await api('/api/session/unarchive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!res.ok) { flashStatus('Could not restore chat'); return; }
-  await loadState();
+  state.snapshot = await res.json();
+  applyLoadedState();
   renderArchived();
-  flashStatus('Chat restored');
+  flashStatus('Conversation restored');
 }
 async function loadArchived() {
   try {
@@ -8726,8 +10330,7 @@ function handleEvent(event) {
   else if (event.type === 'delta') {
     if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
     state.currentAssistant.dataset.raw += event.text || '';
-    state.currentAssistant.textContent = state.currentAssistant.dataset.raw;
-    scrollTranscript();
+    scheduleMarkdownRender(state.currentAssistant);
   } else if (event.type === 'status') setRunStatus(event.message || 'Running', 'running');
   else if (event.type === 'notice') addMessage('notice', event.message || '');
   else if (event.type === 'tool.call') { finalizeAssistant(); state.currentAssistant = null; addToolActivity(event); }
@@ -8745,7 +10348,21 @@ function handleEvent(event) {
   }
   else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
-  else if (event.type === 'done') { finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail(); if (event.usage) state.lastUsageText = formatUsage(event.usage); setRunStatus(readyLabel()); setConversationStatus(null); void processQueue(); }
+  else if (event.type === 'done') {
+    finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail();
+    if (event.usage) state.lastUsageText = formatUsage(event.usage);
+    setRunStatus(readyLabel()); setConversationStatus(null); void processQueue();
+    void (async () => {
+      try {
+        const msgRes = await api('/api/session/messages');
+        if (!msgRes.ok) return;
+        const data = await msgRes.json();
+        state.lastHydratedMessages = data.messages || [];
+        const sid = state.activeSessionId || state.snapshot?.session?.id;
+        if (sid) saveTranscriptCache(sid, state.lastHydratedMessages, state.snapshot);
+      } catch { /* cache refresh best-effort */ }
+    })();
+  }
   else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
   // Live team events (plan/UI_PLAN §6): render as role-colored message rows +
   // SystemEventDivider handoff lines + squad roster, not plain text notices.
@@ -8783,6 +10400,15 @@ function handleEvent(event) {
   else if (event.type === 'team.synthesis') {
     finalizeAssistant(); state.currentAssistant = null;
     addSystemEvent('Synthesis · ' + event.decision);
+  }
+  else if (event.type === 'team.edge.triggered') {
+    finalizeAssistant(); state.currentAssistant = null;
+    const verb = event.channel === 'review' ? 'requested review from'
+      : event.channel === 'handoff' ? 'handed off to'
+      : event.channel === 'broadcast' ? 'broadcast to'
+      : 'passed to';
+    addSystemEvent(event.from + ' ' + verb + ' ' + event.to);
+    void refreshRail();
   }
   else if (event.type === 'team.completed') {
     finalizeAssistant(); state.currentAssistant = null;
@@ -9264,6 +10890,180 @@ function showSettingsTab(tab) {
   if (tab === 'mcp') renderMcpServers();
   if (tab === 'sessions') renderArchived();
 }
+// ── Project Manager panel (plan M0/M1) ─────────────────────────────
+// A per-project governance chat + one-click progress sync. Talks to the
+// /api/manager/* endpoints; the Manager itself is tool-restricted server-side.
+let managerBusy = false;
+let managerTranscriptHydrated = false;
+function managerAddMsg(kind, text) {
+  const t = el('managerTranscript');
+  if (!t) return;
+  const div = document.createElement('div');
+  div.className = 'manager-msg ' + kind + ((kind === 'assistant' || kind === 'user') ? ' md-prose' : '');
+  if (kind === 'assistant' || kind === 'user') {
+    renderMarkdownInto(div, text || '');
+  } else {
+    div.textContent = text;
+  }
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+}
+function hydrateManagerTranscript(items, force) {
+  const t = el('managerTranscript');
+  if (!t || managerBusy) return;
+  if (!force && managerTranscriptHydrated && t.childElementCount > 0) return;
+  t.textContent = '';
+  for (const msg of items || []) managerAddMsg(msg.kind, msg.text);
+  managerTranscriptHydrated = true;
+}
+async function refreshManagerState() {
+  try {
+    const res = await api('/api/manager/state');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.transcript)) hydrateManagerTranscript(data.transcript, false);
+    const meta = el('managerPanelMeta');
+    if (meta) {
+      meta.textContent = data.progressUpdatedAt
+        ? 'updated ' + formatRelativeTime(data.progressUpdatedAt)
+        : 'no progress doc yet';
+    }
+    const line = el('managerStatusLine');
+    if (line) {
+      const parts = [
+        (data.plan.milestones || 0) + ' milestones · ' + (data.plan.today || 0) + ' today · ' + (data.plan.upcoming || 0) + ' upcoming',
+        'model: ' + (data.config?.model || 'session default') + ' (read-only)',
+        'readScope: ' + (data.config?.readScope || 'workspace-only'),
+      ];
+      if (data.config?.mirrorProgressToWorkspace) parts.push('mirror: on');
+      if (data.schedules && data.schedules.length) parts.push(data.schedules.length + ' schedule' + (data.schedules.length === 1 ? '' : 's'));
+      line.textContent = parts.join('  ·  ');
+    }
+    el('managerPanel')?.classList.toggle('running', !!data.running);
+  } catch (e) { /* panel state is best-effort */ }
+}
+async function managerStream(path, payload) {
+  if (managerBusy) { managerAddMsg('error', 'Manager is busy — wait for the current run.'); return; }
+  managerBusy = true;
+  el('managerPanel')?.classList.add('running');
+  const updateBtn = el('managerUpdateBtn');
+  const sendBtn = el('managerChatSend');
+  if (updateBtn) updateBtn.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  try {
+    const res = await api(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok || !res.body) { managerAddMsg('error', 'Manager request failed (' + res.status + ')'); return; }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\\n')) !== -1) {
+        const lineText = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!lineText) continue;
+        let event;
+        try { event = JSON.parse(lineText); } catch (e) { continue; }
+        if (event.type === 'status' && event.message) managerAddMsg('tool', event.message);
+        else if (event.type === 'manager.result') managerAddMsg('assistant', event.text || '(no output)');
+        else if (event.type === 'error') managerAddMsg('error', event.message || 'manager error');
+      }
+    }
+  } catch (e) {
+    managerAddMsg('error', e.message || String(e));
+  } finally {
+    managerBusy = false;
+    el('managerPanel')?.classList.remove('running');
+    if (updateBtn) updateBtn.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+    refreshManagerState();
+    loadState().catch(() => {});
+  }
+}
+function wireManagerPanel() {
+  const panel = el('managerPanel');
+  if (!panel) return;
+  const header = el('managerPanelHeader');
+  const toggle = () => { panel.classList.toggle('collapsed'); };
+  header?.addEventListener('click', (e) => {
+    if (e.target.closest('#managerPanelToggle') || e.target === header || e.target.closest('.manager-panel-title')) toggle();
+  });
+  el('managerUpdateBtn')?.addEventListener('click', () => {
+    managerAddMsg('user', 'Update progress');
+    managerStream('/api/manager/update', {});
+  });
+  el('managerSchedulesLink')?.addEventListener('click', () => { openSettings('automation').catch(console.error); });
+  // Manager settings (plan M0/M3): model + readScope allowlist + mirror toggle.
+  el('managerConfigBtn')?.addEventListener('click', async () => {
+    const form = el('managerConfigForm');
+    if (!form) return;
+    if (!form.classList.contains('hidden')) { form.classList.add('hidden'); return; }
+    try {
+      const res = await api('/api/manager/state');
+      if (res.ok) {
+        const data = await res.json();
+        const cfg = data.config || {};
+        el('managerCfgModel').value = cfg.model || '';
+        el('managerCfgScope').value = cfg.readScope || 'workspace-only';
+        el('managerCfgPaths').value = (cfg.allowedReadPaths || []).join('\\n');
+        el('managerCfgMirror').checked = !!cfg.mirrorProgressToWorkspace;
+        syncManagerCfgPathsVisibility();
+      }
+    } catch (e) { /* open with blanks */ }
+    form.classList.remove('hidden');
+  });
+  function syncManagerCfgPathsVisibility() {
+    const scope = el('managerCfgScope')?.value || 'workspace-only';
+    el('managerCfgPathsLabel')?.classList.toggle('hidden', scope === 'workspace-only');
+  }
+  el('managerCfgScope')?.addEventListener('change', syncManagerCfgPathsVisibility);
+  el('managerCfgCancel')?.addEventListener('click', () => { el('managerConfigForm')?.classList.add('hidden'); });
+  el('managerConfigForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await api('/api/manager/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: el('managerCfgModel')?.value || '',
+          readScope: el('managerCfgScope')?.value || 'workspace-only',
+          allowedReadPaths: (el('managerCfgPaths')?.value || '').split('\\n').map((p) => p.trim()).filter(Boolean),
+          mirrorProgressToWorkspace: !!el('managerCfgMirror')?.checked,
+        }),
+      });
+      if (res.ok) {
+        managerAddMsg('tool', 'Manager settings saved.');
+        el('managerConfigForm')?.classList.add('hidden');
+        refreshManagerState();
+      } else {
+        managerAddMsg('error', 'Settings save failed: ' + await res.text());
+      }
+    } catch (err) {
+      managerAddMsg('error', 'Settings save failed: ' + (err.message || err));
+    }
+  });
+  el('managerChatForm')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = el('managerChatInput');
+    const text = (input?.value || '').trim();
+    if (!text) return;
+    if (input) input.value = '';
+    managerAddMsg('user', text);
+    managerStream('/api/manager/chat', { text });
+  });
+  // Initial visibility: the boot flow renders the overview without going
+  // through switchProjectView, so sync once here.
+  panel.classList.toggle('hidden', state.projectView === 'conversation');
+  if (state.projectView !== 'conversation') refreshManagerState();
+}
+wireManagerPanel();
 async function openSettings(tab = 'general') {
   // Always fetch fresh state so the bridge config list / runtime discovery
   // reflect configs added since the last loadState (the cached snapshot can
@@ -9445,15 +11245,7 @@ el('detailNewConversationBtn').addEventListener('click', () => createNewSession(
 el('detailOpenLocationBtn').addEventListener('click', openLocation);
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
-el('workspaceBrowseBtn').addEventListener('click', async () => {
-  try {
-    const res = await api('/api/pick-folder', { method: 'POST' });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.folder) el('workspacePathInput').value = data.folder;
-    }
-  } catch { /* picker unavailable — user types path manually */ }
-});
+el('workspaceBrowseBtn').addEventListener('click', () => { browseWorkspaceFolder().catch(console.error); });
 el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
 el('settingsOpenLocation').addEventListener('click', openLocation);
 el('settingsApplyRuntimeModel').addEventListener('click', () => {
@@ -9474,6 +11266,26 @@ el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); ope
 el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
 el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
+el('settingsTeamPrefsSave').addEventListener('click', async () => {
+  el('settingsStatus').textContent = 'Saving team preferences...';
+  try {
+    const res = await api('/api/team/preferences', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        autoInvoke: !!el('settingsTeamAutoInvoke')?.checked,
+        confirmBeforeRun: !!el('settingsTeamConfirm')?.checked,
+        defaultAttached: el('settingsTeamDefaultAttached')?.value || '',
+      }),
+    });
+    if (!res.ok) throw new Error('save failed (' + res.status + ')');
+    await loadState();
+    renderSettingsCommandPanels();
+    el('settingsStatus').textContent = 'Team preferences saved';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+  }
+});
 el('settingsEnterWorktree').addEventListener('click', () => {
   const name = el('settingsWorktreeName').value.trim();
   if (name) runSettingsCommand('/worktree enter ' + name, 'Entering worktree...').catch(console.error);
@@ -9497,19 +11309,6 @@ el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
 el('bridgeCfgReuse').addEventListener('change', () => { applyReuseConfig(el('bridgeCfgReuse').value); });
 el('bridgeCfgUpdateLocal').addEventListener('click', () => { updateLocalBridgeConfig().catch(console.error); });
-document.getElementById('convActionBar')?.addEventListener('click', (event) => {
-  const btn = event.target.closest('[data-conv-action]');
-  if (!btn) return;
-  const action = btn.getAttribute('data-conv-action');
-  const prompts = {
-    summarize: 'Summarize this conversation and the current project status.',
-    'update-plan': 'Review the project plan and update milestones based on our latest progress.',
-    'run-tests': 'Run the relevant project tests and report failures with suggested fixes.',
-    'create-pr': 'Draft a pull request summary with title, description, and review checklist for the current changes.',
-  };
-  const prompt = prompts[action];
-  if (prompt) submitText(prompt);
-});
 el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
   const inp = el('bridgeCfgApiKey');
   const show = inp.type === 'password';

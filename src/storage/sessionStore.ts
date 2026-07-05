@@ -255,11 +255,17 @@ export class SessionStore {
   }
 
   private toSummary(session: StoredSession): SessionSummary {
+    const runtimeRaw = session.metadata.__actoviqRuntime;
+    const configRaw = session.metadata.__actoviqConfigName;
+    const kind = session.kind ?? (session.metadata.__actoviqKind === 'manager' ? 'manager' : undefined);
     return {
+      ...(kind ? { kind } : {}),
       id: session.id,
       title: session.title,
       titleSource: session.titleSource,
       model: session.model,
+      runtime: typeof runtimeRaw === 'string' && runtimeRaw.trim() ? runtimeRaw.trim() : 'hadamard',
+      configName: typeof configRaw === 'string' && configRaw.trim() ? configRaw.trim() : null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       lastRunAt: session.lastRunAt,

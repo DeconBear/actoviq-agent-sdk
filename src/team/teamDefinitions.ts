@@ -10,13 +10,94 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import type { TeamDefinition } from '../types.js';
+import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
 
 export interface LoadedTeamDefinition {
   name: string;
   definition: TeamDefinition;
-  source: 'project' | 'personal';
+  source: 'project' | 'personal' | 'built-in';
   filePath: string;
+}
+
+/**
+ * Built-in team presets, available everywhere `/team` lists or loads — even
+ * with no team files on disk. A user file of the same name in `.actoviq/teams/`
+ * or `~/.actoviq/teams/` shadows the built-in (same rule as
+ * `BUILT_IN_ROUTER_PROFILES`). Built-ins are never overwritten by save; clone
+ * to a new name to customize.
+ *
+ * Members use `model: ''` meaning "the session's current model" — call
+ * `instantiateTeamDefinition(def, model)` before running.
+ */
+export const BUILT_IN_TEAM_DEFINITIONS: Record<string, TeamDefinition> = {
+  'panel-analysis': {
+    name: 'panel-analysis',
+    description: 'Research Panel: independent read-only investigation from multiple angles, reconciled by a synthesizer.',
+    mode: 'panel-analysis',
+    members: [
+      { model: '', role: 'researcher', name: 'researcher', systemPrompt: 'Expert researcher. Investigate with read-only tools; cite sources.' },
+      { model: '', role: 'skeptic', name: 'skeptic', systemPrompt: 'Rigorous skeptic. Verify with sources; challenge assumptions.' },
+    ],
+    primary: { model: '', role: 'synthesizer', name: 'synthesizer', systemPrompt: 'Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.' },
+    timeoutMs: 300000,
+    maxIterations: 12,
+  },
+  analysis: {
+    name: 'analysis',
+    description: 'Analysis Panel: parallel read-only research without a synthesizer — you weigh the findings.',
+    mode: 'analysis',
+    members: [
+      { model: '', role: 'researcher', name: 'researcher', systemPrompt: 'Expert researcher. Deep, source-grounded analysis.' },
+      { model: '', role: 'skeptic', name: 'skeptic', systemPrompt: 'Rigorous skeptic. Verify with sources; challenge assumptions.' },
+    ],
+    timeoutMs: 300000,
+    maxIterations: 12,
+  },
+  reviewer: {
+    name: 'reviewer',
+    description: 'Code Reviewer: one read-only agent inspects the project and reports only genuine, verifiable issues.',
+    mode: 'reviewer',
+    members: [],
+    reviewer: { model: '', role: 'reviewer', name: 'reviewer', systemPrompt: 'Meticulous reviewer. Surface only genuine, verifiable issues with file:line evidence; never speculate.' },
+    timeoutMs: 300000,
+    maxIterations: 16,
+  },
+  'quick-review': {
+    name: 'quick-review',
+    description: 'Quick Review: a lightweight reviewer pass for small diffs — fast, focused, verifiable findings only.',
+    mode: 'reviewer',
+    members: [],
+    reviewer: { model: '', role: 'reviewer', name: 'quick-reviewer', systemPrompt: 'Fast, focused reviewer for small changes. Check only what changed; report genuine, verifiable issues with file:line evidence. Be brief.' },
+    timeoutMs: 180000,
+    maxIterations: 8,
+  },
+  'security-audit': {
+    name: 'security-audit',
+    description: 'Security Audit: adversarial read-only panel scanning for injection, secrets, unsafe input handling, and permission gaps.',
+    mode: 'panel-analysis',
+    members: [
+      { model: '', role: 'attacker', name: 'attacker', systemPrompt: 'Offensive security analyst. Hunt for injection points, unsafe deserialization, path traversal, command execution, and secret leakage. Cite file:line for every finding.' },
+      { model: '', role: 'auditor', name: 'auditor', systemPrompt: 'Defensive security auditor. Review authentication, authorization, input validation at boundaries, and dependency risks. Only report verifiable issues with file:line evidence.' },
+    ],
+    primary: { model: '', role: 'synthesizer', name: 'synthesizer', systemPrompt: 'Security lead. Merge the findings, drop speculation, rank by severity, and decide when the audit is sufficient.' },
+    timeoutMs: 300000,
+    maxIterations: 16,
+  },
+};
+
+/**
+ * Fill `model: ''` placeholders in a (typically built-in) team definition with
+ * a concrete model. Returns a new definition; the input is not mutated.
+ */
+export function instantiateTeamDefinition(definition: TeamDefinition, model: string): TeamDefinition {
+  const fill = (member?: TeamMember): TeamMember | undefined =>
+    member ? { ...member, model: member.model || model } : undefined;
+  return {
+    ...definition,
+    members: (definition.members ?? []).map((m) => fill(m)!) ,
+    primary: fill(definition.primary),
+    reviewer: fill(definition.reviewer),
+  };
 }
 
 function resolveTeamDirs(projectDir?: string, homeDir?: string): string[] {
@@ -52,6 +133,7 @@ function resolveEnvVars(def: TeamDefinition): TeamDefinition {
     members: resolvedMembers ?? def.members,
     primary: def.primary ? { ...def.primary, apiKey: resolve(def.primary.apiKey) } : undefined,
     reviewer: def.reviewer ? { ...def.reviewer, apiKey: resolve(def.reviewer.apiKey) } : undefined,
+    nodes: def.nodes?.map((n) => ({ ...n, apiKey: resolve(n.apiKey) })),
   };
 }
 
@@ -84,6 +166,11 @@ export function loadTeamDefinition(
     }
   }
 
+  const builtIn = BUILT_IN_TEAM_DEFINITIONS[name];
+  if (builtIn) {
+    return { name, definition: resolveEnvVars(builtIn), source: 'built-in', filePath: '(built-in)' };
+  }
+
   return null;
 }
 
@@ -103,16 +190,24 @@ export async function saveTeamDefinition(
   if (fs.existsSync(filePath) && !options.overwrite) {
     throw new Error(`Team "${definition.name}" already exists at ${filePath}. Use overwrite: true to replace.`);
   }
+  // Built-in presets are immutable; a same-name save would silently shadow
+  // them, so require an explicit clone-to-new-name instead (overwrite of an
+  // existing user shadow file remains allowed above).
+  if (BUILT_IN_TEAM_DEFINITIONS[definition.name] && !fs.existsSync(filePath) && !options.overwrite) {
+    throw new Error(
+      `"${definition.name}" is a built-in preset. Clone it to a new name (cloneTeamDefinition) instead of overwriting.`,
+    );
+  }
 
   // Strip env var values before saving (save the $VAR reference, not the resolved value)
+  const keepRef = (apiKey?: string) => (apiKey?.startsWith?.('$') ? apiKey : undefined);
   const stripEnvVars = (def: TeamDefinition): TeamDefinition => {
-    const restore = (val?: string) => val?.startsWith?.('$') ? val : val;
-
     return {
       ...def,
-      members: def.members?.map((m) => ({ ...m, apiKey: m.apiKey?.startsWith?.('$') ? m.apiKey : undefined })),
-      primary: def.primary ? { ...def.primary, apiKey: undefined } : undefined,
-      reviewer: def.reviewer ? { ...def.reviewer, apiKey: undefined } : undefined,
+      members: def.members?.map((m) => ({ ...m, apiKey: keepRef(m.apiKey) })),
+      primary: def.primary ? { ...def.primary, apiKey: keepRef(def.primary.apiKey) } : undefined,
+      reviewer: def.reviewer ? { ...def.reviewer, apiKey: keepRef(def.reviewer.apiKey) } : undefined,
+      nodes: def.nodes?.map((n) => ({ ...n, apiKey: keepRef(n.apiKey) })),
     };
   };
 
@@ -162,7 +257,52 @@ export function listTeamDefinitions(
     }
   }
 
+  // Append built-in presets that a user file hasn't shadowed.
+  for (const [name, definition] of Object.entries(BUILT_IN_TEAM_DEFINITIONS)) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    teams.push({ name, definition: resolveEnvVars(definition), source: 'built-in', filePath: '(built-in)' });
+  }
+
   return teams;
+}
+
+/**
+ * Clone an existing team definition (built-in or on-disk) under a new name and
+ * save it to the usual target dir (project when `projectDir` is set, else
+ * personal). This is the supported way to customize a built-in preset — the
+ * clone is a plain user file, fully decoupled from future SDK preset updates.
+ */
+export async function cloneTeamDefinition(
+  sourceName: string,
+  newName: string,
+  options: { projectDir?: string; homeDir?: string; overwrite?: boolean } = {},
+): Promise<LoadedTeamDefinition> {
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error('Clone requires a non-empty new team name.');
+  if (trimmed === sourceName) throw new Error('Clone requires a different name from the source team.');
+  if (BUILT_IN_TEAM_DEFINITIONS[trimmed]) {
+    throw new Error(`"${trimmed}" is a built-in preset name — pick another name for the clone.`);
+  }
+
+  const source = loadTeamDefinition(sourceName, options.projectDir, options.homeDir);
+  if (!source) throw new Error(`Team "${sourceName}" not found (checked project, personal, and built-in presets).`);
+
+  // Clone the raw on-disk shape when there is one, so `$ENV_VAR` apiKey
+  // references survive verbatim (the loaded view resolves them, and resolved
+  // literals would be stripped on save).
+  const rawSource: TeamDefinition = source.source === 'built-in'
+    ? BUILT_IN_TEAM_DEFINITIONS[sourceName]!
+    : (JSON.parse(fs.readFileSync(source.filePath, 'utf-8')) as TeamDefinition);
+  const definition: TeamDefinition = structuredClone(rawSource);
+  definition.name = trimmed;
+  const filePath = await saveTeamDefinition(definition, options);
+  return {
+    name: trimmed,
+    definition,
+    source: options.projectDir ? 'project' : 'personal',
+    filePath,
+  };
 }
 
 /**

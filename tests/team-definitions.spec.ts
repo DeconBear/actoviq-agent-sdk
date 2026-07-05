@@ -10,6 +10,8 @@ import {
   saveTeamDefinition,
   listTeamDefinitions,
   deleteTeamDefinition,
+  cloneTeamDefinition,
+  BUILT_IN_TEAM_DEFINITIONS,
 } from '../src/team/teamDefinitions.js';
 import type { TeamDefinition } from '../src/types.js';
 
@@ -135,8 +137,19 @@ describe('Team definitions from disk', () => {
     await saveTeamDefinition(reviewerDef, { projectDir: tmpDir });
 
     const teams = listTeamDefinitions(tmpDir);
-    expect(teams.length).toBe(2);
-    expect(teams.map((t) => t.name).sort()).toEqual(['test-panel', 'test-reviewer']);
+    // Saved definitions plus the 5 built-in presets (panel-analysis, analysis,
+    // reviewer, quick-review, security-audit).
+    const saved = teams.filter((t) => t.source !== 'built-in');
+    expect(saved.length).toBe(2);
+    expect(saved.map((t) => t.name).sort()).toEqual(['test-panel', 'test-reviewer']);
+    const builtIn = teams.filter((t) => t.source === 'built-in');
+    expect(builtIn.map((t) => t.name).sort()).toEqual([
+      'analysis',
+      'panel-analysis',
+      'quick-review',
+      'reviewer',
+      'security-audit',
+    ]);
   });
 
   it('deletes a team definition', async () => {
@@ -157,6 +170,95 @@ describe('Team definitions from disk', () => {
     await expect(
       saveTeamDefinition(panelDef, { projectDir: tmpDir }),
     ).rejects.toThrow('already exists');
+  });
+
+  it('refuses to save over a built-in preset name by default', async () => {
+    const def: TeamDefinition = {
+      ...BUILT_IN_TEAM_DEFINITIONS['reviewer']!,
+      description: 'my hacked reviewer',
+    };
+    await expect(saveTeamDefinition(def, { projectDir: tmpDir })).rejects.toThrow(/built-in preset/);
+    // Explicit overwrite is the opt-in shadowing escape hatch.
+    const filePath = await saveTeamDefinition(def, { projectDir: tmpDir, overwrite: true });
+    expect(fs.existsSync(filePath)).toBe(true);
+    const loaded = loadTeamDefinition('reviewer', tmpDir);
+    expect(loaded!.source).toBe('project');
+    expect(loaded!.definition.description).toBe('my hacked reviewer');
+  });
+
+  it('a user file shadows the built-in of the same name in list results', async () => {
+    const shadow: TeamDefinition = {
+      ...BUILT_IN_TEAM_DEFINITIONS['analysis']!,
+      description: 'shadowed',
+    };
+    await saveTeamDefinition(shadow, { projectDir: tmpDir, overwrite: true });
+    const teams = listTeamDefinitions(tmpDir);
+    const analysis = teams.filter((t) => t.name === 'analysis');
+    expect(analysis).toHaveLength(1);
+    expect(analysis[0]!.source).toBe('project');
+    expect(analysis[0]!.definition.description).toBe('shadowed');
+  });
+
+  it('clones a built-in preset to a new user-owned definition', async () => {
+    const clone = await cloneTeamDefinition('security-audit', 'my-audit', { projectDir: tmpDir });
+    expect(clone.source).toBe('project');
+    expect(clone.definition.name).toBe('my-audit');
+    expect(clone.definition.mode).toBe('panel-analysis');
+    expect(clone.definition.members.map((m) => m.role)).toEqual(['attacker', 'auditor']);
+
+    const loaded = loadTeamDefinition('my-audit', tmpDir);
+    expect(loaded!.source).toBe('project');
+    // The built-in itself is untouched.
+    expect(BUILT_IN_TEAM_DEFINITIONS['security-audit']!.name).toBe('security-audit');
+  });
+
+  it('clone preserves $ENV_VAR apiKey references from disk sources', async () => {
+    process.env.CLONE_TEST_KEY = 'sk-resolved-clone';
+    await saveTeamDefinition(
+      {
+        name: 'env-source',
+        mode: 'panel',
+        members: [{ model: 'm1', apiKey: '$CLONE_TEST_KEY' }],
+        primary: { model: 'p1' },
+      },
+      { projectDir: tmpDir },
+    );
+
+    await cloneTeamDefinition('env-source', 'env-clone', { projectDir: tmpDir });
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'env-clone.json'), 'utf-8'));
+    expect(raw.members[0].apiKey).toBe('$CLONE_TEST_KEY');
+    delete process.env.CLONE_TEST_KEY;
+  });
+
+  it('clone rejects built-in target names, same-name clones, and unknown sources', async () => {
+    await expect(cloneTeamDefinition('reviewer', 'reviewer', { projectDir: tmpDir })).rejects.toThrow(/different name/);
+    await expect(cloneTeamDefinition('reviewer', 'analysis', { projectDir: tmpDir })).rejects.toThrow(/built-in preset name/);
+    await expect(cloneTeamDefinition('does-not-exist', 'copy', { projectDir: tmpDir })).rejects.toThrow(/not found/);
+  });
+
+  it('resolves and strips graph node apiKeys like members', async () => {
+    process.env.NODE_KEY_TEST = 'sk-node-key';
+    const def: TeamDefinition = {
+      name: 'graph-keys',
+      mode: 'graph',
+      version: 2,
+      orchestration: 'graph',
+      members: [],
+      nodes: [
+        { id: 'a', model: 'm1', entry: true, apiKey: '$NODE_KEY_TEST' },
+        { id: 'b', model: 'm2', apiKey: 'sk-literal-node' },
+      ],
+      edges: [{ from: 'a', to: 'b' }],
+    };
+    await saveTeamDefinition(def, { projectDir: tmpDir });
+
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'graph-keys.json'), 'utf-8'));
+    expect(raw.nodes[0].apiKey).toBe('$NODE_KEY_TEST'); // $refs kept
+    expect(raw.nodes[1].apiKey).toBeUndefined(); // literals stripped
+
+    const loaded = loadTeamDefinition('graph-keys', tmpDir);
+    expect(loaded!.definition.nodes![0]!.apiKey).toBe('sk-node-key'); // resolved on load
+    delete process.env.NODE_KEY_TEST;
   });
 
   it('project definitions override personal ones', async () => {
