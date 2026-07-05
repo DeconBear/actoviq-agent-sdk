@@ -292,8 +292,73 @@ export {
   saveTeamDefinition,
   listTeamDefinitions,
   deleteTeamDefinition,
+  cloneTeamDefinition,
+  instantiateTeamDefinition,
+  BUILT_IN_TEAM_DEFINITIONS,
 } from './team/teamDefinitions.js';
 export type { LoadedTeamDefinition } from './team/teamDefinitions.js';
+export {
+  validateTeamGraph,
+  assertValidTeamGraph,
+  migrateTeamDefinitionToV2,
+  orchestrateGraph,
+  graphNodeRef,
+  edgeConditionPasses,
+  createNotifyTeammateTool,
+  MAX_GRAPH_NODES,
+} from './team/teamGraph.js';
+export type {
+  OrchestrateGraphOptions,
+  OrchestrateGraphResult,
+  GraphNodeRunResult,
+  GraphNodeRunContext,
+  GraphNotifyResult,
+} from './team/teamGraph.js';
+export {
+  applyTeamRunEvent,
+  createTeamRunViewState,
+  formatTeamRunTreeLines,
+  teamRunViewFromSnapshot,
+} from './team/teamRunView.js';
+export type {
+  TeamRunViewState,
+  TeamRunMemberView,
+  TeamRunEdgeView,
+  TeamRunMemberStatus,
+  FormatTeamRunTreeOptions,
+} from './team/teamRunView.js';
+export {
+  readTeamPreferences,
+  writeTeamPreferences,
+  DEFAULT_TEAM_PREFERENCES,
+} from './team/teamPreferences.js';
+export type { TeamPreferences } from './team/teamPreferences.js';
+
+// ── Project Manager (per-project governance agent) ───────────────────
+export {
+  createManagerTools,
+  buildManagerSystemPrompt,
+  buildUpdateProgressPrompt,
+  readManagerConfig,
+  writeManagerConfig,
+  managerConfigPath,
+  managerPlanPath,
+  managerProgressPath,
+  readProjectPlanFile,
+  writeProjectPlanFile,
+  readProgressFile,
+  resolveManagerReadRoots,
+  DEFAULT_MANAGER_CONFIG,
+  EMPTY_PROJECT_PLAN,
+} from './manager/projectManager.js';
+export type {
+  ManagerConfig,
+  ManagerReadScope,
+  ManagerUpdateContext,
+  ProjectPlan,
+  ProjectPlanMilestone,
+  CreateManagerToolsOptions,
+} from './manager/projectManager.js';
 
 // ── Model Router (a /model routing layer) ─────────────────────────────
 export {

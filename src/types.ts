@@ -1487,8 +1487,8 @@ export interface StoredSession {
   status: SessionStatus;
   messages: MessageParam[];
   runs: StoredRunSummary[];
-  // ── v0.5.0 worktree fields ────────────────────────────────────
-  kind?: 'main' | 'worktree';
+  // ── v0.5.0 worktree fields (+ 'manager' for project-manager sessions) ──
+  kind?: 'main' | 'worktree' | 'manager';
   worktreePath?: string;
   worktreeBranch?: string;
   parentSessionId?: string;
@@ -1500,6 +1500,10 @@ export interface SessionSummary {
   title: string;
   titleSource: 'auto' | 'manual';
   model: string;
+  /** Last runtime used for this session (bridge config runtime or `hadamard`). */
+  runtime: string;
+  /** Last named provider config used; null when the default Hadamard provider ran. */
+  configName: string | null;
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
@@ -1509,6 +1513,10 @@ export interface SessionSummary {
   preview: string;
   messageCount: number;
   runCount: number;
+  /** True when the session file lives in the project archive/ directory. */
+  archived?: boolean;
+  /** Session kind — 'manager' sessions belong to the Project Manager panel, not the chat list. */
+  kind?: 'main' | 'worktree' | 'manager';
 }
 
 export interface SessionManagerConfig {
@@ -1976,7 +1984,7 @@ export interface TaskSchedulerOptions {
   defaultRetryDelayMs?: number;
 }
 
-export type ScheduledAutomationKind = 'workflow' | 'prompt';
+export type ScheduledAutomationKind = 'workflow' | 'prompt' | 'manager';
 
 export interface ScheduledAutomationTask {
   id: string;
@@ -2457,7 +2465,7 @@ export interface WorktreeInfo {
  * convergence (the `panel` capability). `panel` and `analysis` are retained as
  * backward-compatible aliases that route to the same engine.
  */
-export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'executor-reviewer';
+export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'executor-reviewer' | 'graph';
 
 export interface TeamMember {
   model: string;
@@ -2494,18 +2502,84 @@ export interface TeamReviewEdge {
   note?: string;
 }
 
+// ── Graph orchestration (TeamDefinition version 2) ────────────────────
+
+/** How an edge wakes its downstream node. v1 engine auto-schedules only `on_complete`. */
+export type TeamGraphTrigger = 'on_complete' | 'on_tool_call' | 'on_handoff' | 'on_review_request' | 'manual';
+
+/** What kind of communication the edge carries (labeling/UI semantics). */
+export type TeamGraphChannel = 'message' | 'handoff' | 'review' | 'broadcast';
+
+/**
+ * A graph node is a team member plus graph-only fields. Nodes are read-only by
+ * default (same expert toolset as panel members); `allowedTools` opts specific
+ * core tools in per node — granting Write/Bash requires an explicit editor
+ * confirmation (product rule, enforced at the UI layer).
+ */
+export interface TeamGraphNode extends TeamMember {
+  /** Marks a run entry point. Multiple entries start in parallel. */
+  entry?: boolean;
+  /** Core-tool whitelist for this node. Absent → read-only expert tools. */
+  allowedTools?: string[];
+  /**
+   * Join semantics across this node's `on_complete` in-edges.
+   * `all` (default): wait-all — wake once after every in-edge resolves.
+   * `any`: OR-join — wake on the first in-edge that delivers a payload.
+   */
+  join?: 'all' | 'any';
+}
+
+export interface TeamGraphEdge {
+  /** Upstream node ref (id → name → role → model). */
+  from: string;
+  /** Downstream node ref. */
+  to: string;
+  channel?: TeamGraphChannel;
+  /** Default: `on_complete`. */
+  trigger?: TeamGraphTrigger;
+  /**
+   * Template for the payload delivered downstream. Supports `{{from.output}}`,
+   * `{{from.id}}`, and `{{run.prompt}}` placeholders. Absent → a labeled
+   * "input from <id>" section containing the upstream report.
+   */
+  payloadTemplate?: string;
+  /**
+   * Output gate: the edge fires only when the upstream output matches.
+   * `/pattern/` (optionally `/pattern/i`) is a regex test; anything else is a
+   * case-sensitive substring test. A gated-out edge releases its join slot
+   * without a payload; a node whose every in-edge gates out is skipped
+   * (conditional short-circuit) and releases its own downstream edges.
+   */
+  condition?: string;
+  note?: string;
+}
+
 export interface TeamDefinition {
   name: string;
   description?: string;
   mode: ModelTeamMode;
+  /** Definition schema version. Missing → 1. Version 2 adds graph orchestration. */
+  version?: number;
+  /** How the team executes. Version 2 only; v1 definitions are implicitly `legacy-mode`. */
+  orchestration?: 'legacy-mode' | 'graph';
   /** Panel members (panel-analysis / its `panel`+`analysis` aliases). */
   members: TeamMember[];
   /** Optional synthesizer that drives panel-analysis convergence. */
   primary?: TeamMember;
   /** The reviewer model (reviewer / its `executor-reviewer` alias). */
   reviewer?: TeamMember;
-  /** Explicit collaboration edges used by GUI/team planners. */
+  /**
+   * Explicit collaboration edges used by GUI/team planners (v1 only). The
+   * v1 → v2 migrator converts these into `edges` with `channel: 'review'` and
+   * drops the field — it is not carried forward on graph definitions.
+   */
   reviewEdges?: TeamReviewEdge[];
+  /** Graph nodes (mode `graph`, version 2). */
+  nodes?: TeamGraphNode[];
+  /** Graph edges (mode `graph`, version 2). */
+  edges?: TeamGraphEdge[];
+  /** Entry node refs; alternative to per-node `entry: true` (union of both applies). */
+  entryNodeIds?: string[];
   /** Max panel members dispatched concurrently within this team (still bounded by the global AgentPool). Default: all members. */
   maxParallel?: number;
   /** Per-member, per-call timeout in ms. */
@@ -2546,6 +2620,7 @@ export type TeamEvent =
   | { type: 'team.member.completed'; id: string; model: string; role?: string; round: number; ok: boolean; toolCalls: number; durationMs: number; error?: string }
   | { type: 'team.round.completed'; round: number; reports: number }
   | { type: 'team.synthesis'; round: number; decision: 'finalize' | 'continue' }
+  | { type: 'team.edge.triggered'; from: string; to: string; trigger: TeamGraphTrigger; channel: TeamGraphChannel }
   | { type: 'team.completed'; mode: ModelTeamMode; rounds: number; incompleteReason?: string };
 
 /** Options for `ModelTeam.ask`. */
@@ -2609,9 +2684,22 @@ export interface AnalysisResult extends TeamResult {
   rounds: number;
 }
 
+/**
+ * `graph` mode result: nodes + `on_complete` edges executed as a DAG
+ * (wait-all joins, fail-soft error propagation). The answer is the terminal
+ * node report(s); `reports` carries every node's output in completion order.
+ */
+export interface GraphTeamResult extends TeamResult {
+  mode: 'graph';
+  reports: ExpertPanelReport[];
+  /** Node ids that never ran (unreachable, or only manual/communication in-edges). */
+  skippedNodes: string[];
+}
+
 export type ModelTeamResult =
   | ReviewerResult
-  | AnalysisResult;
+  | AnalysisResult
+  | GraphTeamResult;
 
 // ── Model Router / Leader-Dispatch (a /model routing layer, not a team) ──
 

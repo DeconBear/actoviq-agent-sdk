@@ -16,12 +16,16 @@
     "access": "public"
   },
   "build": {
-    "appId": "com.actoviq.gui",
+    "appId": "com.actoviq.desktop",
     "productName": "Actoviq",
     "copyright": "Copyright Actoviq",
     "artifactName": "Actoviq-Setup-${version}-${arch}.${ext}",
-    "directories": { "output": "dist_electron" },
-    "extraMetadata": { "main": "dist/src/gui/electronMain.js" },
+    "directories": {
+      "output": "dist_electron"
+    },
+    "extraMetadata": {
+      "main": "dist/src/gui/electronMain.js"
+    },
     "icon": "assets/actoviq-icon.ico",
     "files": [
       "dist/**/*",
@@ -41,7 +45,9 @@
     ],
     "npmRebuild": false,
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -79,14 +85,16 @@
   },
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "node scripts/generate-gui-icon.mjs && npm run clean && tsc -p tsconfig.build.json",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "prepack": "npm run build",
     "prepare:public-runtime": "node scripts/prepare-public-runtime.mjs",
     "prepare:xterm": "node scripts/prepare-xterm.mjs",
+    "prepare:gui-launcher": "node scripts/prepare-gui-launcher.mjs",
     "make:ico": "python scripts/make-ico.py",
+    "generate:icon": "node scripts/generate-gui-icon.mjs && npm run make:ico",
     "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist:win": "npm run prepare:xterm && npm run build && electron-builder --win --x64 && electron-builder --win --arm64",
@@ -149,6 +157,7 @@
     "@types/node": "^22.0.0",
     "electron-builder": "^26.0.0",
     "playwright": "^1.61.0",
+    "rcedit": "^4.0.1",
     "tsx": "^4.20.6",
     "typescript": "^5.8.3",
     "vitepress": "^1.6.3",

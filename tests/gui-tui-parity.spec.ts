@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { execSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { TUI_SLASH_COMMANDS, filterSlashCommands } from '../src/tui/actoviqTui.js';
 import {
   ACTOVIQ_INTERACTIVE_COMMANDS,
+  SUBCOMMANDS,
   filterInteractiveCommands,
 } from '../src/ui/commandSurface.js';
 import {
@@ -48,6 +53,7 @@ describe('TUI and GUI parity', () => {
       'workflows',
       'worktree',
       'team',
+      'manager',
       'bridge',
       'exit',
     ]);
@@ -70,6 +76,9 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="workspaceModal"');
     expect(html).toContain('id="workspaceChoices"');
     expect(html).toContain('id="workspacePathInput"');
+    expect(html).toContain('id="workspaceBrowseBtn"');
+    expect(html).not.toContain('id="workspaceBrowserList"');
+    expect(html).not.toContain('id="workspaceBrowseUp"');
     expect(html).toContain('id="openWorkspaceBtn"');
     expect(html).toContain('id="fileUploadBtn"');
     expect(html).toContain('id="fileInput"');
@@ -104,7 +113,7 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('<span>chat</span>');
     expect(html).not.toContain('<span>mem</span>');
     expect(html).toContain('id="squadRoster"');
-    expect(html).toContain('id="convActionBar"');
+    expect(html).not.toContain('id="convActionBar"');
     expect(html).toContain('id="contextRail"');
     expect(html).toContain('id="sendBtn"');
     expect(html).toContain('id="saveSettingsBtn"');
@@ -147,6 +156,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/settings');
     expect(js).toContain('/api/open-location');
     expect(js).toContain('/api/project/open');
+    expect(js).toContain('/api/pick-folder');
+    expect(js).toContain('pickFolderViaApi');
     expect(js).toContain('createNewSession');
     expect(js).toContain('submitWorkspace');
     expect(js).toContain('renderWorkspaceChoices');
@@ -177,12 +188,144 @@ describe('TUI and GUI parity', () => {
     expect(css).toContain('.context-menu');
     expect(css).toContain('.git-section');
     expect(css).toContain('.brand ');
-    expect(css).toContain('.conv-action-bar');
+    expect(css).toContain('.chat-chrome');
+    expect(css).toContain('.workspace-path-row');
+    expect(css).toContain('.workspace-path-input');
+    expect(js).toContain('pickFolderViaApi');
+    expect(js).toContain('workspaceBrowseBtn');
+    expect(css).toContain('.md-prose');
+    expect(css).toContain('.message-row .md-prose h2.md-h');
+    expect(css).toContain('.message-row .message.user');
+    expect(css).toContain('.pill-btn.primary:hover');
     expect(css).toContain('.system-event');
     expect(css).toContain('.context-rail');
     expect(js).toContain('renderContextRail');
     expect(js).toContain('renderSquadRoster');
     expect(js).toContain('addMemberMessage');
+    expect(js).toContain('TRANSCRIPT_CACHE_TTL_MS');
+    expect(js).toContain('transcriptCacheFresh');
+    expect(js).toContain('refreshSessionInBackground');
+    expect(js).toContain('renderMarkdownInto');
+    expect(js).toContain('detailArchivedExpanded');
+    expect(js).toContain('buildDetailConvCard');
+    expect(js).toContain('detail-archived-section');
+    expect(js).toContain('sessionConfigDisplay');
+    expect(js).not.toContain('Core Squad');
+    expect(js).not.toContain('Test Runner');
     expect(js).toContain('updateLocalBridgeConfig');
+
+    // Project Manager panel (plan M0/M1) + team preferences (plan §3.3).
+    expect(html).toContain('id="managerPanel"');
+    expect(html).toContain('id="managerUpdateBtn"');
+    expect(html).toContain('id="managerChatInput"');
+    expect(html).toContain('id="managerTranscript"');
+    expect(html).toContain('id="settingsTeamAutoInvoke"');
+    expect(html).toContain('id="settingsTeamDefaultAttached"');
+    expect(html).toContain('id="settingsTeamPrefsSave"');
+    expect(css).toContain('.manager-panel');
+    expect(css).toContain('.manager-transcript');
+    expect(js).toContain('/api/manager/state');
+    expect(js).toContain('/api/manager/update');
+    expect(js).toContain('/api/manager/chat');
+    expect(js).toContain('/api/team/preferences');
+    expect(js).toContain('refreshManagerState');
+    expect(js).toContain('renderMarkdownInto(div');
+    expect(js).toContain('managerTranscriptHydrated');
+    expect(js).toContain('hydrateManagerTranscript');
+    expect(js).toContain("item.kind === 'manager'");
+    expect(css).toContain('.manager-transcript .manager-msg.md-prose');
+    // No client-side fake built-in team placeholders (real list comes from the server).
+    expect(js).not.toContain("mode: 'built-in'");
+  });
+
+  it('keeps /manager chat available on all three surfaces (plan §4.6)', () => {
+    const root = join(import.meta.dirname, '..');
+    expect(SUBCOMMANDS.manager).toContain('chat');
+    expect(SUBCOMMANDS.manager).toContain('update');
+    // Each surface must both parse the chat subcommand and show it in usage.
+    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    for (const source of [repl, tui, gui]) {
+      expect(source).toContain('/manager chat <message>');
+    }
+    expect(repl).toContain("sub === 'chat' || sub.startsWith('chat ')");
+    expect(tui).toContain("args === 'chat' || args.startsWith('chat ')");
+    expect(gui).toContain("input.startsWith('/manager chat ')");
+  });
+
+  it('keeps /team clone available on all three surfaces (plan Phase 1)', () => {
+    const root = join(import.meta.dirname, '..');
+    expect(SUBCOMMANDS.team).toContain('clone');
+    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    for (const source of [repl, tui, gui]) {
+      expect(source).toContain('cloneTeamDefinition');
+      expect(source).toContain("startsWith('clone ')");
+    }
+  });
+
+  it('keeps manager config knobs (model/readScope/mirror) on all three surfaces (plan M0/M3)', () => {
+    const root = join(import.meta.dirname, '..');
+    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    for (const source of [repl, tui]) {
+      expect(source).toContain("startsWith('config set ')");
+      expect(source).toContain('writeManagerConfig');
+      expect(source).toContain('read-only regardless of model');
+    }
+    const html = createActoviqGuiHtml();
+    const js = createActoviqGuiClientScript();
+    expect(html).toContain('id="managerConfigForm"');
+    expect(html).toContain('id="managerCfgScope"');
+    expect(html).toContain('id="managerCfgMirror"');
+    expect(html).toContain('always runs read-only');
+    expect(js).toContain('/api/manager/config');
+  });
+
+  it('renders the Team Run tree + graph editor surfaces in the GUI (plan Phase 4/5)', () => {
+    const js = createActoviqGuiClientScript();
+    const css = createActoviqGuiStyles();
+    // Phase 5: TeamEvent-driven run tree (hidden with no team run) + edge lines.
+    expect(js).toContain('renderTeamRunTree');
+    expect(js).toContain("event.type === 'team.edge.triggered'");
+    expect(css).toContain('.team-tree-row');
+    // Phase 4: graph editor (nodes/edges/entry/allowedTools + risky-tool confirm
+    // + save target + engine-validated save) and the graph-mode canvas.
+    expect(js).toContain('renderGraphTeamEditor');
+    expect(js).toContain('RISKY_NODE_TOOLS');
+    expect(js).toContain('/api/team/upgrade');
+    expect(js).toContain('showTeamGraphProblems');
+    expect(js).toContain('renderGraphModeCanvas');
+    expect(js).toContain('saveTargetField');
+  });
+
+  it('keeps Team Run tree formatting on all three surfaces (plan Phase 5)', () => {
+    const root = join(import.meta.dirname, '..');
+    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    for (const source of [repl, tui]) {
+      expect(source).toContain('formatTeamRunTreeLines');
+      expect(source).toContain('applyTeamRunEvent');
+    }
+    const js = createActoviqGuiClientScript();
+    expect(js).toContain('renderTeamRunTree');
+    expect(js).toContain("event.type === 'team.edge.triggered'");
+    expect(gui).toContain('forwardTeamEvent');
+  });
+
+  it('emits syntactically valid GUI client script (template-literal regex escapes)', () => {
+    const js = createActoviqGuiClientScript();
+    const file = join(tmpdir(), `actoviq-gui-client-${process.pid}.js`);
+    writeFileSync(file, js);
+    expect(() => execSync(`node --check ${JSON.stringify(file)}`)).not.toThrow();
+  });
+
+  it('ships GUI taskbar icon assets for Electron', () => {
+    const root = join(import.meta.dirname, '..');
+    expect(existsSync(join(root, 'assets', 'actoviq-icon.png'))).toBe(true);
+    expect(existsSync(join(root, 'assets', 'actoviq-icon.ico'))).toBe(true);
   });
 });

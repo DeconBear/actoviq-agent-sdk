@@ -11,6 +11,7 @@ import {
   startActoviqGuiServer,
   type ActoviqGuiServer,
 } from './actoviqGui.js';
+import { resolveGuiIconPath } from './guiAssets.js';
 import { readPackageVersion } from '../cli/version.js';
 import {
   getDefaultActoviqSettingsPath,
@@ -18,6 +19,11 @@ import {
 } from '../config/actoviqSettingsStore.js';
 
 let guiServer: ActoviqGuiServer | null = null;
+
+if (process.platform === 'win32') {
+  // Set before 'ready'. Use a stable id distinct from electron.exe's default grouping.
+  app.setAppUserModelId('com.actoviq.desktop');
+}
 
 function executeInFocusedWindow(script: string): void {
   const focusedWindow = BrowserWindow.getFocusedWindow();
@@ -80,31 +86,18 @@ function getUserArgs(): string[] {
   return mainIndex >= 0 ? process.argv.slice(mainIndex + 1) : process.argv.slice(2);
 }
 
-function resolveIconPath(): string | undefined {
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  // When packaged, an asset inside app.asar is transparently readable from
-  // the app.asar/... virtual path, BUT Win32 LoadImage (used by setIcon and
-  // the BrowserWindow `icon` option to read .ico) can't read through asar's
-  // virtual FS — the icon silently fails to apply and falls back to the
-  // Electron default. Resolve asar paths to their real app.asar.unpacked/...
-  // location when the asset is unpacked (see package.json asarUnpack).
-  const realPath = (p: string): string => p.includes('\\app.asar\\')
-    ? p.replace('\\app.asar\\', '\\app.asar.unpacked\\')
-    : (p.includes('/app.asar/') ? p.replace('/app.asar/', '/app.asar.unpacked/') : p);
-  const pngs = [
-    path.join(dir, '../../../assets/actoviq-icon.png'), // dist/src/gui -> repo/assets
-    path.join(dir, '../../assets/actoviq-icon.png'), // src/gui (tsx) -> repo/assets
-    path.join(process.cwd(), 'assets', 'actoviq-icon.png'),
-  ];
-  if (process.platform === 'win32') {
-    const icos = [
-      path.join(dir, '../../../assets/actoviq-icon.ico'), // dist/src/gui -> repo/assets
-      path.join(process.cwd(), 'assets', 'actoviq-icon.ico'),
-    ];
-    const ico = icos.find((c) => existsSync(c) || existsSync(realPath(c)));
-    if (ico) return existsSync(realPath(ico)) ? realPath(ico) : ico;
+function loadWindowIcon(): { iconPath?: string; iconImage?: Electron.NativeImage } {
+  const iconPath = resolveGuiIconPath();
+  if (!iconPath || !existsSync(iconPath)) {
+    process.stderr.write('[actoviq-gui] warning: app icon not found — run npm run generate:icon\n');
+    return {};
   }
-  return pngs.find((candidate) => existsSync(candidate) || existsSync(realPath(candidate)));
+  const iconImage = nativeImage.createFromPath(iconPath);
+  if (iconImage.isEmpty()) {
+    process.stderr.write(`[actoviq-gui] warning: could not decode icon at ${iconPath}\n`);
+    return { iconPath };
+  }
+  return { iconPath, iconImage };
 }
 
 /**
@@ -156,15 +149,8 @@ async function createWindow(): Promise<void> {
   await ensureActoviqHomeInit(args);
   guiServer = await startActoviqGuiServer(args);
   installApplicationMenu();
-  app.setAppUserModelId('com.actoviq.gui');
-  const iconPath = resolveIconPath();
-  // Build a NativeImage once and reuse it. On Windows, passing a path string
-  // to setIcon / the `icon` option is unreliable for the taskbar (Win32 LoadImage
-  // + icon caching by exe path can leave the electron.exe icon showing). A
-  // NativeImage decoded from the .ico applies consistently to both the title
-  // bar and the taskbar, in dev (electron.exe) and packaged (Actoviq.exe) runs.
-  const iconImage = iconPath ? nativeImage.createFromPath(iconPath) : null;
-  const hasIcon = iconImage && !iconImage.isEmpty();
+  const { iconPath, iconImage } = loadWindowIcon();
+  const hasIcon = Boolean(iconPath && iconImage && !iconImage.isEmpty());
   const window = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -173,7 +159,7 @@ async function createWindow(): Promise<void> {
     title: 'Actoviq',
     backgroundColor: '#f3f3f3',
     show: false,
-    ...(hasIcon ? { icon: iconImage } : {}),
+    ...(hasIcon ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -181,12 +167,12 @@ async function createWindow(): Promise<void> {
     },
   });
   window.setMenuBarVisibility(true);
-  if (hasIcon) window.setIcon(iconImage);
+  if (hasIcon && iconPath) {
+    window.setIcon(iconPath);
+  }
   window.once('ready-to-show', () => {
     window.show();
-    // Re-apply after the window is visible: Windows sometimes drops the
-    // taskbar icon that was set before the window was shown.
-    if (hasIcon) window.setIcon(iconImage);
+    if (hasIcon && iconPath) window.setIcon(iconPath);
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);

@@ -47,6 +47,16 @@ describe('SessionStore', () => {
     expect(loaded.title).toBe('Alpha');
     expect(listed).toHaveLength(1);
     expect(listed[0]?.preview).toContain('hello world');
+    expect(listed[0]?.runtime).toBe('hadamard');
+    expect(listed[0]?.configName).toBeNull();
+
+    created.metadata.__actoviqRuntime = 'claude';
+    created.metadata.__actoviqConfigName = 'deepseek';
+    await store.save(created);
+    const relisted = await store.list();
+    const updated = relisted.find((item) => item.id === created.id);
+    expect(updated?.runtime).toBe('claude');
+    expect(updated?.configName).toBe('deepseek');
     expect(forked.title).toBe('Alpha Copy');
     expect(forked.runs).toHaveLength(0);
 
