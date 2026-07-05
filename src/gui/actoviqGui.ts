@@ -97,6 +97,8 @@ import {
   createManagerTools,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
+  formatManagerUpdatePreview,
+  resolveGitHubDigestForUpdate,
   readManagerConfig,
   writeManagerConfig,
   readProjectPlanFile,
@@ -1702,10 +1704,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const { gitSummary, conversationSummaries } = await collectManagerHostContext();
       const plan = await readProjectPlanFile(workDir, homeDir);
       const progress = await readProgressFile(workDir, homeDir);
+      const githubDigest = await resolveGitHubDigestForUpdate(workDir, opts.instruction);
       prompt = buildUpdateProgressPrompt({
         instruction: opts.instruction,
         gitSummary,
         conversationSummaries,
+        githubDigest,
         currentPlanJson: JSON.stringify(plan, null, 2),
         currentProgress: progress ?? undefined,
       });
@@ -3182,6 +3186,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       plan: { milestones: plan.milestones.length, today: plan.today.length, upcoming: plan.upcoming.length },
       progressChars: progress?.length ?? 0,
       progressPreview: progress ? progress.slice(0, 2000) : null,
+      updatePreview: formatManagerUpdatePreview(plan, progress),
       progressPath,
       progressUpdatedAt,
       running,
@@ -3924,7 +3929,7 @@ export function createActoviqGuiHtml(): string {
             <label>Model
               <input id="managerCfgModel" autocomplete="off" placeholder="session default">
             </label>
-            <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files.</p>
+            <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files. Bridge runtime: tool restrictions are enforced by the bridge side; use read-only permission mode only.</p>
             <label>Read scope
               <select id="managerCfgScope">
                 <option value="workspace-only">workspace-only</option>
@@ -10995,7 +11000,15 @@ function wireManagerPanel() {
   header?.addEventListener('click', (e) => {
     if (e.target.closest('#managerPanelToggle') || e.target === header || e.target.closest('.manager-panel-title')) toggle();
   });
-  el('managerUpdateBtn')?.addEventListener('click', () => {
+  el('managerUpdateBtn')?.addEventListener('click', async () => {
+    try {
+      const res = await api('/api/manager/state');
+      if (res.ok) {
+        const data = await res.json();
+        const preview = data.updatePreview || 'Update progress documents from recent activity?';
+        if (!window.confirm('Update progress?\\n\\n' + preview + '\\n\\nProceed?')) return;
+      }
+    } catch { /* proceed without preview */ }
     managerAddMsg('user', 'Update progress');
     managerStream('/api/manager/update', {});
   });

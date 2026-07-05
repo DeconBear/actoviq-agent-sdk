@@ -306,12 +306,104 @@ export interface ManagerUpdateContext {
   conversationSummaries?: string;
   /** Read-only git summary collected by the host (branch, dirty, recent commits). */
   gitSummary?: string;
+  /** Open PR digest from GitHub REST (host-collected when `GITHUB_TOKEN` is set). */
+  githubDigest?: string;
   /** Current plan.json content (JSON string), if any. */
   currentPlanJson?: string;
   /** Current PROGRESS.md content, if any. */
   currentProgress?: string;
   /** Extra user instruction for this update. */
   instruction?: string;
+}
+
+/** Human-readable snapshot shown before an Update progress run (plan M3 diff preview). */
+export function formatManagerUpdatePreview(plan: ProjectPlan, progress: string | null): string {
+  const lines = [
+    `plan.json — ${plan.milestones.length} milestones, ${plan.today.length} today, ${plan.upcoming.length} upcoming`,
+    `PROGRESS.md — ${progress ? `${progress.length} chars` : '(none yet — will be created)'}`,
+  ];
+  if (plan.milestones.length) {
+    lines.push('Milestones: ' + plan.milestones.map((m) => `${m.title}${m.status ? ` (${m.status})` : ''}`).slice(0, 6).join('; '));
+  }
+  if (progress?.trim()) {
+    const head = progress.trim().slice(0, 500);
+    lines.push('', 'PROGRESS preview:', head + (progress.length > 500 ? '…' : ''));
+  }
+  return lines.join('\n');
+}
+
+/** True when a scheduled/manual update should attach a GitHub PR digest. */
+export function shouldIncludeGitHubDigest(instruction?: string): boolean {
+  const key = (instruction ?? '').trim().toLowerCase();
+  return key === 'github-pr-digest' || (key.includes('github') && key.includes('pr'));
+}
+
+/** Parse `owner/repo` from a git remote URL (https or git@github.com:). */
+export function parseGitHubRepoFromRemote(remoteUrl: string): { owner: string; repo: string } | null {
+  const s = remoteUrl.trim();
+  const ssh = s.match(/git@github\.com:([^/]+)\/(.+?)(\.git)?$/i);
+  if (ssh) return { owner: ssh[1]!, repo: ssh[2]!.replace(/\.git$/i, '') };
+  try {
+    const u = new URL(s.replace(/\.git$/i, ''));
+    if (!u.hostname.endsWith('github.com')) return null;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts.length >= 2) return { owner: parts[0]!, repo: parts[1]! };
+  } catch { /* not a URL */ }
+  return null;
+}
+
+/**
+ * Fetch a short open-PR digest via GitHub REST (read-only; no shell).
+ * Returns null when `token` is missing or the request fails silently.
+ */
+export async function fetchGitHubPrDigest(
+  token: string | undefined,
+  owner: string,
+  repo: string,
+): Promise<string | null> {
+  if (!token?.trim()) return null;
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=open&per_page=10`,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${token.trim()}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    if (!res.ok) return `GitHub API error: HTTP ${res.status}`;
+    const pulls = (await res.json()) as Array<{ number: number; title: string; user?: { login?: string } }>;
+    if (!Array.isArray(pulls) || pulls.length === 0) return 'Open PRs: none';
+    return [
+      `Open PRs (${pulls.length} shown):`,
+      ...pulls.map((p) => `#${p.number} ${p.title} (@${p.user?.login ?? '?'})`),
+    ].join('\n');
+  } catch (err: unknown) {
+    return `GitHub digest failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** Host helper: resolve a PR digest when the update instruction requests it. */
+export async function resolveGitHubDigestForUpdate(
+  workDir: string,
+  instruction?: string,
+): Promise<string | undefined> {
+  if (!shouldIncludeGitHubDigest(instruction)) return undefined;
+  const token = process.env.GITHUB_TOKEN;
+  if (!token?.trim()) return undefined;
+  let remote = '';
+  try {
+    const { execSync } = await import('node:child_process');
+    remote = execSync('git remote get-url origin', { cwd: workDir, encoding: 'utf8' }).trim();
+  } catch {
+    return undefined;
+  }
+  const repo = parseGitHubRepoFromRemote(remote);
+  if (!repo) return undefined;
+  const digest = await fetchGitHubPrDigest(token, repo.owner, repo.repo);
+  return digest ?? undefined;
 }
 
 /** Build the "Update progress" run prompt from host-collected context. */
@@ -339,6 +431,9 @@ export function buildUpdateProgressPrompt(context: ManagerUpdateContext): string
   }
   if (context.gitSummary?.trim()) {
     parts.push('', '--- Git status (read-only, collected by the host) ---', context.gitSummary.trim());
+  }
+  if (context.githubDigest?.trim()) {
+    parts.push('', '--- GitHub PR digest (read-only, collected by the host) ---', context.githubDigest.trim());
   }
   return parts.join('\n');
 }

@@ -7,6 +7,10 @@ import {
   createManagerTools,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
+  formatManagerUpdatePreview,
+  shouldIncludeGitHubDigest,
+  parseGitHubRepoFromRemote,
+  fetchGitHubPrDigest,
   readManagerConfig,
   writeManagerConfig,
   readProjectPlanFile,
@@ -196,14 +200,47 @@ describe('Manager prompts', () => {
       instruction: 'mark milestone 2 blocked',
       gitSummary: 'branch: main',
       conversationSummaries: '- [2026-07-05] Fix login (3 msgs)',
+      githubDigest: 'Open PRs (1 shown):\n#42 Fix auth',
       currentPlanJson: '{"milestones":[]}',
       currentProgress: '# Progress',
     });
     expect(prompt).toContain('mark milestone 2 blocked');
     expect(prompt).toContain('branch: main');
     expect(prompt).toContain('Fix login');
+    expect(prompt).toContain('Open PRs');
     expect(prompt).toContain('--- Current plan.json ---');
     expect(prompt).toContain('--- Current PROGRESS.md ---');
+  });
+
+  it('formatManagerUpdatePreview summarizes plan and progress', async () => {
+    await writeProjectPlanFile(workDir, homeDir, {
+      milestones: [{ title: 'M1', status: 'done' }],
+      today: ['task a'],
+      upcoming: [],
+    });
+    const preview = formatManagerUpdatePreview(
+      await readProjectPlanFile(workDir, homeDir),
+      '# Progress\nHello',
+    );
+    expect(preview).toContain('1 milestones');
+    expect(preview).toContain('PROGRESS.md');
+    expect(preview).toContain('M1 (done)');
+  });
+
+  it('shouldIncludeGitHubDigest matches github-pr-digest and github+pr phrases', () => {
+    expect(shouldIncludeGitHubDigest('github-pr-digest')).toBe(true);
+    expect(shouldIncludeGitHubDigest('Summarize open GitHub PRs')).toBe(true);
+    expect(shouldIncludeGitHubDigest('daily standup')).toBe(false);
+  });
+
+  it('parseGitHubRepoFromRemote handles https and ssh remotes', () => {
+    expect(parseGitHubRepoFromRemote('https://github.com/acme/widget.git')).toEqual({ owner: 'acme', repo: 'widget' });
+    expect(parseGitHubRepoFromRemote('git@github.com:acme/widget.git')).toEqual({ owner: 'acme', repo: 'widget' });
+    expect(parseGitHubRepoFromRemote('https://gitlab.com/acme/widget.git')).toBeNull();
+  });
+
+  it('fetchGitHubPrDigest returns null without token', async () => {
+    expect(await fetchGitHubPrDigest(undefined, 'acme', 'widget')).toBeNull();
   });
 });
 

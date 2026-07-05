@@ -27,6 +27,8 @@ import {
   createManagerTools,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
+  formatManagerUpdatePreview,
+  resolveGitHubDigestForUpdate,
   readManagerConfig,
   writeManagerConfig,
   readProjectPlanFile,
@@ -647,10 +649,13 @@ async function main() {
                   .join('\n');
                 const plan = await readProjectPlanFile(WORK_DIR, homeDir);
                 const progress = await readProgressFile(WORK_DIR, homeDir);
+                process.stdout.write(`${C.d}${formatManagerUpdatePreview(plan, progress).split('\n').slice(0, 2).join('\n')}${C.r}\n`);
+                const githubDigest = await resolveGitHubDigestForUpdate(WORK_DIR, arg || undefined);
                 prompt = buildUpdateProgressPrompt({
                   instruction: arg || undefined,
                   gitSummary,
                   conversationSummaries,
+                  githubDigest,
                   currentPlanJson: JSON.stringify(plan, null, 2),
                   currentProgress: progress ?? undefined,
                 });
