@@ -2673,18 +2673,8 @@ export interface TeamResult {
 }
 
 /**
- * `reviewer` result. A single read-only ReAct agent inspects the project and
- * returns confirmed issues. The main agent (the "executor") invokes it as a
- * tool, supplies the context to review, and keeps final authority over the
- * findings. It only confirms issues it can verify — no speculation.
+ * One panel/graph agent's findings report.
  */
-export interface ReviewerResult extends TeamResult {
-  mode: 'reviewer';
-  report: string;
-  toolCalls: number;
-}
-
-/** One panel member's findings in `panel-analysis`/`analysis` mode. */
 export interface ExpertPanelReport {
   model: string;
   /** Stable member identity (disambiguates members that share a model). */
@@ -2699,23 +2689,8 @@ export interface ExpertPanelReport {
 }
 
 /**
- * `panel-analysis` (and its `analysis` alias) result. Members are independent
- * read-only ReAct agents that investigate and report back. With no `primary`
- * it is single-pass advisory — the caller (the main agent) decides what to do
- * with the reports. With a `primary`, the primary synthesizes and decides
- * convergence across multiple rounds (harness: the model decides; `maxRounds`
- * is only a safety cap).
- */
-export interface AnalysisResult extends TeamResult {
-  mode: 'analysis' | 'panel-analysis';
-  reports: ExpertPanelReport[];
-  rounds: number;
-}
-
-/**
- * `graph` mode result: nodes + `on_complete` edges executed as a DAG
- * (wait-all joins, fail-soft error propagation). The answer is the terminal
- * node report(s); `reports` carries every node's output in completion order.
+ * `graph` mode result: all team runs return this shape (graph v3 runtime).
+ * Legacy `reviewer` / `panel-analysis` inputs are migrated before execution.
  */
 export interface GraphTeamResult extends TeamResult {
   mode: 'graph';
@@ -2730,10 +2705,13 @@ export interface GraphTeamResult extends TeamResult {
   graphRounds?: number;
 }
 
-export type ModelTeamResult =
-  | ReviewerResult
-  | AnalysisResult
-  | GraphTeamResult;
+/** @deprecated Runtime always returns {@link GraphTeamResult}. Kept for type compatibility. */
+export type ReviewerResult = GraphTeamResult & { report?: string; toolCalls?: number };
+
+/** @deprecated Runtime always returns {@link GraphTeamResult}. Kept for type compatibility. */
+export type AnalysisResult = GraphTeamResult & { rounds?: number };
+
+export type ModelTeamResult = GraphTeamResult;
 
 // ── Model Router / Leader-Dispatch (a /model routing layer, not a team) ──
 

@@ -670,7 +670,7 @@ describe('editor artifact → engine (end to end)', () => {
       expect(result.skipped).toEqual([]);
       // v3 void Return: terminal agent output is not promoted to answer.
       expect(result.returnMode).toBe('void');
-      expect(result.answer).toBe('');
+      expect(result.reports.at(-1)?.report).toBe('reviewer');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

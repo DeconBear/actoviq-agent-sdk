@@ -179,18 +179,50 @@ describe('orchestrateGraph v3 engine', () => {
         { from: 'lead', to: 'task', loop: true, condition: 'CONTINUE' },
       ],
     });
+    const events: TeamEvent[] = [];
     let calls = 0;
     const result = await orchestrateGraph({
       definition: def,
       prompt: 'round test',
+      onEvent: (e) => events.push(e),
       runNode: async () => {
         calls += 1;
-        return { ok: true, report: calls < 2 ? 'CONTINUE' : 'FINALIZE' };
+        return { ok: true, report: calls < 2 ? 'CONTINUE dig' : 'FINALIZE\ndone' };
       },
     });
     expect(calls).toBe(2);
     expect(result.rounds).toBe(2);
     expect(result.returnMode).toBe('void');
+    expect(events.filter((e) => e.type === 'team.synthesis').map((e) => (e.type === 'team.synthesis' ? e.decision : '')))
+      .toEqual(['continue', 'finalize']);
+  });
+});
+
+describe('void Return display answer', () => {
+  it('formats multi-agent advisory reports when engine answer is empty', async () => {
+    const { resolveGraphDisplayAnswer, formatExpertPanelReports } = await import('../src/team/modelTeam.js');
+    const reports = [
+      { id: 'a', model: 'm1', report: 'alpha', toolCalls: 0, durationMs: 0 },
+      { id: 'b', model: 'm2', report: 'beta', toolCalls: 0, durationMs: 0 },
+    ];
+    expect(formatExpertPanelReports(reports)).toContain('### a');
+    expect(resolveGraphDisplayAnswer({
+      returnMode: 'void',
+      returnValue: null,
+      engineAnswer: '',
+      reports,
+    })).toContain('alpha');
+  });
+
+  it('uses FINALIZE body from primary output for convergent void Return', async () => {
+    const { resolveGraphDisplayAnswer } = await import('../src/team/modelTeam.js');
+    expect(resolveGraphDisplayAnswer({
+      returnMode: 'void',
+      returnValue: null,
+      engineAnswer: '',
+      reports: [],
+      lastFromOutput: 'FINALIZE\nSynthesized answer.',
+    })).toBe('Synthesized answer.');
   });
 });
 

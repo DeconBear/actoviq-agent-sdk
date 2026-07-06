@@ -498,8 +498,10 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
         resolveSlot(to, false, fromIndex, output);
         return;
       }
+      opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'continue' });
       if (rounds >= maxRounds) {
         incompleteReason = `maxRounds (${maxRounds}) reached during loop`;
+        opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'finalize' });
         const voidRet = graph.returnIndexes.find((i) => nodes[i]!.returnMode === 'void');
         if (voidRet !== undefined) completeReturn(voidRet, fromIndex, output);
         return;
@@ -517,6 +519,14 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
     if (!edgeConditionPasses(edge.condition, output)) {
       resolveSlot(to, false, fromIndex, output);
       return;
+    }
+
+    if (graphNodeKind(nodes[to]!) === 'return') {
+      const isFinalize = (edge.condition ?? '').trim() === 'FINALIZE'
+        || output.trim().toUpperCase().startsWith('FINALIZE');
+      if (isFinalize) {
+        opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'finalize' });
+      }
     }
 
     opts.onEvent?.({
@@ -614,5 +624,6 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
     returnNodeId,
     rounds,
     incompleteReason,
+    lastFromOutput,
   };
 }
