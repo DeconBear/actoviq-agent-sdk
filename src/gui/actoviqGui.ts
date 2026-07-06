@@ -424,7 +424,10 @@ function guiIcon(name: string): string {
     chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
     chevronUp: '<path d="m18 15-6-6-6 6"/>',
+    copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+    minimize: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/>',
     code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/><path d="m14 4-4 16"/>',
     command: '<path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0 0-6Z"/>',
     computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
@@ -3912,48 +3915,6 @@ export function createActoviqGuiHtml(): string {
         </header>
         <div class="detail-body" id="detailBody"></div>
       </section>
-      <aside class="manager-panel collapsed hidden" id="managerPanel" aria-label="Project Manager">
-        <header class="manager-panel-header" id="managerPanelHeader">
-          <span class="manager-panel-title">${guiIcon('gear')}<strong>Manager</strong><span id="managerPanelMeta" class="manager-panel-meta"></span></span>
-          <button type="button" id="managerPanelToggle" class="icon-btn" title="Expand / collapse">${guiIcon('chevronDown')}</button>
-        </header>
-        <div class="manager-panel-body">
-          <div id="managerStatusLine" class="manager-status-line muted"></div>
-          <div id="managerTranscript" class="manager-transcript"></div>
-          <div class="manager-actions">
-            <button type="button" id="managerUpdateBtn" class="pill-btn primary">Update progress</button>
-            <button type="button" id="managerSchedulesLink" class="pill-btn" title="Manager scheduled tasks">Schedules</button>
-            <button type="button" id="managerConfigBtn" class="pill-btn" title="Manager settings (model, read scope, mirror)">Settings</button>
-          </div>
-          <form id="managerConfigForm" class="manager-config-form hidden">
-            <label>Model
-              <input id="managerCfgModel" autocomplete="off" placeholder="session default">
-            </label>
-            <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files. Bridge runtime: tool restrictions are enforced by the bridge side; use read-only permission mode only.</p>
-            <label>Read scope
-              <select id="managerCfgScope">
-                <option value="workspace-only">workspace-only</option>
-                <option value="workspace+docs">workspace+docs</option>
-                <option value="explicit-allowlist">explicit-allowlist</option>
-              </select>
-            </label>
-            <label id="managerCfgPathsLabel">Allowed read paths (one per line)
-              <textarea id="managerCfgPaths" rows="3" placeholder="D:\\docs\\project-notes"></textarea>
-            </label>
-            <label class="manager-cfg-check">
-              <input type="checkbox" id="managerCfgMirror"> Mirror PROGRESS.md into workspace (.actoviq/PROGRESS.md)
-            </label>
-            <div class="manager-actions">
-              <button type="submit" class="pill-btn primary">Save settings</button>
-              <button type="button" id="managerCfgCancel" class="pill-btn">Cancel</button>
-            </div>
-          </form>
-          <form id="managerChatForm" class="manager-chat-form">
-            <input id="managerChatInput" autocomplete="off" placeholder="Ask the Manager… (progress, priorities, milestones)">
-            <button type="submit" id="managerChatSend" class="pill-btn primary">Send</button>
-          </form>
-        </div>
-      </aside>
       <section class="project-conversation hidden" id="projectConversation">
       <header class="topbar">
         <div class="title-block">
@@ -4075,6 +4036,70 @@ export function createActoviqGuiHtml(): string {
       <div class="region-body" id="regionPluginsBody"></div>
     </section>
     <aside class="context-rail hidden" id="contextRail" aria-label="Context panel"></aside>
+  </div>
+  <div id="managerShell" class="manager-shell hidden" aria-live="polite">
+    <button type="button" id="managerFab" class="manager-fab" title="Project Manager" aria-label="Open Project Manager">
+      <span class="manager-fab-icon">${guiIcon('agent')}</span>
+    </button>
+    <div id="managerBackdrop" class="manager-backdrop hidden" aria-hidden="true"></div>
+    <aside class="manager-widget hidden" id="managerPanel" aria-label="Project Manager">
+      <header class="manager-widget-header">
+        <div class="manager-widget-head-main">
+          <span class="manager-widget-brand" aria-hidden="true">${guiIcon('logo')}</span>
+          <span id="managerHeaderTitle" class="manager-widget-topic">Project Manager</span>
+        </div>
+        <div class="manager-widget-controls">
+          <button type="button" id="managerUpdateQuick" class="manager-ctrl-btn" title="Update progress">${guiIcon('refresh')}</button>
+          <button type="button" id="managerSettingsQuick" class="manager-ctrl-btn" title="Settings">${guiIcon('gear')}</button>
+          <button type="button" id="managerExpandBtn" class="manager-ctrl-btn" title="Expand">${guiIcon('maximize')}</button>
+          <button type="button" id="managerCloseBtn" class="manager-ctrl-btn" title="Close">${guiIcon('close')}</button>
+        </div>
+      </header>
+      <div class="manager-widget-body">
+        <div id="managerTranscript" class="manager-transcript"></div>
+        <div id="managerStatusLine" class="manager-status-line muted"></div>
+        <form id="managerConfigForm" class="manager-config-form hidden">
+          <label>Model
+            <input id="managerCfgModel" autocomplete="off" placeholder="session default">
+          </label>
+          <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files. Bridge runtime: tool restrictions are enforced by the bridge side; use read-only permission mode only.</p>
+          <label>Read scope
+            <select id="managerCfgScope">
+              <option value="workspace-only">workspace-only</option>
+              <option value="workspace+docs">workspace+docs</option>
+              <option value="explicit-allowlist">explicit-allowlist</option>
+            </select>
+          </label>
+          <label id="managerCfgPathsLabel">Allowed read paths (one per line)
+            <textarea id="managerCfgPaths" rows="3" placeholder="D:\\docs\\project-notes"></textarea>
+          </label>
+          <label class="manager-cfg-check">
+            <input type="checkbox" id="managerCfgMirror"> Mirror PROGRESS.md into workspace (.actoviq/PROGRESS.md)
+          </label>
+          <div class="manager-actions">
+            <button type="submit" class="pill-btn primary">Save settings</button>
+            <button type="button" id="managerCfgCancel" class="pill-btn">Cancel</button>
+          </div>
+        </form>
+      </div>
+      <footer class="manager-widget-footer">
+        <div class="manager-composer">
+          <span class="manager-composer-avatar" aria-hidden="true">${guiIcon('logo')}</span>
+          <div class="manager-composer-main">
+            <span class="manager-composer-label">Project Manager <span id="managerPanelMeta" class="manager-panel-meta"></span></span>
+            <form id="managerChatForm" class="manager-chat-form">
+              <input id="managerChatInput" autocomplete="off" placeholder="Ask the Manager…">
+              <button type="submit" id="managerChatSend" class="manager-send-btn" title="Send" aria-label="Send">${guiIcon('send')}</button>
+            </form>
+          </div>
+        </div>
+        <div class="manager-quick-actions">
+          <button type="button" id="managerUpdateBtn" class="manager-quick-btn primary">Update progress</button>
+          <button type="button" id="managerSchedulesLink" class="manager-quick-btn">Schedules</button>
+          <button type="button" id="managerConfigBtn" class="manager-quick-btn">Settings</button>
+        </div>
+      </footer>
+    </aside>
   </div>
   <div id="surfaceDrawer" class="surface-drawer hidden">
     <div class="surface-panel">
@@ -4614,47 +4639,317 @@ button { cursor: pointer; }
 .plan-milestone .pm-title { font-weight: 600; font-size: 13.5px; color: var(--text-1); }
 .plan-milestone .pm-due { font-size: 11.5px; color: var(--text-2); }
 .plan-empty { color: #9aa0a6; font-size: 12.5px; margin: 0; }
-/* --- Project Manager panel (plan M0): collapsible bottom-right governance chat. --- */
-.manager-panel { position: absolute; right: 18px; bottom: 18px; width: 360px; max-height: 520px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-surface); box-shadow: 0 10px 34px rgba(0,0,0,.14); overflow: hidden; z-index: 40; }
-.manager-panel.collapsed { max-height: none; }
-.manager-panel.collapsed .manager-panel-body { display: none; }
-.manager-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; cursor: pointer; background: var(--bg-surface); border-bottom: 1px solid transparent; }
-.manager-panel:not(.collapsed) .manager-panel-header { border-bottom-color: var(--border); }
-.manager-panel-title { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--text-1); }
-.manager-panel-title .ui-icon { width: 15px; height: 15px; color: var(--accent); }
-.manager-panel-meta { font-size: 11.5px; color: #8a8d91; font-weight: 400; }
-.manager-panel-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; min-height: 0; }
-.manager-status-line { font-size: 11.5px; line-height: 1.5; }
-.manager-transcript { flex: 1; min-height: 120px; max-height: 260px; overflow: auto; display: grid; gap: 6px; align-content: start; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-app); padding: 8px; }
-.manager-transcript:empty::before { content: 'No messages yet — ask the Manager about progress, or click Update progress.'; color: #9aa0a6; font-size: 12px; padding: 4px; }
-.manager-msg { font-size: 12.5px; line-height: 1.5; border-radius: 8px; padding: 6px 9px; white-space: pre-wrap; word-break: break-word; }
-.manager-msg.user { background: var(--accent-soft); color: var(--text-1); justify-self: end; max-width: 92%; }
-.manager-msg.assistant { background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); justify-self: start; max-width: 92%; }
-.manager-msg.tool { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent); background: none; padding: 0 4px; }
-.manager-msg.error { color: var(--err); background: none; padding: 0 4px; }
-.manager-transcript .manager-msg.md-prose { white-space: normal; }
-.manager-transcript .manager-msg.md-prose .md-h:first-child { margin-top: 0; }
-.manager-transcript .manager-msg.md-prose h1.md-h { font-size: 1.15em; font-weight: 650; margin: .85em 0 .35em; line-height: 1.35; color: var(--text-1); }
-.manager-transcript .manager-msg.md-prose h2.md-h { font-size: 1.05em; font-weight: 650; margin: .75em 0 .3em; line-height: 1.35; color: var(--text-1); }
-.manager-transcript .manager-msg.md-prose h3.md-h, .manager-transcript .manager-msg.md-prose h4.md-h { font-size: .98em; font-weight: 650; margin: .65em 0 .25em; color: var(--text-1); }
-.manager-transcript .manager-msg.md-prose p.md-p { margin: 0 0 .65em; }
-.manager-transcript .manager-msg.md-prose p.md-p:last-child { margin-bottom: 0; }
-.manager-transcript .manager-msg.md-prose ul.md-ul, .manager-transcript .manager-msg.md-prose ol.md-ol { margin: .35em 0 .65em; padding-left: 1.25em; }
-.manager-transcript .manager-msg.md-prose ul.md-ul li, .manager-transcript .manager-msg.md-prose ol.md-ol li { margin: .2em 0; }
-.manager-transcript .manager-msg.md-prose blockquote.md-quote { margin: .55em 0; padding: .35em .75em; border-left: 3px solid var(--border); color: var(--text-2); }
-.manager-transcript .manager-msg.md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .75em 0; }
-.manager-transcript .manager-msg.md-prose strong { font-weight: 650; color: var(--text-1); }
-.manager-transcript .manager-msg.md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .92em; background: var(--bg-app); border: 1px solid var(--border); border-radius: 5px; padding: .05em .35em; }
-.manager-transcript .manager-msg.md-prose .code-block { margin: .55em 0; border-radius: 8px; overflow: auto; background: #0f172a; border: 1px solid #1e293b; }
-.manager-transcript .manager-msg.md-prose .code-block code { display: block; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45; color: #e2e8f0; white-space: pre; }
-.manager-transcript .manager-msg.md-prose a { color: var(--accent); text-decoration: none; }
-.manager-transcript .manager-msg.md-prose a:hover { text-decoration: underline; }
-.manager-actions { display: flex; gap: 8px; align-items: center; }
-.manager-chat-form { display: flex; gap: 6px; }
-.manager-chat-form input { flex: 1; min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; outline: none; font-size: 13px; background: var(--bg-app); color: var(--text-1); }
-.manager-chat-form input:focus { border-color: var(--accent); }
-.manager-panel .pill-btn { font-size: 12.5px; }
-.manager-panel.running .manager-panel-title strong::after { content: ' · running'; color: var(--accent); font-weight: 500; }
+/* --- Project Manager widget (Multica-style FAB + floating chat). --- */
+.manager-shell { position: fixed; inset: 0; pointer-events: none; z-index: 48; }
+.manager-shell:not(.hidden) { pointer-events: none; }
+.manager-shell .manager-fab,
+.manager-shell .manager-widget,
+.manager-shell .manager-backdrop { pointer-events: auto; }
+.manager-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 8px 28px rgba(17, 24, 39, .12);
+  display: inline-grid;
+  place-items: center;
+  z-index: 45;
+  color: #9CA3AF;
+  transition: box-shadow .18s ease, transform .18s ease, color .18s ease;
+}
+.manager-fab:hover { color: var(--accent); box-shadow: 0 10px 32px rgba(37, 99, 235, .18); transform: translateY(-1px); }
+.manager-fab .manager-fab-icon { display: inline-grid; place-items: center; }
+.manager-fab .ui-icon { width: 22px; height: 22px; }
+.manager-fab.running { color: var(--accent); }
+.manager-fab.running::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(37, 99, 235, .45);
+  animation: pulse 1.2s infinite;
+}
+.manager-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .28);
+  backdrop-filter: blur(2px);
+  z-index: 46;
+}
+.manager-widget {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  height: 520px;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(229, 231, 235, .95);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 48px rgba(17, 24, 39, .16);
+  overflow: hidden;
+  z-index: 47;
+}
+.manager-widget.expanded {
+  right: 50%;
+  bottom: 50%;
+  transform: translate(50%, 50%);
+  width: min(720px, calc(100vw - 40px));
+  height: min(640px, calc(100vh - 48px));
+  max-width: none;
+  max-height: none;
+}
+.manager-widget-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, .96);
+  flex: 0 0 auto;
+}
+.manager-widget-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.manager-widget-brand {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  color: #fff;
+  flex: 0 0 28px;
+}
+.manager-widget-brand .ui-icon { width: 16px; height: 16px; }
+.manager-widget-topic {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.manager-widget-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.manager-ctrl-btn {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #9CA3AF;
+  display: inline-grid;
+  place-items: center;
+}
+.manager-ctrl-btn:hover { background: #F3F4F6; color: var(--text-1); }
+.manager-ctrl-btn .ui-icon { width: 15px; height: 15px; }
+.manager-widget-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 0;
+  background: #FAFBFC;
+}
+.manager-widget-footer {
+  flex: 0 0 auto;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border);
+  background: #fff;
+  display: grid;
+  gap: 8px;
+}
+.manager-status-line { font-size: 11px; line-height: 1.45; padding: 0 2px; }
+.manager-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding: 2px 2px 8px;
+}
+.manager-transcript:empty::before {
+  content: 'Ask about progress, priorities, or milestones — or click Update progress.';
+  color: #9CA3AF;
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 8px 4px;
+}
+.manager-turn { display: flex; gap: 10px; align-items: flex-start; }
+.manager-turn.user { justify-content: flex-end; }
+.manager-turn.user .manager-bubble {
+  max-width: 88%;
+  background: #F3F4F6;
+  color: var(--text-1);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.manager-turn-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  color: #fff;
+  flex: 0 0 28px;
+  margin-top: 2px;
+}
+.manager-turn-avatar .ui-icon { width: 15px; height: 15px; }
+.manager-turn-body { min-width: 0; flex: 1; display: grid; gap: 6px; }
+.manager-turn .manager-bubble.assistant {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.manager-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #9CA3AF;
+}
+.manager-copy-btn {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9CA3AF;
+  display: inline-grid;
+  place-items: center;
+}
+.manager-copy-btn:hover { background: #F3F4F6; color: var(--text-2); }
+.manager-copy-btn .ui-icon { width: 13px; height: 13px; }
+.manager-msg.tool, .manager-msg.error {
+  font-size: 11.5px;
+  line-height: 1.45;
+  padding: 0 4px;
+}
+.manager-msg.tool { font-family: ui-monospace, monospace; color: var(--accent); }
+.manager-msg.error { color: var(--err); }
+.manager-transcript .manager-bubble.md-prose,
+.manager-transcript .manager-turn .md-prose { white-space: normal; }
+.manager-transcript .md-prose .md-h:first-child { margin-top: 0; }
+.manager-transcript .md-prose h1.md-h { font-size: 1.12em; font-weight: 650; margin: .75em 0 .3em; line-height: 1.35; color: var(--text-1); }
+.manager-transcript .md-prose h2.md-h { font-size: 1.04em; font-weight: 650; margin: .65em 0 .28em; line-height: 1.35; color: var(--text-1); }
+.manager-transcript .md-prose h3.md-h, .manager-transcript .md-prose h4.md-h { font-size: .98em; font-weight: 650; margin: .55em 0 .22em; color: var(--text-1); }
+.manager-transcript .md-prose p.md-p { margin: 0 0 .55em; }
+.manager-transcript .md-prose p.md-p:last-child { margin-bottom: 0; }
+.manager-transcript .md-prose ul.md-ul, .manager-transcript .md-prose ol.md-ol { margin: .3em 0 .55em; padding-left: 1.2em; }
+.manager-transcript .md-prose ul.md-ul li, .manager-transcript .md-prose ol.md-ol li { margin: .18em 0; }
+.manager-transcript .md-prose blockquote.md-quote { margin: .45em 0; padding: .3em .7em; border-left: 3px solid var(--border); color: var(--text-2); }
+.manager-transcript .md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .65em 0; }
+.manager-transcript .md-prose strong { font-weight: 650; color: var(--text-1); }
+.manager-transcript .md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .92em; background: #F3F4F6; border: 1px solid var(--border); border-radius: 5px; padding: .05em .35em; }
+.manager-transcript .md-prose .code-block { margin: .45em 0; border-radius: 8px; overflow: auto; background: #0f172a; border: 1px solid #1e293b; }
+.manager-transcript .md-prose .code-block code { display: block; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45; color: #e2e8f0; white-space: pre; }
+.manager-transcript .md-prose a { color: var(--accent); text-decoration: none; }
+.manager-transcript .md-prose a:hover { text-decoration: underline; }
+.manager-composer {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+.manager-composer-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  color: #fff;
+}
+.manager-composer-avatar .ui-icon { width: 18px; height: 18px; }
+.manager-composer-main { min-width: 0; display: grid; gap: 6px; }
+.manager-composer-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.manager-panel-meta { font-size: 11px; color: #9CA3AF; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.manager-chat-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  padding: 4px 4px 4px 12px;
+  box-shadow: inset 0 1px 2px rgba(17, 24, 39, .03);
+}
+.manager-chat-form input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--text-1);
+  height: 32px;
+}
+.manager-send-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: #111827;
+  color: #fff;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 32px;
+}
+.manager-send-btn:hover { background: #1F2937; }
+.manager-send-btn:disabled { opacity: .45; cursor: not-allowed; }
+.manager-send-btn .ui-icon { width: 15px; height: 15px; }
+.manager-quick-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.manager-quick-btn {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.manager-quick-btn:hover { border-color: #C7D2FE; color: var(--accent); background: #F8FBFF; }
+.manager-quick-btn.primary { background: var(--accent-soft); border-color: rgba(37, 99, 235, .25); color: var(--accent); font-weight: 600; }
+.manager-quick-btn.primary:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.manager-widget.running .manager-widget-topic::after { content: ' · running'; color: var(--accent); font-weight: 500; }
+.manager-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 /* Manager settings form (plan M0/M3): model / read scope / mirror. */
 .manager-config-form { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); padding: 10px 12px; margin-bottom: 8px; }
 .manager-config-form.hidden { display: none; }
@@ -5577,6 +5872,15 @@ body[data-theme="dark"] .crumb, body[data-theme="dark"] .crumb-sep { color: #8ab
 body[data-theme="dark"] .squad-chip, body[data-theme="dark"] .te-field input, body[data-theme="dark"] .te-field textarea, body[data-theme="dark"] .plan-add input, body[data-theme="dark"] .overview-search { background: #1f2023; border-color: #3b3d43; color: #e8eaed; }
 body[data-theme="dark"] .team-graph { background: #171819; }
 body[data-theme="dark"] .graph-arrow { color: #5b5f66; }
+body[data-theme="dark"] .manager-fab,
+body[data-theme="dark"] .manager-widget,
+body[data-theme="dark"] .manager-widget-footer { background: #26272b; border-color: #3b3d43; color: #e8eaed; }
+body[data-theme="dark"] .manager-widget-body { background: #1f2023; }
+body[data-theme="dark"] .manager-widget-header { background: #26272b; border-color: #3b3d43; }
+body[data-theme="dark"] .manager-turn.user .manager-bubble { background: #33363c; color: #e8eaed; }
+body[data-theme="dark"] .manager-chat-form { background: #1f2023; border-color: #3b3d43; }
+body[data-theme="dark"] .manager-quick-btn { background: #1f2023; border-color: #3b3d43; color: #c7ccd3; }
+body[data-theme="dark"] .manager-send-btn { background: #e8eaed; color: #111827; }
 body[data-theme="dark"] .chat, body[data-theme="dark"] .composer, body[data-theme="dark"] .dialog, body[data-theme="dark"] .settings-view, body[data-theme="dark"] .settings-main, body[data-theme="dark"] .surface-panel, body[data-theme="dark"] .slash-menu, body[data-theme="dark"] .queue-list, body[data-theme="dark"] .tool-card { background: #1f2023; color: #e8eaed; }
 body[data-theme="dark"] .sidebar, body[data-theme="dark"] .settings-sidebar { background: #202226; border-color: #3b3d43; }
 body[data-theme="dark"] input, body[data-theme="dark"] textarea, body[data-theme="dark"] select, body[data-theme="dark"] .pill-btn, body[data-theme="dark"] .dialog-actions button, body[data-theme="dark"] .settings-savebar button, body[data-theme="dark"] .secondary-btn, body[data-theme="dark"] .surface-actions button, body[data-theme="dark"] .surface-card button, body[data-theme="dark"] .settings-card button, body[data-theme="dark"] .command-chip { background: #26272b; color: #e8eaed; border-color: #3b3d43; }
@@ -5717,6 +6021,13 @@ const _ICONS = {
   agent: '<path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M9 13h.01"/><path d="M15 13h.01"/><path d="M10 17h4"/>',
   automation: '<path d="M4 12a8 8 0 0 1 13.66-5.66"/><path d="M18 4v5h-5"/><path d="M20 12a8 8 0 0 1-13.66 5.66"/><path d="M6 20v-5h5"/>',
   chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
+  logo: '<circle cx="12" cy="12" r="2.4"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M7.1 12h2.5"/><path d="M14.4 12h2.5"/><path d="M12 7.1v2.5"/><path d="M12 14.4v2.5"/><path d="m18.3 4.2.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
+  maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  minimize: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
   terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
   dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -7469,11 +7780,11 @@ async function switchProject(projectPath, view = 'conversation') {
   state.activeSessionId = null;
   state.lastHydratedMessages = null;
   managerTranscriptHydrated = false;
-  const t = el('managerTranscript');
-  if (t) t.textContent = '';
+  resetManagerClientState('');
   const res = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
   if (!res.ok) { addMessage('error', await res.text()); return false; }
   state.snapshot = await res.json();
+  managerBoundWorkDir = state.snapshot?.workDir || projectPath || '';
   transcript.textContent = '';
   state.toolNodes.clear();
   state.sessionsLimit = 16;
@@ -7633,12 +7944,16 @@ function switchProjectView(view) {
   // switching conversations required going back to the detail card list.
   document.body.dataset.sidebarMode = view === 'overview' ? 'nav' : 'full';
   if (view === 'detail') renderProjectDetail();
-  // Manager panel (plan M0): available on the project overview + detail views,
-  // hidden inside a conversation so it never overlaps the composer.
-  const mp = el('managerPanel');
-  if (mp) {
-    mp.classList.toggle('hidden', view === 'conversation');
-    if (view !== 'conversation') refreshManagerState();
+  // Manager chat: only inside an opened project (detail view). Hidden on the
+  // projects overview, in conversations, and outside the Project region.
+  if (view === 'detail') {
+    const wd = state.snapshot?.workDir || '';
+    if (wd && managerBoundWorkDir && wd !== managerBoundWorkDir) resetManagerClientState(wd);
+    else if (wd && !managerBoundWorkDir) managerBoundWorkDir = wd;
+    syncManagerVisibility(view);
+    refreshManagerState(!managerTranscriptHydrated);
+  } else {
+    syncManagerVisibility(view);
   }
   renderConversationBreadcrumb();
   renderContextRail();
@@ -8868,6 +9183,7 @@ async function switchRegion(name) {
   // sidebar (matches the reference designs). Project reuses switchProjectView
   // to drive its own sidebar mode (overview/detail → slim, chat → full).
   if (name !== 'project') document.body.dataset.sidebarMode = 'nav';
+  syncManagerVisibility(state.projectView);
   if (name === 'automation') await renderAutomationRegion();
   else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
@@ -11116,22 +11432,121 @@ function showSettingsTab(tab) {
   if (tab === 'mcp') renderMcpServers();
   if (tab === 'sessions') renderArchived();
 }
-// ── Project Manager panel (plan M0/M1) ─────────────────────────────
+// ── Project Manager widget (Multica-style FAB + floating chat) ───
 // A per-project governance chat + one-click progress sync. Talks to the
 // /api/manager/* endpoints; the Manager itself is tool-restricted server-side.
 let managerBusy = false;
 let managerTranscriptHydrated = false;
-function managerAddMsg(kind, text) {
+let managerUiMode = 'closed';
+let managerBoundWorkDir = '';
+function resetManagerClientState(nextWorkDir) {
+  managerTranscriptHydrated = false;
+  managerUiMode = 'closed';
+  managerBoundWorkDir = typeof nextWorkDir === 'string' ? nextWorkDir : '';
+  const t = el('managerTranscript');
+  if (t) t.textContent = '';
+  const title = el('managerHeaderTitle');
+  if (title) title.textContent = 'Project Manager';
+  el('managerConfigForm')?.classList.add('hidden');
+}
+function managerPlainText(node) {
+  return node?.innerText || node?.textContent || '';
+}
+function managerCopyText(text) {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
+}
+function managerUpdateHeaderTitle(text) {
+  const title = el('managerHeaderTitle');
+  if (!title || !text) return;
+  const snippet = String(text).replace(/\\s+/g, ' ').trim();
+  title.textContent = snippet.length > 48 ? snippet.slice(0, 45) + '…' : snippet;
+}
+function setManagerUiMode(mode) {
+  managerUiMode = mode;
+  const shell = el('managerShell');
+  const fab = el('managerFab');
+  const panel = el('managerPanel');
+  const backdrop = el('managerBackdrop');
+  const expandBtn = el('managerExpandBtn');
+  const hideAll = !managerShellVisible();
+  if (shell) shell.classList.toggle('hidden', hideAll);
+  if (fab) {
+    fab.classList.toggle('hidden', hideAll || mode !== 'closed');
+    fab.classList.toggle('running', !!managerBusy);
+  }
+  if (panel) {
+    panel.classList.toggle('hidden', hideAll || mode === 'closed');
+    panel.classList.toggle('expanded', mode === 'expanded');
+    panel.classList.toggle('running', !!managerBusy);
+  }
+  if (backdrop) backdrop.classList.toggle('hidden', hideAll || mode !== 'expanded');
+  if (expandBtn) {
+    expandBtn.innerHTML = mode === 'expanded' ? guiIcon('minimize') : guiIcon('maximize');
+    expandBtn.title = mode === 'expanded' ? 'Restore' : 'Expand';
+  }
+}
+function managerShellVisible() {
+  return state.activeRegion === 'project' && state.projectView === 'detail';
+}
+function syncManagerVisibility(view) {
+  if (!managerShellVisible()) {
+    setManagerUiMode('closed');
+    el('managerShell')?.classList.add('hidden');
+    el('managerFab')?.classList.add('hidden');
+    el('managerPanel')?.classList.add('hidden');
+    el('managerBackdrop')?.classList.add('hidden');
+    return;
+  }
+  el('managerShell')?.classList.remove('hidden');
+  setManagerUiMode(managerUiMode);
+}
+function managerAddMsg(kind, text, opts) {
   const t = el('managerTranscript');
   if (!t) return;
-  const div = document.createElement('div');
-  div.className = 'manager-msg ' + kind + ((kind === 'assistant' || kind === 'user') ? ' md-prose' : '');
-  if (kind === 'assistant' || kind === 'user') {
-    renderMarkdownInto(div, text || '');
+  const when = (opts && opts.at) || new Date().toISOString();
+  if (kind === 'user') {
+    managerUpdateHeaderTitle(text);
+    const turn = document.createElement('div');
+    turn.className = 'manager-turn user';
+    const bubble = document.createElement('div');
+    bubble.className = 'manager-bubble user md-prose';
+    renderMarkdownInto(bubble, text || '');
+    turn.appendChild(bubble);
+    t.appendChild(turn);
+  } else if (kind === 'assistant') {
+    const turn = document.createElement('div');
+    turn.className = 'manager-turn assistant';
+    const avatar = document.createElement('span');
+    avatar.className = 'manager-turn-avatar';
+    avatar.innerHTML = guiIcon('logo');
+    const body = document.createElement('div');
+    body.className = 'manager-turn-body';
+    const bubble = document.createElement('div');
+    bubble.className = 'manager-bubble assistant md-prose';
+    renderMarkdownInto(bubble, text || '');
+    body.appendChild(bubble);
+    const meta = document.createElement('div');
+    meta.className = 'manager-turn-meta';
+    const timeEl = document.createElement('span');
+    const rel = formatRelativeTime(when);
+    timeEl.textContent = rel ? ('Replied ' + rel) : 'Replied just now';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'manager-copy-btn';
+    copyBtn.title = 'Copy';
+    copyBtn.innerHTML = guiIcon('copy');
+    copyBtn.addEventListener('click', () => managerCopyText(text || managerPlainText(bubble)));
+    meta.append(timeEl, copyBtn);
+    body.appendChild(meta);
+    turn.append(avatar, body);
+    t.appendChild(turn);
   } else {
-    div.textContent = text;
+    const note = document.createElement('div');
+    note.className = 'manager-msg ' + kind;
+    note.textContent = text;
+    t.appendChild(note);
   }
-  t.appendChild(div);
   t.scrollTop = t.scrollHeight;
 }
 function hydrateManagerTranscript(items, force) {
@@ -11140,14 +11555,17 @@ function hydrateManagerTranscript(items, force) {
   if (!force && managerTranscriptHydrated && t.childElementCount > 0) return;
   t.textContent = '';
   for (const msg of items || []) managerAddMsg(msg.kind, msg.text);
+  const lastUser = [...(items || [])].reverse().find((m) => m.kind === 'user');
+  if (lastUser) managerUpdateHeaderTitle(lastUser.text);
   managerTranscriptHydrated = true;
 }
-async function refreshManagerState() {
+async function refreshManagerState(forceHydrate = false) {
+  if (!managerShellVisible()) return;
   try {
     const res = await api('/api/manager/state');
     if (!res.ok) return;
     const data = await res.json();
-    if (Array.isArray(data.transcript)) hydrateManagerTranscript(data.transcript, false);
+    if (Array.isArray(data.transcript)) hydrateManagerTranscript(data.transcript, forceHydrate);
     const meta = el('managerPanelMeta');
     if (meta) {
       meta.textContent = data.progressUpdatedAt
@@ -11166,12 +11584,14 @@ async function refreshManagerState() {
       line.textContent = parts.join('  ·  ');
     }
     el('managerPanel')?.classList.toggle('running', !!data.running);
+    el('managerFab')?.classList.toggle('running', !!data.running);
   } catch (e) { /* panel state is best-effort */ }
 }
 async function managerStream(path, payload) {
   if (managerBusy) { managerAddMsg('error', 'Manager is busy — wait for the current run.'); return; }
   managerBusy = true;
   el('managerPanel')?.classList.add('running');
+  el('managerFab')?.classList.add('running');
   const updateBtn = el('managerUpdateBtn');
   const sendBtn = el('managerChatSend');
   if (updateBtn) updateBtn.disabled = true;
@@ -11207,6 +11627,7 @@ async function managerStream(path, payload) {
   } finally {
     managerBusy = false;
     el('managerPanel')?.classList.remove('running');
+    el('managerFab')?.classList.remove('running');
     if (updateBtn) updateBtn.disabled = false;
     if (sendBtn) sendBtn.disabled = false;
     refreshManagerState();
@@ -11216,12 +11637,19 @@ async function managerStream(path, payload) {
 function wireManagerPanel() {
   const panel = el('managerPanel');
   if (!panel) return;
-  const header = el('managerPanelHeader');
-  const toggle = () => { panel.classList.toggle('collapsed'); };
-  header?.addEventListener('click', (e) => {
-    if (e.target.closest('#managerPanelToggle') || e.target === header || e.target.closest('.manager-panel-title')) toggle();
+  el('managerFab')?.addEventListener('click', () => {
+    setManagerUiMode('compact');
+    el('managerChatInput')?.focus();
   });
+  el('managerCloseBtn')?.addEventListener('click', () => setManagerUiMode('closed'));
+  el('managerBackdrop')?.addEventListener('click', () => setManagerUiMode('compact'));
+  el('managerExpandBtn')?.addEventListener('click', () => {
+    setManagerUiMode(managerUiMode === 'expanded' ? 'compact' : 'expanded');
+  });
+  el('managerUpdateQuick')?.addEventListener('click', () => el('managerUpdateBtn')?.click());
+  el('managerSettingsQuick')?.addEventListener('click', () => el('managerConfigBtn')?.click());
   el('managerUpdateBtn')?.addEventListener('click', async () => {
+    if (managerUiMode === 'closed') setManagerUiMode('compact');
     try {
       const res = await api('/api/manager/state');
       if (res.ok) {
@@ -11288,14 +11716,15 @@ function wireManagerPanel() {
     const input = el('managerChatInput');
     const text = (input?.value || '').trim();
     if (!text) return;
+    if (managerUiMode === 'closed') setManagerUiMode('compact');
     if (input) input.value = '';
     managerAddMsg('user', text);
     managerStream('/api/manager/chat', { text });
   });
-  // Initial visibility: the boot flow renders the overview without going
-  // through switchProjectView, so sync once here.
-  panel.classList.toggle('hidden', state.projectView === 'conversation');
-  if (state.projectView !== 'conversation') refreshManagerState();
+  // Initial visibility: boot lands on project overview — Manager stays hidden
+  // until the user opens a specific project (detail view).
+  if (state.snapshot?.workDir) managerBoundWorkDir = state.snapshot.workDir;
+  syncManagerVisibility(state.projectView || 'overview');
 }
 wireManagerPanel();
 async function openSettings(tab = 'general') {
