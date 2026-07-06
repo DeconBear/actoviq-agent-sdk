@@ -18,6 +18,31 @@ import {
   toPersistedTeamDefinition,
 } from './teamGraph.js';
 
+/** Human-readable agent labels for list/confirm UI (graph v3 nodes or legacy members). */
+export function listTeamAgentLabels(definition: TeamDefinition): string[] {
+  const fromNodes = (definition.nodes ?? [])
+    .filter((n) => graphNodeKind(n) === 'agent')
+    .map((m) => m.name ?? m.role ?? m.id ?? m.model)
+    .filter((label): label is string => Boolean(label));
+  if (fromNodes.length) return fromNodes;
+  return [
+    ...(definition.members ?? []),
+    ...(definition.reviewer ? [definition.reviewer] : []),
+    ...(definition.primary ? [definition.primary] : []),
+  ]
+    .map((m) => m.name ?? m.role ?? m.model)
+    .filter((label): label is string => Boolean(label));
+}
+
+/** Count of executable agent nodes (excludes Task/Return ports). */
+export function countTeamAgents(definition: TeamDefinition): number {
+  const agents = (definition.nodes ?? []).filter((n) => graphNodeKind(n) === 'agent');
+  if (agents.length) return agents.length;
+  return (definition.members?.length ?? 0)
+    + (definition.reviewer ? 1 : 0)
+    + (definition.primary ? 1 : 0);
+}
+
 export interface LoadedTeamDefinition {
   name: string;
   definition: TeamDefinition;

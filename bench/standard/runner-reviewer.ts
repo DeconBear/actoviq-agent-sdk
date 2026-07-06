@@ -66,7 +66,7 @@ export async function runReviewer(fixture: string, agent: ReviewAgent): Promise<
       report: result.answer,
       metrics: {
         durationMs: Date.now() - start,
-        toolCallCount: result.mode === 'reviewer' ? result.toolCalls : 0,
+        toolCallCount: result.memberStatuses?.reduce((n, s) => n + (s.toolCalls ?? 0), 0) ?? 0,
         inputTokens: result.cost.totalInputTokens,
         outputTokens: result.cost.totalOutputTokens,
       },

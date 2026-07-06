@@ -23,6 +23,8 @@ import {
   loadTeamDefinition,
   cloneTeamDefinition,
   instantiateTeamDefinition,
+  listTeamAgentLabels,
+  countTeamAgents,
   createModelTeam,
   createTeamTool,
   readTeamPreferences,
@@ -3188,7 +3190,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             appendStatic([
               `${A.bold}Teams${A.reset}`,
               ...teams.map((t) =>
-                `${t.name === activeTeamName ? `${A.green}*${A.reset}` : ' '}${A.cyan}${t.name}${A.reset}${A.dim} · ${t.definition.mode} · ${t.source} · ${t.definition.members?.length ?? 0} members${A.reset}`),
+                `${t.name === activeTeamName ? `${A.green}*${A.reset}` : ' '}${A.cyan}${t.name}${A.reset}${A.dim} · ${t.definition.mode} · ${t.source} · ${countTeamAgents(t.definition)} agents${A.reset}`),
               `${A.dim}/team attach <name> · /team ask <name> <prompt> · /team off · /team status${A.reset}`,
               '',
             ]);
@@ -3236,10 +3238,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               return;
             }
             const definition = instantiateTeamDefinition(loaded.definition, session.model);
-            const memberModels = [
-              ...(definition.members ?? []),
-              ...(definition.reviewer ? [definition.reviewer] : []),
-            ].map((m) => m.name ?? m.role ?? m.model);
+            const memberModels = listTeamAgentLabels(definition);
             if (teamPrefs.confirmBeforeRun) {
               const go = await selectItem({
                 title: `Run team "${definition.name}"?`,
@@ -3301,7 +3300,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             ...teams.map((t) => ({
               id: `team:${t.name}`,
               label: `${t.name}${t.name === activeTeamName ? ' — attached' : ''}`,
-              description: `${t.source} · ${t.definition.mode} · ${t.definition.members?.length ?? 0} members`,
+              description: `${t.source} · ${t.definition.mode} · ${countTeamAgents(t.definition)} agents`,
             })),
           ];
           const choice = await selectItem({ title: 'Team', subtitle: `attach a team (autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off'} — settings preferences.team)`, items });
