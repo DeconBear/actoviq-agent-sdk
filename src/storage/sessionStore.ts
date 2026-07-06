@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { SessionNotFoundError } from '../errors.js';
@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { createId, deepClone, nowIso, truncateText } from '../runtime/helpers.js';
 import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
+import { writeJsonAtomic } from './atomicJsonWrite.js';
 import {
   assertSafeStorageSegment,
   joinUnderStorageRoot,
@@ -277,10 +278,4 @@ export class SessionStore {
       runCount: session.runs.length,
     };
   }
-}
-
-async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-  const tempPath = `${filePath}.${createId()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  await rename(tempPath, filePath);
 }

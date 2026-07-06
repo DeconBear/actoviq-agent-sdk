@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { ActoviqMailboxMessage } from '../types.js';
@@ -8,6 +8,7 @@ import {
   joinUnderStorageRoot,
   safeStorageFileName,
 } from './pathSafety.js';
+import { writeJsonAtomic } from './atomicJsonWrite.js';
 
 export class MailboxStore {
   constructor(private readonly rootDirectory: string) {}
@@ -74,10 +75,4 @@ export class MailboxStore {
   private async ensureReady(teamName: string): Promise<void> {
     await mkdir(this.teamDirectory(teamName), { recursive: true });
   }
-}
-
-async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
-  const tempPath = `${filePath}.${createId()}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  await rename(tempPath, filePath);
 }

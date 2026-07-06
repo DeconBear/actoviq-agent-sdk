@@ -141,6 +141,7 @@ describe('Hadamard SDK subagent parity', () => {
       const task = (await sdk.tasks.list())[0];
       expect(task?.agentName).toBe('release-reviewer');
       const completedTask = await sdk.tasks.wait(task!.id);
+      expect(completedTask.status).toBe('completed');
       expect(completedTask.text).toContain('Background review complete.');
 
       let deliveredNotification = false;
