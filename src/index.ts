@@ -352,6 +352,7 @@ export {
   readProjectPlanFile,
   writeProjectPlanFile,
   readProgressFile,
+  writeProgressFile,
   resolveManagerReadRoots,
   DEFAULT_MANAGER_CONFIG,
   EMPTY_PROJECT_PLAN,

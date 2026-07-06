@@ -104,6 +104,7 @@ import {
   readProjectPlanFile,
   writeProjectPlanFile,
   readProgressFile,
+  writeProgressFile,
   managerProgressPath,
   loadWorkflow,
   listScheduledAutomationTasks,
@@ -3107,7 +3108,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
   if (req.method === 'GET' && url.pathname === '/api/team/definition') {
     const name = url.searchParams.get('name') || '';
-    const definition = resolveTeamDefinition(name, workDir, session?.model ?? '') ?? null;
+    const raw = resolveTeamDefinition(name, workDir, session?.model ?? '') ?? null;
+    const definition = raw && raw.mode !== 'graph' && raw.orchestration !== 'graph'
+      ? migrateTeamDefinitionToV2(raw)
+      : raw;
     return json(res, 200, { definition });
   }
   if (req.method === 'POST' && url.pathname === '/api/team/save') {
@@ -3263,6 +3267,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
       await writeProjectPlan(workDir, hd, next);
       return json(res, 200, { ok: true, plan: next });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-doc') {
+    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const content = (await readProgressFile(workDir, hd)) ?? '';
+    return json(res, 200, { content, path: managerProgressPath(workDir, hd) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-doc') {
+    try {
+      const body = await readJson(req);
+      const content = typeof body.content === 'string' ? body.content : '';
+      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const savedPath = await writeProgressFile(workDir, hd, content);
+      return json(res, 200, { ok: true, path: savedPath });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -3888,7 +3908,7 @@ export function createActoviqGuiHtml(): string {
             <p>Workspace overview and agent progress</p>
           </div>
           <div class="region-actions">
-            <button type="button" id="overviewNewWorkspaceBtn" class="pill-btn primary">+ New workspace</button>
+            <button type="button" id="overviewNewWorkspaceBtn" class="pill-btn">+ New workspace</button>
           </div>
         </header>
         <div class="overview-toolbar">
@@ -3910,7 +3930,7 @@ export function createActoviqGuiHtml(): string {
           </div>
           <div class="region-actions">
             <button type="button" id="detailOpenLocationBtn" class="pill-btn">Open location</button>
-            <button type="button" id="detailNewConversationBtn" class="pill-btn primary">+ New conversation</button>
+            <button type="button" id="detailNewConversationBtn" class="pill-btn">+ New conversation</button>
           </div>
         </header>
         <div class="detail-body" id="detailBody"></div>
@@ -3929,7 +3949,7 @@ export function createActoviqGuiHtml(): string {
         <div class="top-actions">
           <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
-          <button id="conversationRunSquadBtn" class="pill-btn primary" title="Run selected squad">Run squad</button>
+          <button id="conversationRunSquadBtn" class="pill-btn" title="Run selected squad">Run squad</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
@@ -3994,8 +4014,8 @@ export function createActoviqGuiHtml(): string {
           <select id="teamEnvSelect" class="team-env-select" title="Environment"><option value="dev">Dev</option><option value="staging">Staging</option><option value="prod">Prod</option></select>
           <span id="teamSavedStatus" class="team-saved-status saved">${guiIcon('gear')}<span>Saved</span></span>
           <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
-          <button type="button" id="teamEditToggleBtn" class="pill-btn">Edit</button>
-          <button type="button" id="teamNewSquadBtn" class="pill-btn primary">+ New squad</button>
+          <button type="button" id="teamEditToggleBtn" class="pill-btn">Squad settings</button>
+          <button type="button" id="teamNewSquadBtn" class="pill-btn">+ New squad</button>
         </div>
       </header>
       <div class="region-body team-layout">
@@ -4182,6 +4202,15 @@ export function createActoviqGuiHtml(): string {
         <button data-decision="allow">Allow once</button>
         <button data-decision="always">Always (project)</button>
         <button data-decision="always-user">Always (user)</button>
+      </div>
+    </div>
+  </div>
+  <div id="teamAgentModal" class="modal hidden">
+    <div class="dialog team-agent-dialog">
+      <div id="teamAgentModalBody" class="team-agent-modal-body"></div>
+      <div class="dialog-actions">
+        <button type="button" id="teamAgentModalClose">Cancel</button>
+        <button type="button" id="teamAgentModalDone" class="primary">Done</button>
       </div>
     </div>
   </div>
@@ -4561,8 +4590,8 @@ button { cursor: pointer; }
 .region-header h1 { font-size: 22px; margin: 0; font-weight: 700; color: var(--text-1); letter-spacing: 0; }
 .region-header p { margin: 4px 0 0; color: var(--text-2); font-size: 13px; }
 .region-header .region-actions { display: flex; gap: 8px; align-items: center; }
-.region-actions .primary { background: var(--accent); color: #fff; border-color: transparent; }
-.region-actions .primary:hover { background: var(--accent-strong); }
+.region-actions .primary { background: var(--bg-surface); color: var(--text-1); border-color: var(--border); font-weight: 600; }
+.region-actions .primary:hover { background: var(--bg-app); border-color: #b9c6e6; color: var(--text-1); }
 .region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
 /* Region list cards (Automation / Plugins). */
 .region-list-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
@@ -4600,9 +4629,9 @@ button { cursor: pointer; }
 .proj-card .pc-meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-2); flex-wrap: wrap; }
 .pc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
 .pc-status .dot { width: 7px; height: 7px; border-radius: 50%; }
-/* --- Project detail (plan/UI_PLAN §4.2/§4.3): conversation list + breadcrumb. --- */
+/* --- Project detail: center doc editor + right conversation sidebar. --- */
 .project-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.detail-body { flex: 1; overflow: auto; padding: 14px 18px; display: grid; gap: 10px; align-content: start; }
+.detail-body { flex: 1; min-height: 0; overflow: hidden; padding: 0; display: flex; flex-direction: column; }
 .breadcrumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-2); flex-wrap: wrap; }
 .breadcrumb .crumb { cursor: pointer; color: var(--accent); }
 .breadcrumb .crumb:hover { text-decoration: underline; }
@@ -4618,7 +4647,68 @@ button { cursor: pointer; }
 .conv-meta .chip { border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
 .conv-side { flex: 0 0 auto; display: grid; gap: 4px; align-items: start; text-align: right; }
 /* --- Project plan checklist (plan/UI_PLAN §4.2). --- */
-.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.detail-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 0; align-items: stretch; height: 100%; }
+.project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: #fff; border-right: 1px solid var(--border); overflow: hidden; }
+.project-doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: #fff; }
+.project-doc-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.project-doc-actions { display: flex; align-items: center; gap: 10px; }
+.project-doc-edit-btn { min-height: 28px; padding: 0 10px; font-size: 12px; }
+.project-doc-status { font-size: 11px; color: var(--text-2); }
+.project-doc-status.dirty { color: var(--accent); }
+.project-doc-status.error { color: var(--err); }
+.project-doc-scroll { flex: 1; min-height: 0; overflow: auto; background: #fff; }
+.project-doc-scroll.editing { background: #FAFBFC; }
+.project-doc-editor { max-width: 680px; margin: 0 auto; padding: 16px 28px 36px; width: 100%; min-height: 100%; }
+.project-doc-empty { margin: 0; color: #9CA3AF; font-size: 13px; text-align: center; padding: 40px 16px; cursor: default; }
+.project-doc-source { width: 100%; min-height: 360px; border: 0; outline: none; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.55; background: transparent; color: var(--text-1); padding: 0; }
+.project-doc-view.md-prose { font-size: 13px; line-height: 1.6; color: #374151; cursor: text; }
+.project-doc-view.md-prose .md-h:first-child { margin-top: 0; }
+.project-doc-view.md-prose h1.md-h { font-size: 1.2em; font-weight: 650; margin: .85em 0 .32em; line-height: 1.35; color: var(--text-1); }
+.project-doc-view.md-prose h2.md-h { font-size: 1.08em; font-weight: 650; margin: .7em 0 .28em; line-height: 1.35; color: var(--text-1); }
+.project-doc-view.md-prose h3.md-h, .project-doc-view.md-prose h4.md-h { font-size: 1em; font-weight: 650; margin: .55em 0 .22em; color: var(--text-1); }
+.project-doc-view.md-prose p.md-p { margin: 0 0 .5em; }
+.project-doc-view.md-prose p.md-p:last-child { margin-bottom: 0; }
+.project-doc-view.md-prose ul.md-ul, .project-doc-view.md-prose ol.md-ol { margin: .2em 0 .5em; padding-left: 1.25em; }
+.project-doc-view.md-prose ul.md-ul li, .project-doc-view.md-prose ol.md-ol li { margin: .12em 0; }
+.project-doc-view.md-prose blockquote.md-quote { margin: .4em 0; padding: .05em 0 .05em 10px; border-left: 2px solid #E5E7EB; color: var(--text-2); }
+.project-doc-view.md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .7em 0; }
+.project-doc-view.md-prose strong { font-weight: 650; color: var(--text-1); }
+.project-doc-view.md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .88em; background: #F3F4F6; border-radius: 4px; padding: .06em .32em; }
+.project-doc-view.md-prose .code-block { margin: .5em 0; border-radius: 8px; }
+.project-doc-view.md-prose .code-block code { font-size: 11.5px; line-height: 1.45; }
+.project-doc-view.md-prose a { color: var(--accent); text-decoration: none; }
+.project-doc-view.md-prose a:hover { text-decoration: underline; }
+.project-doc-view.md-prose li.md-task input[type="checkbox"] { margin-right: .35em; accent-color: var(--accent); vertical-align: middle; }
+.project-doc-view.md-prose li.md-task-done { color: #9ca3af; }
+.project-doc-view.md-prose .md-table { font-size: 12px; }
+.detail-sidebar { min-height: 0; display: flex; flex-direction: column; background: #F8FAFC; overflow: hidden; }
+.conv-sidebar-top { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.conv-sidebar-head h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-1); }
+.conv-sidebar-search { height: 34px; border: 1px solid var(--border); border-radius: 9px; background: #fff; display: flex; align-items: center; gap: 6px; padding: 0 10px; }
+.conv-sidebar-search input { border: 0; outline: 0; width: 100%; background: transparent; font-size: 13px; }
+.conv-sidebar-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px; }
+.conv-sidebar-row { width: 100%; border: 0; background: transparent; border-radius: 10px; min-height: 34px; padding: 6px 8px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; text-align: left; color: var(--text-1); font-size: 13px; cursor: pointer; }
+.conv-sidebar-row:hover, .conv-sidebar-row.active { background: rgba(17,24,39,.06); }
+.conv-sidebar-row.active { background: #EEF2F7; }
+.conv-sidebar-row .csr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 7px; }
+.conv-sidebar-row .csr-dot.hidden { visibility: hidden; }
+.conv-sidebar-row .csr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #4B5563; }
+.conv-sidebar-row .csr-meta { display: inline-flex; align-items: center; gap: 4px; color: #9CA3AF; font-size: 12px; flex: 0 0 auto; }
+.conv-sidebar-row .csr-actions { display: none; align-items: center; gap: 2px; }
+.conv-sidebar-row:hover .csr-actions { display: inline-flex; }
+.conv-sidebar-row:hover .csr-time { display: none; }
+.csr-action-btn { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: #9CA3AF; display: inline-grid; place-items: center; }
+.csr-action-btn:hover { background: rgba(17,24,39,.08); color: var(--text-1); }
+.csr-action-btn .ui-icon { width: 14px; height: 14px; }
+.conv-sidebar-archived { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); }
+.conv-sidebar-archived-toggle { width: 100%; border: 0; background: transparent; text-align: left; font-size: 11.5px; color: var(--text-2); padding: 4px 8px; cursor: pointer; }
+.conv-sidebar-detail { flex: 0 0 42%; min-height: 160px; max-height: 48%; overflow: auto; border-top: 1px solid var(--border); background: var(--bg-surface); padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
+.conv-sidebar-detail.empty { place-content: center; color: #9CA3AF; font-size: 12.5px; text-align: center; padding: 20px; }
+.conv-sidebar-detail h4 { margin: 0; font-size: 14px; font-weight: 650; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-sidebar-detail .csd-meta { font-size: 11.5px; color: var(--text-2); display: flex; flex-wrap: wrap; gap: 6px; }
+.conv-sidebar-detail .csd-preview { font-size: 12.5px; line-height: 1.5; color: var(--text-1); max-height: 8em; overflow: auto; white-space: pre-wrap; word-break: break-word; background: #F8FAFC; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.conv-sidebar-detail .csd-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
 .detail-conversations { display: grid; gap: 10px; }
 .plan-panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 14px; }
 .plan-panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #8a8d91; }
@@ -5032,12 +5122,19 @@ button { cursor: pointer; }
 .te-btn.primary:hover { background: var(--accent-strong); }
 .te-actions { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; flex-wrap: wrap; }
 .te-hint { font-size: 12px; color: var(--text-2); margin: 0 0 8px; line-height: 1.5; }
+.dialog.team-agent-dialog { width: min(560px, 100%); max-height: min(88vh, 900px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.team-agent-modal-body { overflow: auto; padding: 16px 18px 8px; flex: 1; }
+.team-agent-modal-body .ins-head { margin-bottom: 12px; }
+.dialog.team-agent-dialog .dialog-actions { padding: 12px 18px 16px; border-top: 1px solid var(--border); margin: 0; }
 .te-check label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-1); cursor: pointer; }
 .te-target select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; padding: 0 8px; }
 .te-field select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; padding: 0 8px; width: 100%; }
 .te-edge-row { background: var(--bg-surface); }
 .te-problems { border: 1px solid rgba(220,38,38,.35); background: #FEF2F2; color: var(--err); border-radius: 8px; padding: 9px 11px; margin-top: 8px; font-size: 12px; display: grid; gap: 3px; }
 .te-problems.hidden { display: none; }
+.te-tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin-top: 4px; }
+.te-tool-grid .te-check { font-size: 12px; font-weight: 400; }
+.team-inspector .ins-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
 .graph-mode-pill { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 10px; background: var(--accent-soft); color: var(--accent); }
 .graph-unreachable { opacity: .65; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
@@ -5296,9 +5393,9 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .region-header h1 { font-size: 24px; }
 .region-actions { flex-wrap: wrap; justify-content: flex-end; }
 .pill-btn, .toolbar-select, .filter-chip, .view-toggle button { min-height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); padding: 0 14px; box-shadow: 0 1px 1px rgba(17,24,39,.02); }
-.pill-btn.primary, .region-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 7px 18px rgba(37,99,235,.18); }
+.pill-btn.primary { background: var(--bg-surface); border-color: var(--border); color: var(--text-1); font-weight: 600; box-shadow: none; }
 .pill-btn:hover, .toolbar-select:hover, .filter-chip:hover, .view-toggle button:hover { border-color: #C7D2FE; background: #F8FBFF; }
-.pill-btn.primary:hover, .region-actions .primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; box-shadow: 0 7px 18px rgba(37,99,235,.28); }
+.pill-btn.primary:hover { background: var(--bg-app); border-color: #b9c6e6; color: var(--text-1); box-shadow: none; }
 .overview-toolbar { align-items: center; padding: 16px 26px; gap: 10px; background: var(--bg-surface); }
 .overview-search-wrap, .detail-search-wrap { height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 280px; flex: 1; max-width: 560px; }
 .overview-search-wrap .search-icon, .detail-search-wrap .ui-icon { color: #8A8D91; flex: 0 0 auto; }
@@ -5336,14 +5433,14 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .ppr-when { font-weight: 700; color: var(--text-1); }
 .ppr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
 .ppr-status { color: var(--accent); font-size: 11px; white-space: nowrap; }
-.detail-body { padding: 16px 20px 24px; }
+.detail-body { padding: 0; overflow: hidden; }
 .detail-toolbar { display: flex; align-items: center; gap: 12px; }
 .detail-search-wrap input { border: 0; outline: 0; width: 100%; height: 100%; background: transparent; }
 .detail-filter-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .filter-chip { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; }
 .filter-chip b { min-width: 22px; min-height: 22px; border-radius: 999px; background: #EEF2FF; color: var(--accent); display: inline-grid; place-items: center; font-size: 12px; }
 .filter-chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.detail-layout { grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; }
+.detail-layout { grid-template-columns: minmax(0, 1fr) 300px; gap: 0; }
 .detail-conversations { gap: 14px; }
 .conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; position: relative; }
 .conv-card.active { background: linear-gradient(180deg, #F8FBFF, #FFFFFF); box-shadow: 0 0 0 1px rgba(37,99,235,.2); }
@@ -5872,6 +5969,18 @@ body[data-theme="dark"] .crumb, body[data-theme="dark"] .crumb-sep { color: #8ab
 body[data-theme="dark"] .squad-chip, body[data-theme="dark"] .te-field input, body[data-theme="dark"] .te-field textarea, body[data-theme="dark"] .plan-add input, body[data-theme="dark"] .overview-search { background: #1f2023; border-color: #3b3d43; color: #e8eaed; }
 body[data-theme="dark"] .team-graph { background: #171819; }
 body[data-theme="dark"] .graph-arrow { color: #5b5f66; }
+body[data-theme="dark"] .project-doc-panel,
+body[data-theme="dark"] .project-doc-scroll,
+body[data-theme="dark"] .project-doc-toolbar { background: #1f2023; border-color: #3b3d43; }
+body[data-theme="dark"] .project-doc-view.md-prose { color: #d1d5db; }
+body[data-theme="dark"] .project-doc-view.md-prose h1.md-h,
+body[data-theme="dark"] .project-doc-view.md-prose h2.md-h,
+body[data-theme="dark"] .project-doc-view.md-prose h3.md-h,
+body[data-theme="dark"] .project-doc-view.md-prose h4.md-h,
+body[data-theme="dark"] .project-doc-view.md-prose strong { color: #e8eaed; }
+body[data-theme="dark"] .project-doc-view.md-prose .inline-code { background: #303238; color: #e8eaed; }
+body[data-theme="dark"] .project-doc-view.md-prose blockquote.md-quote { border-left-color: #3b3d43; color: #aab0b8; }
+body[data-theme="dark"] .project-doc-source { color: #e8eaed; }
 body[data-theme="dark"] .manager-fab,
 body[data-theme="dark"] .manager-widget,
 body[data-theme="dark"] .manager-widget-footer { background: #26272b; border-color: #3b3d43; color: #e8eaed; }
@@ -6041,6 +6150,8 @@ const _ICONS = {
   plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  pin: '<path d="M12 17v5"/><path d="M9 3h6l1 7H8L9 3Z"/><path d="M9 10v4a3 3 0 0 0 6 0v-4"/>',
+  archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
   team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
@@ -6110,6 +6221,12 @@ const state = {
   // loading a full chat on every card click.
   detailSelectedId: null,
   detailArchivedExpanded: false,
+  detailConvQuery: '',
+  projectDocLoadedFor: null,
+  projectDocRaw: '',
+  projectDocEditing: false,
+  projectDocDirty: false,
+  projectDocSaveTimer: null,
   activeSessionId: null,
   lastHydratedMessages: null,
   transcriptCache: {},
@@ -6117,7 +6234,10 @@ const state = {
   teamSelected: null,
   teamDefinition: null,
   teamSelectedNode: null,
+  teamSelectedEdgeIdx: null,
+  teamInspectorPanel: 'view',
   teamEditing: false,
+  teamDefinitionCache: {},
   teamSaveTarget: 'project',
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
@@ -7437,6 +7557,7 @@ function applyLoadedState() {
   if (state.activeSurface) renderSurface(state.activeSurface);
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+  refreshProjectDetailSidebar();
 }
 function renderStatusExtras() {
   const snap = state.snapshot || {};
@@ -7773,8 +7894,20 @@ async function resumeSession(id) {
     setRunStatus(readyLabel(), '');
   }
 }
+function refreshProjectDetailSidebar() {
+  if (state.projectView !== 'detail') return;
+  if (!el('convSidebarList')) return;
+  renderConvSidebarList();
+  renderConvSidebarDetail();
+}
 async function switchProject(projectPath, view = 'conversation') {
   if (!projectPath) return false;
+  if (state.projectDocDirty) await saveProjectDocNow();
+  if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
+  state.projectDocLoadedFor = null;
+  state.projectDocEditing = false;
+  state.projectDocRaw = '';
+  state.projectDocDirty = false;
   stashCurrentSessionCache();
   state.transcriptCache = {};
   state.activeSessionId = null;
@@ -7927,6 +8060,11 @@ function avatarStack(labels) {
   return stack;
 }
 function switchProjectView(view) {
+  if (state.projectView === 'detail' && view !== 'detail') {
+    if (state.projectDocDirty) void saveProjectDocNow();
+    if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
+    state.projectDocEditing = false;
+  }
   state.projectView = view;
   // Clear the detail preview selection when leaving the detail view so a
   // stale preview doesn't persist across navigation.
@@ -8194,6 +8332,275 @@ function buildDetailConvCard(item, opts) {
   card.addEventListener('dblclick', () => { void resumeSession(item.id); });
   return card;
 }
+function formatShortRelativeTime(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diff = Math.max(0, Date.now() - t);
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return min + 'm';
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return hr + 'h';
+  const day = Math.floor(hr / 24);
+  if (day < 30) return day + 'd';
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+function getProjectDocContent() {
+  const src = el('projectDocSource');
+  if (src && !src.classList.contains('hidden')) return src.value;
+  if (state.projectDocRaw != null) return state.projectDocRaw;
+  const view = el('projectDocView');
+  return view && view.dataset.raw != null ? view.dataset.raw : '';
+}
+function renderProjectDocPreview(content) {
+  const view = el('projectDocView');
+  const empty = el('projectDocEmpty');
+  if (!view) return;
+  state.projectDocRaw = String(content || '');
+  const src = el('projectDocSource');
+  if (src) src.value = state.projectDocRaw;
+  if (!state.projectDocRaw.trim()) {
+    view.classList.add('hidden');
+    view.textContent = '';
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+  view.classList.remove('hidden');
+  view.dataset.raw = state.projectDocRaw;
+  renderMarkdownInto(view, state.projectDocRaw);
+}
+function setProjectDocMode(editing) {
+  state.projectDocEditing = editing;
+  const view = el('projectDocView');
+  const empty = el('projectDocEmpty');
+  const src = el('projectDocSource');
+  const btn = el('projectDocEditBtn');
+  const scroll = el('projectDocScroll');
+  if (!view || !src) return;
+  if (editing) {
+    src.value = getProjectDocContent();
+    view.classList.add('hidden');
+    if (empty) empty.classList.add('hidden');
+    src.classList.remove('hidden');
+    if (btn) btn.textContent = 'Preview';
+    if (scroll) scroll.classList.add('editing');
+    src.focus();
+    return;
+  }
+  src.classList.add('hidden');
+  if (scroll) scroll.classList.remove('editing');
+  renderProjectDocPreview(src.value);
+  if (btn) btn.textContent = 'Edit';
+}
+function toggleProjectDocEdit() {
+  if (state.projectDocEditing) {
+    void saveProjectDocNow().then(() => setProjectDocMode(false));
+    return;
+  }
+  setProjectDocMode(true);
+}
+function setProjectDocStatus(text, kind) {
+  const status = el('projectDocStatus');
+  if (!status) return;
+  status.textContent = text || '';
+  status.classList.toggle('dirty', kind === 'dirty');
+  status.classList.toggle('error', kind === 'error');
+}
+function scheduleProjectDocSave() {
+  state.projectDocDirty = true;
+  setProjectDocStatus('Unsaved', 'dirty');
+  if (state.projectDocSaveTimer) clearTimeout(state.projectDocSaveTimer);
+  state.projectDocSaveTimer = setTimeout(() => { void saveProjectDocNow(); }, 700);
+}
+async function saveProjectDocNow() {
+  const content = getProjectDocContent();
+  setProjectDocStatus('Saving…', 'dirty');
+  try {
+    const res = await api('/api/project-doc', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setProjectDocStatus(data.error || 'Save failed', 'error');
+      return;
+    }
+    state.projectDocRaw = content;
+    state.projectDocDirty = false;
+    if (!state.projectDocEditing) renderProjectDocPreview(content);
+    setProjectDocStatus('', '');
+  } catch {
+    setProjectDocStatus('Save failed', 'error');
+  }
+}
+async function mountProjectDoc(force) {
+  const view = el('projectDocView');
+  if (!view) return;
+  const workDir = state.snapshot?.workDir || '';
+  if (!force && state.projectDocLoadedFor === workDir && view.dataset.loaded === workDir) return;
+  setProjectDocStatus('Loading…', '');
+  state.projectDocEditing = false;
+  let content = '';
+  try {
+    const res = await api('/api/project-doc');
+    if (res.ok) {
+      const data = await res.json();
+      content = typeof data.content === 'string' ? data.content : '';
+    }
+  } catch { /* show empty doc */ }
+  state.projectDocLoadedFor = workDir;
+  state.projectDocDirty = false;
+  view.dataset.loaded = workDir;
+  state.projectDocEditing = false;
+  renderProjectDocPreview(content);
+  const src = el('projectDocSource');
+  if (src) src.classList.add('hidden');
+  const scroll = el('projectDocScroll');
+  if (scroll) scroll.classList.remove('editing');
+  const btn = el('projectDocEditBtn');
+  if (btn) btn.textContent = 'Edit';
+  setProjectDocStatus('', '');
+}
+function filteredDetailSessions() {
+  const query = (state.detailConvQuery || '').trim().toLowerCase();
+  const active = (state.snapshot?.sessions || []).filter((item) => {
+    if (item.kind === 'manager') return false;
+    const hay = [item.title, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
+    return !query || hay.includes(query);
+  });
+  const archived = (state.snapshot?.archivedSessions || []).filter((item) => {
+    const hay = [item.title, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
+    return !query || hay.includes(query);
+  });
+  return { active, archived };
+}
+function buildCompactConvRow(item, opts) {
+  const archived = Boolean(opts?.archived || item.archived);
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'conv-sidebar-row' + (item.id === state.detailSelectedId ? ' active' : '');
+  row.dataset.sessionId = item.id;
+  const dot = document.createElement('span');
+  dot.className = 'csr-dot' + (item.status === 'running' || (!archived && item.id === state.snapshot?.session?.id) ? '' : ' hidden');
+  const title = document.createElement('span');
+  title.className = 'csr-title';
+  title.textContent = item.title || item.id || 'Untitled';
+  const meta = document.createElement('span');
+  meta.className = 'csr-meta';
+  const actions = document.createElement('span');
+  actions.className = 'csr-actions';
+  const pinBtn = document.createElement('button');
+  pinBtn.type = 'button';
+  pinBtn.className = 'csr-action-btn';
+  pinBtn.title = 'Pin';
+  pinBtn.innerHTML = guiIcon('pin');
+  pinBtn.addEventListener('click', (e) => e.stopPropagation());
+  const archiveBtn = document.createElement('button');
+  archiveBtn.type = 'button';
+  archiveBtn.className = 'csr-action-btn';
+  archiveBtn.title = archived ? 'Restore' : 'Archive';
+  archiveBtn.innerHTML = guiIcon('archive');
+  archiveBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (archived) void unarchiveDetailChat(item.id);
+    else void archiveDetailChat(item.id);
+  });
+  actions.append(pinBtn, archiveBtn);
+  const when = item.updatedAt || item.updated || item.lastActiveAt || '';
+  const time = document.createElement('span');
+  time.className = 'csr-time';
+  time.textContent = when ? formatShortRelativeTime(when) : '';
+  meta.append(actions, time);
+  row.append(dot, title, meta);
+  row.addEventListener('click', () => selectDetailConversation(item.id));
+  row.addEventListener('dblclick', () => { void resumeSession(item.id); });
+  return row;
+}
+function renderConvSidebarList() {
+  const list = el('convSidebarList');
+  if (!list) return;
+  list.textContent = '';
+  const { active, archived } = filteredDetailSessions();
+  if (!active.length && !archived.length) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = state.detailConvQuery ? 'No matching conversations.' : 'No conversations yet.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of active) list.appendChild(buildCompactConvRow(item, { archived: false }));
+  if (archived.length) {
+    const section = document.createElement('div');
+    section.className = 'conv-sidebar-archived';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'conv-sidebar-archived-toggle';
+    toggle.textContent = 'Completed · ' + archived.length + ' · ' + (state.detailArchivedExpanded ? 'Hide' : 'Show');
+    toggle.addEventListener('click', () => {
+      state.detailArchivedExpanded = !state.detailArchivedExpanded;
+      renderConvSidebarList();
+    });
+    section.appendChild(toggle);
+    if (state.detailArchivedExpanded) {
+      for (const item of archived) section.appendChild(buildCompactConvRow(item, { archived: true }));
+    }
+    list.appendChild(section);
+  }
+}
+function renderConvSidebarDetail() {
+  const panel = el('convSidebarDetail');
+  if (!panel) return;
+  panel.textContent = '';
+  panel.classList.remove('empty');
+  const selected = state.detailSelectedId
+    ? allDetailSessions().find((s) => s.id === state.detailSelectedId)
+    : null;
+  if (!selected) {
+    panel.classList.add('empty');
+    panel.textContent = 'Select a conversation to see details';
+    return;
+  }
+  const archived = Boolean(selected.archived);
+  const title = document.createElement('h4');
+  title.textContent = selected.title || selected.id || 'Untitled';
+  panel.appendChild(title);
+  const meta = document.createElement('div');
+  meta.className = 'csd-meta';
+  meta.textContent = [
+    detailListStatus(selected, archived),
+    formatRuntimeDisplay(selected.runtime),
+    sessionConfigDisplay(selected),
+    selected.model,
+    (selected.messageCount || 0) + ' messages',
+    selected.updatedAt ? formatRelativeTime(selected.updatedAt) : '',
+  ].filter(Boolean).join(' · ');
+  panel.appendChild(meta);
+  if (selected.preview) {
+    const preview = document.createElement('div');
+    preview.className = 'csd-preview';
+    preview.textContent = selected.preview;
+    panel.appendChild(preview);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'csd-actions';
+  const continueBtn = document.createElement('button');
+  continueBtn.type = 'button';
+  continueBtn.className = 'pill-btn';
+  continueBtn.textContent = archived ? 'Restore & continue' : 'Continue chat';
+  continueBtn.addEventListener('click', () => {
+    if (archived) void unarchiveDetailChat(selected.id, true);
+    else void resumeSession(selected.id);
+  });
+  actions.appendChild(continueBtn);
+  if (!archived) {
+    const archiveBtn = document.createElement('button');
+    archiveBtn.type = 'button';
+    archiveBtn.className = 'pill-btn';
+    archiveBtn.textContent = 'Archive';
+    archiveBtn.addEventListener('click', () => { void archiveDetailChat(selected.id); });
+    actions.appendChild(archiveBtn);
+  }
+  panel.appendChild(actions);
+}
 function renderProjectDetail() {
   const name = projectNameFromSnapshot();
   const w = state.snapshot?.workDir || '';
@@ -8217,110 +8624,98 @@ function renderProjectDetail() {
   const body = el('detailBody');
   if (!body) return;
   body.textContent = '';
-  const sessions = (state.snapshot?.sessions || []).slice();
-  const archivedSessions = (state.snapshot?.archivedSessions || []).slice();
-  const toolbar = document.createElement('div');
-  toolbar.className = 'detail-toolbar';
-  const search = document.createElement('label');
-  search.className = 'detail-search-wrap';
-  search.innerHTML = guiIcon('search') + '<input placeholder="Search conversations..." autocomplete="off">';
-  const chips = document.createElement('div');
-  chips.className = 'detail-filter-chips';
-  const chipData = [
-    ['In progress', sessions.length],
-    ['Completed', archivedSessions.length],
-  ];
-  chipData.forEach(([label, count], index) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'filter-chip' + (index === 0 ? ' active' : '');
-    chip.innerHTML = '<span>' + label + '</span><b>' + count + '</b>';
-    if (index === 1 && archivedSessions.length) {
-      chip.addEventListener('click', () => {
-        state.detailArchivedExpanded = !state.detailArchivedExpanded;
-        renderProjectDetail();
-      });
-    }
-    chips.appendChild(chip);
-  });
-  toolbar.append(search, chips);
-  body.appendChild(toolbar);
   const layout = document.createElement('div');
   layout.className = 'detail-layout';
-  const convCol = document.createElement('div');
-  convCol.className = 'detail-conversations';
-  for (const item of sessions) {
-    convCol.appendChild(buildDetailConvCard(item, { archived: false }));
-  }
-  if (sessions.length === 0 && archivedSessions.length === 0) {
-    const e = document.createElement('p');
-    e.className = 'region-empty';
-    e.textContent = 'No conversations yet — click + New conversation to start one.';
-    convCol.appendChild(e);
-  } else if (sessions.length === 0) {
-    const e = document.createElement('p');
-    e.className = 'region-empty';
-    e.textContent = 'No conversations in progress.';
-    convCol.appendChild(e);
-  }
-  if (archivedSessions.length) {
-    const section = document.createElement('section');
-    section.className = 'detail-archived-section';
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'detail-archived-toggle';
-    toggle.innerHTML = '<span><strong>Completed</strong> · archived conversations</span><span class="count">' + archivedSessions.length + ' · ' + (state.detailArchivedExpanded ? 'Hide' : 'Show') + '</span>';
-    toggle.addEventListener('click', () => {
-      state.detailArchivedExpanded = !state.detailArchivedExpanded;
-      renderProjectDetail();
-    });
-    section.appendChild(toggle);
-    const list = document.createElement('div');
-    list.className = 'detail-archived-list' + (state.detailArchivedExpanded ? '' : ' hidden');
-    for (const item of archivedSessions) {
-      list.appendChild(buildDetailConvCard(item, { archived: true }));
+  const docPanel = document.createElement('section');
+  docPanel.className = 'project-doc-panel';
+  const docToolbar = document.createElement('header');
+  docToolbar.className = 'project-doc-toolbar';
+  const docTitle = document.createElement('h2');
+  docTitle.textContent = 'Project document';
+  const docActions = document.createElement('div');
+  docActions.className = 'project-doc-actions';
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.id = 'projectDocEditBtn';
+  editBtn.className = 'pill-btn project-doc-edit-btn';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => toggleProjectDocEdit());
+  const docStatus = document.createElement('span');
+  docStatus.id = 'projectDocStatus';
+  docStatus.className = 'project-doc-status';
+  docActions.append(editBtn, docStatus);
+  docToolbar.append(docTitle, docActions);
+  const docScroll = document.createElement('div');
+  docScroll.id = 'projectDocScroll';
+  docScroll.className = 'project-doc-scroll';
+  const docEditor = document.createElement('div');
+  docEditor.className = 'project-doc-editor';
+  const docView = document.createElement('div');
+  docView.id = 'projectDocView';
+  docView.className = 'project-doc-view md-prose hidden';
+  docView.title = 'Double-click to edit';
+  docView.addEventListener('dblclick', () => { if (!state.projectDocEditing) setProjectDocMode(true); });
+  const docEmpty = document.createElement('p');
+  docEmpty.id = 'projectDocEmpty';
+  docEmpty.className = 'project-doc-empty';
+  docEmpty.textContent = 'No project document yet — click Edit to write.';
+  docEmpty.addEventListener('click', () => setProjectDocMode(true));
+  const docSource = document.createElement('textarea');
+  docSource.id = 'projectDocSource';
+  docSource.className = 'project-doc-source hidden';
+  docSource.placeholder = 'Write markdown…';
+  docSource.spellcheck = true;
+  docSource.addEventListener('input', () => scheduleProjectDocSave());
+  docSource.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      void saveProjectDocNow().then(() => setProjectDocMode(false));
     }
-    section.appendChild(list);
-    convCol.appendChild(section);
-  }
-  layout.appendChild(convCol);
-  const rail = document.createElement('aside');
-  rail.className = 'detail-rail';
-  rail.appendChild(renderDetailRail(allDetailSessions()));
-  layout.appendChild(rail);
+  });
+  docEditor.append(docView, docEmpty, docSource);
+  docScroll.appendChild(docEditor);
+  docPanel.append(docToolbar, docScroll);
+  const sidebar = document.createElement('aside');
+  sidebar.className = 'detail-sidebar';
+  const top = document.createElement('div');
+  top.className = 'conv-sidebar-top';
+  const head = document.createElement('div');
+  head.className = 'conv-sidebar-head';
+  const headTitle = document.createElement('h3');
+  headTitle.textContent = 'Conversations';
+  const search = document.createElement('label');
+  search.className = 'conv-sidebar-search';
+  search.innerHTML = guiIcon('search') + '<input placeholder="Search…" autocomplete="off" id="detailConvSearch">';
+  head.append(headTitle, search);
+  const list = document.createElement('div');
+  list.id = 'convSidebarList';
+  list.className = 'conv-sidebar-list';
+  top.append(head, list);
+  const detail = document.createElement('div');
+  detail.id = 'convSidebarDetail';
+  detail.className = 'conv-sidebar-detail empty';
+  detail.textContent = 'Select a conversation to see details';
+  sidebar.append(top, detail);
+  layout.append(docPanel, sidebar);
   body.appendChild(layout);
-}
-// Right rail of the detail view: shows a conversation preview when one is
-// selected (instant — no session load), otherwise the project context +
-// plan checklist.
-function renderDetailRail(sessions) {
-  const selected = state.detailSelectedId ? sessions.find(s => s.id === state.detailSelectedId) : null;
-  if (selected) return buildConversationPreviewPanel(selected, sessions);
-  const frag = document.createDocumentFragment();
-  const plan = state.snapshot?.projectPlan || { milestones: [], today: [], upcoming: [] };
-  // Only show the project context panel when there's a plan to summarize;
-  // without plan.json the "Current milestone / Conversation plan / N
-  // conversations" placeholders carry no real information.
-  if ((plan.milestones || []).length || (plan.today || []).length || (plan.upcoming || []).length) {
-    frag.appendChild(buildProjectContextPanel(sessions));
+  const searchInput = el('detailConvSearch');
+  if (searchInput) {
+    searchInput.value = state.detailConvQuery || '';
+    searchInput.addEventListener('input', () => {
+      state.detailConvQuery = searchInput.value;
+      renderConvSidebarList();
+    });
   }
-  frag.appendChild(buildPlanPanel(plan));
-  return frag;
+  renderConvSidebarList();
+  renderConvSidebarDetail();
+  void mountProjectDoc(false);
 }
 function selectDetailConversation(id) {
-  // Toggle: clicking the already-selected conversation deselects it (no need
-  // for a dedicated Deselect button).
   state.detailSelectedId = state.detailSelectedId === id ? null : id;
-  document.querySelectorAll('.conv-card').forEach((c) => {
-    c.classList.toggle('active', c.dataset.sessionId === state.detailSelectedId);
+  document.querySelectorAll('.conv-sidebar-row').forEach((row) => {
+    row.classList.toggle('active', row.dataset.sessionId === state.detailSelectedId);
   });
-  // Re-render only the rail (cheap) so the preview appears without rebuilding
-  // the whole conversation list.
-  const rail = el('detailBody')?.querySelector('.detail-rail');
-  if (rail) {
-    rail.textContent = '';
-    rail.appendChild(renderDetailRail(allDetailSessions()));
-  }
+  renderConvSidebarDetail();
 }
 function buildConversationPreviewPanel(item, sessions) {
   const archived = Boolean(item.archived);
@@ -8369,7 +8764,7 @@ function buildConversationPreviewPanel(item, sessions) {
   actions.className = 'context-actions';
   const continueBtn = document.createElement('button');
   continueBtn.type = 'button';
-  continueBtn.className = 'pill-btn primary';
+  continueBtn.className = 'pill-btn';
   continueBtn.textContent = archived ? 'Restore & continue' : 'Continue chat';
   continueBtn.addEventListener('click', () => {
     if (archived) void unarchiveDetailChat(item.id, true);
@@ -8449,7 +8844,7 @@ function buildProjectContextPanel(sessions) {
   actions.className = 'context-actions';
   const continueBtn = document.createElement('button');
   continueBtn.type = 'button';
-  continueBtn.className = 'pill-btn primary';
+  continueBtn.className = 'pill-btn';
   continueBtn.textContent = 'Continue chat';
   continueBtn.addEventListener('click', () => switchProjectView('conversation'));
   const viewPlan = document.createElement('button');
@@ -8524,7 +8919,7 @@ async function mutatePlan(mutator) {
     if (res.ok) {
       const data = await res.json();
       if (state.snapshot) state.snapshot.projectPlan = data.plan || plan;
-      renderProjectDetail();
+      refreshProjectDetailSidebar();
     }
   } catch { /* transient */ }
 }
@@ -9329,11 +9724,7 @@ const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#
 function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
 function firstTeamNode(def) {
   if (!def) return null;
-  if (def.mode === 'graph') return (def.nodes || [])[0] || null;
-  if (def.primary) return def.primary;
-  if ((def.members || []).length) return def.members[0];
-  if (def.reviewer) return def.reviewer;
-  return null;
+  return (def.nodes || [])[0] || null;
 }
 function nodeSubtitle(node, isPrimary) {
   if (node?.responsibility) return node.responsibility;
@@ -9383,55 +9774,90 @@ function teamListForRegion() {
   const builtins = ['panel-analysis', 'analysis', 'reviewer'].filter((n) => !names.has(n)).map((n) => ({ name: n, source: 'built-in' }));
   return [...saved, ...builtins];
 }
-async function renderTeamRegion() {
-  await loadState();
-  state.teamEditing = false;
+async function refreshTeamsSnapshot() {
+  try {
+    const res = await api('/api/state');
+    if (!res.ok) return;
+    const st = await res.json();
+    if (state.snapshot) {
+      state.snapshot.teams = st.teams;
+      state.snapshot.activeTeamName = st.activeTeamName;
+      state.snapshot.session = st.session;
+    } else {
+      state.snapshot = st;
+    }
+  } catch { /* transient */ }
+}
+function renderTeamSquadBar() {
   const teams = teamListForRegion();
   const bar = el('teamSquadBar');
-  if (bar) {
-    bar.textContent = '';
-    for (const t of teams) {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'squad-chip' + (t.name === state.teamSelected ? ' active' : '');
-      chip.dataset.name = t.name;
-      const dot = document.createElement('span');
-      dot.className = 'sq-dot';
-      const labels = document.createElement('span');
-      labels.className = 'sq-labels';
-      const label = document.createElement('strong');
-      label.textContent = t.name;
-      const small = document.createElement('small');
-      small.textContent = t.source === 'built-in' ? 'Built-in squad' : 'Project squad';
-      labels.append(label, small);
-      chip.append(dot, labels);
-      chip.addEventListener('click', () => { state.teamSelected = t.name; state.teamEditing = false; void selectTeam(t.name); });
-      bar.appendChild(chip);
-    }
+  if (!bar) return teams;
+  bar.textContent = '';
+  for (const t of teams) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'squad-chip' + (t.name === state.teamSelected ? ' active' : '');
+    chip.dataset.name = t.name;
+    const dot = document.createElement('span');
+    dot.className = 'sq-dot';
+    const labels = document.createElement('span');
+    labels.className = 'sq-labels';
+    const label = document.createElement('strong');
+    label.textContent = t.name;
+    const small = document.createElement('small');
+    small.textContent = t.source === 'built-in' ? 'Built-in squad' : 'Project squad';
+    labels.append(label, small);
+    chip.append(dot, labels);
+    chip.addEventListener('click', () => {
+      state.teamSelected = t.name;
+      state.teamInspectorPanel = 'view';
+      state.teamSelectedEdgeIdx = null;
+      void selectTeam(t.name);
+    });
+    bar.appendChild(chip);
   }
+  return teams;
+}
+async function renderTeamRegion() {
+  if (!state.snapshot?.teams) await refreshTeamsSnapshot();
+  const teams = renderTeamSquadBar();
   const target = state.teamSelected || teams[0]?.name;
-  if (target) { state.teamSelected = target; await selectTeam(target); }
-  else {
+  if (target) {
+    state.teamSelected = target;
+    await selectTeam(target);
+  } else {
     const g = el('teamGraph');
     if (g) { g.textContent = ''; const e = document.createElement('p'); e.className = 'region-empty'; e.textContent = 'No squads — click + New squad.'; g.appendChild(e); }
     renderTeamInspector(null, null);
   }
 }
-async function selectTeam(name) {
+async function selectTeam(name, opts) {
+  opts = opts || {};
   state.teamSelected = name;
   document.querySelectorAll('.squad-chip').forEach((c) => c.classList.toggle('active', c.dataset.name === name));
-  let def = null;
-  try {
-    const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
-    if (res.ok) def = (await res.json()).definition || null;
-  } catch { /* offline */ }
+  let def = !opts.force && state.teamDefinitionCache[name] ? state.teamDefinitionCache[name] : null;
+  if (!def) {
+    try {
+      const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
+      if (res.ok) def = (await res.json()).definition || null;
+      if (def) state.teamDefinitionCache[name] = def;
+    } catch { /* offline */ }
+  }
+  if (def && def.mode !== 'graph' && def.orchestration !== 'graph') {
+    delete state.teamDefinitionCache[name];
+    try {
+      const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
+      if (res.ok) def = (await res.json()).definition || null;
+      if (def) state.teamDefinitionCache[name] = def;
+    } catch { /* offline */ }
+  }
   state.teamDefinition = def;
   state.teamSelectedNode = firstTeamNode(def);
-  // Preserve the editor open-state across a re-select/save refresh so the
-  // user keeps editing (saveTeamDefinition re-selects to refresh the list).
+  state.teamSelectedEdgeIdx = null;
   renderTeamGraph(def, name);
   renderTeamInspector(state.teamSelectedNode, def);
-  renderTeamEditor();
+  const host = el('teamEditor');
+  if (host) host.classList.add('hidden');
 }
 // Run the selected squad (plan/UI_PLAN §6.3/§5): prompt → /team ask → stream
 // live member activity into the conversation + right rail.
@@ -9449,144 +9875,229 @@ async function runSelectedSquad() {
   switchProjectView('conversation');
   submitText('/team ask ' + name + ' ' + input.trim()).catch(console.error);
 }
-// --- Team editor (plan/UI_PLAN §5.3 / U6 + plan Phase 4): members (legacy)
-// or nodes+edges (graph), with save validation and Personal/Project target. ---
-function renderTeamEditor() {
-  const host = el('teamEditor');
-  if (!host) return;
-  host.classList.toggle('hidden', !state.teamEditing);
-  if (!state.teamEditing) return;
+// --- Team editor (plan/UI_PLAN §5.3 / U6 + graph canvas inspector). ---
+const TEAM_CORE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'TavilySearch', 'WebFetch', 'Task', 'TodoWrite', 'AskUserQuestion'];
+const TEAM_RUNTIME_OPTIONS = ['', 'hadamard', 'claude', 'bridge', 'codex'];
+const TEAM_EDGE_TRIGGERS = [
+  { value: 'on_complete', label: 'Passive trigger (on complete)' },
+  { value: 'on_tool_call', label: 'Communication (tool call)' },
+  { value: 'on_handoff', label: 'Communication (handoff)' },
+  { value: 'on_review_request', label: 'Communication (review request)' },
+  { value: 'manual', label: 'Manual only' },
+];
+const TEAM_EDGE_CHANNELS = [
+  { value: 'message', label: 'Message / task request' },
+  { value: 'handoff', label: 'Handoff' },
+  { value: 'review', label: 'Review' },
+  { value: 'broadcast', label: 'Broadcast' },
+];
+function teamGraphEditable(def) {
+  return Boolean(def);
+}
+function openTeamNodeEditor(node) {
+  if (!node) return;
   const def = state.teamDefinition;
-  host.textContent = '';
-  if (!def) {
-    const e = document.createElement('p');
-    e.className = 'region-empty';
-    e.textContent = 'No squad selected.';
-    host.appendChild(e);
-    return;
-  }
-  if (def.mode === 'graph') { renderGraphTeamEditor(host, def); return; }
-  const wrap = document.createElement('div');
-  wrap.className = 'team-editor';
-  const h = document.createElement('h3');
-  h.textContent = 'Edit squad: ' + (def.name || '(unnamed)');
-  wrap.appendChild(h);
-  // Add-member form.
-  const addRow = document.createElement('div');
-  addRow.className = 'te-add';
-  const nameInput = document.createElement('input');
-  nameInput.placeholder = 'Member name (e.g. security)';
-  const modelInput = document.createElement('input');
-  modelInput.placeholder = 'Model (e.g. claude-sonnet-4-6)';
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'te-btn primary';
-  addBtn.textContent = '+ Add member';
-  const doAdd = () => {
-    const n = nameInput.value.trim();
-    const m = modelInput.value.trim();
-    if (!n) return;
-    def.members = def.members || [];
-    def.members.push({ name: n, role: n, model: m || (state.snapshot?.session?.model || '') || '', systemPrompt: '', responsibility: '', reviews: [] });
-    nameInput.value = ''; modelInput.value = '';
-    void saveTeamDefinition();
-  };
-  addBtn.addEventListener('click', doAdd);
-  addRow.append(nameInput, modelInput, addBtn);
-  wrap.appendChild(addRow);
-  // Member rows.
-  (def.members || []).forEach((member, idx) => {
-    const row = document.createElement('div');
-    row.className = 'te-member-row';
-    const head = document.createElement('div');
-    head.className = 'te-mhead';
-    const title = document.createElement('strong');
-    title.textContent = member.name || member.role || ('member ' + (idx + 1));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'te-btn danger';
-    del.textContent = 'Remove';
-    del.addEventListener('click', () => { def.members.splice(idx, 1); void saveTeamDefinition(); });
-    head.append(title, del);
-    const fieldsRow = document.createElement('div');
-    fieldsRow.className = 'te-row';
-    const fRole = teField('Role', member.role || '', (v) => { member.role = v; member.name = member.name || v; });
-    const fModel = teField('Model', member.model || '', (v) => { member.model = v; });
-    fieldsRow.append(fRole, fModel);
-    const planRow = document.createElement('div');
-    planRow.className = 'te-row';
-    const fReviews = teField('Reviews', reviewTargetsForMember(def, member).join(', '), (v) => { member.reviews = splitCsv(v); normalizeTeamCollaboration(def); });
-    const fRuntime = teField('Runtime', member.runtime || '', (v) => { member.runtime = v; });
-    planRow.append(fReviews, fRuntime);
-    const scopeRow = document.createElement('div');
-    scopeRow.className = 'te-row';
-    const fTools = teField('Tool scope', Array.isArray(member.toolScope) ? member.toolScope.join(', ') : '', (v) => { member.toolScope = splitCsv(v); });
-    scopeRow.append(fTools);
-    const fResponsibility = teField('Responsibility', member.responsibility || '', (v) => { member.responsibility = v; }, true);
-    const fPrompt = teField('System prompt', member.systemPrompt || '', (v) => { member.systemPrompt = v; }, true);
-    row.append(head, fieldsRow, planRow, scopeRow, fResponsibility, fPrompt);
-    wrap.appendChild(row);
+  if (!def) return;
+  state.teamSelectedNode = node;
+  state.teamSelectedEdgeIdx = null;
+  state.teamInspectorPanel = 'view';
+  document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
+  const ref = graphRefOf(node);
+  document.querySelectorAll('.graph-node.board-node').forEach((n) => {
+    if (n.dataset.graphRef === ref) n.classList.add('selected');
   });
-  if (!(def.members || []).length) {
-    const e = document.createElement('p');
-    e.className = 'plan-empty';
-    e.textContent = 'No members yet.';
-    wrap.appendChild(e);
+  renderTeamInspector(node, def);
+  renderTeamNodeEditorPanel(node, def);
+  el('teamAgentModal').classList.remove('hidden');
+}
+function closeTeamNodeEditor() {
+  el('teamAgentModal').classList.add('hidden');
+  const body = el('teamAgentModalBody');
+  if (body) body.textContent = '';
+}
+function openTeamEdgeEditor(idx) {
+  state.teamSelectedEdgeIdx = idx;
+  state.teamInspectorPanel = 'edge';
+  renderTeamInspector(state.teamSelectedNode, state.teamDefinition);
+  const def = state.teamDefinition;
+  if (!def) return;
+  requestAnimationFrame(() => {
+    const board = el('teamGraph')?.querySelector('.graph-board');
+    const svg = board?.querySelector('.graph-board-svg');
+    if (board && svg) redrawGraphBoardEdges(board, svg, def);
+  });
+}
+function teFieldLive(label, value, onChange, textarea) {
+  const f = document.createElement('div');
+  f.className = 'te-field';
+  const l = document.createElement('label');
+  l.textContent = label;
+  const inp = textarea ? document.createElement('textarea') : document.createElement('input');
+  inp.value = value;
+  const fire = () => { onChange(inp.value); setTeamSavedStatus(false); };
+  inp.addEventListener('input', fire);
+  inp.addEventListener('change', fire);
+  f.append(l, inp);
+  return f;
+}
+function teToolChecklist(label, selected, onChange) {
+  const f = document.createElement('div');
+  f.className = 'te-field';
+  const l = document.createElement('label');
+  l.textContent = label;
+  f.appendChild(l);
+  const grid = document.createElement('div');
+  grid.className = 'te-tool-grid';
+  const set = new Set(selected || []);
+  for (const tool of TEAM_CORE_TOOLS) {
+    const row = document.createElement('label');
+    row.className = 'te-check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = set.has(tool);
+    box.addEventListener('change', () => {
+      const next = TEAM_CORE_TOOLS.filter((t) => {
+        const cb = grid.querySelector('input[data-tool="' + t + '"]');
+        return cb && cb.checked;
+      });
+      onChange(next);
+      setTeamSavedStatus(false);
+    });
+    box.dataset.tool = tool;
+    row.append(box, document.createTextNode(' ' + tool));
+    grid.appendChild(row);
   }
-  // Squad config.
-  const cfg = document.createElement('div');
-  cfg.style.marginTop = '10px';
-  const cfgRow = document.createElement('div');
-  cfgRow.className = 'te-row';
-  cfgRow.appendChild(teField('Max rounds', String(def.maxRounds ?? 100), (v) => { def.maxRounds = Number(v) || 100; }));
-  cfgRow.appendChild(teField('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
-  cfg.appendChild(cfgRow);
-  wrap.appendChild(cfg);
-  // Save / upgrade / cancel.
-  const actions = document.createElement('div');
-  actions.className = 'te-actions';
-  actions.appendChild(saveTargetField());
+  f.appendChild(grid);
+  return f;
+}
+function renderTeamNodeEditorPanel(node, def) {
+  const host = el('teamAgentModalBody');
+  if (!host) return;
+  host.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  const icon = document.createElement('span');
+  icon.className = 'gn-icon';
+  icon.style.background = roleColor(node.role || node.name);
+  icon.innerHTML = guiIcon('agent');
+  const h = document.createElement('h3');
+  h.textContent = 'Edit agent · ' + (graphRefOf(node) || 'node');
+  head.append(icon, h);
+  host.appendChild(head);
+  host.appendChild(teFieldLive('Agent id', node.id || '', (v) => { node.id = v.trim(); }));
+  host.appendChild(teFieldLive('Role / specialty', node.role || '', (v) => { node.role = v; }));
+  host.appendChild(teFieldLive('Responsibility', node.responsibility || '', (v) => { node.responsibility = v; }, true));
+  host.appendChild(teSelect('Runtime', node.runtime || '', TEAM_RUNTIME_OPTIONS, (v) => { node.runtime = v || undefined; }));
+  host.appendChild(teFieldLive('Model', node.model || '', (v) => { node.model = v; }));
+  host.appendChild(teSelect('Workspace access', node.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => { node.workspaceAccess = v; }));
+  host.appendChild(teFieldLive('System prompt / injection', node.systemPrompt || '', (v) => { node.systemPrompt = v; }, true));
+  host.appendChild(teCheck('Entry node (starts the run)', node.entry, (v) => {
+    node.entry = v;
+    renderTeamGraph(def, def.name);
+  }));
+  host.appendChild(teSelect('Join incoming edges', node.join || 'all', ['all', 'any'], (v) => { node.join = v === 'any' ? 'any' : undefined; }));
+  host.appendChild(teToolChecklist('Allowed tools (empty = read-only expert set)', node.allowedTools || [], (next) => {
+    const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !(node.allowedTools || []).includes(t));
+    if (added.length && !window.confirm('Grant ' + added.join(' + ') + ' to "' + graphRefOf(node) + '"?')) return;
+    node.allowedTools = next.length ? next : undefined;
+    renderTeamGraph(def, def.name);
+  }));
+}
+function renderTeamEdgeEditorPanel(edge, idx, def, host) {
+  host.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  const h = document.createElement('h3');
+  h.textContent = 'Edit edge · ' + edge.from + ' → ' + edge.to;
+  head.appendChild(h);
+  host.appendChild(head);
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'te-btn';
+  back.textContent = '← Back to overview';
+  back.addEventListener('click', () => { state.teamInspectorPanel = 'view'; state.teamSelectedEdgeIdx = null; renderTeamInspector(state.teamSelectedNode, def); renderTeamGraph(def, def.name); });
+  host.appendChild(back);
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.textContent = 'Passive trigger: downstream runs after upstream completes. Communication: upstream can message downstream via NotifyTeammate during its run.';
+  host.appendChild(hint);
+  const refs = graphNodeRefs(def);
+  host.appendChild(teSelect('From', edge.from, refs, (v) => { edge.from = v; renderTeamGraph(def, def.name); }));
+  host.appendChild(teSelect('To', edge.to, refs, (v) => { edge.to = v; renderTeamGraph(def, def.name); }));
+  host.appendChild(teSelect('Trigger', edge.trigger || 'on_complete', TEAM_EDGE_TRIGGERS.map((t) => t.value), (v) => { edge.trigger = v === 'on_complete' ? undefined : v; renderTeamGraph(def, def.name); }));
+  host.appendChild(teSelect('Channel', edge.channel || 'message', TEAM_EDGE_CHANNELS.map((c) => c.value), (v) => { edge.channel = v === 'message' ? undefined : v; }));
+  host.appendChild(teFieldLive('Condition (optional /regex/ or substring)', edge.condition || '', (v) => { edge.condition = v.trim() || undefined; }));
+  host.appendChild(teFieldLive('Payload template', edge.payloadTemplate || '', (v) => { edge.payloadTemplate = v.trim() || undefined; }, true));
+  host.appendChild(teFieldLive('Note', edge.note || '', (v) => { edge.note = v.trim() || undefined; }));
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'te-btn danger';
+  del.textContent = 'Remove edge';
+  del.addEventListener('click', () => {
+    def.edges.splice(idx, 1);
+    state.teamSelectedEdgeIdx = null;
+    state.teamInspectorPanel = 'view';
+    setTeamSavedStatus(false);
+    renderTeamGraph(def, def.name);
+    renderTeamInspector(state.teamSelectedNode, def);
+  });
+  host.appendChild(del);
+}
+function renderTeamSquadPanel(def, host) {
+  host.textContent = '';
+  const h = document.createElement('h3');
+  h.textContent = 'Squad settings · ' + (def.name || '');
+  host.appendChild(h);
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'te-btn';
+  back.textContent = '← Back to overview';
+  back.addEventListener('click', () => { state.teamInspectorPanel = 'view'; renderTeamInspector(state.teamSelectedNode, def); });
+  host.appendChild(back);
+  host.appendChild(teFieldLive('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
+  host.appendChild(teFieldLive('Member max iterations', String(def.maxIterations ?? 16), (v) => { def.maxIterations = Number(v) || 16; }));
+  host.appendChild(saveTargetField());
+  const problems = document.createElement('div');
+  problems.id = 'teamGraphProblems';
+  problems.className = 'te-problems hidden';
+  host.appendChild(problems);
   const save = document.createElement('button');
   save.type = 'button';
   save.className = 'te-btn primary';
   save.textContent = 'Save squad';
   save.addEventListener('click', () => { void saveTeamDefinition(); });
-  const upgrade = document.createElement('button');
-  upgrade.type = 'button';
-  upgrade.className = 'te-btn';
-  upgrade.textContent = 'Upgrade to graph mode';
-  upgrade.title = 'Convert members/primary/reviewer into graph nodes + on_complete edges (v2). Nothing is saved until you press Save.';
-  upgrade.addEventListener('click', () => { void upgradeTeamToGraph(def.name); });
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'te-btn';
-  close.textContent = 'Done';
-  close.addEventListener('click', () => { state.teamEditing = false; renderTeamEditor(); });
-  actions.append(save, upgrade, close);
-  wrap.appendChild(actions);
-  host.appendChild(wrap);
+  host.appendChild(save);
 }
-// --- Graph editor (plan Phase 4): nodes + edges, engine-validated on save. ---
+function addGraphNodeQuick(def) {
+  def.nodes = def.nodes || [];
+  const n = def.nodes.length;
+  const id = 'agent-' + (n + 1);
+  def.nodes.push({
+    id,
+    role: id,
+    model: state.snapshot?.session?.model || '',
+    entry: n === 0,
+    systemPrompt: '',
+    responsibility: '',
+    workspaceAccess: 'workspace',
+    ui: { x: 80 + (n % 3) * 240, y: 48 + Math.floor(n / 3) * 190 },
+  });
+  setTeamSavedStatus(false);
+  renderTeamGraph(def, def.name);
+  openTeamNodeEditor(def.nodes[def.nodes.length - 1]);
+}
+// Full-screen team editor retired — all squads use the graph canvas + inspector.
+function renderTeamEditor() {
+  const host = el('teamEditor');
+  if (host) host.classList.add('hidden');
+}
+// --- Graph canvas helpers ---
 const RISKY_NODE_TOOLS = ['Write', 'Edit', 'Bash', 'NotebookEdit'];
 function graphRefOf(node) {
   return String(node?.id || node?.name || node?.role || node?.model || '').trim();
 }
 function graphNodeRefs(def) {
   return (def.nodes || []).map(graphRefOf).filter(Boolean);
-}
-async function upgradeTeamToGraph(name) {
-  try {
-    const res = await api('/api/team/upgrade', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
-    if (!res.ok) { addMessage('error', 'Upgrade failed: ' + await res.text()); return; }
-    const data = await res.json();
-    state.teamDefinition = data.definition;
-    setTeamSavedStatus(false);
-    addMessage('notice', 'Converted to graph mode (unsaved) — review nodes/edges, then Save.');
-    renderTeamGraph(state.teamDefinition, state.teamDefinition.name);
-    renderTeamEditor();
-  } catch (err) {
-    addMessage('error', 'Upgrade failed: ' + (err && err.message || err));
-  }
 }
 function saveTargetField() {
   const f = document.createElement('div');
@@ -9632,169 +10143,6 @@ function teCheck(label, checked, onChange) {
   f.appendChild(l);
   return f;
 }
-function renderGraphTeamEditor(host, def) {
-  const wrap = document.createElement('div');
-  wrap.className = 'team-editor';
-  const h = document.createElement('h3');
-  h.textContent = 'Edit graph squad: ' + (def.name || '(unnamed)');
-  wrap.appendChild(h);
-  const hint = document.createElement('p');
-  hint.className = 'te-hint';
-  hint.textContent = 'Nodes run as read-only agents unless you grant tools. Entry nodes start in parallel; on_complete edges wake downstream nodes (wait-all; join: any = first input wins).';
-  wrap.appendChild(hint);
-
-  // Add-node form.
-  const addRow = document.createElement('div');
-  addRow.className = 'te-add';
-  const idInput = document.createElement('input');
-  idInput.placeholder = 'Node id (e.g. planner)';
-  const modelInput = document.createElement('input');
-  modelInput.placeholder = 'Model (blank = session model)';
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'te-btn primary';
-  addBtn.textContent = '+ Add node';
-  addBtn.addEventListener('click', () => {
-    const id = idInput.value.trim();
-    if (!id) return;
-    def.nodes = def.nodes || [];
-    def.nodes.push({ id, role: id, model: modelInput.value.trim() || (state.snapshot?.session?.model || ''), entry: (def.nodes.length === 0), systemPrompt: '', responsibility: '', ui: { x: 80 + (def.nodes.length % 3) * 240, y: 48 + Math.floor(def.nodes.length / 3) * 190 } });
-    idInput.value = ''; modelInput.value = '';
-    setTeamSavedStatus(false);
-    renderTeamGraph(def, def.name);
-    renderTeamEditor();
-  });
-  addRow.append(idInput, modelInput, addBtn);
-  wrap.appendChild(addRow);
-
-  // Node rows.
-  (def.nodes || []).forEach((node, idx) => {
-    const row = document.createElement('div');
-    row.className = 'te-member-row';
-    const head = document.createElement('div');
-    head.className = 'te-mhead';
-    const title = document.createElement('strong');
-    title.textContent = graphRefOf(node) || ('node ' + (idx + 1));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'te-btn danger';
-    del.textContent = 'Remove';
-    del.addEventListener('click', () => {
-      const ref = graphRefOf(node);
-      def.nodes.splice(idx, 1);
-      def.edges = (def.edges || []).filter((e) => e.from !== ref && e.to !== ref);
-      setTeamSavedStatus(false);
-      renderTeamGraph(def, def.name);
-      renderTeamEditor();
-    });
-    head.append(title, del);
-    const idRow = document.createElement('div');
-    idRow.className = 'te-row';
-    idRow.append(
-      teField('Id', node.id || '', (v) => { node.id = v.trim(); }),
-      teField('Role', node.role || '', (v) => { node.role = v; }),
-      teField('Model', node.model || '', (v) => { node.model = v; }),
-    );
-    const flagRow = document.createElement('div');
-    flagRow.className = 'te-row';
-    flagRow.append(
-      teCheck('Entry node (starts the run)', node.entry, (v) => { node.entry = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
-      teSelect('Join', node.join || 'all', ['all', 'any'], (v) => { node.join = v === 'any' ? 'any' : undefined; }),
-    );
-    // allowedTools with the Write/Bash second-confirmation gate (plan §3.5.1).
-    const toolsRow = document.createElement('div');
-    toolsRow.className = 'te-row';
-    toolsRow.appendChild(teField('Allowed tools (blank = read-only expert set)', Array.isArray(node.allowedTools) ? node.allowedTools.join(', ') : '', (v) => {
-      const next = splitCsv(v);
-      const prev = Array.isArray(node.allowedTools) ? node.allowedTools : [];
-      const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !prev.includes(t));
-      if (added.length) {
-        const ok = window.confirm('Grant ' + added.join(' + ') + ' to node "' + graphRefOf(node) + '"?\\n\\nThis lets the node modify files or run shell commands during a team run.');
-        if (!ok) { renderTeamEditor(); return; }
-      }
-      node.allowedTools = next.length ? next : undefined;
-      setTeamSavedStatus(false);
-    }));
-    const fResponsibility = teField('Responsibility', node.responsibility || '', (v) => { node.responsibility = v; }, true);
-    const fPrompt = teField('System prompt', node.systemPrompt || '', (v) => { node.systemPrompt = v; }, true);
-    row.append(head, idRow, flagRow, toolsRow, fResponsibility, fPrompt);
-    wrap.appendChild(row);
-  });
-  if (!(def.nodes || []).length) {
-    const e = document.createElement('p');
-    e.className = 'plan-empty';
-    e.textContent = 'No nodes yet — add the first one above.';
-    wrap.appendChild(e);
-  }
-
-  // Edges.
-  const eh = document.createElement('h3');
-  eh.textContent = 'Edges';
-  wrap.appendChild(eh);
-  const refs = graphNodeRefs(def);
-  (def.edges || []).forEach((edge, idx) => {
-    const row = document.createElement('div');
-    row.className = 'te-member-row te-edge-row';
-    const line = document.createElement('div');
-    line.className = 'te-row';
-    line.append(
-      teSelect('From', edge.from, refs, (v) => { edge.from = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
-      teSelect('To', edge.to, refs, (v) => { edge.to = v; setTeamSavedStatus(false); renderTeamGraph(def, def.name); }),
-      teSelect('Trigger', edge.trigger || 'on_complete', ['on_complete', 'on_tool_call', 'on_handoff', 'on_review_request', 'manual'], (v) => { edge.trigger = v === 'on_complete' ? undefined : v; }),
-      teSelect('Channel', edge.channel || 'message', ['message', 'handoff', 'review', 'broadcast'], (v) => { edge.channel = v === 'message' ? undefined : v; }),
-    );
-    const line2 = document.createElement('div');
-    line2.className = 'te-row';
-    line2.appendChild(teField('Condition (substring or /regex/, blank = always)', edge.condition || '', (v) => { edge.condition = v.trim() || undefined; }));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.className = 'te-btn danger';
-    del.textContent = 'Remove edge';
-    del.addEventListener('click', () => { def.edges.splice(idx, 1); setTeamSavedStatus(false); renderTeamGraph(def, def.name); renderTeamEditor(); });
-    row.append(line, line2, del);
-    wrap.appendChild(row);
-  });
-  const addEdge = document.createElement('button');
-  addEdge.type = 'button';
-  addEdge.className = 'te-btn';
-  addEdge.textContent = '+ Add edge';
-  addEdge.disabled = refs.length < 2;
-  addEdge.addEventListener('click', () => {
-    def.edges = def.edges || [];
-    def.edges.push({ from: refs[0], to: refs[1] });
-    setTeamSavedStatus(false);
-    renderTeamGraph(def, def.name);
-    renderTeamEditor();
-  });
-  wrap.appendChild(addEdge);
-
-  // Squad config + save.
-  const cfgRow = document.createElement('div');
-  cfgRow.className = 'te-row';
-  cfgRow.appendChild(teField('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
-  cfgRow.appendChild(teField('Member max iterations', String(def.maxIterations ?? 16), (v) => { def.maxIterations = Number(v) || 16; }));
-  wrap.appendChild(cfgRow);
-  const problems = document.createElement('div');
-  problems.id = 'teamGraphProblems';
-  problems.className = 'te-problems hidden';
-  wrap.appendChild(problems);
-  const actions = document.createElement('div');
-  actions.className = 'te-actions';
-  actions.appendChild(saveTargetField());
-  const save = document.createElement('button');
-  save.type = 'button';
-  save.className = 'te-btn primary';
-  save.textContent = 'Save squad';
-  save.addEventListener('click', () => { void saveTeamDefinition(); });
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'te-btn';
-  close.textContent = 'Done';
-  close.addEventListener('click', () => { state.teamEditing = false; renderTeamEditor(); });
-  actions.append(save, close);
-  wrap.appendChild(actions);
-  host.appendChild(wrap);
-}
 function teField(label, value, onChange, textarea) {
   const f = document.createElement('div');
   f.className = 'te-field';
@@ -9820,10 +10168,11 @@ async function saveTeamDefinition() {
       addMessage('notice', 'Saved squad: ' + def.name);
       setTeamSavedStatus(true);
       showTeamGraphProblems(null);
-      // Refresh the squad list + re-select.
-      await loadState();
-      await selectTeam(def.name);
-      renderTeamGraph(def, def.name);
+      delete state.teamDefinitionCache[def.name];
+      state.teamDefinitionCache[def.name] = structuredClone(def);
+      await refreshTeamsSnapshot();
+      renderTeamSquadBar();
+      await selectTeam(def.name, { force: true });
     } else {
       let problems = null;
       let message = '';
@@ -9931,73 +10280,21 @@ function graphNodeEl(node, def, isPrimary, opts) {
   card.addEventListener('click', () => {
     if (dragMoved) { dragMoved = false; return; }
     state.teamSelectedNode = node;
+    state.teamSelectedEdgeIdx = null;
+    state.teamInspectorPanel = 'view';
     document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
     card.classList.add('selected');
     renderTeamInspector(node, state.teamDefinition);
+  });
+  card.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openTeamNodeEditor(node);
   });
   if (opts.board && opts.editable) {
     wireGraphNodeDrag(card, node, () => { dragMoved = true; });
   }
   return card;
-}
-// Runtime nodes (plan/UI_PLAN §5.2): Local Shell / CI / Browser — visually
-// distinct dark cards representing execution runtimes, not agents.
-function runtimeIcon(name) {
-  const n = String(name || '').toLowerCase();
-  if (n.includes('browser')) return 'browser';
-  if (n.includes('shell') || n.includes('terminal') || n.includes('bash')) return 'terminal';
-  if (n.includes('ci') || n.includes('runtime')) return 'automation';
-  return 'computer';
-}
-function runtimeNodeEl(name) {
-  const card = document.createElement('div');
-  card.className = 'graph-node runtime';
-  const bar = document.createElement('span');
-  bar.className = 'gn-bar';
-  card.appendChild(bar);
-  const head = document.createElement('div');
-  head.className = 'gn-head';
-  const icon = document.createElement('span');
-  icon.className = 'gn-icon';
-  icon.innerHTML = guiIcon(runtimeIcon(name));
-  const nameEl = document.createElement('span');
-  nameEl.className = 'gn-name';
-  nameEl.textContent = name;
-  head.append(icon, nameEl);
-  const status = document.createElement('span');
-  status.className = 'gn-status';
-  const role = document.createElement('div');
-  role.className = 'gn-role';
-  const n = String(name).toLowerCase();
-  role.textContent = n.includes('shell') ? 'Command execution' : n.includes('browser') ? 'Browser automation' : n.includes('ci') ? 'CI pipeline' : 'Runtime';
-  const model = document.createElement('div');
-  model.className = 'gn-model';
-  model.textContent = n.includes('shell') ? 'Bash' : n.includes('browser') ? 'Playwright' : n.includes('ci') ? 'GitHub Actions' : 'runtime';
-  card.append(head, status, role, model);
-  return card;
-}
-// Specific from→to edge chip (§5.2): "Planner → Coder: assign".
-const ASYNC_EDGE_LABELS = new Set(['handoff', 'trigger', 'publish', 'verify', 'document']);
-function graphEdgeFromTo(from, to, label) {
-  const edge = document.createElement('span');
-  edge.className = 'graph-edge from-to';
-  if (ASYNC_EDGE_LABELS.has(String(label || '').toLowerCase())) edge.classList.add('dashed');
-  const f = document.createElement('span');
-  f.className = 'ge-from';
-  f.textContent = from;
-  const arrow = document.createElement('span');
-  arrow.className = 'ge-arrow';
-  arrow.textContent = '→';
-  const t = document.createElement('span');
-  t.className = 'ge-to';
-  t.textContent = to;
-  const sep = document.createElement('span');
-  sep.className = 'ge-arrow';
-  sep.textContent = '·';
-  const l = document.createElement('span');
-  l.textContent = label;
-  edge.append(f, arrow, t, sep, l);
-  return edge;
 }
 function renderTeamGraph(def, name) {
   const g = el('teamGraph');
@@ -10010,87 +10307,7 @@ function renderTeamGraph(def, name) {
     g.appendChild(e);
     return;
   }
-  if (def.mode === 'graph') { renderGraphModeCanvas(g, def, name); return; }
-  const members = def.members || [];
-  normalizeTeamCollaboration(def);
-  const edges = Array.isArray(def.reviewEdges) ? def.reviewEdges : [];
-  // Build specific from→to edge chips. Fall back to generic verb labels when
-  // the team definition carries no explicit collaboration edges.
-  const primaryRef = def.primary ? memberRef(def.primary) : (members[0] ? memberRef(members[0]) : '');
-  const topEdgeLabels = edges.length
-    ? edges.slice(0, 4).map((e) => graphEdgeFromTo(e.from, e.to, e.kind || 'review'))
-    : ['decompose', 'assign', 'review'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; });
-  const bottomEdgeLabels = def.reviewer
-    ? (edges.length ? edges.filter(e => e.to === memberRef(def.reviewer)).slice(0, 3).map((e) => graphEdgeFromTo(e.from, e.to, e.kind || 'handoff')) : ['handoff', 'verify', 'document'].map((l) => { const span = document.createElement('span'); span.className = 'graph-edge'; span.textContent = l; return span; }))
-    : [];
-  const toolbar = document.createElement('div');
-  toolbar.className = 'graph-toolbar';
-  const left = document.createElement('div');
-  left.className = 'graph-tabs';
-  left.innerHTML = '<button class="active">Graph</button><button>List</button>';
-  const right = document.createElement('div');
-  right.className = 'graph-tools';
-  right.innerHTML = '<button>-</button><span>100%</span><button>+</button><button>Fit view</button>';
-  toolbar.append(left, right);
-  const canvas = document.createElement('div');
-  canvas.className = 'graph-canvas';
-  const title = document.createElement('div');
-  title.className = 'graph-title';
-  title.textContent = (def.name || name) + ' · ' + def.mode;
-  canvas.appendChild(title);
-  const top = document.createElement('div');
-  top.className = 'graph-lane top';
-  if (def.primary) top.appendChild(graphNodeEl(def.primary, def, true));
-  else if (members[0]) top.appendChild(graphNodeEl(members[0], def, true));
-  if (top.children.length) canvas.appendChild(top);
-  if (top.children.length && members.length > 1) canvas.appendChild(edgeRowFromChips(topEdgeLabels));
-  if (members.length) {
-    const row = document.createElement('div');
-    row.className = 'graph-row graph-lane';
-    const middleMembers = top.children.length && !def.primary ? members.slice(1) : members;
-    for (const m of middleMembers) row.appendChild(graphNodeEl(m, def, false));
-    if (middleMembers.length) canvas.appendChild(row);
-  }
-  if (def.reviewer) {
-    canvas.appendChild(edgeRowFromChips(bottomEdgeLabels));
-    const bottom = document.createElement('div');
-    bottom.className = 'graph-lane bottom';
-    bottom.appendChild(graphNodeEl(def.reviewer, def, true));
-    canvas.appendChild(bottom);
-  }
-  // Runtime lane (§5.2): Local Shell always present (TerminalManager); plus
-  // any member.runtime values. Visually distinct dark nodes below agents.
-  const runtimeNames = new Set(['Local Shell', 'CI Runtime', 'Browser Runtime']);
-  for (const m of members) {
-    if (m.runtime) runtimeNames.add(m.runtime);
-  }
-  const runtimeList = [...runtimeNames];
-  if (runtimeList.length) {
-    const edgeLabels = ['execute', 'trigger', 'publish'].map((l) => {
-      const span = document.createElement('span');
-      span.className = 'graph-edge' + (ASYNC_EDGE_LABELS.has(l) ? ' dashed' : '');
-      span.textContent = l;
-      return span;
-    });
-    canvas.appendChild(edgeRowFromChips(edgeLabels, true));
-    const rtLane = document.createElement('div');
-    rtLane.className = 'graph-lane runtime-lane';
-    for (const rt of runtimeList) rtLane.appendChild(runtimeNodeEl(rt));
-    canvas.appendChild(rtLane);
-  }
-  if (!members.length && !def.primary && !def.reviewer) {
-    const e = document.createElement('p');
-    e.className = 'region-empty';
-    e.textContent = 'This team has no members defined.';
-    canvas.appendChild(e);
-  }
-  g.append(toolbar, canvas);
-}
-function edgeRowFromChips(chips, dashedRow) {
-  const row = document.createElement('div');
-  row.className = 'graph-edge-row' + (dashedRow ? ' dashed' : '');
-  chips.forEach((chip) => row.appendChild(chip));
-  return row;
+  renderGraphModeCanvas(g, def, name);
 }
 // --- Graph-mode canvas (plan Phase 4): drag nodes + port-to-port edges on SVG. ---
 function computeGraphLayerIndices(def) {
@@ -10187,17 +10404,17 @@ function redrawGraphBoardEdges(board, svg, def) {
     vis.setAttribute('d', d);
     vis.classList.add('graph-edge-visible');
     if (edge.trigger && edge.trigger !== 'on_complete') vis.classList.add('dashed');
-    if (state.teamEditing) {
-      hit.addEventListener('dblclick', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!window.confirm('Remove edge ' + edge.from + ' → ' + edge.to + '?')) return;
-        def.edges.splice(idx, 1);
-        setTeamSavedStatus(false);
-        renderTeamGraph(def, def.name);
-        if (state.teamEditing) renderTeamEditor();
-      });
-    }
+    if (state.teamSelectedEdgeIdx === idx) vis.classList.add('selected');
+    hit.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTeamEdgeEditor(idx);
+    });
+    hit.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTeamEdgeEditor(idx);
+    });
     svg.append(hit, vis);
   });
   const h = board.scrollHeight;
@@ -10242,7 +10459,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
     moved = false;
   };
   card.addEventListener('mousedown', (e) => {
-    if (!state.teamEditing) return;
+    if (!teamGraphEditable(state.teamDefinition)) return;
     if (e.target.closest('.graph-port')) return;
     e.preventDefault();
     dragging = true;
@@ -10258,7 +10475,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
 function wireGraphBoardConnect(board, svg, def, name) {
   board.addEventListener('mousedown', (e) => {
     const out = e.target.closest('.graph-port-out');
-    if (!out || !state.teamEditing) return;
+    if (!out || !teamGraphEditable(def)) return;
     e.preventDefault();
     e.stopPropagation();
     const fromRef = out.closest('.graph-node')?.dataset.graphRef;
@@ -10288,7 +10505,7 @@ function wireGraphBoardConnect(board, svg, def, name) {
       def.edges.push({ from: fromRef, to: toRef });
       setTeamSavedStatus(false);
       renderTeamGraph(def, name);
-      if (state.teamEditing) renderTeamEditor();
+      openTeamEdgeEditor(def.edges.length - 1);
     };
     board.addEventListener('mousemove', move);
     board.addEventListener('mouseup', up);
@@ -10296,27 +10513,39 @@ function wireGraphBoardConnect(board, svg, def, name) {
 }
 function renderGraphModeCanvas(g, def, name) {
   const nodes = def.nodes || [];
+  const editable = teamGraphEditable(def);
   const toolbar = document.createElement('div');
   toolbar.className = 'graph-toolbar';
   const left = document.createElement('div');
   left.className = 'graph-tabs';
-  left.innerHTML = '<button class="active">Graph</button><button type="button">List</button>';
+  left.innerHTML = '<button class="active">Graph</button>';
   const right = document.createElement('div');
   right.className = 'graph-tools';
   const pill = document.createElement('span');
   pill.className = 'graph-mode-pill';
-  pill.textContent = 'graph · v2';
+  pill.textContent = 'graph · editable canvas';
   right.appendChild(pill);
-  if (state.teamEditing && nodes.length) {
-    const layoutBtn = document.createElement('button');
-    layoutBtn.type = 'button';
-    layoutBtn.textContent = 'Auto layout';
-    layoutBtn.title = 'Recompute node positions from the DAG layers';
-    layoutBtn.addEventListener('click', () => {
-      applyGraphAutoLayout(def);
-      renderTeamGraph(def, name);
-    });
-    right.appendChild(layoutBtn);
+  if (editable) {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+ Agent';
+    addBtn.addEventListener('click', () => addGraphNodeQuick(def));
+    right.appendChild(addBtn);
+    if (nodes.length) {
+      const layoutBtn = document.createElement('button');
+      layoutBtn.type = 'button';
+      layoutBtn.textContent = 'Auto layout';
+      layoutBtn.addEventListener('click', () => {
+        applyGraphAutoLayout(def);
+        renderTeamGraph(def, name);
+      });
+      right.appendChild(layoutBtn);
+    }
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => { void saveTeamDefinition(); });
+    right.appendChild(saveBtn);
   }
   toolbar.append(left, right);
   const canvas = document.createElement('div');
@@ -10328,16 +10557,16 @@ function renderGraphModeCanvas(g, def, name) {
   if (!nodes.length) {
     const e = document.createElement('p');
     e.className = 'region-empty';
-    e.textContent = 'This graph has no nodes — open the editor to add some.';
+    e.textContent = editable ? 'No agents yet — click + Agent to add the first node.' : 'This graph has no nodes.';
     canvas.appendChild(e);
     g.append(toolbar, canvas);
     return;
   }
   ensureGraphNodeLayout(def);
-  if (state.teamEditing) {
+  if (editable) {
     const hint = document.createElement('p');
     hint.className = 'graph-board-hint';
-    hint.textContent = 'Drag nodes to reposition · drag from bottom port → top port to connect · double-click edge to remove';
+    hint.textContent = 'Double-click agent to configure · drag to move · drag bottom port → top port to connect · click edge to configure trigger/channel';
     canvas.appendChild(hint);
   }
   const board = document.createElement('div');
@@ -10347,7 +10576,6 @@ function renderGraphModeCanvas(g, def, name) {
   const layer = document.createElement('div');
   layer.className = 'graph-nodes-layer';
   const { entrySet } = computeGraphLayerIndices(def);
-  const editable = Boolean(state.teamEditing);
   nodes.forEach((n, i) => {
     layer.appendChild(graphNodeEl(n, def, entrySet.has(i), { board: true, editable }));
   });
@@ -10462,10 +10690,28 @@ function renderTeamInspector(node, def) {
   const ins = el('teamInspector');
   if (!ins) return;
   ins.textContent = '';
+  if (!def) {
+    const e = document.createElement('p');
+    e.className = 'ins-empty';
+    e.textContent = 'Select a squad to inspect.';
+    ins.appendChild(e);
+    return;
+  }
+  if (def.mode === 'graph' && state.teamInspectorPanel === 'squad') {
+    renderTeamSquadPanel(def, ins);
+    return;
+  }
+  if (def.mode === 'graph' && state.teamInspectorPanel === 'edge' && state.teamSelectedEdgeIdx != null) {
+    const edge = (def.edges || [])[state.teamSelectedEdgeIdx];
+    if (edge) {
+      renderTeamEdgeEditorPanel(edge, state.teamSelectedEdgeIdx, def, ins);
+      return;
+    }
+  }
   if (!node) {
     const e = document.createElement('p');
     e.className = 'ins-empty';
-    e.textContent = 'Select a node to inspect.';
+    e.textContent = def.mode === 'graph' ? 'Select an agent or edge on the canvas.' : 'Select a node to inspect.';
     ins.appendChild(e);
     return;
   }
@@ -10510,6 +10756,7 @@ function renderTeamInspector(node, def) {
         if (outbound.length) body.appendChild(insField('Out edges', outbound.map(fmt).join('\\n')));
       }
       if (node.responsibility) body.appendChild(insField('Responsibility', node.responsibility));
+      if (node.workspaceAccess) body.appendChild(insField('Workspace', node.workspaceAccess === 'full' ? 'Full access' : 'Workspace only'));
       body.appendChild(insFieldNode('Permissions', insPerms(node, def)));
       body.appendChild(insFieldNode('Tools', insTools(node)));
       if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
@@ -10532,6 +10779,17 @@ function renderTeamInspector(node, def) {
     }
     bodies.appendChild(body);
   });
+  if (def?.mode === 'graph') {
+    const actions = document.createElement('div');
+    actions.className = 'ins-actions';
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'te-btn';
+    editBtn.textContent = 'Edit agent';
+    editBtn.addEventListener('click', () => openTeamNodeEditor(node));
+    actions.appendChild(editBtn);
+    ins.appendChild(actions);
+  }
   ins.appendChild(tabs);
   ins.appendChild(bodies);
 }
@@ -10750,11 +11008,11 @@ async function deleteChat(id) {
 async function archiveDetailChat(id) {
   await archiveChat(id);
   if (state.detailSelectedId === id) state.detailSelectedId = null;
-  if (state.projectView === 'detail') renderProjectDetail();
+  refreshProjectDetailSidebar();
 }
 async function unarchiveDetailChat(id, resumeAfter) {
   await unarchiveChat(id);
-  if (state.projectView === 'detail') renderProjectDetail();
+  refreshProjectDetailSidebar();
   if (resumeAfter) await resumeSession(id);
 }
 async function archiveChat(id) {
@@ -11892,10 +12150,20 @@ el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('m
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('teamEditToggleBtn').addEventListener('click', () => {
-  state.teamEditing = !state.teamEditing;
-  if (state.teamEditing) setTeamSavedStatus(false);
-  renderTeamEditor();
-  if (state.teamDefinition?.mode === 'graph') renderTeamGraph(state.teamDefinition, state.teamDefinition.name);
+  const def = state.teamDefinition;
+  if (!def) return;
+  state.teamInspectorPanel = state.teamInspectorPanel === 'squad' ? 'view' : 'squad';
+  renderTeamInspector(state.teamSelectedNode, def);
+});
+el('teamAgentModalClose').addEventListener('click', closeTeamNodeEditor);
+el('teamAgentModalDone').addEventListener('click', () => {
+  const node = state.teamSelectedNode;
+  const def = state.teamDefinition;
+  closeTeamNodeEditor();
+  if (node && def) renderTeamInspector(node, def);
+});
+el('teamAgentModal').addEventListener('click', (event) => {
+  if (event.target === el('teamAgentModal')) closeTeamNodeEditor();
 });
 el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
@@ -12003,7 +12271,10 @@ document.addEventListener('contextmenu', (event) => {
   const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
   if (!onTarget) hideContextMenu();
 });
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') hideContextMenu(); });
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') hideContextMenu();
+  if (event.key === 'Escape' && !el('teamAgentModal').classList.contains('hidden')) closeTeamNodeEditor();
+});
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('settingsOutputStyle').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));

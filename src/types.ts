@@ -2491,6 +2491,12 @@ export interface TeamMember {
   runtime?: string;
   /** Tool families this member is expected to use, shown in GUI planning surfaces. */
   toolScope?: string[];
+  /**
+   * Workspace access for this member during a team run.
+   * `workspace` (default): project workspace only.
+   * `full`: unrestricted filesystem access (same as the main agent).
+   */
+  workspaceAccess?: 'workspace' | 'full';
 }
 
 export interface TeamReviewEdge {

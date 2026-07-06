@@ -79,6 +79,13 @@ export async function readProgressFile(workDir: string, homeDir: string): Promis
   }
 }
 
+export async function writeProgressFile(workDir: string, homeDir: string, content: string): Promise<string> {
+  const filePath = managerProgressPath(workDir, homeDir);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content, 'utf8');
+  return filePath;
+}
+
 // ── Manager configuration (manager.json) ─────────────────────────
 
 export type ManagerReadScope = 'workspace-only' | 'workspace+docs' | 'explicit-allowlist';
