@@ -5786,6 +5786,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-board-svg path.graph-edge-visible.selected { stroke: var(--accent); stroke-width: 2.5px; }
 .graph-board-svg marker#graph-edge-arrow path { fill: #94A3B8; }
 .graph-board-svg marker#graph-edge-arrow-selected path { fill: var(--accent); }
+.graph-board-svg path.graph-edge-guide { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 1px; stroke-dasharray: 4 3; opacity: 0.45; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle:active { cursor: grabbing; fill: var(--accent-soft); }
 .graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; pointer-events: none; }
@@ -6341,6 +6342,7 @@ const state = {
   teamDefinitionCache: {},
   teamSaveTarget: 'project',
   teamGraphFitView: false,
+  teamGraphBoardDragging: false,
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
@@ -11060,38 +11062,67 @@ function wireGraphBoardViewport(viewport, stage, board) {
     applyGraphViewportTransform(viewport, stage);
   }, { passive: false });
 }
-function computeGraphBoardBounds(board, def) {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  board.querySelectorAll('.graph-node.board-node').forEach((card) => {
-    minX = Math.min(minX, card.offsetLeft);
-    minY = Math.min(minY, card.offsetTop);
-    maxX = Math.max(maxX, card.offsetLeft + card.offsetWidth);
-    maxY = Math.max(maxY, card.offsetTop + card.offsetHeight);
-  });
-  (def?.nodes || []).forEach((n) => {
-    if (n.ui?.x == null || n.ui?.y == null) return;
-    minX = Math.min(minX, n.ui.x);
-    minY = Math.min(minY, n.ui.y);
-    maxX = Math.max(maxX, n.ui.x + 220);
-    maxY = Math.max(maxY, n.ui.y + 160);
-  });
-  if (!Number.isFinite(minX)) {
-    minX = 0;
-    minY = 0;
-    maxX = 400;
-    maxY = 300;
+function computeGraphBoardBounds(def) {
+  const content = computeGraphNodeContentBounds(def);
+  if (!content) {
+    return { minX: -GRAPH_BOARD_PAD, minY: -GRAPH_BOARD_PAD, w: 800 + GRAPH_BOARD_PAD * 2, h: 520 + GRAPH_BOARD_PAD * 2 };
   }
-  minX -= GRAPH_BOARD_PAD;
-  minY -= GRAPH_BOARD_PAD;
-  maxX += GRAPH_BOARD_PAD;
-  maxY += GRAPH_BOARD_PAD;
-  return { minX, minY, w: maxX - minX, h: maxY - minY };
+  const minX = content.minX - GRAPH_BOARD_PAD;
+  const minY = content.minY - GRAPH_BOARD_PAD;
+  return {
+    minX,
+    minY,
+    w: content.w + GRAPH_BOARD_PAD * 2,
+    h: content.h + GRAPH_BOARD_PAD * 2,
+  };
 }
-function syncGraphBoardSize(board, def) {
-  const { minX, minY, w, h } = computeGraphBoardBounds(board, def);
+function positionGraphBoardNodes(board, def) {
+  const origin = graphBoardOrigin(board);
+  board.querySelectorAll('.graph-node.board-node').forEach((card) => {
+    const ref = card.dataset.graphRef;
+    const node = (def?.nodes || []).find((n) => graphRefOf(n) === ref);
+    if (!node) return;
+    const wx = node.ui?.x ?? 0;
+    const wy = node.ui?.y ?? 0;
+    card.style.left = (wx - origin.x) + 'px';
+    card.style.top = (wy - origin.y) + 'px';
+  });
+}
+function syncGraphBoardSize(board, def, opts) {
+  opts = opts || {};
+  const content = computeGraphNodeContentBounds(def);
+  const pad = GRAPH_BOARD_PAD;
+  let minX;
+  let minY;
+  let w;
+  let h;
+  const prev = graphBoardOrigin(board);
+  const hasOrigin = board.dataset.graphOriginX != null && board.dataset.graphOriginY != null;
+  if (content) {
+    const needMinX = content.minX - pad;
+    const needMinY = content.minY - pad;
+    const needMaxX = content.maxX + pad;
+    const needMaxY = content.maxY + pad;
+    if (opts.expandOnly && hasOrigin) {
+      // Keep origin stable when nodes move — only grow the board if content exceeds bounds.
+      minX = Math.min(prev.x, needMinX);
+      minY = Math.min(prev.y, needMinY);
+      const prevMaxX = prev.x + (board.offsetWidth || 0);
+      const prevMaxY = prev.y + (board.offsetHeight || 0);
+      w = Math.max(prevMaxX, needMaxX) - minX;
+      h = Math.max(prevMaxY, needMaxY) - minY;
+    } else {
+      minX = needMinX;
+      minY = needMinY;
+      w = needMaxX - needMinX;
+      h = needMaxY - needMinY;
+    }
+  } else {
+    minX = -pad;
+    minY = -pad;
+    w = 800 + pad * 2;
+    h = 520 + pad * 2;
+  }
   board.dataset.graphOriginX = String(minX);
   board.dataset.graphOriginY = String(minY);
   board.style.width = w + 'px';
@@ -11103,15 +11134,7 @@ function syncGraphBoardSize(board, def) {
     layer.style.minWidth = w + 'px';
     layer.style.minHeight = h + 'px';
   }
-  board.querySelectorAll('.graph-node.board-node').forEach((card) => {
-    const ref = card.dataset.graphRef;
-    const node = (def?.nodes || []).find((n) => graphRefOf(n) === ref);
-    if (!node) return;
-    const wx = node.ui?.x ?? 0;
-    const wy = node.ui?.y ?? 0;
-    card.style.left = (wx - minX) + 'px';
-    card.style.top = (wy - minY) + 'px';
-  });
+  positionGraphBoardNodes(board, def);
 }
 function graphBoardContentSize(board) {
   const w = board.offsetWidth || board.scrollWidth || 800;
@@ -11133,14 +11156,30 @@ function graphBoardPortPoint(card, kind) {
 function graphEdgeBezierPath(x1, y1, x2, y2, ui) {
   return resolveEdgeBezierPoints({ x: x1, y: y1 }, { x: x2, y: y2 }, ui).path;
 }
+function graphEdgeEndpoints(board, edge) {
+  const fromCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
+  const toCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
+  if (!fromCard || !toCard) return null;
+  return { p1: graphBoardPortPoint(fromCard, 'out'), p2: graphBoardPortPoint(toCard, 'in') };
+}
+function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
+  const d = bez.path;
+  const hit = svg.querySelector('path.graph-edge-hit[data-edge-idx="' + idx + '"]');
+  const vis = svg.querySelector('path.graph-edge-visible[data-edge-idx="' + idx + '"]');
+  if (hit) hit.setAttribute('d', d);
+  if (vis) vis.setAttribute('d', d);
+  if (!selected) return;
+  const g1 = svg.querySelector('path.graph-edge-guide[data-edge-idx="' + idx + '"][data-guide="c1"]');
+  const g2 = svg.querySelector('path.graph-edge-guide[data-edge-idx="' + idx + '"][data-guide="c2"]');
+  const h1 = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c1"]');
+  const h2 = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c2"]');
+  if (g1) g1.setAttribute('d', 'M ' + p1.x + ' ' + p1.y + ' L ' + bez.c1.x + ' ' + bez.c1.y);
+  if (g2) g2.setAttribute('d', 'M ' + p2.x + ' ' + p2.y + ' L ' + bez.c2.x + ' ' + bez.c2.y);
+  if (h1) { h1.setAttribute('cx', String(bez.c1.x)); h1.setAttribute('cy', String(bez.c1.y)); }
+  if (h2) { h2.setAttribute('cx', String(bez.c2.x)); h2.setAttribute('cy', String(bez.c2.y)); }
+}
 function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
-  const resolveEndpoints = () => {
-    const fromCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
-    const toCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
-    if (!fromCard || !toCard) return null;
-    return { p1: graphBoardPortPoint(fromCard, 'out'), p2: graphBoardPortPoint(toCard, 'in'), fromCard, toCard };
-  };
-  const endpoints = resolveEndpoints();
+  const endpoints = graphEdgeEndpoints(board, edge);
   if (!endpoints) return;
   const bez = resolveEdgeBezierPoints(endpoints.p1, endpoints.p2, edge.ui);
   const start = which === 'c1' ? bez.c1 : bez.c2;
@@ -11154,7 +11193,7 @@ function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
   let dragging = false;
   const onMove = (e) => {
     if (!dragging) return;
-    const ep = resolveEndpoints();
+    const ep = graphEdgeEndpoints(board, edge);
     if (!ep) return;
     const viewport = graphBoardViewport(board);
     const pt = graphBoardPointFromClient(viewport, board, e.clientX, e.clientY);
@@ -11163,11 +11202,13 @@ function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
     const nextC2 = which === 'c2' ? pt : current.c2;
     writeEdgeBezierUi(edge, ep.p1, ep.p2, nextC1, nextC2);
     setTeamSavedStatus(false);
-    redrawGraphBoardEdges(board, svg, def);
+    const next = resolveEdgeBezierPoints(ep.p1, ep.p2, edge.ui);
+    applyGraphEdgeGeometry(svg, idx, ep.p1, ep.p2, next, true);
   };
   const onUp = () => {
     if (!dragging) return;
     dragging = false;
+    state.teamGraphBoardDragging = false;
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
   };
@@ -11177,6 +11218,7 @@ function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
     e.stopPropagation();
     state.teamSelectedEdgeIdx = idx;
     state.teamSelectedNode = null;
+    state.teamGraphBoardDragging = true;
     dragging = true;
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -11212,8 +11254,10 @@ function syncGraphBoardSvgSize(board, svg) {
   svg.style.width = w + 'px';
   svg.style.height = h + 'px';
 }
-function redrawGraphBoardEdges(board, svg, def) {
-  syncGraphBoardSize(board, def);
+function redrawGraphBoardEdges(board, svg, def, opts) {
+  opts = opts || {};
+  if (!opts.skipBoardSync) syncGraphBoardSize(board, def);
+  else positionGraphBoardNodes(board, def);
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   ensureGraphEdgeMarkers(svg);
   const edges = def.edges || [];
@@ -11236,6 +11280,7 @@ function redrawGraphBoardEdges(board, svg, def) {
     const vis = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     vis.setAttribute('d', d);
     vis.classList.add('graph-edge-visible');
+    vis.dataset.edgeIdx = String(idx);
     const undirected = isUndirectedTeamGraphEdge(edge);
     if (undirected) vis.classList.add('undirected');
     else vis.setAttribute('marker-end', 'url(#' + (state.teamSelectedEdgeIdx === idx ? 'graph-edge-arrow-selected' : 'graph-edge-arrow') + ')');
@@ -11259,6 +11304,17 @@ function redrawGraphBoardEdges(board, svg, def) {
     });
     svg.append(hit, vis);
     if (teamGraphEditable(def) && state.teamSelectedEdgeIdx === idx) {
+      const g1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      g1.classList.add('graph-edge-guide');
+      g1.dataset.edgeIdx = String(idx);
+      g1.dataset.guide = 'c1';
+      g1.setAttribute('d', 'M ' + p1.x + ' ' + p1.y + ' L ' + bez.c1.x + ' ' + bez.c1.y);
+      const g2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      g2.classList.add('graph-edge-guide');
+      g2.dataset.edgeIdx = String(idx);
+      g2.dataset.guide = 'c2';
+      g2.setAttribute('d', 'M ' + p2.x + ' ' + p2.y + ' L ' + bez.c2.x + ' ' + bez.c2.y);
+      svg.append(g1, g2);
       wireEdgeControlHandle(svg, board, def, edge, idx, 'c1');
       wireEdgeControlHandle(svg, board, def, edge, idx, 'c2');
     }
@@ -11305,22 +11361,24 @@ function wireGraphNodeDrag(card, node, onMoved) {
     node.ui.x = origX + dx;
     node.ui.y = origY + dy;
     const b = board();
-    const origin = graphBoardOrigin(b);
-    card.style.left = (node.ui.x - origin.x) + 'px';
-    card.style.top = (node.ui.y - origin.y) + 'px';
+    positionGraphBoardNodes(b, state.teamDefinition);
     const s = svg();
     if (b && s && state.teamDefinition) {
-      syncGraphBoardSize(b, state.teamDefinition);
-      redrawGraphBoardEdges(b, s, state.teamDefinition);
+      redrawGraphBoardEdges(b, s, state.teamDefinition, { skipBoardSync: true });
     }
   };
   const onUp = () => {
     if (!dragging) return;
     dragging = false;
+    state.teamGraphBoardDragging = false;
     card.classList.remove('dragging');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
-    if (moved) {
+    const b = board();
+    const s = svg();
+    if (moved && b && s && state.teamDefinition) {
+      syncGraphBoardSize(b, state.teamDefinition, { expandOnly: true });
+      redrawGraphBoardEdges(b, s, state.teamDefinition, { skipBoardSync: true });
       setTeamSavedStatus(false);
       if (onMoved) onMoved();
     }
@@ -11332,6 +11390,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
     e.preventDefault();
     e.stopPropagation();
     dragging = true;
+    state.teamGraphBoardDragging = true;
     startX = e.clientX;
     startY = e.clientY;
     origX = node.ui?.x ?? 0;

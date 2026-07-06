@@ -17,10 +17,17 @@ export interface GraphEdgeBezierUi {
   c2?: { dx: number; dy: number };
 }
 
-/** Default vertical S-curve offsets (matches legacy auto layout). */
+/** Default S-curve offsets — horizontal or vertical depending on port layout. */
 export function defaultEdgeBezierOffsets(p1: GraphPoint, p2: GraphPoint): Required<GraphEdgeBezierUi> {
-  const dy = Math.max(48, Math.abs(p2.y - p1.y) * 0.45);
-  return { c1: { dx: 0, dy }, c2: { dx: 0, dy: -dy } };
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const bulge = Math.max(56, Math.max(Math.abs(dx), Math.abs(dy)) * 0.4);
+  if (Math.abs(dx) > Math.abs(dy) * 0.65) {
+    const sx = dx >= 0 ? 1 : -1;
+    return { c1: { dx: sx * bulge, dy: dy * 0.12 }, c2: { dx: -sx * bulge, dy: -dy * 0.12 } };
+  }
+  const sy = dy >= 0 ? 1 : -1;
+  return { c1: { dx: dx * 0.12, dy: sy * bulge }, c2: { dx: -dx * 0.12, dy: -sy * bulge } };
 }
 
 export function resolveEdgeBezierPoints(
