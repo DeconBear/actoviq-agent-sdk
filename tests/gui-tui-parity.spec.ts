@@ -311,10 +311,14 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('renderTeamEdgeEditorPanel');
     expect(js).toContain('openTeamNodeEditor');
     expect(js).toContain('teamAgentModal');
+    expect(js).toContain('teamEdgeModal');
+    expect(js).toContain('teamSquadModal');
     expect(js).toContain('closeTeamNodeEditor');
     expect(js).toContain('refreshTeamsSnapshot');
     expect(js).toContain('teamGraphEditable');
-    expect(gui).toContain('migrateTeamDefinitionToV2');
+    expect(gui).toContain('migrateTeamDefinitionToGraph');
+    expect(js).toContain('graphPortNodeEl');
+    expect(js).toContain('renderTeamReturnEditorPanel');
     expect(js).toContain('RISKY_NODE_TOOLS');
     expect(js).not.toContain('/api/team/upgrade');
     expect(gui).toContain('/api/team/upgrade');
@@ -339,6 +343,7 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('renderTeamRunTree');
     expect(js).toContain("event.type === 'team.edge.triggered'");
     expect(gui).toContain('forwardTeamEvent');
+    expect(gui).toContain("case 'team.returned':");
   });
 
   it('emits syntactically valid GUI client script (template-literal regex escapes)', () => {

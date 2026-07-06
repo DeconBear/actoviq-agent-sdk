@@ -88,6 +88,22 @@ describe('teamRunView', () => {
     expect(lines.some((l) => l.includes('● reviewer') && l.includes('Grep'))).toBe(true);
   });
 
+  it('records team.returned on the run view', () => {
+    let state = createTeamRunViewState('graph');
+    applyTeamRunEvent(state, {
+      type: 'team.started',
+      mode: 'graph',
+      members: [{ id: 'a', model: 'm1' }],
+    });
+    applyTeamRunEvent(state, {
+      type: 'team.returned',
+      nodeId: 'return-void',
+      returnMode: 'void',
+    });
+    const lines = formatTeamRunTreeLines(state);
+    expect(lines.some((l) => l.includes('↩ return') && l.includes('return-void') && l.includes('void'))).toBe(true);
+  });
+
   it('returns no lines when there are no members', () => {
     expect(formatTeamRunTreeLines(createTeamRunViewState())).toEqual([]);
   });

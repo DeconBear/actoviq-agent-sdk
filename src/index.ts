@@ -301,12 +301,19 @@ export {
   validateTeamGraph,
   assertValidTeamGraph,
   migrateTeamDefinitionToV2,
+  migrateTeamDefinitionToGraph,
+  migrateTeamDefinitionToV3,
+  isTeamGraphV3,
+  validateTeamGraphV3,
+  graphNodeKind,
+  isPortNode,
   orchestrateGraph,
   graphNodeRef,
   edgeConditionPasses,
   createNotifyTeammateTool,
   MAX_GRAPH_NODES,
 } from './team/teamGraph.js';
+export { orchestrateGraphV3 } from './team/teamGraphV3.js';
 export type {
   OrchestrateGraphOptions,
   OrchestrateGraphResult,

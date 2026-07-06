@@ -32,16 +32,36 @@ import type {
   TeamEvent,
   TeamGraphEdge,
   TeamGraphNode,
+  TeamGraphReturnMode,
   TeamGraphTrigger,
   TeamMember,
 } from '../types.js';
 import { buildMemberIdentities, type MemberIdentity } from './teamRuntime.js';
+import {
+  isTeamGraphV3,
+  migrateTeamDefinitionToGraph,
+  migrateTeamDefinitionToV3,
+  orchestrateGraphV3,
+  validateTeamGraphV3,
+} from './teamGraphV3.js';
+
+export {
+  isTeamGraphV3,
+  migrateTeamDefinitionToGraph,
+  migrateTeamDefinitionToV3,
+  validateTeamGraphV3,
+  graphNodeKind,
+  isPortNode,
+} from './teamGraphV3.js';
 
 /** v1 cap: nodes per graph (kept in the same order as the AgentPool bound). */
 export const MAX_GRAPH_NODES = 16;
 
 /** The ref a node is addressed by in edges/entryNodeIds: id → name → role → model. */
-export function graphNodeRef(node: TeamMember): string {
+export function graphNodeRef(node: TeamMember | TeamGraphNode): string {
+  const gn = node as TeamGraphNode;
+  if (gn.kind === 'task') return (gn.id ?? 'task').trim() || 'task';
+  if (gn.kind === 'return') return (gn.id ?? 'return').trim() || 'return';
   return (node.id ?? node.name ?? node.role ?? node.model ?? '').trim();
 }
 
@@ -56,12 +76,13 @@ interface NormalizedGraph {
 
 function indexGraph(definition: TeamDefinition): NormalizedGraph {
   const nodes = definition.nodes ?? [];
-  const identities = buildMemberIdentities(nodes);
+  const agentNodes = nodes.filter((n) => (n.kind ?? 'agent') === 'agent');
+  const identities = buildMemberIdentities(agentNodes);
   const refIndex = new Map<string, number>();
+  let agentIdx = 0;
   nodes.forEach((node, i) => {
-    // Every addressable alias maps to the node; first writer wins (duplicate
-    // refs are rejected by validation below).
-    for (const ref of [node.id, node.name, node.role, node.model, identities[i]!.id]) {
+    const identityId = (node.kind ?? 'agent') === 'agent' ? identities[agentIdx++]?.id : undefined;
+    for (const ref of [node.id, node.name, node.role, node.model, identityId, graphNodeRef(node)]) {
       const key = (ref ?? '').trim();
       if (key && !refIndex.has(key)) refIndex.set(key, i);
     }
@@ -84,8 +105,16 @@ function indexGraph(definition: TeamDefinition): NormalizedGraph {
 /**
  * Validate a graph-mode team definition. Returns a list of human-readable
  * problems; an empty list means the definition is executable by the engine.
+ * v3 graphs (Task + Return ports) use stricter rules — see teamGraphV3.ts.
  */
 export function validateTeamGraph(definition: TeamDefinition): string[] {
+  if (isTeamGraphV3(definition)) {
+    return validateTeamGraphV3(definition);
+  }
+  return validateTeamGraphV2(definition);
+}
+
+function validateTeamGraphV2(definition: TeamDefinition): string[] {
   const errors: string[] = [];
   const nodes = definition.nodes ?? [];
 
@@ -296,6 +325,12 @@ export interface OrchestrateGraphResult {
   skipped: string[];
   /** Per-node reports in completion order. */
   reports: Array<{ id: string; report: string; ok: boolean }>;
+  /** v3: null when Return mode is void (natural convergence). */
+  returnValue?: string | null;
+  returnMode?: TeamGraphReturnMode;
+  returnNodeId?: string;
+  rounds?: number;
+  incompleteReason?: string;
 }
 
 function renderPayload(edge: TeamGraphEdge, fromId: string, output: string, runPrompt: string): string {
@@ -351,6 +386,13 @@ export function edgeConditionPasses(condition: string | undefined, output: strin
  * is the concatenation of terminal (no auto out-edge) node reports.
  */
 export async function orchestrateGraph(opts: OrchestrateGraphOptions): Promise<OrchestrateGraphResult> {
+  if (isTeamGraphV3(opts.definition)) {
+    return orchestrateGraphV3(opts);
+  }
+  return orchestrateGraphV2(opts);
+}
+
+async function orchestrateGraphV2(opts: OrchestrateGraphOptions): Promise<OrchestrateGraphResult> {
   const graph = indexGraph(opts.definition);
   const { nodes, identities, refIndex } = graph;
 

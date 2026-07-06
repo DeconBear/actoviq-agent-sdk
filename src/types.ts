@@ -2508,7 +2508,7 @@ export interface TeamReviewEdge {
   note?: string;
 }
 
-// ── Graph orchestration (TeamDefinition version 2) ────────────────────
+// ── Graph orchestration (TeamDefinition version 2+) ────────────────────
 
 /** How an edge wakes its downstream node. v1 engine auto-schedules only `on_complete`. */
 export type TeamGraphTrigger = 'on_complete' | 'on_tool_call' | 'on_handoff' | 'on_review_request' | 'manual';
@@ -2516,14 +2516,31 @@ export type TeamGraphTrigger = 'on_complete' | 'on_tool_call' | 'on_handoff' | '
 /** What kind of communication the edge carries (labeling/UI semantics). */
 export type TeamGraphChannel = 'message' | 'handoff' | 'review' | 'broadcast';
 
+/** v3 port + agent nodes on the collaboration canvas. */
+export type TeamGraphNodeKind = 'task' | 'agent' | 'return';
+
+/** How a Return port delivers its result to the team caller. */
+export type TeamGraphReturnMode = 'void' | 'payload';
+
 /**
  * A graph node is a team member plus graph-only fields. Nodes are read-only by
  * default (same expert toolset as panel members); `allowedTools` opts specific
  * core tools in per node — granting Write/Bash requires an explicit editor
  * confirmation (product rule, enforced at the UI layer).
+ *
+ * v3: `kind: 'task'` (exactly one per graph) dispatches `run.prompt`; `kind:
+ * 'return'` (≥1) terminates the run. Absent `kind` → `agent` (v2 compat).
  */
-export interface TeamGraphNode extends TeamMember {
-  /** Marks a run entry point. Multiple entries start in parallel. */
+export interface TeamGraphNode extends Omit<TeamMember, 'model'> {
+  /** Agent nodes require a model; task/return ports omit it. */
+  model?: string;
+  /** v3 node kind. Default `agent`. */
+  kind?: TeamGraphNodeKind;
+  /** Return ports only — `void` (return 0) or structured `payload`. */
+  returnMode?: TeamGraphReturnMode;
+  /** Return ports in `payload` mode — template for the structured return value. */
+  payloadTemplate?: string;
+  /** v2 entry flag — migrated to Task→agent edges in v3. */
   entry?: boolean;
   /** Core-tool whitelist for this node. Absent → read-only expert tools. */
   allowedTools?: string[];
@@ -2560,6 +2577,8 @@ export interface TeamGraphEdge {
    */
   condition?: string;
   note?: string;
+  /** v3: back-edge for convergence loops — requires `maxRounds` on the definition. */
+  loop?: boolean;
 }
 
 export interface TeamDefinition {
@@ -2629,6 +2648,7 @@ export type TeamEvent =
   | { type: 'team.round.completed'; round: number; reports: number }
   | { type: 'team.synthesis'; round: number; decision: 'finalize' | 'continue' }
   | { type: 'team.edge.triggered'; from: string; to: string; trigger: TeamGraphTrigger; channel: TeamGraphChannel }
+  | { type: 'team.returned'; nodeId: string; returnMode: TeamGraphReturnMode; returnValue?: string }
   | { type: 'team.completed'; mode: ModelTeamMode; rounds: number; incompleteReason?: string };
 
 /** Options for `ModelTeam.ask`. */
@@ -2702,6 +2722,12 @@ export interface GraphTeamResult extends TeamResult {
   reports: ExpertPanelReport[];
   /** Node ids that never ran (unreachable, or only manual/communication in-edges). */
   skippedNodes: string[];
+  /** v3: null = void / natural convergence (return 0). */
+  returnValue?: string | null;
+  returnMode?: TeamGraphReturnMode;
+  returnNodeId?: string;
+  /** Convergence loop rounds (v3 graphs with loop edges). */
+  graphRounds?: number;
 }
 
 export type ModelTeamResult =
