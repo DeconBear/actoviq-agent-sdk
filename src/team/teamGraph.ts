@@ -361,6 +361,8 @@ export interface OrchestrateGraphResult {
   returnNodeId?: string;
   rounds?: number;
   incompleteReason?: string;
+  /** v3: output from the last edge that completed the run (e.g. primary FINALIZE). */
+  lastFromOutput?: string;
 }
 
 function renderPayload(edge: TeamGraphEdge, fromId: string, output: string, runPrompt: string): string {

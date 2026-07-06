@@ -111,6 +111,7 @@ import {
   resolveRoutedRun,
   recordScheduledAutomationRun,
   saveTeamDefinition,
+  BUILT_IN_TEAM_DEFINITIONS,
   setScheduledAutomationEnabled,
   TaskScheduler,
   upsertScheduledAutomationTask,
@@ -9763,35 +9764,12 @@ function splitCsv(value) {
 function memberRef(member) {
   return String(member?.id || member?.name || member?.role || member?.model || '').trim();
 }
-function reviewTargetsForMember(def, member) {
-  const ref = memberRef(member);
-  const direct = Array.isArray(member?.reviews) ? member.reviews : [];
-  const fromEdges = Array.isArray(def?.reviewEdges)
-    ? def.reviewEdges.filter((edge) => edge && edge.from === ref).map((edge) => edge.to).filter(Boolean)
-    : [];
-  return [...new Set([...direct, ...fromEdges])];
-}
-function normalizeTeamCollaboration(def) {
-  if (!def) return;
-  const edges = [];
-  const existingEdges = Array.isArray(def.reviewEdges) ? def.reviewEdges : [];
-  for (const member of def.members || []) {
-    const from = memberRef(member);
-    if (!from) continue;
-    const edgeReviews = existingEdges
-      .filter((edge) => edge && edge.from === from && edge.to)
-      .map((edge) => edge.to);
-    const reviews = [...new Set([...(Array.isArray(member.reviews) ? member.reviews : []), ...edgeReviews].filter(Boolean))];
-    member.reviews = reviews;
-    for (const to of reviews) edges.push({ from, to, kind: 'review' });
-  }
-  if (edges.length) def.reviewEdges = edges;
-  else delete def.reviewEdges;
-}
 function teamListForRegion() {
   const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
   const names = new Set(saved.map((t) => t.name));
-  const builtins = ['panel-analysis', 'analysis', 'reviewer'].filter((n) => !names.has(n)).map((n) => ({ name: n, source: 'built-in' }));
+  const builtins = Object.keys(BUILT_IN_TEAM_DEFINITIONS)
+    .filter((n) => !names.has(n))
+    .map((n) => ({ name: n, source: 'built-in' }));
   return [...saved, ...builtins];
 }
 async function refreshTeamsSnapshot() {

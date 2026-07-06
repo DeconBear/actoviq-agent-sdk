@@ -276,6 +276,9 @@ export {
   ModelTeam,
   createModelTeam,
   createTeamTool,
+  orchestratePanel,
+  formatExpertPanelReports,
+  resolveGraphDisplayAnswer,
 } from './team/modelTeam.js';
 export {
   AgentPool,
