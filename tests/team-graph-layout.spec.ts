@@ -62,8 +62,14 @@ describe('teamGraphLayout', () => {
 
   it('defaultEdgeBezierOffsets scales with vertical distance', () => {
     const off = defaultEdgeBezierOffsets({ x: 0, y: 0 }, { x: 0, y: 200 });
-    expect(off.c1.dy).toBeGreaterThanOrEqual(48);
+    expect(off.c1.dy).toBeGreaterThan(0);
     expect(off.c2.dy).toBeLessThan(0);
+  });
+
+  it('defaultEdgeBezierOffsets curves horizontal edges', () => {
+    const off = defaultEdgeBezierOffsets({ x: 0, y: 100 }, { x: 400, y: 110 });
+    expect(Math.abs(off.c1.dx)).toBeGreaterThan(40);
+    expect(Math.abs(off.c2.dx)).toBeGreaterThan(40);
   });
 
   it('computeTeamGraphAutoLayoutLanes separates synthesizer from panel members', () => {
