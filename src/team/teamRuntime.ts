@@ -80,14 +80,16 @@ export interface MemberIdentity {
  * Preference: explicit id → name → role → model; duplicates get a `#n` suffix so
  * two members sharing a model (the common default) never collide in labels.
  */
-export function buildMemberIdentities(members: TeamMember[]): MemberIdentity[] {
+export function buildMemberIdentities(
+  members: Array<{ id?: string; name?: string; role?: string; model?: string }>,
+): MemberIdentity[] {
   const used = new Map<string, number>();
   return members.map((member) => {
     const base = (member.id ?? member.name ?? member.role ?? member.model ?? 'member').trim() || 'member';
     const seen = used.get(base) ?? 0;
     used.set(base, seen + 1);
     const id = seen === 0 ? base : `${base}#${seen + 1}`;
-    return { id, model: member.model, role: member.role };
+    return { id, model: member.model ?? '', role: member.role };
   });
 }
 

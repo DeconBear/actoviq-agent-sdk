@@ -35,7 +35,7 @@ import {
   resolveApiKey,
   runMemberAgent,
 } from './teamRuntime.js';
-import { assertValidTeamGraph, buildGraphNodeTools, createNotifyTeammateTool, orchestrateGraph } from './teamGraph.js';
+import { assertValidTeamGraph, buildGraphNodeTools, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Per-member ModelApi instantiation
@@ -477,9 +477,10 @@ async function runGraphMode(
   onEvent?: (event: TeamEvent) => void,
 ): Promise<GraphTeamResult> {
   const startedAt = Date.now();
+  const execDef = migrateTeamDefinitionToV3(definition);
   const cwd = workDir ?? process.cwd();
-  const nodes = definition.nodes ?? [];
-  const identities = buildMemberIdentities(nodes);
+  const agentNodes = (execDef.nodes ?? []).filter((n) => (n.kind ?? 'agent') === 'agent');
+  const identities = buildMemberIdentities(agentNodes);
   const memberMaxIterations = definition.maxIterations ?? 16;
 
   const perModelTokens = new Map<string, { input: number; output: number }>();
@@ -504,9 +505,9 @@ async function runGraphMode(
     members: identities.map((identity) => ({ id: identity.id, model: identity.model, role: identity.role })),
   });
 
-  const { answer, skipped } = await orchestrateGraph({
+  const { answer, skipped, returnValue, returnMode, returnNodeId, rounds, incompleteReason: graphIncomplete } = await orchestrateGraph({
     prompt,
-    definition,
+    definition: execDef,
     onEvent,
     runNode: async (node, identity, task, ctx) => {
       const tools = await buildGraphNodeTools(node, cwd);
@@ -515,9 +516,9 @@ async function runGraphMode(
       }
       const run = await runMemberAgent({
         identity,
-        member: node,
+        member: { ...node, model: node.model ?? identity.model },
         task,
-        systemPrompt: buildMemberSystemPrompt(graphFraming, node),
+        systemPrompt: buildMemberSystemPrompt(graphFraming, { ...node, model: node.model ?? identity.model }),
         cwd,
         tools,
         maxIterations: memberMaxIterations,
@@ -526,10 +527,10 @@ async function runGraphMode(
         round: 1,
         onEvent,
       });
-      const ex = perModelTokens.get(node.model) ?? { input: 0, output: 0 };
+      const ex = perModelTokens.get(identity.model) ?? { input: 0, output: 0 };
       ex.input += run.inputTokens;
       ex.output += run.outputTokens;
-      perModelTokens.set(node.model, ex);
+      perModelTokens.set(identity.model, ex);
       totalInput += run.inputTokens;
       totalOutput += run.outputTokens;
       memberStatuses.push(run.status);
@@ -553,19 +554,25 @@ async function runGraphMode(
   }
 
   const failed = memberStatuses.filter((status) => !status.ok && !status.skipped);
-  const incompleteReason = failed.length > 0
-    ? `${failed.length} of ${memberStatuses.length} node run(s) failed`
-    : skipped.length > 0
-      ? `${skipped.length} node(s) never triggered: ${skipped.join(', ')}`
-      : undefined;
-  onEvent?.({ type: 'team.completed', mode: 'graph', rounds: 1, incompleteReason });
+  const incompleteReason = graphIncomplete
+    ?? (failed.length > 0
+      ? `${failed.length} of ${memberStatuses.length} node run(s) failed`
+      : skipped.length > 0
+        ? `${skipped.length} node(s) never triggered: ${skipped.join(', ')}`
+        : undefined);
+  onEvent?.({ type: 'team.completed', mode: 'graph', rounds: rounds ?? 1, incompleteReason });
 
   const cost = computeCost([...perModelTokens.keys()], totalInput, totalOutput, perModelTokens);
+  const resolvedAnswer = returnMode === 'payload' && returnValue != null ? returnValue : answer;
   return {
-    answer,
+    answer: resolvedAnswer,
     mode: 'graph',
     reports: [...reportsById.values()],
     skippedNodes: skipped,
+    returnValue: returnValue ?? null,
+    returnMode,
+    returnNodeId,
+    graphRounds: rounds,
     cost,
     durationMs: Date.now() - startedAt,
     memberStatuses,
@@ -717,9 +724,15 @@ export function createTeamTool(
         throw new Error(`Team "${definition.name}" requires a non-empty "prompt" string.`);
       }
       const result = await team.ask(prompt);
+      const graphReturn = result.mode === 'graph' ? (result as GraphTeamResult) : null;
+      const toolAnswer = graphReturn?.returnMode === 'void'
+        ? 'Team completed.'
+        : graphReturn?.returnValue ?? result.answer;
       return JSON.stringify({
-        answer: result.answer,
+        answer: toolAnswer,
         mode: result.mode,
+        returnValue: graphReturn?.returnValue ?? null,
+        returnMode: graphReturn?.returnMode,
         cost: result.cost,
         memberStatuses: result.memberStatuses,
         incompleteReason: result.incompleteReason,

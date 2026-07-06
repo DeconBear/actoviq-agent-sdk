@@ -91,7 +91,7 @@ import {
   cloneTeamDefinition,
   instantiateTeamDefinition,
   validateTeamGraph,
-  migrateTeamDefinitionToV2,
+  migrateTeamDefinitionToGraph,
   readTeamPreferences,
   writeTeamPreferences,
   createManagerTools,
@@ -3108,24 +3108,24 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
   if (req.method === 'GET' && url.pathname === '/api/team/definition') {
     const name = url.searchParams.get('name') || '';
-    const raw = resolveTeamDefinition(name, workDir, session?.model ?? '') ?? null;
-    const definition = raw && raw.mode !== 'graph' && raw.orchestration !== 'graph'
-      ? migrateTeamDefinitionToV2(raw)
-      : raw;
+    const raw = resolveTeamDefinition(name, workDir, session?.model ?? '');
+    const definition = raw ? migrateTeamDefinitionToGraph(raw) : null;
     return json(res, 200, { definition });
   }
   if (req.method === 'POST' && url.pathname === '/api/team/save') {
     try {
       const body = await readJson(req);
-      const def = body.definition as TeamDefinition;
+      let def = body.definition as TeamDefinition;
       if (!def || typeof def.name !== 'string' || !def.name) {
         return json(res, 400, { error: 'definition.name is required' });
       }
       // Graph definitions are validated with the engine's own validator before
       // touching disk — an editor can never save a graph the engine rejects.
       if (def.mode === 'graph' || def.orchestration === 'graph') {
-        const problems = validateTeamGraph(def);
+        const migrated = migrateTeamDefinitionToGraph(def);
+        const problems = validateTeamGraph(migrated);
         if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+        def = migrated;
       }
       // target: 'project' (default, .actoviq/teams/) or 'personal' (~/.actoviq/teams/).
       const target = body.target === 'personal' ? 'personal' : 'project';
@@ -3147,7 +3147,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const name = typeof body.name === 'string' ? body.name : '';
       const definition = resolveTeamDefinition(name, workDir, session?.model ?? '');
       if (!definition) return json(res, 404, { error: `team not found: ${name}` });
-      return json(res, 200, { definition: migrateTeamDefinitionToV2(definition) });
+      return json(res, 200, { definition: migrateTeamDefinitionToGraph(definition) });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -3780,7 +3780,7 @@ function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void
 }
 
 /**
- * Maps the 7 TeamEvents to `team.*` GuiRunEvents (plan phase 4). A sibling of
+ * Maps TeamEvents to `team.*` GuiRunEvents (plan phase 4). A sibling of
  * forwardAgentEvent — it does not touch the 12 chat-run cases. Each event
  * carries runId so the client (and the Monitor pane) can address the team run.
  * Also mirrors member/round state onto the run descriptor for the Monitor cards.
@@ -3822,6 +3822,9 @@ function forwardTeamEvent(event: TeamEvent, runId: string, send: (event: GuiRunE
         if (!desc.team.edges) desc.team.edges = [];
         desc.team.edges.push({ from: event.from, to: event.to, trigger: event.trigger, channel: event.channel });
       }
+      return;
+    case 'team.returned':
+      send({ type: 'team.returned', runId, nodeId: event.nodeId, returnMode: event.returnMode, returnValue: event.returnValue });
       return;
     case 'team.completed':
       send({ type: 'team.completed', runId, mode: event.mode, rounds: event.rounds, incompleteReason: event.incompleteReason });
@@ -4024,7 +4027,6 @@ export function createActoviqGuiHtml(): string {
           <div class="team-editor hidden" id="teamEditor"></div>
           <div class="team-graph" id="teamGraph"></div>
         </div>
-        <aside class="team-inspector" id="teamInspector"></aside>
       </div>
     </section>
     <section class="region hidden" data-region="automation" id="regionAutomation" aria-label="Automation">
@@ -4211,6 +4213,23 @@ export function createActoviqGuiHtml(): string {
       <div class="dialog-actions">
         <button type="button" id="teamAgentModalClose">Cancel</button>
         <button type="button" id="teamAgentModalDone" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+  <div id="teamEdgeModal" class="modal hidden">
+    <div class="dialog team-agent-dialog">
+      <div id="teamEdgeModalBody" class="team-agent-modal-body"></div>
+      <div class="dialog-actions">
+        <button type="button" id="teamEdgeModalClose">Cancel</button>
+        <button type="button" id="teamEdgeModalDone" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+  <div id="teamSquadModal" class="modal hidden">
+    <div class="dialog team-agent-dialog">
+      <div id="teamSquadModalBody" class="team-agent-modal-body"></div>
+      <div class="dialog-actions">
+        <button type="button" id="teamSquadModalClose">Close</button>
       </div>
     </div>
   </div>
@@ -5090,6 +5109,11 @@ button { cursor: pointer; }
 .graph-node .gn-model { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #8a8d91; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-node .gn-status { position: absolute; top: 10px; right: 11px; width: 8px; height: 8px; border-radius: 50%; background: #c5c8cc; }
 .graph-node.primary .gn-name { font-weight: 700; }
+.graph-node.port-node { width: 132px; padding: 10px 12px 10px 14px; cursor: pointer; }
+.graph-node.port-task { border-color: #22c55e; background: linear-gradient(180deg, #f0fdf4 0%, var(--bg-surface) 100%); }
+.graph-node.port-return { border-color: #f59e0b; background: linear-gradient(180deg, #fffbeb 0%, var(--bg-surface) 100%); }
+.graph-node.port-node .gn-name { font-size: 12.5px; }
+.graph-node.port-node .gn-role { font-size: 10.5px; color: var(--text-2); margin-top: 2px; }
 .team-inspector { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-surface); overflow: auto; padding: 14px; }
 .team-inspector .ins-empty { color: #9aa0a6; font-size: 13px; margin-top: 24px; }
 .team-inspector .ins-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
@@ -5680,7 +5704,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .workbench { background: #fff; }
 .tabbar { background: #FBFCFD; padding: 6px 12px; }
 .composer { max-width: 920px; width: calc(100% - 64px); margin: 0 auto 20px; border-radius: 16px; border-color: var(--border); box-shadow: 0 12px 32px rgba(17,24,39,.08); }
-.team-layout { flex: 1; min-height: 0; height: 100%; padding: 0; overflow: hidden; align-content: stretch; display: grid; grid-template-columns: minmax(0, 1fr) 340px; background: var(--bg-app); }
+.team-layout { flex: 1; min-height: 0; height: 100%; padding: 0; overflow: hidden; align-content: stretch; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--bg-app); }
 .team-main { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: 100%; }
 .team-squad-bar { grid-row: 1 / span 2; grid-column: 1; display: grid; align-content: start; gap: 10px; padding: 18px 12px; border-right: 1px solid var(--border); border-bottom: 0; background: var(--bg-surface); overflow: auto; }
 .squad-chip { width: 100%; min-height: 78px; justify-content: flex-start; align-items: center; gap: 11px; padding: 12px; border-radius: 10px; color: var(--text-1); text-align: left; }
@@ -6235,7 +6259,6 @@ const state = {
   teamDefinition: null,
   teamSelectedNode: null,
   teamSelectedEdgeIdx: null,
-  teamInspectorPanel: 'view',
   teamEditing: false,
   teamDefinitionCache: {},
   teamSaveTarget: 'project',
@@ -9724,7 +9747,7 @@ const ROLE_COLORS = { researcher: '#3B82F6', skeptic: '#8B5CF6', synthesizer: '#
 function roleColor(role) { return ROLE_COLORS[(role || '').toLowerCase()] || '#0EA5E9'; }
 function firstTeamNode(def) {
   if (!def) return null;
-  return (def.nodes || [])[0] || null;
+  return (def.nodes || []).find((n) => !n.kind || n.kind === 'agent') || null;
 }
 function nodeSubtitle(node, isPrimary) {
   if (node?.responsibility) return node.responsibility;
@@ -9810,7 +9833,6 @@ function renderTeamSquadBar() {
     chip.append(dot, labels);
     chip.addEventListener('click', () => {
       state.teamSelected = t.name;
-      state.teamInspectorPanel = 'view';
       state.teamSelectedEdgeIdx = null;
       void selectTeam(t.name);
     });
@@ -9828,7 +9850,6 @@ async function renderTeamRegion() {
   } else {
     const g = el('teamGraph');
     if (g) { g.textContent = ''; const e = document.createElement('p'); e.className = 'region-empty'; e.textContent = 'No squads — click + New squad.'; g.appendChild(e); }
-    renderTeamInspector(null, null);
   }
 }
 async function selectTeam(name, opts) {
@@ -9843,7 +9864,7 @@ async function selectTeam(name, opts) {
       if (def) state.teamDefinitionCache[name] = def;
     } catch { /* offline */ }
   }
-  if (def && def.mode !== 'graph' && def.orchestration !== 'graph') {
+  if (def && !def.nodes?.some((n) => n.kind === 'task')) {
     delete state.teamDefinitionCache[name];
     try {
       const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
@@ -9855,7 +9876,6 @@ async function selectTeam(name, opts) {
   state.teamSelectedNode = firstTeamNode(def);
   state.teamSelectedEdgeIdx = null;
   renderTeamGraph(def, name);
-  renderTeamInspector(state.teamSelectedNode, def);
   const host = el('teamEditor');
   if (host) host.classList.add('hidden');
 }
@@ -9900,14 +9920,14 @@ function openTeamNodeEditor(node) {
   if (!def) return;
   state.teamSelectedNode = node;
   state.teamSelectedEdgeIdx = null;
-  state.teamInspectorPanel = 'view';
   document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
   const ref = graphRefOf(node);
   document.querySelectorAll('.graph-node.board-node').forEach((n) => {
     if (n.dataset.graphRef === ref) n.classList.add('selected');
   });
-  renderTeamInspector(node, def);
-  renderTeamNodeEditorPanel(node, def);
+  if (node.kind === 'return') renderTeamReturnEditorPanel(node, def);
+  else if (node.kind === 'task') renderTeamTaskEditorPanel(node, def);
+  else renderTeamNodeEditorPanel(node, def);
   el('teamAgentModal').classList.remove('hidden');
 }
 function closeTeamNodeEditor() {
@@ -9915,10 +9935,36 @@ function closeTeamNodeEditor() {
   const body = el('teamAgentModalBody');
   if (body) body.textContent = '';
 }
+function openTeamSquadEditor() {
+  const def = state.teamDefinition;
+  if (!def) return;
+  renderTeamSquadPanel(def, el('teamSquadModalBody'));
+  el('teamSquadModal').classList.remove('hidden');
+}
+function closeTeamSquadEditor() {
+  el('teamSquadModal').classList.add('hidden');
+  const body = el('teamSquadModalBody');
+  if (body) body.textContent = '';
+}
 function openTeamEdgeEditor(idx) {
+  const def = state.teamDefinition;
+  if (!def) return;
+  const edge = (def.edges || [])[idx];
+  if (!edge) return;
   state.teamSelectedEdgeIdx = idx;
-  state.teamInspectorPanel = 'edge';
-  renderTeamInspector(state.teamSelectedNode, state.teamDefinition);
+  renderTeamEdgeEditorPanel(edge, idx, def, el('teamEdgeModalBody'));
+  el('teamEdgeModal').classList.remove('hidden');
+  requestAnimationFrame(() => {
+    const board = el('teamGraph')?.querySelector('.graph-board');
+    const svg = board?.querySelector('.graph-board-svg');
+    if (board && svg) redrawGraphBoardEdges(board, svg, def);
+  });
+}
+function closeTeamEdgeEditor() {
+  el('teamEdgeModal').classList.add('hidden');
+  const body = el('teamEdgeModalBody');
+  if (body) body.textContent = '';
+  state.teamSelectedEdgeIdx = null;
   const def = state.teamDefinition;
   if (!def) return;
   requestAnimationFrame(() => {
@@ -9926,6 +9972,11 @@ function openTeamEdgeEditor(idx) {
     const svg = board?.querySelector('.graph-board-svg');
     if (board && svg) redrawGraphBoardEdges(board, svg, def);
   });
+}
+function closeTeamModals() {
+  closeTeamNodeEditor();
+  closeTeamEdgeEditor();
+  closeTeamSquadEditor();
 }
 function teFieldLive(label, value, onChange, textarea) {
   const f = document.createElement('div');
@@ -9991,10 +10042,6 @@ function renderTeamNodeEditorPanel(node, def) {
   host.appendChild(teFieldLive('Model', node.model || '', (v) => { node.model = v; }));
   host.appendChild(teSelect('Workspace access', node.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => { node.workspaceAccess = v; }));
   host.appendChild(teFieldLive('System prompt / injection', node.systemPrompt || '', (v) => { node.systemPrompt = v; }, true));
-  host.appendChild(teCheck('Entry node (starts the run)', node.entry, (v) => {
-    node.entry = v;
-    renderTeamGraph(def, def.name);
-  }));
   host.appendChild(teSelect('Join incoming edges', node.join || 'all', ['all', 'any'], (v) => { node.join = v === 'any' ? 'any' : undefined; }));
   host.appendChild(teToolChecklist('Allowed tools (empty = read-only expert set)', node.allowedTools || [], (next) => {
     const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !(node.allowedTools || []).includes(t));
@@ -10002,6 +10049,56 @@ function renderTeamNodeEditorPanel(node, def) {
     node.allowedTools = next.length ? next : undefined;
     renderTeamGraph(def, def.name);
   }));
+}
+function renderTeamTaskEditorPanel(node, def) {
+  const host = el('teamAgentModalBody');
+  if (!host) return;
+  host.textContent = '';
+  const h = document.createElement('h3');
+  h.textContent = 'Task entry · ' + (graphRefOf(node) || 'task');
+  host.appendChild(h);
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.textContent = 'The Task port dispatches the run prompt to all outgoing edges (typically {{run.prompt}}). Exactly one Task node is required per graph.';
+  host.appendChild(hint);
+  host.appendChild(teFieldLive('Node id', node.id || 'task', (v) => { node.id = v.trim() || 'task'; renderTeamGraph(def, def.name); }));
+}
+function renderTeamReturnEditorPanel(node, def) {
+  const host = el('teamAgentModalBody');
+  if (!host) return;
+  host.textContent = '';
+  const h = document.createElement('h3');
+  h.textContent = 'Return exit · ' + (graphRefOf(node) || 'return');
+  host.appendChild(h);
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.textContent = 'Return ports terminate the graph. void = no structured return (streaming output stays in the conversation). payload = structured return value for the Team tool.';
+  host.appendChild(hint);
+  host.appendChild(teFieldLive('Node id', node.id || 'return', (v) => { node.id = v.trim() || 'return'; renderTeamGraph(def, def.name); }));
+  host.appendChild(teSelect('Return mode', node.returnMode || 'void', ['void', 'payload'], (v) => {
+    node.returnMode = v === 'payload' ? 'payload' : 'void';
+    if (node.returnMode === 'void') delete node.payloadTemplate;
+    else if (!node.payloadTemplate) node.payloadTemplate = '{{from.output}}';
+    renderTeamGraph(def, def.name);
+  }));
+  if ((node.returnMode || 'void') === 'payload') {
+    host.appendChild(teFieldLive('Payload template', node.payloadTemplate || '{{from.output}}', (v) => { node.payloadTemplate = v.trim() || '{{from.output}}'; }, true));
+  }
+  const returns = (def.nodes || []).filter((n) => n.kind === 'return');
+  if (returns.length > 1) {
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'te-btn danger';
+    del.textContent = 'Remove return port';
+    del.addEventListener('click', () => {
+      def.nodes = def.nodes.filter((n) => n !== node);
+      def.edges = (def.edges || []).filter((e) => e.from !== graphRefOf(node) && e.to !== graphRefOf(node));
+      setTeamSavedStatus(false);
+      closeTeamNodeEditor();
+      renderTeamGraph(def, def.name);
+    });
+    host.appendChild(del);
+  }
 }
 function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   host.textContent = '';
@@ -10011,12 +10108,6 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   h.textContent = 'Edit edge · ' + edge.from + ' → ' + edge.to;
   head.appendChild(h);
   host.appendChild(head);
-  const back = document.createElement('button');
-  back.type = 'button';
-  back.className = 'te-btn';
-  back.textContent = '← Back to overview';
-  back.addEventListener('click', () => { state.teamInspectorPanel = 'view'; state.teamSelectedEdgeIdx = null; renderTeamInspector(state.teamSelectedNode, def); renderTeamGraph(def, def.name); });
-  host.appendChild(back);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
   hint.textContent = 'Passive trigger: downstream runs after upstream completes. Communication: upstream can message downstream via NotifyTeammate during its run.';
@@ -10027,6 +10118,11 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   host.appendChild(teSelect('Trigger', edge.trigger || 'on_complete', TEAM_EDGE_TRIGGERS.map((t) => t.value), (v) => { edge.trigger = v === 'on_complete' ? undefined : v; renderTeamGraph(def, def.name); }));
   host.appendChild(teSelect('Channel', edge.channel || 'message', TEAM_EDGE_CHANNELS.map((c) => c.value), (v) => { edge.channel = v === 'message' ? undefined : v; }));
   host.appendChild(teFieldLive('Condition (optional /regex/ or substring)', edge.condition || '', (v) => { edge.condition = v.trim() || undefined; }));
+  host.appendChild(teCheck('Loop edge (re-dispatch from Task on condition)', edge.loop, (v) => {
+    edge.loop = v || undefined;
+    if (edge.loop && !def.maxRounds) def.maxRounds = 100;
+    renderTeamGraph(def, def.name);
+  }));
   host.appendChild(teFieldLive('Payload template', edge.payloadTemplate || '', (v) => { edge.payloadTemplate = v.trim() || undefined; }, true));
   host.appendChild(teFieldLive('Note', edge.note || '', (v) => { edge.note = v.trim() || undefined; }));
   const del = document.createElement('button');
@@ -10035,11 +10131,9 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   del.textContent = 'Remove edge';
   del.addEventListener('click', () => {
     def.edges.splice(idx, 1);
-    state.teamSelectedEdgeIdx = null;
-    state.teamInspectorPanel = 'view';
     setTeamSavedStatus(false);
+    closeTeamEdgeEditor();
     renderTeamGraph(def, def.name);
-    renderTeamInspector(state.teamSelectedNode, def);
   });
   host.appendChild(del);
 }
@@ -10048,14 +10142,12 @@ function renderTeamSquadPanel(def, host) {
   const h = document.createElement('h3');
   h.textContent = 'Squad settings · ' + (def.name || '');
   host.appendChild(h);
-  const back = document.createElement('button');
-  back.type = 'button';
-  back.className = 'te-btn';
-  back.textContent = '← Back to overview';
-  back.addEventListener('click', () => { state.teamInspectorPanel = 'view'; renderTeamInspector(state.teamSelectedNode, def); });
-  host.appendChild(back);
   host.appendChild(teFieldLive('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
   host.appendChild(teFieldLive('Member max iterations', String(def.maxIterations ?? 16), (v) => { def.maxIterations = Number(v) || 16; }));
+  host.appendChild(teFieldLive('Max rounds (loop convergence)', String(def.maxRounds ?? ''), (v) => {
+    const n = Number(v);
+    def.maxRounds = v.trim() && Number.isFinite(n) && n >= 2 ? n : undefined;
+  }));
   host.appendChild(saveTargetField());
   const problems = document.createElement('div');
   problems.id = 'teamGraphProblems';
@@ -10070,21 +10162,35 @@ function renderTeamSquadPanel(def, host) {
 }
 function addGraphNodeQuick(def) {
   def.nodes = def.nodes || [];
-  const n = def.nodes.length;
+  const agents = def.nodes.filter((n) => !n.kind || n.kind === 'agent');
+  const n = agents.length;
   const id = 'agent-' + (n + 1);
   def.nodes.push({
+    kind: 'agent',
     id,
     role: id,
     model: state.snapshot?.session?.model || '',
-    entry: n === 0,
     systemPrompt: '',
     responsibility: '',
     workspaceAccess: 'workspace',
-    ui: { x: 80 + (n % 3) * 240, y: 48 + Math.floor(n / 3) * 190 },
+    ui: { x: 120 + (n % 3) * 240, y: 120 + Math.floor(n / 3) * 190 },
   });
   setTeamSavedStatus(false);
   renderTeamGraph(def, def.name);
   openTeamNodeEditor(def.nodes[def.nodes.length - 1]);
+}
+function addGraphReturnNode(def) {
+  def.nodes = def.nodes || [];
+  const count = def.nodes.filter((n) => n.kind === 'return').length;
+  const id = count ? 'return-' + (count + 1) : 'return-void';
+  def.nodes.push({
+    kind: 'return',
+    id,
+    returnMode: 'void',
+    ui: { x: 520, y: 240 + count * 120 },
+  });
+  setTeamSavedStatus(false);
+  renderTeamGraph(def, def.name);
 }
 // Full-screen team editor retired — all squads use the graph canvas + inspector.
 function renderTeamEditor() {
@@ -10094,7 +10200,12 @@ function renderTeamEditor() {
 // --- Graph canvas helpers ---
 const RISKY_NODE_TOOLS = ['Write', 'Edit', 'Bash', 'NotebookEdit'];
 function graphRefOf(node) {
+  if (node?.kind === 'task') return String(node.id || 'task').trim();
+  if (node?.kind === 'return') return String(node.id || 'return').trim();
   return String(node?.id || node?.name || node?.role || node?.model || '').trim();
+}
+function isPortNodeKind(node) {
+  return node?.kind === 'task' || node?.kind === 'return';
 }
 function graphNodeRefs(def) {
   return (def.nodes || []).map(graphRefOf).filter(Boolean);
@@ -10155,9 +10266,14 @@ function teField(label, value, onChange, textarea) {
   return f;
 }
 async function saveTeamDefinition() {
-  const def = state.teamDefinition;
+  let def = state.teamDefinition;
   if (!def || !def.name) return;
-  if (def.mode !== 'graph') normalizeTeamCollaboration(def);
+  if (def.mode === 'graph' || def.orchestration === 'graph') {
+    def = migrateTeamDefinitionToGraph(def);
+    state.teamDefinition = def;
+  } else {
+    normalizeTeamCollaboration(def);
+  }
   try {
     const res = await api('/api/team/save', {
       method: 'POST',
@@ -10211,6 +10327,7 @@ function setTeamSavedStatus(saved) {
   el2.innerHTML = guiIcon(saved ? 'gear' : 'automation') + '<span>' + (saved ? 'Saved' : 'Unsaved') + '</span>';
 }
 function graphNodeEl(node, def, isPrimary, opts) {
+  if (isPortNodeKind(node)) return graphPortNodeEl(node, def, opts);
   opts = opts || {};
   const color = roleColor(node.role || node.name);
   const card = document.createElement('div');
@@ -10259,11 +10376,6 @@ function graphNodeEl(node, def, isPrimary, opts) {
     pill.textContent = text;
     tools.appendChild(pill);
   });
-  if (node.entry) {
-    const entry = document.createElement('span');
-    entry.textContent = 'entry';
-    tools.appendChild(entry);
-  }
   if (node.runtime) {
     const runtime = document.createElement('span');
     runtime.textContent = node.runtime;
@@ -10281,10 +10393,8 @@ function graphNodeEl(node, def, isPrimary, opts) {
     if (dragMoved) { dragMoved = false; return; }
     state.teamSelectedNode = node;
     state.teamSelectedEdgeIdx = null;
-    state.teamInspectorPanel = 'view';
     document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
     card.classList.add('selected');
-    renderTeamInspector(node, state.teamDefinition);
   });
   card.addEventListener('dblclick', (e) => {
     e.preventDefault();
@@ -10293,6 +10403,63 @@ function graphNodeEl(node, def, isPrimary, opts) {
   });
   if (opts.board && opts.editable) {
     wireGraphNodeDrag(card, node, () => { dragMoved = true; });
+  }
+  return card;
+}
+function graphPortNodeEl(node, def, opts) {
+  opts = opts || {};
+  const isTask = node.kind === 'task';
+  const card = document.createElement('div');
+  card.className = 'graph-node port-node board-node' + (isTask ? ' port-task' : ' port-return') + (node === state.teamSelectedNode ? ' selected' : '');
+  card.dataset.graphRef = graphRefOf(node);
+  node.ui = node.ui || {};
+  card.style.left = (node.ui.x ?? 0) + 'px';
+  card.style.top = (node.ui.y ?? 0) + 'px';
+  if (opts.editable && !isTask) {
+    const inPort = document.createElement('span');
+    inPort.className = 'graph-port graph-port-in';
+    inPort.title = 'Connect here';
+    card.appendChild(inPort);
+  }
+  const bar = document.createElement('span');
+  bar.className = 'gn-bar';
+  bar.style.background = isTask ? '#22c55e' : '#f59e0b';
+  card.appendChild(bar);
+  const head = document.createElement('div');
+  head.className = 'gn-head';
+  const icon = document.createElement('span');
+  icon.className = 'gn-icon';
+  icon.style.background = isTask ? '#22c55e' : '#f59e0b';
+  icon.innerHTML = guiIcon(isTask ? 'automation' : 'gear');
+  const nameEl = document.createElement('span');
+  nameEl.className = 'gn-name';
+  nameEl.textContent = isTask ? 'Task' : 'Return';
+  head.append(icon, nameEl);
+  const role = document.createElement('div');
+  role.className = 'gn-role';
+  role.textContent = isTask
+    ? graphRefOf(node)
+    : ((node.returnMode || 'void') + (node.returnMode === 'payload' ? ' · payload' : ''));
+  card.append(head, role);
+  if (opts.editable && isTask) {
+    const outPort = document.createElement('span');
+    outPort.className = 'graph-port graph-port-out';
+    outPort.title = 'Drag to connect';
+    card.appendChild(outPort);
+  }
+  card.addEventListener('click', () => {
+    state.teamSelectedNode = node;
+    state.teamSelectedEdgeIdx = null;
+    document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
+    card.classList.add('selected');
+  });
+  card.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openTeamNodeEditor(node);
+  });
+  if (opts.board && opts.editable) {
+    wireGraphNodeDrag(card, node, () => {});
   }
   return card;
 }
@@ -10316,7 +10483,7 @@ function computeGraphLayerIndices(def) {
   const refs = nodes.map(graphRefOf);
   const indexOfRef = new Map(refs.map((r, i) => [r, i]));
   const entrySet = new Set();
-  nodes.forEach((n, i) => { if (n.entry) entrySet.add(i); });
+  nodes.forEach((n, i) => { if (n.kind === 'task' || n.entry) entrySet.add(i); });
   for (const r of def.entryNodeIds || []) { const i = indexOfRef.get(String(r).trim()); if (i != null) entrySet.add(i); }
   const autoIn = new Map();
   for (const e of edges) {
@@ -10526,6 +10693,24 @@ function renderGraphModeCanvas(g, def, name) {
   pill.textContent = 'graph · editable canvas';
   right.appendChild(pill);
   if (editable) {
+    const hasTask = nodes.some((n) => n.kind === 'task');
+    if (!hasTask) {
+      const taskBtn = document.createElement('button');
+      taskBtn.type = 'button';
+      taskBtn.textContent = '+ Task';
+      taskBtn.addEventListener('click', () => {
+        def.nodes = def.nodes || [];
+        def.nodes.unshift({ kind: 'task', id: 'task', ui: { x: 24, y: 48 } });
+        setTeamSavedStatus(false);
+        renderTeamGraph(def, name);
+      });
+      right.appendChild(taskBtn);
+    }
+    const retBtn = document.createElement('button');
+    retBtn.type = 'button';
+    retBtn.textContent = '+ Return';
+    retBtn.addEventListener('click', () => addGraphReturnNode(def));
+    right.appendChild(retBtn);
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.textContent = '+ Agent';
@@ -10566,7 +10751,7 @@ function renderGraphModeCanvas(g, def, name) {
   if (editable) {
     const hint = document.createElement('p');
     hint.className = 'graph-board-hint';
-    hint.textContent = 'Double-click agent to configure · drag to move · drag bottom port → top port to connect · click edge to configure trigger/channel';
+    hint.textContent = 'Double-click node to configure · drag to move · drag bottom port → top port to connect · click edge to configure trigger/loop';
     canvas.appendChild(hint);
   }
   const board = document.createElement('div');
@@ -10589,209 +10774,6 @@ function renderGraphModeCanvas(g, def, name) {
     redrawGraphBoardEdges(board, svg, def);
     if (editable) wireGraphBoardConnect(board, svg, def, name);
   });
-}
-function insField(lbl, val) {
-  const f = document.createElement('div');
-  f.className = 'ins-field';
-  const l = document.createElement('div');
-  l.className = 'lbl';
-  l.textContent = lbl;
-  const v = document.createElement('div');
-  v.className = 'val';
-  v.textContent = val;
-  f.append(l, v);
-  return f;
-}
-function insFieldNode(lbl, content) {
-  const f = document.createElement('div');
-  f.className = 'ins-field';
-  const l = document.createElement('div');
-  l.className = 'lbl';
-  l.textContent = lbl;
-  f.append(l, content);
-  return f;
-}
-// Permission pills (§5.2): team members are read-only ReAct agents, so the
-// permission set is fixed (Read ✓, Execute ✓, Edit ✗, Bash ✗). The main
-// agent keeps full access — reflected when inspecting the primary node.
-// Graph nodes reflect their explicit allowedTools grants (plan §3.5.1).
-function insPerms(node, def) {
-  const wrap = document.createElement('div');
-  wrap.className = 'ins-perms';
-  const isPrimary = def?.primary === node;
-  const granted = def?.mode === 'graph' && Array.isArray(node.allowedTools) ? node.allowedTools : null;
-  const perms = [
-    { label: 'Read repository', allow: !granted || granted.some((t) => ['Read', 'Glob', 'Grep'].includes(t)) },
-    { label: 'Execute tools', allow: true },
-    { label: 'Edit files', allow: granted ? granted.some((t) => t === 'Write' || t === 'Edit') : isPrimary },
-    { label: 'Bash', allow: granted ? granted.includes('Bash') : isPrimary },
-  ];
-  for (const p of perms) {
-    const pill = document.createElement('span');
-    pill.className = 'ins-perm ' + (p.allow ? 'allow' : 'deny');
-    pill.textContent = (p.allow ? '✓ ' : '✗ ') + p.label;
-    wrap.appendChild(pill);
-  }
-  return wrap;
-}
-function insTools(node) {
-  const wrap = document.createElement('div');
-  wrap.className = 'ins-tools';
-  const labels = Array.isArray(node.toolScope) && node.toolScope.length > 0
-    ? node.toolScope
-    : ['Read', 'Glob', 'Grep', 'TavilySearch', 'WebFetch'];
-  for (const t of labels.slice(0, 6)) {
-    const chip = document.createElement('span');
-    chip.textContent = t;
-    wrap.appendChild(chip);
-  }
-  return wrap;
-}
-// Inputs (who sends to this node) + Outputs (who this node sends to) from
-// the collaboration edges (§5.2).
-function insIO(def, node) {
-  const wrap = document.createElement('div');
-  wrap.className = 'ins-io';
-  const ref = memberRef(node);
-  const edges = Array.isArray(def?.reviewEdges) ? def.reviewEdges : [];
-  const inputs = [...new Set(edges.filter(e => e.to === ref).map(e => e.from))].filter(Boolean);
-  const outputs = reviewTargetsForMember(def, node);
-  const inRow = document.createElement('div');
-  inRow.className = 'io-row';
-  const inLabel = document.createElement('span');
-  inLabel.className = 'io-label';
-  inLabel.textContent = 'Inputs';
-  inRow.append(inLabel, document.createTextNode(inputs.length ? inputs.join(', ') : '—'));
-  const outRow = document.createElement('div');
-  outRow.className = 'io-row';
-  const outLabel = document.createElement('span');
-  outLabel.className = 'io-label';
-  outLabel.textContent = 'Outputs';
-  outRow.append(outLabel, document.createTextNode(outputs.length ? outputs.join(', ') : '—'));
-  wrap.append(inRow, outRow);
-  return wrap;
-}
-function insQueue() {
-  const wrap = document.createElement('div');
-  wrap.className = 'ins-queue';
-  for (const [label, val] of [['Waiting', 0], ['Running', 0], ['Completed', 0]]) {
-    const stat = document.createElement('div');
-    stat.className = 'q-stat';
-    const strong = document.createElement('strong');
-    strong.textContent = String(val);
-    const small = document.createElement('small');
-    small.textContent = label;
-    stat.append(strong, small);
-    wrap.appendChild(stat);
-  }
-  return wrap;
-}
-function renderTeamInspector(node, def) {
-  const ins = el('teamInspector');
-  if (!ins) return;
-  ins.textContent = '';
-  if (!def) {
-    const e = document.createElement('p');
-    e.className = 'ins-empty';
-    e.textContent = 'Select a squad to inspect.';
-    ins.appendChild(e);
-    return;
-  }
-  if (def.mode === 'graph' && state.teamInspectorPanel === 'squad') {
-    renderTeamSquadPanel(def, ins);
-    return;
-  }
-  if (def.mode === 'graph' && state.teamInspectorPanel === 'edge' && state.teamSelectedEdgeIdx != null) {
-    const edge = (def.edges || [])[state.teamSelectedEdgeIdx];
-    if (edge) {
-      renderTeamEdgeEditorPanel(edge, state.teamSelectedEdgeIdx, def, ins);
-      return;
-    }
-  }
-  if (!node) {
-    const e = document.createElement('p');
-    e.className = 'ins-empty';
-    e.textContent = def.mode === 'graph' ? 'Select an agent or edge on the canvas.' : 'Select a node to inspect.';
-    ins.appendChild(e);
-    return;
-  }
-  const color = roleColor(node.role || node.name);
-  const head = document.createElement('div');
-  head.className = 'ins-head';
-  const icon = document.createElement('span');
-  icon.className = 'gn-icon';
-  icon.style.background = color;
-  icon.innerHTML = guiIcon('agent');
-  const h = document.createElement('h3');
-  h.textContent = node.name || node.role || 'agent';
-  head.append(icon, h);
-  ins.appendChild(head);
-  const tabs = document.createElement('div');
-  tabs.className = 'ins-tabs';
-  const bodies = document.createElement('div');
-  const tabNames = ['Details', 'Config', 'Metrics', 'Logs'];
-  tabNames.forEach((tn, i) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'ins-tab' + (i === 0 ? ' active' : '');
-    b.textContent = tn;
-    b.addEventListener('click', () => {
-      [...tabs.children].forEach((x, j) => x.classList.toggle('active', j === i));
-      [...bodies.children].forEach((x, j) => x.classList.toggle('hidden', j !== i));
-    });
-    tabs.appendChild(b);
-    const body = document.createElement('div');
-    body.className = 'ins-body' + (i !== 0 ? ' hidden' : '');
-    if (tn === 'Details') {
-      body.appendChild(insField('Role', node.role || (def?.primary === node ? 'primary' : 'member')));
-      body.appendChild(insField('Model', node.model || '—'));
-      if (def?.mode === 'graph') {
-        body.appendChild(insField('Entry', node.entry ? 'yes — starts the run' : 'no'));
-        body.appendChild(insField('Join', node.join === 'any' ? 'any (OR-join: first input wins)' : 'all (wait-all)'));
-        const ref = graphRefOf(node);
-        const inbound = (def.edges || []).filter((e) => String(e.to).trim() === ref);
-        const outbound = (def.edges || []).filter((e) => String(e.from).trim() === ref);
-        const fmt = (e) => e.from + ' → ' + e.to + ' (' + (e.trigger || 'on_complete') + (e.condition ? ' ? ' + e.condition : '') + ')';
-        if (inbound.length) body.appendChild(insField('In edges', inbound.map(fmt).join('\\n')));
-        if (outbound.length) body.appendChild(insField('Out edges', outbound.map(fmt).join('\\n')));
-      }
-      if (node.responsibility) body.appendChild(insField('Responsibility', node.responsibility));
-      if (node.workspaceAccess) body.appendChild(insField('Workspace', node.workspaceAccess === 'full' ? 'Full access' : 'Workspace only'));
-      body.appendChild(insFieldNode('Permissions', insPerms(node, def)));
-      body.appendChild(insFieldNode('Tools', insTools(node)));
-      if (node.systemPrompt) body.appendChild(insField('System prompt', node.systemPrompt));
-    } else if (tn === 'Config') {
-      body.appendChild(insField('Mode', def?.mode || '—'));
-      if (def?.mode === 'graph' && Array.isArray(node.allowedTools) && node.allowedTools.length) {
-        body.appendChild(insField('Allowed tools', node.allowedTools.join(', ')));
-      }
-      if (node.runtime) body.appendChild(insField('Runtime', node.runtime));
-      if (Array.isArray(node.toolScope) && node.toolScope.length) body.appendChild(insField('Tool scope', node.toolScope.join(', ')));
-      body.appendChild(insField('Timeout', def?.timeoutMs ? def.timeoutMs + 'ms' : 'default'));
-      body.appendChild(insField('Max iterations', String(def?.maxIterations ?? 'default')));
-      body.appendChild(insFieldNode('Inputs / Outputs', insIO(def, node)));
-      body.appendChild(insFieldNode('Queue', insQueue()));
-    } else {
-      const p = document.createElement('p');
-      p.className = 'ins-empty-tab';
-      p.textContent = 'No active run. ' + (tn === 'Metrics' ? 'Metrics' : 'Member logs') + ' appear when this squad runs.';
-      body.appendChild(p);
-    }
-    bodies.appendChild(body);
-  });
-  if (def?.mode === 'graph') {
-    const actions = document.createElement('div');
-    actions.className = 'ins-actions';
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'te-btn';
-    editBtn.textContent = 'Edit agent';
-    editBtn.addEventListener('click', () => openTeamNodeEditor(node));
-    actions.appendChild(editBtn);
-    ins.appendChild(actions);
-  }
-  ins.appendChild(tabs);
-  ins.appendChild(bodies);
 }
 // Renders a surface-data list inline into a region body (reuses surfaceData/
 // itemTitle/itemDescription so the region and the drawer stay in sync).
@@ -12149,21 +12131,20 @@ el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion
 el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
-el('teamEditToggleBtn').addEventListener('click', () => {
-  const def = state.teamDefinition;
-  if (!def) return;
-  state.teamInspectorPanel = state.teamInspectorPanel === 'squad' ? 'view' : 'squad';
-  renderTeamInspector(state.teamSelectedNode, def);
-});
+el('teamEditToggleBtn').addEventListener('click', () => { openTeamSquadEditor(); });
 el('teamAgentModalClose').addEventListener('click', closeTeamNodeEditor);
-el('teamAgentModalDone').addEventListener('click', () => {
-  const node = state.teamSelectedNode;
-  const def = state.teamDefinition;
-  closeTeamNodeEditor();
-  if (node && def) renderTeamInspector(node, def);
-});
+el('teamAgentModalDone').addEventListener('click', closeTeamNodeEditor);
 el('teamAgentModal').addEventListener('click', (event) => {
   if (event.target === el('teamAgentModal')) closeTeamNodeEditor();
+});
+el('teamEdgeModalClose').addEventListener('click', closeTeamEdgeEditor);
+el('teamEdgeModalDone').addEventListener('click', closeTeamEdgeEditor);
+el('teamEdgeModal').addEventListener('click', (event) => {
+  if (event.target === el('teamEdgeModal')) closeTeamEdgeEditor();
+});
+el('teamSquadModalClose').addEventListener('click', closeTeamSquadEditor);
+el('teamSquadModal').addEventListener('click', (event) => {
+  if (event.target === el('teamSquadModal')) closeTeamSquadEditor();
 });
 el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
@@ -12273,7 +12254,7 @@ document.addEventListener('contextmenu', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hideContextMenu();
-  if (event.key === 'Escape' && !el('teamAgentModal').classList.contains('hidden')) closeTeamNodeEditor();
+  if (event.key === 'Escape') closeTeamModals();
 });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });

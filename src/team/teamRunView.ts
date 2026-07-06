@@ -5,7 +5,7 @@
  * One event source (`TeamEvent`); legacy panel/reviewer runs have no edges and
  * render as a flat roster; graph runs nest children under fired edges.
  */
-import type { TeamEvent, TeamGraphChannel, TeamGraphTrigger } from '../types.js';
+import type { TeamEvent, TeamGraphChannel, TeamGraphReturnMode, TeamGraphTrigger } from '../types.js';
 
 export type TeamRunMemberStatus = 'pending' | 'running' | 'done' | 'error' | 'skipped';
 
@@ -33,6 +33,9 @@ export interface TeamRunViewState {
   round: number;
   members: TeamRunMemberView[];
   edges: TeamRunEdgeView[];
+  returnNodeId?: string;
+  returnMode?: TeamGraphReturnMode;
+  returnValue?: string;
   incompleteReason?: string;
   completed: boolean;
 }
@@ -114,6 +117,11 @@ export function applyTeamRunEvent(state: TeamRunViewState, event: TeamEvent): Te
         trigger: event.trigger,
         channel: event.channel,
       });
+      break;
+    case 'team.returned':
+      state.returnNodeId = event.nodeId;
+      state.returnMode = event.returnMode;
+      state.returnValue = event.returnValue;
       break;
     case 'team.completed':
       state.completed = true;
@@ -208,6 +216,10 @@ export function formatTeamRunTreeLines(
 
   if (state.incompleteReason) {
     lines.push(`${prefix}! ${state.incompleteReason}`);
+  }
+  if (state.returnNodeId) {
+    const mode = state.returnMode === 'payload' ? 'payload' : 'void';
+    lines.push(`${prefix}↩ return · ${state.returnNodeId} (${mode})`);
   }
   return lines;
 }
