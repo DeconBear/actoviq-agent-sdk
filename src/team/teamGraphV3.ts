@@ -13,6 +13,7 @@ import type {
 import { buildMemberIdentities, type MemberIdentity } from './teamRuntime.js';
 import {
   edgeConditionPasses,
+  expandTeamGraphEdges,
   graphNodeRef,
   migrateTeamDefinitionToV2,
   type OrchestrateGraphOptions,
@@ -81,7 +82,7 @@ function indexGraphV3(definition: TeamDefinition): V3GraphIndex {
     nodes,
     agentIdentities,
     refIndex,
-    edges: definition.edges ?? [],
+    edges: expandTeamGraphEdges(definition.edges ?? []),
     taskIndex,
     returnIndexes,
   };
@@ -148,6 +149,9 @@ export function validateTeamGraphV3(definition: TeamDefinition): string[] {
     const to = graph.refIndex.get((edge.to ?? '').trim());
     if (from === undefined) errors.push(`edge ${i + 1} references unknown "from" node "${edge.from}"`);
     if (to === undefined) errors.push(`edge ${i + 1} references unknown "to" node "${edge.to}"`);
+    if (to !== undefined && graphNodeKind(nodes[to]!) === 'task') {
+      errors.push(`edge ${i + 1} must not target Task "${edge.to}" — Task is dispatch-only (outgoing edges)`);
+    }
     if (from !== undefined && to !== undefined && from === to && !edge.loop) {
       errors.push(`edge ${i + 1} is a self-loop on "${edge.from}" — set loop: true with maxRounds`);
     }
@@ -236,6 +240,48 @@ function detectUncontrolledCycle(graph: V3GraphIndex): string | null {
   return null;
 }
 
+/** Task dispatch targets: refs of agents (or ports) reached directly from Task. */
+function taskDispatchTargets(edges: TeamGraphEdge[], taskRef = 'task'): string[] {
+  return [...new Set(
+    edges
+      .filter((e) => e.from.trim() === taskRef && (e.trigger ?? 'on_complete') === 'on_complete')
+      .map((e) => e.to.trim())
+      .filter(Boolean),
+  )];
+}
+
+/**
+ * Task is a one-shot dispatch port — no incoming edges. Loop rounds re-hand off
+ * to Task's dispatch targets instead of routing back through Task.
+ */
+export function sanitizeV3GraphTopology(definition: TeamDefinition): TeamDefinition {
+  const nodes = definition.nodes ?? [];
+  const taskNode = nodes.find((n) => graphNodeKind(n) === 'task');
+  if (!taskNode) return definition;
+  const taskRef = portRef(taskNode);
+  const edges = [...(definition.edges ?? [])];
+  const entryTargets = taskDispatchTargets(edges, taskRef);
+
+  for (let i = edges.length - 1; i >= 0; i -= 1) {
+    const edge = edges[i]!;
+    if (edge.to.trim() !== taskRef) continue;
+    if (edge.loop) {
+      for (const target of entryTargets) {
+        const dup = edges.some(
+          (e) => e.from === edge.from && e.to === target && e.loop && e.condition === edge.condition,
+        );
+        if (!dup) {
+          edges.push({ ...edge, to: target });
+        }
+      }
+    }
+    edges.splice(i, 1);
+  }
+
+  definition.edges = edges;
+  return definition;
+}
+
 /**
  * v2/v1 graph → v3: insert Task + Return ports, rewire entries and terminals.
  */
@@ -246,7 +292,7 @@ export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefin
     : migrateTeamDefinitionToV2(definition);
 
   if (isTeamGraphV3(base) && base.nodes?.some((n) => n.kind === 'task')) {
-    return { ...base, version: 3 };
+    return sanitizeV3GraphTopology({ ...base, version: 3 });
   }
 
   const agents: TeamGraphNode[] = (base.nodes ?? [])
@@ -300,10 +346,12 @@ export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefin
     if (!edges.some((e) => e.from === primaryRef && e.to === 'return-void')) {
       edges.push({ from: primaryRef, to: 'return-void', trigger: 'on_complete', condition: 'FINALIZE', channel: 'message' });
     }
-    if (!edges.some((e) => e.from === primaryRef && e.to === 'task' && e.loop)) {
+    const loopTargets = taskDispatchTargets(edges, 'task');
+    for (const target of loopTargets) {
+      if (edges.some((e) => e.from === primaryRef && e.to === target && e.loop)) continue;
       edges.push({
         from: primaryRef,
-        to: 'task',
+        to: target,
         trigger: 'on_complete',
         condition: '/^CONTINUE/i',
         channel: 'message',
@@ -331,7 +379,7 @@ export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefin
     }
   }
 
-  return {
+  return sanitizeV3GraphTopology({
     ...base,
     mode: 'graph',
     version: 3,
@@ -341,7 +389,7 @@ export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefin
     maxRounds: base.maxRounds ?? (hasPrimary ? 100 : undefined),
     entryNodeIds: undefined,
     reviewEdges: undefined,
-  };
+  });
 }
 
 /** v1/v2 → v3 in one step (GUI load / save path). */
@@ -375,8 +423,8 @@ function renderReturnPayload(
 }
 
 /**
- * v3 engine: Task dispatches prompt; Return terminates with void/payload;
- * loop edges re-dispatch from Task when maxRounds allows.
+ * v3 engine: Task dispatches prompt once; Return terminates with void/payload;
+ * loop edges re-hand off to Task's dispatch targets (never back through Task).
  */
 export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise<OrchestrateGraphResult> {
   const graph = indexGraphV3(opts.definition);
@@ -386,6 +434,11 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
   const outgoing = new Map<number, TeamGraphEdge[]>();
   const commOutgoing = new Map<number, TeamGraphEdge[]>();
   const initialRemainingIn = new Array(nodes.length).fill(0);
+  const taskEntryRefs = new Set(
+    (graph.edges ?? [])
+      .filter((e) => e.from.trim() === portRef(nodes[taskIndex]!) && (e.trigger ?? 'on_complete') === 'on_complete')
+      .map((e) => e.to.trim()),
+  );
 
   for (const edge of graph.edges) {
     const from = refIndex.get(edge.from.trim());
@@ -395,7 +448,7 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
     if (trigger === 'on_complete') {
       if (!outgoing.has(from)) outgoing.set(from, []);
       outgoing.get(from)!.push(edge);
-      initialRemainingIn[to] += 1;
+      if (!edge.loop) initialRemainingIn[to] += 1;
     } else if (trigger === 'on_tool_call' || trigger === 'on_handoff' || trigger === 'on_review_request') {
       if (!commOutgoing.has(from)) commOutgoing.set(from, []);
       commOutgoing.get(from)!.push(edge);
@@ -418,6 +471,7 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
   let incompleteReason: string | undefined;
   let lastFromOutput = '';
   let lastFromId = 'task';
+  let continuingRound = false;
 
   const buildTask = (index: number): string => {
     const sections = inputs[index]!.filter((s) => s.trim() && s !== opts.prompt);
@@ -475,15 +529,6 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
     }
   };
 
-  const resetForNextRound = (): void => {
-    remainingIn = [...initialRemainingIn];
-    inputs.fill([], 0, nodes.length);
-    delivered.fill(0);
-    started.clear();
-    shortCircuited.clear();
-    dispatchTask();
-  };
-
   const fireEdge = (edge: TeamGraphEdge, fromIndex: number, output: string): void => {
     if (graphDone) return;
     const to = refIndex.get(edge.to.trim())!;
@@ -493,11 +538,17 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
     lastFromId = fromId;
     lastFromOutput = output;
 
-    if (edge.loop && graphNodeKind(nodes[to]!) === 'task') {
+    const toRef = portRef(nodes[to]!);
+    const isLoopRoundEdge = edge.loop && (
+      graphNodeKind(nodes[to]!) === 'task' || taskEntryRefs.has(toRef)
+    );
+
+    if (isLoopRoundEdge) {
       if (!edgeConditionPasses(edge.condition, output)) {
         resolveSlot(to, false, fromIndex, output);
         return;
       }
+      if (continuingRound) return;
       opts.onEvent?.({ type: 'team.synthesis', round: rounds, decision: 'continue' });
       if (rounds >= maxRounds) {
         incompleteReason = `maxRounds (${maxRounds}) reached during loop`;
@@ -506,13 +557,15 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
         if (voidRet !== undefined) completeReturn(voidRet, fromIndex, output);
         return;
       }
+      continuingRound = true;
       rounds += 1;
       opts.onEvent?.({
         type: 'team.round.completed',
         round: rounds,
         reports: completionOrder.length,
       });
-      resetForNextRound();
+      redispatchEntryAgents();
+      continuingRound = false;
       return;
     }
 
@@ -545,6 +598,18 @@ export async function orchestrateGraphV3(opts: OrchestrateGraphOptions): Promise
 
     inputs[to]!.push(renderPayload(edge, fromId, output, opts.prompt));
     resolveSlot(to, true, fromIndex, output);
+  };
+
+  const redispatchEntryAgents = (): void => {
+    remainingIn = [...initialRemainingIn];
+    inputs.fill([], 0, nodes.length);
+    delivered.fill(0);
+    started.clear();
+    shortCircuited.clear();
+    started.add(taskIndex);
+    for (const edge of outgoing.get(taskIndex) ?? []) {
+      fireEdge(edge, taskIndex, opts.prompt);
+    }
   };
 
   const notifyFrom = (fromIndex: number, to: string, message: string) => {

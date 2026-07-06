@@ -56,6 +56,9 @@ export async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/** Default read-only tool names for graph agent nodes (matches buildReadOnlyExpertTools). */
+export const TEAM_READ_ONLY_EXPERT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'WebFetch', 'TavilySearch'] as const;
+
 /** Read-only tool set for expert/reviewer agents (no write/edit/bash/delegation). */
 export async function buildReadOnlyExpertTools(cwd: string): Promise<AgentToolDefinition[]> {
   const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
@@ -122,6 +125,7 @@ export interface RunMemberOptions {
   tools: AgentToolDefinition[];
   maxIterations: number;
   timeoutMs?: number;
+  reconnectAttempts?: number;
   signal?: AbortSignal;
   round: number;
   onEvent?: (event: TeamEvent) => void;
@@ -144,9 +148,10 @@ export interface MemberRunResult {
  *  - error capture into a structured MemberStatus (never throws)
  */
 export async function runMemberAgent(opts: RunMemberOptions): Promise<MemberRunResult> {
-  const { identity, member, task, systemPrompt, cwd, tools, maxIterations, timeoutMs, signal, round, onEvent } = opts;
+  const { identity, member, task, systemPrompt, cwd, tools, maxIterations, timeoutMs, reconnectAttempts, signal, round, onEvent } = opts;
   const startedAt = Date.now();
   const base = { id: identity.id, model: identity.model, role: identity.role };
+  const maxReconnect = reconnectAttempts ?? (member as { reconnectAttempts?: number }).reconnectAttempts ?? 10;
 
   const pre = preflightMember(member);
   if (!pre.ok) {
@@ -160,35 +165,52 @@ export async function runMemberAgent(opts: RunMemberOptions): Promise<MemberRunR
   const pool = getGlobalAgentPool();
   let slot: AgentPoolSlot | undefined;
   let sdk: Awaited<ReturnType<typeof CreateAgentSdk>> | undefined;
+  const isTransientNetworkError = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    return /ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|fetch failed|network|502|503|504|429|socket hang up/i.test(msg);
+  };
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
   try {
     slot = await pool.acquire(timeoutMs);
     const { createAgentSdk } = await import('../runtime/agentClient.js');
-    sdk = await createAgentSdk({
-      model: member.model,
-      provider: member.provider,
-      baseURL: member.baseURL,
-      authToken: resolveApiKey(member.apiKey),
-      maxTokens: member.maxTokens ?? 32000,
-      workDir: cwd,
-      tools,
-      permissionMode: 'bypassPermissions',
-      maxToolIterations: maxIterations,
-      systemPrompt,
-    });
-    const stream = sdk.stream(task, { signal: memberSignal(signal, timeoutMs) });
-    for await (const event of stream) {
-      if (event.type === 'tool.call' && onEvent) {
-        onEvent({ type: 'team.member.tool', id: identity.id, model: identity.model, round, tool: event.call.publicName });
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= maxReconnect; attempt += 1) {
+      try {
+        if (sdk) await sdk.close().catch(() => {});
+        sdk = await createAgentSdk({
+          model: member.model,
+          provider: member.provider,
+          baseURL: member.baseURL,
+          authToken: resolveApiKey(member.apiKey),
+          maxTokens: member.maxTokens ?? 32000,
+          workDir: cwd,
+          tools,
+          permissionMode: 'bypassPermissions',
+          maxToolIterations: maxIterations,
+          systemPrompt,
+        });
+        const stream = sdk.stream(task, { signal: memberSignal(signal, timeoutMs) });
+        for await (const event of stream) {
+          if (event.type === 'tool.call' && onEvent) {
+            onEvent({ type: 'team.member.tool', id: identity.id, model: identity.model, round, tool: event.call.publicName });
+          }
+        }
+        const result = await stream.result;
+        const inputTokens = result.requests.reduce((sum, r) => sum + (r.usage?.input_tokens ?? 0), 0);
+        const outputTokens = result.requests.reduce((sum, r) => sum + (r.usage?.output_tokens ?? 0), 0);
+        const toolCalls = result.toolCalls.length;
+        const durationMs = Date.now() - startedAt;
+        const status: MemberStatus = { ...base, ok: true, toolCalls, durationMs };
+        onEvent?.({ type: 'team.member.completed', ...base, round, ok: true, toolCalls, durationMs });
+        return { report: result.text, status, inputTokens, outputTokens };
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= maxReconnect || !isTransientNetworkError(err)) throw err;
+        await sleep(Math.min(1000 * (attempt + 1), 8000));
       }
     }
-    const result = await stream.result;
-    const inputTokens = result.requests.reduce((sum, r) => sum + (r.usage?.input_tokens ?? 0), 0);
-    const outputTokens = result.requests.reduce((sum, r) => sum + (r.usage?.output_tokens ?? 0), 0);
-    const toolCalls = result.toolCalls.length;
-    const durationMs = Date.now() - startedAt;
-    const status: MemberStatus = { ...base, ok: true, toolCalls, durationMs };
-    onEvent?.({ type: 'team.member.completed', ...base, round, ok: true, toolCalls, durationMs });
-    return { report: result.text, status, inputTokens, outputTokens };
+    throw lastErr;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const durationMs = Date.now() - startedAt;

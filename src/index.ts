@@ -298,6 +298,7 @@ export {
   cloneTeamDefinition,
   instantiateTeamDefinition,
   BUILT_IN_TEAM_DEFINITIONS,
+  getBuiltInTeamDefinition,
   listTeamAgentLabels,
   countTeamAgents,
 } from './team/teamDefinitions.js';
@@ -319,9 +320,28 @@ export {
   graphNodeRef,
   edgeConditionPasses,
   createNotifyTeammateTool,
+  ensureConfiguredTeamGraph,
+  resolveGraphNodeAllowedTools,
+  TEAM_READ_ONLY_EXPERT_TOOL_NAMES,
   MAX_GRAPH_NODES,
+  isUndirectedTeamGraphEdge,
+  formatTeamGraphEdgeLabel,
+  expandTeamGraphEdges,
 } from './team/teamGraph.js';
+export {
+  defaultEdgeBezierOffsets,
+  resolveEdgeBezierPoints,
+  writeEdgeBezierUi,
+  clearEdgeBezierUi,
+  computeTeamGraphAutoLayoutLanes,
+} from './team/teamGraphLayout.js';
 export { orchestrateGraphV3 } from './team/teamGraphV3.js';
+export {
+  TEAM_GRAPH_MEMBER_FRAMING,
+  buildMemberAssignmentPrompt,
+  buildMemberSystemPrompt,
+  resolveGraphNodeSystemPrompt,
+} from './team/teamPrompts.js';
 export type {
   OrchestrateGraphOptions,
   OrchestrateGraphResult,

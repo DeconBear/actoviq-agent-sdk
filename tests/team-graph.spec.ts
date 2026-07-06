@@ -676,3 +676,23 @@ describe('editor artifact → engine (end to end)', () => {
     }
   });
 });
+
+describe('edge direction', () => {
+  it('formatTeamGraphEdgeLabel uses arrow vs bidirectional glyph', async () => {
+    const { formatTeamGraphEdgeLabel } = await import('../src/team/teamGraph.js');
+    expect(formatTeamGraphEdgeLabel({ from: 'a', to: 'b' })).toBe('a → b');
+    expect(formatTeamGraphEdgeLabel({ from: 'a', to: 'b', direction: 'undirected' })).toBe('a ↔ b');
+  });
+
+  it('expandTeamGraphEdges duplicates undirected edges but not loop back-edges', async () => {
+    const { expandTeamGraphEdges } = await import('../src/team/teamGraph.js');
+    const expanded = expandTeamGraphEdges([
+      { from: 'a', to: 'b', direction: 'undirected', trigger: 'on_tool_call' },
+      { from: 'lead', to: 'peer', loop: true, condition: 'CONTINUE' },
+      { from: 'task', to: 'a' },
+    ]);
+    expect(expanded).toHaveLength(4);
+    expect(expanded.some((e) => e.from === 'b' && e.to === 'a' && e.direction === 'directed')).toBe(true);
+    expect(expanded.filter((e) => e.from === 'lead' && e.to === 'peer')).toHaveLength(1);
+  });
+});

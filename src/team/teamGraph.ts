@@ -36,9 +36,10 @@ import type {
   TeamGraphTrigger,
   TeamMember,
 } from '../types.js';
-import { buildMemberIdentities, type MemberIdentity } from './teamRuntime.js';
+import { buildMemberIdentities, TEAM_READ_ONLY_EXPERT_TOOL_NAMES, type MemberIdentity } from './teamRuntime.js';
 import {
   isTeamGraphV3,
+  graphNodeKind,
   migrateTeamDefinitionToGraph,
   migrateTeamDefinitionToV3,
   orchestrateGraphV3,
@@ -63,6 +64,36 @@ export function graphNodeRef(node: TeamMember | TeamGraphNode): string {
   if (gn.kind === 'task') return (gn.id ?? 'task').trim() || 'task';
   if (gn.kind === 'return') return (gn.id ?? 'return').trim() || 'return';
   return (node.id ?? node.name ?? node.role ?? node.model ?? '').trim();
+}
+
+/** True when the edge is stored/configured as bidirectional (↔). */
+export function isUndirectedTeamGraphEdge(edge: TeamGraphEdge): boolean {
+  return edge.direction === 'undirected';
+}
+
+/** Label for GUI edge titles: `A → B` or `A ↔ B`. */
+export function formatTeamGraphEdgeLabel(edge: Pick<TeamGraphEdge, 'from' | 'to' | 'direction'>): string {
+  const sep = isUndirectedTeamGraphEdge(edge) ? ' ↔ ' : ' → ';
+  return `${edge.from}${sep}${edge.to}`;
+}
+
+/**
+ * Runtime expansion: undirected edges gain a reverse directed sibling.
+ * Loop back-edges stay one-way to preserve convergence semantics.
+ */
+export function expandTeamGraphEdges(edges: TeamGraphEdge[]): TeamGraphEdge[] {
+  const expanded: TeamGraphEdge[] = [];
+  for (const edge of edges) {
+    expanded.push(edge);
+    if (!isUndirectedTeamGraphEdge(edge) || edge.loop) continue;
+    expanded.push({
+      ...edge,
+      from: edge.to,
+      to: edge.from,
+      direction: 'directed',
+    });
+  }
+  return expanded;
 }
 
 interface NormalizedGraph {
@@ -97,7 +128,7 @@ function indexGraph(definition: TeamDefinition): NormalizedGraph {
     nodes,
     identities,
     refIndex,
-    edges: definition.edges ?? [],
+    edges: expandTeamGraphEdges(definition.edges ?? []),
     entryIndexes: [...entrySet].sort((a, b) => a - b),
   };
 }
@@ -645,6 +676,57 @@ export async function createNotifyTeammateTool(ctx: GraphNodeRunContext) {
 // ═══════════════════════════════════════════════════════════════════
 //  Node tool resolution (graph nodes may opt in to specific core tools)
 // ═══════════════════════════════════════════════════════════════════
+
+export { TEAM_READ_ONLY_EXPERT_TOOL_NAMES };
+
+/** Effective allowed-tool names for a graph agent node (explicit or read-only default). */
+export function resolveGraphNodeAllowedTools(node: TeamGraphNode): string[] {
+  if (node.allowedTools?.length) return [...node.allowedTools];
+  return [...TEAM_READ_ONLY_EXPERT_TOOL_NAMES];
+}
+
+const DEFAULT_AGENT_TIMEOUT_MS = 300_000;
+const DEFAULT_AGENT_RECONNECT_ATTEMPTS = 10;
+
+/**
+ * Materialize implicit squad/agent defaults into explicit graph v3 fields so
+ * GUI, disk, and runtime agree on the configured state (tools, timeout,
+ * iterations, reconnect, loop rounds on loop sources).
+ */
+export function ensureConfiguredTeamGraph(definition: TeamDefinition): TeamDefinition {
+  const def = migrateTeamDefinitionToV3(definition);
+  const squadTimeout = def.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
+  const squadMaxIter = def.maxIterations;
+  const squadMaxRounds = def.maxRounds;
+  const loopFromRefs = new Set(
+    (def.edges ?? []).filter((edge) => edge.loop).map((edge) => edge.from.trim()),
+  );
+
+  const nodes = (def.nodes ?? []).map((node) => {
+    if (graphNodeKind(node) !== 'agent') return node;
+    const ref = graphNodeRef(node);
+    const next: TeamGraphNode = { ...node };
+    if (!next.allowedTools?.length) {
+      next.allowedTools = [...TEAM_READ_ONLY_EXPERT_TOOL_NAMES];
+    }
+    if (next.timeoutMs == null) next.timeoutMs = squadTimeout;
+    if (next.maxIterations == null && squadMaxIter != null && squadMaxIter > 0) {
+      next.maxIterations = squadMaxIter;
+    }
+    if (next.reconnectAttempts == null) next.reconnectAttempts = DEFAULT_AGENT_RECONNECT_ATTEMPTS;
+    if (
+      loopFromRefs.has(ref)
+      && next.maxRounds == null
+      && squadMaxRounds != null
+      && squadMaxRounds > 0
+    ) {
+      next.maxRounds = squadMaxRounds;
+    }
+    return next;
+  });
+
+  return { ...def, nodes };
+}
 
 /**
  * Resolve a graph node's toolset. Absent `allowedTools` → the same read-only

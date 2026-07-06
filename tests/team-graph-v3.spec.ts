@@ -8,6 +8,7 @@ import {
   validateTeamGraphV3,
   isTeamGraphV3,
   orchestrateGraph,
+  graphNodeRef,
 } from '../src/team/teamGraph.js';
 import type { TeamDefinition, TeamEvent, TeamGraphNode } from '../src/types.js';
 
@@ -70,11 +71,21 @@ describe('isTeamGraphV3 / validateTeamGraphV3', () => {
       edges: [
         { from: 'task', to: 'a', payloadTemplate: '{{run.prompt}}' },
         { from: 'a', to: 'return-void' },
-        { from: 'a', to: 'task', loop: true, condition: 'CONTINUE' },
+        { from: 'a', to: 'a', loop: true, condition: 'CONTINUE' },
       ],
     });
     expect(validateTeamGraphV3(def).some((e) => e.includes('maxRounds'))).toBe(true);
     expect(validateTeamGraphV3({ ...def, maxRounds: 5 })).toEqual([]);
+  });
+
+  it('rejects edges targeting Task', () => {
+    const def = v3Def({
+      edges: [
+        { from: 'task', to: 'a', payloadTemplate: '{{run.prompt}}' },
+        { from: 'a', to: 'task', loop: true, condition: 'CONTINUE' },
+      ],
+    });
+    expect(validateTeamGraphV3(def).some((e) => e.includes('must not target Task'))).toBe(true);
   });
 });
 
@@ -110,7 +121,7 @@ describe('migrateTeamDefinitionToV3', () => {
       edges: [{ from: 'lead', to: 'peer' }],
     };
     const v3 = migrateTeamDefinitionToV3(v2);
-    expect(v3.edges?.some((e) => e.from === 'lead' && e.to === 'task' && e.loop)).toBe(true);
+    expect(v3.edges?.some((e) => e.from === 'lead' && e.to === 'lead' && e.loop)).toBe(true);
     expect(v3.edges?.some((e) => e.from === 'lead' && e.to === 'return-void' && e.condition === 'FINALIZE')).toBe(true);
     expect(v3.maxRounds).toBeGreaterThanOrEqual(2);
   });
@@ -165,7 +176,7 @@ describe('orchestrateGraph v3 engine', () => {
     expect(result.answer).toContain('findings here');
   });
 
-  it('loops back to Task when loop edge condition passes', async () => {
+  it('loops back to entry agents when loop edge condition passes', async () => {
     const def = v3Def({
       maxRounds: 3,
       nodes: [
@@ -176,7 +187,7 @@ describe('orchestrateGraph v3 engine', () => {
       edges: [
         { from: 'task', to: 'lead', payloadTemplate: '{{run.prompt}}' },
         { from: 'lead', to: 'return-void', condition: 'FINALIZE' },
-        { from: 'lead', to: 'task', loop: true, condition: 'CONTINUE' },
+        { from: 'lead', to: 'lead', loop: true, condition: 'CONTINUE' },
       ],
     });
     const events: TeamEvent[] = [];
@@ -229,12 +240,20 @@ describe('void Return display answer', () => {
 describe('runtime / disk / GUI consistency', () => {
   it('built-in presets are graph v3 JSON with Task and Return ports', async () => {
     const { BUILT_IN_TEAM_DEFINITIONS } = await import('../src/team/teamDefinitions.js');
+    const { graphNodeKind } = await import('../src/team/teamGraph.js');
+    const { TEAM_READ_ONLY_EXPERT_TOOL_NAMES } = await import('../src/team/teamRuntime.js');
     for (const [name, def] of Object.entries(BUILT_IN_TEAM_DEFINITIONS)) {
       expect(def.mode, name).toBe('graph');
       expect(def.version, name).toBe(3);
       expect(def.nodes?.some((n) => n.kind === 'task'), name).toBe(true);
       expect(def.nodes?.some((n) => n.kind === 'return'), name).toBe(true);
       expect(validateTeamGraphV3(def), name).toEqual([]);
+      for (const node of def.nodes ?? []) {
+        if (graphNodeKind(node) !== 'agent') continue;
+        expect(node.allowedTools, name + ':' + graphNodeRef(node)).toEqual([...TEAM_READ_ONLY_EXPERT_TOOL_NAMES]);
+        expect(node.reconnectAttempts, name).toBe(10);
+        expect(node.timeoutMs, name).toBeGreaterThan(0);
+      }
     }
   });
 

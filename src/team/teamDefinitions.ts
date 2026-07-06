@@ -14,6 +14,7 @@ import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
 import {
   canonicalizeTeamDefinition,
   graphNodeKind,
+  ensureConfiguredTeamGraph,
   migrateTeamDefinitionToGraph,
   toPersistedTeamDefinition,
 } from './teamGraph.js';
@@ -128,9 +129,15 @@ const LEGACY_BUILT_IN_TEAM_TEMPLATES: Record<string, TeamDefinition> = {
 export const BUILT_IN_TEAM_DEFINITIONS: Record<string, TeamDefinition> = Object.fromEntries(
   Object.entries(LEGACY_BUILT_IN_TEAM_TEMPLATES).map(([name, legacy]) => [
     name,
-    migrateTeamDefinitionToGraph({ ...legacy, name }),
+    ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph({ ...legacy, name })),
   ]),
 );
+
+/** Fresh built-in preset (graph v3, fully configured) or undefined. */
+export function getBuiltInTeamDefinition(name: string): TeamDefinition | undefined {
+  const preset = BUILT_IN_TEAM_DEFINITIONS[name];
+  return preset ? structuredClone(preset) : undefined;
+}
 
 /**
  * Fill `model: ''` placeholders in a (typically built-in) team definition with
@@ -202,7 +209,9 @@ export function loadTeamDefinition(
     if (fs.existsSync(filePath)) {
       try {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        const definition = resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition));
+        const definition = ensureConfiguredTeamGraph(
+          resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition)),
+        );
         return {
           name,
           definition,
@@ -217,7 +226,12 @@ export function loadTeamDefinition(
 
   const builtIn = BUILT_IN_TEAM_DEFINITIONS[name];
   if (builtIn) {
-    return { name, definition: resolveEnvVars(structuredClone(builtIn)), source: 'built-in', filePath: '(built-in)' };
+    return {
+      name,
+      definition: ensureConfiguredTeamGraph(resolveEnvVars(structuredClone(builtIn))),
+      source: 'built-in',
+      filePath: '(built-in)',
+    };
   }
 
   return null;
@@ -292,7 +306,9 @@ export function listTeamDefinitions(
         const filePath = path.join(dir, entry.name);
         try {
           const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          const definition = resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition));
+          const definition = ensureConfiguredTeamGraph(
+            resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition)),
+          );
           teams.push({
             name,
             definition,
@@ -312,7 +328,12 @@ export function listTeamDefinitions(
   for (const [name, definition] of Object.entries(BUILT_IN_TEAM_DEFINITIONS)) {
     if (seen.has(name)) continue;
     seen.add(name);
-    teams.push({ name, definition: resolveEnvVars(structuredClone(definition)), source: 'built-in', filePath: '(built-in)' });
+    teams.push({
+      name,
+      definition: ensureConfiguredTeamGraph(resolveEnvVars(structuredClone(definition))),
+      source: 'built-in',
+      filePath: '(built-in)',
+    });
   }
 
   return teams;
