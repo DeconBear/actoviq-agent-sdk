@@ -295,6 +295,8 @@ export {
   cloneTeamDefinition,
   instantiateTeamDefinition,
   BUILT_IN_TEAM_DEFINITIONS,
+  listTeamAgentLabels,
+  countTeamAgents,
 } from './team/teamDefinitions.js';
 export type { LoadedTeamDefinition } from './team/teamDefinitions.js';
 export {

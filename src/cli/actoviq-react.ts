@@ -21,6 +21,8 @@ import {
   loadTeamDefinition,
   cloneTeamDefinition,
   instantiateTeamDefinition,
+  listTeamAgentLabels,
+  countTeamAgents,
   createModelTeam,
   createTeamTool,
   readTeamPreferences,
@@ -457,7 +459,7 @@ async function main() {
             const teams = listTeamDefinitions(sdk.config.workDir);
             for (const item of teams) {
               const active = item.name === activeTeamName ? `${C.g}*${C.r}` : ' ';
-              process.stdout.write(`${active}${C.c}${item.name}${C.r}${C.d} · ${item.definition.mode} · ${item.source} · ${item.definition.members?.length ?? 0} members${C.r}\n`);
+              process.stdout.write(`${active}${C.c}${item.name}${C.r}${C.d} · ${item.definition.mode} · ${item.source} · ${countTeamAgents(item.definition)} agents${C.r}\n`);
             }
             process.stdout.write(`${C.d}\n/team attach <name> · /team ask <name> <prompt> · /team off · /team status${C.r}\n\n`);
             return;
@@ -520,6 +522,7 @@ async function main() {
               return;
             }
             const definition = instantiateTeamDefinition(loaded.definition, session.model);
+            const memberModels = listTeamAgentLabels(definition);
             process.stdout.write(`${C.d}Asking team "${teamName}" (${definition.mode})...${C.r}\n`);
             try {
               const team = createModelTeam(definition);
