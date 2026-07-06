@@ -11,6 +11,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
+import {
+  canonicalizeTeamDefinition,
+  graphNodeKind,
+  migrateTeamDefinitionToGraph,
+  toPersistedTeamDefinition,
+} from './teamGraph.js';
 
 export interface LoadedTeamDefinition {
   name: string;
@@ -29,7 +35,12 @@ export interface LoadedTeamDefinition {
  * Members use `model: ''` meaning "the session's current model" — call
  * `instantiateTeamDefinition(def, model)` before running.
  */
-export const BUILT_IN_TEAM_DEFINITIONS: Record<string, TeamDefinition> = {
+/**
+ * Legacy preset shapes used only to seed graph v3 built-ins. Runtime, GUI, and
+ * disk all consume {@link BUILT_IN_TEAM_DEFINITIONS} — canonical graph v3 JSON
+ * with Task + Return ports.
+ */
+const LEGACY_BUILT_IN_TEAM_TEMPLATES: Record<string, TeamDefinition> = {
   'panel-analysis': {
     name: 'panel-analysis',
     description: 'Research Panel: independent read-only investigation from multiple angles, reconciled by a synthesizer.',
@@ -86,18 +97,31 @@ export const BUILT_IN_TEAM_DEFINITIONS: Record<string, TeamDefinition> = {
 };
 
 /**
+ * Built-in team presets as graph v3 metadata (Task + Return + agent nodes).
+ * A user file of the same name shadows the built-in.
+ */
+export const BUILT_IN_TEAM_DEFINITIONS: Record<string, TeamDefinition> = Object.fromEntries(
+  Object.entries(LEGACY_BUILT_IN_TEAM_TEMPLATES).map(([name, legacy]) => [
+    name,
+    migrateTeamDefinitionToGraph({ ...legacy, name }),
+  ]),
+);
+
+/**
  * Fill `model: ''` placeholders in a (typically built-in) team definition with
  * a concrete model. Returns a new definition; the input is not mutated.
  */
 export function instantiateTeamDefinition(definition: TeamDefinition, model: string): TeamDefinition {
   const fill = (member?: TeamMember): TeamMember | undefined =>
     member ? { ...member, model: member.model || model } : undefined;
-  return {
-    ...definition,
-    members: (definition.members ?? []).map((m) => fill(m)!) ,
-    primary: fill(definition.primary),
-    reviewer: fill(definition.reviewer),
-  };
+  const def = structuredClone(definition);
+  def.members = (def.members ?? []).map((m) => fill(m)!);
+  def.primary = fill(def.primary);
+  def.reviewer = fill(def.reviewer);
+  def.nodes = def.nodes?.map((n) =>
+    graphNodeKind(n) === 'agent' ? { ...n, model: n.model || model } : n,
+  );
+  return def;
 }
 
 function resolveTeamDirs(projectDir?: string, homeDir?: string): string[] {
@@ -153,7 +177,7 @@ export function loadTeamDefinition(
     if (fs.existsSync(filePath)) {
       try {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        const definition = resolveEnvVars(raw as TeamDefinition);
+        const definition = resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition));
         return {
           name,
           definition,
@@ -168,7 +192,7 @@ export function loadTeamDefinition(
 
   const builtIn = BUILT_IN_TEAM_DEFINITIONS[name];
   if (builtIn) {
-    return { name, definition: resolveEnvVars(builtIn), source: 'built-in', filePath: '(built-in)' };
+    return { name, definition: resolveEnvVars(structuredClone(builtIn)), source: 'built-in', filePath: '(built-in)' };
   }
 
   return null;
@@ -211,7 +235,9 @@ export async function saveTeamDefinition(
     };
   };
 
-  fs.writeFileSync(filePath, JSON.stringify(stripEnvVars(definition), null, 2), 'utf-8');
+  // Persist graph v3 JSON (Task + Return ports); validate before write.
+  const persisted = toPersistedTeamDefinition(definition);
+  fs.writeFileSync(filePath, JSON.stringify(stripEnvVars(persisted), null, 2), 'utf-8');
   return filePath;
 }
 
@@ -241,7 +267,7 @@ export function listTeamDefinitions(
         const filePath = path.join(dir, entry.name);
         try {
           const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-          const definition = resolveEnvVars(raw as TeamDefinition);
+          const definition = resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition));
           teams.push({
             name,
             definition,
@@ -261,7 +287,7 @@ export function listTeamDefinitions(
   for (const [name, definition] of Object.entries(BUILT_IN_TEAM_DEFINITIONS)) {
     if (seen.has(name)) continue;
     seen.add(name);
-    teams.push({ name, definition: resolveEnvVars(definition), source: 'built-in', filePath: '(built-in)' });
+    teams.push({ name, definition: resolveEnvVars(structuredClone(definition)), source: 'built-in', filePath: '(built-in)' });
   }
 
   return teams;
@@ -292,8 +318,8 @@ export async function cloneTeamDefinition(
   // references survive verbatim (the loaded view resolves them, and resolved
   // literals would be stripped on save).
   const rawSource: TeamDefinition = source.source === 'built-in'
-    ? BUILT_IN_TEAM_DEFINITIONS[sourceName]!
-    : (JSON.parse(fs.readFileSync(source.filePath, 'utf-8')) as TeamDefinition);
+    ? structuredClone(BUILT_IN_TEAM_DEFINITIONS[sourceName]!)
+    : canonicalizeTeamDefinition(JSON.parse(fs.readFileSync(source.filePath, 'utf-8')) as TeamDefinition);
   const definition: TeamDefinition = structuredClone(rawSource);
   definition.name = trimmed;
   const filePath = await saveTeamDefinition(definition, options);

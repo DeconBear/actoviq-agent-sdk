@@ -129,7 +129,9 @@ describe('ModelTeam validation', () => {
       members: [{ model: 'claude-sonnet-4-6' }],
     };
     const team = createModelTeam(def);
-    expect(team.definition.mode).toBe('panel');
+    expect(team.definition.mode).toBe('graph');
+    expect(team.definition.version).toBe(3);
+    expect(team.definition.nodes?.some((n) => n.kind === 'task')).toBe(true);
   });
 
   it('validates panel mode requires at least one member', () => {
@@ -168,16 +170,16 @@ describe('ModelTeam validation', () => {
       members: [],
       reviewer: { model: 'claude-opus-4-8' },
     });
-    expect(reviewer.definition.mode).toBe('reviewer');
+    expect(reviewer.definition.mode).toBe('graph');
+    expect(reviewer.definition.nodes?.some((n) => n.kind === 'return' && n.returnMode === 'payload')).toBe(true);
 
-    // The retired executor-reviewer alias now needs only a reviewer (no executor).
     const legacy = createModelTeam({
       name: 'legacy-er',
       mode: 'executor-reviewer',
       members: [],
       reviewer: { model: 'claude-opus-4-8' },
     });
-    expect(legacy.definition.mode).toBe('executor-reviewer');
+    expect(legacy.definition.mode).toBe('graph');
   });
 
   it('creates a valid panel team', () => {
@@ -193,7 +195,8 @@ describe('ModelTeam validation', () => {
     const team = createModelTeam(def);
     expect(team).toBeInstanceOf(ModelTeam);
     expect(team.name).toBe('valid-panel');
-    expect(team.definition.mode).toBe('panel');
+    expect(team.definition.mode).toBe('graph');
+    expect(team.definition.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent')).toHaveLength(3);
   });
 
   it('validates panel-analysis requires at least one member', () => {
@@ -212,8 +215,8 @@ describe('ModelTeam validation', () => {
       members: [{ model: 'claude-sonnet-4-6' }, { model: 'deepseek-v4-pro' }],
     };
     const team = createModelTeam(def);
-    expect(team.definition.mode).toBe('panel-analysis');
-    expect(team.definition.primary).toBeUndefined();
+    expect(team.definition.mode).toBe('graph');
+    expect(team.definition.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent')).toHaveLength(2);
   });
 
   it('creates a valid panel-analysis team with a primary (convergent)', () => {
@@ -224,8 +227,8 @@ describe('ModelTeam validation', () => {
       primary: { model: 'claude-opus-4-8' },
     };
     const team = createModelTeam(def);
-    expect(team.definition.mode).toBe('panel-analysis');
-    expect(team.definition.primary?.model).toBe('claude-opus-4-8');
+    expect(team.definition.mode).toBe('graph');
+    expect(team.definition.edges?.some((e) => e.loop && e.to === 'task')).toBe(true);
   });
 
   it('still accepts analysis as a backward-compatible alias', () => {
@@ -235,7 +238,7 @@ describe('ModelTeam validation', () => {
       members: [{ model: 'deepseek-v4-pro' }],
     };
     const team = createModelTeam(def);
-    expect(team.definition.mode).toBe('analysis');
+    expect(team.definition.mode).toBe('graph');
   });
 });
 

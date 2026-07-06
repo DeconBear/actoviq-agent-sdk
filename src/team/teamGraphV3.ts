@@ -125,8 +125,12 @@ export function validateTeamGraphV3(definition: TeamDefinition): string[] {
     } else {
       seenRefs.set(ref, i);
     }
-    if (graphNodeKind(node) === 'agent' && !node.model?.trim()) {
-      errors.push(`agent node "${ref}" requires a model`);
+    if (graphNodeKind(node) === 'agent') {
+      const model = node.model;
+      // Empty string = "use session model" placeholder (built-in presets).
+      if (model !== '' && !model?.trim()) {
+        errors.push(`agent node "${ref}" requires a model`);
+      }
     }
     if (graphNodeKind(node) === 'return' && !node.returnMode) {
       errors.push(`return node "${ref}" requires returnMode (void or payload)`);
@@ -236,6 +240,7 @@ function detectUncontrolledCycle(graph: V3GraphIndex): string | null {
  * v2/v1 graph → v3: insert Task + Return ports, rewire entries and terminals.
  */
 export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefinition {
+  const wasReviewer = definition.mode === 'reviewer' || definition.mode === 'executor-reviewer';
   const base = definition.orchestration === 'graph' || definition.mode === 'graph'
     ? structuredClone(definition)
     : migrateTeamDefinitionToV2(definition);
@@ -269,7 +274,7 @@ export function migrateTeamDefinitionToV3(definition: TeamDefinition): TeamDefin
     ui: { x: 520, y: 240 },
   };
 
-  const isReviewer = base.mode === 'reviewer' || base.mode === 'executor-reviewer';
+  const isReviewer = wasReviewer || Boolean(base.reviewer && !(base.members?.length));
   const primaryRef = base.primary ? graphNodeRef(base.primary as TeamMember) : '';
   const hasPrimary = Boolean(primaryRef && agents.some((n) => graphNodeRef(n) === primaryRef));
 

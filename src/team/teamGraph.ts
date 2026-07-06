@@ -105,16 +105,16 @@ function indexGraph(definition: TeamDefinition): NormalizedGraph {
 /**
  * Validate a graph-mode team definition. Returns a list of human-readable
  * problems; an empty list means the definition is executable by the engine.
- * v3 graphs (Task + Return ports) use stricter rules — see teamGraphV3.ts.
+ *
+ * All definitions are normalized to graph v3 (Task + Return ports) before
+ * validation so SDK runtime, GUI, and on-disk JSON share one contract.
  */
 export function validateTeamGraph(definition: TeamDefinition): string[] {
-  if (isTeamGraphV3(definition)) {
-    return validateTeamGraphV3(definition);
-  }
-  return validateTeamGraphV2(definition);
+  return validateTeamGraphV3(migrateTeamDefinitionToGraph(definition));
 }
 
-function validateTeamGraphV2(definition: TeamDefinition): string[] {
+/** v2-only rules — retained for migrator unit tests, not the public save/runtime path. */
+export function validateTeamGraphV2(definition: TeamDefinition): string[] {
   const errors: string[] = [];
   const nodes = definition.nodes ?? [];
 
@@ -208,6 +208,36 @@ export function assertValidTeamGraph(definition: TeamDefinition): void {
   if (errors.length) {
     throw new Error(`Invalid team graph "${definition.name}": ${errors.join('; ')}`);
   }
+}
+
+/**
+ * Migrate to graph v3 and validate. Single canonical shape for runtime execution.
+ */
+export function canonicalizeTeamDefinition(definition: TeamDefinition): TeamDefinition {
+  const canonical = migrateTeamDefinitionToGraph(definition);
+  assertValidTeamGraph(canonical);
+  return canonical;
+}
+
+/**
+ * On-disk team JSON: graph v3 with Task/Return ports; legacy member fields omitted.
+ */
+export function toPersistedTeamDefinition(definition: TeamDefinition): TeamDefinition {
+  const canonical = canonicalizeTeamDefinition(definition);
+  return {
+    name: canonical.name,
+    description: canonical.description,
+    mode: 'graph',
+    version: 3,
+    orchestration: 'graph',
+    members: [],
+    nodes: canonical.nodes,
+    edges: canonical.edges,
+    maxParallel: canonical.maxParallel,
+    timeoutMs: canonical.timeoutMs,
+    maxRounds: canonical.maxRounds,
+    maxIterations: canonical.maxIterations,
+  };
 }
 
 /**
