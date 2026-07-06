@@ -12,8 +12,10 @@ import {
   MAX_GRAPH_NODES,
   graphNodeRef,
   validateTeamGraph,
+  validateTeamGraphV2,
   assertValidTeamGraph,
   migrateTeamDefinitionToV2,
+  migrateTeamDefinitionToGraph,
   orchestrateGraph,
   edgeConditionPasses,
   createNotifyTeammateTool,
@@ -38,42 +40,41 @@ const node = (id: string, extra: Partial<TeamGraphNode> = {}): TeamGraphNode => 
   ...extra,
 });
 
-describe('validateTeamGraph', () => {
+describe('validateTeamGraphV2', () => {
   it('accepts a minimal valid pipeline', () => {
     const def = graphDef({
       nodes: [node('a', { entry: true }), node('b')],
       edges: [{ from: 'a', to: 'b' }],
     });
-    expect(validateTeamGraph(def)).toEqual([]);
-    expect(() => assertValidTeamGraph(def)).not.toThrow();
+    expect(validateTeamGraphV2(def)).toEqual([]);
   });
 
   it('requires at least one node', () => {
-    const errors = validateTeamGraph(graphDef({ nodes: [] }));
+    const errors = validateTeamGraphV2(graphDef({ nodes: [] }));
     expect(errors).toEqual(['graph mode requires at least one node']);
   });
 
   it('enforces the node cap without truncating', () => {
     const nodes = Array.from({ length: MAX_GRAPH_NODES + 1 }, (_, i) => node(`n${i}`, { entry: true }));
-    const errors = validateTeamGraph(graphDef({ nodes }));
+    const errors = validateTeamGraphV2(graphDef({ nodes }));
     expect(errors.some((e) => e.includes(`at most ${MAX_GRAPH_NODES}`))).toBe(true);
   });
 
   it('rejects duplicate node refs instead of silently disambiguating', () => {
     const def = graphDef({ nodes: [node('same', { entry: true }), node('same')] });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('duplicate node ref "same"'))).toBe(true);
   });
 
   it('rejects a node with no addressable ref', () => {
     const def = graphDef({ nodes: [{ model: '' } as TeamGraphNode] });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('no id/name/role/model'))).toBe(true);
   });
 
   it('requires an entry node', () => {
     const def = graphDef({ nodes: [node('a'), node('b')], edges: [{ from: 'a', to: 'b' }] });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('at least one entry node'))).toBe(true);
   });
 
@@ -83,7 +84,7 @@ describe('validateTeamGraph', () => {
       edges: [{ from: 'a', to: 'b' }],
       entryNodeIds: ['a'],
     });
-    expect(validateTeamGraph(def)).toEqual([]);
+    expect(validateTeamGraphV2(def)).toEqual([]);
   });
 
   it('flags unknown entryNodeIds and edge endpoints', () => {
@@ -92,7 +93,7 @@ describe('validateTeamGraph', () => {
       edges: [{ from: 'a', to: 'ghost' }],
       entryNodeIds: ['missing'],
     });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('entryNodeIds references unknown node "missing"'))).toBe(true);
     expect(errors.some((e) => e.includes('unknown "to" node "ghost"'))).toBe(true);
   });
@@ -102,7 +103,7 @@ describe('validateTeamGraph', () => {
       nodes: [node('a', { entry: true })],
       edges: [{ from: 'a', to: 'a' }],
     });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('self-loop'))).toBe(true);
   });
 
@@ -115,9 +116,9 @@ describe('validateTeamGraph', () => {
         { from: 'c', to: 'a', trigger: 'manual' },
       ],
     });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('cycle'))).toBe(true);
-    expect(() => assertValidTeamGraph(def)).toThrow(/cycle/);
+    expect(() => assertValidTeamGraph(def)).toThrow();
   });
 
   it('rejects an invalid regex condition on an edge', () => {
@@ -125,7 +126,7 @@ describe('validateTeamGraph', () => {
       nodes: [node('a', { entry: true }), node('b')],
       edges: [{ from: 'a', to: 'b', condition: '/[unclosed/' }],
     });
-    const errors = validateTeamGraph(def);
+    const errors = validateTeamGraphV2(def);
     expect(errors.some((e) => e.includes('invalid regex condition'))).toBe(true);
   });
 
@@ -137,10 +138,21 @@ describe('validateTeamGraph', () => {
       ],
       edges: [{ from: 'planner', to: 'coder' }],
     });
-    expect(validateTeamGraph(def)).toEqual([]);
+    expect(validateTeamGraphV2(def)).toEqual([]);
     expect(graphNodeRef({ name: 'planner', model: 'm1' })).toBe('planner');
     expect(graphNodeRef({ role: 'coder', model: 'm2' })).toBe('coder');
     expect(graphNodeRef({ model: 'm2' })).toBe('m2');
+  });
+});
+
+describe('validateTeamGraph (v3 canonical)', () => {
+  it('accepts a v2 pipeline after migration to Task/Return ports', () => {
+    const def = graphDef({
+      nodes: [node('a', { entry: true }), node('b')],
+      edges: [{ from: 'a', to: 'b' }],
+    });
+    expect(validateTeamGraph(def)).toEqual([]);
+    expect(() => assertValidTeamGraph(def)).not.toThrow();
   });
 });
 
@@ -172,16 +184,16 @@ describe('migrateTeamDefinitionToV2', () => {
     expect(validateTeamGraph(migrated)).toEqual([]);
   });
 
-  it('maps reviewer mode to a single entry node', () => {
+  it('maps reviewer mode to a single agent with payload Return', () => {
     const def: TeamDefinition = {
       name: 'rev',
       mode: 'reviewer',
       members: [],
       reviewer: { id: 'reviewer', model: 'm1' },
     };
-    const migrated = migrateTeamDefinitionToV2(def);
-    expect(migrated.nodes).toEqual([{ id: 'reviewer', model: 'm1', entry: true }]);
-    expect(migrated.edges).toEqual([]);
+    const migrated = migrateTeamDefinitionToGraph(def);
+    expect(migrated.nodes?.some((n) => n.kind === 'task')).toBe(true);
+    expect(migrated.nodes?.some((n) => n.kind === 'return' && n.returnMode === 'payload')).toBe(true);
     expect(validateTeamGraph(migrated)).toEqual([]);
   });
 
@@ -637,7 +649,11 @@ describe('editor artifact → engine (end to end)', () => {
       const loaded = loadTeamDefinition('editor-e2e', tmpDir);
       expect(loaded).not.toBeNull();
       expect(loaded!.definition.mode).toBe('graph');
-      expect(loaded!.definition.nodes?.[0]?.ui).toEqual({ x: 72, y: 48 });
+      expect(loaded!.definition.version).toBe(3);
+      expect(loaded!.definition.nodes?.some((n) => n.kind === 'task')).toBe(true);
+      expect(loaded!.definition.nodes?.some((n) => n.kind === 'return')).toBe(true);
+      const agentUi = loaded!.definition.nodes?.find((n) => n.id === 'planner');
+      expect(agentUi?.ui).toEqual({ x: 72, y: 48 });
       expect(validateTeamGraph(loaded!.definition)).toEqual([]);
 
       const order: string[] = [];
@@ -652,7 +668,9 @@ describe('editor artifact → engine (end to end)', () => {
       });
       expect(order).toEqual(['planner', 'builder', 'reviewer']);
       expect(result.skipped).toEqual([]);
-      expect(result.answer).toBe('reviewer');
+      // v3 void Return: terminal agent output is not promoted to answer.
+      expect(result.returnMode).toBe('void');
+      expect(result.answer).toBe('');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -3119,14 +3119,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (!def || typeof def.name !== 'string' || !def.name) {
         return json(res, 400, { error: 'definition.name is required' });
       }
-      // Graph definitions are validated with the engine's own validator before
-      // touching disk — an editor can never save a graph the engine rejects.
-      if (def.mode === 'graph' || def.orchestration === 'graph') {
-        const migrated = migrateTeamDefinitionToGraph(def);
-        const problems = validateTeamGraph(migrated);
-        if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
-        def = migrated;
-      }
+      // All squads persist as graph v3 JSON — validate before touching disk.
+      const migrated = migrateTeamDefinitionToGraph(def);
+      const problems = validateTeamGraph(migrated);
+      if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+      def = migrated;
       // target: 'project' (default, .actoviq/teams/) or 'personal' (~/.actoviq/teams/).
       const target = body.target === 'personal' ? 'personal' : 'project';
       const filePath = await saveTeamDefinition(def, {
@@ -10268,12 +10265,8 @@ function teField(label, value, onChange, textarea) {
 async function saveTeamDefinition() {
   let def = state.teamDefinition;
   if (!def || !def.name) return;
-  if (def.mode === 'graph' || def.orchestration === 'graph') {
-    def = migrateTeamDefinitionToGraph(def);
-    state.teamDefinition = def;
-  } else {
-    normalizeTeamCollaboration(def);
-  }
+  def = migrateTeamDefinitionToGraph(def);
+  state.teamDefinition = def;
   try {
     const res = await api('/api/team/save', {
       method: 'POST',

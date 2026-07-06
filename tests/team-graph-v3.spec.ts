@@ -193,3 +193,29 @@ describe('orchestrateGraph v3 engine', () => {
     expect(result.returnMode).toBe('void');
   });
 });
+
+describe('runtime / disk / GUI consistency', () => {
+  it('built-in presets are graph v3 JSON with Task and Return ports', async () => {
+    const { BUILT_IN_TEAM_DEFINITIONS } = await import('../src/team/teamDefinitions.js');
+    for (const [name, def] of Object.entries(BUILT_IN_TEAM_DEFINITIONS)) {
+      expect(def.mode, name).toBe('graph');
+      expect(def.version, name).toBe(3);
+      expect(def.nodes?.some((n) => n.kind === 'task'), name).toBe(true);
+      expect(def.nodes?.some((n) => n.kind === 'return'), name).toBe(true);
+      expect(validateTeamGraphV3(def), name).toEqual([]);
+    }
+  });
+
+  it('createModelTeam canonicalizes legacy panel-analysis to graph v3 for runtime', async () => {
+    const { createModelTeam } = await import('../src/team/modelTeam.js');
+    const team = createModelTeam({
+      name: 'unified-panel',
+      mode: 'panel-analysis',
+      members: [{ id: 'a', model: 'm1' }, { id: 'b', model: 'm2' }],
+    });
+    expect(team.definition.mode).toBe('graph');
+    expect(team.definition.version).toBe(3);
+    expect(team.definition.nodes?.some((n) => n.kind === 'task')).toBe(true);
+    expect(team.definition.nodes?.some((n) => n.kind === 'return')).toBe(true);
+  });
+});

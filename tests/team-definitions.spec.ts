@@ -46,7 +46,10 @@ describe('Team definitions from disk', () => {
     const loaded = loadTeamDefinition('test-panel', tmpDir);
     expect(loaded).not.toBeNull();
     expect(loaded!.definition.name).toBe('test-panel');
-    expect(loaded!.definition.mode).toBe('panel');
+    expect(loaded!.definition.mode).toBe('graph');
+    expect(loaded!.definition.version).toBe(3);
+    expect(loaded!.definition.nodes?.some((n) => n.kind === 'task')).toBe(true);
+    expect(loaded!.definition.nodes?.some((n) => n.kind === 'return')).toBe(true);
     expect(loaded!.source).toBe('project');
   });
 
@@ -79,13 +82,14 @@ describe('Team definitions from disk', () => {
     await saveTeamDefinition(def, { projectDir: tmpDir });
     const loaded = loadTeamDefinition('collab-team', tmpDir);
 
-    expect(loaded!.definition.members[0]).toMatchObject({
+    const planner = loaded!.definition.nodes?.find((n) => n.id === 'planner');
+    expect(planner).toMatchObject({
       responsibility: 'Break the task into implementation steps.',
       reviews: ['coder'],
       runtime: 'claude-code',
       toolScope: ['Read', 'Grep'],
     });
-    expect(loaded!.definition.reviewEdges).toEqual([{ from: 'planner', to: 'coder', kind: 'review' }]);
+    expect(loaded!.definition.edges?.some((e) => e.channel === 'review')).toBe(true);
   });
 
   it('resolves $ENV_VAR apiKey references on load', async () => {
@@ -99,7 +103,8 @@ describe('Team definitions from disk', () => {
 
     await saveTeamDefinition(def, { projectDir: tmpDir });
     const loaded = loadTeamDefinition('env-test', tmpDir);
-    expect(loaded!.definition.members[0]!.apiKey).toBe('sk-resolved-123');
+    const agent = loaded!.definition.nodes?.find((n) => n.kind === 'agent');
+    expect(agent?.apiKey).toBe('sk-resolved-123');
 
     delete process.env.TEST_TEAM_KEY;
   });
@@ -120,10 +125,15 @@ describe('Team definitions from disk', () => {
     const filePath = path.join(tmpDir, '.actoviq', 'teams', 'mixed-keys.json');
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
+    expect(raw.mode).toBe('graph');
+    expect(raw.version).toBe(3);
+    expect(raw.nodes.some((n: { kind?: string }) => n.kind === 'task')).toBe(true);
+    expect(raw.nodes.some((n: { kind?: string }) => n.kind === 'return')).toBe(true);
+    const agents = raw.nodes.filter((n: { kind?: string }) => (n.kind ?? 'agent') === 'agent');
     // $VAR references should be KEPT (not secrets)
-    expect(raw.members[0].apiKey).toBe('$MY_API_KEY');
+    expect(agents[0].apiKey).toBe('$MY_API_KEY');
     // Literal apiKeys should be STRIPPED (don't store secrets on disk)
-    expect(raw.members[1].apiKey).toBeUndefined();
+    expect(agents[1].apiKey).toBeUndefined();
   });
 
   it('lists all team definitions', async () => {
@@ -203,8 +213,15 @@ describe('Team definitions from disk', () => {
     const clone = await cloneTeamDefinition('security-audit', 'my-audit', { projectDir: tmpDir });
     expect(clone.source).toBe('project');
     expect(clone.definition.name).toBe('my-audit');
-    expect(clone.definition.mode).toBe('panel-analysis');
-    expect(clone.definition.members.map((m) => m.role)).toEqual(['attacker', 'auditor']);
+    expect(clone.definition.mode).toBe('graph');
+    expect(clone.definition.version).toBe(3);
+    expect(clone.definition.nodes?.some((n) => n.kind === 'task')).toBe(true);
+    expect(clone.definition.nodes?.some((n) => n.kind === 'return')).toBe(true);
+    expect(clone.definition.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent').map((m) => m.role)).toEqual([
+      'attacker',
+      'auditor',
+      'synthesizer',
+    ]);
 
     const loaded = loadTeamDefinition('my-audit', tmpDir);
     expect(loaded!.source).toBe('project');
@@ -226,7 +243,8 @@ describe('Team definitions from disk', () => {
 
     await cloneTeamDefinition('env-source', 'env-clone', { projectDir: tmpDir });
     const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'env-clone.json'), 'utf-8'));
-    expect(raw.members[0].apiKey).toBe('$CLONE_TEST_KEY');
+    const agent = raw.nodes.find((n: { kind?: string }) => (n.kind ?? 'agent') === 'agent');
+    expect(agent.apiKey).toBe('$CLONE_TEST_KEY');
     delete process.env.CLONE_TEST_KEY;
   });
 
@@ -253,11 +271,13 @@ describe('Team definitions from disk', () => {
     await saveTeamDefinition(def, { projectDir: tmpDir });
 
     const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'graph-keys.json'), 'utf-8'));
-    expect(raw.nodes[0].apiKey).toBe('$NODE_KEY_TEST'); // $refs kept
-    expect(raw.nodes[1].apiKey).toBeUndefined(); // literals stripped
+    const agents = raw.nodes.filter((n: { kind?: string }) => (n.kind ?? 'agent') === 'agent');
+    expect(agents[0].apiKey).toBe('$NODE_KEY_TEST'); // $refs kept
+    expect(agents[1].apiKey).toBeUndefined(); // literals stripped
 
     const loaded = loadTeamDefinition('graph-keys', tmpDir);
-    expect(loaded!.definition.nodes![0]!.apiKey).toBe('sk-node-key'); // resolved on load
+    const loadedAgent = loaded!.definition.nodes!.find((n) => n.id === 'a');
+    expect(loadedAgent!.apiKey).toBe('sk-node-key'); // resolved on load
     delete process.env.NODE_KEY_TEST;
   });
 
@@ -284,6 +304,7 @@ describe('Team definitions from disk', () => {
     const loaded = loadTeamDefinition('override-test', tmpDir, homeDir);
     expect(loaded).not.toBeNull();
     expect(loaded!.source).toBe('project');
-    expect(loaded!.definition.primary!.model).toBe('project-primary');
+    expect(loaded!.definition.nodes?.some((n) => n.model === 'project-model')).toBe(true);
+    expect(loaded!.definition.nodes?.some((n) => n.model === 'project-primary')).toBe(true);
   });
 });

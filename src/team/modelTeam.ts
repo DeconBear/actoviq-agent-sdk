@@ -35,7 +35,7 @@ import {
   resolveApiKey,
   runMemberAgent,
 } from './teamRuntime.js';
-import { assertValidTeamGraph, buildGraphNodeTools, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
+import { buildGraphNodeTools, canonicalizeTeamDefinition, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Per-member ModelApi instantiation
@@ -475,6 +475,7 @@ async function runGraphMode(
   signal?: AbortSignal,
   workDir?: string,
   onEvent?: (event: TeamEvent) => void,
+  reviewerContext?: string,
 ): Promise<GraphTeamResult> {
   const startedAt = Date.now();
   const execDef = migrateTeamDefinitionToV3(definition);
@@ -514,11 +515,16 @@ async function runGraphMode(
       if (ctx.commTargets.length > 0) {
         tools.push(await createNotifyTeammateTool(ctx));
       }
+      const member = { ...node, model: node.model ?? identity.model };
+      let systemPrompt = buildMemberSystemPrompt(graphFraming, member);
+      if (reviewerContext?.trim() && execDef.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent').length === 1) {
+        systemPrompt = `${systemPrompt}\n\n## Context from the calling agent\n${reviewerContext.trim()}`;
+      }
       const run = await runMemberAgent({
         identity,
-        member: { ...node, model: node.model ?? identity.model },
+        member,
         task,
-        systemPrompt: buildMemberSystemPrompt(graphFraming, { ...node, model: node.model ?? identity.model }),
+        systemPrompt,
         cwd,
         tools,
         maxIterations: memberMaxIterations,
@@ -586,32 +592,21 @@ async function runGraphMode(
 
 export class ModelTeam {
   readonly name: string;
+  /** Canonical graph v3 definition (Task + Return ports) used at runtime. */
   readonly definition: TeamDefinition;
 
   constructor(definition: TeamDefinition) {
-    this.name = definition.name;
-    this.definition = definition;
+    this.definition = canonicalizeTeamDefinition(definition);
+    this.name = this.definition.name;
   }
 
   /**
-   * Ask the team. `opts.context` is injected into the reviewer's system prompt
-   * (reviewer mode only — what the main agent did and obtained). Returns the
-   * mode-specific result.
+   * Ask the team. All modes execute through the graph v3 engine (Task → agents → Return).
+   * `opts.context` is appended to the reviewer agent's system prompt when the graph
+   * has a single payload-return agent (reviewer-style presets).
    */
   async ask(prompt: string, signal?: AbortSignal, opts?: TeamAskOptions): Promise<ModelTeamResult> {
-    switch (this.definition.mode) {
-      case 'reviewer':
-      case 'executor-reviewer': // alias: the retired executor loop now runs the single reviewer
-        return runReviewerMode(prompt, this.definition, signal, opts?.context, opts?.workDir, opts?.onEvent);
-      case 'panel': // alias: retired pure-text panel now runs the unified engine
-      case 'analysis':
-      case 'panel-analysis':
-        return runPanelAnalysisMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent);
-      case 'graph':
-        return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent);
-      default:
-        throw new Error(`Unknown team mode: ${(this.definition as any).mode}`);
-    }
+    return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent, opts?.context);
   }
 }
 
@@ -628,23 +623,42 @@ export function createModelTeam(
 
 function validateTeamDefinition(def: TeamDefinition): void {
   if (!def.name) throw new Error('Team definition must have a name.');
-  if (!def.mode) throw new Error('Team definition must specify a mode.');
-
-  switch (def.mode) {
-    case 'reviewer':
-    case 'executor-reviewer': // retired alias: needs only a reviewer now
-      if (!def.reviewer) throw new Error('Reviewer mode requires a reviewer member.');
-      break;
-    case 'panel': // retired alias of panel-analysis (primary now optional)
-    case 'analysis':
-    case 'panel-analysis':
-      if (!def.members || def.members.length === 0) throw new Error('Panel-analysis mode requires at least one panel member.');
-      if (def.members.length > 8) throw new Error('Panel-analysis mode supports at most 8 members.');
-      break;
-    case 'graph':
-      assertValidTeamGraph(def);
-      break;
+  if (!def.mode && def.orchestration !== 'graph') {
+    throw new Error('Team definition must specify a mode.');
   }
+
+  // Legacy-mode guards give clearer errors before graph migration.
+  if (def.orchestration !== 'graph' && def.mode !== 'graph') {
+    switch (def.mode) {
+      case 'reviewer':
+      case 'executor-reviewer':
+        if (!def.reviewer) throw new Error('Reviewer mode requires a reviewer member.');
+        break;
+      case 'panel':
+      case 'analysis':
+      case 'panel-analysis':
+        if (!def.members || def.members.length === 0) {
+          throw new Error('Panel-analysis mode requires at least one panel member.');
+        }
+        if (def.members.length > 8) throw new Error('Panel-analysis mode supports at most 8 members.');
+        break;
+    }
+  }
+
+  canonicalizeTeamDefinition(def);
+}
+
+/** Infer tool UX (reviewer task/context vs panel prompt) from graph v3 shape. */
+function inferTeamToolProfile(definition: TeamDefinition): 'reviewer' | 'panel' | 'graph' {
+  const nodes = definition.nodes ?? [];
+  const agents = nodes.filter((n) => (n.kind ?? 'agent') === 'agent');
+  const payloadReturn = nodes.some((n) => n.kind === 'return' && n.returnMode === 'payload');
+  if (agents.length === 1 && payloadReturn) return 'reviewer';
+  const hasConvergenceLoop = (definition.edges ?? []).some(
+    (e) => e.loop && e.to === 'task' && (e.condition?.includes('CONTINUE') ?? false),
+  );
+  if (agents.length > 1 || hasConvergenceLoop) return 'panel';
+  return 'graph';
 }
 
 /**
@@ -655,9 +669,10 @@ export function createTeamTool(
   definition: TeamDefinition,
 ): AgentToolDefinition {
   const team = createModelTeam(definition);
-  const isReviewer = definition.mode === 'reviewer' || definition.mode === 'executor-reviewer';
-  const isPanel = definition.mode === 'analysis' || definition.mode === 'panel-analysis';
-  const isGraph = definition.mode === 'graph';
+  const profile = inferTeamToolProfile(team.definition);
+  const isReviewer = profile === 'reviewer';
+  const isPanel = profile === 'panel';
+  const isGraph = profile === 'graph';
 
   return {
     kind: 'local',
@@ -741,7 +756,7 @@ export function createTeamTool(
     interruptBehavior: 'block',
     isConcurrencySafe: () => false,
     prompt: async () => [
-      `## ${definition.name} (Model Team: ${definition.mode})`,
+      `## ${definition.name} (Model Team: graph)`,
       definition.description ?? '',
       '',
       isReviewer
