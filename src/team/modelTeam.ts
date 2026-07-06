@@ -71,6 +71,8 @@ function memberAssignmentPrompt(member: TeamMember): string {
   if (member.reviews?.length) lines.push(`Review these teammates' work: ${member.reviews.join(', ')}`);
   if (member.toolScope?.length) lines.push(`Expected tool scope: ${member.toolScope.join(', ')}`);
   if (member.runtime) lines.push(`Preferred runtime: ${member.runtime}`);
+  if (member.workspaceAccess === 'full') lines.push('Workspace access: full filesystem');
+  else if (member.workspaceAccess === 'workspace') lines.push('Workspace access: project workspace only');
   return lines.length ? ['## Team assignment', ...lines].join('\n') : '';
 }
 

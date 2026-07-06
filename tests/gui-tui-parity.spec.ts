@@ -207,8 +207,14 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('refreshSessionInBackground');
     expect(js).toContain('renderMarkdownInto');
     expect(js).toContain('detailArchivedExpanded');
-    expect(js).toContain('buildDetailConvCard');
-    expect(js).toContain('detail-archived-section');
+    expect(js).toContain('mountProjectDoc');
+    expect(js).toContain('renderProjectDocPreview');
+    expect(js).toContain('project-doc-view');
+    expect(js).toContain('conv-sidebar-row');
+    expect(js).toContain('renderConvSidebarDetail');
+    expect(js).toContain('/api/project-doc');
+    expect(css).toContain('.project-doc-panel');
+    expect(css).toContain('.conv-sidebar-detail');
     expect(js).toContain('sessionConfigDisplay');
     expect(js).not.toContain('Core Squad');
     expect(js).not.toContain('Test Runner');
@@ -294,15 +300,24 @@ describe('TUI and GUI parity', () => {
   it('renders the Team Run tree + graph editor surfaces in the GUI (plan Phase 4/5)', () => {
     const js = createActoviqGuiClientScript();
     const css = createActoviqGuiStyles();
+    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
     // Phase 5: TeamEvent-driven run tree (hidden with no team run) + edge lines.
     expect(js).toContain('renderTeamRunTree');
     expect(js).toContain("event.type === 'team.edge.triggered'");
     expect(css).toContain('.team-tree-row');
     // Phase 4: graph editor (nodes/edges/entry/allowedTools + risky-tool confirm
     // + save target + engine-validated save) and the graph-mode canvas.
-    expect(js).toContain('renderGraphTeamEditor');
+    expect(js).toContain('renderTeamNodeEditorPanel');
+    expect(js).toContain('renderTeamEdgeEditorPanel');
+    expect(js).toContain('openTeamNodeEditor');
+    expect(js).toContain('teamAgentModal');
+    expect(js).toContain('closeTeamNodeEditor');
+    expect(js).toContain('refreshTeamsSnapshot');
+    expect(js).toContain('teamGraphEditable');
+    expect(gui).toContain('migrateTeamDefinitionToV2');
     expect(js).toContain('RISKY_NODE_TOOLS');
-    expect(js).toContain('/api/team/upgrade');
+    expect(js).not.toContain('/api/team/upgrade');
+    expect(gui).toContain('/api/team/upgrade');
     expect(js).toContain('showTeamGraphProblems');
     expect(js).toContain('renderGraphModeCanvas');
     expect(js).toContain('applyGraphAutoLayout');
