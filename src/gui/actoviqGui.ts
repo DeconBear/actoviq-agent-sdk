@@ -5304,7 +5304,21 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-tabs button, .graph-tools button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 0 11px; color: var(--text-2); }
 .graph-tabs button.active { color: var(--accent); background: var(--accent-soft); border-color: #BFDBFE; }
 .graph-tools span { font-size: 12px; color: var(--text-2); }
-.graph-canvas { flex: 1; min-height: 0; overflow: auto; padding: 26px; display: grid; gap: 18px; align-content: start; justify-items: center; background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; }
+.graph-canvas { flex: 1; min-height: 0; overflow: auto; padding: 26px; display: grid; gap: 18px; align-content: start; justify-items: stretch; background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; }
+.graph-board { position: relative; min-height: 520px; width: 100%; border: 1px dashed var(--border); border-radius: 12px; background: rgba(255,255,255,.72); overflow: hidden; }
+.graph-board-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
+.graph-board-svg path.graph-edge-hit { pointer-events: stroke; cursor: pointer; fill: none; stroke: transparent; stroke-width: 14px; }
+.graph-board-svg path.graph-edge-visible { pointer-events: none; fill: none; stroke: #94A3B8; stroke-width: 2px; }
+.graph-board-svg path.graph-edge-visible.dashed { stroke-dasharray: 6 4; }
+.graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; }
+.graph-board-svg path.graph-edge-visible.selected { stroke: var(--accent); stroke-width: 2.5px; }
+.graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; }
+.graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; }
+.graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px rgba(37,99,235,.18); z-index: 3; }
+.graph-port { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; background: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,.35); z-index: 2; }
+.graph-port-in { top: -6px; left: 50%; transform: translateX(-50%); }
+.graph-port-out { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: crosshair; }
+.graph-board-hint { font-size: 11.5px; color: var(--text-2); margin: 0 0 8px; }
 .graph-title { justify-self: start; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); }
 .graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
 .graph-row { gap: 22px; }
@@ -9328,7 +9342,7 @@ function renderGraphTeamEditor(host, def) {
     const id = idInput.value.trim();
     if (!id) return;
     def.nodes = def.nodes || [];
-    def.nodes.push({ id, role: id, model: modelInput.value.trim() || (state.snapshot?.session?.model || ''), entry: (def.nodes.length === 0), systemPrompt: '', responsibility: '' });
+    def.nodes.push({ id, role: id, model: modelInput.value.trim() || (state.snapshot?.session?.model || ''), entry: (def.nodes.length === 0), systemPrompt: '', responsibility: '', ui: { x: 80 + (def.nodes.length % 3) * 240, y: 48 + Math.floor(def.nodes.length / 3) * 190 } });
     idInput.value = ''; modelInput.value = '';
     setTeamSavedStatus(false);
     renderTeamGraph(def, def.name);
@@ -9531,10 +9545,23 @@ function setTeamSavedStatus(saved) {
   el2.className = 'team-saved-status ' + (saved ? 'saved' : 'unsaved');
   el2.innerHTML = guiIcon(saved ? 'gear' : 'automation') + '<span>' + (saved ? 'Saved' : 'Unsaved') + '</span>';
 }
-function graphNodeEl(node, def, isPrimary) {
+function graphNodeEl(node, def, isPrimary, opts) {
+  opts = opts || {};
   const color = roleColor(node.role || node.name);
   const card = document.createElement('div');
-  card.className = 'graph-node' + (isPrimary ? ' primary' : '') + (node === state.teamSelectedNode ? ' selected' : '');
+  card.className = 'graph-node' + (isPrimary ? ' primary' : '') + (node === state.teamSelectedNode ? ' selected' : '') + (opts.board ? ' board-node' : '');
+  if (opts.board) {
+    card.dataset.graphRef = graphRefOf(node);
+    node.ui = node.ui || {};
+    card.style.left = (node.ui.x ?? 0) + 'px';
+    card.style.top = (node.ui.y ?? 0) + 'px';
+    if (opts.editable) {
+      const inPort = document.createElement('span');
+      inPort.className = 'graph-port graph-port-in';
+      inPort.title = 'Connect here';
+      card.appendChild(inPort);
+    }
+  }
   const bar = document.createElement('span');
   bar.className = 'gn-bar';
   bar.style.background = color;
@@ -9547,7 +9574,7 @@ function graphNodeEl(node, def, isPrimary) {
   icon.innerHTML = guiIcon('agent');
   const nameEl = document.createElement('span');
   nameEl.className = 'gn-name';
-  nameEl.textContent = node.name || node.role || 'agent';
+  nameEl.textContent = graphRefOf(node) || node.name || node.role || 'agent';
   head.append(icon, nameEl);
   const status = document.createElement('span');
   status.className = 'gn-status';
@@ -9559,26 +9586,42 @@ function graphNodeEl(node, def, isPrimary) {
   model.textContent = node.model || 'inherits model';
   const tools = document.createElement('div');
   tools.className = 'gn-tools';
-  const toolLabels = Array.isArray(node.toolScope) && node.toolScope.length > 0
-    ? node.toolScope
-    : ['Read repository', 'Execute tools'];
+  const toolLabels = def?.mode === 'graph' && Array.isArray(node.allowedTools) && node.allowedTools.length
+    ? node.allowedTools
+    : (Array.isArray(node.toolScope) && node.toolScope.length > 0 ? node.toolScope : ['Read', 'Glob', 'Grep']);
   toolLabels.slice(0, 4).forEach((text) => {
     const pill = document.createElement('span');
     pill.textContent = text;
     tools.appendChild(pill);
   });
+  if (node.entry) {
+    const entry = document.createElement('span');
+    entry.textContent = 'entry';
+    tools.appendChild(entry);
+  }
   if (node.runtime) {
     const runtime = document.createElement('span');
     runtime.textContent = node.runtime;
     tools.appendChild(runtime);
   }
   card.append(head, status, role, model, tools);
+  if (opts.board && opts.editable) {
+    const outPort = document.createElement('span');
+    outPort.className = 'graph-port graph-port-out';
+    outPort.title = 'Drag to connect';
+    card.appendChild(outPort);
+  }
+  let dragMoved = false;
   card.addEventListener('click', () => {
+    if (dragMoved) { dragMoved = false; return; }
     state.teamSelectedNode = node;
     document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
     card.classList.add('selected');
     renderTeamInspector(node, state.teamDefinition);
   });
+  if (opts.board && opts.editable) {
+    wireGraphNodeDrag(card, node, () => { dragMoved = true; });
+  }
   return card;
 }
 // Runtime nodes (plan/UI_PLAN §5.2): Local Shell / CI / Browser — visually
@@ -9733,21 +9776,232 @@ function edgeRowFromChips(chips, dashedRow) {
   chips.forEach((chip) => row.appendChild(chip));
   return row;
 }
-// --- Graph-mode canvas (plan Phase 4/§3.5): topological layers + real edges. ---
-// Layer 0 = entry nodes; each next layer = nodes whose every on_complete
-// upstream sits in an earlier layer. Edge chips between layers carry the real
-// from→to plus trigger/channel (dashed for communication/manual triggers).
-function renderGraphModeCanvas(g, def, name) {
+// --- Graph-mode canvas (plan Phase 4): drag nodes + port-to-port edges on SVG. ---
+function computeGraphLayerIndices(def) {
   const nodes = def.nodes || [];
   const edges = def.edges || [];
+  const refs = nodes.map(graphRefOf);
+  const indexOfRef = new Map(refs.map((r, i) => [r, i]));
+  const entrySet = new Set();
+  nodes.forEach((n, i) => { if (n.entry) entrySet.add(i); });
+  for (const r of def.entryNodeIds || []) { const i = indexOfRef.get(String(r).trim()); if (i != null) entrySet.add(i); }
+  const autoIn = new Map();
+  for (const e of edges) {
+    if ((e.trigger || 'on_complete') !== 'on_complete') continue;
+    const to = indexOfRef.get(String(e.to).trim());
+    const from = indexOfRef.get(String(e.from).trim());
+    if (to == null || from == null) continue;
+    if (!autoIn.has(to)) autoIn.set(to, []);
+    autoIn.get(to).push(from);
+  }
+  const layer = new Array(nodes.length).fill(-1);
+  entrySet.forEach((i) => { layer[i] = 0; });
+  for (let pass = 0; pass < nodes.length; pass++) {
+    let changed = false;
+    nodes.forEach((_, i) => {
+      if (layer[i] >= 0) return;
+      const ups = autoIn.get(i) || [];
+      if (ups.length && ups.every((u) => layer[u] >= 0)) {
+        layer[i] = 1 + Math.max(...ups.map((u) => layer[u]));
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+  return { layer, entrySet, indexOfRef };
+}
+function ensureGraphNodeLayout(def) {
+  const nodes = def.nodes || [];
+  if (!nodes.length) return;
+  const missing = nodes.some((n) => n.ui?.x == null || n.ui?.y == null);
+  if (!missing) return;
+  applyGraphAutoLayout(def);
+}
+function applyGraphAutoLayout(def) {
+  const nodes = def.nodes || [];
+  const { layer } = computeGraphLayerIndices(def);
+  const maxLayer = Math.max(0, ...layer);
+  const lanes = [];
+  nodes.forEach((_, i) => {
+    const l = layer[i] >= 0 ? layer[i] : maxLayer + 1;
+    while (lanes.length <= l) lanes.push([]);
+    lanes[l].push(i);
+  });
+  const startY = 48;
+  const rowGap = 190;
+  const colGap = 250;
+  const startX = 72;
+  lanes.forEach((indices, row) => {
+    indices.forEach((nodeIdx, col) => {
+      const n = nodes[nodeIdx];
+      n.ui = { x: startX + col * colGap, y: startY + row * rowGap };
+    });
+  });
+  setTeamSavedStatus(false);
+}
+function graphBoardPortPoint(card, kind, board) {
+  const port = card.querySelector(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
+  const br = board.getBoundingClientRect();
+  const pr = (port || card).getBoundingClientRect();
+  return { x: pr.left + pr.width / 2 - br.left + board.scrollLeft, y: pr.top + pr.height / 2 - br.top + board.scrollTop };
+}
+function graphEdgeBezierPath(x1, y1, x2, y2) {
+  const dy = Math.max(48, Math.abs(y2 - y1) * 0.45);
+  return 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 + dy) + ', ' + x2 + ' ' + (y2 - dy) + ', ' + x2 + ' ' + y2;
+}
+function redrawGraphBoardEdges(board, svg, def) {
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const edges = def.edges || [];
+  const cards = new Map();
+  board.querySelectorAll('.graph-node.board-node').forEach((el) => {
+    if (el.dataset.graphRef) cards.set(el.dataset.graphRef, el);
+  });
+  edges.forEach((edge, idx) => {
+    const fromCard = cards.get(String(edge.from).trim());
+    const toCard = cards.get(String(edge.to).trim());
+    if (!fromCard || !toCard) return;
+    const p1 = graphBoardPortPoint(fromCard, 'out', board);
+    const p2 = graphBoardPortPoint(toCard, 'in', board);
+    const d = graphEdgeBezierPath(p1.x, p1.y, p2.x, p2.y);
+    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    hit.setAttribute('d', d);
+    hit.classList.add('graph-edge-hit');
+    hit.dataset.edgeIdx = String(idx);
+    const vis = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    vis.setAttribute('d', d);
+    vis.classList.add('graph-edge-visible');
+    if (edge.trigger && edge.trigger !== 'on_complete') vis.classList.add('dashed');
+    if (state.teamEditing) {
+      hit.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.confirm('Remove edge ' + edge.from + ' → ' + edge.to + '?')) return;
+        def.edges.splice(idx, 1);
+        setTeamSavedStatus(false);
+        renderTeamGraph(def, def.name);
+        if (state.teamEditing) renderTeamEditor();
+      });
+    }
+    svg.append(hit, vis);
+  });
+  const h = board.scrollHeight;
+  const w = board.scrollWidth;
+  svg.setAttribute('viewBox', '0 0 ' + Math.max(w, 800) + ' ' + Math.max(h, 520));
+  svg.setAttribute('width', String(Math.max(w, 800)));
+  svg.setAttribute('height', String(Math.max(h, 520)));
+}
+function wireGraphNodeDrag(card, node, onMoved) {
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
+  let origX = 0;
+  let origY = 0;
+  let moved = false;
+  const board = () => card.closest('.graph-board');
+  const svg = () => board()?.querySelector('.graph-board-svg');
+  const onMove = (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+    node.ui = node.ui || {};
+    node.ui.x = Math.max(8, origX + dx);
+    node.ui.y = Math.max(8, origY + dy);
+    card.style.left = node.ui.x + 'px';
+    card.style.top = node.ui.y + 'px';
+    const b = board();
+    const s = svg();
+    if (b && s && state.teamDefinition) redrawGraphBoardEdges(b, s, state.teamDefinition);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    card.classList.remove('dragging');
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    if (moved) {
+      setTeamSavedStatus(false);
+      if (onMoved) onMoved();
+    }
+    moved = false;
+  };
+  card.addEventListener('mousedown', (e) => {
+    if (!state.teamEditing) return;
+    if (e.target.closest('.graph-port')) return;
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    origX = node.ui?.x ?? 0;
+    origY = node.ui?.y ?? 0;
+    card.classList.add('dragging');
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+function wireGraphBoardConnect(board, svg, def, name) {
+  board.addEventListener('mousedown', (e) => {
+    const out = e.target.closest('.graph-port-out');
+    if (!out || !state.teamEditing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const fromRef = out.closest('.graph-node')?.dataset.graphRef;
+    if (!fromRef) return;
+    const preview = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    preview.classList.add('graph-edge-preview');
+    svg.appendChild(preview);
+    const origin = graphBoardPortPoint(out.closest('.graph-node'), 'out', board);
+    const move = (ev) => {
+      const br = board.getBoundingClientRect();
+      const x2 = ev.clientX - br.left + board.scrollLeft;
+      const y2 = ev.clientY - br.top + board.scrollTop;
+      preview.setAttribute('d', graphEdgeBezierPath(origin.x, origin.y, x2, y2));
+    };
+    const up = (ev) => {
+      board.removeEventListener('mousemove', move);
+      board.removeEventListener('mouseup', up);
+      preview.remove();
+      const inPort = ev.target.closest('.graph-port-in');
+      const toRef = inPort?.closest('.graph-node')?.dataset.graphRef;
+      if (!toRef || toRef === fromRef) return;
+      def.edges = def.edges || [];
+      if (def.edges.some((ed) => ed.from === fromRef && ed.to === toRef)) {
+        window.alert('An edge from "' + fromRef + '" to "' + toRef + '" already exists.');
+        return;
+      }
+      def.edges.push({ from: fromRef, to: toRef });
+      setTeamSavedStatus(false);
+      renderTeamGraph(def, name);
+      if (state.teamEditing) renderTeamEditor();
+    };
+    board.addEventListener('mousemove', move);
+    board.addEventListener('mouseup', up);
+  });
+}
+function renderGraphModeCanvas(g, def, name) {
+  const nodes = def.nodes || [];
   const toolbar = document.createElement('div');
   toolbar.className = 'graph-toolbar';
   const left = document.createElement('div');
   left.className = 'graph-tabs';
-  left.innerHTML = '<button class="active">Graph</button><button>List</button>';
+  left.innerHTML = '<button class="active">Graph</button><button type="button">List</button>';
   const right = document.createElement('div');
   right.className = 'graph-tools';
-  right.innerHTML = '<span class="graph-mode-pill">graph · v2</span>';
+  const pill = document.createElement('span');
+  pill.className = 'graph-mode-pill';
+  pill.textContent = 'graph · v2';
+  right.appendChild(pill);
+  if (state.teamEditing && nodes.length) {
+    const layoutBtn = document.createElement('button');
+    layoutBtn.type = 'button';
+    layoutBtn.textContent = 'Auto layout';
+    layoutBtn.title = 'Recompute node positions from the DAG layers';
+    layoutBtn.addEventListener('click', () => {
+      applyGraphAutoLayout(def);
+      renderTeamGraph(def, name);
+    });
+    right.appendChild(layoutBtn);
+  }
   toolbar.append(left, right);
   const canvas = document.createElement('div');
   canvas.className = 'graph-canvas';
@@ -9763,67 +10017,34 @@ function renderGraphModeCanvas(g, def, name) {
     g.append(toolbar, canvas);
     return;
   }
-  const refs = nodes.map(graphRefOf);
-  const indexOfRef = new Map(refs.map((r, i) => [r, i]));
-  const entrySet = new Set();
-  nodes.forEach((n, i) => { if (n.entry) entrySet.add(i); });
-  for (const r of def.entryNodeIds || []) { const i = indexOfRef.get(String(r).trim()); if (i != null) entrySet.add(i); }
-  const autoIn = new Map();
-  for (const e of edges) {
-    if ((e.trigger || 'on_complete') !== 'on_complete') continue;
-    const to = indexOfRef.get(String(e.to).trim());
-    const from = indexOfRef.get(String(e.from).trim());
-    if (to == null || from == null) continue;
-    if (!autoIn.has(to)) autoIn.set(to, []);
-    autoIn.get(to).push(from);
+  ensureGraphNodeLayout(def);
+  if (state.teamEditing) {
+    const hint = document.createElement('p');
+    hint.className = 'graph-board-hint';
+    hint.textContent = 'Drag nodes to reposition · drag from bottom port → top port to connect · double-click edge to remove';
+    canvas.appendChild(hint);
   }
-  // Assign layers (bounded loop — validation guarantees a DAG, but stay safe).
-  const layer = new Array(nodes.length).fill(-1);
-  entrySet.forEach((i) => { layer[i] = 0; });
-  for (let pass = 0; pass < nodes.length; pass++) {
-    let changed = false;
-    nodes.forEach((_, i) => {
-      if (layer[i] >= 0) return;
-      const ups = autoIn.get(i) || [];
-      if (ups.length && ups.every((u) => layer[u] >= 0)) {
-        layer[i] = 1 + Math.max(...ups.map((u) => layer[u]));
-        changed = true;
-      }
-    });
-    if (!changed) break;
-  }
-  const maxLayer = Math.max(0, ...layer);
-  const unplaced = nodes.map((_, i) => i).filter((i) => layer[i] < 0);
-  for (let d = 0; d <= maxLayer; d++) {
-    const lane = document.createElement('div');
-    lane.className = 'graph-row graph-lane';
-    nodes.forEach((n, i) => { if (layer[i] === d) lane.appendChild(graphNodeEl(n, def, entrySet.has(i))); });
-    canvas.appendChild(lane);
-    const chips = edges
-      .filter((e) => {
-        const from = indexOfRef.get(String(e.from).trim());
-        return from != null && layer[from] === d;
-      })
-      .slice(0, 6)
-      .map((e) => {
-        const label = (e.trigger && e.trigger !== 'on_complete' ? e.trigger : (e.channel || 'message')) + (e.condition ? ' ?' : '');
-        const chip = graphEdgeFromTo(e.from, e.to, label);
-        if (e.trigger && e.trigger !== 'on_complete') chip.classList.add('dashed');
-        return chip;
-      });
-    if (chips.length) canvas.appendChild(edgeRowFromChips(chips));
-  }
-  if (unplaced.length) {
-    const lane = document.createElement('div');
-    lane.className = 'graph-row graph-lane graph-unreachable';
-    for (const i of unplaced) lane.appendChild(graphNodeEl(nodes[i], def, false));
-    const note = document.createElement('p');
-    note.className = 'region-empty';
-    note.textContent = 'Not reachable from an entry over on_complete edges (communication/manual only).';
-    canvas.appendChild(note);
-    canvas.appendChild(lane);
-  }
+  const board = document.createElement('div');
+  board.className = 'graph-board';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('graph-board-svg');
+  const layer = document.createElement('div');
+  layer.className = 'graph-nodes-layer';
+  const { entrySet } = computeGraphLayerIndices(def);
+  const editable = Boolean(state.teamEditing);
+  nodes.forEach((n, i) => {
+    layer.appendChild(graphNodeEl(n, def, entrySet.has(i), { board: true, editable }));
+  });
+  let maxBottom = 520;
+  nodes.forEach((n) => { maxBottom = Math.max(maxBottom, (n.ui?.y ?? 0) + 140); });
+  board.style.minHeight = maxBottom + 'px';
+  board.append(svg, layer);
+  canvas.appendChild(board);
   g.append(toolbar, canvas);
+  requestAnimationFrame(() => {
+    redrawGraphBoardEdges(board, svg, def);
+    if (editable) wireGraphBoardConnect(board, svg, def, name);
+  });
 }
 function insField(lbl, val) {
   const f = document.createElement('div');
@@ -11241,7 +11462,12 @@ el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion
 el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
-el('teamEditToggleBtn').addEventListener('click', () => { state.teamEditing = !state.teamEditing; if (state.teamEditing) setTeamSavedStatus(false); renderTeamEditor(); });
+el('teamEditToggleBtn').addEventListener('click', () => {
+  state.teamEditing = !state.teamEditing;
+  if (state.teamEditing) setTeamSavedStatus(false);
+  renderTeamEditor();
+  if (state.teamDefinition?.mode === 'graph') renderTeamGraph(state.teamDefinition, state.teamDefinition.name);
+});
 el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
