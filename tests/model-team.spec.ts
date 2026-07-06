@@ -228,7 +228,8 @@ describe('ModelTeam validation', () => {
     };
     const team = createModelTeam(def);
     expect(team.definition.mode).toBe('graph');
-    expect(team.definition.edges?.some((e) => e.loop && e.to === 'task')).toBe(true);
+    expect(team.definition.edges?.some((e) => e.loop && e.from === 'claude-opus-4-8')).toBe(true);
+    expect(team.definition.edges?.every((e) => !e.loop || e.to !== 'task')).toBe(true);
   });
 
   it('still accepts analysis as a backward-compatible alias', () => {

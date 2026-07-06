@@ -319,6 +319,17 @@ describe('TUI and GUI parity', () => {
     expect(gui).toContain('migrateTeamDefinitionToGraph');
     expect(js).toContain('graphPortNodeEl');
     expect(js).toContain('renderTeamReturnEditorPanel');
+    expect(js).toContain('removeGraphAgentNode');
+    expect(js).toContain('Remove agent');
+    expect(js).toContain('formatTeamGraphEdgeLabel');
+    expect(js).toContain("Direction");
+    expect(js).toContain('graph-edge-arrow');
+    expect(js).toContain('graph-edge-handle');
+    expect(js).toContain('defaultEdgeBezierOffsets');
+    expect(js).toContain('graphNodeRef');
+    expect(js).toContain('computeTeamGraphAutoLayoutLanes');
+    expect(js).toContain('resolveEdgeBezierPoints');
+    expect(js).toContain('Reset curve');
     expect(js).toContain('RISKY_NODE_TOOLS');
     expect(js).not.toContain('/api/team/upgrade');
     expect(gui).toContain('/api/team/upgrade');
@@ -351,6 +362,12 @@ describe('TUI and GUI parity', () => {
     const file = join(tmpdir(), `actoviq-gui-client-${process.pid}.js`);
     writeFileSync(file, js);
     expect(() => execSync(`node --check ${JSON.stringify(file)}`)).not.toThrow();
+  });
+
+  it('client script can auto-layout squads missing agent ui positions', () => {
+    const js = createActoviqGuiClientScript();
+    expect(js).toContain('function graphNodeRef(');
+    expect(js.indexOf('function graphNodeRef(')).toBeLessThan(js.indexOf('function computeTeamGraphAutoLayoutLanes('));
   });
 
   it('ships GUI taskbar icon assets for Electron', () => {

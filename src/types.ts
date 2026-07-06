@@ -2552,6 +2552,14 @@ export interface TeamGraphNode extends Omit<TeamMember, 'model'> {
   join?: 'all' | 'any';
   /** GUI canvas position (pixels). Ignored by the graph engine. */
   ui?: { x?: number; y?: number };
+  /** Per-node ReAct tool-iteration cap. Omit or ≤0 = unlimited. */
+  maxIterations?: number;
+  /** Per-node run timeout (ms). Omit → squad default. */
+  timeoutMs?: number;
+  /** Transient network-error reconnect attempts. Default 10. */
+  reconnectAttempts?: number;
+  /** Per-node graph loop-round cap. Omit or ≤0 = unlimited (squad `maxRounds` applies). */
+  maxRounds?: number;
 }
 
 export interface TeamGraphEdge {
@@ -2579,6 +2587,21 @@ export interface TeamGraphEdge {
   note?: string;
   /** v3: back-edge for convergence loops — requires `maxRounds` on the definition. */
   loop?: boolean;
+  /**
+   * Edge direction for GUI + runtime. Default / omitted = `directed` (from → to).
+   * `undirected` (↔): bidirectional — runtime expands a reverse sibling for
+   * communication triggers; passive `on_complete` edges still store one record
+   * but also gain reverse scheduling except when `loop` is set.
+   */
+  direction?: 'directed' | 'undirected';
+  /**
+   * GUI canvas cubic-bezier control points (offsets from from/to ports).
+   * Ignored by the graph engine; persisted with the squad JSON on Save.
+   */
+  ui?: {
+    c1?: { dx: number; dy: number };
+    c2?: { dx: number; dy: number };
+  };
 }
 
 export interface TeamDefinition {

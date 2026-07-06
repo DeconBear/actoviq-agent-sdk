@@ -90,6 +90,9 @@ import {
   loadTeamDefinition,
   cloneTeamDefinition,
   instantiateTeamDefinition,
+  getBuiltInTeamDefinition,
+  ensureConfiguredTeamGraph,
+  canonicalizeTeamDefinition,
   validateTeamGraph,
   migrateTeamDefinitionToGraph,
   readTeamPreferences,
@@ -111,7 +114,6 @@ import {
   resolveRoutedRun,
   recordScheduledAutomationRun,
   saveTeamDefinition,
-  BUILT_IN_TEAM_DEFINITIONS,
   setScheduledAutomationEnabled,
   TaskScheduler,
   upsertScheduledAutomationTask,
@@ -133,6 +135,24 @@ import {
   type ModelModality,
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
+import {
+  TEAM_GRAPH_MEMBER_FRAMING,
+  buildMemberAssignmentPrompt,
+  buildMemberSystemPrompt,
+  resolveGraphNodeSystemPrompt,
+} from '../team/teamPrompts.js';
+import {
+  formatTeamGraphEdgeLabel,
+  isUndirectedTeamGraphEdge,
+  graphNodeRef,
+} from '../team/teamGraph.js';
+import {
+  resolveEdgeBezierPoints,
+  writeEdgeBezierUi,
+  clearEdgeBezierUi,
+  defaultEdgeBezierOffsets,
+  computeTeamGraphAutoLayoutLanes,
+} from '../team/teamGraphLayout.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { estimateCost } from '../team/pricing.js';
@@ -3109,9 +3129,41 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
   if (req.method === 'GET' && url.pathname === '/api/team/definition') {
     const name = url.searchParams.get('name') || '';
-    const raw = resolveTeamDefinition(name, workDir, session?.model ?? '');
-    const definition = raw ? migrateTeamDefinitionToGraph(raw) : null;
-    return json(res, 200, { definition });
+    const loaded = loadTeamDefinition(name, workDir);
+    const raw = loaded?.definition ?? resolveTeamDefinition(name, workDir, session?.model ?? '');
+    const definition = raw
+      ? ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(raw))
+      : null;
+    return json(res, 200, { definition, source: loaded?.source ?? null });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/team/restore-default') {
+    const name = url.searchParams.get('name') || '';
+    if (!name) return json(res, 400, { error: 'name is required' });
+    const builtIn = getBuiltInTeamDefinition(name);
+    if (builtIn) {
+      return json(res, 200, {
+        definition: instantiateTeamDefinition(builtIn, session?.model ?? ''),
+        source: 'built-in',
+      });
+    }
+    const loaded = loadTeamDefinition(name, workDir);
+    if (!loaded) return json(res, 404, { error: `team not found: ${name}` });
+    if (loaded.source === 'built-in') {
+      return json(res, 200, {
+        definition: instantiateTeamDefinition(loaded.definition, session?.model ?? ''),
+        source: 'built-in',
+      });
+    }
+    try {
+      const raw = JSON.parse(readFileSync(loaded.filePath, 'utf-8')) as TeamDefinition;
+      const definition = instantiateTeamDefinition(
+        ensureConfiguredTeamGraph(canonicalizeTeamDefinition(raw)),
+        session?.model ?? '',
+      );
+      return json(res, 200, { definition, source: loaded.source });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
   }
   if (req.method === 'POST' && url.pathname === '/api/team/save') {
     try {
@@ -3121,7 +3173,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 400, { error: 'definition.name is required' });
       }
       // All squads persist as graph v3 JSON — validate before touching disk.
-      const migrated = migrateTeamDefinitionToGraph(def);
+      const migrated = ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(def));
       const problems = validateTeamGraph(migrated);
       if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
       def = migrated;
@@ -4209,6 +4261,7 @@ export function createActoviqGuiHtml(): string {
     <div class="dialog team-agent-dialog">
       <div id="teamAgentModalBody" class="team-agent-modal-body"></div>
       <div class="dialog-actions">
+        <button type="button" id="teamAgentModalRestore">Restore defaults</button>
         <button type="button" id="teamAgentModalClose">Cancel</button>
         <button type="button" id="teamAgentModalDone" class="primary">Done</button>
       </div>
@@ -5144,6 +5197,7 @@ button { cursor: pointer; }
 .te-btn.primary:hover { background: var(--accent-strong); }
 .te-actions { display: flex; gap: 8px; margin-top: 6px; align-items: flex-end; flex-wrap: wrap; }
 .te-hint { font-size: 12px; color: var(--text-2); margin: 0 0 8px; line-height: 1.5; }
+.te-prompt-preview { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-muted, #f8f9fa); font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; color: var(--text-2); }
 .dialog.team-agent-dialog { width: min(560px, 100%); max-height: min(88vh, 900px); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
 .team-agent-modal-body { overflow: auto; padding: 16px 18px 8px; flex: 1; }
 .team-agent-modal-body .ins-head { margin-bottom: 12px; }
@@ -5712,28 +5766,36 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .sq-labels strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sq-labels small { color: var(--text-2); font-size: 12px; }
 .team-editor { grid-column: 1 / -1; grid-row: 1 / -1; z-index: 2; margin: 14px; overflow: auto; }
-.team-graph { grid-column: 2; grid-row: 1 / span 2; min-height: 0; height: 100%; padding: 0; align-items: stretch; background: #F8FAFC; }
-.graph-toolbar { height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.team-graph { grid-column: 2; grid-row: 1 / span 2; min-height: 0; height: 100%; padding: 0; display: flex; flex-direction: column; overflow: hidden; align-items: stretch; background: #F8FAFC; }
+.graph-toolbar { height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex: 0 0 auto; }
 .graph-tabs, .graph-tools { display: flex; align-items: center; gap: 6px; }
 .graph-tabs button, .graph-tools button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 0 11px; color: var(--text-2); }
 .graph-tabs button.active { color: var(--accent); background: var(--accent-soft); border-color: #BFDBFE; }
 .graph-tools span { font-size: 12px; color: var(--text-2); }
-.graph-canvas { flex: 1; min-height: 0; overflow: auto; padding: 26px; display: grid; gap: 18px; align-content: start; justify-items: stretch; background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; }
-.graph-board { position: relative; min-height: 520px; width: 100%; border: 1px dashed var(--border); border-radius: 12px; background: rgba(255,255,255,.72); overflow: hidden; }
-.graph-board-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; }
-.graph-board-svg path.graph-edge-hit { pointer-events: stroke; cursor: pointer; fill: none; stroke: transparent; stroke-width: 14px; }
-.graph-board-svg path.graph-edge-visible { pointer-events: none; fill: none; stroke: #94A3B8; stroke-width: 2px; }
+.graph-canvas { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 12px 14px 14px; gap: 8px; }
+.graph-board-viewport { flex: 1; min-height: 280px; overflow: hidden; position: relative; border: 1px dashed var(--border); border-radius: 12px; background-color: rgba(255,255,255,.72); background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; overscroll-behavior: contain; cursor: grab; touch-action: none; }
+.graph-board-viewport.panning { cursor: grabbing; }
+.graph-board-stage { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+.graph-board { position: relative; background: transparent; overflow: visible; }
+.graph-board-svg { position: absolute; top: 0; left: 0; z-index: 2; overflow: visible; pointer-events: none; }
+.graph-board-svg path.graph-edge-hit { pointer-events: stroke; cursor: pointer; fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; }
+.graph-board-svg path.graph-edge-visible { pointer-events: none; fill: none; stroke: #94A3B8; stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .graph-board-svg path.graph-edge-visible.dashed { stroke-dasharray: 6 4; }
-.graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; }
+.graph-board-svg path.graph-edge-visible.undirected { stroke-linecap: round; }
+.graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .graph-board-svg path.graph-edge-visible.selected { stroke: var(--accent); stroke-width: 2.5px; }
-.graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; }
-.graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; }
+.graph-board-svg marker#graph-edge-arrow path { fill: #94A3B8; }
+.graph-board-svg marker#graph-edge-arrow-selected path { fill: var(--accent); }
+.graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.graph-board-svg circle.graph-edge-handle:active { cursor: grabbing; fill: var(--accent-soft); }
+.graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; pointer-events: none; }
+.graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; pointer-events: auto; }
 .graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px rgba(37,99,235,.18); z-index: 3; }
 .graph-port { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; background: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,.35); z-index: 2; }
 .graph-port-in { top: -6px; left: 50%; transform: translateX(-50%); }
 .graph-port-out { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: crosshair; }
-.graph-board-hint { font-size: 11.5px; color: var(--text-2); margin: 0 0 8px; }
-.graph-title { justify-self: start; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); }
+.graph-board-hint { font-size: 11.5px; color: var(--text-2); margin: 0; flex: 0 0 auto; }
+.graph-title { flex: 0 0 auto; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); align-self: flex-start; }
 .graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
 .graph-row { gap: 22px; }
 .graph-edge-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 18px 36px; width: min(720px, 100%); position: relative; }
@@ -5990,6 +6052,7 @@ body[data-theme="dark"] .pc-path, body[data-theme="dark"] .conv-preview, body[da
 body[data-theme="dark"] .crumb, body[data-theme="dark"] .crumb-sep { color: #8ab4f8; }
 body[data-theme="dark"] .squad-chip, body[data-theme="dark"] .te-field input, body[data-theme="dark"] .te-field textarea, body[data-theme="dark"] .plan-add input, body[data-theme="dark"] .overview-search { background: #1f2023; border-color: #3b3d43; color: #e8eaed; }
 body[data-theme="dark"] .team-graph { background: #171819; }
+body[data-theme="dark"] .graph-board-viewport { background-color: rgba(23,24,25,.92); background-image: radial-gradient(#3a3d42 1px, transparent 1px); }
 body[data-theme="dark"] .graph-arrow { color: #5b5f66; }
 body[data-theme="dark"] .project-doc-panel,
 body[data-theme="dark"] .project-doc-scroll,
@@ -6144,6 +6207,20 @@ body[data-theme="dark"] #todosList li.todo-completed { color: #6f7479; }
 }
 
 export function createActoviqGuiClientScript(): string {
+  const teamPromptScript = [
+    `const TEAM_GRAPH_MEMBER_FRAMING = ${JSON.stringify(TEAM_GRAPH_MEMBER_FRAMING)};`,
+    buildMemberAssignmentPrompt.toString(),
+    buildMemberSystemPrompt.toString(),
+    resolveGraphNodeSystemPrompt.toString(),
+    isUndirectedTeamGraphEdge.toString(),
+    formatTeamGraphEdgeLabel.toString(),
+    defaultEdgeBezierOffsets.toString(),
+    graphNodeRef.toString(),
+    computeTeamGraphAutoLayoutLanes.toString(),
+    resolveEdgeBezierPoints.toString(),
+    writeEdgeBezierUi.toString(),
+    clearEdgeBezierUi.toString(),
+  ].join('\n');
   return `
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
 // Client-side icon helper. eye/eyeOff are runtime-toggled; the workbench tab
@@ -6188,6 +6265,7 @@ function api(path, options = {}) {
   return fetch(path, Object.assign({}, options, { headers }));
 }
 const __name = (target) => target;
+${teamPromptScript}
 ${renderMarkdown.toString()}
 function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
 let markdownRenderTimer = null;
@@ -6212,6 +6290,7 @@ const state = {
   pendingPermissionId: null,
   permissionQueue: [],
   snapshot: null,
+  loadError: null,
   sessionsLimit: 16,
   queue: [],
   running: false,
@@ -6255,11 +6334,13 @@ const state = {
   // Team region: selected squad + its expanded definition + selected graph node.
   teamSelected: null,
   teamDefinition: null,
+  teamDefinitionSource: null,
   teamSelectedNode: null,
   teamSelectedEdgeIdx: null,
   teamEditing: false,
   teamDefinitionCache: {},
   teamSaveTarget: 'project',
+  teamGraphFitView: false,
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
@@ -7546,8 +7627,16 @@ async function hydrateTranscript() {
   renderTranscriptFromMessages(state.lastHydratedMessages);
 }
 async function loadState() {
-  const res = await api('/api/state');
-  state.snapshot = await res.json();
+  try {
+    const res = await api('/api/state');
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error || ('Failed to load state (' + res.status + ')'));
+    state.snapshot = payload;
+    state.loadError = null;
+  } catch (error) {
+    state.loadError = error instanceof Error ? error.message : String(error);
+    state.snapshot = state.snapshot || { projects: [], sessions: [], runs: [] };
+  }
   applyLoadedState();
 }
 function applyLoadedState() {
@@ -8010,8 +8099,9 @@ async function createNewSession() {
 // --- Project overview (plan/UI_PLAN §4.1): workspace card wall. ---
 const PROJECT_ACCENTS = ['#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EC4899', '#0EA5E9'];
 function projectAccent(name) {
+  const text = String(name || '');
   let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
   return PROJECT_ACCENTS[h % PROJECT_ACCENTS.length];
 }
 function compactPath(value) {
@@ -8224,7 +8314,8 @@ function renderOverview() {
   if (projects.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'region-empty';
-    empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
+    if (state.loadError) empty.textContent = 'Could not load projects: ' + state.loadError;
+    else empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
   renderContextRail();
@@ -9765,12 +9856,11 @@ function memberRef(member) {
   return String(member?.id || member?.name || member?.role || member?.model || '').trim();
 }
 function teamListForRegion() {
-  const saved = (state.snapshot?.teams || []).map((t) => ({ name: t.name, source: t.source || 'project' }));
-  const names = new Set(saved.map((t) => t.name));
-  const builtins = Object.keys(BUILT_IN_TEAM_DEFINITIONS)
-    .filter((n) => !names.has(n))
-    .map((n) => ({ name: n, source: 'built-in' }));
-  return [...saved, ...builtins];
+  // snapshot.teams already includes built-in presets (see hydrateSettingsForm).
+  return (state.snapshot?.teams || []).map((t) => ({
+    name: t.name,
+    source: t.source || 'project',
+  }));
 }
 async function refreshTeamsSnapshot() {
   try {
@@ -9835,7 +9925,11 @@ async function selectTeam(name, opts) {
   if (!def) {
     try {
       const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
-      if (res.ok) def = (await res.json()).definition || null;
+      if (res.ok) {
+        const payload = await res.json();
+        def = payload.definition || null;
+        if (payload.source) state.teamDefinitionSource = payload.source;
+      }
       if (def) state.teamDefinitionCache[name] = def;
     } catch { /* offline */ }
   }
@@ -9843,13 +9937,22 @@ async function selectTeam(name, opts) {
     delete state.teamDefinitionCache[name];
     try {
       const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
-      if (res.ok) def = (await res.json()).definition || null;
+      if (res.ok) {
+        const payload = await res.json();
+        def = payload.definition || null;
+        if (payload.source) state.teamDefinitionSource = payload.source;
+      }
       if (def) state.teamDefinitionCache[name] = def;
     } catch { /* offline */ }
   }
   state.teamDefinition = def;
+  if (!state.teamDefinitionSource) {
+    const meta = teamListForRegion().find((t) => t.name === name);
+    if (meta?.source) state.teamDefinitionSource = meta.source;
+  }
   state.teamSelectedNode = firstTeamNode(def);
   state.teamSelectedEdgeIdx = null;
+  state.teamGraphFitView = true;
   renderTeamGraph(def, name);
   const host = el('teamEditor');
   if (host) host.classList.add('hidden');
@@ -9872,7 +9975,82 @@ async function runSelectedSquad() {
 }
 // --- Team editor (plan/UI_PLAN §5.3 / U6 + graph canvas inspector). ---
 const TEAM_CORE_TOOLS = ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'TavilySearch', 'WebFetch', 'Task', 'TodoWrite', 'AskUserQuestion'];
+const TEAM_READ_ONLY_EXPERT_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'TavilySearch'];
+function effectiveNodeAllowedTools(node) {
+  return (node.allowedTools && node.allowedTools.length)
+    ? node.allowedTools
+    : TEAM_READ_ONLY_EXPERT_TOOLS.slice();
+}
 const TEAM_RUNTIME_OPTIONS = ['', 'hadamard', 'claude', 'bridge', 'codex'];
+function teamBridgeConfigOptions() {
+  return (state.snapshot?.bridgeState?.configs || []);
+}
+function teamRuntimeSelectOptions() {
+  const opts = [{ value: '', label: '(session default · hadamard)' }];
+  const seen = new Set(['']);
+  for (const cfg of teamBridgeConfigOptions()) {
+    const rt = cfg.runtime || 'hadamard';
+    const key = rt + ':' + (cfg.name || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    opts.push({ value: rt, label: formatRuntimeDisplay(rt) + (cfg.name ? ' · ' + cfg.name : '') });
+  }
+  for (const rd of (state.snapshot?.bridgeState?.runtimeDiscovery || [])) {
+    if (!rd.runtime || seen.has('rd:' + rd.runtime)) continue;
+    seen.add('rd:' + rd.runtime);
+    opts.push({ value: rd.runtime, label: rd.label || formatRuntimeDisplay(rd.runtime) });
+  }
+  return opts;
+}
+function teamModelSelectOptions() {
+  const opts = [];
+  const seen = new Set();
+  const sessionModel = state.snapshot?.session?.model;
+  if (sessionModel && !seen.has(sessionModel)) {
+    seen.add(sessionModel);
+    opts.push({ value: sessionModel, label: sessionModel + ' (session)' });
+  }
+  for (const cfg of teamBridgeConfigOptions()) {
+    const models = Array.isArray(cfg.models) && cfg.models.length > 0
+      ? cfg.models
+      : [{ name: cfg.model || '(default)' }];
+    for (const m of models) {
+      const name = typeof m === 'string' ? m : m.name;
+      if (!name || name === '(default)' || seen.has(name)) continue;
+      seen.add(name);
+      opts.push({ value: name, label: name + ' · ' + cfg.name });
+    }
+    if (cfg.model && !seen.has(cfg.model)) {
+      seen.add(cfg.model);
+      opts.push({ value: cfg.model, label: cfg.model + ' · ' + cfg.name });
+    }
+  }
+  if (!opts.length) opts.push({ value: '', label: '(configure providers in Settings)' });
+  return opts;
+}
+function applyTeamModelSelection(node, modelValue) {
+  node.model = modelValue || '';
+  if (!modelValue) return;
+  for (const cfg of teamBridgeConfigOptions()) {
+    const models = Array.isArray(cfg.models) ? cfg.models.map((m) => m.name) : [];
+    if (cfg.model === modelValue || models.includes(modelValue)) {
+      if (cfg.runtime) node.runtime = cfg.runtime;
+      if (cfg.provider) node.provider = cfg.provider;
+      if (cfg.baseURL) node.baseURL = cfg.baseURL;
+      break;
+    }
+  }
+}
+function formatTeamInfinityField(n) {
+  if (n == null || n === 0 || n === Infinity || n < 0) return '';
+  return String(n);
+}
+function parseTeamInfinityField(s) {
+  const t = String(s ?? '').trim();
+  if (!t || t === '∞' || /^inf(inity)?$/i.test(t)) return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
 const TEAM_EDGE_TRIGGERS = [
   { value: 'on_complete', label: 'Passive trigger (on complete)' },
   { value: 'on_tool_call', label: 'Communication (tool call)' },
@@ -9932,7 +10110,7 @@ function openTeamEdgeEditor(idx) {
   requestAnimationFrame(() => {
     const board = el('teamGraph')?.querySelector('.graph-board');
     const svg = board?.querySelector('.graph-board-svg');
-    if (board && svg) redrawGraphBoardEdges(board, svg, def);
+    if (board && svg && def) scheduleGraphBoardEdgeRedraw(board, svg, def);
   });
 }
 function closeTeamEdgeEditor() {
@@ -9945,7 +10123,7 @@ function closeTeamEdgeEditor() {
   requestAnimationFrame(() => {
     const board = el('teamGraph')?.querySelector('.graph-board');
     const svg = board?.querySelector('.graph-board-svg');
-    if (board && svg) redrawGraphBoardEdges(board, svg, def);
+    if (board && svg) scheduleGraphBoardEdgeRedraw(board, svg, def);
   });
 }
 function closeTeamModals() {
@@ -9996,10 +10174,33 @@ function teToolChecklist(label, selected, onChange) {
   f.appendChild(grid);
   return f;
 }
+function teReadonlyPromptPreview(label, hint, getText) {
+  const f = document.createElement('div');
+  f.className = 'te-field te-readonly-prompt';
+  const l = document.createElement('label');
+  l.textContent = label;
+  f.appendChild(l);
+  if (hint) {
+    const h = document.createElement('p');
+    h.className = 'te-hint';
+    h.textContent = hint;
+    f.appendChild(h);
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'te-prompt-preview';
+  pre.textContent = getText();
+  f.appendChild(pre);
+  f.refreshPromptPreview = () => { pre.textContent = getText(); };
+  return f;
+}
 function renderTeamNodeEditorPanel(node, def) {
   const host = el('teamAgentModalBody');
   if (!host) return;
   host.textContent = '';
+  const promptPreviewFields = [];
+  const queuePromptPreview = () => {
+    for (const f of promptPreviewFields) f.refreshPromptPreview?.();
+  };
   const head = document.createElement('div');
   head.className = 'ins-head';
   const icon = document.createElement('span');
@@ -10010,20 +10211,102 @@ function renderTeamNodeEditorPanel(node, def) {
   h.textContent = 'Edit agent · ' + (graphRefOf(node) || 'node');
   head.append(icon, h);
   host.appendChild(head);
-  host.appendChild(teFieldLive('Agent id', node.id || '', (v) => { node.id = v.trim(); }));
-  host.appendChild(teFieldLive('Role / specialty', node.role || '', (v) => { node.role = v; }));
-  host.appendChild(teFieldLive('Responsibility', node.responsibility || '', (v) => { node.responsibility = v; }, true));
-  host.appendChild(teSelect('Runtime', node.runtime || '', TEAM_RUNTIME_OPTIONS, (v) => { node.runtime = v || undefined; }));
-  host.appendChild(teFieldLive('Model', node.model || '', (v) => { node.model = v; }));
-  host.appendChild(teSelect('Workspace access', node.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => { node.workspaceAccess = v; }));
-  host.appendChild(teFieldLive('System prompt / injection', node.systemPrompt || '', (v) => { node.systemPrompt = v; }, true));
+  host.appendChild(teFieldLive('Agent id', node.id || '', (v) => { node.id = v.trim(); queuePromptPreview(); }));
+  host.appendChild(teFieldLive('Role / specialty', node.role || '', (v) => { node.role = v; queuePromptPreview(); }));
+  host.appendChild(teFieldLive('Responsibility', node.responsibility || '', (v) => { node.responsibility = v; queuePromptPreview(); }, true));
+  host.appendChild(teLabeledSelect('Runtime', node.runtime || '', teamRuntimeSelectOptions(), (v) => {
+    node.runtime = v || undefined;
+    setTeamSavedStatus(false);
+    queuePromptPreview();
+  }));
+  host.appendChild(teLabeledSelect('Model', node.model || '', teamModelSelectOptions(), (v) => {
+    applyTeamModelSelection(node, v);
+    setTeamSavedStatus(false);
+    queuePromptPreview();
+  }));
+  host.appendChild(teSelect('Workspace access', node.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => {
+    node.workspaceAccess = v;
+    queuePromptPreview();
+  }));
+  host.appendChild(teFieldLive(
+    'Specialist prompt (stored)',
+    node.systemPrompt || '',
+    (v) => { node.systemPrompt = v; queuePromptPreview(); },
+    true,
+  ));
+  const preview = teReadonlyPromptPreview(
+    'Effective runtime prompt (SDK)',
+    'Graph framing + team assignment + specialist prompt — matches what runMemberAgent receives.',
+    () => resolveGraphNodeSystemPrompt(node),
+  );
+  promptPreviewFields.push(preview);
+  host.appendChild(preview);
   host.appendChild(teSelect('Join incoming edges', node.join || 'all', ['all', 'any'], (v) => { node.join = v === 'any' ? 'any' : undefined; }));
-  host.appendChild(teToolChecklist('Allowed tools (empty = read-only expert set)', node.allowedTools || [], (next) => {
-    const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !(node.allowedTools || []).includes(t));
-    if (added.length && !window.confirm('Grant ' + added.join(' + ') + ' to "' + graphRefOf(node) + '"?')) return;
-    node.allowedTools = next.length ? next : undefined;
+  host.appendChild(teHintField('Timeout (ms)', 'Per-agent run timeout. Empty = 300000 ms.', String(node.timeoutMs ?? ''), (v) => {
+    const n = Number(v);
+    node.timeoutMs = v.trim() && Number.isFinite(n) && n > 0 ? n : undefined;
+    setTeamSavedStatus(false);
+  }));
+  host.appendChild(teHintField('Max tool iterations', 'ReAct loop cap. Empty or ∞ = unlimited.', formatTeamInfinityField(node.maxIterations), (v) => {
+    node.maxIterations = parseTeamInfinityField(v);
+    setTeamSavedStatus(false);
+  }));
+  host.appendChild(teHintField('Max rounds (loop)', 'Graph loop convergence cap for this agent. Empty or ∞ = unlimited.', formatTeamInfinityField(node.maxRounds), (v) => {
+    node.maxRounds = parseTeamInfinityField(v);
+    setTeamSavedStatus(false);
+  }));
+  host.appendChild(teHintField('Network reconnect attempts', 'Retries on transient provider/network errors.', String(node.reconnectAttempts ?? 10), (v) => {
+    const n = Number(v);
+    node.reconnectAttempts = Number.isFinite(n) && n >= 0 ? n : 10;
+    setTeamSavedStatus(false);
+  }));
+  host.appendChild(teToolChecklist('Allowed tools', effectiveNodeAllowedTools(node), (next) => {
+    const prev = effectiveNodeAllowedTools(node);
+    const added = next.filter((t) => RISKY_NODE_TOOLS.includes(t) && !prev.includes(t));
+    if (added.length && !window.confirm('Grant ' + added.join(' + ') + ' to "' + graphRefOf(node) + '"?')) {
+      renderTeamNodeEditorPanel(node, def);
+      return;
+    }
+    node.allowedTools = next.length ? next : TEAM_READ_ONLY_EXPERT_TOOLS.slice();
     renderTeamGraph(def, def.name);
   }));
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'te-btn danger';
+  del.textContent = 'Remove agent';
+  del.addEventListener('click', () => {
+    const ref = graphRefOf(node) || 'this agent';
+    if (!window.confirm('Remove agent "' + ref + '"? Connected edges will also be removed.')) return;
+    removeGraphAgentNode(def, node);
+  });
+  host.appendChild(del);
+}
+async function restoreTeamDefinitionDefaults() {
+  const name = state.teamSelected || state.teamDefinition?.name;
+  if (!name) return;
+  if (!window.confirm('Restore "' + name + '" to its default configuration? Unsaved edits will be lost.')) return;
+  try {
+    const res = await api('/api/team/restore-default?name=' + encodeURIComponent(name));
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      window.alert(payload.error || 'Could not restore defaults');
+      return;
+    }
+    const def = payload.definition;
+    if (!def) return;
+    state.teamDefinition = def;
+    state.teamDefinitionSource = payload.source || state.teamDefinitionSource;
+    state.teamDefinitionCache[name] = structuredClone(def);
+    state.teamSelectedNode = firstTeamNode(def);
+    state.teamSelectedEdgeIdx = null;
+    state.teamGraphFitView = true;
+    setTeamSavedStatus(false);
+    closeTeamModals();
+    renderTeamGraph(def, name);
+    renderTeamSquadBar();
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : String(error));
+  }
 }
 function renderTeamTaskEditorPanel(node, def) {
   const host = el('teamAgentModalBody');
@@ -10034,7 +10317,7 @@ function renderTeamTaskEditorPanel(node, def) {
   host.appendChild(h);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
-  hint.textContent = 'The Task port dispatches the run prompt to all outgoing edges (typically {{run.prompt}}). Exactly one Task node is required per graph.';
+  hint.textContent = 'The Task port dispatches the run prompt once to outgoing agents (out-port only). Exactly one Task node is required per graph.';
   host.appendChild(hint);
   host.appendChild(teFieldLive('Node id', node.id || 'task', (v) => { node.id = v.trim() || 'task'; renderTeamGraph(def, def.name); }));
 }
@@ -10080,26 +10363,72 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   const head = document.createElement('div');
   head.className = 'ins-head';
   const h = document.createElement('h3');
-  h.textContent = 'Edit edge · ' + edge.from + ' → ' + edge.to;
+  h.textContent = 'Edit edge · ' + formatTeamGraphEdgeLabel(edge);
   head.appendChild(h);
   host.appendChild(head);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
-  hint.textContent = 'Passive trigger: downstream runs after upstream completes. Communication: upstream can message downstream via NotifyTeammate during its run.';
+  hint.textContent = 'Directed (→): flows from → to; canvas shows an arrow. Undirected (↔): bidirectional — both agents can receive (runtime expands a reverse path). Loop edges are always one-way.';
   host.appendChild(hint);
   const refs = graphNodeRefs(def);
-  host.appendChild(teSelect('From', edge.from, refs, (v) => { edge.from = v; renderTeamGraph(def, def.name); }));
-  host.appendChild(teSelect('To', edge.to, refs, (v) => { edge.to = v; renderTeamGraph(def, def.name); }));
+  host.appendChild(teSelect('From', edge.from, refs, (v) => {
+    edge.from = v;
+    h.textContent = 'Edit edge · ' + formatTeamGraphEdgeLabel(edge);
+    renderTeamGraph(def, def.name);
+  }));
+  const taskRef = (def.nodes || []).find((n) => n.kind === 'task');
+  const taskId = taskRef ? graphRefOf(taskRef) : 'task';
+  const toRefs = refs.filter((r) => r !== taskId);
+  host.appendChild(teSelect('To', edge.to, toRefs, (v) => {
+    edge.to = v;
+    h.textContent = 'Edit edge · ' + formatTeamGraphEdgeLabel(edge);
+    renderTeamGraph(def, def.name);
+  }));
+  host.appendChild(teSelect('Direction', edge.direction || 'directed', ['directed', 'undirected'], (v) => {
+    if (v === 'undirected' && edge.loop) {
+      window.alert('Loop edges must stay directed (one-way).');
+      return;
+    }
+    edge.direction = v === 'undirected' ? 'undirected' : undefined;
+    h.textContent = 'Edit edge · ' + formatTeamGraphEdgeLabel(edge);
+    setTeamSavedStatus(false);
+    renderTeamGraph(def, def.name);
+  }));
   host.appendChild(teSelect('Trigger', edge.trigger || 'on_complete', TEAM_EDGE_TRIGGERS.map((t) => t.value), (v) => { edge.trigger = v === 'on_complete' ? undefined : v; renderTeamGraph(def, def.name); }));
   host.appendChild(teSelect('Channel', edge.channel || 'message', TEAM_EDGE_CHANNELS.map((c) => c.value), (v) => { edge.channel = v === 'message' ? undefined : v; }));
   host.appendChild(teFieldLive('Condition (optional /regex/ or substring)', edge.condition || '', (v) => { edge.condition = v.trim() || undefined; }));
   host.appendChild(teCheck('Loop edge (re-dispatch from Task on condition)', edge.loop, (v) => {
     edge.loop = v || undefined;
-    if (edge.loop && !def.maxRounds) def.maxRounds = 100;
+    if (edge.loop && edge.direction === 'undirected') {
+      edge.direction = undefined;
+      h.textContent = 'Edit edge · ' + formatTeamGraphEdgeLabel(edge);
+    }
+    if (edge.loop) {
+      const hasCap = (def.nodes || []).some((n) => {
+        const cap = n.maxRounds ?? def.maxRounds;
+        return cap != null && cap > 0;
+      });
+      if (!hasCap) def.maxRounds = def.maxRounds ?? 100;
+    }
     renderTeamGraph(def, def.name);
   }));
   host.appendChild(teFieldLive('Payload template', edge.payloadTemplate || '', (v) => { edge.payloadTemplate = v.trim() || undefined; }, true));
   host.appendChild(teFieldLive('Note', edge.note || '', (v) => { edge.note = v.trim() || undefined; }));
+  const curveActions = document.createElement('div');
+  curveActions.className = 'te-actions';
+  const resetCurve = document.createElement('button');
+  resetCurve.type = 'button';
+  resetCurve.className = 'te-btn';
+  resetCurve.textContent = 'Reset curve';
+  resetCurve.title = 'Restore the default bezier shape for this edge';
+  resetCurve.addEventListener('click', () => {
+    clearEdgeBezierUi(edge);
+    setTeamSavedStatus(false);
+    renderTeamGraph(def, def.name);
+    renderTeamEdgeEditorPanel(edge, idx, def, host);
+  });
+  curveActions.appendChild(resetCurve);
+  host.appendChild(curveActions);
   const del = document.createElement('button');
   del.type = 'button';
   del.className = 'te-btn danger';
@@ -10117,13 +10446,24 @@ function renderTeamSquadPanel(def, host) {
   const h = document.createElement('h3');
   h.textContent = 'Squad settings · ' + (def.name || '');
   host.appendChild(h);
-  host.appendChild(teFieldLive('Timeout (ms)', String(def.timeoutMs ?? 300000), (v) => { def.timeoutMs = Number(v) || 300000; }));
-  host.appendChild(teFieldLive('Member max iterations', String(def.maxIterations ?? 16), (v) => { def.maxIterations = Number(v) || 16; }));
-  host.appendChild(teFieldLive('Max rounds (loop convergence)', String(def.maxRounds ?? ''), (v) => {
-    const n = Number(v);
-    def.maxRounds = v.trim() && Number.isFinite(n) && n >= 2 ? n : undefined;
-  }));
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.textContent = 'Runtime limits (timeout, iterations, loop rounds, reconnect) are configured per agent — double-click an agent node on the graph.';
+  host.appendChild(hint);
+  host.appendChild(teFieldLive('Description', def.description || '', (v) => { def.description = v.trim() || undefined; setTeamSavedStatus(false); }, true));
   host.appendChild(saveTargetField());
+  const actions = document.createElement('div');
+  actions.className = 'te-actions';
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.className = 'te-btn';
+  restore.textContent = 'Restore defaults';
+  restore.title = state.teamDefinitionSource === 'built-in'
+    ? 'Reset to the built-in preset'
+    : 'Reset to the saved on-disk defaults';
+  restore.addEventListener('click', () => { void restoreTeamDefinitionDefaults(); });
+  actions.appendChild(restore);
+  host.appendChild(actions);
   const problems = document.createElement('div');
   problems.id = 'teamGraphProblems';
   problems.className = 'te-problems hidden';
@@ -10148,11 +10488,49 @@ function addGraphNodeQuick(def) {
     systemPrompt: '',
     responsibility: '',
     workspaceAccess: 'workspace',
+    allowedTools: TEAM_READ_ONLY_EXPERT_TOOLS.slice(),
+    reconnectAttempts: 10,
+    timeoutMs: 300000,
     ui: { x: 120 + (n % 3) * 240, y: 120 + Math.floor(n / 3) * 190 },
   });
   setTeamSavedStatus(false);
   renderTeamGraph(def, def.name);
   openTeamNodeEditor(def.nodes[def.nodes.length - 1]);
+}
+function removeGraphAgentNode(def, node) {
+  if (!node || node.kind === 'task' || node.kind === 'return') return false;
+  const ref = graphRefOf(node);
+  if (!ref) {
+    window.alert('Cannot remove agent without an id, role, or name.');
+    return false;
+  }
+  def.nodes = (def.nodes || []).filter((n) => n !== node);
+  def.edges = (def.edges || []).filter((e) => e.from !== ref && e.to !== ref);
+  if (state.teamSelectedNode === node) state.teamSelectedNode = firstTeamNode(def);
+  setTeamSavedStatus(false);
+  closeTeamNodeEditor();
+  renderTeamGraph(def, def.name);
+  return true;
+}
+function addGraphEdgeQuick(def, name) {
+  def.edges = def.edges || [];
+  const refs = graphNodeRefs(def);
+  const taskRef = (def.nodes || []).find((n) => n.kind === 'task');
+  const taskId = taskRef ? graphRefOf(taskRef) : 'task';
+  const from = refs.find((r) => r !== taskId) || refs[0] || '';
+  const to = refs.find((r) => r !== from && r !== taskId) || '';
+  if (!from || !to) {
+    window.alert('Need at least two connectable nodes to add an edge.');
+    return;
+  }
+  if (def.edges.some((e) => e.from === from && e.to === to)) {
+    window.alert('An edge from "' + from + '" to "' + to + '" already exists.');
+    return;
+  }
+  def.edges.push({ from, to });
+  setTeamSavedStatus(false);
+  renderTeamGraph(def, name);
+  openTeamEdgeEditor(def.edges.length - 1);
 }
 function addGraphReturnNode(def) {
   def.nodes = def.nodes || [];
@@ -10215,6 +10593,31 @@ function teSelect(label, value, options, onChange) {
   }
   sel.addEventListener('change', () => onChange(sel.value));
   f.append(l, sel);
+  return f;
+}
+function teLabeledSelect(label, value, options, onChange) {
+  const f = document.createElement('div');
+  f.className = 'te-field';
+  const l = document.createElement('label');
+  l.textContent = label;
+  const sel = document.createElement('select');
+  for (const opt of options) {
+    const o = document.createElement('option');
+    o.value = opt.value;
+    o.textContent = opt.label;
+    if (opt.value === (value ?? options[0]?.value ?? '')) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener('change', () => onChange(sel.value));
+  f.append(l, sel);
+  return f;
+}
+function teHintField(label, hint, value, onChange) {
+  const f = teFieldLive(label, value, onChange);
+  const h = document.createElement('p');
+  h.className = 'te-hint';
+  h.textContent = hint;
+  f.appendChild(h);
   return f;
 }
 function teCheck(label, checked, onChange) {
@@ -10339,9 +10742,9 @@ function graphNodeEl(node, def, isPrimary, opts) {
   model.textContent = node.model || 'inherits model';
   const tools = document.createElement('div');
   tools.className = 'gn-tools';
-  const toolLabels = def?.mode === 'graph' && Array.isArray(node.allowedTools) && node.allowedTools.length
-    ? node.allowedTools
-    : (Array.isArray(node.toolScope) && node.toolScope.length > 0 ? node.toolScope : ['Read', 'Glob', 'Grep']);
+  const toolLabels = def?.mode === 'graph'
+    ? effectiveNodeAllowedTools(node)
+    : (Array.isArray(node.toolScope) && node.toolScope.length > 0 ? node.toolScope : TEAM_READ_ONLY_EXPERT_TOOLS.slice());
   toolLabels.slice(0, 4).forEach((text) => {
     const pill = document.createElement('span');
     pill.textContent = text;
@@ -10459,9 +10862,13 @@ function computeGraphLayerIndices(def) {
   const autoIn = new Map();
   for (const e of edges) {
     if ((e.trigger || 'on_complete') !== 'on_complete') continue;
+    if (e.loop) continue;
     const to = indexOfRef.get(String(e.to).trim());
     const from = indexOfRef.get(String(e.from).trim());
     if (to == null || from == null) continue;
+    const toNode = nodes[to];
+    const fromNode = nodes[from];
+    if (toNode?.kind === 'task' || fromNode?.kind === 'return') continue;
     if (!autoIn.has(to)) autoIn.set(to, []);
     autoIn.get(to).push(from);
   }
@@ -10486,42 +10893,329 @@ function ensureGraphNodeLayout(def) {
   if (!nodes.length) return;
   const missing = nodes.some((n) => n.ui?.x == null || n.ui?.y == null);
   if (!missing) return;
-  applyGraphAutoLayout(def);
+  try {
+    applyGraphAutoLayout(def);
+  } catch (err) {
+    console.error('[actoviq-gui] auto layout failed', err);
+  }
 }
 function applyGraphAutoLayout(def) {
   const nodes = def.nodes || [];
-  const { layer } = computeGraphLayerIndices(def);
-  const maxLayer = Math.max(0, ...layer);
-  const lanes = [];
-  nodes.forEach((_, i) => {
-    const l = layer[i] >= 0 ? layer[i] : maxLayer + 1;
-    while (lanes.length <= l) lanes.push([]);
-    lanes[l].push(i);
-  });
+  const lanes = computeTeamGraphAutoLayoutLanes(def);
   const startY = 48;
-  const rowGap = 190;
-  const colGap = 250;
-  const startX = 72;
+  const rowGap = 210;
+  const colGap = 260;
+  const startX = 80;
+  const canvasW = 880;
+  const portW = (idx) => {
+    const k = nodes[idx]?.kind;
+    return k === 'task' || k === 'return' ? 132 : 210;
+  };
   lanes.forEach((indices, row) => {
-    indices.forEach((nodeIdx, col) => {
-      const n = nodes[nodeIdx];
-      n.ui = { x: startX + col * colGap, y: startY + row * rowGap };
+    const rowWidth = indices.reduce((sum, idx, col) => sum + portW(idx) + (col ? colGap : 0), 0);
+    let x = startX + Math.max(0, (canvasW - rowWidth) / 2);
+    indices.forEach((nodeIdx) => {
+      const w = portW(nodeIdx);
+      nodes[nodeIdx].ui = { x, y: startY + row * rowGap };
+      x += w + colGap;
     });
   });
   setTeamSavedStatus(false);
 }
-function graphBoardPortPoint(card, kind, board) {
-  const port = card.querySelector(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
-  const br = board.getBoundingClientRect();
-  const pr = (port || card).getBoundingClientRect();
-  return { x: pr.left + pr.width / 2 - br.left + board.scrollLeft, y: pr.top + pr.height / 2 - br.top + board.scrollTop };
+const GRAPH_BOARD_PAD = 600;
+const GRAPH_VIEW_MIN_SCALE = 0.2;
+const GRAPH_VIEW_MAX_SCALE = 2.5;
+const graphViewportStates = new WeakMap();
+function graphBoardViewport(board) {
+  return board?.closest('.graph-board-viewport');
 }
-function graphEdgeBezierPath(x1, y1, x2, y2) {
-  const dy = Math.max(48, Math.abs(y2 - y1) * 0.45);
-  return 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 + dy) + ', ' + x2 + ' ' + (y2 - dy) + ', ' + x2 + ' ' + y2;
+function getGraphViewportState(viewport) {
+  if (!viewport) return { scale: 1, panX: 0, panY: 0 };
+  if (!graphViewportStates.has(viewport)) {
+    graphViewportStates.set(viewport, { scale: 1, panX: 0, panY: 0 });
+  }
+  return graphViewportStates.get(viewport);
+}
+function applyGraphViewportTransform(viewport, stage) {
+  if (!viewport || !stage) return;
+  const vp = getGraphViewportState(viewport);
+  stage.style.transform = 'translate(' + vp.panX + 'px,' + vp.panY + 'px) scale(' + vp.scale + ')';
+}
+function graphBoardOrigin(board) {
+  return {
+    x: parseFloat(board?.dataset.graphOriginX || '0'),
+    y: parseFloat(board?.dataset.graphOriginY || '0'),
+  };
+}
+function graphBoardPointFromClient(viewport, board, clientX, clientY) {
+  const vp = getGraphViewportState(viewport);
+  const vr = viewport.getBoundingClientRect();
+  const worldX = (clientX - vr.left - vp.panX) / vp.scale;
+  const worldY = (clientY - vr.top - vp.panY) / vp.scale;
+  const origin = graphBoardOrigin(board);
+  return { x: worldX - origin.x, y: worldY - origin.y };
+}
+function computeGraphNodeContentBounds(def) {
+  const nodes = def?.nodes || [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  nodes.forEach((n) => {
+    if (n.ui?.x == null || n.ui?.y == null) return;
+    const nw = (n.kind === 'task' || n.kind === 'return') ? 132 : 210;
+    const nh = 116;
+    minX = Math.min(minX, n.ui.x);
+    minY = Math.min(minY, n.ui.y);
+    maxX = Math.max(maxX, n.ui.x + nw);
+    maxY = Math.max(maxY, n.ui.y + nh);
+  });
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+}
+function fitGraphBoardView(viewport, board, def, opts) {
+  opts = opts || {};
+  const bounds = computeGraphNodeContentBounds(def);
+  if (!bounds) return;
+  const vp = getGraphViewportState(viewport);
+  const vr = viewport.getBoundingClientRect();
+  if (vr.width < 8 || vr.height < 8) return;
+  const margin = 56;
+  const pad = 32;
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  if (opts.resetScale !== false) {
+    const fitScale = Math.min(
+      (vr.width - margin * 2) / (bounds.w + pad * 2),
+      (vr.height - margin * 2) / (bounds.h + pad * 2),
+      1,
+    );
+    vp.scale = Math.min(GRAPH_VIEW_MAX_SCALE, Math.max(GRAPH_VIEW_MIN_SCALE, fitScale));
+  }
+  const origin = graphBoardOrigin(board);
+  const boardCx = cx - origin.x;
+  const boardCy = cy - origin.y;
+  vp.panX = vr.width / 2 - boardCx * vp.scale;
+  vp.panY = vr.height / 2 - boardCy * vp.scale;
+}
+function centerGraphBoardView(viewport, board, def) {
+  fitGraphBoardView(viewport, board, def);
+}
+function wireGraphBoardViewport(viewport, stage, board) {
+  applyGraphViewportTransform(viewport, stage);
+  let panning = false;
+  let panStartX = 0;
+  let panStartY = 0;
+  let panOrigX = 0;
+  let panOrigY = 0;
+
+  const onPanMove = (e) => {
+    if (!panning) return;
+    const vp = getGraphViewportState(viewport);
+    vp.panX = panOrigX + (e.clientX - panStartX);
+    vp.panY = panOrigY + (e.clientY - panStartY);
+    applyGraphViewportTransform(viewport, stage);
+  };
+  const onPanUp = () => {
+    if (!panning) return;
+    panning = false;
+    viewport.classList.remove('panning');
+    window.removeEventListener('mousemove', onPanMove);
+    window.removeEventListener('mouseup', onPanUp);
+  };
+  const startPan = (e) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    panning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    const vp = getGraphViewportState(viewport);
+    panOrigX = vp.panX;
+    panOrigY = vp.panY;
+    viewport.classList.add('panning');
+    window.addEventListener('mousemove', onPanMove);
+    window.addEventListener('mouseup', onPanUp);
+  };
+
+  viewport.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.graph-node') || e.target.closest('.graph-port')) return;
+    if (e.target.closest('path.graph-edge-hit')) return;
+    if (e.target.closest('circle.graph-edge-handle')) return;
+    e.preventDefault();
+    startPan(e);
+  });
+
+  viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const vp = getGraphViewportState(viewport);
+    const vr = viewport.getBoundingClientRect();
+    const mx = e.clientX - vr.left;
+    const my = e.clientY - vr.top;
+    const worldX = (mx - vp.panX) / vp.scale;
+    const worldY = (my - vp.panY) / vp.scale;
+    const factor = e.deltaY < 0 ? 1.08 : 0.925;
+    const nextScale = Math.min(GRAPH_VIEW_MAX_SCALE, Math.max(GRAPH_VIEW_MIN_SCALE, vp.scale * factor));
+    vp.scale = nextScale;
+    vp.panX = mx - worldX * nextScale;
+    vp.panY = my - worldY * nextScale;
+    applyGraphViewportTransform(viewport, stage);
+  }, { passive: false });
+}
+function computeGraphBoardBounds(board, def) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  board.querySelectorAll('.graph-node.board-node').forEach((card) => {
+    minX = Math.min(minX, card.offsetLeft);
+    minY = Math.min(minY, card.offsetTop);
+    maxX = Math.max(maxX, card.offsetLeft + card.offsetWidth);
+    maxY = Math.max(maxY, card.offsetTop + card.offsetHeight);
+  });
+  (def?.nodes || []).forEach((n) => {
+    if (n.ui?.x == null || n.ui?.y == null) return;
+    minX = Math.min(minX, n.ui.x);
+    minY = Math.min(minY, n.ui.y);
+    maxX = Math.max(maxX, n.ui.x + 220);
+    maxY = Math.max(maxY, n.ui.y + 160);
+  });
+  if (!Number.isFinite(minX)) {
+    minX = 0;
+    minY = 0;
+    maxX = 400;
+    maxY = 300;
+  }
+  minX -= GRAPH_BOARD_PAD;
+  minY -= GRAPH_BOARD_PAD;
+  maxX += GRAPH_BOARD_PAD;
+  maxY += GRAPH_BOARD_PAD;
+  return { minX, minY, w: maxX - minX, h: maxY - minY };
+}
+function syncGraphBoardSize(board, def) {
+  const { minX, minY, w, h } = computeGraphBoardBounds(board, def);
+  board.dataset.graphOriginX = String(minX);
+  board.dataset.graphOriginY = String(minY);
+  board.style.width = w + 'px';
+  board.style.height = h + 'px';
+  board.style.minWidth = w + 'px';
+  board.style.minHeight = h + 'px';
+  const layer = board.querySelector('.graph-nodes-layer');
+  if (layer) {
+    layer.style.minWidth = w + 'px';
+    layer.style.minHeight = h + 'px';
+  }
+  board.querySelectorAll('.graph-node.board-node').forEach((card) => {
+    const ref = card.dataset.graphRef;
+    const node = (def?.nodes || []).find((n) => graphRefOf(n) === ref);
+    if (!node) return;
+    const wx = node.ui?.x ?? 0;
+    const wy = node.ui?.y ?? 0;
+    card.style.left = (wx - minX) + 'px';
+    card.style.top = (wy - minY) + 'px';
+  });
+}
+function graphBoardContentSize(board) {
+  const w = board.offsetWidth || board.scrollWidth || 800;
+  const h = board.offsetHeight || board.scrollHeight || 520;
+  return { w, h };
+}
+function graphBoardPortPoint(card, kind) {
+  const port = card.querySelector(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
+  const cardX = card.offsetLeft;
+  const cardY = card.offsetTop;
+  if (port) {
+    return {
+      x: cardX + port.offsetLeft + port.offsetWidth / 2,
+      y: cardY + port.offsetTop + port.offsetHeight / 2,
+    };
+  }
+  return { x: cardX + card.offsetWidth / 2, y: cardY + card.offsetHeight / 2 };
+}
+function graphEdgeBezierPath(x1, y1, x2, y2, ui) {
+  return resolveEdgeBezierPoints({ x: x1, y: y1 }, { x: x2, y: y2 }, ui).path;
+}
+function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
+  const resolveEndpoints = () => {
+    const fromCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
+    const toCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
+    if (!fromCard || !toCard) return null;
+    return { p1: graphBoardPortPoint(fromCard, 'out'), p2: graphBoardPortPoint(toCard, 'in'), fromCard, toCard };
+  };
+  const endpoints = resolveEndpoints();
+  if (!endpoints) return;
+  const bez = resolveEdgeBezierPoints(endpoints.p1, endpoints.p2, edge.ui);
+  const start = which === 'c1' ? bez.c1 : bez.c2;
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', String(start.x));
+  circle.setAttribute('cy', String(start.y));
+  circle.setAttribute('r', '6');
+  circle.classList.add('graph-edge-handle');
+  circle.dataset.edgeIdx = String(idx);
+  circle.dataset.handle = which;
+  let dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const ep = resolveEndpoints();
+    if (!ep) return;
+    const viewport = graphBoardViewport(board);
+    const pt = graphBoardPointFromClient(viewport, board, e.clientX, e.clientY);
+    const current = resolveEdgeBezierPoints(ep.p1, ep.p2, edge.ui);
+    const nextC1 = which === 'c1' ? pt : current.c1;
+    const nextC2 = which === 'c2' ? pt : current.c2;
+    writeEdgeBezierUi(edge, ep.p1, ep.p2, nextC1, nextC2);
+    setTeamSavedStatus(false);
+    redrawGraphBoardEdges(board, svg, def);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  circle.addEventListener('mousedown', (e) => {
+    if (!teamGraphEditable(def)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    state.teamSelectedEdgeIdx = idx;
+    state.teamSelectedNode = null;
+    dragging = true;
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+  svg.appendChild(circle);
+}
+function ensureGraphEdgeMarkers(svg) {
+  if (svg.querySelector('#graph-edge-arrow')) return;
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  for (const spec of [
+    { id: 'graph-edge-arrow', fill: '#94A3B8' },
+    { id: 'graph-edge-arrow-selected', fill: 'var(--accent)' },
+  ]) {
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', spec.id);
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '9');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '7');
+    marker.setAttribute('markerHeight', '7');
+    marker.setAttribute('orient', 'auto');
+    const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+    arrow.setAttribute('fill', spec.fill);
+    marker.appendChild(arrow);
+    defs.appendChild(marker);
+  }
+  svg.appendChild(defs);
+}
+function syncGraphBoardSvgSize(board, svg) {
+  const { w, h } = graphBoardContentSize(board);
+  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+  svg.style.width = w + 'px';
+  svg.style.height = h + 'px';
 }
 function redrawGraphBoardEdges(board, svg, def) {
+  syncGraphBoardSize(board, def);
   while (svg.firstChild) svg.removeChild(svg.firstChild);
+  ensureGraphEdgeMarkers(svg);
   const edges = def.edges || [];
   const cards = new Map();
   board.querySelectorAll('.graph-node.board-node').forEach((el) => {
@@ -10531,9 +11225,10 @@ function redrawGraphBoardEdges(board, svg, def) {
     const fromCard = cards.get(String(edge.from).trim());
     const toCard = cards.get(String(edge.to).trim());
     if (!fromCard || !toCard) return;
-    const p1 = graphBoardPortPoint(fromCard, 'out', board);
-    const p2 = graphBoardPortPoint(toCard, 'in', board);
-    const d = graphEdgeBezierPath(p1.x, p1.y, p2.x, p2.y);
+    const p1 = graphBoardPortPoint(fromCard, 'out');
+    const p2 = graphBoardPortPoint(toCard, 'in');
+    const bez = resolveEdgeBezierPoints(p1, p2, edge.ui);
+    const d = bez.path;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.setAttribute('d', d);
     hit.classList.add('graph-edge-hit');
@@ -10541,12 +11236,21 @@ function redrawGraphBoardEdges(board, svg, def) {
     const vis = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     vis.setAttribute('d', d);
     vis.classList.add('graph-edge-visible');
+    const undirected = isUndirectedTeamGraphEdge(edge);
+    if (undirected) vis.classList.add('undirected');
+    else vis.setAttribute('marker-end', 'url(#' + (state.teamSelectedEdgeIdx === idx ? 'graph-edge-arrow-selected' : 'graph-edge-arrow') + ')');
     if (edge.trigger && edge.trigger !== 'on_complete') vis.classList.add('dashed');
     if (state.teamSelectedEdgeIdx === idx) vis.classList.add('selected');
     hit.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openTeamEdgeEditor(idx);
+      state.teamSelectedEdgeIdx = idx;
+      state.teamSelectedNode = null;
+      document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
+      const def = state.teamDefinition;
+      const b = board;
+      const s = svg;
+      if (def && b && s) scheduleGraphBoardEdgeRedraw(b, s, def);
     });
     hit.addEventListener('dblclick', (e) => {
       e.preventDefault();
@@ -10554,12 +11258,32 @@ function redrawGraphBoardEdges(board, svg, def) {
       openTeamEdgeEditor(idx);
     });
     svg.append(hit, vis);
+    if (teamGraphEditable(def) && state.teamSelectedEdgeIdx === idx) {
+      wireEdgeControlHandle(svg, board, def, edge, idx, 'c1');
+      wireEdgeControlHandle(svg, board, def, edge, idx, 'c2');
+    }
   });
-  const h = board.scrollHeight;
-  const w = board.scrollWidth;
-  svg.setAttribute('viewBox', '0 0 ' + Math.max(w, 800) + ' ' + Math.max(h, 520));
-  svg.setAttribute('width', String(Math.max(w, 800)));
-  svg.setAttribute('height', String(Math.max(h, 520)));
+  syncGraphBoardSvgSize(board, svg);
+}
+function scheduleGraphBoardEdgeRedraw(board, svg, def, after) {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!board.isConnected || !svg.isConnected) return;
+      try {
+        redrawGraphBoardEdges(board, svg, def);
+      } catch (err) {
+        console.error('[actoviq-gui] graph edge redraw failed', err);
+      }
+      if (after) after();
+    });
+  });
+}
+function observeGraphBoardResize(board, svg, def) {
+  if (typeof ResizeObserver === 'undefined') return;
+  const viewport = graphBoardViewport(board);
+  const ro = new ResizeObserver(() => scheduleGraphBoardEdgeRedraw(board, svg, def));
+  ro.observe(board);
+  if (viewport && viewport !== board) ro.observe(viewport);
 }
 function wireGraphNodeDrag(card, node, onMoved) {
   let dragging = false;
@@ -10572,17 +11296,23 @@ function wireGraphNodeDrag(card, node, onMoved) {
   const svg = () => board()?.querySelector('.graph-board-svg');
   const onMove = (e) => {
     if (!dragging) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+    const viewport = graphBoardViewport(board());
+    const scale = viewport ? getGraphViewportState(viewport).scale : 1;
+    const dx = (e.clientX - startX) / scale;
+    const dy = (e.clientY - startY) / scale;
+    if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
     node.ui = node.ui || {};
-    node.ui.x = Math.max(8, origX + dx);
-    node.ui.y = Math.max(8, origY + dy);
-    card.style.left = node.ui.x + 'px';
-    card.style.top = node.ui.y + 'px';
+    node.ui.x = origX + dx;
+    node.ui.y = origY + dy;
     const b = board();
+    const origin = graphBoardOrigin(b);
+    card.style.left = (node.ui.x - origin.x) + 'px';
+    card.style.top = (node.ui.y - origin.y) + 'px';
     const s = svg();
-    if (b && s && state.teamDefinition) redrawGraphBoardEdges(b, s, state.teamDefinition);
+    if (b && s && state.teamDefinition) {
+      syncGraphBoardSize(b, state.teamDefinition);
+      redrawGraphBoardEdges(b, s, state.teamDefinition);
+    }
   };
   const onUp = () => {
     if (!dragging) return;
@@ -10600,6 +11330,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
     if (!teamGraphEditable(state.teamDefinition)) return;
     if (e.target.closest('.graph-port')) return;
     e.preventDefault();
+    e.stopPropagation();
     dragging = true;
     startX = e.clientX;
     startY = e.clientY;
@@ -10621,12 +11352,11 @@ function wireGraphBoardConnect(board, svg, def, name) {
     const preview = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     preview.classList.add('graph-edge-preview');
     svg.appendChild(preview);
-    const origin = graphBoardPortPoint(out.closest('.graph-node'), 'out', board);
+    const origin = graphBoardPortPoint(out.closest('.graph-node'), 'out');
     const move = (ev) => {
-      const br = board.getBoundingClientRect();
-      const x2 = ev.clientX - br.left + board.scrollLeft;
-      const y2 = ev.clientY - br.top + board.scrollTop;
-      preview.setAttribute('d', graphEdgeBezierPath(origin.x, origin.y, x2, y2));
+      const viewport = graphBoardViewport(board);
+      const pt = graphBoardPointFromClient(viewport, board, ev.clientX, ev.clientY);
+      preview.setAttribute('d', graphEdgeBezierPath(origin.x, origin.y, pt.x, pt.y));
     };
     const up = (ev) => {
       board.removeEventListener('mousemove', move);
@@ -10635,6 +11365,11 @@ function wireGraphBoardConnect(board, svg, def, name) {
       const inPort = ev.target.closest('.graph-port-in');
       const toRef = inPort?.closest('.graph-node')?.dataset.graphRef;
       if (!toRef || toRef === fromRef) return;
+      const toNode = (def.nodes || []).find((n) => graphRefOf(n) === toRef);
+      if (toNode?.kind === 'task') {
+        window.alert('Task is dispatch-only — connect from Task out-port to agents, not into Task.');
+        return;
+      }
       def.edges = def.edges || [];
       if (def.edges.some((ed) => ed.from === fromRef && ed.to === toRef)) {
         window.alert('An edge from "' + fromRef + '" to "' + toRef + '" already exists.');
@@ -10687,12 +11422,19 @@ function renderGraphModeCanvas(g, def, name) {
     addBtn.textContent = '+ Agent';
     addBtn.addEventListener('click', () => addGraphNodeQuick(def));
     right.appendChild(addBtn);
+    const edgeBtn = document.createElement('button');
+    edgeBtn.type = 'button';
+    edgeBtn.textContent = '+ Edge';
+    edgeBtn.title = 'Add edge — or drag bottom port → top port on the canvas';
+    edgeBtn.addEventListener('click', () => addGraphEdgeQuick(def, name));
+    right.appendChild(edgeBtn);
     if (nodes.length) {
       const layoutBtn = document.createElement('button');
       layoutBtn.type = 'button';
       layoutBtn.textContent = 'Auto layout';
       layoutBtn.addEventListener('click', () => {
         applyGraphAutoLayout(def);
+        state.teamGraphFitView = true;
         renderTeamGraph(def, name);
       });
       right.appendChild(layoutBtn);
@@ -10722,7 +11464,7 @@ function renderGraphModeCanvas(g, def, name) {
   if (editable) {
     const hint = document.createElement('p');
     hint.className = 'graph-board-hint';
-    hint.textContent = 'Double-click node to configure · drag to move · drag bottom port → top port to connect · click edge to configure trigger/loop';
+    hint.textContent = '滚轮缩放 · 空白处拖动画布 · 双击节点/边编辑 · 拖动节点移动 · 单击边后拖动圆点调整曲线 · 底 port→顶 port 或 + Edge 连线';
     canvas.appendChild(hint);
   }
   const board = document.createElement('div');
@@ -10735,16 +11477,36 @@ function renderGraphModeCanvas(g, def, name) {
   nodes.forEach((n, i) => {
     layer.appendChild(graphNodeEl(n, def, entrySet.has(i), { board: true, editable }));
   });
-  let maxBottom = 520;
-  nodes.forEach((n) => { maxBottom = Math.max(maxBottom, (n.ui?.y ?? 0) + 140); });
-  board.style.minHeight = maxBottom + 'px';
-  board.append(svg, layer);
-  canvas.appendChild(board);
+  board.append(layer, svg);
+  syncGraphBoardSize(board, def);
+  const stage = document.createElement('div');
+  stage.className = 'graph-board-stage';
+  stage.appendChild(board);
+  const viewport = document.createElement('div');
+  viewport.className = 'graph-board-viewport';
+  viewport.appendChild(stage);
+  canvas.appendChild(viewport);
   g.append(toolbar, canvas);
-  requestAnimationFrame(() => {
-    redrawGraphBoardEdges(board, svg, def);
-    if (editable) wireGraphBoardConnect(board, svg, def, name);
+  wireGraphBoardViewport(viewport, stage, board);
+  scheduleGraphBoardEdgeRedraw(board, svg, def, () => {
+    const tryFit = () => {
+      if (!state.teamGraphFitView) {
+        applyGraphViewportTransform(viewport, stage);
+        return;
+      }
+      const vr = viewport.getBoundingClientRect();
+      if (vr.width < 8 || vr.height < 8) {
+        requestAnimationFrame(tryFit);
+        return;
+      }
+      fitGraphBoardView(viewport, board, def);
+      state.teamGraphFitView = false;
+      applyGraphViewportTransform(viewport, stage);
+    };
+    tryFit();
   });
+  observeGraphBoardResize(board, svg, def);
+  if (editable) wireGraphBoardConnect(board, svg, def, name);
 }
 // Renders a surface-data list inline into a region body (reuses surfaceData/
 // itemTitle/itemDescription so the region and the drawer stay in sync).
@@ -12105,6 +12867,7 @@ el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch
 el('teamEditToggleBtn').addEventListener('click', () => { openTeamSquadEditor(); });
 el('teamAgentModalClose').addEventListener('click', closeTeamNodeEditor);
 el('teamAgentModalDone').addEventListener('click', closeTeamNodeEditor);
+el('teamAgentModalRestore').addEventListener('click', () => { void restoreTeamDefinitionDefaults(); });
 el('teamAgentModal').addEventListener('click', (event) => {
   if (event.target === el('teamAgentModal')) closeTeamNodeEditor();
 });

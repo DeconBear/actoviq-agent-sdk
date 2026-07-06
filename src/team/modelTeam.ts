@@ -23,22 +23,7 @@ import {
 } from './teamRuntime.js';
 import { buildGraphNodeTools, canonicalizeTeamDefinition, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
 import { listTeamAgentLabels } from './teamDefinitions.js';
-
-function memberAssignmentPrompt(member: TeamMember): string {
-  const lines: string[] = [];
-  if (member.responsibility) lines.push(`Responsibility: ${member.responsibility}`);
-  if (member.dependsOn?.length) lines.push(`Coordinate after: ${member.dependsOn.join(', ')}`);
-  if (member.reviews?.length) lines.push(`Review these teammates' work: ${member.reviews.join(', ')}`);
-  if (member.toolScope?.length) lines.push(`Expected tool scope: ${member.toolScope.join(', ')}`);
-  if (member.runtime) lines.push(`Preferred runtime: ${member.runtime}`);
-  if (member.workspaceAccess === 'full') lines.push('Workspace access: full filesystem');
-  else if (member.workspaceAccess === 'workspace') lines.push('Workspace access: project workspace only');
-  return lines.length ? ['## Team assignment', ...lines].join('\n') : '';
-}
-
-function buildMemberSystemPrompt(base: string, member: TeamMember): string {
-  return [base, memberAssignmentPrompt(member), member.systemPrompt].filter(Boolean).join('\n\n');
-}
+import { resolveGraphNodeSystemPrompt } from './teamPrompts.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Helpers
@@ -180,23 +165,34 @@ async function runGraphMode(
   const cwd = workDir ?? process.cwd();
   const agentNodes = (execDef.nodes ?? []).filter((n) => (n.kind ?? 'agent') === 'agent');
   const identities = buildMemberIdentities(agentNodes);
-  const memberMaxIterations = definition.maxIterations ?? 16;
+  const squadMaxIterations = definition.maxIterations;
+  const squadTimeoutMs = definition.timeoutMs;
+  const squadMaxRounds = definition.maxRounds;
+
+  const resolveMemberMaxIterations = (node: typeof agentNodes[number]) => {
+    const cap = node.maxIterations ?? squadMaxIterations;
+    return cap != null && cap > 0 ? cap : Infinity;
+  };
+  const resolveMemberTimeout = (node: typeof agentNodes[number]) =>
+    node.timeoutMs ?? squadTimeoutMs;
+  const resolveGraphMaxRounds = () => {
+    const nodeCaps = agentNodes
+      .map((n) => n.maxRounds)
+      .filter((n): n is number => n != null && n > 0);
+    if (nodeCaps.length) return Math.min(...nodeCaps);
+    if (squadMaxRounds != null && squadMaxRounds > 0) return squadMaxRounds;
+    return Infinity;
+  };
+  const graphMaxRounds = resolveGraphMaxRounds();
+  const execDefWithRounds = graphMaxRounds !== execDef.maxRounds
+    ? { ...execDef, maxRounds: graphMaxRounds }
+    : execDef;
 
   const perModelTokens = new Map<string, { input: number; output: number }>();
   const memberStatuses: MemberStatus[] = [];
   const reportsById = new Map<string, ExpertPanelReport>();
   let totalInput = 0;
   let totalOutput = 0;
-
-  const graphFraming = [
-    'You are an agent node in a collaboration graph of specialist agents.',
-    'Work the task you are given; upstream teammates\' outputs (when present) appear as',
-    '"Input from <id>" sections — build on them instead of re-deriving their work.',
-    'A failed upstream appears as a [FAILED …] marker: proceed with what you have and',
-    'note the gap. Produce a focused, decision-useful report for your downstream teammates.',
-    'If you have a NotifyTeammate tool, use it to hand off work or push findings to the',
-    'listed teammates when your findings are ready for them.',
-  ].join(' ');
 
   onEvent?.({
     type: 'team.started',
@@ -206,7 +202,7 @@ async function runGraphMode(
 
   const { answer, skipped, returnValue, returnMode, returnNodeId, rounds, incompleteReason: graphIncomplete, lastFromOutput } = await orchestrateGraph({
     prompt,
-    definition: execDef,
+    definition: execDefWithRounds,
     onEvent,
     runNode: async (node, identity, task, ctx) => {
       const tools = await buildGraphNodeTools(node, cwd);
@@ -214,10 +210,10 @@ async function runGraphMode(
         tools.push(await createNotifyTeammateTool(ctx));
       }
       const member = { ...node, model: node.model ?? identity.model };
-      let systemPrompt = buildMemberSystemPrompt(graphFraming, member);
-      if (reviewerContext?.trim() && execDef.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent').length === 1) {
-        systemPrompt = `${systemPrompt}\n\n## Context from the calling agent\n${reviewerContext.trim()}`;
-      }
+      const singleReviewer = execDef.nodes?.filter((n) => (n.kind ?? 'agent') === 'agent').length === 1;
+      const systemPrompt = resolveGraphNodeSystemPrompt(member, {
+        reviewerContext: singleReviewer ? reviewerContext : undefined,
+      });
       const run = await runMemberAgent({
         identity,
         member,
@@ -225,8 +221,9 @@ async function runGraphMode(
         systemPrompt,
         cwd,
         tools,
-        maxIterations: memberMaxIterations,
-        timeoutMs: definition.timeoutMs,
+        maxIterations: resolveMemberMaxIterations(node),
+        timeoutMs: resolveMemberTimeout(node),
+        reconnectAttempts: node.reconnectAttempts ?? 10,
         signal,
         round: 1,
         onEvent,
@@ -360,7 +357,9 @@ function inferTeamToolProfile(definition: TeamDefinition): 'reviewer' | 'panel' 
   const payloadReturn = nodes.some((n) => n.kind === 'return' && n.returnMode === 'payload');
   if (agents.length === 1 && payloadReturn) return 'reviewer';
   const hasConvergenceLoop = (definition.edges ?? []).some(
-    (e) => e.loop && e.to === 'task' && (e.condition?.includes('CONTINUE') ?? false),
+    (e) => e.loop
+      && (e.condition?.includes('CONTINUE') ?? false)
+      && e.from !== 'task',
   );
   if (agents.length > 1 || hasConvergenceLoop) return 'panel';
   return 'graph';
