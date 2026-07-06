@@ -147,10 +147,7 @@ import {
   graphNodeRef,
 } from '../team/teamGraph.js';
 import {
-  resolveEdgeBezierPoints,
-  writeEdgeBezierUi,
-  clearEdgeBezierUi,
-  defaultEdgeBezierOffsets,
+  getTeamGraphBezierClientScript,
   computeTeamGraphAutoLayoutLanes,
 } from '../team/teamGraphLayout.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
@@ -6215,12 +6212,9 @@ export function createActoviqGuiClientScript(): string {
     resolveGraphNodeSystemPrompt.toString(),
     isUndirectedTeamGraphEdge.toString(),
     formatTeamGraphEdgeLabel.toString(),
-    defaultEdgeBezierOffsets.toString(),
     graphNodeRef.toString(),
     computeTeamGraphAutoLayoutLanes.toString(),
-    resolveEdgeBezierPoints.toString(),
-    writeEdgeBezierUi.toString(),
-    clearEdgeBezierUi.toString(),
+    getTeamGraphBezierClientScript(),
   ].join('\n');
   return `
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
@@ -10903,6 +10897,7 @@ function ensureGraphNodeLayout(def) {
 }
 function applyGraphAutoLayout(def) {
   const nodes = def.nodes || [];
+  for (const edge of def.edges || []) clearEdgeBezierUi(edge);
   const lanes = computeTeamGraphAutoLayoutLanes(def);
   const startY = 48;
   const rowGap = 210;
@@ -11377,6 +11372,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
     const b = board();
     const s = svg();
     if (moved && b && s && state.teamDefinition) {
+      clearEdgeBezierUiForNodeRef(state.teamDefinition, graphRefOf(node));
       syncGraphBoardSize(b, state.teamDefinition, { expandOnly: true });
       redrawGraphBoardEdges(b, s, state.teamDefinition, { skipBoardSync: true });
       setTeamSavedStatus(false);

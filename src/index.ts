@@ -334,6 +334,10 @@ export {
   writeEdgeBezierUi,
   clearEdgeBezierUi,
   computeTeamGraphAutoLayoutLanes,
+  clearEdgeBezierUiForNodeRef,
+  edgeBezierMaxControlDistance,
+  sanitizeEdgeBezierUi,
+  getTeamGraphBezierClientScript,
 } from './team/teamGraphLayout.js';
 export { orchestrateGraphV3 } from './team/teamGraphV3.js';
 export {

@@ -17,17 +17,47 @@ export interface GraphEdgeBezierUi {
   c2?: { dx: number; dy: number };
 }
 
-/** Default S-curve offsets — horizontal or vertical depending on port layout. */
+const MIN_CONTROL_TENSION = 36;
+const MAX_CONTROL_TENSION = 96;
+
+function clampControlOffset(dx: number, dy: number, maxDist: number): { dx: number; dy: number } {
+  const len = Math.hypot(dx, dy);
+  if (len <= maxDist || len === 0) return { dx, dy };
+  const s = maxDist / len;
+  return { dx: dx * s, dy: dy * s };
+}
+
+/** Max distance a control point may sit from its anchor port. */
+export function edgeBezierMaxControlDistance(p1: GraphPoint, p2: GraphPoint): number {
+  const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  return Math.min(MAX_CONTROL_TENSION, Math.max(MIN_CONTROL_TENSION, dist * 0.28));
+}
+
+/** Clamp stored offsets so curves cannot loop wildly after layout or sloppy drags. */
+export function sanitizeEdgeBezierUi(
+  p1: GraphPoint,
+  p2: GraphPoint,
+  ui?: GraphEdgeBezierUi | TeamGraphEdge['ui'],
+): Required<GraphEdgeBezierUi> | undefined {
+  if (!ui?.c1 && !ui?.c2) return undefined;
+  const max = edgeBezierMaxControlDistance(p1, p2);
+  const defaults = defaultEdgeBezierOffsets(p1, p2);
+  const c1 = clampControlOffset(ui?.c1?.dx ?? defaults.c1.dx, ui?.c1?.dy ?? defaults.c1.dy, max);
+  const c2 = clampControlOffset(ui?.c2?.dx ?? defaults.c2.dx, ui?.c2?.dy ?? defaults.c2.dy, max);
+  return { c1, c2 };
+}
+
+/** Default S-curve — capped tension, follows dominant axis between ports. */
 export function defaultEdgeBezierOffsets(p1: GraphPoint, p2: GraphPoint): Required<GraphEdgeBezierUi> {
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
-  const bulge = Math.max(56, Math.max(Math.abs(dx), Math.abs(dy)) * 0.4);
-  if (Math.abs(dx) > Math.abs(dy) * 0.65) {
-    const sx = dx >= 0 ? 1 : -1;
-    return { c1: { dx: sx * bulge, dy: dy * 0.12 }, c2: { dx: -sx * bulge, dy: -dy * 0.12 } };
+  const tension = edgeBezierMaxControlDistance(p1, p2);
+  if (Math.abs(dy) >= Math.abs(dx) * 0.55) {
+    const sy = dy >= 0 ? 1 : -1;
+    return { c1: { dx: dx * 0.06, dy: sy * tension }, c2: { dx: -dx * 0.06, dy: -sy * tension } };
   }
-  const sy = dy >= 0 ? 1 : -1;
-  return { c1: { dx: dx * 0.12, dy: sy * bulge }, c2: { dx: -dx * 0.12, dy: -sy * bulge } };
+  const sx = dx >= 0 ? 1 : -1;
+  return { c1: { dx: sx * tension, dy: dy * 0.06 }, c2: { dx: -sx * tension, dy: -dy * 0.06 } };
 }
 
 export function resolveEdgeBezierPoints(
@@ -35,11 +65,9 @@ export function resolveEdgeBezierPoints(
   p2: GraphPoint,
   ui?: GraphEdgeBezierUi | TeamGraphEdge['ui'],
 ): { c1: GraphPoint; c2: GraphPoint; path: string } {
-  const defaults = defaultEdgeBezierOffsets(p1, p2);
-  const c1off = ui?.c1 ?? defaults.c1;
-  const c2off = ui?.c2 ?? defaults.c2;
-  const c1 = { x: p1.x + c1off.dx, y: p1.y + c1off.dy };
-  const c2 = { x: p2.x + c2off.dx, y: p2.y + c2off.dy };
+  const offsets = sanitizeEdgeBezierUi(p1, p2, ui) ?? defaultEdgeBezierOffsets(p1, p2);
+  const c1 = { x: p1.x + offsets.c1.dx, y: p1.y + offsets.c1.dy };
+  const c2 = { x: p2.x + offsets.c2.dx, y: p2.y + offsets.c2.dy };
   const path = `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`;
   return { c1, c2, path };
 }
@@ -51,20 +79,48 @@ export function writeEdgeBezierUi(
   c1: GraphPoint,
   c2: GraphPoint,
 ): void {
-  edge.ui = {
-    c1: { dx: c1.x - p1.x, dy: c1.y - p1.y },
-    c2: { dx: c2.x - p2.x, dy: c2.y - p2.y },
-  };
+  const max = edgeBezierMaxControlDistance(p1, p2);
+  const c1off = clampControlOffset(c1.x - p1.x, c1.y - p1.y, max);
+  const c2off = clampControlOffset(c2.x - p2.x, c2.y - p2.y, max);
+  edge.ui = { c1: c1off, c2: c2off };
 }
 
 export function clearEdgeBezierUi(edge: TeamGraphEdge): void {
   delete edge.ui;
 }
 
+/** Drop custom curves on edges touching a moved node so paths re-default cleanly. */
+export function clearEdgeBezierUiForNodeRef(
+  def: Pick<TeamDefinition, 'edges'>,
+  ref: string,
+): void {
+  const key = ref.trim();
+  if (!key) return;
+  for (const edge of def.edges ?? []) {
+    if (String(edge.from).trim() === key || String(edge.to).trim() === key) {
+      clearEdgeBezierUi(edge);
+    }
+  }
+}
+
+/** Join bezier helpers for injection into the GUI client script bundle. */
+export function getTeamGraphBezierClientScript(): string {
+  return [
+    'const MIN_CONTROL_TENSION = 36;',
+    'const MAX_CONTROL_TENSION = 96;',
+    clampControlOffset.toString(),
+    edgeBezierMaxControlDistance.toString(),
+    sanitizeEdgeBezierUi.toString(),
+    defaultEdgeBezierOffsets.toString(),
+    resolveEdgeBezierPoints.toString(),
+    writeEdgeBezierUi.toString(),
+    clearEdgeBezierUi.toString(),
+    clearEdgeBezierUiForNodeRef.toString(),
+  ].join('\n');
+}
+
 /**
  * Semantic auto-layout rows: Task → member agents → loop leaders → Return.
- * Task fans out to every agent (including synthesizer), so topology layers
- * collapse panel members and the synthesizer into one row — this splits them.
  */
 export function computeTeamGraphAutoLayoutLanes(
   def: Pick<TeamDefinition, 'nodes' | 'edges'>,

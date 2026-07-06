@@ -8,23 +8,25 @@ import {
   writeEdgeBezierUi,
   clearEdgeBezierUi,
   computeTeamGraphAutoLayoutLanes,
+  edgeBezierMaxControlDistance,
+  clearEdgeBezierUiForNodeRef,
 } from '../src/team/teamGraphLayout.js';
 import { toPersistedTeamDefinition } from '../src/team/teamGraph.js';
 import { getBuiltInTeamDefinition } from '../src/team/teamDefinitions.js';
 import type { TeamDefinition, TeamGraphEdge } from '../src/types.js';
 
 describe('teamGraphLayout', () => {
-  it('resolveEdgeBezierPoints uses stored offsets when present', () => {
+  it('resolveEdgeBezierPoints uses stored offsets when within clamp budget', () => {
     const p1 = { x: 100, y: 50 };
     const p2 = { x: 300, y: 200 };
     const { path, c1, c2 } = resolveEdgeBezierPoints(p1, p2, {
-      c1: { dx: 40, dy: 80 },
-      c2: { dx: -30, dy: -60 },
+      c1: { dx: 30, dy: 50 },
+      c2: { dx: -20, dy: -40 },
     });
-    expect(c1).toEqual({ x: 140, y: 130 });
-    expect(c2).toEqual({ x: 270, y: 140 });
-    expect(path).toContain('140 130');
-    expect(path).toContain('270 140');
+    expect(c1).toEqual({ x: 130, y: 100 });
+    expect(c2).toEqual({ x: 280, y: 160 });
+    expect(path).toContain('130 100');
+    expect(path).toContain('280 160');
   });
 
   it('writeEdgeBezierUi stores offsets relative to ports', () => {
@@ -66,10 +68,53 @@ describe('teamGraphLayout', () => {
     expect(off.c2.dy).toBeLessThan(0);
   });
 
+  it('defaultEdgeBezierOffsets caps tension on long edges', () => {
+    const off = defaultEdgeBezierOffsets({ x: 0, y: 0 }, { x: 0, y: 900 });
+    expect(Math.abs(off.c1.dy)).toBeLessThanOrEqual(96);
+    expect(Math.abs(off.c2.dy)).toBeLessThanOrEqual(96);
+  });
+
   it('defaultEdgeBezierOffsets curves horizontal edges', () => {
     const off = defaultEdgeBezierOffsets({ x: 0, y: 100 }, { x: 400, y: 110 });
-    expect(Math.abs(off.c1.dx)).toBeGreaterThan(40);
-    expect(Math.abs(off.c2.dx)).toBeGreaterThan(40);
+    expect(Math.abs(off.c1.dx)).toBeGreaterThan(30);
+    expect(Math.abs(off.c1.dx)).toBeLessThanOrEqual(96);
+  });
+
+  it('resolveEdgeBezierPoints clamps wild stored offsets', () => {
+    const p1 = { x: 100, y: 100 };
+    const p2 = { x: 200, y: 260 };
+    const max = edgeBezierMaxControlDistance(p1, p2);
+    const { c1, c2 } = resolveEdgeBezierPoints(p1, p2, {
+      c1: { dx: 900, dy: 1200 },
+      c2: { dx: -700, dy: -800 },
+    });
+    expect(Math.hypot(c1.x - p1.x, c1.y - p1.y)).toBeLessThanOrEqual(max + 0.001);
+    expect(Math.hypot(c2.x - p2.x, c2.y - p2.y)).toBeLessThanOrEqual(max + 0.001);
+  });
+
+  it('writeEdgeBezierUi clamps dragged control points', () => {
+    const edge: TeamGraphEdge = { from: 'a', to: 'b' };
+    const p1 = { x: 0, y: 0 };
+    const p2 = { x: 180, y: 220 };
+    writeEdgeBezierUi(edge, p1, p2, { x: 800, y: 900 }, { x: -500, y: -400 });
+    const max = edgeBezierMaxControlDistance(p1, p2);
+    expect(Math.hypot(edge.ui!.c1!.dx, edge.ui!.c1!.dy)).toBeLessThanOrEqual(max + 0.001);
+    expect(Math.hypot(edge.ui!.c2!.dx, edge.ui!.c2!.dy)).toBeLessThanOrEqual(max + 0.001);
+  });
+
+  it('clearEdgeBezierUiForNodeRef clears touching edges only', () => {
+    const def: TeamDefinition = {
+      name: 't',
+      mode: 'graph',
+      members: [],
+      edges: [
+        { from: 'a', to: 'b', ui: { c1: { dx: 10, dy: 10 }, c2: { dx: -10, dy: -10 } } },
+        { from: 'c', to: 'd', ui: { c1: { dx: 5, dy: 5 }, c2: { dx: -5, dy: -5 } } },
+      ],
+    };
+    clearEdgeBezierUiForNodeRef(def, 'b');
+    expect(def.edges![0].ui).toBeUndefined();
+    expect(def.edges![1].ui).toBeDefined();
   });
 
   it('computeTeamGraphAutoLayoutLanes separates synthesizer from panel members', () => {
