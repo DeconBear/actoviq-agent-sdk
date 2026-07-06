@@ -216,24 +216,31 @@ describe('TUI and GUI parity', () => {
 
     // Project Manager panel (plan M0/M1) + team preferences (plan §3.3).
     expect(html).toContain('id="managerPanel"');
+    expect(html).toContain('id="managerFab"');
+    expect(html).toContain('id="managerShell"');
     expect(html).toContain('id="managerUpdateBtn"');
     expect(html).toContain('id="managerChatInput"');
     expect(html).toContain('id="managerTranscript"');
     expect(html).toContain('id="settingsTeamAutoInvoke"');
     expect(html).toContain('id="settingsTeamDefaultAttached"');
     expect(html).toContain('id="settingsTeamPrefsSave"');
-    expect(css).toContain('.manager-panel');
+    expect(css).toContain('.manager-widget');
+    expect(css).toContain('.manager-fab');
     expect(css).toContain('.manager-transcript');
     expect(js).toContain('/api/manager/state');
     expect(js).toContain('/api/manager/update');
     expect(js).toContain('/api/manager/chat');
     expect(js).toContain('/api/team/preferences');
     expect(js).toContain('refreshManagerState');
-    expect(js).toContain('renderMarkdownInto(div');
+    expect(js).toContain('setManagerUiMode');
+    expect(js).toContain('managerBoundWorkDir');
+    expect(js).toContain('resetManagerClientState');
+    expect(js).toContain("state.projectView === 'detail'");
+    expect(js).toContain('renderMarkdownInto(bubble');
     expect(js).toContain('managerTranscriptHydrated');
     expect(js).toContain('hydrateManagerTranscript');
     expect(js).toContain("item.kind === 'manager'");
-    expect(css).toContain('.manager-transcript .manager-msg.md-prose');
+    expect(css).toContain('.manager-transcript .md-prose');
     // No client-side fake built-in team placeholders (real list comes from the server).
     expect(js).not.toContain("mode: 'built-in'");
   });
