@@ -2527,6 +2527,8 @@ export interface TeamGraphNode extends TeamMember {
    * `any`: OR-join — wake on the first in-edge that delivers a payload.
    */
   join?: 'all' | 'any';
+  /** GUI canvas position (pixels). Ignored by the graph engine. */
+  ui?: { x?: number; y?: number };
 }
 
 export interface TeamGraphEdge {

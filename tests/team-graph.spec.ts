@@ -621,9 +621,9 @@ describe('editor artifact → engine (end to end)', () => {
       const editorArtifact: TeamDefinition = graphDef({
         name: 'editor-e2e',
         nodes: [
-          node('planner', { entry: true, allowedTools: ['Read', 'Grep'] }),
-          node('builder'),
-          node('reviewer', { join: 'any' }),
+          node('planner', { entry: true, allowedTools: ['Read', 'Grep'], ui: { x: 72, y: 48 } }),
+          node('builder', { ui: { x: 322, y: 238 } }),
+          node('reviewer', { join: 'any', ui: { x: 572, y: 428 } }),
         ],
         edges: [
           { from: 'planner', to: 'builder', payloadTemplate: 'PLAN:\n{{from.output}}' },
@@ -637,6 +637,7 @@ describe('editor artifact → engine (end to end)', () => {
       const loaded = loadTeamDefinition('editor-e2e', tmpDir);
       expect(loaded).not.toBeNull();
       expect(loaded!.definition.mode).toBe('graph');
+      expect(loaded!.definition.nodes?.[0]?.ui).toEqual({ x: 72, y: 48 });
       expect(validateTeamGraph(loaded!.definition)).toEqual([]);
 
       const order: string[] = [];

@@ -298,6 +298,9 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/team/upgrade');
     expect(js).toContain('showTeamGraphProblems');
     expect(js).toContain('renderGraphModeCanvas');
+    expect(js).toContain('applyGraphAutoLayout');
+    expect(js).toContain('wireGraphBoardConnect');
+    expect(js).toContain('graph-board');
     expect(js).toContain('saveTargetField');
   });
 
