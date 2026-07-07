@@ -1986,19 +1986,40 @@ export interface TaskSchedulerOptions {
 
 export type ScheduledAutomationKind = 'workflow' | 'prompt' | 'manager';
 
+/** How an automation task is fired. */
+export type AutomationTriggerType = 'schedule' | 'webhook';
+
+/**
+ * A scheduled or webhook-triggered automation task. Schedule tasks fire on a
+ * cron expression; webhook tasks fire when their unique webhook URL receives a
+ * POST. Tasks are persisted per project workDir, or globally when `scope` is
+ * 'global' (created from any conversation via /automation).
+ */
 export interface ScheduledAutomationTask {
   id: string;
   name: string;
   kind: ScheduledAutomationKind;
+  /** Trigger type. Absent → 'schedule' (backward compat). */
+  trigger?: AutomationTriggerType;
+  /** Cron expression for trigger==='schedule'. Empty for webhook tasks. */
   cron: string;
   enabled: boolean;
   description?: string;
   workflowName?: string;
   input?: string;
   prompt?: string;
+  /** Webhook: unique token in the webhook URL (trigger==='webhook'). */
+  webhookId?: string;
+  /** Webhook: shared secret verified via x-webhook-secret header. */
+  webhookSecret?: string;
+  /** Webhook: optional case-insensitive substring the request body must contain. */
+  webhookFilter?: string;
+  /** 'global' = created from conversation (any project); otherwise the project workDir path. */
+  scope?: string;
   lastRunAt?: string;
   lastResult?: ScheduledTaskRecord['lastResult'];
   lastError?: string;
+  /** ISO time of the next scheduled run (schedule trigger only). */
   nextRunAt: string;
   invocationCount: number;
   createdAt: string;
@@ -2009,12 +2030,17 @@ export interface ScheduledAutomationTaskInput {
   id?: string;
   name?: string;
   kind?: ScheduledAutomationKind;
+  trigger?: AutomationTriggerType;
   cron?: string;
   enabled?: boolean;
   description?: string;
   workflowName?: string;
   input?: string;
   prompt?: string;
+  webhookId?: string;
+  webhookSecret?: string;
+  webhookFilter?: string;
+  scope?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

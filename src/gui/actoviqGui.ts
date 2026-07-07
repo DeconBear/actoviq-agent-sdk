@@ -372,6 +372,13 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   return raw.trim() ? JSON.parse(raw) as Record<string, unknown> : {};
 }
 
+/** Read the raw request body as a string (for webhook filter matching). */
+async function readRawBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return chunks.length ? Buffer.concat(chunks).toString('utf8') : '';
+}
+
 function summarizeInput(input: unknown): string {
   if (typeof input !== 'object' || input === null) return '';
   const record = input as Record<string, unknown>;
@@ -1797,6 +1804,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     scheduledAutomationIds.clear();
     for (const task of await listScheduledAutomationTasks(workDir)) {
+      // Webhook tasks fire on demand via /api/automation/webhook/:id — skip the cron scheduler.
+      if ((task.trigger ?? 'schedule') === 'webhook' || !task.cron) continue;
       await automationScheduler.schedule({
         id: task.id,
         schedule: { cron: task.cron },
@@ -3517,18 +3526,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks') {
         const body = await readJson(req);
+        const kind = body.kind === 'prompt' ? 'prompt' : body.kind === 'manager' ? 'manager' : 'workflow';
+        const trigger = body.trigger === 'webhook' ? 'webhook' : 'schedule';
         let task: ScheduledAutomationTask;
         try {
           task = await saveScheduledAutomationTask({
             id: typeof body.id === 'string' ? body.id : undefined,
             name: typeof body.name === 'string' ? body.name : undefined,
-            kind: body.kind === 'prompt' ? 'prompt' : 'workflow',
+            kind,
+            trigger,
             cron: typeof body.cron === 'string' ? body.cron : undefined,
             enabled: body.enabled !== false,
             description: typeof body.description === 'string' ? body.description : undefined,
             workflowName: typeof body.workflowName === 'string' ? body.workflowName : undefined,
             input: typeof body.input === 'string' ? body.input : undefined,
             prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
+            webhookId: typeof body.webhookId === 'string' ? body.webhookId : undefined,
+            webhookSecret: typeof body.webhookSecret === 'string' ? body.webhookSecret : undefined,
+            webhookFilter: typeof body.webhookFilter === 'string' ? body.webhookFilter : undefined,
+            scope: typeof body.scope === 'string' ? body.scope : undefined,
           });
         } catch (error) {
           return json(res, 400, { error: (error as Error).message });
@@ -3561,6 +3577,27 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!task) return json(res, 404, { error: `scheduled task not found: ${id}` });
         const events = await executeScheduledAutomationTask(task);
         return json(res, 200, { events, state: await state() });
+      }
+      // Webhook trigger: POST /api/automation/webhook/<webhookId>
+      // External services hit this URL to fire a webhook-triggered automation task.
+      if (req.method === 'POST' && url.pathname.startsWith('/api/automation/webhook/')) {
+        const webhookId = decodeURIComponent(url.pathname.slice('/api/automation/webhook/'.length)).trim();
+        if (!webhookId) return json(res, 400, { error: 'Missing webhook id' });
+        const tasks = await listScheduledAutomationTasks(workDir);
+        const task = tasks.find(t => t.trigger === 'webhook' && t.webhookId === webhookId && t.enabled);
+        if (!task) return json(res, 404, { error: `no enabled webhook task for id: ${webhookId}` });
+        if (task.webhookSecret) {
+          const provided = req.headers['x-webhook-secret'];
+          if (provided !== task.webhookSecret) return json(res, 401, { error: 'Invalid webhook secret' });
+        }
+        if (task.webhookFilter) {
+          const raw = await readRawBody(req);
+          if (!raw.toLowerCase().includes(task.webhookFilter.toLowerCase())) {
+            return json(res, 202, { ok: true, skipped: 'filter', reason: `body missing "${task.webhookFilter}"` });
+          }
+        }
+        const events = await executeScheduledAutomationTask(task);
+        return json(res, 200, { ok: true, task: { id: task.id, name: task.name }, events });
       }
       if (req.method === 'POST' && url.pathname === '/api/send') {
         const body = await readJson(req);

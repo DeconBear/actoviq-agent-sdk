@@ -3,12 +3,25 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { nowIso } from '../runtime/helpers.js';
 import type {
+  AutomationTriggerType,
   ScheduledAutomationKind,
   ScheduledAutomationTask,
   ScheduledAutomationTaskInput,
   ScheduledTaskRecord,
 } from '../types.js';
 import { nextCronTime } from './cron.js';
+
+/** A task fires on cron unless its trigger is explicitly 'webhook'. */
+function isScheduleTrigger(task: { trigger?: string }): boolean {
+  return (task.trigger ?? 'schedule') === 'schedule';
+}
+
+/** nextRunAt for a task: cron-derived for schedule tasks, empty for webhook. */
+function computeNextRunAt(task: { trigger?: string; cron?: string }, from?: Date): string {
+  if (!isScheduleTrigger(task)) return '';
+  const cron = task.cron || '0 9 * * *';
+  return nextCronTime(cron, from).toISOString();
+}
 
 interface ScheduledAutomationFile {
   version: 1;
@@ -63,7 +76,7 @@ export async function setScheduledAutomationEnabled(
   if (!task) return undefined;
   task.enabled = enabled;
   task.updatedAt = nowIso();
-  if (enabled) task.nextRunAt = nextCronTime(task.cron).toISOString();
+  if (enabled) task.nextRunAt = computeNextRunAt(task);
   await writeScheduledAutomationFile(workDir, file);
   return { ...task };
 }
@@ -83,7 +96,7 @@ export async function recordScheduledAutomationRun(
   if (error) task.lastError = error;
   else delete task.lastError;
   task.invocationCount += 1;
-  task.nextRunAt = nextCronTime(task.cron, new Date(completedAt)).toISOString();
+  task.nextRunAt = computeNextRunAt(task, new Date(completedAt));
   task.updatedAt = completedAt;
   await writeScheduledAutomationFile(workDir, file);
   return { ...task };
@@ -95,8 +108,11 @@ function normalizeScheduledAutomationTask(
 ): ScheduledAutomationTask {
   const now = nowIso();
   const kind: ScheduledAutomationKind = input.kind ?? existing?.kind ?? 'workflow';
-  const cron = normalizeText(input.cron) || existing?.cron || '0 9 * * *';
-  const nextRunAt = nextCronTime(cron).toISOString();
+  const trigger: AutomationTriggerType = input.trigger ?? existing?.trigger ?? 'schedule';
+  const cron = trigger === 'webhook'
+    ? ''
+    : (normalizeText(input.cron) || existing?.cron || '0 9 * * *');
+  const nextRunAt = computeNextRunAt({ trigger, cron });
   const workflowName = kind === 'workflow'
     ? normalizeText(input.workflowName) || existing?.workflowName
     : undefined;
@@ -116,24 +132,41 @@ function normalizeScheduledAutomationTask(
   if (kind === 'prompt' && !prompt) {
     throw new Error('Prompt tasks require prompt');
   }
+  if (trigger === 'webhook' && !(normalizeText(input.webhookId) || existing?.webhookId)) {
+    throw new Error('Webhook tasks require webhookId');
+  }
 
   return {
     id: normalizeText(input.id) || existing?.id || createTaskId(name),
     name,
     kind,
+    trigger,
     cron,
     enabled: input.enabled ?? existing?.enabled ?? true,
     ...(normalizeText(input.description) || existing?.description
       ? { description: normalizeText(input.description) || existing?.description }
       : {}),
     ...(workflowName ? { workflowName } : {}),
-    // `input` is the workflow input, or the optional Manager update instruction.
     ...((kind === 'workflow' || kind === 'manager') && input.input !== undefined
       ? { input: String(input.input) }
       : (kind === 'workflow' || kind === 'manager') && existing?.input !== undefined
         ? { input: existing.input }
         : {}),
     ...(prompt ? { prompt } : {}),
+    ...(trigger === 'webhook'
+      ? {
+          webhookId: normalizeText(input.webhookId) || existing?.webhookId,
+          ...(normalizeText(input.webhookSecret) || existing?.webhookSecret
+            ? { webhookSecret: normalizeText(input.webhookSecret) || existing?.webhookSecret }
+            : {}),
+          ...(normalizeText(input.webhookFilter) || existing?.webhookFilter
+            ? { webhookFilter: normalizeText(input.webhookFilter) || existing?.webhookFilter }
+            : {}),
+        }
+      : {}),
+    ...(normalizeText(input.scope) || existing?.scope
+      ? { scope: normalizeText(input.scope) || existing?.scope }
+      : {}),
     ...(existing?.lastRunAt ? { lastRunAt: existing.lastRunAt } : {}),
     ...(existing?.lastResult ? { lastResult: existing.lastResult } : {}),
     ...(existing?.lastError ? { lastError: existing.lastError } : {}),
@@ -175,30 +208,44 @@ function coerceTask(value: unknown): ScheduledAutomationTask | undefined {
   if (!isRecord(value)) return undefined;
   const id = normalizeText(value.id);
   const name = normalizeText(value.name);
-  const cron = normalizeText(value.cron);
   const kind = value.kind === 'prompt' || value.kind === 'workflow' || value.kind === 'manager' ? value.kind : undefined;
-  if (!id || !name || !cron || !kind) return undefined;
-  try {
-    nextCronTime(cron);
-  } catch {
-    return undefined;
+  const trigger: AutomationTriggerType = value.trigger === 'webhook' ? 'webhook' : 'schedule';
+  const cron = normalizeText(value.cron);
+  if (!id || !name || !kind) return undefined;
+  // Schedule tasks need a valid cron; webhook tasks don't.
+  if (trigger === 'schedule') {
+    if (!cron) return undefined;
+    try {
+      nextCronTime(cron);
+    } catch {
+      return undefined;
+    }
   }
   return {
     id,
     name,
     kind,
-    cron,
+    trigger,
+    cron: trigger === 'webhook' ? '' : cron,
     enabled: value.enabled !== false,
     ...(normalizeText(value.description) ? { description: normalizeText(value.description) } : {}),
     ...(normalizeText(value.workflowName) ? { workflowName: normalizeText(value.workflowName) } : {}),
     ...(typeof value.input === 'string' ? { input: value.input } : {}),
     ...(normalizeText(value.prompt) ? { prompt: normalizeText(value.prompt) } : {}),
+    ...(trigger === 'webhook' && normalizeText(value.webhookId)
+      ? {
+          webhookId: normalizeText(value.webhookId),
+          ...(normalizeText(value.webhookSecret) ? { webhookSecret: normalizeText(value.webhookSecret) } : {}),
+          ...(normalizeText(value.webhookFilter) ? { webhookFilter: normalizeText(value.webhookFilter) } : {}),
+        }
+      : {}),
+    ...(normalizeText(value.scope) ? { scope: normalizeText(value.scope) } : {}),
     ...(normalizeText(value.lastRunAt) ? { lastRunAt: normalizeText(value.lastRunAt) } : {}),
     ...(value.lastResult === 'success' || value.lastResult === 'failure' || value.lastResult === 'timeout'
       ? { lastResult: value.lastResult }
       : {}),
     ...(normalizeText(value.lastError) ? { lastError: normalizeText(value.lastError) } : {}),
-    nextRunAt: normalizeText(value.nextRunAt) || nextCronTime(cron).toISOString(),
+    nextRunAt: normalizeText(value.nextRunAt) || computeNextRunAt({ trigger, cron }),
     invocationCount: typeof value.invocationCount === 'number' && Number.isFinite(value.invocationCount)
       ? Math.max(0, Math.floor(value.invocationCount))
       : 0,
