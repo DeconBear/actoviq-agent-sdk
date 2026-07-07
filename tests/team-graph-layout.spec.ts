@@ -101,6 +101,22 @@ describe('teamGraphLayout', () => {
     expect(edge.ui!.c2).toEqual({ dx: -680, dy: -620 });
   });
 
+  it('writeEdgeBezierUi preserves fromPort/toPort across a control-point drag', () => {
+    const edge: TeamGraphEdge = { from: 'a', to: 'b', ui: { fromPort: 0, toPort: 2 } };
+    writeEdgeBezierUi(edge, { x: 0, y: 0 }, { x: 200, y: 100 }, { x: 50, y: 20 }, { x: 150, y: 80 });
+    expect(edge.ui).toEqual({ fromPort: 0, toPort: 2, c1: { dx: 50, dy: 20 }, c2: { dx: -50, dy: -20 } });
+  });
+
+  it('clearEdgeBezierUi drops the curve shape but keeps snap-point selection', () => {
+    const edge: TeamGraphEdge = { from: 'a', to: 'b', ui: { c1: { dx: 5, dy: 5 }, c2: { dx: -5, dy: -5 }, fromPort: 0 } };
+    clearEdgeBezierUi(edge);
+    expect(edge.ui).toEqual({ fromPort: 0 });
+    // A pure bezier-only ui is fully removed.
+    const bezierOnly: TeamGraphEdge = { from: 'a', to: 'b', ui: { c1: { dx: 1, dy: 1 }, c2: { dx: -1, dy: -1 } } };
+    clearEdgeBezierUi(bezierOnly);
+    expect(bezierOnly.ui).toBeUndefined();
+  });
+
   it('defaultEdgeTension stays within [36, 96]', () => {
     expect(defaultEdgeTension({ x: 0, y: 0 }, { x: 10, y: 10 })).toBe(36);
     expect(defaultEdgeTension({ x: 0, y: 0 }, { x: 0, y: 900 })).toBe(96);

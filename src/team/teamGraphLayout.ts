@@ -82,14 +82,22 @@ export function writeEdgeBezierUi(
   c1: GraphPoint,
   c2: GraphPoint,
 ): void {
+  // Spread the existing ui so fromPort/toPort (snap-point selection) survive a
+  // control-point drag — otherwise the endpoint would snap back to center.
   edge.ui = {
+    ...edge.ui,
     c1: { dx: c1.x - p1.x, dy: c1.y - p1.y },
     c2: { dx: c2.x - p2.x, dy: c2.y - p2.y },
   };
 }
 
 export function clearEdgeBezierUi(edge: TeamGraphEdge): void {
-  delete edge.ui;
+  // Only drop the bezier shape; keep fromPort/toPort so a "reset curve" or
+  // auto-layout doesn't also reset the user's snap-point selection.
+  if (!edge.ui) return;
+  delete edge.ui.c1;
+  delete edge.ui.c2;
+  if (edge.ui.fromPort == null && edge.ui.toPort == null) delete edge.ui;
 }
 
 /** Drop custom curves on edges touching a moved node so paths re-default cleanly. */
