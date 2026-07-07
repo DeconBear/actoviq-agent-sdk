@@ -3079,7 +3079,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (!hostHeaderAllowed(req) || !originAllowed(req)) {
         return text(res, 403, 'Forbidden: invalid host or origin');
       }
-      if (url.pathname.startsWith('/api/') && req.headers['x-actoviq-token'] !== authToken) {
+      // Webhook triggers come from external services (no actoviq token); they
+      // carry their own per-task secret verified inside the route handler.
+      const isWebhook = req.method === 'POST' && url.pathname.startsWith('/api/automation/webhook/');
+      if (!isWebhook && url.pathname.startsWith('/api/') && req.headers['x-actoviq-token'] !== authToken) {
         return json(res, 403, { error: 'Forbidden: missing or invalid token' });
       }
       if (req.method === 'GET' && url.pathname === '/') {
@@ -6055,7 +6058,34 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .automation-schedule-payload { max-width: 760px; }
 .automation-schedule-payload textarea { min-height: 76px; resize: vertical; }
 .automation-region-section { display: grid; gap: 12px; }
-.automation-region-section + .automation-region-section { margin-top: 8px; padding-top: 14px; border-top: 1px solid #eceff3; }
+.automation-region-section + .automation-region-section { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+/* Automation list-grid (multica-inspired) + create/edit dialog */
+.auto-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.auto-toolbar .auto-new { margin-left: auto; min-height: 32px; padding: 0 12px; border-radius: 8px; background: var(--btn-primary-bg); color: var(--btn-primary-fg); border: 0; font-weight: 600; font-size: 13px; }
+.auto-grid { display: grid; gap: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg-surface); }
+.auto-row { display: grid; grid-template-columns: minmax(160px,1.4fr) 88px minmax(150px,1.2fr) 120px 120px 96px 132px; align-items: center; gap: 0; padding: 0 12px; min-height: 48px; border-bottom: 1px solid var(--border); }
+.auto-row:last-child { border-bottom: 0; }
+.auto-row.auto-head { background: var(--bg-surface-2); font-size: 11.5px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .03em; min-height: 36px; }
+.auto-cell { padding: 0 10px; font-size: 13px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-cell .auto-name { font-weight: 600; }
+.auto-cell .auto-sub { font-size: 11.5px; color: var(--text-2); display: block; }
+.auto-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); background: var(--bg-surface-2); }
+.auto-pill.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.auto-pill.off { color: var(--text-2); }
+.auto-pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); background: color-mix(in srgb, var(--err) 12%, transparent); }
+.auto-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.auto-actions button { min-height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); font-size: 12px; }
+.auto-actions button:hover { background: var(--bg-surface-2); }
+.auto-empty { padding: 28px 16px; text-align: center; color: var(--text-2); font-size: 13px; }
+.auto-dialog { max-width: 560px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.18); width: min(560px, 92vw); max-height: 86vh; overflow: auto; }
+.auto-dialog .te-field { margin-bottom: 10px; }
+.auto-dialog .auto-webhook-url { font-family: ui-monospace, monospace; font-size: 11.5px; background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text-1); word-break: break-all; }
+.auto-freq-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.auto-freq-row button { min-height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); font-size: 12.5px; }
+.auto-freq-row button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.auto-dow { display: flex; gap: 4px; }
+.auto-dow button { width: 30px; height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); font-size: 11.5px; }
+.auto-dow button.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
 .automation-region-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .automation-region-title h3 { margin: 0; font-size: 15px; color: var(--text-1); }
 .automation-region-title small { color: var(--text-2); }
@@ -9488,6 +9518,14 @@ function enqueueText(text) {
 }
 async function submitText(text) {
   if (!text) return;
+  // /automation — open the create-task dialog from any conversation. The task
+  // is scoped 'global' so it shows in the Automation panel regardless of project.
+  const trimmed = text.trim();
+  if (trimmed === '/automation' || trimmed === '/automation new' || trimmed.startsWith('/automation create')) {
+    openAutomationDialog(null);
+    addMessage('command.result', '/automation — create a scheduled or webhook task (scoped global).');
+    return;
+  }
   if (state.running) {
     enqueueText(text);
     return;
@@ -9658,8 +9696,286 @@ async function renderAutomationRegion() {
   body.textContent = '';
   const tasks = state.snapshot?.scheduledTasks || [];
   const workflows = state.snapshot?.workflows || [];
-  body.appendChild(createAutomationSection('Scheduled tasks', tasks.length + ' configured', tasks, renderAutomationTaskCard));
+  const section = document.createElement('section');
+  section.className = 'automation-region-section';
+  const head = document.createElement('div');
+  head.className = 'automation-region-title';
+  const h = document.createElement('h3');
+  h.textContent = 'Automation tasks';
+  const small = document.createElement('small');
+  small.textContent = tasks.length + ' configured · schedule or webhook · /automation in any chat';
+  head.append(h, small);
+  section.appendChild(head);
+  const toolbar = document.createElement('div');
+  toolbar.className = 'auto-toolbar';
+  const newBtn = document.createElement('button');
+  newBtn.type = 'button';
+  newBtn.className = 'auto-new';
+  newBtn.textContent = '+ New task';
+  newBtn.addEventListener('click', () => openAutomationDialog(null));
+  toolbar.appendChild(newBtn);
+  section.appendChild(toolbar);
+  if (!tasks.length) {
+    const empty = document.createElement('p');
+    empty.className = 'auto-empty';
+    empty.textContent = 'No automation tasks yet. Click "+ New task", or use /automation in any conversation.';
+    section.appendChild(empty);
+  } else {
+    const grid = document.createElement('div');
+    grid.className = 'auto-grid';
+    const header = document.createElement('div');
+    header.className = 'auto-row auto-head';
+    ['Name', 'Kind', 'Trigger', 'Last run', 'Next run', 'Status', 'Actions'].forEach((t, i) => {
+      const c = document.createElement('div');
+      c.className = 'auto-cell';
+      if (i === 6) c.style.textAlign = 'right';
+      c.textContent = t;
+      header.appendChild(c);
+    });
+    grid.appendChild(header);
+    for (const task of tasks) grid.appendChild(renderAutomationRow(task));
+    section.appendChild(grid);
+  }
+  body.appendChild(section);
   body.appendChild(createAutomationSection('Workflows', workflows.length + ' saved scripts', workflows, renderAutomationWorkflowCard));
+}
+function renderAutomationRow(task) {
+  const row = document.createElement('div');
+  row.className = 'auto-row';
+  const status = !task.enabled ? { cls: 'off', text: 'Paused' } : task.lastError ? { cls: 'err', text: 'Error' } : { cls: 'on', text: 'Active' };
+  const cells = [
+    '<div class="auto-cell"><span class="auto-name">' + escHtml(task.name) + '</span><span class="auto-sub">' + escHtml(task.scope === 'global' ? 'global' : (task.description || task.id)) + '</span></div>',
+    '<div class="auto-cell">' + escHtml(task.kind) + '</div>',
+    '<div class="auto-cell">' + escHtml(formatSchedule(task)) + '</div>',
+    '<div class="auto-cell">' + escHtml(task.lastRunAt ? formatRelative(task.lastRunAt) : '—') + '</div>',
+    '<div class="auto-cell">' + escHtml((task.trigger || 'schedule') === 'webhook' ? 'on demand' : (task.nextRunAt ? formatRelative(task.nextRunAt) : '—')) + '</div>',
+    '<div class="auto-cell"><span class="auto-pill ' + status.cls + '">' + status.text + '</span></div>',
+    '<div class="auto-cell auto-actions"></div>',
+  ];
+  row.innerHTML = cells.join('');
+  const actions = row.querySelector('.auto-actions');
+  const run = document.createElement('button');
+  run.type = 'button'; run.textContent = 'Run';
+  run.addEventListener('click', () => runScheduledTask(task.id));
+  const toggle = document.createElement('button');
+  toggle.type = 'button'; toggle.textContent = task.enabled ? 'Pause' : 'Enable';
+  toggle.addEventListener('click', () => toggleScheduledTask(task.id, !task.enabled));
+  const edit = document.createElement('button');
+  edit.type = 'button'; edit.textContent = 'Edit';
+  edit.addEventListener('click', () => openAutomationDialog(task));
+  actions.append(run, toggle, edit);
+  return row;
+}
+// Cron frequency presets (port of multica trigger-config). No backticks — runs inside the client-script template.
+function autoParseTime(t) { const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '').trim()); return m ? { h: ((+m[1]) % 24 + 24) % 24, min: (+m[2]) % 60 } : { h: 9, min: 0 }; }
+function autoFmtTime(h, min) { return String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0'); }
+function frequencyToCron(freq, time, daysOfWeek) {
+  const r = autoParseTime(time);
+  if (freq === 'hourly') return r.min + ' * * * *';
+  if (freq === 'daily') return r.min + ' ' + r.h + ' * * *';
+  if (freq === 'weekdays') return r.min + ' ' + r.h + ' * * 1-5';
+  if (freq === 'weekly') return r.min + ' ' + r.h + ' * * ' + (daysOfWeek && daysOfWeek.length ? daysOfWeek.join(',') : '1');
+  return '';
+}
+function cronToFrequency(cron) {
+  const parts = String(cron || '').trim().split(/\s+/);
+  if (parts.length !== 5) return { frequency: 'custom', time: '09:00', daysOfWeek: [1] };
+  const m = parts[0], h = parts[1], dom = parts[2], mon = parts[3], dow = parts[4];
+  if (dom !== '*' || mon !== '*') return { frequency: 'custom', time: '09:00', daysOfWeek: [1] };
+  const min = +m;
+  if (Number.isNaN(min) || min < 0 || min > 59) return { frequency: 'custom', time: '09:00', daysOfWeek: [1] };
+  if (h === '*') return { frequency: 'hourly', time: autoFmtTime(0, min), daysOfWeek: [] };
+  const hour = +h;
+  if (Number.isNaN(hour) || hour < 0 || hour > 23) return { frequency: 'custom', time: '09:00', daysOfWeek: [1] };
+  const time = autoFmtTime(hour, min);
+  if (dow === '*') return { frequency: 'daily', time: time, daysOfWeek: [] };
+  if (dow === '1-5') return { frequency: 'weekdays', time: time, daysOfWeek: [1, 2, 3, 4, 5] };
+  const days = dow.split(',').map(function (d) { return +d; }).filter(function (d) { return d >= 0 && d <= 6; });
+  if (days.length) return { frequency: 'weekly', time: time, daysOfWeek: days };
+  return { frequency: 'custom', time: time, daysOfWeek: [1] };
+}
+function formatSchedule(task) {
+  if ((task.trigger || 'schedule') === 'webhook') return 'Webhook';
+  if (!task.cron) return '—';
+  const cfg = cronToFrequency(task.cron);
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  if (cfg.frequency === 'custom') return task.cron;
+  if (cfg.frequency === 'hourly') return 'Hourly :' + String(autoParseTime(cfg.time).min).padStart(2, '0');
+  if (cfg.frequency === 'daily') return 'Daily ' + cfg.time;
+  if (cfg.frequency === 'weekdays') return 'Weekdays ' + cfg.time;
+  if (cfg.frequency === 'weekly') return 'Weekly ' + cfg.time + ' ' + cfg.daysOfWeek.map(function (d) { return dayNames[d]; }).join(',');
+  return task.cron;
+}
+function formatRelative(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const diff = t - Date.now();
+  const abs = Math.abs(diff);
+  const mins = Math.round(abs / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return (diff < 0 ? '-' : '') + mins + 'm';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return (diff < 0 ? '-' : '') + hrs + 'h';
+  return (diff < 0 ? '-' : '') + Math.round(hrs / 24) + 'd';
+}
+function escHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function openAutomationDialog(task) {
+  const old = document.getElementById('automationDialog');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'automationDialog';
+  overlay.className = 'modal';
+  overlay.classList.remove('hidden');
+  const panel = document.createElement('div');
+  panel.className = 'modal-panel auto-dialog';
+  panel.style.cssText = 'max-width:560px;width:min(560px,92vw);max-height:86vh;overflow:auto;';
+  const editing = !!task;
+  const state0 = task || { kind: 'workflow', trigger: 'schedule', enabled: true, cron: '0 9 * * *' };
+  const cfg = cronToFrequency(state0.cron);
+  let freq = cfg.frequency;
+  let time = cfg.time;
+  let days = cfg.daysOfWeek.slice();
+  let customCron = freq === 'custom' ? state0.cron : '';
+  let trigger = state0.trigger || 'schedule';
+  const webhookId = state0.webhookId || ('wh-' + Math.random().toString(36).slice(2, 10));
+  // ... form built below via helpers ...
+  const title = document.createElement('div');
+  title.className = 'ins-head';
+  title.innerHTML = '<h3>' + (editing ? 'Edit' : 'New') + ' automation task</h3>';
+  panel.appendChild(title);
+  const host = document.createElement('div');
+  host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
+  panel.appendChild(host);
+  const name = teFieldLive('Name', state0.name || '', function (v) { state0.name = v; });
+  host.appendChild(name);
+  host.appendChild(teSelect('Kind', state0.kind || 'workflow', ['workflow', 'prompt', 'manager'], function (v) {
+    state0.kind = v;
+    rebuildActionFields();
+  }));
+  host.appendChild(teSelect('Trigger', trigger, ['schedule', 'webhook'], function (v) {
+    trigger = v;
+    rebuildTriggerFields();
+  }));
+  const triggerHost = document.createElement('div');
+  host.appendChild(triggerHost);
+  const actionHost = document.createElement('div');
+  host.appendChild(actionHost);
+  host.appendChild(teCheck('Enabled', state0.enabled !== false, function (v) { state0.enabled = v; }));
+  function rebuildTriggerFields() {
+    triggerHost.textContent = '';
+    if (trigger === 'webhook') {
+      const url = location.origin + '/api/automation/webhook/' + webhookId;
+      const urlBox = document.createElement('div');
+      urlBox.className = 'te-field';
+      urlBox.innerHTML = '<label>Webhook URL</label><div class="auto-webhook-url">' + escHtml(url) + '</div>';
+      triggerHost.appendChild(urlBox);
+      triggerHost.appendChild(teFieldLive('Webhook id', webhookId, function (v) { /* id is part of URL; keep stable */ }, false));
+      triggerHost.appendChild(teHintField('Secret (optional, verified via x-webhook-secret header)', 'Leave empty to allow unauthenticated calls.', state0.webhookSecret || '', function (v) { state0.webhookSecret = v.trim() || undefined; }));
+      triggerHost.appendChild(teHintField('Body filter (optional, case-insensitive substring)', 'Only fire when the request body contains this text.', state0.webhookFilter || '', function (v) { state0.webhookFilter = v.trim() || undefined; }));
+      return;
+    }
+    // schedule
+    const freqRow = document.createElement('div');
+    freqRow.className = 'te-field';
+    freqRow.innerHTML = '<label>Frequency</label>';
+    const btns = document.createElement('div');
+    btns.className = 'auto-freq-row';
+    ['hourly', 'daily', 'weekdays', 'weekly', 'custom'].forEach(function (f) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = f;
+      b.className = freq === f ? 'active' : '';
+      b.addEventListener('click', function () { freq = f; rebuildTriggerFields(); });
+      btns.appendChild(b);
+    });
+    freqRow.appendChild(btns);
+    triggerHost.appendChild(freqRow);
+    if (freq !== 'custom') {
+      triggerHost.appendChild(teHintField('Time (HH:MM, 24h)', 'Run at this time.', time, function (v) { time = v; }));
+    }
+    if (freq === 'weekly') {
+      const dowField = document.createElement('div');
+      dowField.className = 'te-field';
+      dowField.innerHTML = '<label>Days of week</label>';
+      const dowBtns = document.createElement('div');
+      dowBtns.className = 'auto-dow';
+      const labels = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+      for (let i = 0; i < 7; i++) {
+        (function (i) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = labels[i];
+          b.title = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][i];
+          function refresh() { b.className = days.indexOf(i) >= 0 ? 'active' : ''; }
+          b.addEventListener('click', function () {
+            const idx = days.indexOf(i);
+            if (idx >= 0) days.splice(idx, 1); else days.push(i);
+            days.sort(function (a, b) { return a - b; });
+            refresh();
+          });
+          refresh();
+          dowBtns.appendChild(b);
+        })(i);
+      }
+      dowField.appendChild(dowBtns);
+      triggerHost.appendChild(dowField);
+    }
+    if (freq === 'custom') {
+      triggerHost.appendChild(teHintField('Cron expression (min hour dom mon dow)', 'Standard 5-field cron.', state0.cron || '', function (v) { customCron = v; }));
+    }
+  }
+  function rebuildActionFields() {
+    actionHost.textContent = '';
+    const k = state0.kind || 'workflow';
+    if (k === 'workflow') {
+      const workflows = (state.snapshot && state.snapshot.workflows) || [];
+      const names = workflows.map(function (w) { return w.name; });
+      actionHost.appendChild(teSelect('Workflow', state0.workflowName || (names[0] || ''), names, function (v) { state0.workflowName = v; if (!state0.name) { state0.name = v; name.querySelector('input').value = v; } }));
+      actionHost.appendChild(teHintField('Input (optional)', 'Workflow input text.', state0.input || '', function (v) { state0.input = v; }));
+    } else if (k === 'prompt') {
+      actionHost.appendChild(teFieldLive('Prompt', state0.prompt || '', function (v) { state0.prompt = v; if (!state0.name) { state0.name = v.slice(0, 48); name.querySelector('input').value = state0.name; } }, true));
+    } else {
+      actionHost.appendChild(teHintField('Instruction (optional)', 'Manager update instruction.', state0.input || '', function (v) { state0.input = v; }));
+    }
+  }
+  rebuildTriggerFields();
+  rebuildActionFields();
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'te-btn';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', function () { overlay.remove(); });
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'te-btn primary';
+  save.textContent = 'Save';
+  save.addEventListener('click', async function () {
+    const cron = trigger === 'webhook' ? '' : (freq === 'custom' ? customCron.trim() : frequencyToCron(freq, time, days));
+    if (trigger === 'schedule' && !cron) { window.alert('Please provide a valid cron expression.'); return; }
+    const body = {
+      id: state0.id, name: state0.name, kind: state0.kind, trigger: trigger,
+      cron: cron, enabled: state0.enabled !== false,
+      workflowName: state0.workflowName, input: state0.input, prompt: state0.prompt,
+      webhookId: trigger === 'webhook' ? webhookId : undefined,
+      webhookSecret: state0.webhookSecret, webhookFilter: state0.webhookFilter,
+      scope: state0.scope || 'global',
+    };
+    try {
+      const res = await api('/api/scheduled-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) { const j = await res.json().catch(function () { return {}; }); window.alert('Save failed: ' + (j.error || res.status)); return; }
+      overlay.remove();
+      await refreshTeamsSnapshot().catch(function () {});
+      await renderAutomationRegion();
+    } catch (e) { window.alert('Save failed: ' + (e && e.message || e)); }
+  });
+  actions.append(cancel, save);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
 }
 function createAutomationSection(title, subtitle, items, renderItem) {
   const section = document.createElement('section');
@@ -9684,51 +10000,6 @@ function createAutomationSection(title, subtitle, items, renderItem) {
   for (const item of items) grid.appendChild(renderItem(item));
   section.appendChild(grid);
   return section;
-}
-function renderAutomationTaskCard(task) {
-  const card = document.createElement('article');
-  card.className = 'rl-card';
-  const head = document.createElement('div');
-  head.className = 'rl-head';
-  const icon = document.createElement('span');
-  icon.className = 'rl-icon';
-  icon.innerHTML = guiIcon('automation');
-  const titles = document.createElement('div');
-  titles.style.cssText = 'min-width:0;display:grid;gap:1px;';
-  const title = document.createElement('span');
-  title.className = 'rl-title';
-  title.textContent = task.name || task.id;
-  const source = document.createElement('span');
-  source.className = 'rl-source';
-  source.textContent = task.cron || '';
-  titles.append(title, source);
-  head.append(icon, titles);
-  const desc = document.createElement('p');
-  desc.className = 'rl-desc';
-  desc.textContent = scheduledTaskDetail(task);
-  const footer = document.createElement('div');
-  footer.className = 'rl-footer';
-  const run = document.createElement('button');
-  run.type = 'button';
-  run.className = 'rl-btn primary';
-  run.textContent = 'Run';
-  run.addEventListener('click', () => runScheduledTask(task.id));
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'rl-btn';
-  toggle.textContent = task.enabled ? 'Pause' : 'Enable';
-  toggle.addEventListener('click', () => toggleScheduledTask(task.id, !task.enabled));
-  const edit = document.createElement('button');
-  edit.type = 'button';
-  edit.className = 'rl-btn';
-  edit.textContent = 'Edit';
-  edit.addEventListener('click', async () => {
-    await openSettings('automation');
-    editScheduledTask(task);
-  });
-  footer.append(run, toggle, edit);
-  card.append(head, desc, footer);
-  return card;
 }
 function renderAutomationWorkflowCard(workflow) {
   const card = document.createElement('article');
