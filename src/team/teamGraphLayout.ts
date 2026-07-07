@@ -18,40 +18,43 @@ export interface GraphEdgeBezierUi {
 }
 
 const MIN_CONTROL_TENSION = 36;
-const MAX_CONTROL_TENSION = 96;
+const DEFAULT_TENSION_MAX = 96;
 
-function clampControlOffset(dx: number, dy: number, maxDist: number): { dx: number; dy: number } {
-  const len = Math.hypot(dx, dy);
-  if (len <= maxDist || len === 0) return { dx, dy };
-  const s = maxDist / len;
-  return { dx: dx * s, dy: dy * s };
-}
-
-/** Max distance a control point may sit from its anchor port. */
-export function edgeBezierMaxControlDistance(p1: GraphPoint, p2: GraphPoint): number {
+/** Default S-curve tension — capped so auto curves stay gentle on long edges. */
+export function defaultEdgeTension(p1: GraphPoint, p2: GraphPoint): number {
   const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-  return Math.min(MAX_CONTROL_TENSION, Math.max(MIN_CONTROL_TENSION, dist * 0.28));
+  return Math.min(DEFAULT_TENSION_MAX, Math.max(MIN_CONTROL_TENSION, dist * 0.28));
 }
 
-/** Clamp stored offsets so curves cannot loop wildly after layout or sloppy drags. */
+/**
+ * Normalize stored offsets: fill missing c1/c2 with defaults and guard against
+ * non-finite values. No upper clamp — users can drag control points arbitrarily
+ * far. Reset-curve restores defaults; `clearEdgeBezierUiForNodeRef` drops stale
+ * offsets when a node moves.
+ */
 export function sanitizeEdgeBezierUi(
   p1: GraphPoint,
   p2: GraphPoint,
   ui?: GraphEdgeBezierUi | TeamGraphEdge['ui'],
 ): Required<GraphEdgeBezierUi> | undefined {
   if (!ui?.c1 && !ui?.c2) return undefined;
-  const max = edgeBezierMaxControlDistance(p1, p2);
   const defaults = defaultEdgeBezierOffsets(p1, p2);
-  const c1 = clampControlOffset(ui?.c1?.dx ?? defaults.c1.dx, ui?.c1?.dy ?? defaults.c1.dy, max);
-  const c2 = clampControlOffset(ui?.c2?.dx ?? defaults.c2.dx, ui?.c2?.dy ?? defaults.c2.dy, max);
-  return { c1, c2 };
+  const merge = (
+    off: { dx?: number; dy?: number } | undefined,
+    def: { dx: number; dy: number },
+  ): { dx: number; dy: number } => {
+    const dx = off?.dx ?? def.dx;
+    const dy = off?.dy ?? def.dy;
+    return Number.isFinite(dx) && Number.isFinite(dy) ? { dx, dy } : def;
+  };
+  return { c1: merge(ui?.c1, defaults.c1), c2: merge(ui?.c2, defaults.c2) };
 }
 
 /** Default S-curve — capped tension, follows dominant axis between ports. */
 export function defaultEdgeBezierOffsets(p1: GraphPoint, p2: GraphPoint): Required<GraphEdgeBezierUi> {
   const dx = p2.x - p1.x;
   const dy = p2.y - p1.y;
-  const tension = edgeBezierMaxControlDistance(p1, p2);
+  const tension = defaultEdgeTension(p1, p2);
   if (Math.abs(dy) >= Math.abs(dx) * 0.55) {
     const sy = dy >= 0 ? 1 : -1;
     return { c1: { dx: dx * 0.06, dy: sy * tension }, c2: { dx: -dx * 0.06, dy: -sy * tension } };
@@ -79,10 +82,10 @@ export function writeEdgeBezierUi(
   c1: GraphPoint,
   c2: GraphPoint,
 ): void {
-  const max = edgeBezierMaxControlDistance(p1, p2);
-  const c1off = clampControlOffset(c1.x - p1.x, c1.y - p1.y, max);
-  const c2off = clampControlOffset(c2.x - p2.x, c2.y - p2.y, max);
-  edge.ui = { c1: c1off, c2: c2off };
+  edge.ui = {
+    c1: { dx: c1.x - p1.x, dy: c1.y - p1.y },
+    c2: { dx: c2.x - p2.x, dy: c2.y - p2.y },
+  };
 }
 
 export function clearEdgeBezierUi(edge: TeamGraphEdge): void {
@@ -107,9 +110,8 @@ export function clearEdgeBezierUiForNodeRef(
 export function getTeamGraphBezierClientScript(): string {
   return [
     'const MIN_CONTROL_TENSION = 36;',
-    'const MAX_CONTROL_TENSION = 96;',
-    clampControlOffset.toString(),
-    edgeBezierMaxControlDistance.toString(),
+    'const DEFAULT_TENSION_MAX = 96;',
+    defaultEdgeTension.toString(),
     sanitizeEdgeBezierUi.toString(),
     defaultEdgeBezierOffsets.toString(),
     resolveEdgeBezierPoints.toString(),

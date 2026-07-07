@@ -8,7 +8,7 @@ import {
   writeEdgeBezierUi,
   clearEdgeBezierUi,
   computeTeamGraphAutoLayoutLanes,
-  edgeBezierMaxControlDistance,
+  defaultEdgeTension,
   clearEdgeBezierUiForNodeRef,
 } from '../src/team/teamGraphLayout.js';
 import { toPersistedTeamDefinition } from '../src/team/teamGraph.js';
@@ -80,26 +80,30 @@ describe('teamGraphLayout', () => {
     expect(Math.abs(off.c1.dx)).toBeLessThanOrEqual(96);
   });
 
-  it('resolveEdgeBezierPoints clamps wild stored offsets', () => {
+  it('resolveEdgeBezierPoints preserves far dragged offsets (no upper clamp)', () => {
     const p1 = { x: 100, y: 100 };
     const p2 = { x: 200, y: 260 };
-    const max = edgeBezierMaxControlDistance(p1, p2);
     const { c1, c2 } = resolveEdgeBezierPoints(p1, p2, {
       c1: { dx: 900, dy: 1200 },
       c2: { dx: -700, dy: -800 },
     });
-    expect(Math.hypot(c1.x - p1.x, c1.y - p1.y)).toBeLessThanOrEqual(max + 0.001);
-    expect(Math.hypot(c2.x - p2.x, c2.y - p2.y)).toBeLessThanOrEqual(max + 0.001);
+    // No clamping — the user can pull control points arbitrarily far.
+    expect(c1).toEqual({ x: 1000, y: 1300 });
+    expect(c2).toEqual({ x: -500, y: -540 });
   });
 
-  it('writeEdgeBezierUi clamps dragged control points', () => {
+  it('writeEdgeBezierUi stores dragged offsets without clamping', () => {
     const edge: TeamGraphEdge = { from: 'a', to: 'b' };
     const p1 = { x: 0, y: 0 };
     const p2 = { x: 180, y: 220 };
     writeEdgeBezierUi(edge, p1, p2, { x: 800, y: 900 }, { x: -500, y: -400 });
-    const max = edgeBezierMaxControlDistance(p1, p2);
-    expect(Math.hypot(edge.ui!.c1!.dx, edge.ui!.c1!.dy)).toBeLessThanOrEqual(max + 0.001);
-    expect(Math.hypot(edge.ui!.c2!.dx, edge.ui!.c2!.dy)).toBeLessThanOrEqual(max + 0.001);
+    expect(edge.ui!.c1).toEqual({ dx: 800, dy: 900 });
+    expect(edge.ui!.c2).toEqual({ dx: -680, dy: -620 });
+  });
+
+  it('defaultEdgeTension stays within [36, 96]', () => {
+    expect(defaultEdgeTension({ x: 0, y: 0 }, { x: 10, y: 10 })).toBe(36);
+    expect(defaultEdgeTension({ x: 0, y: 0 }, { x: 0, y: 900 })).toBe(96);
   });
 
   it('clearEdgeBezierUiForNodeRef clears touching edges only', () => {

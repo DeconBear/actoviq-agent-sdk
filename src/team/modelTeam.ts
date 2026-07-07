@@ -22,7 +22,7 @@ import {
   runMemberAgent,
 } from './teamRuntime.js';
 import { buildGraphNodeTools, canonicalizeTeamDefinition, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
-import { listTeamAgentLabels } from './teamDefinitions.js';
+import { listTeamAgentLabels, loadTeamDefinition } from './teamDefinitions.js';
 import { resolveGraphNodeSystemPrompt } from './teamPrompts.js';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -159,6 +159,7 @@ async function runGraphMode(
   workDir?: string,
   onEvent?: (event: TeamEvent) => void,
   reviewerContext?: string,
+  teamStack: string[] = [],
 ): Promise<GraphTeamResult> {
   const startedAt = Date.now();
   const execDef = migrateTeamDefinitionToV3(definition);
@@ -205,8 +206,54 @@ async function runGraphMode(
     definition: execDefWithRounds,
     onEvent,
     runNode: async (node, identity, task, ctx) => {
-      const tools = await buildGraphNodeTools(node, cwd);
-      if (ctx.commTargets.length > 0) {
+      const nodeType = node.type ?? 'react';
+      const base = { id: identity.id, model: identity.model, role: identity.role };
+
+      // team-as-agent: invoke a persisted sub-team by teamRef.
+      if (nodeType === 'team') {
+        const ref = node.teamRef?.trim();
+        if (!ref) {
+          memberStatuses.push({ ...base, ok: false, error: 'team node missing teamRef', toolCalls: 0, durationMs: 0 });
+          return { report: `[team node "${identity.id}" has no teamRef]`, ok: false, error: 'missing teamRef' };
+        }
+        if (teamStack.includes(ref)) {
+          const cycle = [...teamStack, ref].join(' → ');
+          memberStatuses.push({ ...base, ok: false, error: `team recursion: ${cycle}`, toolCalls: 0, durationMs: 0 });
+          return { report: `[team recursion detected: ${cycle}]`, ok: false, error: 'recursion' };
+        }
+        const loaded = loadTeamDefinition(ref, cwd);
+        if (!loaded) {
+          memberStatuses.push({ ...base, ok: false, error: `team "${ref}" not found`, toolCalls: 0, durationMs: 0 });
+          return { report: `[team "${ref}" not found]`, ok: false, error: 'team not found' };
+        }
+        const subStarted = Date.now();
+        try {
+          const subTeam = new ModelTeam(loaded.definition);
+          const subResult = await subTeam.ask(task, signal, { workDir: cwd, onEvent, teamStack: [...teamStack, ref] });
+          for (const m of subResult.memberStatuses ?? []) memberStatuses.push(m);
+          const subIn = subResult.cost?.totalInputTokens ?? 0;
+          const subOut = subResult.cost?.totalOutputTokens ?? 0;
+          totalInput += subIn;
+          totalOutput += subOut;
+          const ex = perModelTokens.get(identity.model) ?? { input: 0, output: 0 };
+          ex.input += subIn;
+          ex.output += subOut;
+          perModelTokens.set(identity.model, ex);
+          reportsById.set(identity.id, {
+            id: identity.id, role: identity.role, model: identity.model,
+            report: subResult.answer, toolCalls: 0, durationMs: Date.now() - subStarted, round: 1,
+          });
+          return { report: subResult.answer, ok: !subResult.incompleteReason, error: subResult.incompleteReason };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          memberStatuses.push({ ...base, ok: false, error: `team "${ref}" failed: ${msg}`, toolCalls: 0, durationMs: Date.now() - subStarted });
+          return { report: `[team "${ref}" failed: ${msg}]`, ok: false, error: msg };
+        }
+      }
+
+      // single: one LLM call, no tools. react: full ReAct loop.
+      const tools = nodeType === 'single' ? [] : await buildGraphNodeTools(node, cwd);
+      if (nodeType !== 'single' && ctx.commTargets.length > 0) {
         tools.push(await createNotifyTeammateTool(ctx));
       }
       const member = { ...node, model: node.model ?? identity.model };
@@ -221,7 +268,7 @@ async function runGraphMode(
         systemPrompt,
         cwd,
         tools,
-        maxIterations: resolveMemberMaxIterations(node),
+        maxIterations: nodeType === 'single' ? 1 : resolveMemberMaxIterations(node),
         timeoutMs: resolveMemberTimeout(node),
         reconnectAttempts: node.reconnectAttempts ?? 10,
         signal,
@@ -308,7 +355,7 @@ export class ModelTeam {
    * has a single payload-return agent (reviewer-style presets).
    */
   async ask(prompt: string, signal?: AbortSignal, opts?: TeamAskOptions): Promise<ModelTeamResult> {
-    return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent, opts?.context);
+    return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent, opts?.context, opts?.teamStack);
   }
 }
 
