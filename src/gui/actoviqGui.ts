@@ -6103,6 +6103,37 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .auto-dow { display: flex; gap: 4px; }
 .auto-dow button { width: 30px; height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); font-size: 11.5px; }
 .auto-dow button.active { background: var(--accent-soft); color: var(--brand); border-color: var(--brand); font-weight: 600; }
+/* Workflow tree editor — fixed vertical tree, branch children side by side. */
+.wf-canvas { flex: 1; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: center; }
+.wf-tree { display: flex; flex-direction: column; align-items: center; gap: 0; min-width: min-content; }
+.wf-node { width: 260px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 12px 14px; position: relative; transition: border-color .12s; }
+.wf-node:hover { border-color: var(--ring); }
+.wf-node-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.wf-node-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
+.wf-node-dot.agent { background: var(--brand); }
+.wf-node-dot.branch { background: #8b5cf6; }
+.wf-node-dot.parallel { background: var(--ok); }
+.wf-node-type { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); }
+.wf-node-actions { margin-left: auto; display: flex; gap: 2px; }
+.wf-node-actions button { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 13px; display: inline-grid; place-items: center; }
+.wf-node-actions button:hover { background: var(--accent); color: var(--text-1); }
+.wf-node-label { font-size: 13.5px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-node-prompt { font-size: 12px; color: var(--text-2); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-node-meta { font-size: 11px; color: var(--text-2); margin-top: 5px; display: flex; gap: 8px; }
+.wf-node-meta span { background: var(--bg-surface-2); padding: 1px 7px; border-radius: 999px; }
+.wf-node-cond { font-size: 11.5px; color: #8b5cf6; margin-top: 5px; font-style: italic; }
+.wf-connector { width: 2px; height: 20px; background: var(--border); }
+.wf-children { display: flex; gap: 32px; align-items: flex-start; position: relative; }
+.wf-children::before { content: ''; position: absolute; top: -20px; left: 0; right: 0; height: 2px; background: var(--border); }
+.wf-child-col { display: flex; flex-direction: column; align-items: center; position: relative; }
+.wf-child-col::before { content: ''; position: absolute; top: -20px; left: 50%; width: 2px; height: 20px; background: var(--border); }
+.wf-branch-label { font-size: 10.5px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .05em; position: absolute; top: -34px; background: var(--bg-surface); padding: 0 5px; }
+.wf-add { width: 260px; min-height: 36px; border: 1px dashed var(--border); border-radius: 9px; background: transparent; color: var(--text-2); font-size: 12.5px; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.wf-add:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+.wf-type-pick { display: flex; gap: 6px; margin-bottom: 8px; }
+.wf-type-pick button { flex: 1; min-height: 44px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); text-align: center; font-size: 12px; color: var(--text-2); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.wf-type-pick button.active { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.wf-type-pick button strong { font-size: 13px; color: var(--text-1); }
 .automation-region-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .automation-region-title h3 { margin: 0; font-size: 15px; color: var(--text-1); }
 .automation-region-title small { color: var(--text-2); }
@@ -11220,13 +11251,194 @@ function renderTeamGraph(def, name) {
   renderGraphModeCanvas(g, def, name);
 }
 function renderWorkflowSquadPlaceholder(g, def, name) {
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:48px;text-align:center;color:var(--text-2);';
-  wrap.innerHTML = '<div style="font-size:15px;font-weight:600;color:var(--text-1);">' + escHtml(def.name || name) + ' · workflow</div>'
-    + '<p style="max-width:420px;margin:0;">The visual work-tree editor is coming in Phase 3. This squad is saved as type <strong>workflow</strong>; once the editor lands, you will configure nodes, per-node runtime/type, and if/else routing here.</p>'
-    + '<p style="margin:0;font-size:12.5px;">For now, workflows remain editable as JS scripts via <code>/workflows</code>.</p>';
-  g.appendChild(wrap);
+  // Workflow tree editor — fixed vertical tree, branch children side by side.
+  const editable = teamGraphEditable(def);
+  // Ensure the tree exists.
+  if (!def.workflowTree) {
+    def.workflowTree = { id: 'start', type: 'agent', label: 'Start', prompt: '', children: [] };
+  }
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graph-toolbar';
+  const left = document.createElement('div'); left.className = 'graph-tabs';
+  left.innerHTML = '<button class="active">Workflow</button>';
+  const right = document.createElement('div'); right.className = 'graph-tools';
+  const pill = document.createElement('span'); pill.className = 'graph-mode-pill';
+  pill.textContent = 'workflow · ' + (def.name || name);
+  right.appendChild(pill);
+  if (editable) {
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button'; saveBtn.textContent = 'Save';
+    saveBtn.className = 'graph-save-btn' + (state.teamDirty ? ' save-dirty' : '');
+    saveBtn.addEventListener('click', () => { void saveTeamDefinition(); });
+    right.appendChild(saveBtn);
+  }
+  toolbar.append(left, right);
+  g.appendChild(toolbar);
+  const canvas = document.createElement('div');
+  canvas.className = 'wf-canvas';
+  const tree = document.createElement('div');
+  tree.className = 'wf-tree';
+  tree.appendChild(renderWfNode(def.workflowTree, def, editable));
+  canvas.appendChild(tree);
+  g.appendChild(canvas);
 }
+function renderWfNode(node, def, editable) {
+  const col = document.createElement('div');
+  col.className = 'wf-child-col';
+  const card = document.createElement('div');
+  card.className = 'wf-node';
+  const dotColor = node.type === 'branch' ? 'branch' : node.type === 'parallel' ? 'parallel' : 'agent';
+  const head = document.createElement('div');
+  head.className = 'wf-node-head';
+  head.innerHTML = '<span class="wf-node-dot ' + dotColor + '"></span><span class="wf-node-type">' + escHtml(node.type) + '</span>';
+  if (editable) {
+    const actions = document.createElement('div');
+    actions.className = 'wf-node-actions';
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button'; editBtn.title = 'Edit'; editBtn.textContent = '✎';
+    editBtn.addEventListener('click', () => openWfNodeDialog(node, def, false));
+    actions.appendChild(editBtn);
+    // Delete: only if not the root.
+    if (node !== def.workflowTree) {
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button'; delBtn.title = 'Delete'; delBtn.textContent = '✕';
+      delBtn.addEventListener('click', () => { if (window.confirm('Remove node "' + (node.label || node.type) + '" and its children?')) { wfRemoveNode(def.workflowTree, node.id); setTeamSavedStatus(false); renderTeamGraph(def, def.name); } });
+      actions.appendChild(delBtn);
+    }
+    head.appendChild(actions);
+  }
+  card.appendChild(head);
+  const label = document.createElement('div');
+  label.className = 'wf-node-label';
+  label.textContent = node.label || (node.type === 'agent' ? '(no prompt)' : node.type);
+  card.appendChild(label);
+  if (node.prompt) {
+    const p = document.createElement('div');
+    p.className = 'wf-node-prompt';
+    p.textContent = node.prompt.slice(0, 80);
+    card.appendChild(p);
+  }
+  if (node.condition) {
+    const c = document.createElement('div');
+    c.className = 'wf-node-cond';
+    c.textContent = 'if contains: "' + node.condition + '"';
+    card.appendChild(c);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'wf-node-meta';
+  if (node.runtime) { const s = document.createElement('span'); s.textContent = node.runtime; meta.appendChild(s); }
+  if (node.model) { const s = document.createElement('span'); s.textContent = node.model; meta.appendChild(s); }
+  if (meta.children.length) card.appendChild(meta);
+  col.appendChild(card);
+  // Children
+  if (node.children && node.children.length) {
+    const conn = document.createElement('div'); conn.className = 'wf-connector';
+    col.appendChild(conn);
+    const childRow = document.createElement('div');
+    childRow.className = 'wf-children';
+    node.children.forEach((child, i) => {
+      const childCol = renderWfNode(child, def, editable);
+      if (node.type === 'branch') {
+        const lbl = document.createElement('div');
+        lbl.className = 'wf-branch-label';
+        lbl.textContent = i === 0 ? 'IF' : 'ELSE';
+        childCol.appendChild(lbl);
+      }
+      childRow.appendChild(childCol);
+    });
+    col.appendChild(childRow);
+  } else if (editable && node.type !== 'agent') {
+    // branch/parallel with no children: show add button
+    const conn = document.createElement('div'); conn.className = 'wf-connector';
+    col.appendChild(conn);
+    col.appendChild(wfAddButton(def, node));
+  } else if (editable) {
+    // agent leaf: add button
+    const conn = document.createElement('div'); conn.className = 'wf-connector';
+    col.appendChild(conn);
+    col.appendChild(wfAddButton(def, node));
+  }
+  return col;
+}
+function wfAddButton(def, parent) {
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'wf-add'; btn.textContent = '+ Add step';
+  btn.addEventListener('click', () => {
+    const newNode = { id: wfNewId(), type: 'agent', label: '', prompt: '', children: [] };
+    openWfNodeDialog(newNode, def, true, function () {
+      parent.children = parent.children || [];
+      parent.children.push(newNode);
+      setTeamSavedStatus(false);
+      renderTeamGraph(def, def.name);
+    });
+  });
+  return btn;
+}
+function wfNewId() { return 'n-' + Math.random().toString(36).slice(2, 9); }
+function wfRemoveNode(root, id) {
+  if (!root.children) return;
+  root.children = root.children.filter((c) => c.id !== id);
+  root.children.forEach((c) => wfRemoveNode(c, id));
+}
+function openWfNodeDialog(node, def, isNew, onCreate) {
+  const old = document.getElementById('wfNodeDialog');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'wfNodeDialog'; overlay.className = 'modal';
+  const panel = document.createElement('div');
+  panel.className = 'auto-dialog';
+  panel.style.cssText = 'max-width:480px;width:min(480px,92vw);';
+  const head = document.createElement('div'); head.className = 'ins-head';
+  head.innerHTML = '<h3>' + (isNew ? 'New' : 'Edit') + ' node</h3>';
+  panel.appendChild(head);
+  const host = document.createElement('div');
+  host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
+  panel.appendChild(host);
+  // Type picker (only for new)
+  let nodeType = node.type || 'agent';
+  if (isNew) {
+    const typeField = document.createElement('div'); typeField.className = 'te-field';
+    typeField.innerHTML = '<label>Type</label>';
+    const pick = document.createElement('div'); pick.className = 'wf-type-pick';
+    [['agent', 'Agent', 'Run a prompt'], ['branch', 'Branch', 'if / else split'], ['parallel', 'Parallel', 'Run all at once']].forEach((t) => {
+      const b = document.createElement('button'); b.type = 'button';
+      b.innerHTML = '<strong>' + t[1] + '</strong><span>' + t[2] + '</span>';
+      b.className = nodeType === t[0] ? 'active' : '';
+      b.addEventListener('click', () => { nodeType = t[0]; [...pick.children].forEach((c, i) => c.className = ['agent','branch','parallel'][i] === nodeType ? 'active' : ''); });
+      pick.appendChild(b);
+    });
+    typeField.appendChild(pick);
+    host.appendChild(typeField);
+  }
+  host.appendChild(teFieldLive('Label', node.label || '', function (v) { node.label = v; }));
+  if (node.type === 'agent' || isNew) {
+    host.appendChild(teFieldLive('Prompt', node.prompt || '', function (v) { node.prompt = v; }, true));
+  }
+  if (node.type === 'branch' || (isNew && false)) {
+    host.appendChild(teHintField('Condition (substring)', 'Case-insensitive text the upstream output must contain to take the IF branch.', node.condition || '', function (v) { node.condition = v; }));
+  }
+  host.appendChild(teLabeledSelect('Runtime', node.runtime || '', teamRuntimeSelectOptions(), function (v) { node.runtime = v || undefined; }));
+  host.appendChild(teLabeledSelect('Model', node.model || '', teamModelSelectOptions(), function (v) { node.model = v; }));
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'te-btn'; cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => overlay.remove());
+  const save = document.createElement('button');
+  save.type = 'button'; save.className = 'te-btn primary'; save.textContent = isNew ? 'Add' : 'Save';
+  save.addEventListener('click', () => {
+    if (isNew) { node.type = nodeType; if (nodeType === 'branch') { node.children = [wfDefaultChild(), wfDefaultChild()]; } else { node.children = []; } if (onCreate) onCreate(); }
+    setTeamSavedStatus(false);
+    overlay.remove();
+    renderTeamGraph(def, def.name);
+  });
+  actions.append(cancel, save);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+function wfDefaultChild() { return { id: wfNewId(), type: 'agent', label: '', prompt: '', children: [] }; }
 function renderSubagentSquadEditor(g, def, name) {
   const wrap = document.createElement('div');
   wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:14px;padding:24px;overflow:auto;max-width:640px;';

@@ -2493,6 +2493,22 @@ export interface WorktreeInfo {
  */
 export type ModelTeamMode = 'panel-analysis' | 'panel' | 'analysis' | 'reviewer' | 'executor-reviewer' | 'graph';
 
+/** A node in a workflow squad's execution tree. */
+export interface WorkflowNode {
+  id: string;
+  /** Agent = run a prompt; branch = if/else split (children[0]=true, children[1]=false); parallel = run all children concurrently. */
+  type: 'agent' | 'branch' | 'parallel';
+  label?: string;
+  /** Agent nodes: the prompt to run. */
+  prompt?: string;
+  /** Branch nodes: case-insensitive substring the upstream output must contain to take the `true` child. */
+  condition?: string;
+  runtime?: string;
+  model?: string;
+  /** Children: branch=[if,else], parallel=all, agent=[] (leaf). */
+  children: WorkflowNode[];
+}
+
 export interface TeamMember {
   model: string;
   provider?: 'anthropic' | 'openai';
@@ -2662,6 +2678,8 @@ export interface TeamDefinition {
    * - `subagent`: a single configured agent (prompt + tools + workspace + runtime).
    */
   squadType?: 'graph' | 'workflow' | 'subagent';
+  /** Workflow squad only: the execution tree. */
+  workflowTree?: WorkflowNode;
   /** Panel members (panel-analysis / its `panel`+`analysis` aliases). */
   members: TeamMember[];
   /** Optional synthesizer that drives panel-analysis convergence. */
