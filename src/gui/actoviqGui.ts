@@ -153,6 +153,7 @@ import {
 import { buildRouteModelApi } from '../router/modelRouter.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { estimateCost } from '../team/pricing.js';
+import { runMemberAgent } from '../team/teamRuntime.js';
 import { createPlanModeTools, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
@@ -198,6 +199,9 @@ import type {
   TeamDefinition,
   TeamEvent,
   SessionSummary,
+  ModelTeamResult,
+  ModelTeamMode,
+  WorkflowNode,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
 import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
@@ -1015,6 +1019,107 @@ function resolveTeamDefinition(name: string, workDir: string, model: string): Te
   const loaded = loadTeamDefinition(name, workDir);
   if (!loaded) return undefined;
   return instantiateTeamDefinition(loaded.definition, model);
+}
+
+/** Run a subagent squad — a single member, no graph topology. */
+async function runSubagentSquad(
+  def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
+  onEvent?: (e: TeamEvent) => void,
+): Promise<ModelTeamResult> {
+  const member = def.members?.[0];
+  if (!member) throw new Error('subagent squad has no member');
+  const identity = { id: member.role || def.name, model: member.model || '', role: member.role || def.name };
+  const startedAt = Date.now();
+  const run = await runMemberAgent({
+    identity,
+    member: { ...member, model: member.model || '' },
+    task: prompt,
+    systemPrompt: member.systemPrompt || '',
+    cwd: workDir,
+    tools: [],
+    maxIterations: (member as { maxIterations?: number }).maxIterations ?? Infinity,
+    timeoutMs: def.timeoutMs ?? 300000,
+    reconnectAttempts: 10,
+    signal,
+    round: 1,
+    onEvent,
+  });
+  return {
+    answer: run.report,
+    mode: 'graph',
+    cost: { totalInputTokens: run.inputTokens, totalOutputTokens: run.outputTokens, estimatedCost: null, breakdown: [] },
+    durationMs: Date.now() - startedAt,
+    memberStatuses: [run.status],
+    reports: [],
+    skippedNodes: [],
+    incompleteReason: run.status.error,
+  };
+}
+
+/** Run a workflow squad — walk the workflow tree. */
+async function runWorkflowSquad(
+  def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
+  onEvent?: (e: TeamEvent) => void,
+): Promise<ModelTeamResult> {
+  const startedAt = Date.now();
+  const statuses: any[] = [];
+  let totalInput = 0, totalOutput = 0;
+  let lastOutput = prompt;
+
+  async function runAgentNode(node: WorkflowNode): Promise<string> {
+    const identity = { id: node.id, model: node.model || '', role: node.label || node.type };
+    const run = await runMemberAgent({
+      identity,
+      member: { model: node.model || '', role: node.label || 'agent', systemPrompt: '' } as any,
+      task: node.prompt ? node.prompt.replace(/\{\{input\}\}/g, lastOutput) : lastOutput,
+      systemPrompt: '',
+      cwd: workDir,
+      tools: [],
+      maxIterations: Infinity,
+      timeoutMs: def.timeoutMs ?? 300000,
+      reconnectAttempts: 10,
+      signal,
+      round: 1,
+      onEvent,
+    });
+    statuses.push(run.status);
+    totalInput += run.inputTokens;
+    totalOutput += run.outputTokens;
+    return run.report;
+  }
+
+  async function walk(node: WorkflowNode | undefined): Promise<void> {
+    if (!node) return;
+    if (node.type === 'agent') {
+      lastOutput = await runAgentNode(node);
+      return;
+    }
+    if (node.type === 'branch') {
+      const cond = (node.condition || '').toLowerCase();
+      const match = cond ? lastOutput.toLowerCase().includes(cond) : true;
+      const child = match ? node.children?.[0] : node.children?.[1];
+      await walk(child);
+      return;
+    }
+    if (node.type === 'parallel') {
+      const children = node.children || [];
+      const results = await Promise.all(children.map((c) => runAgentNode(c)));
+      lastOutput = results.filter(Boolean).join('\n\n');
+      return;
+    }
+  }
+
+  await walk(def.workflowTree);
+  return {
+    answer: lastOutput,
+    mode: 'graph',
+    cost: { totalInputTokens: totalInput, totalOutputTokens: totalOutput, estimatedCost: null, breakdown: [] },
+    durationMs: Date.now() - startedAt,
+    memberStatuses: statuses,
+    reports: [],
+    skippedNodes: [],
+    incompleteReason: undefined,
+  };
 }
 
 async function listenWithFallback(
@@ -2627,10 +2732,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       runs.set(teamRunId, teamRun);
       try {
         send({ type: 'run.started', runId: teamRunId, model: session.model || null });
-        const result = await createModelTeam(definition).ask(prompt, teamAbort.signal, {
-          workDir,
-          onEvent: (e) => { forwardTeamEvent(e, teamRunId, send, teamDesc); },
-        });
+        const rawDef = loadTeamDefinition(teamName, workDir);
+        const squadType = rawDef?.definition?.squadType || 'graph';
+        const onEvent = (e: TeamEvent) => { forwardTeamEvent(e, teamRunId, send, teamDesc); };
+        const result: ModelTeamResult = squadType === 'subagent' && rawDef
+          ? await runSubagentSquad(rawDef.definition, prompt, teamAbort.signal, workDir, onEvent)
+          : squadType === 'workflow' && rawDef
+            ? await runWorkflowSquad(rawDef.definition, prompt, teamAbort.signal, workDir, onEvent)
+            : await createModelTeam(definition).ask(prompt, teamAbort.signal, { workDir, onEvent });
         teamDesc.status = 'done';
         lastTeamRunSummary = `${definition.name} · ${result.mode} · ${Math.round(result.durationMs / 1000)}s`;
         send({ type: 'command.result', title: `Team response · ${result.mode}`, text: result.answer, runId: teamRunId });
