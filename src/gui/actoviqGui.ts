@@ -5768,6 +5768,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-tabs, .graph-tools { display: flex; align-items: center; gap: 6px; }
 .graph-tabs button, .graph-tools button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 0 11px; color: var(--text-2); }
 .graph-tabs button.active { color: var(--accent); background: var(--accent-soft); border-color: #BFDBFE; }
+.graph-tools button.graph-save-btn.save-dirty { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 600; }
 .graph-tools span { font-size: 12px; color: var(--text-2); }
 .graph-canvas { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 12px 14px 14px; gap: 8px; }
 .graph-board-viewport { flex: 1; min-height: 280px; overflow: hidden; position: relative; border: 1px dashed var(--border); border-radius: 12px; background-color: rgba(255,255,255,.72); background-image: radial-gradient(#D7DCE3 1px, transparent 1px); background-size: 18px 18px; overscroll-behavior: contain; cursor: grab; touch-action: none; }
@@ -6339,6 +6340,7 @@ const state = {
   teamSaveTarget: 'project',
   teamGraphFitView: false,
   teamGraphBoardDragging: false,
+  teamDirty: false,
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
@@ -9951,6 +9953,9 @@ async function selectTeam(name, opts) {
   state.teamSelectedNode = firstTeamNode(def);
   state.teamSelectedEdgeIdx = null;
   state.teamGraphFitView = true;
+  // A freshly loaded team is clean — ensureGraphNodeLayout may auto-position
+  // missing nodes, but that's load-time init, not a user edit.
+  setTeamSavedStatus(true);
   renderTeamGraph(def, name);
   const host = el('teamEditor');
   if (host) host.classList.add('hidden');
@@ -10669,10 +10674,10 @@ function teField(label, value, onChange, textarea) {
   return f;
 }
 async function saveTeamDefinition() {
-  let def = state.teamDefinition;
+  const def = state.teamDefinition;
   if (!def || !def.name) return;
-  def = migrateTeamDefinitionToGraph(def);
-  state.teamDefinition = def;
+  // Server-side /api/team/save migrates (migrateTeamDefinitionToGraph) +
+  // validates before writing — the renderer doesn't have that helper in scope.
   try {
     const res = await api('/api/team/save', {
       method: 'POST',
@@ -10720,10 +10725,15 @@ function showTeamGraphProblems(problems) {
   }
 }
 function setTeamSavedStatus(saved) {
+  state.teamDirty = !saved;
   const el2 = el('teamSavedStatus');
-  if (!el2) return;
-  el2.className = 'team-saved-status ' + (saved ? 'saved' : 'unsaved');
-  el2.innerHTML = guiIcon(saved ? 'gear' : 'automation') + '<span>' + (saved ? 'Saved' : 'Unsaved') + '</span>';
+  if (el2) {
+    el2.className = 'team-saved-status ' + (saved ? 'saved' : 'unsaved');
+    el2.innerHTML = guiIcon(saved ? 'gear' : 'automation') + '<span>' + (saved ? 'Saved' : 'Unsaved') + '</span>';
+  }
+  // Reflect dirty state on the Save button so users can see when a save is needed.
+  const saveBtn = document.querySelector('#teamGraph .graph-save-btn');
+  if (saveBtn) saveBtn.classList.toggle('save-dirty', !saved);
 }
 function graphNodeEl(node, def, isPrimary, opts) {
   if (isPortNodeKind(node)) return graphPortNodeEl(node, def, opts);
@@ -10958,7 +10968,9 @@ function applyGraphAutoLayout(def) {
       x += w + colGap;
     });
   });
-  setTeamSavedStatus(false);
+  // Don't mark dirty here — ensureGraphNodeLayout calls this on initial load
+  // (adding missing positions), which isn't a user edit. The Auto-layout
+  // toolbar button calls setTeamSavedStatus(false) itself.
 }
 const GRAPH_BOARD_PAD = 600;
 const GRAPH_VIEW_MIN_SCALE = 0.2;
@@ -11699,6 +11711,7 @@ function renderGraphModeCanvas(g, def, name) {
       layoutBtn.textContent = 'Auto layout';
       layoutBtn.addEventListener('click', () => {
         applyGraphAutoLayout(def);
+        setTeamSavedStatus(false);
         state.teamGraphFitView = true;
         renderTeamGraph(def, name);
       });
@@ -11706,6 +11719,7 @@ function renderGraphModeCanvas(g, def, name) {
     }
     const saveBtn = document.createElement('button');
     saveBtn.type = 'button';
+    saveBtn.className = 'graph-save-btn' + (state.teamDirty ? ' save-dirty' : '');
     saveBtn.textContent = 'Save';
     saveBtn.addEventListener('click', () => { void saveTeamDefinition(); });
     right.appendChild(saveBtn);
