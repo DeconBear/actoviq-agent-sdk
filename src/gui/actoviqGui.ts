@@ -11551,7 +11551,9 @@ function wireGraphNodeDrag(card, node, onMoved) {
     const b = board();
     const s = svg();
     if (moved && b && s && state.teamDefinition) {
-      clearEdgeBezierUiForNodeRef(state.teamDefinition, graphRefOf(node));
+      // Preserve custom bezier curves: offsets are relative to the ports, so the
+      // curve shape translates with the moved node automatically. Do NOT clear
+      // edge.ui here — that would discard user-dragged control points.
       syncGraphBoardSize(b, state.teamDefinition, { expandOnly: true });
       redrawGraphBoardEdges(b, s, state.teamDefinition, { skipBoardSync: true });
       setTeamSavedStatus(false);
