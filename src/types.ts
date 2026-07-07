@@ -2536,6 +2536,16 @@ export interface TeamGraphNode extends Omit<TeamMember, 'model'> {
   model?: string;
   /** v3 node kind. Default `agent`. */
   kind?: TeamGraphNodeKind;
+  /**
+   * Execution mode for agent nodes.
+   * - `react` (default): full ReAct loop with the node's allowed tools.
+   * - `single`: one LLM call, no tools — answer directly.
+   * - `team`: invoke another persisted team definition by `teamRef` as a
+   *   sub-agent; the sub-team's answer becomes this node's output.
+   */
+  type?: 'react' | 'single' | 'team';
+  /** When `type === 'team'`, name of the persisted team definition to invoke. */
+  teamRef?: string;
   /** Return ports only — `void` (return 0) or structured `payload`. */
   returnMode?: TeamGraphReturnMode;
   /** Return ports in `payload` mode — template for the structured return value. */
@@ -2601,6 +2611,13 @@ export interface TeamGraphEdge {
   ui?: {
     c1?: { dx: number; dy: number };
     c2?: { dx: number; dy: number };
+    /**
+     * GUI-only snap-point index on the source/target node's edge (0-based).
+     * Agents have 3 snaps per side (0=left, 1=center, 2=right); task/return have
+     * 1 (index 0). Default/absent → center. Ignored by the graph engine.
+     */
+    fromPort?: number;
+    toPort?: number;
   };
 }
 
@@ -2682,6 +2699,12 @@ export interface TeamAskOptions {
   workDir?: string;
   /** Receives progress events as the team deliberates. */
   onEvent?: (event: TeamEvent) => void;
+  /**
+   * Internal recursion guard for `type: 'team'` graph nodes: the chain of team
+   * refs currently being executed. The top-level call omits this; each team node
+   * appends its own ref before invoking the sub-team.
+   */
+  teamStack?: string[];
 }
 
 export interface TeamResult {

@@ -335,7 +335,7 @@ export {
   clearEdgeBezierUi,
   computeTeamGraphAutoLayoutLanes,
   clearEdgeBezierUiForNodeRef,
-  edgeBezierMaxControlDistance,
+  defaultEdgeTension,
   sanitizeEdgeBezierUi,
   getTeamGraphBezierClientScript,
 } from './team/teamGraphLayout.js';

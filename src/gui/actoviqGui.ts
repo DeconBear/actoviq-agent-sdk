@@ -5786,12 +5786,14 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-board-svg path.graph-edge-guide { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 1px; stroke-dasharray: 4 3; opacity: 0.45; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle:active { cursor: grabbing; fill: var(--accent-soft); }
+.graph-board-svg circle.graph-edge-handle.graph-edge-endpoint { fill: var(--accent); stroke: #fff; r: 7; }
 .graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; pointer-events: none; }
 .graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; pointer-events: auto; }
 .graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px rgba(37,99,235,.18); z-index: 3; }
 .graph-port { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; background: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,.35); z-index: 2; }
-.graph-port-in { top: -6px; left: 50%; transform: translateX(-50%); }
-.graph-port-out { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: crosshair; }
+.graph-port-in { top: -6px; left: 50%; margin-left: -6px; }
+.graph-port-out { bottom: -6px; left: 50%; margin-left: -6px; cursor: crosshair; }
+.graph-port.snap-target { background: var(--accent); box-shadow: 0 0 0 4px rgba(37,99,235,.28); z-index: 3; }
 .graph-board-hint { font-size: 11.5px; color: var(--text-2); margin: 0; flex: 0 0 auto; }
 .graph-title { flex: 0 0 auto; border: 1px solid var(--border); background: rgba(255,255,255,.9); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); align-self: flex-start; }
 .graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
@@ -10220,6 +10222,33 @@ function renderTeamNodeEditorPanel(node, def) {
     setTeamSavedStatus(false);
     queuePromptPreview();
   }));
+  host.appendChild(teSelect('Agent type', node.type || 'react', ['react', 'single', 'team'], (v) => {
+    node.type = v === 'react' ? undefined : v;
+    if (v !== 'team') node.teamRef = undefined;
+    setTeamSavedStatus(false);
+    renderTeamNodeEditorPanel(node, def);
+    renderTeamGraph(def, def.name);
+  }));
+  if (node.type === 'team') {
+    const teamNames = teamListForRegion().map((t) => t.name);
+    if (teamNames.length) {
+      host.appendChild(teSelect('Team', node.teamRef || '', teamNames, (v) => {
+        node.teamRef = v || undefined;
+        setTeamSavedStatus(false);
+      }));
+    } else {
+      host.appendChild(teFieldLive('Team (name)', node.teamRef || '', (v) => { node.teamRef = v.trim() || undefined; setTeamSavedStatus(false); }));
+    }
+    const teamHint = document.createElement('p');
+    teamHint.className = 'te-hint';
+    teamHint.textContent = 'type=team: invokes the selected team as a sub-agent; its answer becomes this node output. Model/tools below are ignored.';
+    host.appendChild(teamHint);
+  } else if (node.type === 'single') {
+    const singleHint = document.createElement('p');
+    singleHint.className = 'te-hint';
+    singleHint.textContent = 'type=single: one LLM call, no tools — the agent answers directly from its specialist prompt.';
+    host.appendChild(singleHint);
+  }
   host.appendChild(teSelect('Workspace access', node.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => {
     node.workspaceAccess = v;
     queuePromptPreview();
@@ -10708,10 +10737,14 @@ function graphNodeEl(node, def, isPrimary, opts) {
     card.style.left = (node.ui.x ?? 0) + 'px';
     card.style.top = (node.ui.y ?? 0) + 'px';
     if (opts.editable) {
-      const inPort = document.createElement('span');
-      inPort.className = 'graph-port graph-port-in';
-      inPort.title = 'Connect here';
-      card.appendChild(inPort);
+      for (let i = 0; i < GRAPH_AGENT_SNAP_COUNT; i++) {
+        const inPort = document.createElement('span');
+        inPort.className = 'graph-port graph-port-in';
+        inPort.dataset.port = String(i);
+        inPort.style.left = graphSnapLeftPct(i, GRAPH_AGENT_SNAP_COUNT);
+        inPort.title = 'Connect here';
+        card.appendChild(inPort);
+      }
     }
   }
   const bar = document.createElement('span');
@@ -10736,6 +10769,8 @@ function graphNodeEl(node, def, isPrimary, opts) {
   const model = document.createElement('div');
   model.className = 'gn-model';
   model.textContent = node.model || 'inherits model';
+  if (node.type === 'single') model.textContent += ' · single';
+  else if (node.type === 'team') model.textContent += ' · team:' + (node.teamRef || '?');
   const tools = document.createElement('div');
   tools.className = 'gn-tools';
   const toolLabels = def?.mode === 'graph'
@@ -10753,10 +10788,14 @@ function graphNodeEl(node, def, isPrimary, opts) {
   }
   card.append(head, status, role, model, tools);
   if (opts.board && opts.editable) {
-    const outPort = document.createElement('span');
-    outPort.className = 'graph-port graph-port-out';
-    outPort.title = 'Drag to connect';
-    card.appendChild(outPort);
+    for (let i = 0; i < GRAPH_AGENT_SNAP_COUNT; i++) {
+      const outPort = document.createElement('span');
+      outPort.className = 'graph-port graph-port-out';
+      outPort.dataset.port = String(i);
+      outPort.style.left = graphSnapLeftPct(i, GRAPH_AGENT_SNAP_COUNT);
+      outPort.title = 'Drag to connect';
+      card.appendChild(outPort);
+    }
   }
   let dragMoved = false;
   card.addEventListener('click', () => {
@@ -10788,6 +10827,7 @@ function graphPortNodeEl(node, def, opts) {
   if (opts.editable && !isTask) {
     const inPort = document.createElement('span');
     inPort.className = 'graph-port graph-port-in';
+    inPort.dataset.port = '0';
     inPort.title = 'Connect here';
     card.appendChild(inPort);
   }
@@ -10814,6 +10854,7 @@ function graphPortNodeEl(node, def, opts) {
   if (opts.editable && isTask) {
     const outPort = document.createElement('span');
     outPort.className = 'graph-port graph-port-out';
+    outPort.dataset.port = '0';
     outPort.title = 'Drag to connect';
     card.appendChild(outPort);
   }
@@ -10922,6 +10963,20 @@ function applyGraphAutoLayout(def) {
 const GRAPH_BOARD_PAD = 600;
 const GRAPH_VIEW_MIN_SCALE = 0.2;
 const GRAPH_VIEW_MAX_SCALE = 2.5;
+/** Snap points per side on agent nodes (task/return stay single). Purely visual. */
+const GRAPH_AGENT_SNAP_COUNT = 3;
+/** left percentage for snap point i of count (1-based, evenly spaced). */
+function graphSnapLeftPct(i, count) {
+  return ((i + 1) / (count + 1)) * 100 + '%';
+}
+/** How many snap points a node exposes per side (agents: N, task/return: 1). */
+function graphSnapCountFor(node) {
+  return node && (node.kind ?? 'agent') === 'agent' ? GRAPH_AGENT_SNAP_COUNT : 1;
+}
+/** Center snap index for a node (default when edge.ui doesn't specify one). */
+function graphSnapDefault(node) {
+  return Math.floor(graphSnapCountFor(node) / 2);
+}
 const graphViewportStates = new WeakMap();
 function graphBoardViewport(board) {
   return board?.closest('.graph-board-viewport');
@@ -10944,13 +10999,16 @@ function graphBoardOrigin(board) {
     y: parseFloat(board?.dataset.graphOriginY || '0'),
   };
 }
-function graphBoardPointFromClient(viewport, board, clientX, clientY) {
+function graphBoardPointFromClient(viewport, clientX, clientY) {
+  // Returns board-local (SVG) coordinates — same frame as graphBoardPortPoint,
+  // which reads card.offsetLeft (= worldX - origin.x). Subtracting origin here
+  // would yield node-world coords and desync handle/connect drags by ~|origin| px.
   const vp = getGraphViewportState(viewport);
   const vr = viewport.getBoundingClientRect();
-  const worldX = (clientX - vr.left - vp.panX) / vp.scale;
-  const worldY = (clientY - vr.top - vp.panY) / vp.scale;
-  const origin = graphBoardOrigin(board);
-  return { x: worldX - origin.x, y: worldY - origin.y };
+  return {
+    x: (clientX - vr.left - vp.panX) / vp.scale,
+    y: (clientY - vr.top - vp.panY) / vp.scale,
+  };
 }
 function computeGraphNodeContentBounds(def) {
   const nodes = def?.nodes || [];
@@ -11005,9 +11063,11 @@ function wireGraphBoardViewport(viewport, stage, board) {
   let panStartY = 0;
   let panOrigX = 0;
   let panOrigY = 0;
+  let panMoved = false;
 
   const onPanMove = (e) => {
     if (!panning) return;
+    if (Math.abs(e.clientX - panStartX) + Math.abs(e.clientY - panStartY) > 2) panMoved = true;
     const vp = getGraphViewportState(viewport);
     vp.panX = panOrigX + (e.clientX - panStartX);
     vp.panY = panOrigY + (e.clientY - panStartY);
@@ -11019,10 +11079,22 @@ function wireGraphBoardViewport(viewport, stage, board) {
     viewport.classList.remove('panning');
     window.removeEventListener('mousemove', onPanMove);
     window.removeEventListener('mouseup', onPanUp);
+    // A click on empty canvas (no drag) clears the current edge/node selection
+    // so handles and the selection ring disappear. Panning keeps the selection.
+    if (panMoved) return;
+    const hadSelection = state.teamSelectedEdgeIdx != null || state.teamSelectedNode != null;
+    if (!hadSelection) return;
+    state.teamSelectedEdgeIdx = null;
+    state.teamSelectedNode = null;
+    document.querySelectorAll('.graph-node').forEach((n) => n.classList.remove('selected'));
+    const svg = board.querySelector('.graph-board-svg');
+    const def = state.teamDefinition;
+    if (svg && def) scheduleGraphBoardEdgeRedraw(board, svg, def);
   };
   const startPan = (e) => {
     if (e.button !== 0 && e.button !== 1) return;
     panning = true;
+    panMoved = false;
     panStartX = e.clientX;
     panStartY = e.clientY;
     const vp = getGraphViewportState(viewport);
@@ -11130,16 +11202,37 @@ function syncGraphBoardSize(board, def, opts) {
     layer.style.minHeight = h + 'px';
   }
   positionGraphBoardNodes(board, def);
+  // When the origin shifts (board grew because content exceeded bounds), every
+  // card's board-local position changes by (minX - prev.x, minY - prev.y) since
+  // card.left = worldX - origin.x. Compensate the pan so existing content stays
+  // visually fixed instead of jumping. Skipped on first layout (no prior origin).
+  if (hasOrigin && (minX !== prev.x || minY !== prev.y)) {
+    const viewport = graphBoardViewport(board);
+    const stage = board.closest('.graph-board-stage');
+    if (viewport && stage) {
+      const vp = getGraphViewportState(viewport);
+      vp.panX += (minX - prev.x) * vp.scale;
+      vp.panY += (minY - prev.y) * vp.scale;
+      applyGraphViewportTransform(viewport, stage);
+    }
+  }
 }
 function graphBoardContentSize(board) {
   const w = board.offsetWidth || board.scrollWidth || 800;
   const h = board.offsetHeight || board.scrollHeight || 520;
   return { w, h };
 }
-function graphBoardPortPoint(card, kind) {
-  const port = card.querySelector(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
+function graphBoardPortPoint(card, kind, portIndex) {
+  const ports = card.querySelectorAll(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
   const cardX = card.offsetLeft;
   const cardY = card.offsetTop;
+  let port = null;
+  if (ports.length) {
+    const idx = (portIndex != null && portIndex >= 0 && portIndex < ports.length)
+      ? portIndex
+      : Math.floor(ports.length / 2);
+    port = ports[idx];
+  }
   if (port) {
     return {
       x: cardX + port.offsetLeft + port.offsetWidth / 2,
@@ -11155,7 +11248,7 @@ function graphEdgeEndpoints(board, edge) {
   const fromCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
   const toCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
   if (!fromCard || !toCard) return null;
-  return { p1: graphBoardPortPoint(fromCard, 'out'), p2: graphBoardPortPoint(toCard, 'in') };
+  return { p1: graphBoardPortPoint(fromCard, 'out', edge.ui?.fromPort), p2: graphBoardPortPoint(toCard, 'in', edge.ui?.toPort) };
 }
 function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
   const d = bez.path;
@@ -11191,7 +11284,7 @@ function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
     const ep = graphEdgeEndpoints(board, edge);
     if (!ep) return;
     const viewport = graphBoardViewport(board);
-    const pt = graphBoardPointFromClient(viewport, board, e.clientX, e.clientY);
+    const pt = graphBoardPointFromClient(viewport, e.clientX, e.clientY);
     const current = resolveEdgeBezierPoints(ep.p1, ep.p2, edge.ui);
     const nextC1 = which === 'c1' ? pt : current.c1;
     const nextC2 = which === 'c2' ? pt : current.c2;
@@ -11206,6 +11299,90 @@ function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
     state.teamGraphBoardDragging = false;
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+  };
+  circle.addEventListener('mousedown', (e) => {
+    if (!teamGraphEditable(def)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    state.teamSelectedEdgeIdx = idx;
+    state.teamSelectedNode = null;
+    state.teamGraphBoardDragging = true;
+    dragging = true;
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+  svg.appendChild(circle);
+}
+function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
+  const isFrom = which === 'from';
+  const cardRef = String(isFrom ? edge.from : edge.to).trim();
+  const kind = isFrom ? 'out' : 'in';
+  const card = board.querySelector('.graph-node.board-node[data-graph-ref="' + cardRef + '"]');
+  if (!card) return;
+  const endpoints = graphEdgeEndpoints(board, edge);
+  if (!endpoints) return;
+  const start = isFrom ? endpoints.p1 : endpoints.p2;
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', String(start.x));
+  circle.setAttribute('cy', String(start.y));
+  circle.setAttribute('r', '7');
+  circle.classList.add('graph-edge-handle', 'graph-edge-endpoint');
+  circle.dataset.edgeIdx = String(idx);
+  circle.dataset.handle = which;
+  let dragging = false;
+  let highlighted = null;
+  const ports = () => card.querySelectorAll(kind === 'out' ? '.graph-port-out' : '.graph-port-in');
+  const clearHighlight = () => {
+    if (highlighted) { highlighted.classList.remove('snap-target'); highlighted = null; }
+  };
+  const nearestSnap = (clientX) => {
+    let best = -1, bestD = Infinity;
+    ports().forEach((p, i) => {
+      const r = p.getBoundingClientRect();
+      const d = Math.abs(r.left + r.width / 2 - clientX);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best >= 0 ? best : null;
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    const snapIdx = nearestSnap(e.clientX);
+    clearHighlight();
+    const ps = ports();
+    if (snapIdx == null || !ps[snapIdx]) return;
+    highlighted = ps[snapIdx];
+    highlighted.classList.add('snap-target');
+    const ep = graphEdgeEndpoints(board, edge);
+    if (!ep) return;
+    const newP = graphBoardPortPoint(card, kind, snapIdx);
+    const p1 = isFrom ? newP : ep.p1;
+    const p2 = isFrom ? ep.p2 : newP;
+    const bez = resolveEdgeBezierPoints(p1, p2, edge.ui);
+    applyGraphEdgeGeometry(svg, idx, p1, p2, bez, true);
+    circle.setAttribute('cx', String(newP.x));
+    circle.setAttribute('cy', String(newP.y));
+  };
+  const onUp = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    state.teamGraphBoardDragging = false;
+    clearHighlight();
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    const snapIdx = nearestSnap(e.clientX);
+    if (snapIdx == null) return;
+    const def2 = state.teamDefinition;
+    const edge2 = (def2?.edges || [])[idx];
+    if (!edge2) return;
+    const node2 = (def2.nodes || []).find((n) => graphRefOf(n) === cardRef);
+    const dflt = graphSnapDefault(node2);
+    edge2.ui = edge2.ui || {};
+    const key = isFrom ? 'fromPort' : 'toPort';
+    if (snapIdx === dflt) delete edge2.ui[key];
+    else edge2.ui[key] = snapIdx;
+    if (!edge2.ui.c1 && !edge2.ui.c2 && edge2.ui.fromPort == null && edge2.ui.toPort == null) delete edge2.ui;
+    setTeamSavedStatus(false);
+    scheduleGraphBoardEdgeRedraw(board, svg, def2);
   };
   circle.addEventListener('mousedown', (e) => {
     if (!teamGraphEditable(def)) return;
@@ -11264,8 +11441,8 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
     const fromCard = cards.get(String(edge.from).trim());
     const toCard = cards.get(String(edge.to).trim());
     if (!fromCard || !toCard) return;
-    const p1 = graphBoardPortPoint(fromCard, 'out');
-    const p2 = graphBoardPortPoint(toCard, 'in');
+    const p1 = graphBoardPortPoint(fromCard, 'out', edge.ui?.fromPort);
+    const p2 = graphBoardPortPoint(toCard, 'in', edge.ui?.toPort);
     const bez = resolveEdgeBezierPoints(p1, p2, edge.ui);
     const d = bez.path;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -11312,6 +11489,8 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
       svg.append(g1, g2);
       wireEdgeControlHandle(svg, board, def, edge, idx, 'c1');
       wireEdgeControlHandle(svg, board, def, edge, idx, 'c2');
+      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'from');
+      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'to');
     }
   });
   syncGraphBoardSvgSize(board, svg);
@@ -11398,26 +11577,47 @@ function wireGraphNodeDrag(card, node, onMoved) {
 }
 function wireGraphBoardConnect(board, svg, def, name) {
   board.addEventListener('mousedown', (e) => {
-    const out = e.target.closest('.graph-port-out');
+    let out = e.target.closest('.graph-port-out');
+    // The 14px edge hit-path sits above the nodes layer (SVG z-index 2 > nodes
+    // z-index 1) and can cover a port, so e.target may be the hit path even when
+    // the cursor is on the port. Look through the full element stack to recover
+    // the port beneath the hit path so connection drag still starts.
+    if (!out && e.target.closest('path.graph-edge-hit') && typeof document.elementsFromPoint === 'function') {
+      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+        const port = el.closest && el.closest('.graph-port-out');
+        if (port) { out = port; break; }
+      }
+    }
     if (!out || !teamGraphEditable(def)) return;
     e.preventDefault();
     e.stopPropagation();
-    const fromRef = out.closest('.graph-node')?.dataset.graphRef;
+    const fromNodeEl = out.closest('.graph-node');
+    const fromRef = fromNodeEl?.dataset.graphRef;
     if (!fromRef) return;
+    const fromNode = (def.nodes || []).find((n) => graphRefOf(n) === fromRef);
+    const fromDefault = graphSnapDefault(fromNode);
+    const fromPort = out.dataset.port != null ? parseInt(out.dataset.port, 10) : fromDefault;
     const preview = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     preview.classList.add('graph-edge-preview');
     svg.appendChild(preview);
-    const origin = graphBoardPortPoint(out.closest('.graph-node'), 'out');
+    const origin = graphBoardPortPoint(fromNodeEl, 'out', fromPort);
     const move = (ev) => {
       const viewport = graphBoardViewport(board);
-      const pt = graphBoardPointFromClient(viewport, board, ev.clientX, ev.clientY);
+      const pt = graphBoardPointFromClient(viewport, ev.clientX, ev.clientY);
       preview.setAttribute('d', graphEdgeBezierPath(origin.x, origin.y, pt.x, pt.y));
     };
-    const up = (ev) => {
-      board.removeEventListener('mousemove', move);
-      board.removeEventListener('mouseup', up);
+    const cleanup = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', onUp);
       preview.remove();
-      const inPort = ev.target.closest('.graph-port-in');
+      state.teamGraphBoardDragging = false;
+    };
+    const onUp = (ev) => {
+      cleanup();
+      // elementFromPoint resolves the drop target reliably even when the cursor
+      // released over an edge-hit path or outside the board (window mouseup).
+      const dropEl = document.elementFromPoint(ev.clientX, ev.clientY);
+      const inPort = dropEl?.closest('.graph-port-in');
       const toRef = inPort?.closest('.graph-node')?.dataset.graphRef;
       if (!toRef || toRef === fromRef) return;
       const toNode = (def.nodes || []).find((n) => graphRefOf(n) === toRef);
@@ -11430,13 +11630,21 @@ function wireGraphBoardConnect(board, svg, def, name) {
         window.alert('An edge from "' + fromRef + '" to "' + toRef + '" already exists.');
         return;
       }
-      def.edges.push({ from: fromRef, to: toRef });
+      const toDefault = graphSnapDefault(toNode);
+      const toPort = inPort?.dataset.port != null ? parseInt(inPort.dataset.port, 10) : toDefault;
+      // Only persist port indices that differ from the node's center snap, so the
+      // JSON stays clean and center-connected edges re-default if snap count changes.
+      const ui = {};
+      if (fromPort !== fromDefault) ui.fromPort = fromPort;
+      if (toPort !== toDefault) ui.toPort = toPort;
+      def.edges.push({ from: fromRef, to: toRef, ...(Object.keys(ui).length ? { ui } : {}) });
       setTeamSavedStatus(false);
       renderTeamGraph(def, name);
       openTeamEdgeEditor(def.edges.length - 1);
     };
-    board.addEventListener('mousemove', move);
-    board.addEventListener('mouseup', up);
+    state.teamGraphBoardDragging = true;
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', onUp);
   });
 }
 function renderGraphModeCanvas(g, def, name) {
