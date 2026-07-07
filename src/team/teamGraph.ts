@@ -268,6 +268,7 @@ export function toPersistedTeamDefinition(definition: TeamDefinition): TeamDefin
       members: definition.members ?? [],
       nodes: definition.nodes ?? [],
       edges: definition.edges ?? [],
+      ...(definition.workflowTree ? { workflowTree: definition.workflowTree } : {}),
       ...(definition.maxParallel != null ? { maxParallel: definition.maxParallel } : {}),
       ...(definition.timeoutMs != null ? { timeoutMs: definition.timeoutMs } : {}),
       ...(definition.maxRounds != null ? { maxRounds: definition.maxRounds } : {}),
