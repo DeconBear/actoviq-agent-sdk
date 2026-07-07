@@ -2655,6 +2655,13 @@ export interface TeamDefinition {
   version?: number;
   /** How the team executes. Version 2 only; v1 definitions are implicitly `legacy-mode`. */
   orchestration?: 'legacy-mode' | 'graph';
+  /**
+   * Squad kind — drives which editor the GUI shows. Absent → 'graph' (back-compat).
+   * - `graph`: collaboration graph (Task → agents → Return), the existing editor.
+   * - `workflow`: linear/tree work-flow node editor (Phase 3 — visual work tree).
+   * - `subagent`: a single configured agent (prompt + tools + workspace + runtime).
+   */
+  squadType?: 'graph' | 'workflow' | 'subagent';
   /** Panel members (panel-analysis / its `panel`+`analysis` aliases). */
   members: TeamMember[];
   /** Optional synthesizer that drives panel-analysis convergence. */

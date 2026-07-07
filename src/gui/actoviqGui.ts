@@ -3140,8 +3140,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const name = url.searchParams.get('name') || '';
     const loaded = loadTeamDefinition(name, workDir);
     const raw = loaded?.definition ?? resolveTeamDefinition(name, workDir, session?.model ?? '');
+    // Subagent / workflow squads skip graph migration (no Task→Return topology).
+    const squadType = (raw as TeamDefinition | null)?.squadType || 'graph';
     const definition = raw
-      ? ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(raw))
+      ? (squadType === 'graph' ? ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(raw)) : raw)
       : null;
     return json(res, 200, { definition, source: loaded?.source ?? null });
   }
@@ -3182,10 +3184,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 400, { error: 'definition.name is required' });
       }
       // All squads persist as graph v3 JSON — validate before touching disk.
-      const migrated = ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(def));
-      const problems = validateTeamGraph(migrated);
-      if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
-      def = migrated;
+      // Subagent / workflow squads skip graph validation (no Task→Return topology).
+      const squadType = (def.squadType || 'graph') as 'graph' | 'workflow' | 'subagent';
+      if (squadType === 'graph') {
+        const migrated = ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(def));
+        const problems = validateTeamGraph(migrated);
+        if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+        def = migrated;
+      } else {
+        def = { ...def, squadType, mode: 'graph', version: 3, orchestration: 'graph' };
+      }
       // target: 'project' (default, .actoviq/teams/) or 'personal' (~/.actoviq/teams/).
       const target = body.target === 'personal' ? 'personal' : 'project';
       const filePath = await saveTeamDefinition(def, {
@@ -10141,6 +10149,81 @@ function renderTeamSquadBar() {
   }
   return teams;
 }
+function openNewSquadDialog() {
+  const old = document.getElementById('newSquadDialog');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'newSquadDialog';
+  overlay.className = 'modal';
+  const panel = document.createElement('div');
+  panel.className = 'auto-dialog';
+  panel.style.cssText = 'max-width:480px;width:min(480px,92vw);';
+  let chosen = 'graph';
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  head.innerHTML = '<h3>New squad</h3>';
+  panel.appendChild(head);
+  const host = document.createElement('div');
+  host.style.cssText = 'padding:0 18px 18px;display:grid;gap:12px;';
+  panel.appendChild(host);
+  const typeField = document.createElement('div');
+  typeField.className = 'te-field';
+  typeField.innerHTML = '<label>Squad type</label>';
+  const typeRow = document.createElement('div');
+  typeRow.className = 'auto-freq-row';
+  const types = [
+    { v: 'graph', label: 'Graph', hint: 'Collaboration graph — Task → agents → Return. Complex team logic.' },
+    { v: 'workflow', label: 'Workflow', hint: 'Linear/tree work-flow — nodes + if/else routing. Batch pipelines.' },
+    { v: 'subagent', label: 'Subagent', hint: 'Single agent — prompt + tools + workspace + runtime.' },
+  ];
+  types.forEach((t) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = t.label;
+    b.title = t.hint;
+    b.className = t.v === chosen ? 'active' : '';
+    b.addEventListener('click', () => { chosen = t.v; [...typeRow.children].forEach((c, i) => c.className = types[i].v === chosen ? 'active' : ''); });
+    typeRow.appendChild(b);
+  });
+  typeField.appendChild(typeRow);
+  host.appendChild(typeField);
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.style.cssText = 'min-height:32px;';
+  hint.textContent = types[0].hint;
+  typeRow.addEventListener('click', () => { const t = types.find((x) => x.v === chosen); if (t) hint.textContent = t.hint; });
+  host.appendChild(hint);
+  const name = teFieldLive('Name', '', function () {});
+  host.appendChild(name);
+  host.appendChild(teFieldLive('Description', '', function () {}, true));
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'te-btn'; cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => overlay.remove());
+  const create = document.createElement('button');
+  create.type = 'button'; create.className = 'te-btn primary'; create.textContent = 'Create';
+  create.addEventListener('click', async () => {
+    const nameInput = name.querySelector('input');
+    const squadName = (nameInput && nameInput.value.trim()) || '';
+    if (!squadName) { window.alert('Please enter a squad name.'); return; }
+    const descEl = host.querySelector('textarea');
+    const desc = descEl ? descEl.value.trim() : '';
+    const def = { name: squadName, description: desc || undefined, mode: 'graph', version: 3, orchestration: 'graph', squadType: chosen, members: [], nodes: [], edges: [] };
+    try {
+      const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def, target: 'project' }) });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); window.alert('Create failed: ' + (j.error || res.status)); return; }
+      overlay.remove();
+      await refreshTeamsSnapshot();
+      await selectTeam(squadName, { force: true });
+    } catch (e) { window.alert('Create failed: ' + (e && e.message || e)); }
+  });
+  actions.append(cancel, create);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
 async function renderTeamRegion() {
   if (!state.snapshot?.teams) await refreshTeamsSnapshot();
   const teams = renderTeamSquadBar();
@@ -11131,7 +11214,38 @@ function renderTeamGraph(def, name) {
     g.appendChild(e);
     return;
   }
+  const squadType = def.squadType || 'graph';
+  if (squadType === 'workflow') { renderWorkflowSquadPlaceholder(g, def, name); return; }
+  if (squadType === 'subagent') { renderSubagentSquadEditor(g, def, name); return; }
   renderGraphModeCanvas(g, def, name);
+}
+function renderWorkflowSquadPlaceholder(g, def, name) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:48px;text-align:center;color:var(--text-2);';
+  wrap.innerHTML = '<div style="font-size:15px;font-weight:600;color:var(--text-1);">' + escHtml(def.name || name) + ' · workflow</div>'
+    + '<p style="max-width:420px;margin:0;">The visual work-tree editor is coming in Phase 3. This squad is saved as type <strong>workflow</strong>; once the editor lands, you will configure nodes, per-node runtime/type, and if/else routing here.</p>'
+    + '<p style="margin:0;font-size:12.5px;">For now, workflows remain editable as JS scripts via <code>/workflows</code>.</p>';
+  g.appendChild(wrap);
+}
+function renderSubagentSquadEditor(g, def, name) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:14px;padding:24px;overflow:auto;max-width:640px;';
+  const h = document.createElement('div');
+  h.className = 'ins-head';
+  h.innerHTML = '<h3>' + escHtml(def.name || name) + ' · subagent</h3>';
+  wrap.appendChild(h);
+  const desc = document.createElement('p');
+  desc.className = 'te-hint';
+  desc.textContent = 'A subagent is a single configured agent. Set its prompt, tools, workspace access, and runtime below. (Phase 2 will wire this to live execution.)';
+  wrap.appendChild(desc);
+  const member = (def.members && def.members[0]) || { role: def.name, model: '', systemPrompt: '' };
+  wrap.appendChild(teFieldLive('Role / name', member.role || def.name || '', (v) => { member.role = v; setTeamSavedStatus(false); }));
+  wrap.appendChild(teFieldLive('Prompt (system prompt)', member.systemPrompt || '', (v) => { member.systemPrompt = v; setTeamSavedStatus(false); }, true));
+  wrap.appendChild(teLabeledSelect('Runtime', member.runtime || '', teamRuntimeSelectOptions(), (v) => { member.runtime = v || undefined; setTeamSavedStatus(false); }));
+  wrap.appendChild(teLabeledSelect('Model', member.model || '', teamModelSelectOptions(), (v) => { member.model = v; setTeamSavedStatus(false); }));
+  wrap.appendChild(teSelect('Workspace access', member.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => { member.workspaceAccess = v; setTeamSavedStatus(false); }));
+  if (!def.members || !def.members.length) def.members = [member];
+  g.appendChild(wrap);
 }
 // --- Graph-mode canvas (plan Phase 4): drag nodes + port-to-port edges on SVG. ---
 function computeGraphLayerIndices(def) {
@@ -13377,7 +13491,7 @@ el('pluginsViewPluginsBtn').addEventListener('click', () => { renderPluginsRegio
 el('pluginsViewToolsBtn').addEventListener('click', () => { renderPluginsRegion('tools').catch(console.error); });
 el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion('skills').catch(console.error); });
 el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
-el('teamNewSquadBtn').addEventListener('click', () => { openSurface('teams').catch(console.error); });
+el('teamNewSquadBtn').addEventListener('click', () => { openNewSquadDialog(); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('teamEditToggleBtn').addEventListener('click', () => { openTeamSquadEditor(); });
 el('teamAgentModalClose').addEventListener('click', closeTeamNodeEditor);

@@ -254,6 +254,26 @@ export function canonicalizeTeamDefinition(definition: TeamDefinition): TeamDefi
  * On-disk team JSON: graph v3 with Task/Return ports; legacy member fields omitted.
  */
 export function toPersistedTeamDefinition(definition: TeamDefinition): TeamDefinition {
+  // Subagent / workflow squads have no Task→Return topology — persist as-is,
+  // skipping graph canonicalization (which would assert a valid graph).
+  const squadType = definition.squadType || 'graph';
+  if (squadType !== 'graph') {
+    return {
+      name: definition.name,
+      description: definition.description,
+      mode: 'graph',
+      version: 3,
+      orchestration: 'graph',
+      squadType,
+      members: definition.members ?? [],
+      nodes: definition.nodes ?? [],
+      edges: definition.edges ?? [],
+      ...(definition.maxParallel != null ? { maxParallel: definition.maxParallel } : {}),
+      ...(definition.timeoutMs != null ? { timeoutMs: definition.timeoutMs } : {}),
+      ...(definition.maxRounds != null ? { maxRounds: definition.maxRounds } : {}),
+      ...(definition.maxIterations != null ? { maxIterations: definition.maxIterations } : {}),
+    };
+  }
   const canonical = canonicalizeTeamDefinition(definition);
   return {
     name: canonical.name,
@@ -261,6 +281,7 @@ export function toPersistedTeamDefinition(definition: TeamDefinition): TeamDefin
     mode: 'graph',
     version: 3,
     orchestration: 'graph',
+    ...(canonical.squadType ? { squadType: canonical.squadType } : {}),
     members: [],
     nodes: canonical.nodes,
     edges: canonical.edges,
