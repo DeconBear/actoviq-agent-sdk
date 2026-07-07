@@ -208,10 +208,12 @@ export function loadTeamDefinition(
     const filePath = path.join(dir, `${name}.json`);
     if (fs.existsSync(filePath)) {
       try {
-        const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-        const definition = ensureConfiguredTeamGraph(
-          resolveEnvVars(canonicalizeTeamDefinition(raw as TeamDefinition)),
-        );
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as TeamDefinition;
+        // Subagent / workflow squads skip graph canonicalization (no Task→Return).
+        const squadType = raw.squadType || 'graph';
+        const definition = squadType === 'graph'
+          ? ensureConfiguredTeamGraph(resolveEnvVars(canonicalizeTeamDefinition(raw)))
+          : { ...raw, squadType } as TeamDefinition;
         return {
           name,
           definition,
