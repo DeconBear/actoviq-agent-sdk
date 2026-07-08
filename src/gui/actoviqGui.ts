@@ -10354,7 +10354,9 @@ function openNewSquadDialog() {
       const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def, target: 'project' }) });
       if (!res.ok) { const j = await res.json().catch(() => ({})); window.alert('Create failed: ' + (j.error || res.status)); return; }
       overlay.remove();
+      state.teamSelected = squadName;
       await refreshTeamsSnapshot();
+      renderTeamSquadBar();
       await selectTeam(squadName, { force: true });
     } catch (e) { window.alert('Create failed: ' + (e && e.message || e)); }
   });
@@ -11149,6 +11151,7 @@ async function saveTeamDefinition() {
       showTeamGraphProblems(null);
       delete state.teamDefinitionCache[def.name];
       state.teamDefinitionCache[def.name] = structuredClone(def);
+      state.teamSelected = def.name;
       await refreshTeamsSnapshot();
       renderTeamSquadBar();
       await selectTeam(def.name, { force: true });

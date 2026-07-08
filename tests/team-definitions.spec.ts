@@ -162,6 +162,40 @@ describe('Team definitions from disk', () => {
     ]);
   });
 
+  it('lists subagent and workflow squads without graph validation', async () => {
+    const subagent: TeamDefinition = {
+      name: 'test-subagent',
+      mode: 'graph',
+      version: 3,
+      orchestration: 'graph',
+      squadType: 'subagent',
+      members: [],
+      nodes: [],
+      edges: [],
+    };
+    const workflow: TeamDefinition = {
+      name: 'test-workflow',
+      mode: 'graph',
+      version: 3,
+      orchestration: 'graph',
+      squadType: 'workflow',
+      members: [],
+      nodes: [],
+      edges: [],
+      workflowTree: { id: 'start', type: 'agent', label: 'Start', prompt: '', children: [] },
+    };
+    await saveTeamDefinition(subagent, { projectDir: tmpDir });
+    await saveTeamDefinition(workflow, { projectDir: tmpDir });
+
+    const teams = listTeamDefinitions(tmpDir);
+    const saved = teams.filter((t) => t.source === 'project').map((t) => t.name).sort();
+    expect(saved).toEqual(['test-subagent', 'test-workflow']);
+    const listedSubagent = teams.find((t) => t.name === 'test-subagent');
+    expect(listedSubagent?.definition.squadType).toBe('subagent');
+    const listedWorkflow = teams.find((t) => t.name === 'test-workflow');
+    expect(listedWorkflow?.definition.squadType).toBe('workflow');
+  });
+
   it('deletes a team definition', async () => {
     await saveTeamDefinition(panelDef, { projectDir: tmpDir });
     expect(loadTeamDefinition('test-panel', tmpDir)).not.toBeNull();
