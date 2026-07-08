@@ -11549,23 +11549,36 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
 }
 function wfDefaultChild() { return { id: wfNewId(), type: 'agent', label: '', prompt: '', children: [] }; }
 function renderSubagentSquadEditor(g, def, name) {
+  const editable = teamGraphEditable(def);
+  // Toolbar with Save button
+  const toolbar = document.createElement('div');
+  toolbar.className = 'graph-toolbar';
+  const left = document.createElement('div'); left.className = 'graph-tabs';
+  left.innerHTML = '<button class="active">Subagent</button>';
+  const right = document.createElement('div'); right.className = 'graph-tools';
+  const pill = document.createElement('span'); pill.className = 'graph-mode-pill';
+  pill.textContent = 'subagent · ' + (def.name || name);
+  right.appendChild(pill);
+  if (editable) {
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'graph-save-btn' + (state.teamDirty ? ' save-dirty' : '');
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => { void saveTeamDefinition(); });
+    right.appendChild(saveBtn);
+  }
+  toolbar.append(left, right);
+  g.appendChild(toolbar);
+  // Editor body
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:14px;padding:24px;overflow:auto;max-width:640px;';
-  const h = document.createElement('div');
-  h.className = 'ins-head';
-  h.innerHTML = '<h3>' + escHtml(def.name || name) + ' · subagent</h3>';
-  wrap.appendChild(h);
-  const desc = document.createElement('p');
-  desc.className = 'te-hint';
-  desc.textContent = 'A subagent is a single configured agent. Set its prompt, tools, workspace access, and runtime below. (Phase 2 will wire this to live execution.)';
-  wrap.appendChild(desc);
+  wrap.style.cssText = 'flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:12px;max-width:640px;';
   const member = (def.members && def.members[0]) || { role: def.name, model: '', systemPrompt: '' };
+  if (!def.members || !def.members.length) def.members = [member];
   wrap.appendChild(teFieldLive('Role / name', member.role || def.name || '', (v) => { member.role = v; setTeamSavedStatus(false); }));
   wrap.appendChild(teFieldLive('Prompt (system prompt)', member.systemPrompt || '', (v) => { member.systemPrompt = v; setTeamSavedStatus(false); }, true));
   wrap.appendChild(teLabeledSelect('Runtime', member.runtime || '', teamRuntimeSelectOptions(), (v) => { member.runtime = v || undefined; setTeamSavedStatus(false); }));
   wrap.appendChild(teLabeledSelect('Model', member.model || '', teamModelSelectOptions(), (v) => { member.model = v; setTeamSavedStatus(false); }));
   wrap.appendChild(teSelect('Workspace access', member.workspaceAccess || 'workspace', ['workspace', 'full'], (v) => { member.workspaceAccess = v; setTeamSavedStatus(false); }));
-  if (!def.members || !def.members.length) def.members = [member];
   g.appendChild(wrap);
 }
 // --- Graph-mode canvas (plan Phase 4): drag nodes + port-to-port edges on SVG. ---
