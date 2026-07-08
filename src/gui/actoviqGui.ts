@@ -5970,13 +5970,13 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-board-svg path.graph-edge-visible.dashed { stroke-dasharray: 6 4; }
 .graph-board-svg path.graph-edge-visible.undirected { stroke-linecap: round; }
 .graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
-.graph-board-svg path.graph-edge-visible.selected { stroke: var(--accent); stroke-width: 2.5px; }
+.graph-board-svg path.graph-edge-visible.selected { stroke: var(--brand); stroke-width: 2.5px; }
 .graph-board-svg marker#graph-edge-arrow path { fill: #94A3B8; }
-.graph-board-svg marker#graph-edge-arrow-selected path { fill: var(--accent); }
-.graph-board-svg path.graph-edge-guide { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 1px; stroke-dasharray: 4 3; opacity: 0.45; vector-effect: non-scaling-stroke; }
-.graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.graph-board-svg marker#graph-edge-arrow-selected path { fill: var(--brand); }
+.graph-board-svg path.graph-edge-guide { pointer-events: none; fill: none; stroke: var(--brand); stroke-width: 1px; stroke-dasharray: 4 3; opacity: 0.45; vector-effect: non-scaling-stroke; }
+.graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--brand); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle:active { cursor: grabbing; fill: var(--accent-soft); }
-.graph-board-svg circle.graph-edge-handle.graph-edge-endpoint { fill: var(--accent); stroke: #fff; r: 7; }
+.graph-board-svg circle.graph-edge-handle.graph-edge-endpoint { fill: var(--brand); stroke: #fff; r: 7; }
 .graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; pointer-events: none; }
 .graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; pointer-events: auto; }
 .graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px rgba(37,99,235,.18); z-index: 3; }
@@ -12098,7 +12098,7 @@ function ensureGraphEdgeMarkers(svg) {
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
   for (const spec of [
     { id: 'graph-edge-arrow', fill: '#94A3B8' },
-    { id: 'graph-edge-arrow-selected', fill: 'var(--accent)' },
+    { id: 'graph-edge-arrow-selected', fill: 'var(--brand)' },
   ]) {
     const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
     marker.setAttribute('id', spec.id);
