@@ -182,6 +182,14 @@ import { readPackageVersion } from '../cli/version.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import { renderMarkdown } from './guiMarkdown.js';
+import {
+  ContextRailReminderScheduler,
+  normalizeContextRailStore,
+  readContextRailStore,
+  sortContextRailItems,
+  writeContextRailStore,
+} from './contextRailStore.js';
+import { readWorkspaceNote, writeWorkspaceNote } from './workspaceNote.js';
 import { resolveGuiAssetsDir } from './guiAssets.js';
 import type {
   ActoviqCanUseTool,
@@ -487,6 +495,8 @@ function guiIcon(name: string): string {
     team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
     worktree: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="M8.6 8.6 11 15"/><path d="m15.4 8.6-2.4 6.4"/>',
     eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
     eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
@@ -558,6 +568,7 @@ interface StoredSessionFile {
   messageCount: number;
   workDir?: string;
   kind?: SessionSummary['kind'];
+  updatedAt?: string;
 }
 
 /** Manager sessions belong to the corner panel only — never the chat list. */
@@ -610,12 +621,16 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
       const kindRaw = isPlainRecord(raw) && typeof raw.kind === 'string' ? raw.kind : metadata.__actoviqKind;
       const kind = kindRaw === 'manager' || kindRaw === 'worktree' || kindRaw === 'main' ? kindRaw : undefined;
       const storageId = file.slice(0, -'.json'.length);
+      const updatedAt = isPlainRecord(raw) && typeof raw.updatedAt === 'string'
+        ? raw.updatedAt
+        : (typeof metadata.__actoviqUpdatedAt === 'string' ? metadata.__actoviqUpdatedAt : '');
       sessions.push({
         id: isPlainRecord(raw) && typeof raw.id === 'string' ? raw.id : storageId,
         storageId,
         filePath,
         messageCount: messages.length,
         workDir: typeof metadata.__actoviqWorkDir === 'string' ? metadata.__actoviqWorkDir : undefined,
+        updatedAt,
         ...(kind ? { kind } : {}),
       });
     } catch {
@@ -738,8 +753,11 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     path: string;
     sessionCount: number;
     active: boolean;
+    lastUsedAt: string;
+    note: string;
   }>();
-  const addProject = (projectPath: string, sessionCount = 0) => {
+  const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
+  const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '') => {
     const resolved = path.resolve(projectPath);
     const key = normalizeFsPath(resolved);
     const existing = projects.get(key);
@@ -748,26 +766,39 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
       path: resolved,
       sessionCount: (existing?.sessionCount ?? 0) + sessionCount,
       active: normalizeFsPath(resolved) === normalizeFsPath(current),
+      lastUsedAt: maxIso(existing?.lastUsedAt ?? '', lastUsedAt),
+      note: existing?.note ?? '',
     });
   };
   addProject(current, 0);
 
   for (const projectRoot of await listProjectSessionRoots(homeDir)) {
-    const countsByWorkDir = new Map<string, { path: string; count: number }>();
+    const countsByWorkDir = new Map<string, { path: string; count: number; lastUsedAt: string }>();
     for (const item of await listStoredSessionFiles(projectRoot)) {
       if (item.messageCount === 0 || !item.workDir || !(await pathExists(item.workDir))) continue;
       if (item.kind === 'manager') continue;
       const key = normalizeFsPath(item.workDir);
       const existing = countsByWorkDir.get(key);
-      countsByWorkDir.set(key, { path: item.workDir, count: (existing?.count ?? 0) + 1 });
+      countsByWorkDir.set(key, {
+        path: item.workDir,
+        count: (existing?.count ?? 0) + 1,
+        lastUsedAt: maxIso(existing?.lastUsedAt ?? '', item.updatedAt || ''),
+      });
     }
     for (const project of countsByWorkDir.values()) {
-      addProject(project.path, project.count);
+      addProject(project.path, project.count, project.lastUsedAt);
     }
   }
 
-  return [...projects.values()].sort((left, right) => {
+  const rows = [...projects.values()];
+  await Promise.all(rows.map(async (project) => {
+    project.note = await readWorkspaceNote(project.path, homeDir);
+  }));
+  return rows.sort((left, right) => {
     if (left.active !== right.active) return left.active ? -1 : 1;
+    const leftTs = Date.parse(left.lastUsedAt || '') || 0;
+    const rightTs = Date.parse(right.lastUsedAt || '') || 0;
+    if (leftTs !== rightTs) return rightTs - leftTs;
     return left.name.localeCompare(right.name);
   });
 }
@@ -1271,6 +1302,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const foregroundRun = (): GuiRunRecord | undefined => (foregroundRunId ? runs.get(foregroundRunId) : undefined);
   const automationScheduler = new TaskScheduler({ defaultTimeoutMs: 30 * 60 * 1000 });
   const scheduledAutomationIds = new Set<string>();
+  const railReminderScheduler = new ContextRailReminderScheduler();
+  const resolveGuiHomeDir = () =>
+    options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+  railReminderScheduler.setOnFire(async (wd, hd, item) => {
+    const store = await readContextRailStore(wd, hd);
+    const firedAt = item.firedAt ?? new Date().toISOString();
+    const next = store.items.map(entry =>
+      entry.id === item.id ? { ...entry, firedAt, updatedAt: firedAt } : entry,
+    );
+    await writeContextRailStore(wd, hd, { items: next });
+  });
+  async function syncRailReminders(targetWorkDir = workDir, homeDir = resolveGuiHomeDir()) {
+    const store = await readContextRailStore(targetWorkDir, homeDir);
+    await railReminderScheduler.sync(targetWorkDir, homeDir, store);
+  }
+  await syncRailReminders().catch(() => undefined);
   const pendingPermissions = new Map<string, PendingPermission>();
   // Terminal engine (plan phase 3). node-pty is probed once; terminalCapable
   // tells the renderer whether to show the terminal tab (false hides it even when
@@ -1386,6 +1433,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     if (previousSdk) await previousSdk.close().catch(() => undefined);
     invalidateHeavyState();
     await resyncAutomationScheduler();
+    await syncRailReminders().catch(() => undefined);
     return state();
   }
 
@@ -1509,6 +1557,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const archivedSessions = needsCredentials
       ? []
       : await listArchivedSessionsForWorkDir(workDir, homeDir);
+    const railStore = await readContextRailStore(workDir, homeDir);
     return {
       workDir,
       session: sessionView(session),
@@ -1625,6 +1674,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       runs: [...runs.values()].map(r => r.desc),
       foregroundRunId,
       terminalCapable,
+      railItems: sortContextRailItems(railStore.items),
+      railNotifications: railReminderScheduler.drainNotifications(),
     };
   }
 
@@ -3428,6 +3479,36 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     return;
   }
+  if (req.method === 'GET' && url.pathname === '/api/rail-items') {
+    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await readContextRailStore(workDir, hd);
+    return json(res, 200, { items: sortContextRailItems(store.items) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/rail-items') {
+    try {
+      const body = await readJson(req);
+      const next = normalizeContextRailStore({ items: body.items });
+      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const saved = await writeContextRailStore(workDir, hd, next);
+      await syncRailReminders(workDir, hd);
+      return json(res, 200, { ok: true, items: sortContextRailItems(saved.items) });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-note') {
+    try {
+      const body = await readJson(req);
+      const targetPath = typeof body.path === 'string' ? body.path.trim() : workDir;
+      const content = typeof body.content === 'string' ? body.content : '';
+      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const savedPath = await writeWorkspaceNote(path.resolve(targetPath), hd, content);
+      invalidateHeavyState();
+      return json(res, 200, { ok: true, path: savedPath, content });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
     const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
     return json(res, 200, await readProjectPlan(workDir, hd));
@@ -4111,7 +4192,7 @@ export function createActoviqGuiHtml(): string {
       <section class="project-overview" id="projectOverview">
         <header class="region-header">
           <div class="region-titles">
-            <h1>Projects</h1>
+            <h1>Projects <span id="overviewProjectCount" class="overview-count">0</span></h1>
             <p>Workspace overview and agent progress</p>
           </div>
           <div class="region-actions">
@@ -4119,12 +4200,18 @@ export function createActoviqGuiHtml(): string {
           </div>
         </header>
         <div class="overview-toolbar">
-          <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="overviewSearch" class="overview-search" placeholder="Search projects..." autocomplete="off"></label>
-          <button type="button" class="toolbar-select">All status <span>v</span></button>
-          <button type="button" class="toolbar-select">Sort: Recent <span>v</span></button>
-          <div class="view-toggle" aria-label="View mode">
-            <button type="button" class="active" title="Grid view">${guiIcon('dashboard')}</button>
-            <button type="button" title="List view">${guiIcon('list')}</button>
+          <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="overviewSearch" class="overview-search" placeholder="Search projects…" autocomplete="off"></label>
+          <select id="overviewStatusFilter" class="overview-toolbar-select" aria-label="Filter by status">
+            <option value="all">All status</option>
+            <option value="active">Active only</option>
+          </select>
+          <select id="overviewSort" class="overview-toolbar-select" aria-label="Sort projects">
+            <option value="recent">Recent</option>
+            <option value="name">Name</option>
+          </select>
+          <div class="view-toggle overview-view-toggle" id="overviewViewToggle" aria-label="View mode">
+            <button type="button" id="overviewViewGridBtn" class="active" data-view="grid" title="Grid view">${guiIcon('dashboard')}</button>
+            <button type="button" id="overviewViewTableBtn" data-view="table" title="Table view">${guiIcon('list')}</button>
           </div>
         </div>
         <div class="overview-body" id="overviewBody"></div>
@@ -4262,6 +4349,7 @@ export function createActoviqGuiHtml(): string {
       <div class="region-body" id="regionPluginsBody"></div>
     </section>
     <aside class="context-rail hidden" id="contextRail" aria-label="Context panel"></aside>
+    <div id="railToast" class="rail-toast hidden" role="status" aria-live="polite"></div>
   </div>
   <div id="managerShell" class="manager-shell hidden" aria-live="polite">
     <button type="button" id="managerFab" class="manager-fab" title="Project Manager" aria-label="Open Project Manager">
@@ -4774,57 +4862,81 @@ button { cursor: pointer; }
 .ui-icon { width: 18px; height: 18px; display: block; flex: 0 0 auto; }
 /* --- Design tokens (plan/UI_PLAN §2.2). Light theme; dark reserved for U9. --- */
 :root, body[data-theme="light"] {
-  /* multica / shadcn neutral (zinc) — near-monochrome; blue is brand-only. */
-  --bg-app: #fcfcfd;
+  /* Zinc-neutral canvas; low-saturation blue reserved for links, focus, and active accent. */
+  --bg-app: #f4f4f5;
   --bg-surface: #ffffff;
-  --bg-surface-2: #f4f4f5;
+  --bg-surface-2: #e4e4e7;
   --bg-sidebar: #fafafa;
   --border: #e4e4e7;
   --text-1: #18181b;
   --text-2: #71717a;
+  --text-muted: #a1a1aa;
   --accent: #f4f4f5;
   --accent-soft: #f4f4f5;
-  --accent-strong: #e4e4e7;
-  --brand: #3b82f6;
-  --brand-soft: #eff6ff;
-  --fg-on-accent: #18181b;
-  --ring: #a1a1aa;
-  --role-planner: #3B82F6;
+  --accent-strong: #d4d4d8;
+  --brand: #6b8299;
+  --brand-soft: #eef2f6;
+  --brand-muted: #94a3b8;
+  --fg-on-accent: #fafafa;
+  --ring: #8fa3b8;
+  --border-hover: #d4d4d8;
+  --border-active: #6b8299;
+  --border-active-soft: #d4d4d8;
+  --surface-hover: #f4f4f5;
+  --surface-selected: #ececef;
+  --surface-muted: #fafafa;
+  --avatar-gradient: linear-gradient(135deg, #52525b 0%, #71717a 100%);
+  --role-planner: #52525b;
   --role-coder: #10B981;
   --role-reviewer: #8B5CF6;
   --role-test: #F59E0B;
   --role-docs: #EC4899;
   --role-shell: #1F2330;
-  --role-runtime: #0EA5E9;
+  --role-runtime: #71717a;
   --ok: #16a34a;
+  --ok-soft: #dafbe1;
   --warn: #ca8a04;
   --err: #dc2626;
   --radius-sm: 8px;
   --radius: 10px;
-  --shadow-card: 0 1px 2px rgba(0,0,0,.04);
+  --shadow-card: 0 1px 2px rgba(24,24,27,.06), 0 0 0 1px rgba(24,24,27,.04);
+  --shadow-card-hover: 0 10px 28px rgba(24,24,27,.10), 0 2px 8px rgba(24,24,27,.06);
+  --shadow-focus: 0 0 0 3px rgba(107,130,153,.18);
   --btn-primary-bg: #18181b;
   --btn-primary-fg: #fafafa;
   --btn-primary-bg-hover: #27272a;
 }
 body[data-theme="dark"] {
   --bg-app: #09090b;
-  --bg-surface: #09090b;
-  --bg-surface-2: #18181b;
-  --bg-sidebar: #0c0c0e;
-  --border: #27272a;
+  --bg-surface: #18181b;
+  --bg-surface-2: #27272a;
+  --bg-sidebar: #18181b;
+  --border: #3f3f46;
   --text-1: #fafafa;
   --text-2: #a1a1aa;
-  --accent: #18181b;
-  --accent-soft: #18181b;
-  --accent-strong: #27272a;
-  --brand: #60a5fa;
-  --brand-soft: rgba(96,165,250,.14);
+  --text-muted: #71717a;
+  --accent: #27272a;
+  --accent-soft: #27272a;
+  --accent-strong: #3f3f46;
+  --brand: #94a8bc;
+  --brand-soft: rgba(148,168,188,.14);
+  --brand-muted: rgba(148,168,188,.28);
   --fg-on-accent: #fafafa;
-  --ring: #3f3f46;
+  --ring: #7d95ab;
+  --border-hover: #52525b;
+  --border-active: #94a8bc;
+  --border-active-soft: #52525b;
+  --surface-hover: rgba(255,255,255,.04);
+  --surface-selected: rgba(255,255,255,.07);
+  --surface-muted: #27272a;
+  --avatar-gradient: linear-gradient(135deg, #3f3f46 0%, #52525b 100%);
   --ok: #22c55e;
+  --ok-soft: rgba(34,197,94,.15);
   --warn: #facc15;
   --err: #ef4444;
-  --shadow-card: none;
+  --shadow-card: 0 1px 0 rgba(255,255,255,.04);
+  --shadow-card-hover: 0 4px 12px rgba(0,0,0,.35);
+  --shadow-focus: 0 0 0 3px rgba(148,168,188,.22);
   --btn-primary-bg: #fafafa;
   --btn-primary-fg: #18181b;
   --btn-primary-bg-hover: #e4e4e7;
@@ -4834,11 +4946,12 @@ body[data-theme="dark"] {
 .new-chat-btn:hover { background: var(--btn-primary-bg-hover); }
 .new-chat-btn .nav-icon { color: var(--fg-on-accent); }
 .region-nav.active {
-  background: var(--accent);
-  color: var(--text-1);
+  background: var(--surface-selected);
+  color: var(--brand);
   font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--brand);
 }
-.region-nav.active .nav-icon { color: var(--text-1); }
+.region-nav.active .nav-icon { color: var(--brand); }
 .region-nav:not(.active):hover { background: var(--bg-surface-2); }
 .region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
 .region-header { min-height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; gap: 14px; flex: 0 0 auto; background: var(--bg-surface); }
@@ -4847,13 +4960,13 @@ body[data-theme="dark"] {
 .region-header p { margin: 0 0 0 8px; color: var(--text-2); font-size: 13px; }
 .region-header .region-actions { display: flex; gap: 8px; align-items: center; }
 .region-actions .primary { background: var(--bg-surface); color: var(--text-1); border-color: var(--border); font-weight: 600; }
-.region-actions .primary:hover { background: var(--bg-app); border-color: #b9c6e6; color: var(--text-1); }
+.region-actions .primary:hover { background: var(--surface-hover); border-color: var(--border-hover); color: var(--text-1); }
 .region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
 /* Region list cards (Automation / Plugins). */
 .region-list-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .rl-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 13px 14px; display: grid; gap: 7px; }
 .rl-card .rl-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.rl-card .rl-icon { width: 32px; height: 32px; border-radius: 8px; display: inline-grid; place-items: center; background: var(--accent-soft); color: var(--brand); flex: 0 0 32px; }
+.rl-card .rl-icon { width: 32px; height: 32px; border-radius: 8px; display: inline-grid; place-items: center; background: var(--accent); color: var(--text-2); flex: 0 0 32px; }
 .rl-card .rl-icon .ui-icon { width: 17px; height: 17px; }
 .rl-card .rl-title { font-weight: 600; font-size: 14px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rl-card .rl-source { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); }
@@ -4866,18 +4979,54 @@ body[data-theme="dark"] {
 .rl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; color: var(--text-2); }
 .region-empty { margin: 24px auto; color: var(--text-2); font-size: 14px; }
 /* --- Project overview (plan/UI_PLAN §4.1): workspace card wall. --- */
-.project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-app); }
+.project-overview > .region-header { background: linear-gradient(180deg, var(--bg-surface) 0%, var(--surface-muted) 100%); border-bottom: 1px solid var(--border); box-shadow: 0 1px 0 rgba(255,255,255,.6); }
+.project-overview > .overview-toolbar { background: var(--bg-surface); border-bottom: 1px solid var(--border); box-shadow: 0 2px 8px rgba(24,24,27,.04); }
 /* Conversation view wraps the existing topbar + workbench; it must be a flex
    column so the workbench (flex:1) fills height and the composer docks bottom. */
 .project-conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.overview-toolbar { padding: 10px 18px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex: 0 0 auto; }
-.overview-search { height: 34px; border: 1px solid var(--border); border-radius: 10px; padding: 0 12px; background: var(--bg-surface); outline: none; width: 100%; max-width: 360px; }
-.overview-body { flex: 1; overflow: auto; padding: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-content: start; }
-.proj-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 14px 14px 14px 18px; box-shadow: var(--shadow-card); display: grid; gap: 9px; cursor: pointer; overflow: hidden; }
-.proj-card:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.06); }
-.proj-card .pc-accent { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.overview-toolbar { padding: 8px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex: 0 0 auto; flex-wrap: wrap; }
+.overview-search-wrap { height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); display: flex; align-items: center; gap: 6px; padding: 0 10px; min-width: 160px; flex: 0 1 240px; max-width: 280px; }
+.overview-search-wrap .search-icon .ui-icon { width: 14px; height: 14px; }
+.overview-search { height: 100%; border: 0; padding: 0; font-size: 12.5px; background: transparent; outline: none; width: 100%; }
+.overview-toolbar-select { height: 30px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; padding: 0 28px 0 10px; cursor: pointer; }
+.overview-toolbar-select:hover { border-color: var(--border-hover); }
+.overview-toolbar-select:focus { outline: none; border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.overview-view-toggle { padding: 2px; border-radius: 8px; }
+.overview-view-toggle button { width: 28px; height: 26px; min-height: 26px; padding: 0; }
+.overview-view-toggle .ui-icon { width: 14px; height: 14px; }
+.overview-body { flex: 1; overflow: auto; padding: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-content: start; min-width: 0; }
+.overview-body.overview-table { display: block; padding: 16px 18px 24px; min-width: 0; overflow: hidden; }
+.overview-count { display: inline-grid; place-items: center; min-width: 22px; height: 22px; margin-left: 8px; padding: 0 7px; border-radius: 999px; background: var(--bg-surface-2); font-size: 12px; font-weight: 600; color: var(--text-2); vertical-align: middle; }
+.overview-table-wrap { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); overflow-x: auto; overflow-y: visible; box-shadow: var(--shadow-card); width: 100%; max-width: 100%; -webkit-overflow-scrolling: touch; }
+.overview-table-row { display: grid; grid-template-columns: minmax(108px, 1.1fr) minmax(128px, 1.35fr) minmax(76px, 0.75fr) 52px 76px minmax(108px, 1.1fr); gap: 8px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-1); min-width: 600px; }
+.overview-table-row:last-child { border-bottom: 0; }
+.overview-table-head { background: var(--bg-app); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); cursor: default; }
+.overview-table-row:not(.overview-table-head) { cursor: pointer; }
+.overview-table-row:not(.overview-table-head):hover { background: var(--surface-hover); }
+.overview-table-row.active { background: color-mix(in srgb, var(--brand) 6%, var(--bg-surface)); }
+.overview-table-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; }
+.overview-table-name .ui-icon { width: 16px; height: 16px; color: var(--text-2); flex: 0 0 auto; }
+.overview-table-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-table-path { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.overview-table-sessions, .overview-table-last { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.overview-table-row > div { min-width: 0; }
+.overview-table-row .pc-note-table { min-width: 0; }
+.pc-badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-2); background: var(--bg-surface); white-space: nowrap; }
+.pc-badge.active { color: var(--ok); border-color: rgba(16,185,129,.28); background: var(--ok-soft); }
+.pc-badge.running { color: var(--brand); border-color: var(--border-active-soft); background: var(--brand-soft); }
+.pc-note-compact .pc-note-label, .pc-note-table .pc-note-label { display: none; }
+.pc-note-compact .pc-note-head, .pc-note-table .pc-note-head { gap: 6px; }
+.pc-note-compact .pc-note-view, .pc-note-table .pc-note-view { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.4; }
+.pc-note-compact.editing .pc-note-head .pc-note-view, .pc-note-table.editing .pc-note-head .pc-note-view { display: none; }
+.pc-note-compact .pc-note-input, .pc-note-table .pc-note-input { min-height: 36px; }
+.proj-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 12px 16px; box-shadow: var(--shadow-card); display: grid; gap: 6px; cursor: pointer; overflow: hidden; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.proj-card:hover { border-color: var(--border-active-soft); box-shadow: var(--shadow-card-hover); transform: translateY(-2px); }
+.proj-card.active { border-color: var(--border-active); box-shadow: 0 0 0 2px var(--brand-soft), var(--shadow-card-hover); background: linear-gradient(135deg, var(--surface-selected) 0%, var(--bg-surface) 42%); }
+.proj-card .pc-accent { display: none; }
 .proj-card .pc-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.proj-card .pc-icon { width: 36px; height: 36px; border-radius: 9px; display: inline-grid; place-items: center; color: var(--fg-on-accent); flex: 0 0 36px; }
+.proj-card .pc-icon { width: 36px; height: 36px; border-radius: 10px; display: inline-grid; place-items: center; flex: 0 0 36px; background: color-mix(in srgb, var(--pc-accent, var(--brand)) 20%, var(--bg-surface)); color: var(--pc-accent, var(--brand)); border: 1px solid color-mix(in srgb, var(--pc-accent, var(--brand)) 32%, var(--border)); box-shadow: none; }
+.pc-active-badge { margin-left: auto; flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); background: var(--brand-soft); border: 1px solid var(--border-active-soft); border-radius: 999px; padding: 3px 9px; }
 .proj-card .pc-icon .ui-icon { width: 18px; height: 18px; }
 .proj-card .pc-titles { min-width: 0; }
 .proj-card .pc-title { font-weight: 700; font-size: 16px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
@@ -4894,8 +5043,8 @@ body[data-theme="dark"] {
 .breadcrumb .crumb-current { color: var(--text-1); font-weight: 600; font-size: 16px; cursor: default; }
 .breadcrumb .crumb-sep { color: var(--text-2); }
 .conv-card { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 13px 15px; box-shadow: var(--shadow-card); cursor: pointer; }
-.conv-card:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.06); }
-.conv-card.active { border-color: var(--brand); background: var(--accent-soft); }
+.conv-card:hover { border-color: var(--border-hover); box-shadow: var(--shadow-card-hover); }
+.conv-card.active { border-color: var(--border-active); background: linear-gradient(180deg, var(--surface-hover), var(--bg-surface)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent); }
 .conv-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .conv-title { font-weight: 600; font-size: 14.5px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv-preview { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4913,11 +5062,12 @@ body[data-theme="dark"] {
 .project-doc-status.dirty { color: var(--brand); }
 .project-doc-status.error { color: var(--err); }
 .project-doc-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--bg-surface); }
-.project-doc-scroll.editing { background: #FAFBFC; }
+.overview-search-wrap:focus-within, .detail-search-wrap:focus-within { border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.project-doc-scroll.editing { background: var(--surface-muted); }
 .project-doc-editor { max-width: 680px; margin: 0 auto; padding: 16px 28px 36px; width: 100%; min-height: 100%; }
 .project-doc-empty { margin: 0; color: var(--text-2); font-size: 13px; text-align: center; padding: 40px 16px; cursor: default; }
 .project-doc-source { width: 100%; min-height: 360px; border: 0; outline: none; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.55; background: transparent; color: var(--text-1); padding: 0; }
-.project-doc-view.md-prose { font-size: 13px; line-height: 1.6; color: #374151; cursor: text; }
+.project-doc-view.md-prose { font-size: 13px; line-height: 1.6; color: var(--text-1); cursor: text; }
 .project-doc-view.md-prose .md-h:first-child { margin-top: 0; }
 .project-doc-view.md-prose h1.md-h { font-size: 1.2em; font-weight: 650; margin: .85em 0 .32em; line-height: 1.35; color: var(--text-1); }
 .project-doc-view.md-prose h2.md-h { font-size: 1.08em; font-weight: 650; margin: .7em 0 .28em; line-height: 1.35; color: var(--text-1); }
@@ -4926,7 +5076,7 @@ body[data-theme="dark"] {
 .project-doc-view.md-prose p.md-p:last-child { margin-bottom: 0; }
 .project-doc-view.md-prose ul.md-ul, .project-doc-view.md-prose ol.md-ol { margin: .2em 0 .5em; padding-left: 1.25em; }
 .project-doc-view.md-prose ul.md-ul li, .project-doc-view.md-prose ol.md-ol li { margin: .12em 0; }
-.project-doc-view.md-prose blockquote.md-quote { margin: .4em 0; padding: .05em 0 .05em 10px; border-left: 2px solid #E5E7EB; color: var(--text-2); }
+.project-doc-view.md-prose blockquote.md-quote { margin: .4em 0; padding: .05em 0 .05em 10px; border-left: 2px solid var(--border); color: var(--text-2); }
 .project-doc-view.md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .7em 0; }
 .project-doc-view.md-prose strong { font-weight: 650; color: var(--text-1); }
 .project-doc-view.md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .88em; background: var(--bg-surface-2); border-radius: 4px; padding: .06em .32em; }
@@ -4937,7 +5087,7 @@ body[data-theme="dark"] {
 .project-doc-view.md-prose li.md-task input[type="checkbox"] { margin-right: .35em; accent-color: var(--brand); vertical-align: middle; }
 .project-doc-view.md-prose li.md-task-done { color: var(--text-2); }
 .project-doc-view.md-prose .md-table { font-size: 12px; }
-.detail-sidebar { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface-2); overflow: hidden; }
+.detail-sidebar { min-height: 0; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
 .conv-sidebar-top { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .conv-sidebar-head h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-1); }
@@ -4945,11 +5095,11 @@ body[data-theme="dark"] {
 .conv-sidebar-search input { border: 0; outline: 0; width: 100%; background: transparent; font-size: 13px; }
 .conv-sidebar-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px; }
 .conv-sidebar-row { width: 100%; border: 0; background: transparent; border-radius: 10px; min-height: 34px; padding: 6px 8px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; text-align: left; color: var(--text-1); font-size: 13px; cursor: pointer; }
-.conv-sidebar-row:hover, .conv-sidebar-row.active { background: rgba(17,24,39,.06); }
-.conv-sidebar-row.active { background: #EEF2F7; }
+.conv-sidebar-row:hover { background: var(--surface-hover); }
+.conv-sidebar-row.active { background: var(--surface-selected); box-shadow: inset 3px 0 0 var(--brand); }
 .conv-sidebar-row .csr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 7px; }
 .conv-sidebar-row .csr-dot.hidden { visibility: hidden; }
-.conv-sidebar-row .csr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: #4B5563; }
+.conv-sidebar-row .csr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
 .conv-sidebar-row .csr-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-size: 12px; flex: 0 0 auto; }
 .conv-sidebar-row .csr-actions { display: none; align-items: center; gap: 2px; }
 .conv-sidebar-row:hover .csr-actions { display: inline-flex; }
@@ -5007,7 +5157,7 @@ body[data-theme="dark"] {
   color: var(--text-2);
   transition: box-shadow .18s ease, transform .18s ease, color .18s ease;
 }
-.manager-fab:hover { color: var(--brand); box-shadow: 0 10px 32px rgba(37, 99, 235, .18); transform: translateY(-1px); }
+.manager-fab:hover { color: var(--brand); box-shadow: 0 10px 32px rgba(24, 24, 27, .12); transform: translateY(-1px); }
 .manager-fab .manager-fab-icon { display: inline-grid; place-items: center; }
 .manager-fab .ui-icon { width: 22px; height: 22px; }
 .manager-fab.running { color: var(--brand); }
@@ -5020,7 +5170,7 @@ body[data-theme="dark"] {
   height: 10px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(37, 99, 235, .45);
+  box-shadow: 0 0 0 0 rgba(107, 130, 153, .35);
   animation: pulse 1.2s infinite;
 }
 .manager-backdrop {
@@ -5079,7 +5229,7 @@ body[data-theme="dark"] {
   border-radius: 50%;
   display: inline-grid;
   place-items: center;
-  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  background: var(--avatar-gradient);
   color: var(--fg-on-accent);
   flex: 0 0 28px;
 }
@@ -5117,7 +5267,7 @@ body[data-theme="dark"] {
   flex-direction: column;
   gap: 8px;
   padding: 12px 14px 0;
-  background: #FAFBFC;
+  background: var(--surface-muted);
 }
 .manager-widget-footer {
   flex: 0 0 auto;
@@ -5161,7 +5311,7 @@ body[data-theme="dark"] {
   border-radius: 50%;
   display: inline-grid;
   place-items: center;
-  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  background: var(--avatar-gradient);
   color: var(--fg-on-accent);
   flex: 0 0 28px;
   margin-top: 2px;
@@ -5232,7 +5382,7 @@ body[data-theme="dark"] {
   border-radius: 50%;
   display: inline-grid;
   place-items: center;
-  background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%);
+  background: var(--avatar-gradient);
   color: var(--fg-on-accent);
 }
 .manager-composer-avatar .ui-icon { width: 18px; height: 18px; }
@@ -5328,14 +5478,14 @@ body[data-theme="dark"] {
 .team-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .team-squad-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .squad-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 5px 11px; font-size: 12.5px; cursor: pointer; color: var(--text-2); }
-.squad-chip:hover { border-color: #b9c6e6; }
-.squad-chip.active { border-color: var(--brand); background: var(--accent-soft); color: var(--text-1); font-weight: 600; }
+.squad-chip:hover { border-color: var(--border-hover); }
+.squad-chip.active { border-color: var(--brand); background: var(--surface-selected); color: var(--text-1); font-weight: 600; }
 .squad-chip .sq-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 .team-graph { flex: 1; overflow: auto; padding: 28px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 16px; background: var(--bg-surface-2); }
 .graph-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 .graph-arrow { color: var(--text-2); font-size: 22px; line-height: 1; }
 .graph-node { width: 184px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 11px 13px 11px 17px; cursor: pointer; position: relative; }
-.graph-node:hover { border-color: #b9c6e6; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.graph-node:hover { border-color: var(--border-hover); box-shadow: var(--shadow-card-hover); }
 .graph-node.selected { border-color: var(--brand); box-shadow: 0 0 0 2px var(--accent-soft); }
 .graph-node .gn-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 12px 0 0 12px; }
 .graph-node .gn-head { display: flex; align-items: center; gap: 8px; }
@@ -5397,7 +5547,7 @@ body[data-theme="dark"] {
 .te-tool-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 10px; margin-top: 4px; }
 .te-tool-grid .te-check { font-size: 12px; font-weight: 400; }
 .team-inspector .ins-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
-.graph-mode-pill { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 10px; background: var(--accent-soft); color: var(--brand); }
+.graph-mode-pill { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 3px 10px; background: var(--accent); color: var(--text-2); }
 .graph-unreachable { opacity: .65; }
 .context-rail { width: 320px; flex: 0 0 320px; border-left: 1px solid var(--border); background: var(--bg-app); overflow: auto; padding: 14px; }
 .app { height: 100vh; display: flex; overflow: hidden; border: 1px solid var(--border); background: var(--bg-app); }
@@ -5421,7 +5571,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-link,
 body[data-sidebar-mode="nav"] .sidebar .workspace-meta { display: none; }
 body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-icon) { display: inline; }
 .brand { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 8px; margin-bottom: 4px; }
-.brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: linear-gradient(135deg, var(--brand) 0%, #6ad0a8 100%); color: var(--fg-on-accent); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: var(--avatar-gradient); color: var(--fg-on-accent); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
 .brand-name { font-weight: 700; font-size: 15px; letter-spacing: 0; color: var(--text-1); }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
@@ -5481,7 +5631,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .icon-btn .ui-icon, .round-btn .ui-icon, .send-btn .ui-icon { width: 18px; height: 18px; }
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
 .workbench { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.tabbar { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #e7e7e7; background: #fafafa; min-height: 38px; flex: 0 0 auto; }
+.tabbar { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar); min-height: 38px; flex: 0 0 auto; }
 .tabbar-tabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .tabbar-tabs::-webkit-scrollbar { height: 6px; }
 .tab { display: inline-flex; align-items: center; gap: 6px; max-width: 210px; padding: 5px 8px 5px 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-2); font-size: 13px; flex: 0 0 auto; }
@@ -5492,7 +5642,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .tab .tab-close .ui-icon { width: 12px; height: 12px; }
 .tab .tab-close:hover { background: rgba(0,0,0,.1); color: var(--err); }
 .tab:hover { background: rgba(0,0,0,.05); }
-.tab.active { background: var(--bg-surface); border-color: #e2e2e2; color: var(--text-1); }
+.tab.active { background: var(--bg-surface); border-color: var(--border); color: var(--text-1); }
 .tabbar-add { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 7px; border: 1px solid transparent; flex: 0 0 auto; color: var(--text-2); }
 .tabbar-add:hover { background: rgba(0,0,0,.06); }
 .tabbar-add .ui-icon { width: 16px; height: 16px; }
@@ -5532,14 +5682,14 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .history-picker .hp-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px; outline: none; }
 .history-picker .hp-list { margin-top: 6px; max-height: 280px; overflow: auto; display: grid; gap: 2px; }
 .history-picker .hp-row { text-align: left; width: 100%; padding: 7px 9px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: var(--text-1); }
-.history-picker .hp-row:hover { background: rgba(75,147,247,.12); }
+.history-picker .hp-row:hover { background: var(--surface-hover); }
 /* Monitor pane (plan phase 4): live cards for every active run. */
-.pane-monitor { background: #f6f7f8; overflow: auto; }
+.pane-monitor { background: var(--bg-app); overflow: auto; }
 .monitor-list { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
 .monitor-empty { margin: 24px auto; color: var(--text-2); }
 .monitor-card { border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); padding: 10px 12px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
 .monitor-card.clickable { cursor: pointer; }
-.monitor-card.clickable:hover { border-color: #b9c6e6; }
+.monitor-card.clickable:hover { border-color: var(--border-hover); }
 .monitor-card.status-running { border-left: 3px solid var(--brand); }
 .monitor-card.status-done { border-left: 3px solid #6ad0a8; }
 .monitor-card.status-aborted { border-left: 3px solid #e0a458; }
@@ -5575,7 +5725,7 @@ h1 { font-size: 16px; margin: 0; font-weight: 650; }
 .pill-btn { border-color: var(--border); background: var(--bg-surface); padding: 0 14px; }
 select { border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); border-radius: 8px; height: 34px; padding: 0 9px; }
 .statusbar { min-height: 34px; padding: 8px 18px; color: #6b6f75; font-size: 13px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-.statusbar.running::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(75,147,247,.45); animation: pulse 1.2s infinite; }
+.statusbar.running::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 45%, transparent); animation: pulse 1.2s infinite; }
 .statusbar.error::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
 .transcript { flex: 1; overflow: auto; }
 .code-block { position: relative; margin: 10px 0; padding: 12px 14px; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; overflow: auto; border: 1px solid #2d2d2d; }
@@ -5612,10 +5762,10 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 .result .row { padding: 10px 12px; border-top: 1px solid #eeeeee; }
 .result small { display: block; color: var(--text-2); margin-top: 3px; }
 .composer { margin: 0 max(22px, 12vw) 18px; border: 1px solid var(--border); border-radius: 18px; padding: 10px; background: var(--bg-surface); display: grid; gap: 8px; position: relative; }
-.composer.dragging { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(75,147,247,.12); }
+.composer.dragging { border-color: var(--brand); box-shadow: var(--shadow-focus); }
 .composer textarea { resize: none; border: 0; outline: none; min-height: 58px; max-height: 190px; width: 100%; }
 .hidden-file-input { display: none; }
-.drop-overlay { position: absolute; inset: 8px; z-index: 3; border: 1px dashed var(--accent); border-radius: 14px; background: rgba(244,248,255,.94); color: var(--brand); display: grid; place-items: center; font-weight: 600; pointer-events: none; }
+.drop-overlay { position: absolute; inset: 8px; z-index: 3; border: 1px dashed var(--brand); border-radius: 14px; background: color-mix(in srgb, var(--brand-soft) 92%, transparent); color: var(--brand); display: grid; place-items: center; font-weight: 600; pointer-events: none; }
 .drop-overlay.hidden { display: none; }
 .attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; }
 .attachment-tray.hidden { display: none; }
@@ -5641,54 +5791,88 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 /* --- UI plan visual polish (30 Jun 2026). --- */
 body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .app { border: 0; background: var(--bg-app); }
-.sidebar { padding: 18px 12px 14px; gap: 14px; box-shadow: 1px 0 0 rgba(17,24,39,.02); }
+.sidebar { padding: 18px 12px 14px; gap: 14px; background: var(--bg-sidebar); box-shadow: 1px 0 0 var(--border); }
 body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .brand { height: 38px; margin-bottom: 8px; }
-.brand-mark { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #4B93F7 0%, #6AD0A8 100%); }
+.brand-mark { width: 32px; height: 32px; border-radius: 10px; background: var(--avatar-gradient); }
 .brand-name, .region-header h1, .proj-card .pc-title { letter-spacing: 0; }
 .primary-nav { gap: 8px; }
 .nav-btn { min-height: 44px; border-radius: 10px; padding: 0 12px; font-size: 15px; }
 
-.sidebar-footer { padding-top: 8px; border-top: 1px solid rgba(229,231,235,.75); }
+.sidebar-footer { padding-top: 8px; border-top: 1px solid var(--border); }
 .region, .chat, .project-overview, .project-detail, .project-conversation { background: var(--bg-app); }
 .region-header { min-height: 48px; padding: 0 16px; background: var(--bg-surface); }
 .region-header h1 { font-size: 15px; font-weight: 600; }
 .region-actions { flex-wrap: wrap; justify-content: flex-end; }
 .pill-btn, .toolbar-select, .filter-chip, .view-toggle button { min-height: 38px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); padding: 0 14px; box-shadow: 0 1px 1px rgba(17,24,39,.02); }
 .pill-btn.primary { background: var(--bg-surface); border-color: var(--border); color: var(--text-1); font-weight: 600; box-shadow: none; }
-.pill-btn:hover, .toolbar-select:hover, .filter-chip:hover, .view-toggle button:hover { border-color: #C7D2FE; background: #F8FBFF; }
-.pill-btn.primary:hover { background: var(--bg-app); border-color: #b9c6e6; color: var(--text-1); box-shadow: none; }
-.overview-toolbar { align-items: center; padding: 16px 26px; gap: 10px; background: var(--bg-surface); }
-.overview-search-wrap, .detail-search-wrap { height: 40px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); display: flex; align-items: center; gap: 8px; padding: 0 12px; min-width: 280px; flex: 1; max-width: 560px; }
-.overview-search-wrap .search-icon, .detail-search-wrap .ui-icon { color: #8A8D91; flex: 0 0 auto; }
-.overview-search { height: 100%; border: 0; padding: 0; max-width: none; background: transparent; }
+.pill-btn:hover, .toolbar-select:hover, .filter-chip:hover, .view-toggle button:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+.pill-btn.primary:hover { background: var(--surface-hover); border-color: var(--border-active-soft); color: var(--text-1); box-shadow: none; }
+.overview-toolbar { align-items: center; padding: 8px 18px; gap: 8px; background: var(--bg-surface); flex-wrap: wrap; }
+.overview-search-wrap, .detail-search-wrap { height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); display: flex; align-items: center; gap: 6px; padding: 0 10px; min-width: 160px; flex: 0 1 240px; max-width: 280px; }
+.overview-search-wrap .search-icon, .detail-search-wrap .ui-icon { color: var(--text-muted); flex: 0 0 auto; }
+.overview-search-wrap .search-icon .ui-icon, .detail-search-wrap .ui-icon { width: 14px; height: 14px; }
+.overview-search { height: 100%; border: 0; padding: 0; max-width: none; background: transparent; font-size: 12.5px; }
+.overview-toolbar-select { height: 30px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; padding: 0 28px 0 10px; cursor: pointer; box-shadow: none; }
+.overview-toolbar-select:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+.overview-view-toggle { padding: 2px; border-radius: 8px; }
+.overview-view-toggle button { width: 28px; min-height: 26px; height: 26px; }
+.overview-view-toggle .ui-icon { width: 14px; height: 14px; }
 .toolbar-select { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
 .view-toggle { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface-2); }
 .view-toggle button { width: 34px; min-height: 32px; padding: 0; display: inline-grid; place-items: center; border-color: transparent; box-shadow: none; }
 .view-toggle button.active { background: var(--bg-surface); border-color: var(--border); color: var(--brand); }
-.overview-body { padding: 18px 26px 26px; grid-template-columns: minmax(0, 1fr); gap: 14px; }
-.proj-card { min-height: 164px; grid-template-columns: minmax(0, 1fr) minmax(260px, 31%); column-gap: 22px; padding: 18px 24px 16px 24px; border-radius: 12px; }
-.proj-card.active { border-color: #D6E4FF; }
-.proj-card .pc-accent { width: 5px; }
-.proj-card .pc-icon { width: 50px; height: 50px; border-radius: 11px; box-shadow: inset 0 -10px 18px rgba(0,0,0,.08); }
-.proj-card .pc-title { font-size: 18px; }
-.proj-card .pc-path { margin-top: 3px; font-size: 12px; }
-.pc-meta { gap: 12px; align-items: center; }
+.overview-body { padding: 16px 18px 24px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; background: var(--bg-app); min-width: 0; }
+.overview-body.overview-table { display: block; padding: 16px 18px 24px; grid-template-columns: none; min-width: 0; overflow: hidden; }
+.proj-card { min-height: 0; grid-template-columns: 1fr; column-gap: 0; padding: 10px 14px; border-radius: 12px; gap: 5px; }
+.proj-card .pc-body { display: grid; gap: 8px; min-width: 0; }
+.proj-card .pc-activity-line { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card .pc-note { display: grid; gap: 4px; }
+.proj-card .pc-note-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.proj-card .pc-note-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); }
+.proj-card .pc-note-action { width: 28px; height: 28px; min-height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); display: inline-grid; place-items: center; cursor: pointer; flex: 0 0 28px; padding: 0; }
+.proj-card .pc-note-action:hover { color: var(--text-1); background: rgba(0,0,0,.055); }
+.proj-card .pc-note-action.save { color: var(--ok); background: transparent; }
+.proj-card .pc-note-action.save:hover { color: var(--ok); background: rgba(16,185,129,.1); }
+.proj-card .pc-note-action:disabled { opacity: .55; cursor: wait; }
+.proj-card .pc-note-action .ui-icon { width: 16px; height: 16px; }
+.proj-card .pc-note-view { font-size: 12.5px; line-height: 1.45; color: var(--text-1); white-space: pre-wrap; word-break: break-word; }
+.proj-card .pc-note-view.empty { color: var(--text-2); font-style: italic; }
+.proj-card .pc-note-input {
+  width: 100%;
+  min-height: 44px;
+  max-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-family: inherit;
+}
+.proj-card .pc-note-input:focus { outline: none; border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.proj-card .pc-icon { width: 36px; height: 36px; border-radius: 10px; }
+.proj-card .pc-title { font-size: 15px; font-weight: 650; }
+.proj-card .pc-path { margin-top: 2px; font-size: 11.5px; }
+.pc-meta { gap: 10px; align-items: center; flex-wrap: wrap; }
+.pc-meta .pc-activity-line { flex: 1 1 160px; min-width: 0; }
 .pc-percent { color: var(--text-2); }
 .pc-progress, .conv-progress { min-width: 180px; flex: 1; display: inline-flex; align-items: center; }
-.progress-track { width: 100%; height: 5px; border-radius: 999px; background: #E5E7EB; overflow: hidden; display: inline-block; }
+.progress-track { width: 100%; height: 6px; border-radius: 999px; background: var(--bg-surface-2); border: 1px solid color-mix(in srgb, var(--border) 70%, var(--brand-muted)); overflow: hidden; display: inline-block; }
 .progress-fill { height: 100%; border-radius: inherit; display: block; }
 .pc-info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 .pc-info-cell { min-width: 0; display: grid; gap: 5px; padding-left: 14px; border-left: 1px solid var(--border); }
 .pc-info-cell:first-child { padding-left: 0; border-left: 0; }
-.ui-label { font-size: 11px; font-weight: 600; color: #8A8D91; text-transform: uppercase; letter-spacing: 0; }
+.ui-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0; }
 .pc-info-cell strong, .context-row strong { font-size: 13px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc-info-cell small, .context-row small { color: var(--text-2); font-size: 12px; }
 .avatar-stack { display: flex; align-items: center; min-height: 26px; }
 .avatar-dot, .avatar-more { width: 26px; height: 26px; border: 2px solid #fff; border-radius: 50%; display: inline-grid; place-items: center; color: var(--fg-on-accent); font-size: 11px; font-weight: 700; margin-left: -6px; box-shadow: 0 1px 2px rgba(17,24,39,.12); }
 .avatar-dot:first-child, .avatar-more:first-child { margin-left: 0; }
-.avatar-more { background: #E5E7EB; color: #4B5563; }
-.plan-preview { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; display: grid; align-content: start; gap: 8px; border-radius: 12px; padding: 14px; background: linear-gradient(145deg, rgba(234,242,255,.94), var(--bg-surface)); }
+.avatar-more { background: var(--bg-surface-2); color: var(--text-2); }
+.plan-preview { grid-column: 2; grid-row: 1 / span 3; align-self: stretch; display: grid; align-content: start; gap: 8px; border-radius: 12px; padding: 14px; background: linear-gradient(160deg, var(--surface-selected), var(--bg-surface)); border: 1px solid var(--border-active-soft); box-shadow: inset 0 1px 0 rgba(255,255,255,.75); }
 .plan-preview-title { display: flex; align-items: center; gap: 7px; color: var(--brand); font-size: 12px; font-weight: 700; }
 .plan-preview-title .ui-icon { width: 15px; height: 15px; }
 .plan-preview-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
@@ -5700,18 +5884,24 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .detail-search-wrap input { border: 0; outline: 0; width: 100%; height: 100%; background: transparent; }
 .detail-filter-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .filter-chip { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; }
-.filter-chip b { min-width: 22px; min-height: 22px; border-radius: 999px; background: #EEF2FF; color: var(--brand); display: inline-grid; place-items: center; font-size: 12px; }
+.filter-chip b { min-width: 22px; min-height: 22px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); display: inline-grid; place-items: center; font-size: 12px; }
 .filter-chip.active { border-color: var(--brand); background: var(--accent-soft); color: var(--brand); }
-.detail-layout { grid-template-columns: minmax(0, 1fr) 300px; gap: 0; }
+.project-detail > .region-header { background: linear-gradient(180deg, var(--bg-surface), var(--surface-muted)); border-bottom: 1px solid var(--border-active-soft); }
+.detail-layout { grid-template-columns: minmax(0, 1fr) 300px; gap: 0; background: var(--bg-app); }
+.detail-sidebar { border-left: 1px solid var(--border); box-shadow: inset 1px 0 0 rgba(255,255,255,.5); }
 .detail-conversations { gap: 14px; }
 .conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; position: relative; }
-.conv-card.active { background: linear-gradient(180deg, #F8FBFF, #FFFFFF); box-shadow: 0 0 0 1px rgba(37,99,235,.2); }
+.conv-card.active { background: linear-gradient(180deg, var(--surface-selected), var(--bg-surface)); box-shadow: 0 0 0 2px var(--brand-soft), var(--shadow-card); border-color: var(--border-active); }
+.project-detail > .region-header { background: linear-gradient(180deg, var(--bg-surface), var(--surface-muted)); border-bottom: 1px solid var(--border-active-soft); }
+.detail-layout { border-top: 1px solid var(--border); }
+.project-doc-panel { box-shadow: inset -1px 0 0 var(--border); }
+.detail-sidebar { border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgba(24,24,27,.04); }
 .conv-card.archived { opacity: .92; }
 .conv-archive-btn { position: absolute; top: 12px; right: 12px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-muted); border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; z-index: 1; }
 .conv-archive-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--accent-soft); }
 .detail-archived-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
 .detail-archived-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-muted); padding: 10px 14px; cursor: pointer; font: inherit; color: inherit; }
-.detail-archived-toggle:hover { border-color: #b9c6e6; }
+.detail-archived-toggle:hover { border-color: var(--border-hover); background: var(--surface-hover); }
 .detail-archived-toggle .count { color: var(--text-muted); font-size: 12px; }
 .detail-archived-list { display: grid; gap: 12px; margin-top: 12px; }
 .detail-archived-list.hidden { display: none; }
@@ -5730,13 +5920,13 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .project-context-card { border: 1px solid var(--border); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 16px; display: grid; gap: 16px; }
 .context-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .context-card-head h3 { margin: 0; font-size: 16px; }
-.context-card-head span { color: var(--ok); font-size: 12px; border-radius: 999px; background: #E8F7EF; padding: 3px 9px; }
+.context-card-head span { color: var(--ok); font-size: 12px; border-radius: 999px; background: var(--ok-soft); padding: 3px 9px; }
 .context-progress { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .context-progress .progress-track { grid-column: 1 / -1; height: 7px; }
 .context-row { display: grid; gap: 5px; padding-top: 12px; border-top: 1px solid var(--border); }
 .context-checklist { display: grid; gap: 9px; }
 .checkline { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; }
-.checkline i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #93C5FD; flex: 0 0 auto; }
+.checkline i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--brand-muted); flex: 0 0 auto; }
 .checkline.done i { background: var(--ok); border-color: var(--ok); box-shadow: inset 0 0 0 3px #fff; }
 .context-actions { display: flex; gap: 8px; }
 /* --- Chat pane chrome + transcript column (plan/UI_PLAN §6). --- */
@@ -5787,7 +5977,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   white-space: normal;
   font-size: 14px;
   line-height: 1.65;
-  color: #374151;
+  color: var(--text-1);
 }
 .message-row .message.user {
   padding: 14px 16px;
@@ -5802,7 +5992,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   background: transparent;
   border: 0;
   border-radius: 0;
-  color: #374151;
+  color: var(--text-1);
 }
 .message-row .message.error {
   padding: 0;
@@ -5839,7 +6029,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .message-row .md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: 1.1em 0; }
 .message-row .md-prose del { color: var(--text-2); }
 .message-row .md-prose strong { font-weight: 650; color: var(--text-1); }
-.message-row .md-prose em { color: #374151; }
+.message-row .md-prose em { color: var(--text-1); }
 .message-row .md-prose .md-table { border-collapse: collapse; margin: .75em 0; font-size: 13px; display: block; overflow-x: auto; width: 100%; }
 .message-row .md-prose .md-table th, .message-row .md-prose .md-table td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
 .message-row .md-prose .md-table th { background: #f9fafb; font-weight: 650; color: var(--text-1); }
@@ -5900,8 +6090,8 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .transcript > .tool-card,
 .transcript > .system-event { max-width: 820px; margin-left: auto; margin-right: auto; }
 .pane-chat .composer { flex: 0 0 auto; margin-top: 0; }
-.conv-status-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: #E8F7EF; color: var(--ok); border: 1px solid rgba(16,185,129,.25); }
-.conv-status-pill.running { background: var(--accent-soft); color: var(--brand); border-color: rgba(37,99,235,.25); }
+.conv-status-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: var(--ok-soft); color: var(--ok); border: 1px solid rgba(16,185,129,.25); }
+.conv-status-pill.running { background: var(--brand-soft); color: var(--brand); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }
 .conv-status-pill.error { background: #FEE2E2; color: var(--err); border-color: rgba(239,68,68,.25); }
 .conv-status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .squad-roster { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -5923,7 +6113,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .msg-attach-card strong, .msg-pr-card strong { display: block; margin-bottom: 4px; font-size: 13px; }
 .msg-change-strip { display: inline-flex; gap: 6px; margin-top: 8px; }
 .msg-change-strip span { border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
-.msg-change-strip .add { background: #E8F7EF; color: var(--ok); }
+.msg-change-strip .add { background: var(--ok-soft); color: var(--ok); }
 .msg-change-strip .del { background: #FEE2E2; color: var(--err); }
 .msg-pr-card .pr-review { display: inline-flex; margin-left: 8px; border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 700; background: var(--accent-soft); color: var(--brand); }
 .role-chip.rp-planner { background: rgba(59,130,246,.12); color: var(--role-planner); }
@@ -5935,7 +6125,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .msg-meta { margin-left: auto; color: var(--text-2); font-size: 11px; }
 .member-summary { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
 .member-summary .ms-chip { display: inline-flex; align-items: center; gap: 4px; border-radius: 6px; padding: 2px 7px; font-size: 11px; background: var(--bg-surface-2); color: var(--text-2); }
-.member-summary .ms-chip.ok { background: #E8F7EF; color: var(--ok); }
+.member-summary .ms-chip.ok { background: var(--ok-soft); color: var(--ok); }
 .member-summary .ms-chip.fail { background: #FEE2E2; color: var(--err); }
 .topbar { min-height: 84px; padding: 14px 24px; background: var(--bg-surface); }
 .topbar h1 { font-size: 20px; font-weight: 700; }
@@ -5946,17 +6136,20 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .team-main { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: 100%; }
 .team-squad-bar { grid-row: 1 / span 2; grid-column: 1; display: grid; align-content: start; gap: 10px; padding: 18px 12px; border-right: 1px solid var(--border); border-bottom: 0; background: var(--bg-surface); overflow: auto; }
 .squad-chip { width: 100%; min-height: 78px; justify-content: flex-start; align-items: center; gap: 11px; padding: 12px; border-radius: 10px; color: var(--text-1); text-align: left; }
-.squad-chip.active { box-shadow: 0 0 0 1px rgba(37,99,235,.22); }
+.squad-chip.active { box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent); }
 .sq-dot { flex: 0 0 auto; }
 .sq-labels { display: grid; gap: 4px; min-width: 0; }
 .sq-labels strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sq-labels small { color: var(--text-2); font-size: 12px; }
 .team-editor { grid-column: 1 / -1; grid-row: 1 / -1; z-index: 2; margin: 14px; overflow: auto; }
 .team-graph { grid-column: 2; grid-row: 1 / span 2; min-height: 0; height: 100%; padding: 0; display: flex; flex-direction: column; overflow: hidden; align-items: stretch; background: var(--bg-surface-2); }
+.team-graph.subagent-mode { background: var(--bg-surface); align-items: center; }
+.subagent-editor-body { flex: 1; overflow: auto; width: min(640px, calc(100% - 48px)); padding: 20px 0 28px; display: grid; gap: 12px; align-content: start; }
 .graph-toolbar { height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex: 0 0 auto; }
+.team-graph.subagent-mode .graph-toolbar { width: 100%; align-self: stretch; }
 .graph-tabs, .graph-tools { display: flex; align-items: center; gap: 6px; }
 .graph-tabs button, .graph-tools button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 11px; color: var(--text-2); }
-.graph-tabs button.active { color: var(--brand); background: var(--accent-soft); border-color: #BFDBFE; }
+.graph-tabs button.active { color: var(--brand); background: var(--brand-soft); border-color: var(--border-active-soft); }
 .graph-tools button.graph-save-btn.save-dirty { color: var(--btn-primary-fg); background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); font-weight: 600; }
 .graph-tools span { font-size: 12px; color: var(--text-2); }
 .graph-canvas { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 12px 14px 14px; gap: 8px; }
@@ -5979,11 +6172,11 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-board-svg circle.graph-edge-handle.graph-edge-endpoint { fill: var(--brand); stroke: #fff; r: 7; }
 .graph-nodes-layer { position: relative; z-index: 1; min-height: inherit; pointer-events: none; }
 .graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; pointer-events: auto; }
-.graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px rgba(37,99,235,.18); z-index: 3; }
-.graph-port { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; background: var(--accent); box-shadow: 0 0 0 1px rgba(37,99,235,.35); z-index: 2; }
+.graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px color-mix(in srgb, var(--brand) 18%, transparent); z-index: 3; }
+.graph-port { position: absolute; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg-surface); background: var(--brand); box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent); z-index: 2; }
 .graph-port-in { top: -6px; left: 50%; margin-left: -6px; }
 .graph-port-out { bottom: -6px; left: 50%; margin-left: -6px; cursor: crosshair; }
-.graph-port.snap-target { background: var(--accent); box-shadow: 0 0 0 4px rgba(37,99,235,.28); z-index: 3; }
+.graph-port.snap-target { background: var(--brand); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 28%, transparent); z-index: 3; }
 .graph-board-hint { font-size: 11.5px; color: var(--text-2); margin: 0; flex: 0 0 auto; }
 .graph-title { flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-surface); border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; color: var(--text-2); align-self: flex-start; }
 .graph-lane { display: flex; justify-content: center; align-items: center; gap: 24px; flex-wrap: wrap; width: 100%; }
@@ -5999,7 +6192,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-node .gn-role { margin-top: 8px; font-size: 12px; }
 .graph-node .gn-model { margin-top: 4px; }
 .gn-tools { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
-.gn-tools span { border-radius: 999px; background: var(--bg-surface-2); color: #4B5563; padding: 2px 7px; font-size: 10.5px; }
+.gn-tools span { border-radius: 999px; background: var(--bg-surface-2); color: var(--text-2); padding: 2px 7px; font-size: 10.5px; }
 /* Runtime nodes (plan/UI_PLAN §5.2): visually distinct from agent nodes. */
 .graph-node.runtime { background: #1F2330; border-color: #2C313D; }
 .graph-node.runtime .gn-bar { background: var(--role-runtime); }
@@ -6015,10 +6208,10 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 /* Inspector permission pills + tools (§5.2). */
 .ins-perms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .ins-perm { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 9px; font-size: 11px; border: 1px solid var(--border); }
-.ins-perm.allow { background: #E8F7EF; color: var(--ok); border-color: rgba(16,185,129,.3); }
+.ins-perm.allow { background: var(--ok-soft); color: var(--ok); border-color: rgba(16,185,129,.3); }
 .ins-perm.deny { background: var(--bg-surface-2); color: var(--text-2); border-color: var(--border); text-decoration: line-through; }
 .ins-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.ins-tools span { border-radius: 999px; background: var(--bg-surface-2); color: #4B5563; padding: 2px 8px; font-size: 11px; }
+.ins-tools span { border-radius: 999px; background: var(--bg-surface-2); color: var(--text-2); padding: 2px 8px; font-size: 11px; }
 .ins-io { display: grid; gap: 4px; margin-top: 6px; }
 .ins-io .io-row { display: flex; gap: 6px; font-size: 12px; color: var(--text-1); }
 .ins-io .io-row .io-label { color: var(--text-2); min-width: 64px; }
@@ -6043,7 +6236,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .rail-task > span { color: var(--text-2); font-size: 12px; }
 .rail-task strong { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-task small { color: var(--text-2); font-size: 11.5px; }
-.rail-task.active { border-color: #BFDBFE; background: var(--accent-soft); }
+.rail-task.active { border-color: var(--border-active-soft); background: var(--surface-selected); }
 /* Overview + conversation rail sections (plan/UI_PLAN §3/§4.1/§6). */
 .rail-section { margin-bottom: 16px; }
 .rail-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
@@ -6061,13 +6254,84 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .rail-link { display: block; margin-top: 4px; color: var(--brand); font-size: 12px; cursor: pointer; }
 .rail-link:hover { text-decoration: underline; }
 .rail-empty { color: var(--text-2); font-size: 12.5px; padding: 4px 8px; }
+.rail-add { display: flex; gap: 6px; margin-bottom: 8px; }
+.rail-add input[type="text"], .rail-add input[type="datetime-local"] {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--bg-surface);
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+.rail-add button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.rail-add button:hover { background: var(--surface-hover); border-color: var(--border-hover); }
+.rail-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 7px 8px; border-radius: 8px; font-size: 12.5px; color: var(--text-1); }
+.rail-item:hover { background: var(--surface-hover); }
+.rail-item.done { opacity: .62; }
+.rail-item.done .ri-label { text-decoration: line-through; color: var(--text-2); }
+.rail-item .ri-check { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--brand); flex: 0 0 16px; }
+.rail-item .ri-body { min-width: 0; display: grid; gap: 2px; }
+.rail-item .ri-label { overflow: hidden; text-overflow: ellipsis; }
+.rail-item .ri-meta { font-size: 11px; color: var(--text-2); }
+.rail-item .ri-meta.due-soon { color: var(--brand); }
+.rail-item .ri-meta.fired { color: var(--ok); }
+.rail-item .ri-del { width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); opacity: 0; }
+.rail-item:hover .ri-del { opacity: 1; }
+.rail-item .ri-del:hover { background: var(--bg-surface-2); color: var(--err); }
+.rail-item.due-alert { background: #fef2f2; border: 1px solid rgba(220, 38, 38, .22); }
+.rail-item.due-alert .ri-label, .rail-item.due-alert .ri-meta { color: var(--err); font-weight: 600; }
+.rail-completed-section { margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.rail-done-fold { margin-top: 0; padding-top: 0; border-top: 0; }
+.rail-done-fold > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-2);
+  padding: 4px 8px;
+  border-radius: 8px;
+  user-select: none;
+}
+.rail-done-fold > summary::-webkit-details-marker { display: none; }
+.rail-done-fold > summary:hover { background: var(--surface-hover); color: var(--text-1); }
+.rail-done-fold[open] > summary { margin-bottom: 4px; }
+.rail-done-fold .rail-done-list { display: grid; gap: 2px; }
+.rail-hint { margin: 0 0 10px; font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
+.rail-toast {
+  position: fixed;
+  right: 24px;
+  top: 72px;
+  z-index: 60;
+  max-width: 320px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card-hover);
+  font-size: 13px;
+  color: var(--text-1);
+}
+.rail-toast.hidden { display: none; }
+.rail-toast strong { display: block; margin-bottom: 4px; font-size: 12px; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
 .rail-agent { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); margin-bottom: 7px; }
 .rail-agent .ra-badge { width: 24px; height: 24px; border-radius: 7px; display: inline-grid; place-items: center; color: var(--fg-on-accent); flex: 0 0 24px; }
 .rail-agent .ra-badge .ui-icon { width: 13px; height: 13px; }
 .rail-agent .ra-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text-1); }
 .rail-agent .ra-state { font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 2px 8px; background: var(--bg-surface-2); color: var(--text-2); }
 .rail-agent .ra-state.live { background: var(--accent-soft); color: var(--brand); }
-.rail-agent .ra-state.done { background: #E8F7EF; color: var(--ok); }
+.rail-agent .ra-state.done { background: var(--ok-soft); color: var(--ok); }
 .rail-approval { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid rgba(245,158,11,.35); border-radius: 10px; background: #FFFBEB; margin-bottom: 7px; }
 .rail-approval .ra-icon { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--warn); color: var(--fg-on-accent); flex: 0 0 22px; font-size: 11px; }
 .rail-approval .ra-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-1); }
@@ -6131,13 +6395,13 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   font-size: 12.5px;
   background: var(--bg-surface);
 }
-.workspace-path-input:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.workspace-path-input:focus { border-color: var(--border-active); box-shadow: var(--shadow-focus); }
 .workspace-path-row .secondary-btn { flex: 0 0 auto; min-height: 38px; padding: 0 14px; white-space: nowrap; }
 .dialog h2 { margin: 0 0 8px; font-size: 18px; }
 .dialog-field { display: grid; gap: 6px; margin: 14px 0 8px; color: var(--text-2); font-size: 13px; }
 .dialog-field input { min-height: 38px; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; outline: none; }
 .workspace-choice { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; padding: 9px 10px; cursor: pointer; font: inherit; }
-.workspace-choice:hover, .workspace-choice.active { background: #f1f1ef; border-color: #e1e1df; }
+.workspace-choice:hover, .workspace-choice.active { background: var(--surface-hover); border-color: var(--border-hover); }
 .workspace-choice strong, .workspace-choice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-choice small { color: #73777d; }
 .workspace-choice .workspace-count { color: #7b8086; font-size: 12px; white-space: nowrap; }
@@ -6271,14 +6535,14 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .runtime-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .runtime-status { min-height: 22px; display: inline-flex; align-items: center; border-radius: 999px; padding: 0 9px; font-size: 11px; font-weight: 700; }
 .runtime-status.ready { background: #e8f7ef; color: #18794e; }
-.runtime-status.detected { background: #eaf2ff; color: var(--brand); }
+.runtime-status.detected { background: var(--brand-soft); color: var(--brand); }
 .runtime-status.configured { background: #fff7e6; color: #8a5a12; }
 .runtime-status.missing { background: var(--bg-surface-2); color: #6f7479; }
 .runtime-hint { font-size: 12px; }
 .settings-savebar { position: fixed; right: min(11vw, 160px); bottom: 24px; display: flex; align-items: center; gap: 10px; background: var(--bg-surface); border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
 .muted { color: var(--text-2); font-size: 13px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(75,147,247,0); } 100% { box-shadow: 0 0 0 0 rgba(75,147,247,0); } }
+@keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(107,130,153,0); } 100% { box-shadow: 0 0 0 0 rgba(107,130,153,0); } }
 @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 @keyframes slideIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 body[data-density="compact"] .message { margin-bottom: 10px; line-height: 1.42; }
@@ -6394,6 +6658,8 @@ const _ICONS = {
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
   team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0Z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
 };
@@ -6456,6 +6722,9 @@ const state = {
   // Within the Project region: 'overview' (workspace card wall) or
   // 'conversation' (the chat workbench). Overview is the entry landing.
   projectView: 'overview',
+  overviewViewMode: 'grid',
+  overviewStatusFilter: 'all',
+  overviewSort: 'recent',
   // Detail view: the conversation selected for preview (not yet loaded).
   // Clicking a card selects it and shows a preview in the right rail; the
   // user then clicks "Continue chat" to actually resume the session (which
@@ -7802,7 +8071,10 @@ function applyLoadedState() {
   el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
   renderProjects();
   renderOverview();
+  bindOverviewToolbar();
   renderContextRail();
+  drainRailNotifications();
+  if (state.projectView === 'overview') startRailReminderPoll();
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
@@ -8240,7 +8512,7 @@ async function createNewSession() {
   switchProjectView('conversation');
 }
 // --- Project overview (plan/UI_PLAN §4.1): workspace card wall. ---
-const PROJECT_ACCENTS = ['#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EC4899', '#0EA5E9'];
+const PROJECT_ACCENTS = ['#52525b', '#8250df', '#1a7f37', '#bf8700', '#cf222e', '#71717a'];
 function projectAccent(name) {
   const text = String(name || '');
   let h = 0;
@@ -8253,6 +8525,296 @@ function compactPath(value) {
   if (parts.length <= 3) return raw;
   const root = raw.match(/^[A-Za-z]:/) ? raw.slice(0, 2) : parts[0];
   return root + '\\\\...\\\\' + parts.slice(-2).join('\\\\');
+}
+function projectCardPath(value) {
+  const raw = String(value || '');
+  const sep = raw.includes('\\\\') ? '\\\\' : '/';
+  const parts = raw.split(/[\\\\/]/).filter(Boolean);
+  if (parts.length <= 2) return raw;
+  const tail = parts.slice(-2).join(sep);
+  if (parts.length === 2) return tail;
+  const root = raw.match(/^[A-Za-z]:/) ? raw.slice(0, 2) : parts[0];
+  return root + sep + '...' + sep + tail;
+}
+const projectNoteSaveTimers = {};
+async function saveProjectNote(projectPath, content) {
+  const key = String(projectPath || '');
+  if (projectNoteSaveTimers[key]) {
+    clearTimeout(projectNoteSaveTimers[key]);
+    delete projectNoteSaveTimers[key];
+  }
+  try {
+    const res = await api('/api/project-note', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: key, content }),
+    });
+    if (res.ok && state.snapshot?.projects) {
+      const project = state.snapshot.projects.find(entry => entry.path === key);
+      if (project) project.note = content;
+    }
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+function buildProjectNoteRow(project, variant) {
+  const compact = variant === 'compact' || variant === 'table';
+  const wrap = document.createElement('div');
+  wrap.className = 'pc-note' + (variant === 'compact' ? ' pc-note-compact' : '') + (variant === 'table' ? ' pc-note-table' : '');
+  const head = document.createElement('div');
+  head.className = 'pc-note-head';
+  const label = document.createElement('span');
+  label.className = 'pc-note-label';
+  label.textContent = 'Project note';
+  const actionBtn = document.createElement('button');
+  actionBtn.type = 'button';
+  actionBtn.className = 'pc-note-action icon-btn';
+  actionBtn.title = 'Edit note';
+  actionBtn.setAttribute('aria-label', 'Edit note');
+  actionBtn.innerHTML = guiIcon('edit');
+  const view = document.createElement('div');
+  view.className = 'pc-note-view';
+  const textarea = document.createElement('textarea');
+  textarea.className = 'pc-note-input hidden';
+  textarea.placeholder = 'Brief description or notes for this project…';
+  textarea.rows = variant === 'table' ? 2 : 2;
+  let editing = false;
+  function renderView() {
+    const text = (project.note || '').trim();
+    view.textContent = text || (compact ? 'Add a note…' : 'No note yet');
+    view.classList.toggle('empty', !text);
+  }
+  function setEditing(on) {
+    editing = on;
+    wrap.classList.toggle('editing', on);
+    if (on) {
+      textarea.value = project.note || '';
+      view.classList.add('hidden');
+      textarea.classList.remove('hidden');
+      actionBtn.innerHTML = guiIcon('check');
+      actionBtn.title = 'Save note';
+      actionBtn.setAttribute('aria-label', 'Save note');
+      actionBtn.classList.add('save');
+      textarea.focus();
+      return;
+    }
+    textarea.classList.add('hidden');
+    view.classList.remove('hidden');
+    actionBtn.innerHTML = guiIcon('edit');
+    actionBtn.title = 'Edit note';
+    actionBtn.setAttribute('aria-label', 'Edit note');
+    actionBtn.classList.remove('save');
+    renderView();
+  }
+  renderView();
+  actionBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!editing) {
+      setEditing(true);
+      return;
+    }
+    const content = textarea.value;
+    actionBtn.disabled = true;
+    void saveProjectNote(project.path, content).then((ok) => {
+      actionBtn.disabled = false;
+      if (ok) {
+        project.note = content;
+        setEditing(false);
+      }
+    });
+  });
+  textarea.addEventListener('click', (e) => e.stopPropagation());
+  textarea.addEventListener('mousedown', (e) => e.stopPropagation());
+  textarea.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') setEditing(false);
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') actionBtn.click();
+  });
+  head.addEventListener('click', (e) => e.stopPropagation());
+  view.addEventListener('click', (e) => e.stopPropagation());
+  wrap.addEventListener('click', (e) => e.stopPropagation());
+  if (compact) head.append(view, actionBtn);
+  else head.append(label, actionBtn);
+  wrap.append(head, textarea);
+  return wrap;
+}
+function overviewProjectsFiltered() {
+  const query = (el('overviewSearch')?.value || '').trim().toLowerCase();
+  let projects = [...(state.snapshot?.projects || [])];
+  if (query) {
+    projects = projects.filter((p) =>
+      (p.name || '').toLowerCase().includes(query)
+      || (p.path || '').toLowerCase().includes(query)
+      || (p.note || '').toLowerCase().includes(query));
+  }
+  if (state.overviewStatusFilter === 'active') projects = projects.filter((p) => p.active);
+  if (state.overviewSort === 'name') {
+    projects.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+  } else {
+    projects.sort((a, b) => {
+      const ta = a.lastUsedAt ? Date.parse(a.lastUsedAt) : 0;
+      const tb = b.lastUsedAt ? Date.parse(b.lastUsedAt) : 0;
+      if (tb !== ta) return tb - ta;
+      return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+    });
+  }
+  return projects;
+}
+function syncOverviewToolbar() {
+  const countEl = el('overviewProjectCount');
+  if (countEl) countEl.textContent = String(overviewProjectsFiltered().length);
+  const statusSel = el('overviewStatusFilter');
+  if (statusSel) statusSel.value = state.overviewStatusFilter || 'all';
+  const sortSel = el('overviewSort');
+  if (sortSel) sortSel.value = state.overviewSort || 'recent';
+  const gridBtn = el('overviewViewGridBtn');
+  const tableBtn = el('overviewViewTableBtn');
+  if (gridBtn) gridBtn.classList.toggle('active', state.overviewViewMode === 'grid');
+  if (tableBtn) tableBtn.classList.toggle('active', state.overviewViewMode === 'table');
+}
+function bindOverviewToolbar() {
+  const search = el('overviewSearch');
+  if (search && !search.dataset.bound) {
+    search.dataset.bound = '1';
+    search.addEventListener('input', () => renderOverview());
+  }
+  const statusSel = el('overviewStatusFilter');
+  if (statusSel && !statusSel.dataset.bound) {
+    statusSel.dataset.bound = '1';
+    statusSel.addEventListener('change', () => {
+      state.overviewStatusFilter = statusSel.value === 'active' ? 'active' : 'all';
+      renderOverview();
+    });
+  }
+  const sortSel = el('overviewSort');
+  if (sortSel && !sortSel.dataset.bound) {
+    sortSel.dataset.bound = '1';
+    sortSel.addEventListener('change', () => {
+      state.overviewSort = sortSel.value === 'name' ? 'name' : 'recent';
+      renderOverview();
+    });
+  }
+  const viewToggle = el('overviewViewToggle');
+  if (viewToggle && !viewToggle.dataset.bound) {
+    viewToggle.dataset.bound = '1';
+    viewToggle.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-view]');
+      if (!btn) return;
+      e.preventDefault();
+      state.overviewViewMode = btn.getAttribute('data-view') === 'table' ? 'table' : 'grid';
+      renderOverview();
+    });
+  }
+}
+function buildProjectStatusBadge(p, running) {
+  const meta = document.createElement('div');
+  meta.className = 'pc-meta';
+  const badge = document.createElement('span');
+  badge.className = 'pc-badge' + (p.active ? ' active' : '');
+  badge.textContent = p.active ? 'Active' : 'Idle';
+  meta.appendChild(badge);
+  if (running) {
+    const runBadge = document.createElement('span');
+    runBadge.className = 'pc-badge running';
+    runBadge.textContent = running + ' running';
+    meta.appendChild(runBadge);
+  }
+  const activity = document.createElement('span');
+  activity.className = 'pc-activity-line';
+  const sessions = (p.sessionCount || 0) + ' session' + ((p.sessionCount || 0) === 1 ? '' : 's');
+  const lastUsed = p.lastUsedAt ? formatRelativeTime(p.lastUsedAt) : 'No activity';
+  activity.textContent = sessions + ' · ' + lastUsed;
+  meta.appendChild(activity);
+  return meta;
+}
+function buildProjectCard(p, runs) {
+  const accent = projectAccent(p.name);
+  const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
+  const card = document.createElement('article');
+  card.className = 'proj-card';
+  if (p.active) card.classList.add('active');
+  const title = document.createElement('div');
+  title.className = 'pc-title';
+  title.textContent = p.name;
+  const pathEl = document.createElement('div');
+  pathEl.className = 'pc-path';
+  pathEl.textContent = projectCardPath(p.path);
+  pathEl.title = p.path || '';
+  const titles = document.createElement('div');
+  titles.className = 'pc-titles';
+  titles.append(title, pathEl);
+  const icon = document.createElement('span');
+  icon.className = 'pc-icon';
+  icon.style.setProperty('--pc-accent', accent);
+  icon.innerHTML = guiIcon('folder');
+  const head = document.createElement('div');
+  head.className = 'pc-head';
+  head.append(icon, titles);
+  if (p.active) {
+    const badge = document.createElement('span');
+    badge.className = 'pc-active-badge';
+    badge.textContent = 'Current';
+    head.appendChild(badge);
+  }
+  card.append(head, buildProjectStatusBadge(p, running), buildProjectNoteRow(p, 'compact'));
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('.pc-note')) return;
+    void openProjectFromOverview(p);
+  });
+  return card;
+}
+function renderOverviewTable(body, projects, runs) {
+  const wrap = document.createElement('div');
+  wrap.className = 'overview-table-wrap';
+  const header = document.createElement('div');
+  header.className = 'overview-table-row overview-table-head';
+  ['Name', 'Path', 'Status', 'Sessions', 'Last used', 'Note'].forEach((label) => {
+    const cell = document.createElement('span');
+    cell.textContent = label;
+    header.appendChild(cell);
+  });
+  wrap.appendChild(header);
+  for (const p of projects) {
+    const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
+    const row = document.createElement('div');
+    row.className = 'overview-table-row' + (p.active ? ' active' : '');
+    const nameCell = document.createElement('div');
+    nameCell.className = 'overview-table-name';
+    nameCell.innerHTML = guiIcon('folder') + '<span></span>';
+    nameCell.querySelector('span').textContent = p.name || 'workspace';
+    const pathCell = document.createElement('div');
+    pathCell.className = 'overview-table-path';
+    pathCell.textContent = projectCardPath(p.path);
+    pathCell.title = p.path || '';
+    const statusCell = document.createElement('div');
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'pc-badge' + (p.active ? ' active' : '');
+    statusBadge.textContent = p.active ? 'Active' : 'Idle';
+    statusCell.appendChild(statusBadge);
+    if (running) {
+      const runBadge = document.createElement('span');
+      runBadge.className = 'pc-badge running';
+      runBadge.style.marginLeft = '6px';
+      runBadge.textContent = running + ' running';
+      statusCell.appendChild(runBadge);
+    }
+    const sessionsCell = document.createElement('div');
+    sessionsCell.className = 'overview-table-sessions';
+    sessionsCell.textContent = String(p.sessionCount || 0);
+    const lastCell = document.createElement('div');
+    lastCell.className = 'overview-table-last';
+    lastCell.textContent = p.lastUsedAt ? formatRelativeTime(p.lastUsedAt) : '—';
+    const noteCell = document.createElement('div');
+    noteCell.appendChild(buildProjectNoteRow(p, 'table'));
+    row.append(nameCell, pathCell, statusCell, sessionsCell, lastCell, noteCell);
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.pc-note')) return;
+      void openProjectFromOverview(p);
+    });
+    wrap.appendChild(row);
+  }
+  body.appendChild(wrap);
 }
 function planItemText(item) {
   if (typeof item === 'string') return item;
@@ -8349,6 +8911,8 @@ function switchProjectView(view) {
   }
   renderConversationBreadcrumb();
   renderContextRail();
+  stopRailReminderPoll();
+  if (view === 'overview') startRailReminderPoll();
   if (view === 'conversation' && state.running) startRailPolling();
   else stopRailPolling();
 }
@@ -8356,109 +8920,22 @@ function renderOverview() {
   const body = el('overviewBody');
   if (!body) return;
   body.textContent = '';
-  const query = (el('overviewSearch')?.value || '').trim().toLowerCase();
-  const projects = (state.snapshot?.projects || []).filter((p) =>
-    !query || (p.name || '').toLowerCase().includes(query) || (p.path || '').toLowerCase().includes(query));
+  syncOverviewToolbar();
+  const projects = overviewProjectsFiltered();
   const runs = state.snapshot?.runs || [];
-  for (const p of projects) {
-    const accent = projectAccent(p.name);
-    const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
-    const percent = projectProgress(p, running);
-    const planRows = projectPlanRows(p);
-    const card = document.createElement('article');
-    card.className = 'proj-card';
-    if (p.active) card.classList.add('active');
-    const title = document.createElement('div');
-    title.className = 'pc-title';
-    title.textContent = p.name;
-    const pathEl = document.createElement('div');
-    pathEl.className = 'pc-path';
-    pathEl.textContent = compactPath(p.path);
-    pathEl.title = p.path || '';
-    const titles = document.createElement('div');
-    titles.className = 'pc-titles';
-    titles.append(title, pathEl);
-    const icon = document.createElement('span');
-    icon.className = 'pc-icon';
-    icon.style.background = accent;
-    icon.innerHTML = guiIcon('folder');
-    const head = document.createElement('div');
-    head.className = 'pc-head';
-    head.append(icon, titles);
-    const status = document.createElement('span');
-    status.className = 'pc-status';
-    const dot = document.createElement('span');
-    dot.className = 'dot';
-    dot.style.background = p.active ? 'var(--ok)' : 'var(--text-2)';
-    const statusText = document.createElement('span');
-    statusText.textContent = p.active ? 'Active' : 'Idle';
-    status.append(dot, statusText);
-    const pct = document.createElement('span');
-    pct.className = 'pc-percent';
-    pct.textContent = percent + '% complete';
-    const progress = document.createElement('span');
-    progress.className = 'pc-progress';
-    appendProgressBar(progress, percent, accent);
-    const meta = document.createElement('div');
-    meta.className = 'pc-meta';
-    meta.append(status, pct, progress);
-    if (running) {
-      const r = document.createElement('span');
-      r.className = 'pc-status';
-      r.style.color = 'var(--accent)';
-      const rd = document.createElement('span');
-      rd.className = 'dot';
-      rd.style.background = 'var(--accent)';
-      r.append(rd, document.createTextNode(running + ' running'));
-      meta.append(r);
-    }
-    const info = document.createElement('div');
-    info.className = 'pc-info-grid';
-    const agents = document.createElement('div');
-    agents.className = 'pc-info-cell';
-    const activeTeam = state.snapshot?.activeTeamName;
-    const agentLabels = activeTeam ? ['Planner', 'Coder', 'Reviewer', 'Test'] : ['Main agent'];
-    agents.append(labelText('Active agents'), avatarStack(agentLabels));
-    const milestone = document.createElement('div');
-    milestone.className = 'pc-info-cell';
-    milestone.append(labelText('Next milestone'), strongText(planRows[0]?.title || 'Open conversation'), smallText(planRows[0]?.status || 'Ready'));
-    const recent = document.createElement('div');
-    recent.className = 'pc-info-cell';
-    recent.append(labelText('Recent activity'), strongText((p.sessionCount || 0) + ' conversations'), smallText(p.active ? 'Current workspace' : 'Saved workspace'));
-    info.append(agents, milestone, recent);
-    const preview = document.createElement('div');
-    preview.className = 'plan-preview';
-    const previewHead = document.createElement('div');
-    previewHead.className = 'plan-preview-title';
-    previewHead.innerHTML = guiIcon('memory') + '<span>Plan preview</span>';
-    preview.appendChild(previewHead);
-    for (const row of planRows) {
-      const line = document.createElement('div');
-      line.className = 'plan-preview-row';
-      const when = document.createElement('span');
-      when.className = 'ppr-when';
-      when.textContent = row.when;
-      const name = document.createElement('span');
-      name.className = 'ppr-title';
-      name.textContent = row.title;
-      const st = document.createElement('span');
-      st.className = 'ppr-status';
-      st.textContent = row.status;
-      line.append(when, name, st);
-      preview.appendChild(line);
-    }
-    const accentBar = document.createElement('span');
-    accentBar.className = 'pc-accent';
-    accentBar.style.background = accent;
-    card.append(accentBar, head, meta, info, preview);
-    card.addEventListener('click', () => { void openProjectFromOverview(p); });
-    body.appendChild(card);
+  body.classList.toggle('overview-table', state.overviewViewMode === 'table');
+  body.classList.toggle('overview-grid', state.overviewViewMode !== 'table');
+  if (state.overviewViewMode === 'table') renderOverviewTable(body, projects, runs);
+  else {
+    for (const p of projects) body.appendChild(buildProjectCard(p, runs));
   }
   if (projects.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'region-empty';
     if (state.loadError) empty.textContent = 'Could not load projects: ' + state.loadError;
-    else empty.textContent = query ? 'No projects match.' : 'No projects yet — click + New workspace to add one.';
+    else if ((el('overviewSearch')?.value || '').trim()) empty.textContent = 'No projects match.';
+    else if (state.overviewStatusFilter === 'active') empty.textContent = 'No active projects.';
+    else empty.textContent = 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
   renderContextRail();
@@ -8497,7 +8974,7 @@ function statusDotColor(status) {
   if (s.includes('done') || s.includes('complete')) return 'var(--ok)';
   if (s.includes('error') || s.includes('fail')) return 'var(--err)';
   if (s.includes('review') || s.includes('plan')) return 'var(--warn)';
-  if (s.includes('run') || s.includes('active') || s.includes('progress')) return 'var(--accent)';
+  if (s.includes('run') || s.includes('active') || s.includes('progress')) return 'var(--brand)';
   return 'var(--text-2)';
 }
 // --- Project detail (plan/UI_PLAN §4.3): conversation list for a workspace. ---
@@ -9227,18 +9704,282 @@ function renderConversationBreadcrumb() {
     setConversationStatus(null);
   }
 }
-// --- Right context rail (plan/UI_PLAN §3/§4.1/§6). ---
-// Overview: Today / Upcoming plans / Blockers (§4.1).
-// Conversation: Run state / Active agents / Tasks / Artifacts / Approvals (§6).
-// Detail has its own inline rail; Team/Automation/Plugins keep their layout.
+// --- Right context rail: user todos/reminders on project overview only. ---
 function renderContextRail() {
   const rail = el('contextRail');
   if (!rail) return;
   rail.textContent = '';
-  if (state.activeRegion !== 'project') { rail.classList.add('hidden'); return; }
-  if (state.projectView === 'overview') renderOverviewRail(rail);
-  else if (state.projectView === 'conversation') renderConversationRail(rail);
-  else rail.classList.add('hidden');
+  if (state.activeRegion !== 'project' || state.projectView !== 'overview') {
+    rail.classList.add('hidden');
+    return;
+  }
+  renderUserContextRail(rail);
+}
+function railItemsFromSnapshot() {
+  return Array.isArray(state.snapshot?.railItems) ? state.snapshot.railItems : [];
+}
+function formatRailDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function toLocalDateTimeInputValue(iso) {
+  const d = new Date(iso || Date.now());
+  if (!Number.isFinite(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+async function mutateRailItems(mutator) {
+  const items = JSON.parse(JSON.stringify(railItemsFromSnapshot()));
+  mutator(items);
+  try {
+    const res = await api('/api/rail-items', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (state.snapshot) state.snapshot.railItems = data.items || items;
+    renderContextRail();
+  } catch { /* transient */ }
+}
+function buildRailAddRow(placeholder, onAdd, opts) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rail-add';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = placeholder;
+  input.autocomplete = 'off';
+  let whenInput = null;
+  if (opts?.withSchedule) {
+    whenInput = document.createElement('input');
+    whenInput.type = 'datetime-local';
+    whenInput.title = 'Reminder time';
+    const defaultAt = new Date(Date.now() + 60 * 60 * 1000);
+    whenInput.value = toLocalDateTimeInputValue(defaultAt.toISOString());
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = opts?.buttonLabel || 'Add';
+  const submit = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    const remindAt = whenInput?.value ? new Date(whenInput.value).toISOString() : null;
+    onAdd(text, remindAt);
+    input.value = '';
+    if (whenInput) {
+      const next = new Date(Date.now() + 60 * 60 * 1000);
+      whenInput.value = toLocalDateTimeInputValue(next.toISOString());
+    }
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+  });
+  wrap.append(input);
+  if (whenInput) wrap.append(whenInput);
+  wrap.append(btn);
+  return wrap;
+}
+function buildRailTodoRow(item) {
+  const row = document.createElement('div');
+  row.className = 'rail-item' + (item.done ? ' done' : '');
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.className = 'ri-check';
+  chk.checked = Boolean(item.done);
+  chk.addEventListener('change', () => {
+    void mutateRailItems((list) => {
+      const target = list.find(entry => entry.id === item.id);
+      if (!target) return;
+      target.done = chk.checked;
+      target.updatedAt = new Date().toISOString();
+    });
+  });
+  const body = document.createElement('div');
+  body.className = 'ri-body';
+  const label = document.createElement('div');
+  label.className = 'ri-label';
+  label.textContent = item.text;
+  body.appendChild(label);
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'ri-del';
+  del.textContent = '×';
+  del.title = 'Remove';
+  del.addEventListener('click', () => {
+    void mutateRailItems((list) => {
+      const idx = list.findIndex(entry => entry.id === item.id);
+      if (idx >= 0) list.splice(idx, 1);
+    });
+  });
+  row.append(chk, body, del);
+  return row;
+}
+function reminderIsDue(item) {
+  if (item.done) return false;
+  if (item.firedAt) return true;
+  const due = Date.parse(item.remindAt || '');
+  return Number.isFinite(due) && due <= Date.now();
+}
+function buildRailReminderRow(item) {
+  const due = reminderIsDue(item);
+  const row = document.createElement('div');
+  row.className = 'rail-item' + (item.done ? ' done' : '') + (due ? ' due-alert' : '');
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.className = 'ri-check';
+  chk.checked = Boolean(item.done);
+  chk.addEventListener('change', () => {
+    void mutateRailItems((list) => {
+      const target = list.find(entry => entry.id === item.id);
+      if (!target) return;
+      target.done = chk.checked;
+      target.updatedAt = new Date().toISOString();
+    });
+  });
+  const body = document.createElement('div');
+  body.className = 'ri-body';
+  const label = document.createElement('div');
+  label.className = 'ri-label';
+  label.textContent = item.text;
+  const meta = document.createElement('div');
+  meta.className = 'ri-meta' + (due ? ' due-alert' : '');
+  if (item.done && item.firedAt) meta.textContent = 'Completed · ' + formatRailDateTime(item.firedAt);
+  else if (item.done) meta.textContent = 'Completed';
+  else if (item.firedAt) meta.textContent = 'Due · ' + formatRailDateTime(item.remindAt);
+  else meta.textContent = 'At ' + formatRailDateTime(item.remindAt);
+  body.append(label, meta);
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'ri-del';
+  del.textContent = '×';
+  del.title = 'Remove';
+  del.addEventListener('click', () => {
+    void mutateRailItems((list) => {
+      const idx = list.findIndex(entry => entry.id === item.id);
+      if (idx >= 0) list.splice(idx, 1);
+    });
+  });
+  row.append(chk, body, del);
+  return row;
+}
+function renderUserContextRail(rail) {
+  rail.classList.remove('hidden');
+  const hint = document.createElement('p');
+  hint.className = 'rail-hint';
+  hint.textContent = 'Personal todos and timed reminders for the current workspace. Stored locally in ~/.actoviq/projects/.';
+  rail.appendChild(hint);
+  const items = railItemsFromSnapshot();
+  const todos = items.filter(item => item.kind === 'todo');
+  const reminders = items.filter(item => item.kind === 'reminder');
+  const openTodos = todos.filter(item => !item.done);
+  const doneTodos = todos.filter(item => item.done);
+  const openReminders = reminders.filter(item => !item.done);
+  const doneReminders = reminders.filter(item => item.done);
+  const todoSection = railSection('Todo list', openTodos.length || null);
+  todoSection.appendChild(buildRailAddRow('Add a todo…', (text) => {
+    void mutateRailItems((list) => {
+      list.push({
+        id: 'rail-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        kind: 'todo',
+        text,
+        done: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  }));
+  if (openTodos.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = todos.length ? 'No open todos.' : 'No todos yet.';
+    todoSection.appendChild(empty);
+  } else {
+    const openList = document.createElement('div');
+    openList.className = 'rail-open-list';
+    for (const item of openTodos) openList.appendChild(buildRailTodoRow(item));
+    todoSection.appendChild(openList);
+  }
+  rail.appendChild(todoSection);
+  const reminderSection = railSection('Reminders', openReminders.length || null);
+  reminderSection.appendChild(buildRailAddRow('Reminder…', (text, remindAt) => {
+    if (!remindAt) return;
+    void requestRailNotificationPermission();
+    void mutateRailItems((list) => {
+      list.push({
+        id: 'rail-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        kind: 'reminder',
+        text,
+        remindAt,
+        firedAt: null,
+        done: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  }, { withSchedule: true, buttonLabel: 'Add reminder' }));
+  if (openReminders.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'rail-empty';
+    empty.textContent = reminders.length ? 'No open reminders.' : 'No reminders yet.';
+    reminderSection.appendChild(empty);
+  } else {
+    const openList = document.createElement('div');
+    openList.className = 'rail-open-list';
+    for (const item of openReminders) openList.appendChild(buildRailReminderRow(item));
+    reminderSection.appendChild(openList);
+  }
+  rail.appendChild(reminderSection);
+  const completedCount = doneTodos.length + doneReminders.length;
+  if (completedCount > 0) {
+    const completedWrap = document.createElement('div');
+    completedWrap.className = 'rail-completed-section';
+    const fold = document.createElement('details');
+    fold.className = 'rail-done-fold';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Completed (' + completedCount + ')';
+    fold.appendChild(summary);
+    const doneList = document.createElement('div');
+    doneList.className = 'rail-done-list';
+    for (const item of doneTodos) doneList.appendChild(buildRailTodoRow(item));
+    for (const item of doneReminders) doneList.appendChild(buildRailReminderRow(item));
+    fold.appendChild(doneList);
+    completedWrap.appendChild(fold);
+    rail.appendChild(completedWrap);
+  }
+}
+async function requestRailNotificationPermission() {
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission === 'granted' || Notification.permission === 'denied') return;
+  try { await Notification.requestPermission(); } catch { /* ignore */ }
+}
+function showRailNotification(note) {
+  const text = note?.text || 'Reminder';
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try { new Notification('Actoviq reminder', { body: text }); } catch { /* ignore */ }
+  }
+  const toast = el('railToast');
+  if (!toast) return;
+  toast.innerHTML = '<strong>Reminder</strong>' + escapeHtml(text);
+  toast.classList.remove('hidden');
+  clearTimeout(showRailNotification._timer);
+  showRailNotification._timer = setTimeout(() => toast.classList.add('hidden'), 8000);
+}
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+function drainRailNotifications() {
+  const notes = Array.isArray(state.snapshot?.railNotifications) ? state.snapshot.railNotifications : [];
+  if (!notes.length) return;
+  for (const note of notes) showRailNotification(note);
+  if (state.snapshot) state.snapshot.railNotifications = [];
 }
 function railSection(title, count, countKind) {
   const section = document.createElement('div');
@@ -9272,55 +10013,6 @@ function railRow(label, meta, dotClass) {
     row.appendChild(m);
   }
   return row;
-}
-function renderOverviewRail(rail) {
-  rail.classList.remove('hidden');
-  const plan = state.snapshot?.projectPlan || { milestones: [], today: [], upcoming: [] };
-  const runs = state.snapshot?.runs || [];
-  // Today
-  const todayItems = (plan.today || []).map(item => ({ text: planItemText(item), done: item?.done }));
-  const todaySection = railSection('Today', todayItems.length || null);
-  if (todayItems.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'rail-empty';
-    empty.textContent = 'No items scheduled.';
-    todaySection.appendChild(empty);
-  } else {
-    for (const item of todayItems) todaySection.appendChild(railRow(item.text, item.done ? 'Done' : 'In progress', item.done ? 'ok' : 'accent'));
-  }
-  rail.appendChild(todaySection);
-  // Upcoming plans
-  const upcomingCount = (plan.upcoming || []).length;
-  const milestoneCount = (plan.milestones || []).length;
-  const upcomingSection = railSection('Upcoming plans', upcomingCount + milestoneCount || null);
-  const dueByStatus = { week: 0, next: 0 };
-  for (const m of plan.milestones || []) {
-    const st = (m.status || '').toLowerCase();
-    if (st.includes('next') || st.includes('soon')) dueByStatus.week++;
-    else if (st.includes('plan')) dueByStatus.next++;
-  }
-  upcomingSection.appendChild(railRow('Due this week', String(dueByStatus.week || upcomingCount), 'warn'));
-  upcomingSection.appendChild(railRow('Due next week', String(dueByStatus.next || milestoneCount), ''));
-  rail.appendChild(upcomingSection);
-  // Blockers (derive from error runs + blocked milestones)
-  const blockers = [];
-  for (const r of runs) {
-    if (r.status === 'error' || r.status === 'blocked') blockers.push({ label: r.label || r.kind || 'Run', meta: r.currentTool || 'Error' });
-  }
-  for (const m of plan.milestones || []) {
-    const st = (m.status || '').toLowerCase();
-    if (st.includes('block') || st.includes('wait') || st.includes('error')) blockers.push({ label: m.title, meta: m.status });
-  }
-  const blockerSection = railSection('Blockers', blockers.length || null, blockers.length ? 'err' : null);
-  if (blockers.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'rail-empty';
-    empty.textContent = 'No blockers.';
-    blockerSection.appendChild(empty);
-  } else {
-    for (const b of blockers) blockerSection.appendChild(railRow(b.label, b.meta, 'err'));
-  }
-  rail.appendChild(blockerSection);
 }
 function renderConversationRail(rail) {
   rail.classList.remove('hidden');
@@ -9518,6 +10210,28 @@ async function refreshRail() {
       renderContextRail();
     }
   } catch { /* transient — keep last render */ }
+}
+let railReminderTimer = null;
+async function refreshRailReminders() {
+  try {
+    const res = await api('/api/state');
+    if (!res.ok) return;
+    const st = await res.json();
+    if (state.snapshot) {
+      if (Array.isArray(st.railItems)) state.snapshot.railItems = st.railItems;
+      if (Array.isArray(st.railNotifications)) state.snapshot.railNotifications = st.railNotifications;
+    }
+    renderContextRail();
+    drainRailNotifications();
+  } catch { /* transient */ }
+}
+function startRailReminderPoll() {
+  if (railReminderTimer) return;
+  void refreshRailReminders();
+  railReminderTimer = setInterval(() => { void refreshRailReminders(); }, 10000);
+}
+function stopRailReminderPoll() {
+  if (railReminderTimer) { clearInterval(railReminderTimer); railReminderTimer = null; }
 }
 async function openLocation() {
   const res = await api('/api/open-location', { method: 'POST' });
@@ -9842,6 +10556,9 @@ async function switchRegion(name) {
   // to drive its own sidebar mode (overview/detail → slim, chat → full).
   if (name !== 'project') document.body.dataset.sidebarMode = 'nav';
   syncManagerVisibility(state.projectView);
+  renderContextRail();
+  stopRailReminderPoll();
+  if (name === 'project' && state.projectView === 'overview') startRailReminderPoll();
   if (name === 'automation') await renderAutomationRegion();
   else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
@@ -11350,6 +12067,7 @@ function renderTeamGraph(def, name) {
   const g = el('teamGraph');
   if (!g) return;
   g.textContent = '';
+  g.classList.remove('subagent-mode');
   if (!def) {
     const e = document.createElement('p');
     e.className = 'region-empty';
@@ -11359,7 +12077,7 @@ function renderTeamGraph(def, name) {
   }
   const squadType = def.squadType || 'graph';
   if (squadType === 'workflow') { renderWorkflowSquadPlaceholder(g, def, name); return; }
-  if (squadType === 'subagent') { renderSubagentSquadEditor(g, def, name); return; }
+  if (squadType === 'subagent') { g.classList.add('subagent-mode'); renderSubagentSquadEditor(g, def, name); return; }
   renderGraphModeCanvas(g, def, name);
 }
 function renderWorkflowSquadPlaceholder(g, def, name) {
@@ -11572,9 +12290,8 @@ function renderSubagentSquadEditor(g, def, name) {
   }
   toolbar.append(left, right);
   g.appendChild(toolbar);
-  // Editor body
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'flex:1;overflow:auto;padding:24px;display:flex;flex-direction:column;gap:12px;max-width:640px;';
+  wrap.className = 'subagent-editor-body';
   const member = (def.members && def.members[0]) || { role: def.name, model: '', systemPrompt: '' };
   if (!def.members || !def.members.length) def.members = [member];
   wrap.appendChild(teFieldLive('Role / name', member.role || def.name || '', (v) => { member.role = v; setTeamSavedStatus(false); }));
@@ -13856,7 +14573,7 @@ el('newWorkspaceBtn').addEventListener('click', addWorkspace);
 el('newProjectSessionBtn').addEventListener('click', createNewSession);
 el('addProjectBtn').addEventListener('click', addWorkspace);
 el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
-el('overviewSearch').addEventListener('input', () => renderOverview());
+bindOverviewToolbar();
 el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
 el('detailNewConversationBtn').addEventListener('click', () => createNewSession().catch(console.error));
 el('detailOpenLocationBtn').addEventListener('click', openLocation);
