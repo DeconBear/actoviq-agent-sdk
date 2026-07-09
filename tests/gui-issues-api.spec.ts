@@ -33,6 +33,20 @@ async function api<T>(
   return { status: res.status, body: await res.json() as T };
 }
 
+async function apiRaw(
+  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  requestPath: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  return fetch(`${server.url}${requestPath}`, {
+    ...init,
+    headers: {
+      'x-actoviq-token': server.token,
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
 describe('GUI issues API', () => {
   it('creates, transitions, comments, edits, and migrates project issues', async () => {
     const root = await tempRoot('actoviq-gui-issues-');
@@ -134,6 +148,70 @@ describe('GUI issues API', () => {
       });
       expect(deleted.status).toBe(200);
       expect(deleted.body.issues).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('streams a dispatch error without starting an issue that is already in progress', async () => {
+    const root = await tempRoot('actoviq-gui-issue-start-');
+    const homeDir = path.join(root, 'home');
+    const workDir = path.join(root, 'work');
+    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    await mkdir(workDir, { recursive: true });
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, JSON.stringify({
+      ACTOVIQ_PROVIDER: 'openai',
+      ACTOVIQ_API_KEY: 'test-key',
+      ACTOVIQ_MODEL: 'gpt-4o-mini',
+    }), 'utf8');
+
+    const port = 48000 + Math.floor(Math.random() * 8000);
+    const server = await startActoviqGuiServer({
+      workDir,
+      homeDir,
+      host: '127.0.0.1',
+      port,
+      configPath,
+    });
+
+    try {
+      const created = await api<{
+        issue: { id: string; status: string };
+      }>(server, 'api/issues', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'Dispatch already-started issue' }),
+      });
+      expect(created.status).toBe(200);
+      expect(created.body.issue.status).toBe('todo');
+
+      const inProgress = await api<{ issue: { id: string; status: string } }>(server, 'api/issues/status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: created.body.issue.id, status: 'in_progress' }),
+      });
+      expect(inProgress.status).toBe(200);
+      expect(inProgress.body.issue.status).toBe('in_progress');
+
+      const res = await apiRaw(server, 'api/issues/start', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: created.body.issue.id }),
+      });
+      expect(res.status).toBe(200);
+      const streamText = await res.text();
+      expect(streamText).toContain('"type":"error"');
+      expect(streamText).toContain('Issue must be todo or backlog before dispatch');
+
+      const listed = await api<{ issues: Array<{ id: string; status: string; activeSessionId?: string }> }>(
+        server,
+        'api/issues',
+      );
+      expect(listed.body.issues).toEqual([
+        expect.objectContaining({ id: created.body.issue.id, status: 'in_progress' }),
+      ]);
+      expect(listed.body.issues[0]?.activeSessionId).toBeUndefined();
     } finally {
       await server.close();
     }

@@ -26,6 +26,17 @@ import { tool } from '../runtime/tools.js';
 import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { isRecord } from '../runtime/helpers.js';
 import type { AgentToolDefinition } from '../types.js';
+import {
+  addIssueComment,
+  createProjectIssue,
+  isIssuePriority,
+  isIssueStatus,
+  listProjectIssues,
+  transitionProjectIssue,
+  updateProjectIssue,
+  type IssueStorageMode,
+  type ProjectIssue,
+} from '../issues/issueStore.js';
 
 // ── Progress documents ────────────────────────────────────────────
 
@@ -228,9 +239,33 @@ export interface CreateManagerToolsOptions {
   workDir: string;
   homeDir: string;
   config?: ManagerConfig;
+  issueStorageMode?: IssueStorageMode;
 }
 
 const MANAGER_READ_TOOLS = new Set(['Read', 'Glob', 'Grep']);
+
+function matchesManagerIssue(issue: ProjectIssue, idOrNumber: string | number): boolean {
+  return typeof idOrNumber === 'number'
+    ? issue.number === idOrNumber
+    : issue.id === idOrNumber || String(issue.number) === idOrNumber || `ISS-${issue.number}` === idOrNumber.toUpperCase();
+}
+
+function summarizeManagerIssue(issue: ProjectIssue): Record<string, unknown> {
+  return {
+    id: issue.id,
+    number: issue.number,
+    key: `ISS-${issue.number}`,
+    title: issue.title,
+    status: issue.status,
+    priority: issue.priority,
+    labels: issue.labels,
+    acceptanceCriteria: issue.acceptanceCriteria,
+    agentConfig: issue.agentConfig,
+    activeSessionId: issue.activeSessionId,
+    sessionIds: issue.sessionIds,
+    updatedAt: issue.updatedAt,
+  };
+}
 
 /**
  * The Manager's entire tool surface. By construction there is no Write, Edit,
@@ -312,7 +347,153 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
     },
   );
 
-  return [...readTools, ...webTools, planWrite, progressWrite];
+  const issueStorageMode = options.issueStorageMode ?? 'home';
+
+  const issueList = tool(
+    {
+      name: 'IssueList',
+      description:
+        'List project issues from the project issue board. Use this before updating issues so you preserve current state.',
+      inputSchema: z.strictObject({
+        status: z.string().optional().describe('Optional status filter'),
+        includeClosed: z.boolean().optional().describe('Include done/cancelled issues (default false)'),
+      }),
+      isReadOnly: () => true,
+      serialize: (output: { issues: unknown[] }) => `Listed ${output.issues.length} issue(s)`,
+    },
+    async (input) => {
+      const issues = await listProjectIssues(workDir, homeDir, issueStorageMode);
+      const filtered = issues
+        .filter(issue => !input.status || issue.status === input.status)
+        .filter(issue => input.includeClosed === true || (issue.status !== 'done' && issue.status !== 'cancelled'))
+        .map(summarizeManagerIssue);
+      return { issues: filtered };
+    },
+  );
+
+  const issueGet = tool(
+    {
+      name: 'IssueGet',
+      description: 'Read one project issue by id, number, or ISS-<number> key.',
+      inputSchema: z.strictObject({
+        id: z.union([z.string(), z.number()]).describe('Issue id, number, or ISS-<number> key'),
+      }),
+      isReadOnly: () => true,
+      serialize: (output: { issue?: ProjectIssue }) => output.issue ? `Read ISS-${output.issue.number}` : 'Issue not found',
+    },
+    async (input) => {
+      const issues = await listProjectIssues(workDir, homeDir, issueStorageMode);
+      return { issue: issues.find(issue => matchesManagerIssue(issue, input.id)) };
+    },
+  );
+
+  const issueCreate = tool(
+    {
+      name: 'IssueCreate',
+      description:
+        'Create a project issue. Write clear acceptance criteria. New issues default to todo; use status=backlog only for parking-lot items.',
+      inputSchema: z.strictObject({
+        title: z.string().describe('Issue title'),
+        description: z.string().optional().describe('Issue description'),
+        status: z.string().optional().describe('Optional initial status: todo or backlog'),
+        priority: z.string().optional().describe('urgent | high | medium | low | none'),
+        labels: z.array(z.string()).optional(),
+        acceptanceCriteria: z.array(z.string()).optional(),
+        agentConfig: z.string().optional().describe('Optional Agent Profile name to use when dispatching this issue'),
+      }),
+      isReadOnly: () => false,
+      serialize: (output: { issue: ProjectIssue }) => `Created ISS-${output.issue.number}: ${output.issue.title}`,
+    },
+    async (input) => {
+      if (input.status !== undefined && input.status !== 'todo' && input.status !== 'backlog') {
+        throw new Error('Manager may create issues only as todo or backlog.');
+      }
+      if (input.priority !== undefined && !isIssuePriority(input.priority)) {
+        throw new Error(`Invalid issue priority: ${input.priority}`);
+      }
+      const issue = await createProjectIssue(workDir, homeDir, {
+        title: input.title,
+        description: input.description,
+        status: input.status === 'backlog' ? 'backlog' : 'todo',
+        priority: isIssuePriority(input.priority) ? input.priority : undefined,
+        labels: input.labels,
+        acceptanceCriteria: input.acceptanceCriteria,
+        createdBy: 'manager',
+        agentConfig: input.agentConfig,
+      }, issueStorageMode);
+      return { issue };
+    },
+  );
+
+  const issueUpdate = tool(
+    {
+      name: 'IssueUpdate',
+      description:
+        'Update an existing project issue. Status changes go through the lifecycle guard. Never set in_progress; dispatch is the only owner of that transition.',
+      inputSchema: z.strictObject({
+        id: z.union([z.string(), z.number()]).describe('Issue id, number, or ISS-<number> key'),
+        title: z.string().optional(),
+        description: z.string().optional(),
+        status: z.string().optional().describe('backlog | todo | in_review | done | blocked | cancelled. in_progress is forbidden here.'),
+        priority: z.string().optional().describe('urgent | high | medium | low | none'),
+        labels: z.array(z.string()).optional(),
+        acceptanceCriteria: z.array(z.string()).optional(),
+        agentConfig: z.string().optional(),
+        brief: z.string().optional(),
+      }),
+      isReadOnly: () => false,
+      serialize: (output: { issue: ProjectIssue }) => `Updated ISS-${output.issue.number}: ${output.issue.status}`,
+    },
+    async (input) => {
+      if (input.priority !== undefined && !isIssuePriority(input.priority)) {
+        throw new Error(`Invalid issue priority: ${input.priority}`);
+      }
+      const patch: Parameters<typeof updateProjectIssue>[3] = {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(isIssuePriority(input.priority) ? { priority: input.priority } : {}),
+        ...(input.labels !== undefined ? { labels: input.labels } : {}),
+        ...(input.acceptanceCriteria !== undefined ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
+        ...(input.agentConfig !== undefined ? { agentConfig: input.agentConfig } : {}),
+        ...(input.brief !== undefined ? { brief: input.brief } : {}),
+      };
+      let issue = Object.keys(patch).length > 0
+        ? await updateProjectIssue(workDir, homeDir, input.id, patch, issueStorageMode)
+        : (await listProjectIssues(workDir, homeDir, issueStorageMode)).find(candidate => matchesManagerIssue(candidate, input.id));
+      if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
+      if (input.status !== undefined) {
+        if (!isIssueStatus(input.status)) throw new Error(`Invalid issue status: ${input.status}`);
+        if (input.status === 'in_progress') {
+          throw new Error('Manager cannot set in_progress. Start/dispatch the issue instead.');
+        }
+        issue = await transitionProjectIssue(workDir, homeDir, input.id, input.status, 'manager', issueStorageMode);
+        if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
+      }
+      return { issue };
+    },
+  );
+
+  const issueComment = tool(
+    {
+      name: 'IssueComment',
+      description: 'Append a manager comment or progress note to a project issue.',
+      inputSchema: z.strictObject({
+        id: z.union([z.string(), z.number()]).describe('Issue id, number, or ISS-<number> key'),
+        body: z.string().describe('Comment body'),
+        kind: z.string().optional().describe('comment | progress | system'),
+      }),
+      isReadOnly: () => false,
+      serialize: (output: { issue: ProjectIssue }) => `Commented on ISS-${output.issue.number}`,
+    },
+    async (input) => {
+      const kind = input.kind === 'progress' || input.kind === 'system' ? input.kind : 'comment';
+      const issue = await addIssueComment(workDir, homeDir, input.id, { body: input.body, kind, actor: 'manager' }, issueStorageMode);
+      if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
+      return { issue };
+    },
+  );
+
+  return [...readTools, ...webTools, planWrite, progressWrite, issueList, issueGet, issueCreate, issueUpdate, issueComment];
 }
 
 // ── Prompts ───────────────────────────────────────────────────────
@@ -326,6 +507,10 @@ export function buildManagerSystemPrompt(workDir: string, config?: ManagerConfig
     'Hard rules:',
     '- You NEVER modify project source code. You have no Write/Edit/Bash tools; do not attempt workarounds.',
     '- The ONLY documents you maintain are the structured plan (via the PlanWrite tool) and PROGRESS.md (via the ProgressWrite tool).',
+    '- You also maintain the project issue board using IssueList, IssueGet, IssueCreate, IssueUpdate, and IssueComment.',
+    '- Create issues with clear acceptance criteria. Keep issue titles actionable and status changes evidence-based.',
+    '- Never move an issue to in_progress with IssueUpdate. That status is owned by deterministic dispatch after a worker session starts successfully.',
+    '- Use in_review only when worker evidence says the issue is ready for review; move in_review to done only after evidence supports completion.',
     '- Use Read/Glob/Grep to inspect the project and WebFetch for reference material. Cite file paths in your findings.',
     ...(config?.readScope === 'full-access'
       ? ['- Read scope is full-access: you may read any path on this machine. You still cannot write outside plan/PROGRESS.']
@@ -350,8 +535,44 @@ export interface ManagerUpdateContext {
   currentPlanJson?: string;
   /** Current PROGRESS.md content, if any. */
   currentProgress?: string;
+  /** Current project issue board as JSON, if any. */
+  currentIssuesJson?: string;
   /** Extra user instruction for this update. */
   instruction?: string;
+}
+
+export interface IssueDecomposeContext {
+  currentPlanJson?: string;
+  currentProgress?: string;
+}
+
+export function buildDecomposeIssuePrompt(issue: ProjectIssue, context: IssueDecomposeContext = {}): string {
+  const parts = [
+    `Decompose ISS-${issue.number}: ${issue.title}`,
+    '',
+    'Produce a detailed worker brief in Markdown. Return only the brief.',
+    '',
+    'The brief must include:',
+    '- Background and relevant project context.',
+    '- Objective and non-goals.',
+    '- Step-by-step execution plan.',
+    '- Verification commands or checks.',
+    '- Acceptance criteria copied or refined from the issue.',
+    '- Reporting instructions: when all work and self-checks are complete, call IssueReport with status="in_review"; if blocked, call IssueReport with status="blocked" and explain why.',
+    '',
+    'Issue:',
+    JSON.stringify({
+      key: `ISS-${issue.number}`,
+      title: issue.title,
+      description: issue.description,
+      priority: issue.priority,
+      labels: issue.labels,
+      acceptanceCriteria: issue.acceptanceCriteria,
+    }, null, 2),
+  ];
+  if (context.currentPlanJson) parts.push('', 'Current plan.json:', context.currentPlanJson);
+  if (context.currentProgress) parts.push('', 'Current PROGRESS.md:', context.currentProgress);
+  return parts.join('\n');
 }
 
 /** Human-readable snapshot shown before an Update progress run (plan M3 diff preview). */
@@ -458,6 +679,9 @@ export function buildUpdateProgressPrompt(context: ManagerUpdateContext): string
   }
   if (context.currentPlanJson) {
     parts.push('', '--- Current plan.json ---', context.currentPlanJson);
+  }
+  if (context.currentIssuesJson) {
+    parts.push('', '--- Current issues.json summary ---', context.currentIssuesJson);
   }
   parts.push(
     '',
