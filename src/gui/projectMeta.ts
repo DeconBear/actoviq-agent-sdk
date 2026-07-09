@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { isIssueStorageMode, type IssueStorageMode } from '../issues/issueStore.js';
 
 /** Manual project lifecycle status (not "is this the current workspace"). */
 export const PROJECT_STATUSES = [
@@ -15,15 +16,16 @@ export const PROJECT_STATUSES = [
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
-  in_progress: '正在执行',
-  planning: '规划中',
-  on_hold: '已搁置',
-  not_started: '未开始',
-  completed: '已完成',
+  in_progress: 'In progress',
+  planning: 'Planning',
+  on_hold: 'On hold',
+  not_started: 'Not started',
+  completed: 'Completed',
 };
 
 export type ProjectMeta = {
   status: ProjectStatus;
+  issueStorage?: IssueStorageMode;
   updatedAt?: string;
 };
 
@@ -47,7 +49,10 @@ export async function readProjectMeta(workDir: string, homeDir: string): Promise
     const updatedAt = typeof (raw as ProjectMeta).updatedAt === 'string'
       ? (raw as ProjectMeta).updatedAt
       : undefined;
-    return { status, updatedAt };
+    const issueStorage = isIssueStorageMode((raw as ProjectMeta).issueStorage)
+      ? (raw as ProjectMeta).issueStorage
+      : undefined;
+    return { status, ...(issueStorage ? { issueStorage } : {}), updatedAt };
   } catch {
     return { ...DEFAULT_META };
   }
@@ -61,6 +66,9 @@ export async function writeProjectMeta(
   const current = await readProjectMeta(workDir, homeDir);
   const next: ProjectMeta = {
     status: isProjectStatus(patch.status) ? patch.status : current.status,
+    ...(isIssueStorageMode(patch.issueStorage ?? current.issueStorage)
+      ? { issueStorage: (patch.issueStorage ?? current.issueStorage) as IssueStorageMode }
+      : {}),
     updatedAt: new Date().toISOString(),
   };
   const filePath = projectMetaPath(workDir, homeDir);

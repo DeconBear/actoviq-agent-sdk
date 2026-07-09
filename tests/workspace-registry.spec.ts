@@ -7,6 +7,7 @@ import {
   forgetWorkspaceFromRegistry,
   readWorkspaceRegistry,
   rememberWorkspace,
+  setWorkspacePinned,
 } from '../src/gui/workspaceRegistry.js';
 
 describe('workspaceRegistry', () => {
@@ -51,5 +52,23 @@ describe('workspaceRegistry', () => {
     await mkdir(actoviq, { recursive: true });
     await writeFile(path.join(actoviq, 'workspaces.json'), '{not-json');
     expect(await readWorkspaceRegistry(home)).toEqual([]);
+  });
+
+  it('pins a workspace and preserves pin across remember', async () => {
+    const home = await tempHome();
+    const a = path.join(home, 'a');
+    const b = path.join(home, 'b');
+    await rememberWorkspace(a, home, '2026-07-09T01:00:00.000Z');
+    await rememberWorkspace(b, home, '2026-07-09T02:00:00.000Z');
+    await setWorkspacePinned(a, home, true);
+    let entries = await readWorkspaceRegistry(home);
+    expect(entries[0]?.path).toBe(path.resolve(a));
+    expect(entries[0]?.pinned).toBe(true);
+    await rememberWorkspace(a, home, '2026-07-09T04:00:00.000Z');
+    entries = await readWorkspaceRegistry(home);
+    expect(entries.find((e) => e.path === path.resolve(a))?.pinned).toBe(true);
+    await setWorkspacePinned(a, home, false);
+    entries = await readWorkspaceRegistry(home);
+    expect(entries.find((e) => e.path === path.resolve(a))?.pinned).toBeUndefined();
   });
 });

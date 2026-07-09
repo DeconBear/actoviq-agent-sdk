@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +16,7 @@ import {
   getDefaultActoviqSettingsPath,
   persistActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 let guiServer: ActoviqGuiServer | null = null;
 
@@ -101,13 +101,13 @@ function loadWindowIcon(): { iconPath?: string; iconImage?: Electron.NativeImage
 }
 
 /**
- * First-launch init: ensure `~/.actoviq/` and a minimal `settings.json` exist
+ * First-launch init: ensure the Actoviq data root and a minimal `settings.json` exist
  * so the app boots (and the dir is present even if the user hasn't configured
  * a key yet). Idempotent — never overwrites an existing settings file, so a
  * user who already has an npm-installed `~/.actoviq` is left untouched.
  */
 async function ensureActoviqHomeInit(args: { homeDir?: string; configPath?: string }): Promise<void> {
-  const homeDir = args.homeDir ?? os.homedir();
+  const homeDir = resolveActoviqHome(args.homeDir);
   const configPath = args.configPath ?? getDefaultActoviqSettingsPath(homeDir);
   if (existsSync(configPath)) return;
   try {

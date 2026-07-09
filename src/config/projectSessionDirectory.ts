@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { access, copyFile, cp, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { resolveActoviqHome } from './actoviqHome.js';
 
 const MAX_PROJECT_KEY_LENGTH = 200;
 
@@ -18,7 +19,7 @@ export function getActoviqProjectSessionDirectory(
   workDir: string,
   homeDir: string,
 ): string {
-  return path.join(homeDir, '.actoviq', 'projects', encodeActoviqProjectPath(workDir));
+  return path.join(resolveActoviqHome(homeDir), 'projects', encodeActoviqProjectPath(workDir));
 }
 
 export async function migrateLegacyActoviqProjectSessions(options: {
@@ -27,8 +28,7 @@ export async function migrateLegacyActoviqProjectSessions(options: {
   targetDirectory: string;
 }): Promise<number> {
   const legacySessions = path.join(
-    options.homeDir,
-    '.actoviq',
+    resolveActoviqHome(options.homeDir),
     'actoviq-agent-sdk',
     'sessions',
   );

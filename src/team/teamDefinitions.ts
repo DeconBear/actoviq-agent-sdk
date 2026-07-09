@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
 import {
   canonicalizeTeamDefinition,
@@ -158,7 +159,7 @@ export function instantiateTeamDefinition(definition: TeamDefinition, model: str
 
 function resolveTeamDirs(projectDir?: string, homeDir?: string): string[] {
   const dirs: string[] = [];
-  const home = homeDir ?? process.env.ACTOVIQ_HOME ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.actoviq');
+  const home = resolveActoviqHome(homeDir);
 
   if (projectDir) {
     dirs.push(path.join(projectDir, '.actoviq', 'teams'));

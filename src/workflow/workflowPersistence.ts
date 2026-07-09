@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import type { WorkflowMeta } from '../types.js';
 
 export interface SavedWorkflow {
@@ -24,7 +25,7 @@ export interface SavedWorkflow {
  */
 function resolveWorkflowDirs(projectDir?: string, homeDir?: string): string[] {
   const dirs: string[] = [];
-  const home = homeDir ?? process.env.ACTOVIQ_HOME ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.actoviq');
+  const home = resolveActoviqHome(homeDir);
 
   if (projectDir) {
     dirs.push(path.join(projectDir, '.actoviq', 'workflows'));

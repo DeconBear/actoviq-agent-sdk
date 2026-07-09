@@ -6,6 +6,7 @@
 import type { ModelPricing } from '../types.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 /** $ per 1M tokens */
 const BUILT_IN_PRICING: Record<string, ModelPricing> = {
@@ -48,7 +49,7 @@ const BUILT_IN_PRICING: Record<string, ModelPricing> = {
 };
 
 function resolvePricingPath(homeDir?: string): string {
-  return path.join(homeDir ?? process.env.ACTOVIQ_HOME ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.actoviq'), 'pricing.json');
+  return path.join(resolveActoviqHome(homeDir), 'pricing.json');
 }
 
 let _userPricing: Record<string, ModelPricing> | null = null;

@@ -53,6 +53,7 @@ describe('TUI and GUI parity', () => {
       'workflows',
       'worktree',
       'team',
+      'issues',
       'manager',
       'bridge',
       'exit',
@@ -63,16 +64,21 @@ describe('TUI and GUI parity', () => {
     const html = createActoviqGuiHtml();
     const css = createActoviqGuiStyles();
     const js = createActoviqGuiClientScript();
+    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
 
     expect(html).not.toContain('id="commands"');
     expect(html).not.toContain('class="command-section"');
-    expect(html).toContain('id="projects"');
-    expect(html).toContain('id="newWorkspaceBtn"');
-    expect(html).toContain('id="newProjectSessionBtn"');
+    expect(html).not.toContain('id="projects"');
+    expect(html).not.toContain('id="newWorkspaceBtn"');
+    expect(html).not.toContain('id="newProjectSessionBtn"');
+    expect(html).not.toContain('id="commandSearch"');
+    expect(html).not.toContain('class="project-section"');
     expect(html).not.toContain('id="newChatInlineBtn"');
     expect(html).not.toContain('id="showMoreSessions"');
     expect(html).not.toContain('id="sessions"');
-    expect(html).toContain('id="projectMenuBtn"');
+    expect(html).not.toContain('id="projectMenuBtn"');
+    expect(html).toContain('id="sidebarRecents"');
+    expect(html).toContain('id="overviewNewWorkspaceBtn"');
     expect(html).toContain('id="workspaceModal"');
     expect(html).toContain('id="workspaceChoices"');
     expect(html).toContain('id="workspacePathInput"');
@@ -139,14 +145,27 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('class="brand"');
     expect(html).toContain('id="settingsOutputStyle"');
     expect(css).toContain('.sidebar');
+    expect(html).toContain('id="sidebarRecents"');
+    expect(html).toContain('id="sidebarPinnedList"');
+    expect(html).toContain('id="sidebarRecentList"');
+    expect(css).toContain('.sidebar-recents');
+    expect(css).toContain('.sr-project-row');
+    expect(js).toContain('renderSidebarRecents');
+    expect(js).toContain('/api/project/pin');
+    expect(js).toContain('setProjectPinned');
+    expect(html).not.toContain('id="addProjectBtn"');
+    expect(html).not.toContain('id="workspaceMeta"');
+    expect(css).toContain('.pc-badge.status-planning');
+    expect(css).toContain('.pc-badge.status-not_started');
+    expect(js).toContain("status-' + status");
+    expect(js).not.toContain('pc-current-chip');
+    expect(js).not.toContain('pc-active-badge');
+    expect(css).not.toContain('.proj-card.active');
+    expect(html).toContain('All statuses');
+    expect(html).not.toContain('全部状态');
+    expect(html).not.toContain('规划中');
     expect(css).toContain('.composer');
-    expect(css).toContain('.mini-action-btn');
-    expect(css).toContain('.project-control-row');
-    expect(css).toContain('.project-session-list');
-    expect(css).toContain('.project-session-list.current-project-chats');
-    expect(css).toContain('.project-chat-row');
     expect(css).toContain('.workspace-choice-list');
-    expect(css).toContain('.workspace-meta');
     expect(css).toContain('.tool-card');
     expect(css).toContain('@keyframes spin');
     expect(css).toContain('.attachment-tray');
@@ -165,12 +184,15 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/settings');
     expect(js).toContain('/api/open-location');
     expect(js).toContain('/api/project/open');
+    expect(js).toContain("view === 'conversation'");
+    expect(js).toContain('void hydrateTranscript()');
+    expect(gui).toContain('state({ light: true })');
+    expect(gui).toContain('projectSessionOverview');
     expect(js).toContain('/api/pick-folder');
     expect(js).toContain('pickFolderViaApi');
     expect(js).toContain('createNewSession');
     expect(js).toContain('submitWorkspace');
     expect(js).toContain('renderWorkspaceChoices');
-    expect(js).toContain('current-project-chats');
     expect(js).toContain('addToolActivity');
     expect(js).toContain('updateToolActivity');
     expect(js).toContain('addFiles');
@@ -187,8 +209,7 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/workflows run ');
     expect(js).toContain('/team attach ');
     expect(js).toContain('/dream run');
-    expect(js).toContain('newWorkspaceBtn');
-    expect(js).toContain('newProjectSessionBtn');
+    expect(js).toContain('overviewNewWorkspaceBtn');
     expect(js).toContain('completeSlash');
     expect(js).toContain('processQueue');
     expect(js).toContain('/api/git');
@@ -226,6 +247,10 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('mountProjectDoc');
     expect(js).toContain('renderProjectDocPreview');
     expect(js).toContain('project-doc-view');
+    expect(js).toContain('/api/issues');
+    expect(js).toContain('renderProjectIssuesPanel');
+    expect(css).toContain('.project-issues-panel');
+    expect(css).toContain('.issue-board');
     expect(js).toContain('conv-sidebar-row');
     expect(js).toContain('renderConvSidebarDetail');
     expect(js).toContain('/api/project-doc');
@@ -272,6 +297,20 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('id="managerConfigBtn"');
     // No client-side fake built-in team placeholders (real list comes from the server).
     expect(js).not.toContain("mode: 'built-in'");
+  });
+
+  it('keeps /issues available on all three surfaces (project issue workflow)', () => {
+    const root = join(import.meta.dirname, '..');
+    expect(SUBCOMMANDS.issues).toEqual(['list', 'create', 'start', 'review', 'done', 'block']);
+    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    for (const source of [repl, tui, gui]) {
+      expect(source).toContain('/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]');
+      expect(source).toContain('createProjectIssue');
+      expect(source).toContain('transitionProjectIssue');
+      expect(source).toContain('listProjectIssues');
+    }
   });
 
   it('keeps /manager chat available on all three surfaces (plan §4.6)', () => {

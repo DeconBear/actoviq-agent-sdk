@@ -7,8 +7,8 @@
  * The TUI's /mcp add writes here and reloads the client.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 export interface PersistedMcpServer {
   name: string;
@@ -25,11 +25,11 @@ export interface PersistedMcpConfig {
   servers: PersistedMcpServer[];
 }
 
-export function getMcpConfigPath(homeDir: string = os.homedir()): string {
-  return path.join(homeDir, '.actoviq', 'mcp.json');
+export function getMcpConfigPath(homeDir?: string): string {
+  return path.join(resolveActoviqHome(homeDir), 'mcp.json');
 }
 
-export function readMcpServerConfig(homeDir: string = os.homedir()): PersistedMcpConfig {
+export function readMcpServerConfig(homeDir?: string): PersistedMcpConfig {
   const file = getMcpConfigPath(homeDir);
   if (!existsSync(file)) return { servers: [] };
   try {
@@ -48,13 +48,13 @@ export function readMcpServerConfig(homeDir: string = os.homedir()): PersistedMc
   }
 }
 
-export function writeMcpServerConfig(config: PersistedMcpConfig, homeDir: string = os.homedir()): void {
+export function writeMcpServerConfig(config: PersistedMcpConfig, homeDir?: string): void {
   const file = getMcpConfigPath(homeDir);
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(config, null, 2), 'utf-8');
 }
 
-export function addMcpServer(server: PersistedMcpServer, homeDir: string = os.homedir()): PersistedMcpConfig {
+export function addMcpServer(server: PersistedMcpServer, homeDir?: string): PersistedMcpConfig {
   const config = readMcpServerConfig(homeDir);
   const without = config.servers.filter(s => s.name !== server.name);
   without.push(server);
@@ -63,7 +63,7 @@ export function addMcpServer(server: PersistedMcpServer, homeDir: string = os.ho
   return next;
 }
 
-export function removeMcpServer(name: string, homeDir: string = os.homedir()): PersistedMcpConfig {
+export function removeMcpServer(name: string, homeDir?: string): PersistedMcpConfig {
   const config = readMcpServerConfig(homeDir);
   const next = { servers: config.servers.filter(s => s.name !== name) };
   writeMcpServerConfig(next, homeDir);

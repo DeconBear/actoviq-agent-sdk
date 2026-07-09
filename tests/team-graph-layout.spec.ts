@@ -133,8 +133,9 @@ describe('teamGraphLayout', () => {
       ],
     };
     clearEdgeBezierUiForNodeRef(def, 'b');
-    expect(def.edges![0].ui).toBeUndefined();
-    expect(def.edges![1].ui).toBeDefined();
+    const [first, second] = def.edges!;
+    expect(first!.ui).toBeUndefined();
+    expect(second!.ui).toBeDefined();
   });
 
   it('computeTeamGraphAutoLayoutLanes separates synthesizer from panel members', () => {

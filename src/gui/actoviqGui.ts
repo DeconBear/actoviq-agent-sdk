@@ -111,19 +111,38 @@ import {
   readProgressFile,
   writeProgressFile,
   managerProgressPath,
+  ISSUE_PRIORITIES,
+  ISSUE_STATUSES,
+  addIssueComment,
+  createProjectIssue,
+  deleteProjectIssue,
+  isIssuePriority,
+  isIssueStatus,
+  isIssueStorageMode,
+  listProjectIssues,
+  migrateIssueStore,
   loadWorkflow,
   listScheduledAutomationTasks,
   resolveRoutedRun,
   recordScheduledAutomationRun,
+  getActoviqHomePointerPath,
+  migrateActoviqHomeData,
+  resolveActoviqHome,
+  summarizeActoviqHome,
   saveTeamDefinition,
   setScheduledAutomationEnabled,
   TaskScheduler,
   upsertScheduledAutomationTask,
   deleteScheduledAutomationTask,
   getScheduledAutomationTask,
+  transitionProjectIssue,
+  updateProjectIssue,
   WorktreeService,
   type ActoviqAgentClient,
   type ManagerConfig,
+  type IssueActor,
+  type IssueCommentKind,
+  type IssueStorageMode,
   isManagerReadScope,
 } from '../index.js';
 import {
@@ -175,7 +194,7 @@ import {
   runPostToolUseHooks,
   runSessionStartHooks,
 } from '../hooks/userHooks.js';
-import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
+import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { encodeActoviqProjectPath, getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import {
   persistActoviqSettingsStore,
@@ -205,6 +224,7 @@ import {
   forgetWorkspaceFromRegistry,
   readWorkspaceRegistry,
   rememberWorkspace,
+  setWorkspacePinned,
 } from './workspaceRegistry.js';
 import { resolveGuiAssetsDir } from './guiAssets.js';
 import type {
@@ -468,6 +488,7 @@ function commandUsage(command: string): string {
     case 'workflows': return '/workflows [run <name> [input]]';
     case 'worktree': return '/worktree [enter <name>|exit|list]';
     case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]';
+    case 'issues': return '/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]';
     default: return `/${command}`;
   }
 }
@@ -584,6 +605,7 @@ interface StoredSessionFile {
   storageId: string;
   filePath: string;
   messageCount: number;
+  title?: string;
   workDir?: string;
   kind?: SessionSummary['kind'];
   updatedAt?: string;
@@ -629,11 +651,15 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
       const updatedAt = isPlainRecord(raw) && typeof raw.updatedAt === 'string'
         ? raw.updatedAt
         : (typeof metadata.__actoviqUpdatedAt === 'string' ? metadata.__actoviqUpdatedAt : '');
+      const title = isPlainRecord(raw) && typeof raw.title === 'string' && raw.title.trim()
+        ? raw.title.trim()
+        : undefined;
       sessions.push({
         id: isPlainRecord(raw) && typeof raw.id === 'string' ? raw.id : storageId,
         storageId,
         filePath,
         messageCount: messages.length,
+        ...(title ? { title } : {}),
         workDir: typeof metadata.__actoviqWorkDir === 'string' ? metadata.__actoviqWorkDir : undefined,
         updatedAt,
         ...(kind ? { kind } : {}),
@@ -742,22 +768,41 @@ async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory
   return uniquePaths([currentSessionDirectory]);
 }
 
-async function sessionStatsForWorkDir(
+type SidebarRecentSession = {
+  id: string;
+  title: string;
+  updatedAt: string;
+};
+
+async function projectSessionOverview(
   workDir: string,
   homeDir: string,
-): Promise<{ count: number; lastUsedAt: string }> {
+  recentLimit = 3,
+): Promise<{ count: number; lastUsedAt: string; recentSessions: SidebarRecentSession[] }> {
   const projectRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+  const workKey = normalizeFsPath(workDir);
   let count = 0;
   let lastUsedAt = '';
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
+  const candidates: SidebarRecentSession[] = [];
+  // Single directory pass — previously stats + recents each readdir+parsed every JSON.
   for (const item of await listStoredSessionFiles(projectRoot)) {
     if (item.messageCount === 0 || item.kind === 'manager') continue;
-    // Prefer sessions that belong to this workDir; older files may omit workDir.
-    if (item.workDir && normalizeFsPath(item.workDir) !== normalizeFsPath(workDir)) continue;
+    if (item.workDir && normalizeFsPath(item.workDir) !== workKey) continue;
     count += 1;
     lastUsedAt = maxIso(lastUsedAt, item.updatedAt || '');
+    candidates.push({
+      id: item.id,
+      title: item.title || item.id,
+      updatedAt: item.updatedAt || '',
+    });
   }
-  return { count, lastUsedAt };
+  candidates.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  return {
+    count,
+    lastUsedAt,
+    recentSessions: candidates.slice(0, Math.max(0, recentLimit)),
+  };
 }
 
 // --- Project plan (plan/UI_PLAN §4.2): a light per-workspace plan.json. ---
@@ -776,12 +821,14 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     path: string;
     sessionCount: number;
     active: boolean;
+    pinned: boolean;
     lastUsedAt: string;
     note: string;
     status: ProjectStatus;
+    recentSessions: SidebarRecentSession[];
   }>();
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
-  const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '') => {
+  const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '', pinned = false) => {
     const resolved = path.resolve(projectPath);
     const key = normalizeFsPath(resolved);
     const existing = projects.get(key);
@@ -790,9 +837,11 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
       path: resolved,
       sessionCount: Math.max(existing?.sessionCount ?? 0, sessionCount),
       active: normalizeFsPath(resolved) === normalizeFsPath(current),
+      pinned: Boolean(existing?.pinned || pinned),
       lastUsedAt: maxIso(existing?.lastUsedAt ?? '', lastUsedAt),
       note: existing?.note ?? '',
       status: existing?.status ?? 'not_started',
+      recentSessions: existing?.recentSessions ?? [],
     });
   };
   addProject(current, 0);
@@ -802,22 +851,24 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
   const registry = await readWorkspaceRegistry(homeDir);
   await Promise.all(registry.map(async (entry) => {
     if (!(await pathExists(entry.path))) return;
-    addProject(entry.path, 0, entry.lastOpenedAt);
+    addProject(entry.path, 0, entry.lastOpenedAt, entry.pinned === true);
   }));
 
   const rows = [...projects.values()];
   await Promise.all(rows.map(async (project) => {
-    const [note, stats, meta] = await Promise.all([
+    const [note, overview, meta] = await Promise.all([
       readWorkspaceNote(project.path, homeDir),
-      sessionStatsForWorkDir(project.path, homeDir),
+      projectSessionOverview(project.path, homeDir, 3),
       readProjectMeta(project.path, homeDir),
     ]);
     project.note = note;
-    project.sessionCount = Math.max(project.sessionCount, stats.count);
-    project.lastUsedAt = maxIso(project.lastUsedAt, stats.lastUsedAt);
+    project.sessionCount = Math.max(project.sessionCount, overview.count);
+    project.lastUsedAt = maxIso(project.lastUsedAt, overview.lastUsedAt);
     project.status = meta.status;
+    project.recentSessions = overview.recentSessions;
   }));
   return rows.sort((left, right) => {
+    if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
     if (left.active !== right.active) return left.active ? -1 : 1;
     const leftTs = Date.parse(left.lastUsedAt || '') || 0;
     const rightTs = Date.parse(right.lastUsedAt || '') || 0;
@@ -1310,16 +1361,29 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const authToken = randomBytes(32).toString('hex');
   let guiWorkMode: 'coding' | 'daily' = 'coding';
   let systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+  let guiHomeOverride: string | undefined;
+  const currentHomeInput = () => guiHomeOverride ?? options.homeDir;
+  const pointerHomeDir = () => {
+    if (!options.homeDir) return os.homedir();
+    const normalized = path.normalize(options.homeDir);
+    return path.basename(normalized).toLowerCase() === '.actoviq'
+      ? path.dirname(normalized)
+      : normalized;
+  };
+  const resolveGuiHomeDir = () =>
+    guiHomeOverride
+      ? resolveActoviqHome(guiHomeOverride, { inputKind: 'dataRoot' })
+      : resolveActoviqHome(options.homeDir);
 
   try {
     if (options.configPath) await loadJsonConfigFile(options.configPath);
-    else await loadDefaultActoviqSettings({ homeDir: options.homeDir });
+    else await loadDefaultActoviqSettings({ homeDir: currentHomeInput() });
   } catch {
     // Missing local config is fine; env vars may carry credentials.
   }
 
   try {
-    const initialStore = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir });
+    const initialStore = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
     guiWorkMode = readGuiPreferences(initialStore.raw).workMode;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
   } catch {
@@ -1345,7 +1409,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let tools = buildTools();
   const createCleanSdk = () =>
     createAgentSdk({
-      ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+      ...(currentHomeInput() ? { homeDir: currentHomeInput() } : {}),
       workDir,
       tools,
       permissionMode,
@@ -1396,11 +1460,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   try {
     const bootHome = (await resolveActoviqSettingsStore({
       configPath: options.configPath,
-      homeDir: options.homeDir,
+      homeDir: currentHomeInput(),
     }).catch(() => undefined))?.homeDir
-      ?? process.env.HOME
-      ?? process.env.USERPROFILE
-      ?? workDir;
+      ?? resolveGuiHomeDir();
     await rememberWorkspace(workDir, bootHome);
   } catch {
     // Registry write is best-effort.
@@ -1438,8 +1500,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const automationScheduler = new TaskScheduler({ defaultTimeoutMs: 30 * 60 * 1000 });
   const scheduledAutomationIds = new Set<string>();
   const railReminderScheduler = new ContextRailReminderScheduler();
-  const resolveGuiHomeDir = () =>
-    options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
   railReminderScheduler.setOnFire(async (wd, hd, item) => {
     const store = await readContextRailStore(wd, hd);
     const firedAt = item.firedAt ?? new Date().toISOString();
@@ -1480,7 +1540,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const outT = usage?.output_tokens ?? 0;
     totalInputTokens += inT;
     totalOutputTokens += outT;
-    const cost = estimateCost(model, inT, outT, options.homeDir);
+    const cost = estimateCost(model, inT, outT, resolveGuiHomeDir());
     totalCostUsd = cost === null ? null : (totalCostUsd === null ? cost : totalCostUsd + cost);
     if (bridgeMode && activeBridgeConfig) {
       const rec = configUsage.get(activeBridgeConfig.name) ?? { inputTokens: 0, outputTokens: 0, turns: 0 };
@@ -1491,9 +1551,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
   function configCost(name: string, rec: { inputTokens: number; outputTokens: number }): string | null {
-    const cfg = findBridgeConfig(name, options.homeDir);
+    const cfg = findBridgeConfig(name, resolveGuiHomeDir());
     if (!cfg?.model) return null;
-    const cost = estimateCost(cfg.model, rec.inputTokens, rec.outputTokens, options.homeDir);
+    const cost = estimateCost(cfg.model, rec.inputTokens, rec.outputTokens, resolveGuiHomeDir());
     return cost !== null ? `$${cost.toFixed(4)}` : null;
   }
 
@@ -1559,7 +1619,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       session = resumable
         ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
         : await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
-      toolMetadata = await nextSdk.listToolMetadata();
+      // Tool metadata is not needed to paint project detail; fill after open returns.
+      toolMetadata = [];
       sdk = nextSdk;
     } catch (error) {
       await nextSdk.close().catch(() => undefined);
@@ -1568,16 +1629,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     if (previousSdk) await previousSdk.close().catch(() => undefined);
     const storeHome = (await resolveActoviqSettingsStore({
       configPath: options.configPath,
-      homeDir: options.homeDir,
+      homeDir: currentHomeInput(),
     }).catch(() => undefined))?.homeDir
-      ?? process.env.HOME
-      ?? process.env.USERPROFILE
-      ?? workDir;
-    await rememberWorkspace(workDir, storeHome).catch(() => undefined);
+      ?? resolveGuiHomeDir();
     invalidateHeavyState();
-    await resyncAutomationScheduler();
-    await syncRailReminders().catch(() => undefined);
-    return state();
+    // Remember + scheduler/rail are not required to render the opened project UI.
+    void Promise.all([
+      rememberWorkspace(workDir, storeHome).catch(() => undefined),
+      resyncAutomationScheduler().catch(() => undefined),
+      syncRailReminders().catch(() => undefined),
+      nextSdk.listToolMetadata().then((meta) => { toolMetadata = meta; }).catch(() => undefined),
+    ]);
+    return state({ light: true });
   }
 
   const currentPermissionMode = (): ActoviqPermissionMode =>
@@ -1657,39 +1720,59 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
   };
 
-  async function state() {
+  async function state(opts?: { light?: boolean }) {
+    const light = opts?.light === true;
     const store = await resolveActoviqSettingsStore({
       configPath: options.configPath,
-      homeDir: options.homeDir,
+      homeDir: currentHomeInput(),
     }).catch(() => undefined);
     const env = store ? readEnvFromSettings(store.raw) : {};
     const configuredDirs = Array.isArray(store?.raw.pluginDirs)
       ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
       : [];
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const cacheKey = `${workDir}|${session?.id ?? 'none'}`;
     const now = Date.now();
     let heavy = heavyStateCache && heavyStateCache.key === cacheKey && now - heavyStateCache.at < 4000
       ? heavyStateCache
       : null;
     if (!heavy) {
-      const sessionStoreRoots = needsCredentials ? [] : await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
-      const [plugins, projects] = await Promise.all([
-        discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
-        listKnownProjects(homeDir, workDir),
-        needsCredentials || !session ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
-      ]);
-      heavy = { key: cacheKey, at: now, plugins, projects };
-      heavyStateCache = heavy;
+      if (light) {
+        // Project open: only rebuild the projects list. Plugins / empty-session
+        // cleanup can wait for the next full /api/state refresh.
+        const projects = await listKnownProjects(homeDir, workDir);
+        heavy = { key: cacheKey, at: now, plugins: [], projects };
+        heavyStateCache = heavy;
+        void Promise.all([
+          discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
+          needsCredentials || !session
+            ? Promise.resolve(undefined)
+            : collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory)
+              .then((roots) => cleanupStoredEmptySessions(roots, session!.id)),
+        ]).then(([plugins]) => {
+          if (heavyStateCache?.key === cacheKey) {
+            heavyStateCache = { ...heavyStateCache, plugins, at: Date.now() };
+          }
+        }).catch(() => undefined);
+      } else {
+        const sessionStoreRoots = needsCredentials ? [] : await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
+        const [plugins, projects] = await Promise.all([
+          discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
+          listKnownProjects(homeDir, workDir),
+          needsCredentials || !session ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
+        ]);
+        heavy = { key: cacheKey, at: now, plugins, projects };
+        heavyStateCache = heavy;
+      }
     }
     const [allSessions, workflows, teams, routers, skills, agents, runtimeDiscovery, scheduledTasks] = await Promise.all([
       needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).sessions.list(),
       Promise.resolve(listWorkflows(workDir)),
       Promise.resolve(listTeamDefinitions(workDir)),
       Promise.resolve(listRouterProfiles(workDir)),
-      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
-      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
-      Promise.resolve(discoverAgentRuntimes({ homeDir })),
+      light || needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).skills.listMetadata(),
+      light || needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).agents.list(),
+      light ? Promise.resolve([]) : Promise.resolve(discoverAgentRuntimes({ homeDir })),
       listScheduledAutomationTasks(workDir),
     ]);
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
@@ -1697,7 +1780,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
     // list is noise. The active session is still resumable via the chat view.
     const sessions = allSessions.filter(item => item.messageCount > 0 && isVisibleChatSession(item));
-    const archivedSessions = needsCredentials
+    const archivedSessions = light || needsCredentials
       ? []
       : await listArchivedSessionsForWorkDir(workDir, homeDir);
     const railStore = await readContextRailStore(workDir, homeDir);
@@ -1735,6 +1818,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
         bridge: store?.raw?.bridge ?? {},
+        dataRoot: {
+          root: homeDir,
+          pointerPath: getActoviqHomePointerPath(pointerHomeDir()),
+        },
       },
       bridgeState: {
         mode: bridgeMode,
@@ -1795,7 +1882,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           };
         }),
       },
-      mcpServers: readMcpServerConfig(options.homeDir).servers,
+      mcpServers: readMcpServerConfig(homeDir).servers,
       goal: getGoal(),
       needsCredentials,
       outputStyle,
@@ -1825,7 +1912,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function saveSettings(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const store = await resolveActoviqSettingsStore({
       configPath: options.configPath,
-      homeDir: options.homeDir,
+      homeDir: currentHomeInput(),
     });
     const raw = structuredClone(store.raw);
     const env = readEnvFromSettings(raw);
@@ -1895,6 +1982,66 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     };
   }
 
+  function dataRootStatus() {
+    const root = resolveGuiHomeDir();
+    const summary = summarizeActoviqHome(root);
+    return {
+      root,
+      pointerPath: getActoviqHomePointerPath(pointerHomeDir()),
+      summary: {
+        bytes: summary.bytes,
+        entries: summary.entries,
+      },
+      retainedAfterMigration: true,
+    };
+  }
+
+  async function changeDataRoot(body: Record<string, unknown>) {
+    const targetRaw = typeof body.targetRoot === 'string' ? body.targetRoot.trim() : '';
+    if (!targetRaw) throw new Error('Target data root is required');
+    if (body.confirmed !== true) throw new Error('Confirmation is required before migrating the data root');
+
+    const sourceRoot = resolveGuiHomeDir();
+    const targetRoot = path.resolve(targetRaw);
+    const sourceResolved = path.resolve(sourceRoot);
+    const sameRoot = process.platform === 'win32'
+      ? sourceResolved.toLowerCase() === targetRoot.toLowerCase()
+      : sourceResolved === targetRoot;
+    if (sameRoot) {
+      return { ok: true, changed: false, dataRoot: dataRootStatus(), state: await state() };
+    }
+
+    const migration = await migrateActoviqHomeData({
+      sourceRoot,
+      targetRoot,
+      osHomeDir: pointerHomeDir(),
+    });
+    guiHomeOverride = migration.targetRoot;
+    if (!options.configPath) {
+      clearLoadedJsonConfig();
+      await loadJsonConfigFile(path.join(migration.targetRoot, 'settings.json')).catch(() => undefined);
+    }
+
+    let applyError: string | undefined;
+    try {
+      await reloadSdk();
+    } catch (error) {
+      applyError = (error as Error).message;
+    }
+    invalidateHeavyState();
+    await syncRailReminders().catch(() => undefined);
+    return {
+      ok: true,
+      changed: true,
+      migration,
+      dataRoot: dataRootStatus(),
+      state: {
+        ...await state(),
+        settingsApplyError: applyError,
+      },
+    };
+  }
+
   async function setPermissionPreset(key: string): Promise<GuiRunEvent[]> {
     const presets: Record<string, { mode: ActoviqPermissionMode; rules: ActoviqPermissionRule[]; label: string }> = {
       'read-only': {
@@ -1945,7 +2092,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let managerDedupeTriggered = false;
 
   function managerHomeDir(): string {
-    return options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    return resolveGuiHomeDir();
   }
 
   async function dedupeManagerSessions(): Promise<string | undefined> {
@@ -2273,7 +2420,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ts: Math.floor(Date.now() / 1000),
           text: `automation:${task.name} ${input}`.slice(0, 200),
           model: effectiveModel,
-        }, options.homeDir);
+        }, resolveGuiHomeDir());
       } catch { /* never fail automation over history */ }
       desc.status = 'done';
       return events;
@@ -2653,11 +2800,49 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return [{ type: 'error', message: 'usage: /team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]' }];
       }
+      case 'issues': {
+        const homeDir = resolveGuiHomeDir();
+        const storage = await issueStorageFor(workDir, homeDir);
+        const listIssues = async () => listProjectIssues(workDir, homeDir, storage);
+        if (!args || args === 'list') {
+          const issues = await listIssues();
+          return [{
+            type: 'command.result',
+            title: `Issues (${storage})`,
+            items: issues.map(issue => ({
+              label: `#${issue.number} ${issue.title}`,
+              description: `${issue.status} 路 ${issue.priority}`,
+              detail: issue.description || issue.labels.join(', '),
+            })),
+            text: issues.length === 0 ? 'No issues yet. Use /issues create <title>.' : undefined,
+          }];
+        }
+        if (args.startsWith('create ')) {
+          const title = args.slice(7).trim();
+          if (!title) return [{ type: 'error', message: 'usage: /issues create <title>' }];
+          const issue = await createProjectIssue(workDir, homeDir, { title }, storage);
+          return [{ type: 'notice', message: `issue created: #${issue.number} ${issue.title}` }, { type: 'state' }];
+        }
+        const transitions: Record<string, string> = {
+          start: 'in_progress',
+          review: 'in_review',
+          done: 'done',
+          block: 'blocked',
+        };
+        const [verb, rawId] = args.split(/\s+/, 2);
+        const nextStatus = transitions[verb ?? ''];
+        if (nextStatus && isIssueStatus(nextStatus) && rawId) {
+          const issue = await transitionProjectIssue(workDir, homeDir, rawId.replace(/^#/, ''), nextStatus, 'user', storage);
+          if (!issue) return [{ type: 'error', message: `issue not found: ${rawId}` }];
+          return [{ type: 'notice', message: `issue #${issue.number}: ${issue.status}` }, { type: 'state' }];
+        }
+        return [{ type: 'error', message: 'usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]' }];
+      }
       case 'manager': {
         // `/manager update` and `/manager chat <msg>` are intercepted by the
         // streaming path in /api/send (they register a RunRegistry
         // kind='manager' run); the synchronous sub-commands are handled here.
-        const homeDir = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+        const homeDir = resolveGuiHomeDir();
         if (!args || args === 'status') {
           const cfg = await readManagerConfig(workDir, homeDir);
           const plan = await readProjectPlanFile(workDir, homeDir);
@@ -2877,7 +3062,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
         if (args.startsWith('switch ')) {
           const cfgName = args.slice(7).trim();
-          const cfg = findBridgeConfig(cfgName, options.homeDir);
+          const cfg = findBridgeConfig(cfgName, resolveGuiHomeDir());
           if (!cfg) return [{ type: 'error', message: `bridge config not found: ${cfgName}` }];
           await activateBridgeConfig(cfg);
           return [{ type: 'notice', message: `bridge active: ${cfg.name} → ${bridgeModelLabel} (provider ${cfg.provider})` }, { type: 'state' }];
@@ -3148,7 +3333,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ts: Math.floor(Date.now() / 1000),
           text: input.slice(0, 200),
           model: effectiveModel,
-        }, options.homeDir);
+        }, resolveGuiHomeDir());
       } catch { /* never fail a turn over a history write */ }
       toolMetadata = await sdk!.listToolMetadata();
       invalidateHeavyState();
@@ -3207,8 +3392,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function deleteSession(id: string): Promise<Record<string, unknown>> {
-    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     // Also include the SDK session dir's parent (it may hold sessions/ directly).
     roots.push(path.dirname(sdk!.config.sessionDirectory));
@@ -3253,8 +3438,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // Move a session from sessions/ → archive/ (peer dir that the SDK never
   // touches), so it's hidden from both TUI and GUI session lists.
   async function archiveSession(id: string): Promise<boolean> {
-    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     roots.push(path.dirname(sdk!.config.sessionDirectory)); // SDK session dir's parent
     for (const projectRoot of roots) {
@@ -3278,8 +3463,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function unarchiveSession(id: string): Promise<boolean> {
-    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     roots.push(path.dirname(sdk!.config.sessionDirectory));
     for (const projectRoot of roots) {
@@ -3338,8 +3523,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       } catch { /* archive dir doesn't exist */ }
     };
     // Check archive/ subdirs of all known project roots + the session dir's parent.
-    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
     for (const projectRoot of roots) {
       await addDir(path.join(projectRoot, 'archive'));
@@ -3347,9 +3532,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Also check the parent of the session directory (SDK may store sessions directly there).
     await addDir(path.resolve(sdk!.config.sessionDirectory, '..', 'archive'));
     await addDir(path.join(path.dirname(sdk!.config.sessionDirectory), 'archive'));
-    // Fallback: scan any archive/ dir directly under ~/.actoviq/ (the SDK's data root).
+    // Fallback: scan any archive/ dir directly under the SDK data root.
     try {
-      const dataRoot = path.join(os.homedir(), '.actoviq');
+      const dataRoot = homeDir;
       for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         await addDir(path.join(dataRoot, entry.name, 'archive'));
@@ -3363,8 +3548,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     if (normalizeFsPath(resolved) === normalizeFsPath(workDir)) {
       return { ok: false, error: 'Cannot forget the active workspace — switch to another first.', state: await state() };
     }
-    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
-    const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     // Only touch the forgotten workspace's own session store (+ current SDK dir
     // in case older sessions were written there with this workDir metadata).
     const roots = uniquePaths([
@@ -3385,6 +3570,49 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     invalidateHeavyState();
     return { ok: true, deleted, state: await state() };
   }
+
+  async function pinProject(targetPath: string, pinned: boolean): Promise<Record<string, unknown>> {
+    const resolved = path.resolve(targetPath);
+    const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
+    await setWorkspacePinned(resolved, homeDir, pinned);
+    invalidateHeavyState();
+    return { ok: true, pinned, state: await state() };
+  }
+
+  const issueTargetPath = (rawPath: unknown): string =>
+    typeof rawPath === 'string' && rawPath.trim()
+      ? path.resolve(rawPath.trim())
+      : workDir;
+
+  const issueStorageFor = async (targetPath: string, homeDir: string): Promise<IssueStorageMode> => {
+    const meta = await readProjectMeta(targetPath, homeDir);
+    return isIssueStorageMode(meta.issueStorage) ? meta.issueStorage : 'home';
+  };
+
+  const issuePayload = async (targetPath: string, homeDir: string): Promise<Record<string, unknown>> => {
+    const storage = await issueStorageFor(targetPath, homeDir);
+    const issues = await listProjectIssues(targetPath, homeDir, storage);
+    return {
+      ok: true,
+      path: targetPath,
+      storage,
+      storageModes: ['home', 'workspace'],
+      statuses: ISSUE_STATUSES,
+      priorities: ISSUE_PRIORITIES,
+      issues,
+      counts: Object.fromEntries(ISSUE_STATUSES.map((status) => [
+        status,
+        issues.filter((issue) => issue.status === status).length,
+      ])),
+    };
+  };
+
+  const issueActorFrom = (value: unknown): IssueActor =>
+    value === 'manager' || value === 'agent' || value === 'system' ? value : 'user';
+
+  const issueCommentKindFrom = (value: unknown): IssueCommentKind =>
+    value === 'status_change' || value === 'progress' || value === 'system' ? value : 'comment';
 
   // Only loopback hosts may reach the server. The Host check defeats DNS-rebinding
   // (the browser still sends the attacker's hostname); the Origin check defeats
@@ -3534,7 +3762,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const target = body.target === 'personal' ? 'personal' : 'project';
       const filePath = await saveTeamDefinition(def, {
         projectDir: target === 'project' ? workDir : undefined,
-        homeDir: options.homeDir,
+        homeDir: resolveGuiHomeDir(),
         overwrite: true,
       });
       return json(res, 200, { ok: true, filePath, target });
@@ -3560,7 +3788,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // into settings.json — the same block the TUI/REPL read.
     try {
       const body = await readJson(req);
-      const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir });
+      const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
       const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
       const next = {
         autoInvoke: typeof body.autoInvoke === 'boolean' ? body.autoInvoke : teamPrefs.autoInvoke,
@@ -3657,7 +3885,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/rail-items') {
-    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const hd = resolveGuiHomeDir();
     const store = await readContextRailStore(workDir, hd);
     return json(res, 200, { items: sortContextRailItems(store.items) });
   }
@@ -3665,7 +3893,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     try {
       const body = await readJson(req);
       const next = normalizeContextRailStore({ items: body.items });
-      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const hd = resolveGuiHomeDir();
       const saved = await writeContextRailStore(workDir, hd, next);
       await syncRailReminders(workDir, hd);
       return json(res, 200, { ok: true, items: sortContextRailItems(saved.items) });
@@ -3678,7 +3906,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const body = await readJson(req);
       const targetPath = typeof body.path === 'string' ? body.path.trim() : workDir;
       const content = typeof body.content === 'string' ? body.content : '';
-      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const hd = resolveGuiHomeDir();
       const savedPath = await writeWorkspaceNote(path.resolve(targetPath), hd, content);
       invalidateHeavyState();
       return json(res, 200, { ok: true, path: savedPath, content });
@@ -3687,7 +3915,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/project-status') {
-    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const hd = resolveGuiHomeDir();
     const targetPath = typeof url.searchParams.get('path') === 'string' && url.searchParams.get('path')!.trim()
       ? path.resolve(url.searchParams.get('path')!.trim())
       : workDir;
@@ -3710,7 +3938,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (!isProjectStatus(body.status)) {
         return json(res, 400, { error: 'Invalid status' });
       }
-      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const hd = resolveGuiHomeDir();
       const meta = await writeProjectMeta(targetPath, hd, { status: body.status });
       invalidateHeavyState();
       return json(res, 200, {
@@ -3725,7 +3953,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
-    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const hd = resolveGuiHomeDir();
     return json(res, 200, await readProjectPlan(workDir, hd));
   }
   if (req.method === 'POST' && url.pathname === '/api/plan') {
@@ -3736,7 +3964,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         today: Array.isArray(body.today) ? body.today : [],
         upcoming: Array.isArray(body.upcoming) ? body.upcoming : [],
       };
-      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const hd = resolveGuiHomeDir();
       await writeProjectPlan(workDir, hd, next);
       return json(res, 200, { ok: true, plan: next });
     } catch (error) {
@@ -3744,7 +3972,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/project-doc') {
-    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const hd = resolveGuiHomeDir();
     const content = (await readProgressFile(workDir, hd)) ?? '';
     return json(res, 200, { content, path: managerProgressPath(workDir, hd) });
   }
@@ -3752,14 +3980,147 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     try {
       const body = await readJson(req);
       const content = typeof body.content === 'string' ? body.content : '';
-      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const hd = resolveGuiHomeDir();
       const savedPath = await writeProgressFile(workDir, hd, content);
       return json(res, 200, { ok: true, path: savedPath });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
   }
+  if (req.method === 'GET' && url.pathname === '/api/issues') {
+    try {
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(url.searchParams.get('path'));
+      return json(res, 200, await issuePayload(targetPath, hd));
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues') {
+    try {
+      const body = await readJson(req);
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(body.path);
+      const storage = await issueStorageFor(targetPath, hd);
+      const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
+      if (typeof idOrNumber === 'string' || typeof idOrNumber === 'number') {
+        const patch = {
+          ...(typeof body.title === 'string' ? { title: body.title } : {}),
+          ...(typeof body.description === 'string' ? { description: body.description } : {}),
+          ...(isIssuePriority(body.priority) ? { priority: body.priority } : {}),
+          ...(Array.isArray(body.labels) ? { labels: body.labels } : {}),
+          ...(Array.isArray(body.acceptanceCriteria) ? { acceptanceCriteria: body.acceptanceCriteria } : {}),
+          ...(typeof body.parentIssueId === 'string' || body.parentIssueId === null ? { parentIssueId: body.parentIssueId } : {}),
+          ...(typeof body.agentConfig === 'string' || body.agentConfig === null ? { agentConfig: body.agentConfig } : {}),
+          ...(typeof body.brief === 'string' || body.brief === null ? { brief: body.brief } : {}),
+        };
+        const issue = await updateProjectIssue(targetPath, hd, idOrNumber, patch, storage);
+        if (!issue) return json(res, 404, { error: 'Issue not found' });
+        return json(res, 200, { ...(await issuePayload(targetPath, hd)), issue });
+      }
+      const issue = await createProjectIssue(targetPath, hd, {
+        title: typeof body.title === 'string' ? body.title : '',
+        description: typeof body.description === 'string' ? body.description : '',
+        status: isIssueStatus(body.status) ? body.status : undefined,
+        priority: isIssuePriority(body.priority) ? body.priority : undefined,
+        labels: Array.isArray(body.labels) ? body.labels : undefined,
+        acceptanceCriteria: Array.isArray(body.acceptanceCriteria) ? body.acceptanceCriteria : undefined,
+        parentIssueId: typeof body.parentIssueId === 'string' ? body.parentIssueId : undefined,
+        createdBy: body.createdBy === 'manager' ? 'manager' : 'user',
+        agentConfig: typeof body.agentConfig === 'string' ? body.agentConfig : undefined,
+        brief: typeof body.brief === 'string' ? body.brief : undefined,
+      }, storage);
+      return json(res, 200, { ...(await issuePayload(targetPath, hd)), issue });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues/status') {
+    try {
+      const body = await readJson(req);
+      if (!isIssueStatus(body.status)) return json(res, 400, { error: 'Invalid issue status' });
+      const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
+      if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') {
+        return json(res, 400, { error: 'Missing issue id' });
+      }
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(body.path);
+      const storage = await issueStorageFor(targetPath, hd);
+      const issue = await transitionProjectIssue(targetPath, hd, idOrNumber, body.status, issueActorFrom(body.actor), storage);
+      if (!issue) return json(res, 404, { error: 'Issue not found' });
+      return json(res, 200, { ...(await issuePayload(targetPath, hd)), issue });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues/comment') {
+    try {
+      const body = await readJson(req);
+      const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
+      if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') {
+        return json(res, 400, { error: 'Missing issue id' });
+      }
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(body.path);
+      const storage = await issueStorageFor(targetPath, hd);
+      const issue = await addIssueComment(targetPath, hd, idOrNumber, {
+        body: typeof body.body === 'string' ? body.body : '',
+        actor: issueActorFrom(body.actor),
+        kind: issueCommentKindFrom(body.kind),
+      }, storage);
+      if (!issue) return json(res, 404, { error: 'Issue not found' });
+      return json(res, 200, { ...(await issuePayload(targetPath, hd)), issue });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues/delete') {
+    try {
+      const body = await readJson(req);
+      const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
+      if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') {
+        return json(res, 400, { error: 'Missing issue id' });
+      }
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(body.path);
+      const storage = await issueStorageFor(targetPath, hd);
+      const deleted = await deleteProjectIssue(targetPath, hd, idOrNumber, storage);
+      if (!deleted) return json(res, 404, { error: 'Issue not found' });
+      return json(res, 200, await issuePayload(targetPath, hd));
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues/storage') {
+    try {
+      const body = await readJson(req);
+      if (!isIssueStorageMode(body.mode)) return json(res, 400, { error: 'Invalid issue storage mode' });
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(body.path);
+      const from = await issueStorageFor(targetPath, hd);
+      await migrateIssueStore({ workDir: targetPath, homeDir: hd, from, to: body.mode });
+      await writeProjectMeta(targetPath, hd, { issueStorage: body.mode });
+      return json(res, 200, await issuePayload(targetPath, hd));
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
       if (req.method === 'GET' && url.pathname === '/api/session/messages') return json(res, 200, { messages: renderableHistory(session) });
+      if (req.method === 'GET' && url.pathname === '/api/settings/data-root') {
+        return json(res, 200, dataRootStatus());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/settings/data-root') {
+        try {
+          return json(res, 200, await changeDataRoot(await readJson(req)));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/settings/data-root/open') {
+        const root = resolveGuiHomeDir();
+        openPathInSystem(root);
+        return json(res, 200, { ok: true, path: root });
+      }
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         return json(res, 200, await saveSettings(await readJson(req)));
       }
@@ -3768,7 +4129,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect-local') {
         const runtime = url.searchParams.get('runtime') || '';
-        const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+        const hd = resolveGuiHomeDir();
         return json(res, 200, detectRuntimeLocalConfig(runtime, hd) || {});
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/update-local') {
@@ -3776,7 +4137,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const body = await readJson(req);
           const runtime = typeof body.runtime === 'string' ? body.runtime.trim() : '';
           if (!runtime) return json(res, 400, { error: 'Missing runtime' });
-          const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+          const hd = resolveGuiHomeDir();
           const result = updateRuntimeLocalConfig(runtime, {
             model: typeof body.model === 'string' ? body.model : undefined,
             baseURL: typeof body.baseURL === 'string' ? body.baseURL : undefined,
@@ -3801,7 +4162,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         // clearApiKey:true explicitly drops the key.
         // Hadamard configs may omit credentials (SDK defaults) or carry apiKey/baseURL
         // for a named provider override — same persistence path either way.
-        const existing = findBridgeConfig(name, options.homeDir);
+        const existing = findBridgeConfig(name, resolveGuiHomeDir());
         const config: PersistedBridgeConfig = { name, provider, runtime };
         if (body.clearApiKey === true) {
           // explicitly remove the saved key
@@ -3824,7 +4185,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
               modality: (m.modality === 'multimodal' ? 'multimodal' : 'text') as ModelModality,
             }));
         }
-        addBridgeConfig(config, options.homeDir);
+        addBridgeConfig(config, resolveGuiHomeDir());
         // If the saved config is the active one, refresh it so the next turn uses it.
         if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
         invalidateHeavyState();
@@ -3834,7 +4195,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name) return json(res, 400, { error: 'Missing config name' });
-        removeBridgeConfig(name, options.homeDir);
+        removeBridgeConfig(name, resolveGuiHomeDir());
         if (activeBridgeConfig?.name === name) disableBridge();
         invalidateHeavyState();
         return json(res, 200, await state());
@@ -3842,7 +4203,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'POST' && url.pathname === '/api/bridge/activate') {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
-        const cfg = findBridgeConfig(name, options.homeDir);
+        const cfg = findBridgeConfig(name, resolveGuiHomeDir());
         if (!cfg) return json(res, 404, { error: `bridge config not found: ${name}` });
         try {
           await activateBridgeConfig(cfg);
@@ -3911,10 +4272,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const target = body.target === 'personal' ? 'personal' : 'project';
         const store = await resolveActoviqSettingsStore({
           configPath: options.configPath,
-          homeDir: options.homeDir,
+          homeDir: currentHomeInput(),
         }).catch(() => undefined);
-        // modelRouter treats homeDir as the Actoviq home (~/.actoviq), not the OS home.
-        const actoviqHome = path.join(store?.homeDir ?? options.homeDir ?? os.homedir(), '.actoviq');
+        const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
         try {
           await saveRouterProfile(profile, {
             projectDir: target === 'project' ? workDir : undefined,
@@ -3937,9 +4297,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!name) return json(res, 400, { error: 'Missing router profile name' });
         const store = await resolveActoviqSettingsStore({
           configPath: options.configPath,
-          homeDir: options.homeDir,
+          homeDir: currentHomeInput(),
         }).catch(() => undefined);
-        const actoviqHome = path.join(store?.homeDir ?? options.homeDir ?? os.homedir(), '.actoviq');
+        const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
         const loaded = loadRouterProfile(name, workDir, actoviqHome);
         if (!loaded) return json(res, 404, { error: `router profile not found: ${name}` });
         if (loaded.source === 'built-in') {
@@ -3952,7 +4312,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 200, await state());
       }
       if (req.method === 'GET' && url.pathname === '/api/mcp/list') {
-        return json(res, 200, readMcpServerConfig(options.homeDir));
+        return json(res, 200, readMcpServerConfig(resolveGuiHomeDir()));
       }
       if (req.method === 'POST' && url.pathname === '/api/mcp/add') {
         const body = await readJson(req);
@@ -3962,7 +4322,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (typeof body.command === 'string' && body.command) server.command = body.command;
         if (typeof body.url === 'string' && body.url) server.url = body.url;
         if (Array.isArray(body.args)) server.args = body.args.filter((a: unknown) => typeof a === 'string') as string[];
-        addMcpServer(server, options.homeDir);
+        addMcpServer(server, resolveGuiHomeDir());
         try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
         invalidateHeavyState();
         return json(res, 200, await state());
@@ -3971,7 +4331,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name) return json(res, 400, { error: 'Missing server name' });
-        removeMcpServer(name, options.homeDir);
+        removeMcpServer(name, resolveGuiHomeDir());
         try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
         invalidateHeavyState();
         return json(res, 200, await state());
@@ -4031,6 +4391,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const target = typeof body.path === 'string' ? body.path.trim() : '';
         if (!target) return json(res, 400, { error: 'Missing project path' });
         return json(res, 200, await forgetProject(target));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/project/pin') {
+        const body = await readJson(req);
+        const target = typeof body.path === 'string' ? body.path.trim() : '';
+        if (!target) return json(res, 400, { error: 'Missing project path' });
+        const pinned = body.pinned !== false;
+        return json(res, 200, await pinProject(target, pinned));
       }
       if (req.method === 'GET' && url.pathname === '/api/scheduled-tasks') {
         return json(res, 200, { tasks: await listScheduledAutomationTasks(workDir) });
@@ -4471,28 +4838,15 @@ export function createActoviqGuiHtml(): string {
         <button id="navAutomation" class="nav-btn region-nav" data-region="automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
         <button id="navPlugins" class="nav-btn region-nav" data-region="plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
       </nav>
-      <label class="search"><span>Search</span><input id="commandSearch" placeholder="Search chats"></label>
-      <section class="project-section">
-        <div class="section-title-row">
-          <h2>Projects</h2>
-          <div class="section-actions">
-            <button type="button" id="newWorkspaceBtn" class="mini-action-btn" title="Switch workspace"><span class="mini-icon">${guiIcon('folder')}</span><small>Workspace</small></button>
-            <button type="button" id="newProjectSessionBtn" class="mini-action-btn" title="New chat in this workspace"><span class="mini-icon">${guiIcon('plus')}</span><small>Chat</small></button>
-          </div>
+      <section class="sidebar-recents" id="sidebarRecents" aria-label="Pinned and recent">
+        <div class="sidebar-recents-block" id="sidebarPinnedBlock">
+          <h2 class="sidebar-recents-heading">Pinned</h2>
+          <div id="sidebarPinnedList" class="sidebar-recents-list"></div>
         </div>
-        <div class="project-control-row">
-          <button class="project-row" id="projectRoot">
-            <span class="folder-icon">${guiIcon('folder')}</span>
-            <span><strong id="projectName">actoviq-agent-sdk</strong><small id="projectPath"></small></span>
-            <span class="chevron">${guiIcon('chevronDown')}</span>
-          </button>
-          <button type="button" id="projectMenuBtn" class="icon-btn" title="Project options" aria-label="Project options">${guiIcon('more')}</button>
+        <div class="sidebar-recents-block" id="sidebarRecentBlock">
+          <h2 class="sidebar-recents-heading">Recent</h2>
+          <div id="sidebarRecentList" class="sidebar-recents-list"></div>
         </div>
-        <div id="projects" class="project-list"></div>
-        <div class="project-actions">
-          <button type="button" id="addProjectBtn" class="sidebar-link">Add workspace</button>
-        </div>
-        <div id="workspaceMeta" class="workspace-meta"></div>
       </section>
       <div class="sidebar-footer">
         <button id="settingsBtn" class="nav-btn"><span class="nav-icon">${guiIcon('gear')}</span><span>Settings</span></button>
@@ -4512,13 +4866,13 @@ export function createActoviqGuiHtml(): string {
         <div class="overview-toolbar">
           <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="overviewSearch" class="overview-search" placeholder="Search projects…" autocomplete="off"></label>
           <select id="overviewStatusFilter" class="overview-toolbar-select" aria-label="Filter by status">
-            <option value="all">全部状态</option>
-            <option value="in_progress">正在执行</option>
-            <option value="planning">规划中</option>
-            <option value="on_hold">已搁置</option>
-            <option value="not_started">未开始</option>
-            <option value="completed">已完成</option>
-            <option value="current">仅当前工作区</option>
+            <option value="all">All statuses</option>
+            <option value="in_progress">In progress</option>
+            <option value="planning">Planning</option>
+            <option value="on_hold">On hold</option>
+            <option value="not_started">Not started</option>
+            <option value="completed">Completed</option>
+            <option value="current">Current workspace</option>
           </select>
           <select id="overviewSort" class="overview-toolbar-select" aria-label="Sort projects">
             <option value="recent">Recent</option>
@@ -4948,6 +5302,11 @@ export function createActoviqGuiHtml(): string {
           </div>
         </div>
         <div class="settings-group">
+          <h2>Data storage</h2>
+          <div class="settings-help-row"><span><strong id="settingsDataRootPath">Loading...</strong><small id="settingsDataRootSummary">Local projects, sessions, runtime configs, MCP, teams, workflows, and settings.</small></span><button type="button" id="settingsDataRootChoose" class="secondary-btn">Change...</button></div>
+          <div class="settings-action-row"><button type="button" id="settingsDataRootOpen" class="secondary-btn">Open data folder</button></div>
+        </div>
+        <div class="settings-group">
           <h2>Permissions</h2>
           <div class="settings-row"><span><strong>Default permission</strong><small>Read and edit files in the workspace.</small></span><input id="settingsDefaultPermission" type="checkbox"></div>
           <div class="settings-row"><span><strong>Auto review</strong><small>Auto-accept workspace edits when possible.</small></span><input id="settingsAutoAudit" type="checkbox"></div>
@@ -5363,7 +5722,6 @@ body[data-theme="dark"] {
 .overview-table-head { background: var(--bg-app); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); cursor: default; }
 .overview-table-row:not(.overview-table-head) { cursor: pointer; }
 .overview-table-row:not(.overview-table-head):hover { background: var(--surface-hover); }
-.overview-table-row.active { background: color-mix(in srgb, var(--brand) 6%, var(--bg-surface)); }
 .overview-table-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; }
 .overview-table-name .ui-icon { width: 16px; height: 16px; color: var(--text-2); flex: 0 0 auto; }
 .overview-table-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -5372,8 +5730,13 @@ body[data-theme="dark"] {
 .overview-table-row > div { min-width: 0; }
 .overview-table-row .pc-note-table { min-width: 0; }
 .pc-badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); background: var(--bg-surface); white-space: nowrap; }
-.pc-badge.active, .pc-badge.running, .pc-badge.status { color: var(--text-2); border-color: var(--border); background: var(--bg-surface); }
-.pc-current-chip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: transparent; white-space: nowrap; }
+.pc-badge.active, .pc-badge.running { color: var(--text-2); border-color: var(--border); background: var(--bg-surface); }
+.pc-badge.status { border-color: transparent; }
+.pc-badge.status-in_progress { color: #3f6f8f; background: #e8f1f6; border-color: #d2e3ec; }
+.pc-badge.status-planning { color: #7a6a3d; background: #f5f0e4; border-color: #e8dfc8; }
+.pc-badge.status-on_hold { color: #8a6a4a; background: #f4ebe3; border-color: #e8d7c8; }
+.pc-badge.status-not_started { color: #6b7280; background: #f1f2f4; border-color: #e2e4e8; }
+.pc-badge.status-completed { color: #3f7a5c; background: #e8f3ec; border-color: #d0e5d9; }
 .project-status-select {
   min-height: 28px;
   border: 1px solid var(--border);
@@ -5394,11 +5757,9 @@ body[data-theme="dark"] {
 .pc-note-compact .pc-note-input, .pc-note-table .pc-note-input { min-height: 36px; }
 .proj-card { position: relative; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); padding: 12px 16px; box-shadow: var(--shadow-card); display: grid; gap: 6px; cursor: pointer; overflow: hidden; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
 .proj-card:hover { border-color: var(--border-active-soft); box-shadow: var(--shadow-card-hover); transform: translateY(-2px); }
-.proj-card.active { border-color: var(--border-active); box-shadow: 0 0 0 2px var(--brand-soft), var(--shadow-card-hover); background: linear-gradient(135deg, var(--surface-selected) 0%, var(--bg-surface) 42%); }
 .proj-card .pc-accent { display: none; }
 .proj-card .pc-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .proj-card .pc-icon { width: 36px; height: 36px; border-radius: 10px; display: inline-grid; place-items: center; flex: 0 0 36px; background: color-mix(in srgb, var(--pc-accent, var(--brand)) 20%, var(--bg-surface)); color: var(--pc-accent, var(--brand)); border: 1px solid color-mix(in srgb, var(--pc-accent, var(--brand)) 32%, var(--border)); box-shadow: none; }
-.pc-active-badge { margin-left: auto; flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--brand); background: var(--brand-soft); border: 1px solid var(--border-active-soft); border-radius: 999px; padding: 3px 9px; }
 .proj-card .pc-icon .ui-icon { width: 18px; height: 18px; }
 .proj-card .pc-titles { min-width: 0; }
 .proj-card .pc-title { font-weight: 700; font-size: 16px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
@@ -5425,7 +5786,13 @@ body[data-theme="dark"] {
 .conv-side { flex: 0 0 auto; display: grid; gap: 4px; align-items: start; text-align: right; }
 /* --- Project plan checklist (plan/UI_PLAN §4.2). --- */
 .detail-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 0; align-items: stretch; height: 100%; }
+.detail-main { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
+.project-detail-tabs { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 8px 16px 0; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.project-detail-tab { min-height: 30px; border: 0; border-bottom: 2px solid transparent; border-radius: 7px 7px 0 0; background: transparent; color: var(--text-2); padding: 0 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.project-detail-tab:hover { color: var(--text-1); background: var(--surface-hover); }
+.project-detail-tab.active { color: var(--brand); border-bottom-color: var(--brand); background: var(--brand-soft); }
 .project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
+.detail-main .project-doc-panel { flex: 1; border-right: 0; }
 .project-doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .project-doc-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
 .project-doc-actions { display: flex; align-items: center; gap: 10px; }
@@ -5459,6 +5826,59 @@ body[data-theme="dark"] {
 .project-doc-view.md-prose li.md-task input[type="checkbox"] { margin-right: .35em; accent-color: var(--brand); vertical-align: middle; }
 .project-doc-view.md-prose li.md-task-done { color: var(--text-2); }
 .project-doc-view.md-prose .md-table { font-size: 12px; }
+.project-issues-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-app); }
+.project-issues-toolbar { flex: 0 0 auto; min-height: 48px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.project-issues-title { min-width: 0; display: grid; gap: 1px; }
+.project-issues-title h2 { margin: 0; font-size: 14px; font-weight: 650; color: var(--text-1); }
+.project-issues-title span { color: var(--text-2); font-size: 11.5px; }
+.project-issues-actions { display: flex; align-items: center; gap: 7px; }
+.project-issues-storage { height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12px; padding: 0 24px 0 9px; }
+.project-issues-error { margin: 8px 14px 0; border: 1px solid color-mix(in srgb, var(--err) 25%, var(--border)); background: color-mix(in srgb, var(--err) 9%, var(--bg-surface)); color: var(--err); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; }
+.issue-quick-create { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 112px auto; gap: 8px; padding: 10px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.issue-quick-create input, .issue-quick-create select { min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font-size: 12.5px; }
+.issue-quick-create button, .issue-comment-form button { min-height: 32px; min-width: 88px; border: 0; border-radius: 8px; background: var(--btn-primary-bg); color: var(--btn-primary-fg); padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.issue-quick-create button .ui-icon, .issue-comment-form button .ui-icon { width: 14px; height: 14px; }
+.issue-filter-row { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
+.issue-filter { min-height: 28px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); color: var(--text-2); padding: 0 10px; font-size: 12px; white-space: nowrap; }
+.issue-filter.active { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 34%, var(--border)); background: var(--brand-soft); }
+.project-issues-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 34%); overflow: hidden; }
+.issue-board { min-height: 0; overflow: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; align-content: start; }
+.issue-column { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); overflow: hidden; box-shadow: var(--shadow-card); }
+.issue-column > header { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 12px; font-weight: 650; }
+.issue-column > header strong { min-width: 22px; height: 20px; display: inline-grid; place-items: center; border-radius: 999px; background: var(--bg-surface-2); color: var(--text-2); font-size: 11px; }
+.issue-column-empty { margin: 0; padding: 12px; color: var(--text-2); font-size: 12px; }
+.issue-card { margin: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 9px 10px; display: grid; gap: 5px; cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+.issue-card:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+.issue-card.active { border-color: var(--border-active); box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent); }
+.issue-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.issue-number { color: var(--text-2); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.issue-card strong { color: var(--text-1); font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.issue-card small { color: var(--text-2); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.issue-priority { border-radius: 999px; padding: 1px 7px; border: 1px solid var(--border); color: var(--text-2); background: var(--bg-surface); font-size: 10.5px; font-weight: 650; white-space: nowrap; }
+.priority-urgent { color: #9f1239; background: #fff1f2; border-color: #fecdd3; }
+.priority-high { color: #92400e; background: #fffbeb; border-color: #fde68a; }
+.priority-medium { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
+.priority-low { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+.issue-detail-panel { min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid var(--border); background: var(--bg-surface); padding: 12px; display: grid; gap: 12px; align-content: start; }
+.issue-detail-panel.empty { place-content: center; color: var(--text-2); text-align: center; font-size: 12.5px; }
+.issue-detail-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.issue-detail-title { min-width: 0; display: grid; gap: 3px; }
+.issue-detail-title span { color: var(--text-2); font-size: 11.5px; }
+.issue-detail-title h3 { margin: 0; color: var(--text-1); font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }
+.issue-edit-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.issue-edit-grid label { min-width: 0; display: grid; gap: 4px; color: var(--text-2); font-size: 11.5px; }
+.issue-edit-grid label.wide { grid-column: 1 / -1; }
+.issue-edit-grid input, .issue-edit-grid textarea, .issue-edit-grid select { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; padding: 7px 9px; resize: vertical; }
+.issue-edit-grid button { justify-self: start; }
+.issue-transition-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.issue-transition-row small { color: var(--text-2); font-size: 12px; }
+.issue-comments { display: grid; gap: 8px; }
+.issue-comments h4 { margin: 0; color: var(--text-1); font-size: 13px; }
+.issue-comment { border: 1px solid var(--border); border-radius: 8px; padding: 8px 9px; background: var(--bg-surface-2); }
+.issue-comment small { color: var(--text-2); font-size: 11px; }
+.issue-comment p { margin: 3px 0 0; color: var(--text-1); font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.issue-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 7px; }
+.issue-comment-form input { min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font-size: 12.5px; }
 .detail-sidebar { min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
 .conv-sidebar-top { flex: 1; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
@@ -5933,18 +6353,13 @@ body[data-theme="dark"] {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
 }
-/* Adaptive sidebar: when not in a project chat, hide the search + projects
-   list (the 4 reference designs all show a slim nav-only sidebar in those
-   modes; the rich sidebar appears only when actually browsing chats). */
-body[data-sidebar-mode="nav"] .sidebar .search,
-body[data-sidebar-mode="nav"] .sidebar .project-section,
-body[data-sidebar-mode="nav"] .sidebar .sidebar-link,
-body[data-sidebar-mode="nav"] .sidebar .workspace-meta { display: none; }
+/* Sidebar is nav + Pinned/Recent only. Chat lists live in the project detail
+   conversation sidebar; workspace open uses the overview "+ New workspace". */
 body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-icon) { display: inline; }
 .brand { display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 8px; margin-bottom: 4px; }
 .brand-mark { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border-radius: 9px; background: var(--avatar-gradient); color: var(--fg-on-accent); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .brand-mark .ui-icon { width: 18px; height: 18px; }
-.brand-name { font-weight: 700; font-size: 15px; letter-spacing: 0; color: var(--text-1); }
+.brand-name { font-weight: 700; font-size: 14px; letter-spacing: 0; color: var(--text-1); }
 .primary-nav, .project-list, .command-list { display: grid; gap: 2px; }
 .nav-btn, .project-row, .project-list button, .command-list button, .sidebar-link, .icon-btn, .pill-btn, .round-btn, .secondary-btn, .mini-action-btn {
   min-height: 34px;
@@ -5953,9 +6368,9 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
   background: transparent;
   color: var(--text-1);
 }
-.nav-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 0 10px; text-align: left; }
-.nav-icon, .folder-icon, .chevron, .settings-icon, .mini-icon { width: 22px; height: 22px; display: inline-grid; place-items: center; flex: 0 0 22px; color: var(--text-2); }
-.nav-icon .ui-icon, .folder-icon .ui-icon, .chevron .ui-icon, .settings-icon .ui-icon, .mini-icon .ui-icon { width: 18px; height: 18px; }
+.nav-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0 8px; text-align: left; font-size: 13px; }
+.nav-icon, .folder-icon, .chevron, .settings-icon, .mini-icon { width: 18px; height: 18px; display: inline-grid; place-items: center; flex: 0 0 18px; color: var(--text-2); }
+.nav-icon .ui-icon, .folder-icon .ui-icon, .chevron .ui-icon, .settings-icon .ui-icon, .mini-icon .ui-icon { width: 15px; height: 15px; }
 .nav-btn:hover, .project-row:hover, .project-list button:hover, .command-list button:hover, .sidebar-link:hover, .icon-btn:hover, .pill-btn:hover, .mini-action-btn:hover { background: rgba(0,0,0,.055); }
 .search { display: grid; gap: 6px; color: var(--text-2); font-size: 13px; }
 .search input, .settings-search input {
@@ -5967,8 +6382,120 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
   background: var(--bg-surface);
   outline: none;
 }
+.sidebar-recents {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0 4px;
+  margin-top: 2px;
+}
+.sidebar-recents-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sidebar-recents-heading {
+  margin: 0 8px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.sidebar-recents-list { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sidebar-recents-empty {
+  margin: 0 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  padding: 4px 0;
+}
+.sr-project { display: flex; flex-direction: column; gap: 1px; min-width: 0; margin-bottom: 4px; }
+.sr-project-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.sr-project-row:hover { background: rgba(0,0,0,.05); }
+.sr-project-row.active { background: rgba(0,0,0,.06); }
+.sr-project-row .sr-folder { width: 14px; height: 14px; flex: 0 0 14px; color: var(--text-2); display: inline-grid; place-items: center; }
+.sr-project-row .sr-folder .ui-icon { width: 13px; height: 13px; }
+.sr-project-row .sr-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+  font-size: 12.5px;
+}
+.sr-project-row .sr-pin {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  display: inline-grid;
+  place-items: center;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+}
+.sr-project-row:hover .sr-pin,
+.sr-project-row.pinned .sr-pin { opacity: 1; }
+.sr-project-row.pinned .sr-pin { color: var(--brand); }
+.sr-project-row .sr-pin:hover { background: rgba(0,0,0,.08); color: var(--text-1); }
+.sr-project-row .sr-pin .ui-icon { width: 12px; height: 12px; }
+.sr-session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  margin-left: 14px;
+  padding: 3px 8px 3px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  font-size: 11.5px;
+  box-sizing: border-box;
+  max-width: calc(100% - 14px);
+}
+.sr-session-row:hover { background: rgba(0,0,0,.05); color: var(--text-1); }
+.sr-session-row.active { background: rgba(0,0,0,.06); color: var(--text-1); }
+.sr-session-row .sr-session-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sr-session-row .sr-session-time {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.sr-session-empty {
+  margin: 0 8px 2px 26px;
+  font-size: 11px;
+  color: var(--text-2);
+}
 .project-section, .command-section { min-height: 0; }
-.project-section { flex: 1; overflow: hidden; }
+.project-section { flex: 0 1 auto; overflow: hidden; max-height: 42%; }
 .project-section h2, .command-section h2, .settings-sidebar h2 { margin: 8px 10px; font-size: 13px; font-weight: 500; color: var(--text-2); }
 .section-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 4px; }
 .section-actions { display: flex; align-items: center; gap: 4px; }
@@ -5981,8 +6508,6 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .project-list { max-height: 150px; overflow: auto; margin: 4px 0; }
 .project-list button { width: 100%; display: grid; gap: 2px; padding: 7px 10px; text-align: left; }
 .project-list button.active { background: rgba(0,0,0,.06); }
-.project-actions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px; }
-.workspace-meta { margin: 2px 10px 8px; color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-row strong, .project-list strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-row small, .project-list small, .command-list small { color: #7e8389; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-icon { color: var(--text-2); }
@@ -6262,13 +6787,13 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 /* --- UI plan visual polish (30 Jun 2026). --- */
 body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .app { border: 0; background: var(--bg-app); }
-.sidebar { padding: 18px 12px 14px; gap: 14px; background: var(--bg-sidebar); box-shadow: 1px 0 0 var(--border); }
+.sidebar { padding: 14px 10px 12px; gap: 10px; background: var(--bg-sidebar); box-shadow: 1px 0 0 var(--border); }
 body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
-.brand { height: 38px; margin-bottom: 8px; }
-.brand-mark { width: 32px; height: 32px; border-radius: 10px; background: var(--avatar-gradient); }
+.brand { height: 34px; margin-bottom: 4px; }
+.brand-mark { width: 28px; height: 28px; border-radius: 9px; background: var(--avatar-gradient); }
 .brand-name, .region-header h1, .proj-card .pc-title { letter-spacing: 0; }
-.primary-nav { gap: 8px; }
-.nav-btn { min-height: 44px; border-radius: 10px; padding: 0 12px; font-size: 15px; }
+.primary-nav { gap: 2px; }
+.nav-btn { min-height: 34px; border-radius: 8px; padding: 0 8px; font-size: 13px; }
 
 .sidebar-footer { padding-top: 8px; border-top: 1px solid var(--border); }
 .region, .chat, .project-overview, .project-detail, .project-conversation { background: var(--bg-app); }
@@ -7151,6 +7676,27 @@ function api(path, options = {}) {
 const __name = (target) => target;
 const PROJECT_STATUSES = ${JSON.stringify(PROJECT_STATUSES)};
 const PROJECT_STATUS_LABELS = ${JSON.stringify(PROJECT_STATUS_LABELS)};
+const ISSUE_STATUSES = ${JSON.stringify(ISSUE_STATUSES)};
+const ISSUE_PRIORITIES = ${JSON.stringify(ISSUE_PRIORITIES)};
+const ISSUE_STATUS_LABELS = {
+  backlog: 'Backlog',
+  todo: 'To do',
+  in_progress: 'In progress',
+  in_review: 'In review',
+  done: 'Done',
+  blocked: 'Blocked',
+  cancelled: 'Cancelled'
+};
+const ISSUE_PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'None' };
+const ISSUE_TRANSITIONS = {
+  backlog: ['todo', 'cancelled'],
+  todo: ['in_progress', 'cancelled'],
+  in_progress: ['in_review', 'blocked', 'todo'],
+  in_review: ['done', 'todo'],
+  blocked: ['todo'],
+  done: [],
+  cancelled: []
+};
 function isProjectStatus(value) {
   return typeof value === 'string' && PROJECT_STATUSES.includes(value);
 }
@@ -7215,11 +7761,19 @@ const state = {
   detailSelectedId: null,
   detailArchivedExpanded: false,
   detailConvQuery: '',
+  projectDetailTab: 'document',
   projectDocLoadedFor: null,
   projectDocRaw: '',
   projectDocEditing: false,
   projectDocDirty: false,
   projectDocSaveTimer: null,
+  issues: [],
+  issuesLoadedFor: null,
+  issuesStorage: 'home',
+  issuesSelectedId: null,
+  issuesFilter: 'open',
+  issuesLoading: false,
+  issuesError: null,
   activeSessionId: null,
   lastHydratedMessages: null,
   transcriptCache: {},
@@ -7973,6 +8527,20 @@ function formatRelativeTime(iso) {
   if (day < 30) return day + 'd ago';
   return new Date(iso).toLocaleDateString();
 }
+function formatRelativeTimeShort(iso) {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diff = Math.max(0, Date.now() - t);
+  const sec = Math.round(diff / 1000);
+  if (sec < 60) return 'now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return min + 'm';
+  const hr = Math.round(min / 60);
+  if (hr < 24) return hr + 'h';
+  const day = Math.round(hr / 24);
+  if (day < 30) return day + 'd';
+  return new Date(iso).toLocaleDateString();
+}
 function toggleToolCard(card, toggle, forceCollapsed) {
   const collapsed = typeof forceCollapsed === 'boolean'
     ? forceCollapsed
@@ -8372,54 +8940,154 @@ async function runScheduledTask(id) {
   el('settingsScheduleStatus').textContent = 'Run complete';
 }
 function renderProjects() {
-  const root = el('projects');
-  root.textContent = '';
+  // Legacy sidebar chat list removed — keep Pinned/Recent in sync only.
+  renderSidebarRecents();
+}
+function sidebarRecentsProjects() {
   const projects = state.snapshot?.projects || [];
-  const query = el('commandSearch').value.trim().toLowerCase();
-  const visibleSessions = (state.snapshot?.sessions || []).filter(item => {
-    if (item.kind === 'manager') return false;
-    const haystack = [item.id, item.title, item.model, item.status].filter(Boolean).join(' ').toLowerCase();
-    return !query || haystack.includes(query);
+  const pinned = projects.filter((p) => p.pinned);
+  const recent = projects.filter((p) => !p.pinned).slice(0, 8);
+  return { pinned, recent };
+}
+function appendSidebarProjectGroup(root, project) {
+  const group = document.createElement('div');
+  group.className = 'sr-project';
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'sr-project-row' + (project.active ? ' active' : '') + (project.pinned ? ' pinned' : '');
+  row.title = project.path || project.name;
+  const folder = document.createElement('span');
+  folder.className = 'sr-folder';
+  folder.innerHTML = guiIcon('folder');
+  const name = document.createElement('span');
+  name.className = 'sr-name';
+  name.textContent = project.name || project.path;
+  const pin = document.createElement('button');
+  pin.type = 'button';
+  pin.className = 'sr-pin';
+  pin.title = project.pinned ? 'Unpin from sidebar' : 'Pin to sidebar';
+  pin.setAttribute('aria-label', pin.title);
+  pin.innerHTML = guiIcon('pin');
+  pin.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void setProjectPinned(project.path, !project.pinned);
   });
-  const chats = document.createElement('div');
-  chats.className = 'project-session-list current-project-chats';
-  for (const item of visibleSessions.slice(0, state.sessionsLimit)) {
-    const chat = makeListButton(item.title || item.id, [item.model, item.status, (item.messageCount || 0) + ' messages'].filter(Boolean).join(' - '));
-    chat.classList.add('project-chat-row');
-    if (state.snapshot?.session?.id === item.id) chat.classList.add('active');
-    chat.addEventListener('click', () => resumeSession(item.id));
-    chat.addEventListener('contextmenu', (event) => {
-      event.preventDefault();
-      const cx = event.clientX;
-      const cy = event.clientY;
-      showContextMenu(cx, cy, [
-        { label: 'Archive chat', onClick: () => archiveChat(item.id) },
-        { label: 'Delete chat', danger: true, onClick: () => dangerConfirmMenu(cx, cy, 'Confirm delete chat', () => deleteChat(item.id)) },
-      ]);
-    });
-    chats.appendChild(chat);
-  }
-  if (visibleSessions.length > state.sessionsLimit) {
-    const more = document.createElement('button');
-    more.type = 'button';
-    more.className = 'project-chat-more';
-    more.textContent = 'Show more chats';
-    more.addEventListener('click', () => {
-      state.sessionsLimit += 16;
-      renderProjects();
-    });
-    chats.appendChild(more);
-  }
-  if (visibleSessions.length === 0) {
+  row.append(folder, name, pin);
+  row.addEventListener('click', () => {
+    void openSidebarProject(project.path);
+  });
+  row.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    const cx = event.clientX;
+    const cy = event.clientY;
+    showContextMenu(cx, cy, [
+      {
+        label: project.pinned ? 'Unpin project' : 'Pin project',
+        onClick: () => setProjectPinned(project.path, !project.pinned),
+      },
+      {
+        label: 'Open project',
+        onClick: () => openSidebarProject(project.path),
+      },
+      ...(project.active ? [] : [{
+        label: 'Forget workspace',
+        danger: true,
+        onClick: () => dangerConfirmMenu(cx, cy, 'Confirm forget workspace', () => forgetWorkspace(project.path)),
+      }]),
+    ]);
+  });
+  group.appendChild(row);
+  const sessions = Array.isArray(project.recentSessions) ? project.recentSessions : [];
+  if (sessions.length === 0) {
     const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = query ? 'No matching chats in this workspace.' : 'No chats in this workspace.';
-    chats.appendChild(empty);
+    empty.className = 'sr-session-empty';
+    empty.textContent = 'No agents yet';
+    group.appendChild(empty);
+  } else {
+    for (const session of sessions) {
+      const srow = document.createElement('button');
+      srow.type = 'button';
+      srow.className = 'sr-session-row' + (state.snapshot?.session?.id === session.id && project.active ? ' active' : '');
+      srow.title = session.title || session.id;
+      const title = document.createElement('span');
+      title.className = 'sr-session-title';
+      title.textContent = session.title || session.id;
+      const time = document.createElement('span');
+      time.className = 'sr-session-time';
+      time.textContent = session.updatedAt ? formatRelativeTimeShort(session.updatedAt) : '';
+      srow.append(title, time);
+      srow.addEventListener('click', () => {
+        void openSidebarSession(project.path, session.id);
+      });
+      group.appendChild(srow);
+    }
   }
-  root.appendChild(chats);
-  const active = projects.find(project => project.active);
-  const activeChats = active?.sessionCount ?? visibleSessions.filter(item => item.messageCount > 0).length;
-  el('workspaceMeta').textContent = activeChats + ' chats here';
+  root.appendChild(group);
+}
+function renderSidebarRecents() {
+  const pinnedRoot = el('sidebarPinnedList');
+  const recentRoot = el('sidebarRecentList');
+  const pinnedBlock = el('sidebarPinnedBlock');
+  if (!pinnedRoot || !recentRoot) return;
+  pinnedRoot.textContent = '';
+  recentRoot.textContent = '';
+  const { pinned, recent } = sidebarRecentsProjects();
+  if (pinnedBlock) pinnedBlock.classList.toggle('hidden', pinned.length === 0);
+  if (pinned.length === 0) {
+    // Keep heading hidden; recent section still shows.
+  } else {
+    for (const project of pinned) appendSidebarProjectGroup(pinnedRoot, project);
+  }
+  if (recent.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'sidebar-recents-empty';
+    empty.textContent = 'No recent workspaces yet.';
+    recentRoot.appendChild(empty);
+  } else {
+    for (const project of recent) appendSidebarProjectGroup(recentRoot, project);
+  }
+}
+async function setProjectPinned(projectPath, pinned) {
+  if (!projectPath) return false;
+  const res = await api('/api/project/pin', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: projectPath, pinned: Boolean(pinned) }),
+  });
+  if (!res.ok) {
+    addMessage('error', await res.text());
+    return false;
+  }
+  const payload = await res.json();
+  if (payload.state) state.snapshot = payload.state;
+  else await loadState();
+  applyLoadedState();
+  return true;
+}
+function sameWorkspacePath(a, b) {
+  if (!a || !b) return false;
+  // Template literal: /\\\\\\\\/g emits /\\\\/g in the browser (match one backslash).
+  const norm = (value) => String(value).replace(/\\\\/g, '/').toLowerCase();
+  return norm(a) === norm(b);
+}
+async function openSidebarProject(projectPath) {
+  if (!projectPath) return;
+  if (sameWorkspacePath(state.snapshot?.workDir || '', projectPath)) {
+    switchProjectView('detail');
+    return;
+  }
+  await switchProject(projectPath, 'detail');
+}
+async function openSidebarSession(projectPath, sessionId) {
+  if (!sessionId) return;
+  if (!sameWorkspacePath(state.snapshot?.workDir || '', projectPath || '') && projectPath) {
+    const ok = await switchProject(projectPath, 'conversation');
+    if (!ok) return;
+  } else {
+    switchProjectView('conversation');
+  }
+  await resumeSession(sessionId);
 }
 function renderWorkspaceChoices() {
   const root = el('workspaceChoices');
@@ -8585,9 +9253,6 @@ function applyLoadedState() {
     document.body.dataset.sidebarMode = 'nav';
   }
   const workDir = state.snapshot.workDir || '';
-  const parts = workDir.split(/[\\\\/]/).filter(Boolean);
-  el('projectName').textContent = parts[parts.length - 1] || 'workspace';
-  el('projectPath').textContent = workDir;
   el('sessionTitle').textContent = state.snapshot.session?.title || 'Actoviq GUI';
   el('workspace').textContent = workDir + ' - ' + (state.snapshot.session?.model || 'default') + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
   state.running = Boolean(state.snapshot.running);
@@ -8962,6 +9627,10 @@ async function switchProject(projectPath, view = 'conversation') {
   state.projectDocEditing = false;
   state.projectDocRaw = '';
   state.projectDocDirty = false;
+  state.issues = [];
+  state.issuesLoadedFor = null;
+  state.issuesSelectedId = null;
+  state.issuesError = null;
   stashCurrentSessionCache();
   state.transcriptCache = {};
   state.activeSessionId = null;
@@ -8976,7 +9645,9 @@ async function switchProject(projectPath, view = 'conversation') {
   state.toolNodes.clear();
   state.sessionsLimit = 16;
   applyLoadedState();
-  await hydrateTranscript();
+  // Detail view does not need the chat transcript on the critical path.
+  if (view === 'conversation') await hydrateTranscript();
+  else void hydrateTranscript();
   closeSurface();
   switchProjectView(view);
   return true;
@@ -9250,16 +9921,11 @@ function projectStatusOf(p) {
 function buildProjectStatusBadge(p, running) {
   const meta = document.createElement('div');
   meta.className = 'pc-meta';
+  const status = projectStatusOf(p);
   const badge = document.createElement('span');
-  badge.className = 'pc-badge status';
-  badge.textContent = projectStatusLabel(projectStatusOf(p));
+  badge.className = 'pc-badge status status-' + status;
+  badge.textContent = projectStatusLabel(status);
   meta.appendChild(badge);
-  if (p.active) {
-    const current = document.createElement('span');
-    current.className = 'pc-current-chip';
-    current.textContent = '当前';
-    meta.appendChild(current);
-  }
   if (running) {
     const runBadge = document.createElement('span');
     runBadge.className = 'pc-badge';
@@ -9279,7 +9945,6 @@ function buildProjectCard(p, runs) {
   const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
   const card = document.createElement('article');
   card.className = 'proj-card';
-  if (p.active) card.classList.add('active');
   const title = document.createElement('div');
   title.className = 'pc-title';
   title.textContent = p.name;
@@ -9297,12 +9962,6 @@ function buildProjectCard(p, runs) {
   const head = document.createElement('div');
   head.className = 'pc-head';
   head.append(icon, titles);
-  if (p.active) {
-    const badge = document.createElement('span');
-    badge.className = 'pc-active-badge';
-    badge.textContent = 'Current';
-    head.appendChild(badge);
-  }
   card.append(head, buildProjectStatusBadge(p, running), buildProjectNoteRow(p, 'compact'));
   card.addEventListener('click', (e) => {
     if (e.target.closest('.pc-note')) return;
@@ -9324,7 +9983,7 @@ function renderOverviewTable(body, projects, runs) {
   for (const p of projects) {
     const running = p.active ? runs.filter((r) => r.status === 'running').length : 0;
     const row = document.createElement('div');
-    row.className = 'overview-table-row' + (p.active ? ' active' : '');
+    row.className = 'overview-table-row';
     const nameCell = document.createElement('div');
     nameCell.className = 'overview-table-name';
     nameCell.innerHTML = guiIcon('folder') + '<span></span>';
@@ -9334,17 +9993,11 @@ function renderOverviewTable(body, projects, runs) {
     pathCell.textContent = projectCardPath(p.path);
     pathCell.title = p.path || '';
     const statusCell = document.createElement('div');
+    const status = projectStatusOf(p);
     const statusBadge = document.createElement('span');
-    statusBadge.className = 'pc-badge status';
-    statusBadge.textContent = projectStatusLabel(projectStatusOf(p));
+    statusBadge.className = 'pc-badge status status-' + status;
+    statusBadge.textContent = projectStatusLabel(status);
     statusCell.appendChild(statusBadge);
-    if (p.active) {
-      const current = document.createElement('span');
-      current.className = 'pc-current-chip';
-      current.style.marginLeft = '6px';
-      current.textContent = '当前';
-      statusCell.appendChild(current);
-    }
     if (running) {
       const runBadge = document.createElement('span');
       runBadge.className = 'pc-badge';
@@ -9461,7 +10114,10 @@ function switchProjectView(view) {
     if (wd && managerBoundWorkDir && wd !== managerBoundWorkDir) resetManagerClientState(wd);
     else if (wd && !managerBoundWorkDir) managerBoundWorkDir = wd;
     syncManagerVisibility(view);
-    refreshManagerState(!managerTranscriptHydrated);
+    // Defer manager hydrate so project detail paints first.
+    requestAnimationFrame(() => {
+      if (state.projectView === 'detail') refreshManagerState(!managerTranscriptHydrated);
+    });
   } else {
     syncManagerVisibility(view);
   }
@@ -9490,8 +10146,8 @@ function renderOverview() {
     empty.className = 'region-empty';
     if (state.loadError) empty.textContent = 'Could not load projects: ' + state.loadError;
     else if ((el('overviewSearch')?.value || '').trim()) empty.textContent = 'No projects match.';
-    else if (state.overviewStatusFilter === 'current') empty.textContent = '当前工作区不在列表中。';
-    else if (isProjectStatus(state.overviewStatusFilter)) empty.textContent = '没有该状态的项目。';
+    else if (state.overviewStatusFilter === 'current') empty.textContent = 'Current workspace is not in the list.';
+    else if (isProjectStatus(state.overviewStatusFilter)) empty.textContent = 'No projects with this status.';
     else empty.textContent = 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
@@ -9775,6 +10431,372 @@ async function mountProjectDoc(force) {
   if (btn) btn.textContent = 'Edit';
   setProjectDocStatus('', '');
 }
+function setProjectDetailTab(tab) {
+  const next = tab === 'issues' ? 'issues' : 'document';
+  if (state.projectDetailTab === next) return;
+  if (state.projectDetailTab === 'document' && state.projectDocDirty) void saveProjectDocNow();
+  state.projectDetailTab = next;
+  document.querySelectorAll('.project-detail-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.detailTab === next);
+  });
+  const docPanel = el('projectDocumentPanel');
+  const issuesPanel = el('projectIssuesPanel');
+  if (docPanel) docPanel.classList.toggle('hidden', next !== 'document');
+  if (issuesPanel) issuesPanel.classList.toggle('hidden', next !== 'issues');
+  if (next === 'document') void mountProjectDoc(false);
+  else void loadProjectIssues(false);
+}
+function currentIssuePath() {
+  return state.snapshot?.workDir || '';
+}
+function issueRequestPath() {
+  const path = currentIssuePath();
+  return path ? '/api/issues?path=' + encodeURIComponent(path) : '/api/issues';
+}
+function applyIssuesPayload(payload, preferredId) {
+  state.issues = Array.isArray(payload?.issues) ? payload.issues : [];
+  state.issuesStorage = payload?.storage === 'workspace' ? 'workspace' : 'home';
+  state.issuesLoadedFor = payload?.path || currentIssuePath();
+  state.issuesError = null;
+  const preferred = preferredId || payload?.issue?.id || state.issuesSelectedId;
+  if (preferred && state.issues.some((issue) => issue.id === preferred)) {
+    state.issuesSelectedId = preferred;
+  } else {
+    const firstOpen = state.issues.find((issue) => issue.status !== 'done' && issue.status !== 'cancelled');
+    state.issuesSelectedId = firstOpen?.id || state.issues[0]?.id || null;
+  }
+}
+async function loadProjectIssues(force) {
+  const host = el('projectIssuesPanel');
+  if (!host) return;
+  const path = currentIssuePath();
+  if (!force && state.issuesLoadedFor === path) {
+    renderProjectIssuesPanel();
+    return;
+  }
+  state.issuesLoading = true;
+  state.issuesError = null;
+  renderProjectIssuesPanel();
+  try {
+    const res = await api(issueRequestPath());
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Could not load issues');
+    applyIssuesPayload(payload);
+  } catch (error) {
+    state.issuesError = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.issuesLoading = false;
+    renderProjectIssuesPanel();
+  }
+}
+function issueCount(statuses) {
+  return state.issues.filter((issue) => statuses.includes(issue.status)).length;
+}
+function issueMeta(issue) {
+  return [
+    ISSUE_PRIORITY_LABELS[issue.priority] || issue.priority,
+    Array.isArray(issue.labels) && issue.labels.length ? issue.labels.join(', ') : '',
+    issue.updatedAt ? formatShortRelativeTime(issue.updatedAt) : ''
+  ].filter(Boolean).join(' · ');
+}
+function renderProjectIssuesPanel() {
+  const host = el('projectIssuesPanel');
+  if (!host) return;
+  host.textContent = '';
+  const toolbar = document.createElement('header');
+  toolbar.className = 'project-issues-toolbar';
+  const title = document.createElement('div');
+  title.className = 'project-issues-title';
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Issues';
+  const meta = document.createElement('span');
+  meta.textContent = state.issues.length + ' total · ' + state.issuesStorage;
+  title.append(h2, meta);
+  const actions = document.createElement('div');
+  actions.className = 'project-issues-actions';
+  const storage = document.createElement('select');
+  storage.className = 'project-issues-storage';
+  storage.title = 'Issue storage';
+  storage.innerHTML = '<option value="home">App data</option><option value="workspace">Workspace</option>';
+  storage.value = state.issuesStorage || 'home';
+  storage.addEventListener('change', () => { void changeIssueStorage(storage.value); });
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'icon-btn';
+  refresh.title = 'Refresh issues';
+  refresh.innerHTML = guiIcon('refresh');
+  refresh.addEventListener('click', () => { void loadProjectIssues(true); });
+  actions.append(storage, refresh);
+  toolbar.append(title, actions);
+  host.appendChild(toolbar);
+
+  if (state.issuesError) {
+    const error = document.createElement('div');
+    error.className = 'project-issues-error';
+    error.textContent = state.issuesError;
+    host.appendChild(error);
+  }
+
+  const quick = document.createElement('form');
+  quick.className = 'issue-quick-create';
+  quick.innerHTML = '<input id="issueQuickTitle" placeholder="New issue title" autocomplete="off">'
+    + '<select id="issueQuickPriority" title="Priority">'
+    + ISSUE_PRIORITIES.map((p) => '<option value="' + p + '">' + (ISSUE_PRIORITY_LABELS[p] || p) + '</option>').join('')
+    + '</select>'
+    + '<button type="submit">' + guiIcon('plus') + '<span>Create</span></button>';
+  quick.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void createIssueFromForm();
+  });
+  const quickPriority = quick.querySelector('#issueQuickPriority');
+  if (quickPriority) quickPriority.value = 'none';
+  host.appendChild(quick);
+
+  const filters = document.createElement('div');
+  filters.className = 'issue-filter-row';
+  const filterDefs = [
+    ['open', 'Open', issueCount(['backlog', 'todo', 'in_progress', 'in_review', 'blocked'])],
+    ['review', 'Review', issueCount(['in_review'])],
+    ['closed', 'Closed', issueCount(['done', 'cancelled'])],
+    ['all', 'All', state.issues.length],
+  ];
+  for (const [value, label, count] of filterDefs) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'issue-filter' + (state.issuesFilter === value ? ' active' : '');
+    btn.textContent = label + ' ' + count;
+    btn.addEventListener('click', () => {
+      state.issuesFilter = value;
+      renderProjectIssuesPanel();
+    });
+    filters.appendChild(btn);
+  }
+  host.appendChild(filters);
+
+  const body = document.createElement('div');
+  body.className = 'project-issues-body';
+  const board = document.createElement('div');
+  board.className = 'issue-board';
+  body.append(board, buildIssueDetailPanel());
+  host.appendChild(body);
+
+  if (state.issuesLoading) {
+    const loading = document.createElement('p');
+    loading.className = 'region-empty';
+    loading.textContent = 'Loading issues...';
+    board.appendChild(loading);
+    return;
+  }
+  const visibleStatuses = state.issuesFilter === 'closed'
+    ? ['done', 'cancelled']
+    : state.issuesFilter === 'review'
+      ? ['in_review']
+      : state.issuesFilter === 'all'
+        ? ISSUE_STATUSES
+        : ['backlog', 'todo', 'in_progress', 'in_review', 'blocked'];
+  let rendered = 0;
+  for (const status of visibleStatuses) {
+    const list = state.issues.filter((issue) => issue.status === status);
+    if (!list.length && state.issuesFilter !== 'all') continue;
+    const column = document.createElement('section');
+    column.className = 'issue-column issue-status-' + status;
+    const head = document.createElement('header');
+    head.innerHTML = '<span>' + (ISSUE_STATUS_LABELS[status] || status) + '</span><strong>' + list.length + '</strong>';
+    column.appendChild(head);
+    for (const issue of list) column.appendChild(buildIssueCard(issue));
+    if (!list.length) {
+      const empty = document.createElement('p');
+      empty.className = 'issue-column-empty';
+      empty.textContent = 'No issues';
+      column.appendChild(empty);
+    }
+    board.appendChild(column);
+    rendered += list.length;
+  }
+  if (!rendered && state.issues.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = 'No issues yet.';
+    board.appendChild(empty);
+  }
+}
+function buildIssueCard(issue) {
+  const card = document.createElement('article');
+  card.className = 'issue-card' + (issue.id === state.issuesSelectedId ? ' active' : '');
+  card.dataset.issueId = issue.id;
+  const head = document.createElement('div');
+  head.className = 'issue-card-head';
+  const number = document.createElement('span');
+  number.className = 'issue-number';
+  number.textContent = '#' + issue.number;
+  const priority = document.createElement('span');
+  priority.className = 'issue-priority priority-' + (issue.priority || 'none');
+  priority.textContent = ISSUE_PRIORITY_LABELS[issue.priority] || issue.priority || 'None';
+  head.append(number, priority);
+  const title = document.createElement('strong');
+  title.textContent = issue.title || 'Untitled issue';
+  const meta = document.createElement('small');
+  meta.textContent = issueMeta(issue);
+  card.append(head, title, meta);
+  card.addEventListener('click', () => selectIssue(issue.id));
+  return card;
+}
+function selectIssue(id) {
+  state.issuesSelectedId = id;
+  renderProjectIssuesPanel();
+}
+function selectedIssue() {
+  return state.issues.find((issue) => issue.id === state.issuesSelectedId) || null;
+}
+function buildIssueDetailPanel() {
+  const panel = document.createElement('aside');
+  panel.className = 'issue-detail-panel';
+  const issue = selectedIssue();
+  if (!issue) {
+    panel.classList.add('empty');
+    panel.textContent = 'Select an issue to inspect or update it.';
+    return panel;
+  }
+  const head = document.createElement('header');
+  const title = document.createElement('div');
+  title.className = 'issue-detail-title';
+  const label = document.createElement('span');
+  label.textContent = '#' + issue.number + ' · ' + (ISSUE_STATUS_LABELS[issue.status] || issue.status);
+  const h3 = document.createElement('h3');
+  h3.textContent = issue.title || 'Untitled issue';
+  title.append(label, h3);
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'icon-btn';
+  del.title = 'Delete issue';
+  del.innerHTML = guiIcon('close');
+  del.addEventListener('click', () => { void deleteIssue(issue.id); });
+  head.append(title, del);
+  panel.appendChild(head);
+
+  const edit = document.createElement('div');
+  edit.className = 'issue-edit-grid';
+  edit.innerHTML = '<label>Title<input id="issueEditTitle" value=""></label>'
+    + '<label>Priority<select id="issueEditPriority">'
+    + ISSUE_PRIORITIES.map((p) => '<option value="' + p + '">' + (ISSUE_PRIORITY_LABELS[p] || p) + '</option>').join('')
+    + '</select></label>'
+    + '<label class="wide">Description<textarea id="issueEditDescription" rows="5"></textarea></label>'
+    + '<label class="wide">Labels<input id="issueEditLabels" placeholder="comma separated"></label>'
+    + '<button id="issueSaveBtn" type="button" class="pill-btn">Save changes</button>';
+  panel.appendChild(edit);
+  const titleInput = edit.querySelector('#issueEditTitle');
+  const priorityInput = edit.querySelector('#issueEditPriority');
+  const descInput = edit.querySelector('#issueEditDescription');
+  const labelsInput = edit.querySelector('#issueEditLabels');
+  titleInput.value = issue.title || '';
+  priorityInput.value = issue.priority || 'none';
+  descInput.value = issue.description || '';
+  labelsInput.value = Array.isArray(issue.labels) ? issue.labels.join(', ') : '';
+  edit.querySelector('#issueSaveBtn').addEventListener('click', () => { void saveIssueEdits(issue.id); });
+
+  const transitions = ISSUE_TRANSITIONS[issue.status] || [];
+  const actions = document.createElement('div');
+  actions.className = 'issue-transition-row';
+  for (const status of transitions) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pill-btn';
+    btn.textContent = ISSUE_STATUS_LABELS[status] || status;
+    btn.addEventListener('click', () => { void transitionIssue(issue.id, status); });
+    actions.appendChild(btn);
+  }
+  if (!transitions.length) {
+    const done = document.createElement('small');
+    done.textContent = 'No further transitions.';
+    actions.appendChild(done);
+  }
+  panel.appendChild(actions);
+
+  const comments = document.createElement('div');
+  comments.className = 'issue-comments';
+  const commentsTitle = document.createElement('h4');
+  commentsTitle.textContent = 'Activity';
+  comments.appendChild(commentsTitle);
+  const items = Array.isArray(issue.comments) ? issue.comments : [];
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'issue-column-empty';
+    empty.textContent = 'No activity yet.';
+    comments.appendChild(empty);
+  }
+  for (const comment of items.slice(-8).reverse()) {
+    const row = document.createElement('div');
+    row.className = 'issue-comment';
+    const meta = document.createElement('small');
+    meta.textContent = [comment.actor || 'user', comment.kind || 'comment', comment.createdAt ? formatShortRelativeTime(comment.createdAt) : ''].filter(Boolean).join(' · ');
+    const body = document.createElement('p');
+    body.textContent = comment.body || '';
+    row.append(meta, body);
+    comments.appendChild(row);
+  }
+  const form = document.createElement('form');
+  form.className = 'issue-comment-form';
+  form.innerHTML = '<input id="issueCommentInput" placeholder="Add a progress note" autocomplete="off">'
+    + '<button type="submit">' + guiIcon('send') + '</button>';
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void addIssueCommentFromForm(issue.id);
+  });
+  comments.appendChild(form);
+  panel.appendChild(comments);
+  return panel;
+}
+async function mutateIssues(path, body, preferredId) {
+  try {
+    const res = await api(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: currentIssuePath(), ...body }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Issue update failed');
+    applyIssuesPayload(payload, preferredId);
+    renderProjectIssuesPanel();
+  } catch (error) {
+    state.issuesError = error instanceof Error ? error.message : String(error);
+    renderProjectIssuesPanel();
+  }
+}
+async function createIssueFromForm() {
+  const title = (el('issueQuickTitle')?.value || '').trim();
+  if (!title) return;
+  const priority = el('issueQuickPriority')?.value || 'none';
+  await mutateIssues('/api/issues', { title, priority }, null);
+  const input = el('issueQuickTitle');
+  if (input) input.value = '';
+}
+async function saveIssueEdits(id) {
+  const labels = (el('issueEditLabels')?.value || '').split(',').map((item) => item.trim()).filter(Boolean);
+  await mutateIssues('/api/issues', {
+    id,
+    title: el('issueEditTitle')?.value || '',
+    description: el('issueEditDescription')?.value || '',
+    priority: el('issueEditPriority')?.value || 'none',
+    labels,
+  }, id);
+}
+async function transitionIssue(id, status) {
+  await mutateIssues('/api/issues/status', { id, status }, id);
+}
+async function addIssueCommentFromForm(id) {
+  const input = el('issueCommentInput');
+  const body = (input?.value || '').trim();
+  if (!body) return;
+  await mutateIssues('/api/issues/comment', { id, body, kind: 'progress', actor: 'user' }, id);
+  if (input) input.value = '';
+}
+async function deleteIssue(id) {
+  if (!window.confirm('Delete this issue?')) return;
+  await mutateIssues('/api/issues/delete', { id }, null);
+}
+async function changeIssueStorage(mode) {
+  await mutateIssues('/api/issues/storage', { mode }, state.issuesSelectedId);
+}
 function filteredDetailSessions() {
   const query = (state.detailConvQuery || '').trim().toLowerCase();
   const active = (state.snapshot?.sessions || []).filter((item) => {
@@ -9949,8 +10971,25 @@ function renderProjectDetail() {
   body.textContent = '';
   const layout = document.createElement('div');
   layout.className = 'detail-layout';
+  const main = document.createElement('main');
+  main.className = 'detail-main';
+  const tabs = document.createElement('div');
+  tabs.className = 'project-detail-tabs';
+  for (const tab of [
+    ['document', 'Document'],
+    ['issues', 'Issues'],
+  ]) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'project-detail-tab' + (state.projectDetailTab === tab[0] ? ' active' : '');
+    btn.dataset.detailTab = tab[0];
+    btn.textContent = tab[1];
+    btn.addEventListener('click', () => setProjectDetailTab(tab[0]));
+    tabs.appendChild(btn);
+  }
   const docPanel = document.createElement('section');
-  docPanel.className = 'project-doc-panel';
+  docPanel.id = 'projectDocumentPanel';
+  docPanel.className = 'project-doc-panel' + (state.projectDetailTab === 'document' ? '' : ' hidden');
   const docToolbar = document.createElement('header');
   docToolbar.className = 'project-doc-toolbar';
   const docTitle = document.createElement('h2');
@@ -10017,6 +11056,10 @@ function renderProjectDetail() {
   docEditor.append(docView, docEmpty, docSource);
   docScroll.appendChild(docEditor);
   docPanel.append(docToolbar, docScroll);
+  const issuesPanel = document.createElement('section');
+  issuesPanel.id = 'projectIssuesPanel';
+  issuesPanel.className = 'project-issues-panel' + (state.projectDetailTab === 'issues' ? '' : ' hidden');
+  main.append(tabs, docPanel, issuesPanel);
   const sidebar = document.createElement('aside');
   sidebar.className = 'detail-sidebar';
   const top = document.createElement('div');
@@ -10038,7 +11081,7 @@ function renderProjectDetail() {
   detail.className = 'conv-sidebar-detail empty';
   detail.textContent = 'Select a conversation to see details';
   sidebar.append(top, detail);
-  layout.append(docPanel, sidebar);
+  layout.append(main, sidebar);
   body.appendChild(layout);
   const searchInput = el('detailConvSearch');
   if (searchInput) {
@@ -10050,7 +11093,8 @@ function renderProjectDetail() {
   }
   renderConvSidebarList();
   renderConvSidebarDetail();
-  void mountProjectDoc(false);
+  if (state.projectDetailTab === 'issues') void loadProjectIssues(false);
+  else void mountProjectDoc(false);
 }
 function selectDetailConversation(id) {
   state.detailSelectedId = state.detailSelectedId === id ? null : id;
@@ -10848,7 +11892,7 @@ async function openLocation() {
   if (!res.ok) addMessage('error', await res.text());
 }
 function commandNeedsSpace(name) {
-  return ['model','effort','permissions','resume','dream','workflows','worktree','team','goal','batch','plan','output-style','rewind','export','review','bridge'].includes(name);
+  return ['model','effort','permissions','resume','dream','workflows','worktree','team','issues','goal','batch','plan','output-style','rewind','export','review','bridge'].includes(name);
 }
 function slashMatches() {
   const value = input.value.trim();
@@ -15368,6 +16412,72 @@ function wireManagerPanel() {
   syncManagerVisibility(state.projectView || 'overview');
 }
 wireManagerPanel();
+function renderDataRootStatus(dataRoot) {
+  const root = dataRoot?.root || state.snapshot?.settings?.dataRoot?.root || '';
+  const entries = dataRoot?.summary?.entries;
+  const bytes = dataRoot?.summary?.bytes;
+  const summary = entries == null
+    ? 'Local projects, sessions, runtime configs, MCP, teams, workflows, and settings.'
+    : String(entries) + ' items, ' + formatFileSize(bytes || 0) + '. Old data is kept after migration.';
+  const pathEl = el('settingsDataRootPath');
+  const summaryEl = el('settingsDataRootSummary');
+  if (pathEl) pathEl.textContent = root || 'Data root unavailable';
+  if (summaryEl) summaryEl.textContent = summary;
+}
+async function refreshDataRootSettings() {
+  renderDataRootStatus(state.snapshot?.settings?.dataRoot);
+  try {
+    const res = await api('/api/settings/data-root');
+    if (!res.ok) return;
+    renderDataRootStatus(await res.json());
+  } catch {
+    // Keep the state snapshot value.
+  }
+}
+async function changeDataRootFromSettings() {
+  const targetRoot = await pickFolderViaApi();
+  if (!targetRoot) return;
+  let current = null;
+  try {
+    const res = await api('/api/settings/data-root');
+    if (res.ok) current = await res.json();
+  } catch { /* preview is optional */ }
+  const entries = current?.summary?.entries ?? 0;
+  const bytes = current?.summary?.bytes ?? 0;
+  const confirmed = window.confirm([
+    'Move Actoviq data storage?',
+    '',
+    'From:',
+    current?.root || state.snapshot?.settings?.dataRoot?.root || '(current data root)',
+    '',
+    'To:',
+    targetRoot,
+    '',
+    'Will copy ' + entries + ' items (' + formatFileSize(bytes) + '). Old data will be kept.',
+  ].join('\\n'));
+  if (!confirmed) return;
+  const status = el('settingsStatus');
+  if (status) status.textContent = 'Migrating data...';
+  const res = await api('/api/settings/data-root', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ targetRoot, confirmed: true }),
+  });
+  const payload = await res.json();
+  if (!res.ok) {
+    if (status) status.textContent = payload.error || 'Migration failed';
+    return;
+  }
+  if (payload.state) {
+    state.snapshot = payload.state;
+    applyLoadedState();
+    applyPreferences(state.snapshot.settings?.preferences);
+  } else {
+    await loadState();
+  }
+  renderDataRootStatus(payload.dataRoot || state.snapshot?.settings?.dataRoot);
+  if (status) status.textContent = payload.changed === false ? 'Data root unchanged' : 'Data root migrated';
+}
 async function openSettings(tab = 'general') {
   // Always fetch fresh state so the bridge config list / runtime discovery
   // reflect configs added since the last loadState (the cached snapshot can
@@ -15377,6 +16487,8 @@ async function openSettings(tab = 'general') {
   const settings = state.snapshot?.settings || {};
   const preferences = settings.preferences || {};
   el('settingsPath').textContent = settings.configPath ? 'Saved locally: ' + settings.configPath : 'Settings path unavailable';
+  renderDataRootStatus(settings.dataRoot);
+  void refreshDataRootSettings();
   const mode = preferences.workMode === 'daily' ? 'daily' : 'coding';
   setChecked('settingsWorkModeCoding', mode === 'coding');
   setChecked('settingsWorkModeDaily', mode === 'daily');
@@ -15631,11 +16743,6 @@ el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
-el('projectRoot').addEventListener('click', () => { openSurface('projects').catch(console.error); });
-el('projectMenuBtn').addEventListener('click', () => { openSurface('projects').catch(console.error); });
-el('newWorkspaceBtn').addEventListener('click', addWorkspace);
-el('newProjectSessionBtn').addEventListener('click', createNewSession);
-el('addProjectBtn').addEventListener('click', addWorkspace);
 el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
 bindOverviewToolbar();
 el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
@@ -15651,6 +16758,8 @@ el('settingsOpenTools').addEventListener('click', () => { closeSettings(); openS
 el('settingsOpenSkills').addEventListener('click', () => { closeSettings(); openSurface('skills').catch(console.error); });
 el('settingsOpenAgents').addEventListener('click', () => { closeSettings(); openSurface('agents').catch(console.error); });
 el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); openSurface('plugins').catch(console.error); });
+el('settingsDataRootChoose').addEventListener('click', () => { changeDataRootFromSettings().catch(console.error); });
+el('settingsDataRootOpen').addEventListener('click', () => { api('/api/settings/data-root/open', { method: 'POST' }).catch(console.error); });
 el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
 el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
@@ -15761,7 +16870,6 @@ el('settingsSearch').addEventListener('input', (event) => {
     button.style.display = !query || button.textContent.toLowerCase().includes(query) ? '' : 'none';
   });
 });
-el('commandSearch').addEventListener('input', () => { renderProjects(); });
 transcript.addEventListener('click', (event) => {
   const button = event.target.closest ? event.target.closest('.copy-btn') : null;
   if (!button) return;

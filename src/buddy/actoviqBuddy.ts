@@ -1,8 +1,8 @@
-import os from 'node:os';
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 import { getLoadedJsonConfig, loadJsonConfigFile } from '../config/loadJsonConfigFile.js';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import { ConfigurationError } from '../errors.js';
 import { isRecord } from '../runtime/helpers.js';
 import type {
@@ -140,8 +140,8 @@ function rollFromSeed(seed: string): ActoviqBuddyRoll {
   };
 }
 
-function defaultBuddySettingsPath(homeDir: string): string {
-  return path.join(homeDir, '.actoviq', 'settings.json');
+function defaultBuddySettingsPath(homeDir?: string): string {
+  return path.join(resolveActoviqHome(homeDir), 'settings.json');
 }
 
 function parseStoredBuddy(value: unknown): StoredActoviqBuddy | undefined {
@@ -223,8 +223,7 @@ async function resolveBuddyContext(
   storedBuddy?: StoredActoviqBuddy;
 }> {
   const loaded = getLoadedJsonConfig();
-  const homeDir = options.homeDir ?? os.homedir();
-  const configPath = options.configPath ?? loaded?.path ?? defaultBuddySettingsPath(homeDir);
+  const configPath = options.configPath ?? loaded?.path ?? defaultBuddySettingsPath(options.homeDir);
   const raw =
     loaded?.path === configPath && loaded.raw && isRecord(loaded.raw)
       ? structuredClone(loaded.raw)

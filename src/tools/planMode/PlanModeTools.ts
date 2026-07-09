@@ -9,11 +9,11 @@
  * and the user can approve (switching out of plan mode) or revise.
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 
 import { tool } from '../../runtime/tools.js';
+import { resolveActoviqHome } from '../../config/actoviqHome.js';
 import type { AgentToolDefinition, ActoviqPermissionMode } from '../../types.js';
 
 export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode';
@@ -32,7 +32,7 @@ export interface PlanModeToolContext {
 
 function resolvePlanDir(workDir: string): string {
   const projectKey = workDir.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40) || 'default';
-  return path.join(os.homedir(), '.actoviq', 'projects', projectKey);
+  return path.join(resolveActoviqHome(), 'projects', projectKey);
 }
 
 export function planFilePath(workDir: string): string {
