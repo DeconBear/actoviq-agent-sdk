@@ -100,6 +100,7 @@ import {
   readTeamPreferences,
   writeTeamPreferences,
   createManagerTools,
+  buildDecomposeIssuePrompt,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
   formatManagerUpdatePreview,
@@ -137,6 +138,7 @@ import {
   deleteAgentProfile,
   getScheduledAutomationTask,
   listAgentProfiles,
+  resolveAgentProfileRun,
   transitionProjectIssue,
   updateProjectIssue,
   upsertAgentProfile,
@@ -147,6 +149,7 @@ import {
   type IssueActor,
   type IssueCommentKind,
   type IssueStorageMode,
+  type ProjectIssue,
   isManagerReadScope,
 } from '../index.js';
 import {
@@ -2179,12 +2182,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     const homeDir = managerHomeDir();
     const cfg = await readManagerConfig(workDir, homeDir);
-    const managerTools = await createManagerTools({ workDir, homeDir, config: cfg });
+    const managerIssueStorage = await issueStorageFor(workDir, homeDir);
+    const managerTools = await createManagerTools({ workDir, homeDir, config: cfg, issueStorageMode: managerIssueStorage });
     let prompt: string;
     if (opts.mode === 'update') {
       const { gitSummary, conversationSummaries } = await collectManagerHostContext();
       const plan = await readProjectPlanFile(workDir, homeDir);
       const progress = await readProgressFile(workDir, homeDir);
+      const issues = await listProjectIssues(workDir, homeDir, managerIssueStorage);
       const githubDigest = await resolveGitHubDigestForUpdate(workDir, opts.instruction);
       prompt = buildUpdateProgressPrompt({
         instruction: opts.instruction,
@@ -2193,6 +2198,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         githubDigest,
         currentPlanJson: JSON.stringify(plan, null, 2),
         currentProgress: progress ?? undefined,
+        currentIssuesJson: JSON.stringify(issues.map(issue => ({
+          key: `ISS-${issue.number}`,
+          title: issue.title,
+          status: issue.status,
+          priority: issue.priority,
+          agentConfig: issue.agentConfig,
+          activeSessionId: issue.activeSessionId,
+          updatedAt: issue.updatedAt,
+        })), null, 2),
       });
     } else {
       prompt = opts.text?.trim() ?? '';
@@ -3092,6 +3106,188 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
 
+  async function streamIssueDispatch(body: Record<string, unknown>, res: ServerResponse): Promise<void> {
+    const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
+    res.writeHead(200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'keep-alive',
+    });
+    let issue: ProjectIssue | undefined;
+    let targetPath = workDir;
+    let homeDir = resolveGuiHomeDir();
+    let storage: IssueStorageMode = 'home';
+    let transitionedToProgress = false;
+    let reported = false;
+    let workerRunId: string | null = null;
+    try {
+      if (needsCredentials || !sdk) throw new Error('No API key configured - open Settings > General to add one.');
+      const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
+      if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') throw new Error('Missing issue id');
+      homeDir = resolveGuiHomeDir();
+      targetPath = issueTargetPath(body.path);
+      storage = await issueStorageFor(targetPath, homeDir);
+      issue = (await listProjectIssues(targetPath, homeDir, storage)).find(candidate =>
+        typeof idOrNumber === 'number'
+          ? candidate.number === idOrNumber
+          : candidate.id === idOrNumber || String(candidate.number) === idOrNumber || `ISS-${candidate.number}` === idOrNumber.toUpperCase(),
+      );
+      if (!issue) throw new Error(`Issue not found: ${String(idOrNumber)}`);
+      if (issue.status !== 'todo' && issue.status !== 'backlog') {
+        throw new Error(`Issue must be todo or backlog before dispatch; current status is ${issue.status}.`);
+      }
+
+      const requestedProfile = typeof body.agentConfig === 'string' && body.agentConfig.trim()
+        ? body.agentConfig.trim()
+        : issue.agentConfig;
+      const resolvedProfile = requestedProfile ? await resolveAgentProfileRun(requestedProfile, homeDir) : null;
+
+      send({ type: 'status', message: `manager - decomposing ISS-${issue.number}` });
+      const plan = await readProjectPlanFile(targetPath, homeDir);
+      const progress = await readProgressFile(targetPath, homeDir);
+      const briefPrompt = buildDecomposeIssuePrompt(issue, {
+        currentPlanJson: JSON.stringify(plan, null, 2),
+        currentProgress: progress ?? undefined,
+      });
+      const brief = await runManagerTurn({ mode: 'chat', text: briefPrompt, send });
+      const title = `ISS-${issue.number} ${issue.title}`.slice(0, 120);
+      const workerModel = resolvedProfile?.model
+        ?? (bridgeMode && activeBridgeModelApi ? activeBridgeModelApi.model : undefined)
+        ?? (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard' ? activeBridgeConfig.model : undefined)
+        ?? session.model;
+      const workerModelApi = resolvedProfile?.modelApi ?? (bridgeMode ? activeBridgeModelApi?.modelApi : undefined);
+      const workerPermissionMode = resolvedProfile?.profile.permissionMode ?? currentPermissionMode();
+      const workerSession = await sdk.createSession({
+        title,
+        ...(workerModel ? { model: workerModel } : {}),
+        permissionMode: workerPermissionMode,
+        metadata: {
+          __actoviqIssueId: issue.id,
+          __actoviqIssueNumber: issue.number,
+          __actoviqIssueKey: `ISS-${issue.number}`,
+          __actoviqAgentProfile: requestedProfile ?? null,
+          [RUNTIME_METADATA_KEY]: resolvedProfile
+            ? resolvedProfile.bridgeConfig.runtime
+            : activeBridgeConfig?.runtime ?? 'hadamard',
+          [CONFIG_NAME_METADATA_KEY]: resolvedProfile
+            ? resolvedProfile.bridgeConfig.name
+            : activeBridgeConfig?.name ?? null,
+        },
+      });
+
+      const sessionIds = [...new Set([...(issue.sessionIds ?? []), workerSession.id])];
+      issue = await updateProjectIssue(targetPath, homeDir, issue.id, {
+        brief,
+        agentConfig: requestedProfile ?? issue.agentConfig ?? null,
+        sessionIds,
+        activeSessionId: workerSession.id,
+      }, storage) ?? issue;
+      if (issue.status === 'backlog') {
+        issue = await transitionProjectIssue(targetPath, homeDir, issue.id, 'todo', 'system', storage) ?? issue;
+      }
+      issue = await transitionProjectIssue(targetPath, homeDir, issue.id, 'in_progress', 'system', storage) ?? issue;
+      transitionedToProgress = true;
+      send({ type: 'status', message: `dispatched ISS-${issue.number} to session ${workerSession.id}` });
+
+      const issueReportTool = createIssueReportToolForRun({
+        targetPath,
+        homeDir,
+        storage,
+        issueId: issue.id,
+        onReported: () => { reported = true; },
+      });
+      const runId = 'r-iss-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      workerRunId = runId;
+      const abort = new AbortController();
+      const desc: GuiRunDescriptor = {
+        runId,
+        kind: 'chat',
+        label: `issue:${issue.id}`,
+        sessionId: workerSession.id,
+        model: workerModel ?? null,
+        startedAt: Date.now(),
+        status: 'running',
+        toolCalls: 0,
+        tokenUsage: { input: 0, output: 0 },
+      };
+      runs.set(runId, { desc, abort, sink: send });
+      const issueSystemPrompt = [
+        applyOutputStyle(systemPrompt, outputStyle),
+        '',
+        `You are working on ISS-${issue.number}: ${issue.title}.`,
+        'When the work and self-checks are complete, call IssueReport with status="in_review".',
+        'If you are blocked, call IssueReport with status="blocked" and explain the blocker.',
+        resolvedProfile?.profile.systemPromptAppend ? '\nAgent profile instructions:\n' + resolvedProfile.profile.systemPromptAppend : '',
+      ].filter(Boolean).join('\n');
+      const workerPrompt = [
+        brief,
+        '',
+        'Operational requirement: update the issue by calling IssueReport before ending the run.',
+      ].join('\n');
+      const stream = workerSession.stream(workerPrompt, {
+        systemPrompt: issueSystemPrompt,
+        signal: abort.signal,
+        permissionMode: workerPermissionMode,
+        effort: currentEffort(),
+        approver,
+        classifier: preToolUseHookClassifier,
+        canUseTool,
+        ...(workerModel ? { model: workerModel } : {}),
+        ...(workerModelApi ? { modelApi: workerModelApi } : {}),
+        tools: [issueReportTool],
+      });
+      for await (const event of stream) {
+        forwardAgentEvent(event, send, runId);
+        if (event.type === 'tool.call') {
+          desc.toolCalls += 1;
+          desc.currentTool = event.call.publicName;
+        } else if (event.type === 'tool.result') {
+          desc.currentTool = undefined;
+        } else if (event.type === 'response.text.delta' && event.delta) {
+          desc.lastText = (desc.lastText || '') + event.delta;
+        }
+      }
+      const result = await stream.result;
+      if (result.text) send({ type: 'delta', text: result.text });
+      if (!reported) {
+        await addIssueComment(targetPath, homeDir, issue.id, {
+          actor: 'system',
+          kind: 'system',
+          body: 'Worker session ended without IssueReport; manager reconcile should review this issue.',
+        }, storage);
+      }
+      desc.status = 'done';
+      send({ type: 'state', state: await state() });
+      send({ type: 'done', usage: (result as any).usage });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (workerRunId) {
+        const record = runs.get(workerRunId);
+        if (record) record.desc.status = 'error';
+      }
+      send({ type: 'error', message });
+      if (issue && transitionedToProgress && !reported) {
+        try {
+          await addIssueComment(targetPath, homeDir, issue.id, {
+            actor: 'system',
+            kind: 'system',
+            body: `Issue dispatch failed or ended before reporting: ${message}`,
+          }, storage);
+          const latest = (await listProjectIssues(targetPath, homeDir, storage)).find(candidate => candidate.id === issue!.id);
+          if (latest?.status === 'in_progress') {
+            await transitionProjectIssue(targetPath, homeDir, issue.id, 'todo', 'system', storage);
+          }
+        } catch { /* preserve original error */ }
+      }
+      send({ type: 'state', state: await state() });
+      send({ type: 'done' });
+    } finally {
+      if (workerRunId) runs.delete(workerRunId);
+      invalidateHeavyState();
+      res.end();
+    }
+  }
+
   async function streamRun(input: string, res: ServerResponse): Promise<void> {
     const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
     res.writeHead(200, {
@@ -3620,6 +3816,46 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const issueCommentKindFrom = (value: unknown): IssueCommentKind =>
     value === 'status_change' || value === 'progress' || value === 'system' ? value : 'comment';
 
+  function createIssueReportToolForRun(args: {
+    targetPath: string;
+    homeDir: string;
+    storage: IssueStorageMode;
+    issueId: string | number;
+    onReported?: () => void;
+  }): AgentToolDefinition {
+    return tool(
+      {
+        name: 'IssueReport',
+        description:
+          'Report the outcome for the issue assigned to this session. Call status=in_review when work and self-checks are complete; call status=blocked when you cannot proceed.',
+        inputSchema: z.strictObject({
+          status: z.enum(['in_review', 'blocked']),
+          summary: z.string().describe('Concise outcome summary and verification performed'),
+          followUps: z.array(z.string()).optional().describe('Optional follow-up items or blocker details'),
+        }),
+        isReadOnly: () => false,
+        serialize: (output: { status: string }) => `Issue reported: ${output.status}`,
+      },
+      async (input) => {
+        const body = [
+          input.summary,
+          Array.isArray(input.followUps) && input.followUps.length
+            ? '\nFollow-ups:\n' + input.followUps.map((item) => `- ${item}`).join('\n')
+            : '',
+        ].join('').trim();
+        await addIssueComment(args.targetPath, args.homeDir, args.issueId, {
+          body,
+          actor: 'agent',
+          kind: 'progress',
+        }, args.storage);
+        const issue = await transitionProjectIssue(args.targetPath, args.homeDir, args.issueId, input.status, 'agent', args.storage);
+        if (!issue) throw new Error(`Issue not found: ${String(args.issueId)}`);
+        args.onReported?.();
+        return { ok: true, status: issue.status, issue };
+      },
+    );
+  }
+
   // Only loopback hosts may reach the server. The Host check defeats DNS-rebinding
   // (the browser still sends the attacker's hostname); the Origin check defeats
   // cross-site requests; the per-process token defeats other local processes.
@@ -4079,6 +4315,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/issues/start') {
+    return streamIssueDispatch(await readJson(req) as Record<string, unknown>, res);
   }
   if (req.method === 'POST' && url.pathname === '/api/issues/delete') {
     try {
@@ -5952,6 +6191,8 @@ body[data-theme="dark"] {
 .issue-edit-grid button { justify-self: start; }
 .issue-transition-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .issue-transition-row small { color: var(--text-2); font-size: 12px; }
+.issue-dispatch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding-top: 8px; border-top: 1px solid var(--border); }
+.issue-dispatch-row select { min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 9px; font-size: 12.5px; }
 .issue-comments { display: grid; gap: 8px; }
 .issue-comments h4 { margin: 0; color: var(--text-1); font-size: 13px; }
 .issue-comment { border: 1px solid var(--border); border-radius: 8px; padding: 8px 9px; background: var(--bg-surface-2); }
@@ -5959,6 +6200,7 @@ body[data-theme="dark"] {
 .issue-comment p { margin: 3px 0 0; color: var(--text-1); font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; }
 .issue-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 7px; }
 .issue-comment-form input { min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font-size: 12.5px; }
+.issue-comment-form button { width: 38px; min-width: 38px; padding: 0; }
 .detail-sidebar { min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
 .conv-sidebar-top { flex: 1; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
@@ -10792,6 +11034,33 @@ function buildIssueDetailPanel() {
   }
   panel.appendChild(actions);
 
+  if (issue.status === 'todo' || issue.status === 'backlog') {
+    const dispatch = document.createElement('div');
+    dispatch.className = 'issue-dispatch-row';
+    const select = document.createElement('select');
+    select.id = 'issueDispatchAgent';
+    const sessionDefault = document.createElement('option');
+    sessionDefault.value = '';
+    sessionDefault.textContent = 'Session default';
+    select.appendChild(sessionDefault);
+    for (const profile of state.snapshot?.agentProfiles || []) {
+      const opt = document.createElement('option');
+      opt.value = profile.name;
+      opt.textContent = profile.name + ' - ' + profile.model;
+      select.appendChild(opt);
+    }
+    select.value = issue.agentConfig || '';
+    const start = document.createElement('button');
+    start.type = 'button';
+    start.className = 'pill-btn primary';
+    start.textContent = 'Start with agent';
+    start.addEventListener('click', () => {
+      void startIssueWithAgent(issue.id, select.value);
+    });
+    dispatch.append(select, start);
+    panel.appendChild(dispatch);
+  }
+
   const comments = document.createElement('div');
   comments.className = 'issue-comments';
   const commentsTitle = document.createElement('h4');
@@ -10862,6 +11131,43 @@ async function saveIssueEdits(id) {
 }
 async function transitionIssue(id, status) {
   await mutateIssues('/api/issues/status', { id, status }, id);
+}
+async function startIssueWithAgent(id, agentConfig) {
+  state.issuesLoading = true;
+  state.issuesError = null;
+  renderProjectIssuesPanel();
+  try {
+    const res = await api('/api/issues/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: currentIssuePath(), id, agentConfig: agentConfig || undefined }),
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      throw new Error(text || 'Issue dispatch failed');
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'error') state.issuesError = event.message || 'Issue dispatch failed';
+        if (event.type === 'notice' || event.type === 'status') addMessage('notice', event.message || '');
+      }
+    }
+  } catch (error) {
+    state.issuesError = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.issuesLoading = false;
+    await loadProjectIssues(true);
+  }
 }
 async function addIssueCommentFromForm(id) {
   const input = el('issueCommentInput');

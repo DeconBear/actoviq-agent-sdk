@@ -256,9 +256,18 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('renderProjectDocPreview');
     expect(js).toContain('project-doc-view');
     expect(js).toContain('/api/issues');
+    expect(js).toContain('/api/issues/start');
     expect(js).toContain('renderProjectIssuesPanel');
+    expect(js).toContain('issueDispatchAgent');
+    expect(js).toContain('startIssueWithAgent');
+    expect(js).toContain('Start with agent');
+    expect(gui).toContain('streamIssueDispatch');
+    expect(gui).toContain('buildDecomposeIssuePrompt');
+    expect(gui).toContain('IssueReport');
+    expect(gui).toContain('resolveAgentProfileRun');
     expect(css).toContain('.project-issues-panel');
     expect(css).toContain('.issue-board');
+    expect(css).toContain('.issue-dispatch-row');
     expect(js).toContain('conv-sidebar-row');
     expect(js).toContain('renderConvSidebarDetail');
     expect(js).toContain('/api/project-doc');

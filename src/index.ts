@@ -403,6 +403,7 @@ export type { TeamPreferences } from './team/teamPreferences.js';
 // ── Project Manager (per-project governance agent) ───────────────────
 export {
   createManagerTools,
+  buildDecomposeIssuePrompt,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
   formatManagerUpdatePreview,
@@ -427,6 +428,7 @@ export {
 } from './manager/projectManager.js';
 export type {
   ManagerConfig,
+  IssueDecomposeContext,
   ManagerReadScope,
   ManagerUpdateContext,
   ProjectPlan,
