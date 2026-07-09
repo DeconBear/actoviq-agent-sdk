@@ -106,6 +106,11 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsRouterStatus"');
     expect(html).toContain('id="settingsDisableRouter"');
     expect(html).toContain('id="settingsRoutersList"');
+    expect(html).toContain('id="agentProfilesList"');
+    expect(html).toContain('id="agentProfileNew"');
+    expect(html).toContain('id="agentProfileEditorModal"');
+    expect(html).toContain('id="agentProfileBridge"');
+    expect(html).toContain('id="agentProfileModelSelect"');
     expect(html).toContain('id="routerNewProfile"');
     expect(html).toContain('id="routerEditorModal"');
     expect(html).toContain('id="routerCfgSave"');
@@ -203,6 +208,9 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('persistSettingsNow');
     expect(js).toContain('openRouterEditor');
     expect(js).toContain('saveRouterProfileViaApi');
+    expect(js).toContain('renderAgentProfiles');
+    expect(js).toContain('saveAgentProfileViaApi');
+    expect(js).toContain('/api/agent-profiles');
     expect(js).toContain('/api/router/profile');
     expect(js).not.toContain('settingsApplyRuntimeModel');
     expect(js).toContain('/model router ');

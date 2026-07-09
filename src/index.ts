@@ -17,6 +17,24 @@ export {
   summarizeActoviqHome,
   writeActoviqHomePointer,
 } from './config/actoviqHome.js';
+export {
+  deleteAgentProfile,
+  findAgentProfile,
+  getAgentProfilesPath,
+  listAgentProfileBridgeModels,
+  listAgentProfiles,
+  readAgentProfiles,
+  resolveAgentProfileRun,
+  upsertAgentProfile,
+  validateAgentProfile,
+  writeAgentProfiles,
+} from './config/agentProfiles.js';
+export type {
+  AgentProfile,
+  AgentProfileValidationResult,
+  PersistedAgentProfiles,
+  ResolvedAgentProfileRun,
+} from './config/agentProfiles.js';
 export * from './issues/issueStore.js';
 export {
   ActoviqBuddyApi,

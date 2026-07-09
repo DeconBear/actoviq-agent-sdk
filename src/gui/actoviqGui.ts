@@ -134,11 +134,15 @@ import {
   TaskScheduler,
   upsertScheduledAutomationTask,
   deleteScheduledAutomationTask,
+  deleteAgentProfile,
   getScheduledAutomationTask,
+  listAgentProfiles,
   transitionProjectIssue,
   updateProjectIssue,
+  upsertAgentProfile,
   WorktreeService,
   type ActoviqAgentClient,
+  type AgentProfile,
   type ManagerConfig,
   type IssueActor,
   type IssueCommentKind,
@@ -1776,6 +1780,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       listScheduledAutomationTasks(workDir),
     ]);
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
+    const agentProfiles = listAgentProfiles(homeDir);
     // Hide 0-message conversations entirely — they're auto-cleaned on the
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
     // list is noise. The active session is still resumable via the chat view.
@@ -1804,6 +1809,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       scheduledTasks,
       teams,
       routers,
+      agentProfiles,
       skills,
       agents,
       plugins: heavy.plugins,
@@ -4200,6 +4206,43 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         invalidateHeavyState();
         return json(res, 200, await state());
       }
+      if (req.method === 'GET' && url.pathname === '/api/agent-profiles') {
+        return json(res, 200, { profiles: listAgentProfiles(resolveGuiHomeDir()) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/agent-profiles') {
+        try {
+          const body = await readJson(req);
+          const profile: AgentProfile = {
+            name: typeof body.name === 'string' ? body.name.trim() : '',
+            bridgeConfig: typeof body.bridgeConfig === 'string' ? body.bridgeConfig.trim() : '',
+            model: typeof body.model === 'string' ? body.model.trim() : '',
+          };
+          if (typeof body.description === 'string' && body.description.trim()) {
+            profile.description = body.description.trim();
+          }
+          if (typeof body.systemPromptAppend === 'string' && body.systemPromptAppend.trim()) {
+            profile.systemPromptAppend = body.systemPromptAppend.trim();
+          }
+          if (typeof body.permissionMode === 'string' && body.permissionMode.trim()) {
+            profile.permissionMode = body.permissionMode.trim() as AgentProfile['permissionMode'];
+          }
+          const saved = upsertAgentProfile(profile, resolveGuiHomeDir());
+          return json(res, 200, { ok: true, profile: saved.profile, warnings: saved.warnings, state: await state() });
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/agent-profiles/delete') {
+        try {
+          const body = await readJson(req);
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!name) return json(res, 400, { error: 'Missing profile name' });
+          deleteAgentProfile(name, resolveGuiHomeDir());
+          return json(res, 200, await state());
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/bridge/activate') {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -5166,6 +5209,34 @@ export function createActoviqGuiHtml(): string {
       </div>
     </form>
   </div>
+  <div id="agentProfileEditorModal" class="modal hidden">
+    <form id="agentProfileEditorForm" class="dialog bridge-editor">
+      <h2 id="agentProfileEditorTitle">New agent profile</h2>
+      <div class="two-col">
+        <label class="dialog-field">Profile name<input id="agentProfileName" autocomplete="off" placeholder="e.g. reviewer"></label>
+        <label class="dialog-field">Provider config<select id="agentProfileBridge"></select></label>
+      </div>
+      <label class="dialog-field">Description<input id="agentProfileDescription" autocomplete="off" placeholder="Optional role summary"></label>
+      <div class="two-col">
+        <label class="dialog-field">Model<select id="agentProfileModelSelect"></select></label>
+        <label class="dialog-field">Custom model<input id="agentProfileModelCustom" autocomplete="off" placeholder="Only used when selected"></label>
+      </div>
+      <label class="dialog-field">Permission mode<select id="agentProfilePermission">
+        <option value="">Session default</option>
+        <option value="default">Default</option>
+        <option value="acceptEdits">Accept edits</option>
+        <option value="bypassPermissions">Full access</option>
+        <option value="plan">Plan mode</option>
+        <option value="auto">Auto</option>
+      </select></label>
+      <label class="dialog-field">System prompt append<textarea id="agentProfileSystemPrompt" rows="4" placeholder="Optional instructions appended when this agent runs"></textarea></label>
+      <p id="agentProfileCfgStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="agentProfileCfgReset" class="secondary-btn">Cancel</button>
+        <button type="button" id="agentProfileCfgSave" class="primary">Save profile</button>
+      </div>
+    </form>
+  </div>
   <div id="routerEditorModal" class="modal hidden">
     <form id="routerEditorForm" class="dialog bridge-editor router-editor">
       <h2 id="routerEditorTitle">New router profile</h2>
@@ -5331,6 +5402,15 @@ export function createActoviqGuiHtml(): string {
           <p class="muted">Save named provider/model configs (provider + API key + base URL + models), then pick them from the composer's model menu. The active config runs every prompt through its backend on the same chat, so context survives switching. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
           <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <h2>Agent profiles</h2>
+            <button type="button" id="agentProfileNew" class="primary">+ New profile</button>
+          </div>
+          <p class="muted">Save reusable agent roles bound to a provider config and one model. Issue dispatch and team members can reuse these profiles without changing the global active runtime.</p>
+          <p id="agentProfilesStatus" class="muted"></p>
+          <div id="agentProfilesList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
           <div class="settings-group-head">
@@ -15355,6 +15435,7 @@ function renderBridgeConfigs() {
   const active = bs.activeConfig;
   const configs = bs.configs || [];
   renderRuntimeDiscovery();
+  renderAgentProfiles();
   el('bridgeActive').innerHTML = active
     ? (active.runtime === 'hadamard' && !active.apiKeyMasked && !active.baseURL
       ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`
@@ -15399,6 +15480,194 @@ function renderBridgeConfigs() {
 }
 
 // ── Per-config editor modal ───────────────────────────────────────────────
+let editingAgentProfileName = null;
+
+function agentProfileBridgeModels(cfg) {
+  const names = [];
+  const seen = new Set();
+  function addName(name) {
+    const value = String(name || '').trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    names.push(value);
+  }
+  addName(cfg?.model);
+  for (const model of cfg?.models || []) addName(model?.name);
+  return names;
+}
+
+function renderAgentProfiles() {
+  const root = document.getElementById('agentProfilesList');
+  if (!root) return;
+  const profiles = state.snapshot?.agentProfiles || [];
+  const configs = state.snapshot?.bridgeState?.configs || [];
+  root.textContent = '';
+  const status = document.getElementById('agentProfilesStatus');
+  if (status) {
+    status.textContent = configs.length === 0
+      ? 'Create a provider config first; profiles reuse those runtime settings.'
+      : '';
+  }
+  if (profiles.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No agent profiles yet.';
+    root.appendChild(empty);
+    return;
+  }
+  for (const profile of profiles) {
+    const cfg = configs.find(item => item.name === profile.bridgeConfig);
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    const strong = document.createElement('strong');
+    strong.textContent = profile.name;
+    card.appendChild(strong);
+    const detail = document.createElement('p');
+    detail.textContent = describeParts([
+      profile.description || '',
+      cfg ? cfg.runtime : 'missing config',
+      profile.bridgeConfig,
+      profile.model,
+      profile.permissionMode ? 'permission: ' + profile.permissionMode : '',
+    ]);
+    card.appendChild(detail);
+    const footer = document.createElement('footer');
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => openAgentProfileEditor(profile));
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.textContent = 'Remove';
+    delBtn.addEventListener('click', () => deleteAgentProfileViaApi(profile.name));
+    footer.append(editBtn, delBtn);
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+
+function populateAgentProfileBridgeOptions(selected) {
+  const select = el('agentProfileBridge');
+  const configs = state.snapshot?.bridgeState?.configs || [];
+  select.textContent = '';
+  if (configs.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No provider configs';
+    select.appendChild(opt);
+    return;
+  }
+  for (const cfg of configs) {
+    const opt = document.createElement('option');
+    opt.value = cfg.name;
+    opt.textContent = cfg.name + ' - ' + cfg.runtime;
+    select.appendChild(opt);
+  }
+  select.value = selected && configs.some(cfg => cfg.name === selected)
+    ? selected
+    : configs[0].name;
+}
+
+function populateAgentProfileModelOptions(selectedModel) {
+  const select = el('agentProfileModelSelect');
+  const custom = el('agentProfileModelCustom');
+  const cfg = (state.snapshot?.bridgeState?.configs || []).find(item => item.name === el('agentProfileBridge').value);
+  const models = agentProfileBridgeModels(cfg);
+  select.textContent = '';
+  for (const model of models) {
+    const opt = document.createElement('option');
+    opt.value = model;
+    opt.textContent = model;
+    select.appendChild(opt);
+  }
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = models.length > 0 ? 'Custom model...' : 'Custom model';
+  select.appendChild(customOpt);
+  if (selectedModel && models.includes(selectedModel)) {
+    select.value = selectedModel;
+    custom.value = '';
+  } else {
+    select.value = '__custom__';
+    custom.value = selectedModel || '';
+  }
+}
+
+function selectedAgentProfileModel() {
+  const selected = el('agentProfileModelSelect').value;
+  if (selected && selected !== '__custom__') return selected;
+  return el('agentProfileModelCustom').value.trim();
+}
+
+function openAgentProfileEditor(profile) {
+  editingAgentProfileName = profile ? profile.name : null;
+  el('agentProfileEditorTitle').textContent = profile ? 'Edit agent profile' : 'New agent profile';
+  setField('agentProfileName', profile ? profile.name : '');
+  el('agentProfileName').disabled = Boolean(profile);
+  setField('agentProfileDescription', profile?.description || '');
+  setField('agentProfilePermission', profile?.permissionMode || '');
+  setField('agentProfileSystemPrompt', profile?.systemPromptAppend || '');
+  populateAgentProfileBridgeOptions(profile?.bridgeConfig || '');
+  populateAgentProfileModelOptions(profile?.model || '');
+  el('agentProfileCfgStatus').textContent = profile ? 'Editing "' + profile.name + '".' : '';
+  el('agentProfileEditorModal').classList.remove('hidden');
+  el('agentProfileName').focus();
+}
+
+function closeAgentProfileEditor() {
+  el('agentProfileEditorModal').classList.add('hidden');
+  editingAgentProfileName = null;
+}
+
+async function saveAgentProfileViaApi() {
+  const name = editingAgentProfileName || el('agentProfileName').value.trim();
+  const model = selectedAgentProfileModel();
+  if (!name) { el('agentProfileCfgStatus').textContent = 'Profile name is required.'; return; }
+  if (!el('agentProfileBridge').value) { el('agentProfileCfgStatus').textContent = 'Provider config is required.'; return; }
+  if (!model) { el('agentProfileCfgStatus').textContent = 'Model is required.'; return; }
+  el('agentProfileCfgStatus').textContent = 'Saving...';
+  const body = {
+    name,
+    description: el('agentProfileDescription').value.trim(),
+    bridgeConfig: el('agentProfileBridge').value,
+    model,
+    permissionMode: el('agentProfilePermission').value,
+    systemPromptAppend: el('agentProfileSystemPrompt').value.trim(),
+  };
+  const res = await api('/api/agent-profiles', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    el('agentProfileCfgStatus').textContent = data.error || 'Save failed.';
+    return;
+  }
+  state.snapshot = data.state || state.snapshot;
+  closeAgentProfileEditor();
+  renderBridgeConfigs();
+  const warnings = Array.isArray(data.warnings) && data.warnings.length ? ' - ' + data.warnings.join(' ') : '';
+  el('settingsStatus').textContent = 'Agent profile saved' + warnings;
+}
+
+async function deleteAgentProfileViaApi(name) {
+  const res = await api('/api/agent-profiles/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    let message = await res.text();
+    try { message = JSON.parse(message).error || message; } catch { /* keep text */ }
+    addMessage('error', 'Delete failed: ' + message);
+    return;
+  }
+  state.snapshot = await res.json();
+  renderBridgeConfigs();
+  el('settingsStatus').textContent = 'Agent profile deleted';
+}
+
 let editingBridgeConfigName = null;
 let bridgeEditorUsesLocalConfig = false;
 const localRuntimeConfigCache = {};
@@ -16808,6 +17077,17 @@ el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); sub
 el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); });
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
 el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
+el('agentProfileNew').addEventListener('click', () => { openAgentProfileEditor(null); });
+el('agentProfileCfgSave').addEventListener('click', () => { saveAgentProfileViaApi().catch(console.error); });
+el('agentProfileCfgReset').addEventListener('click', () => { closeAgentProfileEditor(); });
+el('agentProfileBridge').addEventListener('change', () => { populateAgentProfileModelOptions(''); });
+el('agentProfileEditorForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveAgentProfileViaApi().catch(console.error);
+});
+el('agentProfileEditorModal').addEventListener('click', (event) => {
+  if (event.target === el('agentProfileEditorModal')) closeAgentProfileEditor();
+});
 el('routerNewProfile').addEventListener('click', () => { openRouterEditor(null); });
 el('routerCfgSave').addEventListener('click', () => { saveRouterProfileViaApi().catch(console.error); });
 el('routerCfgReset').addEventListener('click', () => { closeRouterEditor(); });
