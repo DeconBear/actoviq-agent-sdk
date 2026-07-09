@@ -3352,7 +3352,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
             appendStatic([
               ...JSON.stringify(cfg, null, 2).split('\n').map((l) => `${A.dim}${l}${A.reset}`),
-              `${A.dim}Set: /manager config set <model|readScope|mirror|allow> <value>${A.reset}`,
+              `${A.dim}Set: /manager config set <model|bridgeConfig|readScope|mirror|allow> <value>${A.reset}`,
               `${A.dim}The Manager always runs read-only regardless of model.${A.reset}`,
               '',
             ]);
@@ -3365,16 +3365,17 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             const value = spIdx === -1 ? '' : rest.slice(spIdx + 1).trim();
             const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
             if (key === 'model') cfg.model = value || undefined;
+            else if (key === 'bridgeConfig' || key === 'config') cfg.bridgeConfig = value || undefined;
             else if (key === 'readScope') {
-              if (value !== 'workspace-only' && value !== 'workspace+docs' && value !== 'explicit-allowlist') {
-                appendStatic([...formatErrorLine('readScope must be workspace-only | workspace+docs | explicit-allowlist'), '']);
+              if (value !== 'workspace-only' && value !== 'workspace+docs' && value !== 'explicit-allowlist' && value !== 'full-access') {
+                appendStatic([...formatErrorLine('readScope must be workspace-only | workspace+docs | explicit-allowlist | full-access'), '']);
                 return;
               }
               cfg.readScope = value;
             } else if (key === 'mirror') cfg.mirrorProgressToWorkspace = value === 'on' || value === 'true';
             else if (key === 'allow') cfg.allowedReadPaths = value ? value.split(',').map((p) => p.trim()).filter(Boolean) : [];
             else {
-              appendStatic([...formatErrorLine('usage: /manager config set <model|readScope|mirror|allow> <value>'), '']);
+              appendStatic([...formatErrorLine('usage: /manager config set <model|bridgeConfig|readScope|mirror|allow> <value>'), '']);
               return;
             }
             await writeManagerConfig(sdk.config.workDir, homeDir, cfg);

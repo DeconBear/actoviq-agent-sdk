@@ -12,7 +12,8 @@
  *     target paths are hard-coded. Optional opt-in mirror of PROGRESS.md to
  *     `<workDir>/.actoviq/PROGRESS.md`.
  *   - Read scope: `workspace-only` (default) | `workspace+docs` |
- *     `explicit-allowlist` — enforced by wrapping the read tools' execute.
+ *     `explicit-allowlist` | `full-access` — enforced by wrapping the read
+ *     tools' execute (`full-access` skips path checks; writes stay limited).
  *
  * Host surfaces (GUI/TUI) collect git summaries and conversation previews
  * themselves and inject them as context; the Manager has no shell.
@@ -88,11 +89,35 @@ export async function writeProgressFile(workDir: string, homeDir: string, conten
 
 // ── Manager configuration (manager.json) ─────────────────────────
 
-export type ManagerReadScope = 'workspace-only' | 'workspace+docs' | 'explicit-allowlist';
+export type ManagerReadScope =
+  | 'workspace-only'
+  | 'workspace+docs'
+  | 'explicit-allowlist'
+  | 'full-access';
+
+export const MANAGER_READ_SCOPES: readonly ManagerReadScope[] = [
+  'workspace-only',
+  'workspace+docs',
+  'explicit-allowlist',
+  'full-access',
+] as const;
+
+export function isManagerReadScope(value: unknown): value is ManagerReadScope {
+  return typeof value === 'string' && (MANAGER_READ_SCOPES as readonly string[]).includes(value);
+}
 
 export interface ManagerConfig {
-  /** Model override for manager runs. Empty/absent → session default. */
+  /**
+   * Optional model id override for manager runs.
+   * With `bridgeConfig`: overrides that config's default model (same provider/credentials).
+   * Without `bridgeConfig`: overrides the session model. Empty/absent → no override.
+   */
   model?: string;
+  /**
+   * Named provider config from `~/.actoviq/bridge-configs.json`. When set, the
+   * Manager turn uses that config's model/provider credentials (Hadamard path).
+   */
+  bridgeConfig?: string;
   /** Read scope policy (default workspace-only). */
   readScope: ManagerReadScope;
   /** Extra readable paths for `workspace+docs` / `explicit-allowlist`. */
@@ -117,12 +142,14 @@ export async function readManagerConfig(workDir: string, homeDir: string): Promi
   try {
     const raw = JSON.parse(await readFile(managerConfigPath(workDir, homeDir), 'utf8'));
     if (!isRecord(raw)) return { ...DEFAULT_MANAGER_CONFIG };
-    const readScope: ManagerReadScope =
-      raw.readScope === 'workspace+docs' || raw.readScope === 'explicit-allowlist'
-        ? raw.readScope
-        : 'workspace-only';
+    const readScope: ManagerReadScope = isManagerReadScope(raw.readScope)
+      ? raw.readScope
+      : 'workspace-only';
     return {
       model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : undefined,
+      bridgeConfig: typeof raw.bridgeConfig === 'string' && raw.bridgeConfig.trim()
+        ? raw.bridgeConfig.trim()
+        : undefined,
       readScope,
       allowedReadPaths: Array.isArray(raw.allowedReadPaths)
         ? raw.allowedReadPaths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
@@ -153,8 +180,9 @@ function isWithin(candidate: string, root: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-/** Compute the roots the manager may read, per config. */
+/** Compute the roots the manager may read, per config. Empty = unrestricted. */
 export function resolveManagerReadRoots(workDir: string, homeDir: string, config: ManagerConfig): string[] {
+  if (config.readScope === 'full-access') return [];
   const roots = [normalizeRoot(workDir), normalizeRoot(getActoviqProjectSessionDirectory(workDir, homeDir))];
   if (config.readScope === 'workspace+docs' || config.readScope === 'explicit-allowlist') {
     for (const extra of config.allowedReadPaths) roots.push(normalizeRoot(extra));
@@ -219,7 +247,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
 
   const readTools = createActoviqFileTools({ cwd: workDir })
     .filter((t) => MANAGER_READ_TOOLS.has(t.name))
-    .map((t) => restrictToolReadScope(t, roots, workDir));
+    .map((t) => (config.readScope === 'full-access' ? t : restrictToolReadScope(t, roots, workDir)));
   const webTools = createActoviqWebTools().filter((t) => t.name === 'WebFetch');
 
   const planWrite = tool(
@@ -299,6 +327,9 @@ export function buildManagerSystemPrompt(workDir: string, config?: ManagerConfig
     '- You NEVER modify project source code. You have no Write/Edit/Bash tools; do not attempt workarounds.',
     '- The ONLY documents you maintain are the structured plan (via the PlanWrite tool) and PROGRESS.md (via the ProgressWrite tool).',
     '- Use Read/Glob/Grep to inspect the project and WebFetch for reference material. Cite file paths in your findings.',
+    ...(config?.readScope === 'full-access'
+      ? ['- Read scope is full-access: you may read any path on this machine. You still cannot write outside plan/PROGRESS.']
+      : []),
     '- Before updating a document, read its current state and preserve everything still accurate.',
     '- Keep PROGRESS.md human-readable: a short status summary, milestones, risks/blockers, notable decisions, and a dated changelog section.',
     '- You do not run teams or delegate to other agents. If multi-perspective research would help, recommend the user run `/team ask` in the main conversation instead.',

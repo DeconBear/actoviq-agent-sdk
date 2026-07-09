@@ -1995,6 +1995,7 @@ export class ActoviqAgentClient {
     emit?: (event: import('../types.js').AgentEvent) => void,
     augmentations?: PreparedRunAugmentations,
     skipRunStartedEvent = false,
+    liveSession?: AgentSession,
   ): Promise<AgentRunResult> {
     const metadata = {
       ...this.config.metadata,
@@ -2081,6 +2082,22 @@ export class ActoviqAgentClient {
         this.activateConditionalSkillsFromEvent(event);
         emit?.(event);
       },
+      onConversationCheckpoint: session
+        ? async (messages) => {
+            const snap = deepClone(session);
+            snap.messages = deepClone(messages);
+            snap.updatedAt = nowIso();
+            snap.metadata = {
+              ...snap.metadata,
+              __actoviqWorkDir: this.config.workDir,
+              ...(options.metadata ?? {}),
+            };
+            await this.store.save(snap);
+            // Keep the live AgentSession (if any) in sync so a subsequent
+            // persistSessionAfterRun / reactive compact sees the checkpoint.
+            liveSession?.replace(snap);
+          }
+        : undefined,
       skipRunStartedEvent,
       // Per-run model client override (the /model router uses this to route a
       // turn to a different model/provider); falls back to the SDK default.
@@ -2128,6 +2145,7 @@ export class ActoviqAgentClient {
           args.emit,
           currentAugmentations,
           attempts > 0,
+          args.session,
         );
         if (lastReactiveCompact) {
           result.reactiveCompact = lastReactiveCompact;

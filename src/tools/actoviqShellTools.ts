@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { ToolExecutionError } from '../errors.js';
 import { tool } from '../runtime/tools.js';
 import type { AgentToolDefinition } from '../types.js';
+import { detectDangerousBashCommand } from './bash/BashTool.js';
 
 export const POWERSHELL_TOOL_NAME = 'PowerShell';
 const execFile = promisify(execFileCallback);
@@ -43,6 +44,16 @@ export function createPowerShellTool(): AgentToolDefinition {
           POWERSHELL_TOOL_NAME,
           'PowerShell execution requires Windows.',
         );
+      }
+
+      const blocked = detectDangerousBashCommand(command);
+      if (blocked) {
+        return {
+          command,
+          stdout: '',
+          stderr: blocked,
+          exitCode: 1,
+        };
       }
 
       const timeoutMs = Math.min(

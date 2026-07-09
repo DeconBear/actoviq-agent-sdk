@@ -97,9 +97,15 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('data-settings-tab="automation"');
     expect(html).toContain('data-settings-tab="sessions"');
     expect(html).toContain('data-settings-tab="memory"');
-    expect(html).toContain('id="settingsRuntimeModel"');
-    expect(html).toContain('id="settingsRuntimeEffort"');
-    expect(html).toContain('id="settingsRouterSelect"');
+    expect(html).toContain('id="settingsRouterStatus"');
+    expect(html).toContain('id="settingsDisableRouter"');
+    expect(html).toContain('id="settingsRoutersList"');
+    expect(html).toContain('id="routerNewProfile"');
+    expect(html).toContain('id="routerEditorModal"');
+    expect(html).toContain('id="routerCfgSave"');
+    expect(html).not.toContain('id="settingsRuntimeModel"');
+    expect(html).not.toContain('id="settingsRuntimeEffort"');
+    expect(html).not.toContain('id="settingsRouterSelect"');
     expect(html).toContain('id="settingsToolsList"');
     expect(html).toContain('id="settingsSkillsList"');
     expect(html).toContain('id="settingsAgentsList"');
@@ -116,7 +122,10 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('id="convActionBar"');
     expect(html).toContain('id="contextRail"');
     expect(html).toContain('id="sendBtn"');
-    expect(html).toContain('id="saveSettingsBtn"');
+    expect(html).toContain('id="settingsStatus"');
+    expect(html).toContain('settings-autosave-status');
+    expect(html).not.toContain('id="saveSettingsBtn"');
+    expect(html).not.toContain('id="cancelSettings"');
     expect(html).toContain('id="backToAppBtn"');
     expect(html).toContain('id="openLocationBtn"');
     // The command-palette / tools / abort (×) top-bar buttons were removed; the
@@ -168,7 +177,12 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('buildSubmissionText');
     expect(js).toContain('renderSettingsCommandPanels');
     expect(js).toContain('runSettingsCommand');
-    expect(js).toContain('settingsApplyRuntimeModel');
+    expect(js).toContain('wireSettingsAutosave');
+    expect(js).toContain('persistSettingsNow');
+    expect(js).toContain('openRouterEditor');
+    expect(js).toContain('saveRouterProfileViaApi');
+    expect(js).toContain('/api/router/profile');
+    expect(js).not.toContain('settingsApplyRuntimeModel');
     expect(js).toContain('/model router ');
     expect(js).toContain('/workflows run ');
     expect(js).toContain('/team attach ');
@@ -187,6 +201,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('updateSendButton');
     expect(css).toContain('.context-menu');
     expect(css).toContain('.git-section');
+    expect(css).toContain('.settings-autosave-status');
+    expect(css).not.toContain('.settings-savebar');
     expect(css).toContain('.brand ');
     expect(css).toContain('.chat-chrome');
     expect(css).toContain('.workspace-path-row');
@@ -229,7 +245,8 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="managerTranscript"');
     expect(html).toContain('id="settingsTeamAutoInvoke"');
     expect(html).toContain('id="settingsTeamDefaultAttached"');
-    expect(html).toContain('id="settingsTeamPrefsSave"');
+    expect(html).not.toContain('id="settingsTeamPrefsSave"');
+    expect(js).toContain('saveTeamPreferencesFromSettings');
     expect(css).toContain('.manager-widget');
     expect(css).toContain('.manager-fab');
     expect(css).toContain('.manager-transcript');
@@ -242,11 +259,17 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('managerBoundWorkDir');
     expect(js).toContain('resetManagerClientState');
     expect(js).toContain("state.projectView === 'detail'");
-    expect(js).toContain('renderMarkdownInto(bubble');
+    expect(js).toContain('managerAddMsg');
+    expect(js).toContain('managerAddToolActivity');
     expect(js).toContain('managerTranscriptHydrated');
     expect(js).toContain('hydrateManagerTranscript');
     expect(js).toContain("item.kind === 'manager'");
-    expect(css).toContain('.manager-transcript .md-prose');
+    expect(css).toContain('.manager-transcript .message.md-prose');
+    expect(js).toContain('/api/project-status');
+    expect(js).toContain('projectStatusSelect');
+    expect(js).toContain('PROJECT_STATUS_LABELS');
+    expect(html).toContain('id="managerCfgBridge"');
+    expect(html).not.toContain('id="managerConfigBtn"');
     // No client-side fake built-in team placeholders (real list comes from the server).
     expect(js).not.toContain("mode: 'built-in'");
   });
@@ -290,11 +313,23 @@ describe('TUI and GUI parity', () => {
     }
     const html = createActoviqGuiHtml();
     const js = createActoviqGuiClientScript();
+    const css = createActoviqGuiStyles();
     expect(html).toContain('id="managerConfigForm"');
     expect(html).toContain('id="managerCfgScope"');
     expect(html).toContain('id="managerCfgMirror"');
-    expect(html).toContain('always runs read-only');
+    expect(html).toContain('id="managerCfgBridge"');
+    expect(html).toContain('id="managerCfgModel"');
+    expect(html).toContain('<select id="managerCfgModel">');
+    expect(html).toContain('value="full-access"');
+    expect(html).toContain('Manager stays read-only');
     expect(js).toContain('/api/manager/config');
+    expect(js).toContain('bridgeConfig');
+    expect(html).toContain('id="managerThinking"');
+    expect(html).toContain('id="managerThinkingLabel"');
+    expect(css).toContain('.manager-thinking');
+    expect(css).toContain('align-items: stretch');
+    expect(js).toContain('setManagerThinking');
+    expect(js).toContain('fillManagerModelOptions');
   });
 
   it('renders the Team Run tree + graph editor surfaces in the GUI (plan Phase 4/5)', () => {

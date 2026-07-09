@@ -393,6 +393,8 @@ export {
   readProgressFile,
   writeProgressFile,
   resolveManagerReadRoots,
+  isManagerReadScope,
+  MANAGER_READ_SCOPES,
   DEFAULT_MANAGER_CONFIG,
   EMPTY_PROJECT_PLAN,
 } from './manager/projectManager.js';

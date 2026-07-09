@@ -40,6 +40,14 @@ export function createBashTool(): AgentToolDefinition {
       prompt: () => BASH_DESCRIPTION,
     },
     async (input: BashInput, context) => {
+      const blocked = detectDangerousBashCommand(input.command);
+      if (blocked) {
+        return {
+          stdout: '',
+          stderr: blocked,
+          exitCode: 1,
+        };
+      }
       const timeoutMs = Math.min(Math.max(1, input.timeout ?? 120_000), 600_000);
       const shell = resolveBashShell();
       try {
@@ -75,6 +83,44 @@ export function createBashTool(): AgentToolDefinition {
       }
     },
   );
+}
+
+/**
+ * Block host-wide process kills that would take down Actoviq itself
+ * (e.g. `taskkill /IM node.exe`, `killall node`, `pkill -f node`).
+ * Prefer killing a specific PID from the command that started the server.
+ */
+export function detectDangerousBashCommand(command: string): string | null {
+  const cmd = String(command || '');
+  // taskkill targeting all node.exe / bun.exe / deno.exe by image name
+  if (/\btaskkill\b/i.test(cmd) && /\/(?:IM|FI)\b/i.test(cmd) && /\b(?:node|bun|deno)(?:\.exe)?\b/i.test(cmd) && !/\b\/PID\b/i.test(cmd)) {
+    return (
+      'Blocked: refusing to kill all node/bun/deno processes by image name ' +
+      '(this would terminate Actoviq itself). Kill a specific PID instead ' +
+      '(e.g. taskkill /PID <pid> /F), or stop the server you started via its own PID.'
+    );
+  }
+  // killall / pkill of node/bun/deno without a more specific filter that includes a pid
+  if (/\bkillall\b/i.test(cmd) && /\b(?:node|bun|deno)\b/i.test(cmd)) {
+    return (
+      'Blocked: refusing killall on node/bun/deno (would terminate Actoviq). ' +
+      'Use kill <pid> for the specific server process instead.'
+    );
+  }
+  if (/\bpkill\b/i.test(cmd) && /(?:^|[\s"'])-f(?:\s|=)/i.test(cmd) && /\b(?:node|bun|deno)\b/i.test(cmd) && !/\b\d{2,}\b/.test(cmd)) {
+    return (
+      'Blocked: refusing broad pkill -f on node/bun/deno (would terminate Actoviq). ' +
+      'Use kill <pid> for the specific server process instead.'
+    );
+  }
+  // PowerShell Stop-Process -Name node (kills every node process)
+  if (/\bStop-Process\b/i.test(cmd) && /(?:-Name|-ProcessName)\s+['"]?(?:node|bun|deno)(?:\.exe)?['"]?/i.test(cmd) && !/-Id\b/i.test(cmd)) {
+    return (
+      'Blocked: refusing Stop-Process -Name node/bun/deno (would terminate Actoviq). ' +
+      'Use Stop-Process -Id <pid> for the specific server process instead.'
+    );
+  }
+  return null;
 }
 
 function resolveBashShell(): { executable: string; args: string[] } {

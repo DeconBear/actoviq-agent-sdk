@@ -101,6 +101,24 @@ describe('Manager read scope enforcement', () => {
     }
   });
 
+  it('full-access allows reads outside the workspace without allowlist', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mgr-full-'));
+    const secret = path.join(outside, 'secret.txt');
+    fs.writeFileSync(secret, 'full access ok');
+    try {
+      const cfg = { ...DEFAULT_MANAGER_CONFIG, readScope: 'full-access' as const };
+      expect(resolveManagerReadRoots(workDir, homeDir, cfg)).toEqual([]);
+      const read = (await tools(cfg)).find((t) => t.name === 'Read')!;
+      const result = await (read.execute as (i: unknown, c: unknown) => Promise<unknown>)(
+        { file_path: secret },
+        {},
+      );
+      expect(JSON.stringify(result)).toContain('full access ok');
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('the project store (plan/PROGRESS home) is always readable', () => {
     const roots = resolveManagerReadRoots(workDir, homeDir, DEFAULT_MANAGER_CONFIG);
     const planDir = path.dirname(managerPlanPath(workDir, homeDir));

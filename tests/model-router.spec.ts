@@ -170,3 +170,39 @@ describe('built-in dispatch profile', () => {
     expect(dispatchEntries[0]!.source).toBe('personal');
   });
 });
+
+describe('saveRouterProfile / deleteRouterProfile', () => {
+  const temps: string[] = [];
+  afterEach(() => {
+    for (const dir of temps.splice(0)) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
+    temps.push(dir);
+    return dir;
+  }
+
+  it('writes a project profile and can delete it', async () => {
+    const { saveRouterProfile, deleteRouterProfile } = await import('../src/router/modelRouter.js');
+    const project = tempDir('actoviq-router-proj-');
+    const home = tempDir('actoviq-router-home-');
+    const filePath = await saveRouterProfile(
+      {
+        name: 'fast-strong',
+        routerModel: { model: 'leader' },
+        routes: [{ role: 'quick', model: 'haiku', when: 'simple' }],
+        fallback: { model: 'sonnet' },
+      },
+      { projectDir: project, homeDir: home, overwrite: true },
+    );
+    expect(filePath).toContain(path.join('.actoviq', 'routers', 'fast-strong.json'));
+    const loaded = loadRouterProfile('fast-strong', project, home);
+    expect(loaded?.source).toBe('project');
+    expect(loaded?.profile.routes[0]?.role).toBe('quick');
+    expect(await deleteRouterProfile('fast-strong', project, home)).toBe(true);
+    expect(loadRouterProfile('fast-strong', project, home)).toBeNull();
+  });
+});

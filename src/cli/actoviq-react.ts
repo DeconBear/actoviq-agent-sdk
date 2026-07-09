@@ -582,7 +582,7 @@ async function main() {
           }
           if (sub === 'config') {
             const cfg = await readManagerConfig(WORK_DIR, homeDir);
-            process.stdout.write(`${C.d}${JSON.stringify(cfg, null, 2)}\nSet: /manager config set <model|readScope|mirror|allow> <value>\nThe Manager always runs read-only regardless of model.${C.r}\n\n`);
+            process.stdout.write(`${C.d}${JSON.stringify(cfg, null, 2)}\nSet: /manager config set <model|bridgeConfig|readScope|mirror|allow> <value>\nThe Manager always runs read-only regardless of model.${C.r}\n\n`);
             return;
           }
           if (sub.startsWith('config set ')) {
@@ -592,16 +592,17 @@ async function main() {
             const value = spIdx === -1 ? '' : rest.slice(spIdx + 1).trim();
             const cfg = await readManagerConfig(WORK_DIR, homeDir);
             if (key === 'model') cfg.model = value || undefined;
+            else if (key === 'bridgeConfig' || key === 'config') cfg.bridgeConfig = value || undefined;
             else if (key === 'readScope') {
-              if (value !== 'workspace-only' && value !== 'workspace+docs' && value !== 'explicit-allowlist') {
-                process.stdout.write(`${C.R}readScope must be workspace-only | workspace+docs | explicit-allowlist${C.r}\n\n`);
+              if (value !== 'workspace-only' && value !== 'workspace+docs' && value !== 'explicit-allowlist' && value !== 'full-access') {
+                process.stdout.write(`${C.R}readScope must be workspace-only | workspace+docs | explicit-allowlist | full-access${C.r}\n\n`);
                 return;
               }
               cfg.readScope = value;
             } else if (key === 'mirror') cfg.mirrorProgressToWorkspace = value === 'on' || value === 'true';
             else if (key === 'allow') cfg.allowedReadPaths = value ? value.split(',').map(p => p.trim()).filter(Boolean) : [];
             else {
-              process.stdout.write(`${C.R}usage: /manager config set <model|readScope|mirror|allow> <value>${C.r}\n\n`);
+              process.stdout.write(`${C.R}usage: /manager config set <model|bridgeConfig|readScope|mirror|allow> <value>${C.r}\n\n`);
               return;
             }
             await writeManagerConfig(WORK_DIR, homeDir, cfg);
