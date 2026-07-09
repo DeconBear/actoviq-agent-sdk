@@ -87,6 +87,8 @@ import {
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
   loadRouterProfile,
+  saveRouterProfile,
+  deleteRouterProfile,
   loadTeamDefinition,
   cloneTeamDefinition,
   instantiateTeamDefinition,
@@ -122,6 +124,7 @@ import {
   WorktreeService,
   type ActoviqAgentClient,
   type ManagerConfig,
+  isManagerReadScope,
 } from '../index.js';
 import {
   addBridgeConfig,
@@ -190,6 +193,19 @@ import {
   writeContextRailStore,
 } from './contextRailStore.js';
 import { readWorkspaceNote, writeWorkspaceNote } from './workspaceNote.js';
+import {
+  PROJECT_STATUS_LABELS,
+  PROJECT_STATUSES,
+  isProjectStatus,
+  readProjectMeta,
+  writeProjectMeta,
+  type ProjectStatus,
+} from './projectMeta.js';
+import {
+  forgetWorkspaceFromRegistry,
+  readWorkspaceRegistry,
+  rememberWorkspace,
+} from './workspaceRegistry.js';
 import { resolveGuiAssetsDir } from './guiAssets.js';
 import type {
   ActoviqCanUseTool,
@@ -201,7 +217,9 @@ import type {
   AgentEvent,
   AgentRunResult,
   AgentToolDefinition,
+  RouterModelRef,
   RouterProfile,
+  RouterRoute,
   ScheduledAutomationTask,
   ScheduledAutomationTaskInput,
   TeamDefinition,
@@ -576,19 +594,6 @@ function isVisibleChatSession(item: Pick<SessionSummary, 'kind'>): boolean {
   return item.kind !== 'manager';
 }
 
-async function listProjectSessionRoots(homeDir: string): Promise<string[]> {
-  const projectsRoot = path.join(homeDir, '.actoviq', 'projects');
-  let projectDirs: Array<{ name: string; isDirectory(): boolean }>;
-  try {
-    projectDirs = await readdir(projectsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return projectDirs
-    .filter((projectDir) => projectDir.isDirectory())
-    .map((projectDir) => path.join(projectsRoot, projectDir.name));
-}
-
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -731,10 +736,28 @@ async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionI
 }
 
 async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory: string): Promise<string[]> {
-  return uniquePaths([
-    currentSessionDirectory,
-    ...await listProjectSessionRoots(homeDir),
-  ]);
+  // Hot paths (state refresh / project open) must not readdir every hash under
+  // ~/.actoviq/projects — bench runs leave hundreds of dirs and dominate latency.
+  void homeDir;
+  return uniquePaths([currentSessionDirectory]);
+}
+
+async function sessionStatsForWorkDir(
+  workDir: string,
+  homeDir: string,
+): Promise<{ count: number; lastUsedAt: string }> {
+  const projectRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+  let count = 0;
+  let lastUsedAt = '';
+  const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
+  for (const item of await listStoredSessionFiles(projectRoot)) {
+    if (item.messageCount === 0 || item.kind === 'manager') continue;
+    // Prefer sessions that belong to this workDir; older files may omit workDir.
+    if (item.workDir && normalizeFsPath(item.workDir) !== normalizeFsPath(workDir)) continue;
+    count += 1;
+    lastUsedAt = maxIso(lastUsedAt, item.updatedAt || '');
+  }
+  return { count, lastUsedAt };
 }
 
 // --- Project plan (plan/UI_PLAN §4.2): a light per-workspace plan.json. ---
@@ -755,6 +778,7 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     active: boolean;
     lastUsedAt: string;
     note: string;
+    status: ProjectStatus;
   }>();
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
   const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '') => {
@@ -764,35 +788,34 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     projects.set(key, {
       name: path.basename(resolved) || resolved,
       path: resolved,
-      sessionCount: (existing?.sessionCount ?? 0) + sessionCount,
+      sessionCount: Math.max(existing?.sessionCount ?? 0, sessionCount),
       active: normalizeFsPath(resolved) === normalizeFsPath(current),
       lastUsedAt: maxIso(existing?.lastUsedAt ?? '', lastUsedAt),
       note: existing?.note ?? '',
+      status: existing?.status ?? 'not_started',
     });
   };
   addProject(current, 0);
 
-  for (const projectRoot of await listProjectSessionRoots(homeDir)) {
-    const countsByWorkDir = new Map<string, { path: string; count: number; lastUsedAt: string }>();
-    for (const item of await listStoredSessionFiles(projectRoot)) {
-      if (item.messageCount === 0 || !item.workDir || !(await pathExists(item.workDir))) continue;
-      if (item.kind === 'manager') continue;
-      const key = normalizeFsPath(item.workDir);
-      const existing = countsByWorkDir.get(key);
-      countsByWorkDir.set(key, {
-        path: item.workDir,
-        count: (existing?.count ?? 0) + 1,
-        lastUsedAt: maxIso(existing?.lastUsedAt ?? '', item.updatedAt || ''),
-      });
-    }
-    for (const project of countsByWorkDir.values()) {
-      addProject(project.path, project.count, project.lastUsedAt);
-    }
-  }
+  // Only remembered + current workspaces — never scan every ~/.actoviq/projects/*
+  // hash (bench pollution made project open O(all historical dirs)).
+  const registry = await readWorkspaceRegistry(homeDir);
+  await Promise.all(registry.map(async (entry) => {
+    if (!(await pathExists(entry.path))) return;
+    addProject(entry.path, 0, entry.lastOpenedAt);
+  }));
 
   const rows = [...projects.values()];
   await Promise.all(rows.map(async (project) => {
-    project.note = await readWorkspaceNote(project.path, homeDir);
+    const [note, stats, meta] = await Promise.all([
+      readWorkspaceNote(project.path, homeDir),
+      sessionStatsForWorkDir(project.path, homeDir),
+      readProjectMeta(project.path, homeDir),
+    ]);
+    project.note = note;
+    project.sessionCount = Math.max(project.sessionCount, stats.count);
+    project.lastUsedAt = maxIso(project.lastUsedAt, stats.lastUsedAt);
+    project.status = meta.status;
   }));
   return rows.sort((left, right) => {
     if (left.active !== right.active) return left.active ? -1 : 1;
@@ -819,29 +842,126 @@ function openPathInSystem(targetPath: string): void {
 
 /**
  * Open a native folder-picker dialog and return the selected directory path,
- * or null if the user cancelled. Uses each platform's built-in dialog (no
- * GUI dependency). Runs the picker as a detached child process so the Node
- * main loop (and Electron) is NOT blocked while the dialog is open.
+ * or null if the user cancelled.
+ *
+ * Prefer Electron's Common Item Dialog (modern explorer-style picker) when
+ * running inside the desktop app. Outside Electron, fall back to each OS's
+ * built-in picker — on Windows that is IFileOpenDialog (same modern UI), not
+ * the legacy FolderBrowserDialog tree.
  */
 const execFileAsync = promisify(execFile);
+
+async function pickFolderViaElectron(): Promise<string | null | undefined> {
+  if (!process.versions.electron) return undefined;
+  try {
+    const { BrowserWindow, dialog } = await import('electron');
+    const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const options = {
+      title: 'Select workspace folder',
+      properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    };
+    const result = parent
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return null;
+    return result.filePaths[0];
+  } catch {
+    // Electron module unavailable or dialog failed — fall through to OS picker.
+    return undefined;
+  }
+}
+
+/** Windows Vista+ IFileOpenDialog (explorer-style), via PowerShell Add-Type. */
+function windowsModernFolderPickerScript(): string {
+  // Keep the C# compact: IFileDialog vtable must match the COM layout exactly.
+  // Guard Add-Type so a second pick in the same PowerShell process does not fail.
+  return `
+$ErrorActionPreference = 'Stop'
+if (-not ('ActoviqFolderPicker' -as [type])) {
+$code = @'
+using System;
+using System.Runtime.InteropServices;
+public static class ActoviqFolderPicker {
+  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+  class FileOpenDialogRCW {}
+  [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"),
+   InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IFileDialog {
+    [PreserveSig] int Show(IntPtr parent);
+    void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+    void SetFileTypeIndex(uint iFileType);
+    void GetFileTypeIndex(out uint piFileType);
+    void Advise(IntPtr pfde, out uint pdwCookie);
+    void Unadvise(uint dwCookie);
+    void SetOptions(uint fos);
+    void GetOptions(out uint pfos);
+    void SetDefaultFolder(IShellItem psi);
+    void SetFolder(IShellItem psi);
+    void GetFolder(out IShellItem ppsi);
+    void GetCurrentSelection(out IShellItem ppsi);
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+    void GetResult(out IShellItem ppsi);
+    void AddPlace(IShellItem psi, int fdap);
+    void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+    void Close(int hr);
+    void SetClientGuid(ref Guid guid);
+    void ClearClientData();
+    void SetFilter(IntPtr pFilter);
+  }
+  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"),
+   InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IShellItem {
+    void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    void GetParent(out IShellItem ppsi);
+    void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+    void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+    void Compare(IShellItem psi, uint hint, out int piOrder);
+  }
+  const uint FOS_PICKFOLDERS = 0x20;
+  const uint FOS_FORCEFILESYSTEM = 0x40;
+  const uint SIGDN_FILESYSPATH = 0x80058000;
+  public static string Pick(string title) {
+    var dialog = (IFileDialog)new FileOpenDialogRCW();
+    uint options;
+    dialog.GetOptions(out options);
+    dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    if (!string.IsNullOrEmpty(title)) dialog.SetTitle(title);
+    if (dialog.Show(IntPtr.Zero) != 0) return null;
+    IShellItem item;
+    dialog.GetResult(out item);
+    IntPtr ptr;
+    item.GetDisplayName(SIGDN_FILESYSPATH, out ptr);
+    string path = Marshal.PtrToStringUni(ptr);
+    Marshal.FreeCoTaskMem(ptr);
+    return path;
+  }
+}
+'@
+Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
+}
+$path = [ActoviqFolderPicker]::Pick('Select workspace folder')
+if ($path) { Write-Output $path }
+`;
+}
+
 async function pickFolder(): Promise<string | null> {
+  const electronPick = await pickFolderViaElectron();
+  if (electronPick !== undefined) return electronPick;
+
   try {
     if (process.platform === 'win32') {
-      // PowerShell FolderBrowserDialog — ships with Windows.
-      // NB: use Write-Output WITHOUT -NoNewline. Windows PowerShell 5.1's
-      // Write-Output has no -NoNewline parameter (that's Write-Host), so the
-      // literal "-NoNewline" was emitted as a positional input object and
-      // corrupted the path ("...-NoNewlineC:\folder..."). The trailing newline
-      // Write-Output adds is stripped by the .trim() below.
-      const ps = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = 'Select workspace folder'
-$d.ShowNewFolderButton = $true
-if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }
-`;
-      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf-8', windowsHide: true });
+      // Modern Common Item Dialog (same UI as Electron / Explorer "选择文件夹").
+      // NB: use Write-Output WITHOUT -NoNewline — Windows PowerShell 5.1's
+      // Write-Output has no -NoNewline parameter; a trailing newline is trimmed.
+      const { stdout } = await execFileAsync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', windowsModernFolderPickerScript()],
+        { encoding: 'utf-8', windowsHide: true },
+      );
       const trimmed = stdout.trim();
       return trimmed ? trimmed : null;
     }
@@ -1271,6 +1391,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     session = { id: '', model: options.model ?? '', title: '', messages: [], metadata: {} } as unknown as AgentSession;
   }
 
+  // Remember the startup workspace so it stays in the project list even with
+  // zero chats (listKnownProjects previously only inferred from session files).
+  try {
+    const bootHome = (await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: options.homeDir,
+    }).catch(() => undefined))?.homeDir
+      ?? process.env.HOME
+      ?? process.env.USERPROFILE
+      ?? workDir;
+    await rememberWorkspace(workDir, bootHome);
+  } catch {
+    // Registry write is best-effort.
+  }
+
   // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
   runSessionStartHooks(() => readSessionStartHooks(getLoadedJsonConfig()?.raw), workDir);
 
@@ -1431,6 +1566,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       throw error;
     }
     if (previousSdk) await previousSdk.close().catch(() => undefined);
+    const storeHome = (await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: options.homeDir,
+    }).catch(() => undefined))?.homeDir
+      ?? process.env.HOME
+      ?? process.env.USERPROFILE
+      ?? workDir;
+    await rememberWorkspace(workDir, storeHome).catch(() => undefined);
     invalidateHeavyState();
     await resyncAutomationScheduler();
     await syncRailReminders().catch(() => undefined);
@@ -1902,12 +2045,34 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       prompt = opts.text?.trim() ?? '';
       if (!prompt) throw new Error('Empty manager message.');
     }
+    let managerModel: string | null = cfg.model ?? session.model ?? null;
+    let managerModelApi: Awaited<ReturnType<typeof buildRouteModelApi>>['modelApi'] | undefined;
+    if (cfg.bridgeConfig) {
+      const bridgeCfg = findBridgeConfig(cfg.bridgeConfig, homeDir);
+      if (!bridgeCfg) throw new Error(`Manager provider config "${cfg.bridgeConfig}" not found.`);
+      const hadamardUsesDefaults = bridgeCfg.runtime === 'hadamard'
+        && !(typeof bridgeCfg.apiKey === 'string' && bridgeCfg.apiKey.trim())
+        && !(typeof bridgeCfg.baseURL === 'string' && bridgeCfg.baseURL.trim());
+      if (hadamardUsesDefaults) {
+        managerModel = cfg.model || bridgeCfg.model || session.model || null;
+      } else {
+        const routed = await buildRouteModelApi({
+          model: cfg.model || bridgeCfg.model || session.model || 'default',
+          provider: bridgeCfg.provider,
+          baseURL: bridgeCfg.baseURL,
+          apiKey: bridgeCfg.apiKey,
+          maxTokens: 32000,
+        });
+        managerModel = routed.model;
+        managerModelApi = routed.modelApi;
+      }
+    }
     const managerSession = await getManagerSession();
     const runId = 'r-mgr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const abort = new AbortController();
     const desc: GuiRunDescriptor = {
       runId, kind: 'manager', label: opts.mode === 'update' ? 'manager:update' : 'manager:chat',
-      sessionId: managerSession.id, model: cfg.model ?? session.model ?? null, startedAt: Date.now(),
+      sessionId: managerSession.id, model: managerModel, startedAt: Date.now(),
       status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
     };
     runs.set(runId, { desc, abort, sink: opts.send });
@@ -1927,16 +2092,17 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         systemPrompt: buildManagerSystemPrompt(workDir, cfg),
         tools: managerTools,
         signal: abort.signal,
-        ...(cfg.model ? { model: cfg.model } : {}),
+        ...(managerModel ? { model: managerModel } : {}),
+        ...(managerModelApi ? { modelApi: managerModelApi } : {}),
         __actoviqUseDefaultTools: false,
         __actoviqAllowedTools: managerTools.map(tool => tool.name),
       } as Parameters<typeof managerSession.stream>[1];
       const stream = managerSession.stream(prompt, runOptions);
       for await (const event of stream) {
+        forwardAgentEvent(event, opts.send, runId);
         if (event.type === 'tool.call') {
           desc.toolCalls += 1;
-          desc.currentTool = event.call.name;
-          opts.send({ type: 'status', message: `manager · ${event.call.name}`, runId });
+          desc.currentTool = event.call.publicName;
         } else if (event.type === 'tool.result') {
           desc.currentTool = undefined;
         }
@@ -2129,16 +2295,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // it; streamRun injects {model, modelApi} per-run on the SAME session, so
   // context survives switching bridge↔hadamard. No child process anywhere.
   async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
-    if (config.runtime === 'hadamard') {
-      // hadamard configs run through the SDK's default provider — no separate
-      // ModelApi is built. Only the model is injected per-run.
+    // Hadamard without credentials: model-only override on the SDK default provider.
+    // Hadamard WITH apiKey/baseURL (or any non-hadamard runtime): build a ModelApi
+    // so the named config's provider credentials are used for every turn.
+    const hadamardUsesDefaults = config.runtime === 'hadamard'
+      && !(typeof config.apiKey === 'string' && config.apiKey.trim())
+      && !(typeof config.baseURL === 'string' && config.baseURL.trim());
+    if (hadamardUsesDefaults) {
       activeBridgeConfig = config;
       activeBridgeModelApi = null;
       bridgeMode = false;
       bridgeModelLabel = config.model || null;
       return true;
     }
-    // bridge config: pre-build the ModelApi from the config's credentials.
     const routed = await buildRouteModelApi({
       model: config.model || session.model,
       provider: config.provider,
@@ -3196,7 +3365,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: options.homeDir }).catch(() => undefined);
     const homeDir = store?.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
-    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
+    // Only touch the forgotten workspace's own session store (+ current SDK dir
+    // in case older sessions were written there with this workDir metadata).
+    const roots = uniquePaths([
+      getActoviqProjectSessionDirectory(resolved, homeDir),
+      sdk!.config.sessionDirectory,
+      path.dirname(sdk!.config.sessionDirectory),
+    ]);
     let deleted = 0;
     for (const projectRoot of roots) {
       for (const item of await listStoredSessionFiles(projectRoot)) {
@@ -3206,6 +3381,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         deleted += 1;
       }
     }
+    await forgetWorkspaceFromRegistry(resolved, homeDir).catch(() => undefined);
     invalidateHeavyState();
     return { ok: true, deleted, state: await state() };
   }
@@ -3440,9 +3616,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const next: ManagerConfig = {
         ...current,
         model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
-        readScope: body.readScope === 'workspace+docs' || body.readScope === 'explicit-allowlist' || body.readScope === 'workspace-only'
-          ? body.readScope
-          : current.readScope,
+        bridgeConfig: typeof body.bridgeConfig === 'string'
+          ? (body.bridgeConfig.trim() || undefined)
+          : current.bridgeConfig,
+        readScope: isManagerReadScope(body.readScope) ? body.readScope : current.readScope,
         allowedReadPaths: Array.isArray(body.allowedReadPaths)
           ? body.allowedReadPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
           : current.allowedReadPaths,
@@ -3505,6 +3682,44 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const savedPath = await writeWorkspaceNote(path.resolve(targetPath), hd, content);
       invalidateHeavyState();
       return json(res, 200, { ok: true, path: savedPath, content });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-status') {
+    const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+    const targetPath = typeof url.searchParams.get('path') === 'string' && url.searchParams.get('path')!.trim()
+      ? path.resolve(url.searchParams.get('path')!.trim())
+      : workDir;
+    const meta = await readProjectMeta(targetPath, hd);
+    return json(res, 200, {
+      ok: true,
+      path: targetPath,
+      status: meta.status,
+      label: PROJECT_STATUS_LABELS[meta.status],
+      updatedAt: meta.updatedAt ?? null,
+      statuses: PROJECT_STATUSES.map((value) => ({ value, label: PROJECT_STATUS_LABELS[value] })),
+    });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-status') {
+    try {
+      const body = await readJson(req);
+      const targetPath = typeof body.path === 'string' && body.path.trim()
+        ? path.resolve(body.path.trim())
+        : workDir;
+      if (!isProjectStatus(body.status)) {
+        return json(res, 400, { error: 'Invalid status' });
+      }
+      const hd = options.homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? workDir;
+      const meta = await writeProjectMeta(targetPath, hd, { status: body.status });
+      invalidateHeavyState();
+      return json(res, 200, {
+        ok: true,
+        path: targetPath,
+        status: meta.status,
+        label: PROJECT_STATUS_LABELS[meta.status],
+        updatedAt: meta.updatedAt ?? null,
+      });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -3584,7 +3799,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         // intentionally leaves the API-key field blank on edit (it's a secret),
         // so a blank key must PRESERVE the saved one — not replace it with empty.
         // clearApiKey:true explicitly drops the key.
-        // For hadamard configs, apiKey/baseURL are unused (SDK default credentials).
+        // Hadamard configs may omit credentials (SDK defaults) or carry apiKey/baseURL
+        // for a named provider override — same persistence path either way.
         const existing = findBridgeConfig(name, options.homeDir);
         const config: PersistedBridgeConfig = { name, provider, runtime };
         if (body.clearApiKey === true) {
@@ -3638,6 +3854,100 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/off') {
         disableBridge();
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/router/profile') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing router profile name' });
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+          return json(res, 400, { error: 'Invalid name (use letters, digits, . _ -)' });
+        }
+        const parseRef = (raw: unknown): RouterModelRef | null => {
+          if (!raw || typeof raw !== 'object') return null;
+          const obj = raw as Record<string, unknown>;
+          const model = typeof obj.model === 'string' ? obj.model.trim() : '';
+          if (!model) return null;
+          const ref: RouterModelRef = { model };
+          if (obj.provider === 'openai' || obj.provider === 'anthropic') ref.provider = obj.provider;
+          if (typeof obj.baseURL === 'string' && obj.baseURL.trim()) ref.baseURL = obj.baseURL.trim();
+          if (typeof obj.apiKey === 'string' && obj.apiKey.trim()) ref.apiKey = obj.apiKey.trim();
+          if (typeof obj.maxTokens === 'number' && Number.isFinite(obj.maxTokens) && obj.maxTokens > 0) {
+            ref.maxTokens = Math.floor(obj.maxTokens);
+          }
+          return ref;
+        };
+        const routerModel = parseRef(body.routerModel);
+        if (!routerModel) return json(res, 400, { error: 'Leader model (routerModel.model) is required' });
+        const routesRaw = Array.isArray(body.routes) ? body.routes : [];
+        const routes: RouterRoute[] = [];
+        for (const item of routesRaw) {
+          if (!item || typeof item !== 'object') continue;
+          const obj = item as Record<string, unknown>;
+          const base = parseRef(obj);
+          const when = typeof obj.when === 'string' ? obj.when.trim() : '';
+          if (!base || !when) continue;
+          const route: RouterRoute = { ...base, when };
+          if (typeof obj.role === 'string' && obj.role.trim()) route.role = obj.role.trim();
+          if (typeof obj.name === 'string' && obj.name.trim()) route.name = obj.name.trim();
+          if (typeof obj.description === 'string' && obj.description.trim()) route.description = obj.description.trim();
+          routes.push(route);
+        }
+        if (routes.length === 0) return json(res, 400, { error: 'At least one route with model + when is required' });
+        const profile: RouterProfile = {
+          name,
+          routerModel,
+          routes,
+        };
+        if (typeof body.description === 'string' && body.description.trim()) {
+          profile.description = body.description.trim();
+        }
+        if (typeof body.classificationPrompt === 'string' && body.classificationPrompt.trim()) {
+          profile.classificationPrompt = body.classificationPrompt.trim();
+        }
+        const fallback = parseRef(body.fallback);
+        if (fallback) profile.fallback = fallback;
+        const target = body.target === 'personal' ? 'personal' : 'project';
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: options.homeDir,
+        }).catch(() => undefined);
+        // modelRouter treats homeDir as the Actoviq home (~/.actoviq), not the OS home.
+        const actoviqHome = path.join(store?.homeDir ?? options.homeDir ?? os.homedir(), '.actoviq');
+        try {
+          await saveRouterProfile(profile, {
+            projectDir: target === 'project' ? workDir : undefined,
+            homeDir: actoviqHome,
+            overwrite: true,
+          });
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        if (activeRouter?.name === name) {
+          const reloaded = loadRouterProfile(name, workDir, actoviqHome);
+          activeRouter = reloaded?.profile ?? profile;
+        }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/router/profile/delete') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing router profile name' });
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: options.homeDir,
+        }).catch(() => undefined);
+        const actoviqHome = path.join(store?.homeDir ?? options.homeDir ?? os.homedir(), '.actoviq');
+        const loaded = loadRouterProfile(name, workDir, actoviqHome);
+        if (!loaded) return json(res, 404, { error: `router profile not found: ${name}` });
+        if (loaded.source === 'built-in') {
+          return json(res, 400, { error: 'Cannot delete a built-in router profile' });
+        }
+        const deleted = await deleteRouterProfile(name, workDir, actoviqHome);
+        if (!deleted) return json(res, 404, { error: `router profile not found: ${name}` });
+        if (activeRouter?.name === name) activeRouter = null;
         invalidateHeavyState();
         return json(res, 200, await state());
       }
@@ -4202,8 +4512,13 @@ export function createActoviqGuiHtml(): string {
         <div class="overview-toolbar">
           <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="overviewSearch" class="overview-search" placeholder="Search projects…" autocomplete="off"></label>
           <select id="overviewStatusFilter" class="overview-toolbar-select" aria-label="Filter by status">
-            <option value="all">All status</option>
-            <option value="active">Active only</option>
+            <option value="all">全部状态</option>
+            <option value="in_progress">正在执行</option>
+            <option value="planning">规划中</option>
+            <option value="on_hold">已搁置</option>
+            <option value="not_started">未开始</option>
+            <option value="completed">已完成</option>
+            <option value="current">仅当前工作区</option>
           </select>
           <select id="overviewSort" class="overview-toolbar-select" aria-label="Sort projects">
             <option value="recent">Recent</option>
@@ -4371,17 +4686,29 @@ export function createActoviqGuiHtml(): string {
       </header>
       <div class="manager-widget-body">
         <div id="managerTranscript" class="manager-transcript"></div>
+        <div id="managerThinking" class="manager-thinking" aria-live="polite" aria-hidden="true">
+          <span class="manager-thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span id="managerThinkingLabel" class="manager-thinking-label">Thinking…</span>
+        </div>
         <div id="managerStatusLine" class="manager-status-line muted"></div>
         <form id="managerConfigForm" class="manager-config-form hidden">
-          <label>Model
-            <input id="managerCfgModel" autocomplete="off" placeholder="session default">
+          <label>Provider config
+            <select id="managerCfgBridge">
+              <option value="">Session default</option>
+            </select>
           </label>
-          <p class="manager-cfg-hint">The Manager always runs read-only, whichever model or runtime serves it — it observes the project and writes only its own plan/progress files. Bridge runtime: tool restrictions are enforced by the bridge side; use read-only permission mode only.</p>
+          <label>Model
+            <select id="managerCfgModel">
+              <option value="">Config / session default</option>
+            </select>
+          </label>
+          <p class="manager-cfg-hint">Pick a saved provider config, then choose a model from that config (or leave Model on default). The Manager stays read-only: it observes the project and writes only its own plan/progress files.</p>
           <label>Read scope
             <select id="managerCfgScope">
               <option value="workspace-only">workspace-only</option>
               <option value="workspace+docs">workspace+docs</option>
               <option value="explicit-allowlist">explicit-allowlist</option>
+              <option value="full-access">full-access</option>
             </select>
           </label>
           <label id="managerCfgPathsLabel">Allowed read paths (one per line)
@@ -4391,7 +4718,7 @@ export function createActoviqGuiHtml(): string {
             <input type="checkbox" id="managerCfgMirror"> Mirror PROGRESS.md into workspace (.actoviq/PROGRESS.md)
           </label>
           <div class="manager-actions">
-            <button type="submit" class="pill-btn primary">Save settings</button>
+            <button type="submit" class="pill-btn primary">Save</button>
             <button type="button" id="managerCfgCancel" class="pill-btn">Cancel</button>
           </div>
         </form>
@@ -4410,7 +4737,6 @@ export function createActoviqGuiHtml(): string {
         <div class="manager-quick-actions">
           <button type="button" id="managerUpdateBtn" class="manager-quick-btn primary">Update progress</button>
           <button type="button" id="managerSchedulesLink" class="manager-quick-btn">Schedules</button>
-          <button type="button" id="managerConfigBtn" class="manager-quick-btn">Settings</button>
         </div>
       </footer>
     </aside>
@@ -4483,6 +4809,56 @@ export function createActoviqGuiHtml(): string {
         <button type="button" id="bridgeCfgReset" class="secondary-btn">Cancel</button>
         <button type="button" id="bridgeCfgUpdateLocal" class="secondary-btn hidden">Update local CLI config</button>
         <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
+      </div>
+    </form>
+  </div>
+  <div id="routerEditorModal" class="modal hidden">
+    <form id="routerEditorForm" class="dialog bridge-editor router-editor">
+      <h2 id="routerEditorTitle">New router profile</h2>
+      <div class="two-col">
+        <label class="dialog-field">Profile name<input id="routerCfgName" autocomplete="off" placeholder="e.g. fast-strong"></label>
+        <label class="dialog-field">Save to<select id="routerCfgTarget"><option value="project">Project (.actoviq/routers)</option><option value="personal">Personal (~/.actoviq/routers)</option></select></label>
+      </div>
+      <label class="dialog-field">Description<input id="routerCfgDescription" autocomplete="off" placeholder="Optional summary"></label>
+      <div class="bridge-models-section">
+        <h3>Leader (router model)</h3>
+        <p class="muted">Classifies each turn and dispatches to one specialist. Leave provider/URL/key blank to inherit the SDK default.</p>
+        <div class="two-col">
+          <label class="dialog-field">Model<input id="routerLeaderModel" autocomplete="off" placeholder="e.g. deepseek-v4-flash"></label>
+          <label class="dialog-field">Provider<select id="routerLeaderProvider"><option value="">Inherit default</option><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+          <label class="dialog-field">Base URL<input id="routerLeaderBaseUrl" autocomplete="off" placeholder="optional"></label>
+          <label class="dialog-field">API key<input id="routerLeaderApiKey" autocomplete="off" placeholder="$ENV_VAR or blank"></label>
+        </div>
+      </div>
+      <div class="bridge-models-section">
+        <h3>Specialist routes</h3>
+        <p class="muted">Each route needs a model and a <code>when</code> trigger the leader uses to decide.</p>
+        <div class="router-route-draft two-col">
+          <label class="dialog-field">Role<input id="routerRouteRole" autocomplete="off" placeholder="quick / general / deep"></label>
+          <label class="dialog-field">Model<input id="routerRouteModel" autocomplete="off" placeholder="model id"></label>
+          <label class="dialog-field">When<input id="routerRouteWhen" autocomplete="off" placeholder="short factual questions"></label>
+          <label class="dialog-field">Provider<select id="routerRouteProvider"><option value="">Inherit</option><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+          <label class="dialog-field">Base URL<input id="routerRouteBaseUrl" autocomplete="off" placeholder="optional"></label>
+          <label class="dialog-field">API key<input id="routerRouteApiKey" autocomplete="off" placeholder="$ENV_VAR or blank"></label>
+        </div>
+        <label class="dialog-field">Description<textarea id="routerRouteDescription" rows="2" placeholder="Optional specialist strengths for the leader"></textarea></label>
+        <div class="settings-action-row">
+          <button type="button" id="routerRouteAdd" class="secondary-btn">+ Add route</button>
+        </div>
+        <div id="routerRoutesList" class="settings-card-list compact"></div>
+      </div>
+      <div class="bridge-models-section">
+        <h3>Fallback</h3>
+        <p class="muted">Used when the leader matches no route. Defaults to the first route if blank.</p>
+        <div class="two-col">
+          <label class="dialog-field">Model<input id="routerFallbackModel" autocomplete="off" placeholder="optional"></label>
+          <label class="dialog-field">Provider<select id="routerFallbackProvider"><option value="">Inherit</option><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+        </div>
+      </div>
+      <p id="routerCfgStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="routerCfgReset" class="secondary-btn">Cancel</button>
+        <button type="button" id="routerCfgSave" class="primary">Save profile</button>
       </div>
     </form>
   </div>
@@ -4595,31 +4971,17 @@ export function createActoviqGuiHtml(): string {
           </div>
           <p class="muted">Save named provider/model configs (provider + API key + base URL + models), then pick them from the composer's model menu. The active config runs every prompt through its backend on the same chat, so context survives switching. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
           <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
-          <div class="settings-action-row">
-            <button type="button" id="settingsBridgeOff" class="secondary-btn">Disable active config</button>
-          </div>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
-          <h2>Current run</h2>
-          <p id="settingsCurrentRun" class="muted"></p>
-          <div class="settings-row"><span><strong>Active model</strong><small id="settingsCurrentModel">Loading...</small></span><button type="button" id="settingsResetRuntimeModel" class="secondary-btn">Use default</button></div>
-          <div class="settings-command-row">
-            <label>Switch model<input id="settingsRuntimeModel" autocomplete="off" placeholder="model name"></label>
-            <button type="button" id="settingsApplyRuntimeModel" class="secondary-btn">Use model</button>
+          <div class="settings-group-head">
+            <h2>Router profiles</h2>
+            <button type="button" id="routerNewProfile" class="primary">+ New profile</button>
           </div>
-          <div class="settings-command-row">
-            <label>Reasoning effort<select id="settingsRuntimeEffort"><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
-            <button type="button" id="settingsApplyRuntimeEffort" class="secondary-btn">Apply effort</button>
-          </div>
-        </div>
-        <div class="settings-group">
-          <h2>Router profiles</h2>
-          <p>Route future turns through a saved model-router profile.</p>
-          <div class="settings-command-row">
-            <label>Router<select id="settingsRouterSelect"></select></label>
-            <button type="button" id="settingsApplyRouter" class="secondary-btn">Use router</button>
-            <button type="button" id="settingsDisableRouter" class="secondary-btn">Disable</button>
+          <p class="muted">Optional leader/dispatch profiles for future turns. Model and effort for the current chat are chosen from the composer model menu — not here. Profiles save to <code>.actoviq/routers/</code> (project) or <code>~/.actoviq/routers/</code> (personal).</p>
+          <p id="settingsRouterStatus" class="muted"></p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsDisableRouter" class="secondary-btn">Disable router</button>
           </div>
           <div id="settingsRoutersList" class="settings-card-list"></div>
         </div>
@@ -4724,7 +5086,6 @@ export function createActoviqGuiHtml(): string {
           <div class="settings-help-row"><span><strong>Confirm before run</strong><small>Ask before /team ask starts (members + models).</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamConfirm"></label></div>
           <label class="inline-field wide">Default team for new conversations<select id="settingsTeamDefaultAttached"></select></label>
           <div class="settings-action-row">
-            <button type="button" id="settingsTeamPrefsSave" class="secondary-btn">Save team preferences</button>
             <button type="button" id="settingsTeamOff" class="secondary-btn">No team</button>
           </div>
           <div id="settingsTeamsList" class="settings-card-list"></div>
@@ -4833,10 +5194,8 @@ export function createActoviqGuiHtml(): string {
         <h1>Worktrees</h1>
         <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
       </section>
-      <div class="settings-savebar">
+      <div class="settings-autosave-status" aria-live="polite">
         <span id="settingsStatus" class="muted"></span>
-        <button type="button" id="cancelSettings">Cancel</button>
-        <button type="submit" id="saveSettingsBtn" class="primary">Save</button>
       </div>
     </form>
   </div>
@@ -5012,9 +5371,22 @@ body[data-theme="dark"] {
 .overview-table-sessions, .overview-table-last { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
 .overview-table-row > div { min-width: 0; }
 .overview-table-row .pc-note-table { min-width: 0; }
-.pc-badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-2); background: var(--bg-surface); white-space: nowrap; }
-.pc-badge.active { color: var(--ok); border-color: rgba(16,185,129,.28); background: var(--ok-soft); }
-.pc-badge.running { color: var(--brand); border-color: var(--border-active-soft); background: var(--brand-soft); }
+.pc-badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--text-2); background: var(--bg-surface); white-space: nowrap; }
+.pc-badge.active, .pc-badge.running, .pc-badge.status { color: var(--text-2); border-color: var(--border); background: var(--bg-surface); }
+.pc-current-chip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: transparent; white-space: nowrap; }
+.project-status-select {
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+  padding: 0 28px 0 10px;
+  cursor: pointer;
+}
+.project-status-select:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+.project-doc-status-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.project-doc-status-wrap label { font-size: 12px; color: var(--text-2); }
 .pc-note-compact .pc-note-label, .pc-note-table .pc-note-label { display: none; }
 .pc-note-compact .pc-note-head, .pc-note-table .pc-note-head { gap: 6px; }
 .pc-note-compact .pc-note-view, .pc-note-table .pc-note-view { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.4; }
@@ -5087,27 +5459,29 @@ body[data-theme="dark"] {
 .project-doc-view.md-prose li.md-task input[type="checkbox"] { margin-right: .35em; accent-color: var(--brand); vertical-align: middle; }
 .project-doc-view.md-prose li.md-task-done { color: var(--text-2); }
 .project-doc-view.md-prose .md-table { font-size: 12px; }
-.detail-sidebar { min-height: 0; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
-.conv-sidebar-top { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.detail-sidebar { min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
+.conv-sidebar-top { flex: 1; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .conv-sidebar-head h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-1); }
 .conv-sidebar-search { height: 34px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); display: flex; align-items: center; gap: 6px; padding: 0 10px; }
 .conv-sidebar-search input { border: 0; outline: 0; width: 100%; background: transparent; font-size: 13px; }
-.conv-sidebar-list { flex: 1; min-height: 0; overflow: auto; padding: 6px 8px; }
-.conv-sidebar-row { width: 100%; border: 0; background: transparent; border-radius: 10px; min-height: 34px; padding: 6px 8px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; text-align: left; color: var(--text-1); font-size: 13px; cursor: pointer; }
+.conv-sidebar-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px; display: flex; flex-direction: column; align-items: stretch; gap: 1px; }
+.conv-sidebar-row { width: 100%; max-width: 100%; box-sizing: border-box; border: 0; background: transparent; border-radius: 8px; min-height: 32px; padding: 6px 10px; display: flex; align-items: center; gap: 8px; text-align: left; color: var(--text-1); font-size: 13px; cursor: pointer; align-self: stretch; }
 .conv-sidebar-row:hover { background: var(--surface-hover); }
-.conv-sidebar-row.active { background: var(--surface-selected); box-shadow: inset 3px 0 0 var(--brand); }
+.conv-sidebar-row.active { background: var(--surface-selected); }
 .conv-sidebar-row .csr-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 7px; }
-.conv-sidebar-row .csr-dot.hidden { visibility: hidden; }
-.conv-sidebar-row .csr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
-.conv-sidebar-row .csr-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-size: 12px; flex: 0 0 auto; }
+.conv-sidebar-row .csr-dot.hidden { display: none; }
+.conv-sidebar-row .csr-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text-2); }
+.conv-sidebar-row.active .csr-title { color: var(--text-1); font-weight: 600; }
+.conv-sidebar-row .csr-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); font-size: 12px; flex: 0 0 auto; white-space: nowrap; margin-left: auto; }
+.conv-sidebar-row .csr-time { color: var(--text-2); font-size: 12px; }
 .conv-sidebar-row .csr-actions { display: none; align-items: center; gap: 2px; }
 .conv-sidebar-row:hover .csr-actions { display: inline-flex; }
 .conv-sidebar-row:hover .csr-time { display: none; }
 .csr-action-btn { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); display: inline-grid; place-items: center; }
 .csr-action-btn:hover { background: rgba(17,24,39,.08); color: var(--text-1); }
 .csr-action-btn .ui-icon { width: 14px; height: 14px; }
-.conv-sidebar-archived { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); }
+.conv-sidebar-archived { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--border); display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; }
 .conv-sidebar-archived-toggle { width: 100%; border: 0; background: transparent; text-align: left; font-size: 11.5px; color: var(--text-2); padding: 4px 8px; cursor: pointer; }
 .conv-sidebar-detail { flex: 0 0 42%; min-height: 160px; max-height: 48%; overflow: auto; border-top: 1px solid var(--border); background: var(--bg-surface); padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
 .conv-sidebar-detail.empty { place-content: center; color: var(--text-2); font-size: 12.5px; text-align: center; padding: 20px; }
@@ -5282,8 +5656,10 @@ body[data-theme="dark"] {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  display: grid;
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
   align-content: start;
   padding: 2px 2px 8px;
 }
@@ -5294,66 +5670,61 @@ body[data-theme="dark"] {
   line-height: 1.55;
   padding: 8px 4px;
 }
-.manager-turn { display: flex; gap: 10px; align-items: flex-start; }
-.manager-turn.user { justify-content: flex-end; }
-.manager-turn.user .manager-bubble {
-  max-width: 88%;
-  background: var(--bg-surface-2);
-  color: var(--text-1);
-  border-radius: 14px 14px 4px 14px;
-  padding: 10px 12px;
-  font-size: 13px;
-  line-height: 1.55;
+/* Override main-chat centering (margin: 0 auto) — Manager panel is narrow. */
+.manager-transcript .message-row,
+.manager-transcript .tool-card,
+.manager-transcript .system-event,
+.manager-transcript .manager-thinking {
+  max-width: 100%;
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+  align-self: stretch;
 }
-.manager-turn-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  display: inline-grid;
-  place-items: center;
-  background: var(--avatar-gradient);
-  color: var(--fg-on-accent);
-  flex: 0 0 28px;
-  margin-top: 2px;
-}
-.manager-turn-avatar .ui-icon { width: 15px; height: 15px; }
-.manager-turn-body { min-width: 0; flex: 1; display: grid; gap: 6px; }
-.manager-turn .manager-bubble.assistant {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  color: var(--text-1);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.manager-turn-meta {
-  display: flex;
+.manager-transcript .message-row { padding: 0; margin-bottom: 0; }
+.manager-transcript .msg-wrap { max-width: 100%; width: 100%; }
+.manager-transcript .message.user,
+.manager-transcript .message.assistant { font-size: 13px; }
+.manager-transcript .message.user { width: 100%; box-sizing: border-box; }
+.manager-transcript .tool-card { margin: 0; }
+.manager-thinking {
+  display: none;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
+  gap: 10px;
+  padding: 8px 2px;
   color: var(--text-2);
+  font-size: 12.5px;
 }
-.manager-copy-btn {
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
-  display: inline-grid;
-  place-items: center;
+.manager-thinking.visible { display: flex; }
+.manager-thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 14px;
 }
-.manager-copy-btn:hover { background: var(--bg-surface-2); color: var(--text-2); }
-.manager-copy-btn .ui-icon { width: 13px; height: 13px; }
+.manager-thinking-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-2);
+  opacity: .35;
+  animation: managerThinkPulse 1.1s ease-in-out infinite;
+}
+.manager-thinking-dots span:nth-child(2) { animation-delay: .18s; }
+.manager-thinking-dots span:nth-child(3) { animation-delay: .36s; }
+@keyframes managerThinkPulse {
+  0%, 80%, 100% { opacity: .28; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+.manager-thinking-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .manager-msg.tool, .manager-msg.error {
   font-size: 11.5px;
   line-height: 1.45;
   padding: 0 4px;
 }
-.manager-msg.tool { font-family: ui-monospace, monospace; color: var(--brand); }
+.manager-msg.tool { font-family: ui-monospace, monospace; color: var(--text-2); }
 .manager-msg.error { color: var(--err); }
-.manager-transcript .manager-bubble.md-prose,
-.manager-transcript .manager-turn .md-prose { white-space: normal; }
+.manager-transcript .message.md-prose { white-space: normal; }
 .manager-transcript .md-prose .md-h:first-child { margin-top: 0; }
 .manager-transcript .md-prose h1.md-h { font-size: 1.12em; font-weight: 650; margin: .75em 0 .3em; line-height: 1.35; color: var(--text-1); }
 .manager-transcript .md-prose h2.md-h { font-size: 1.04em; font-weight: 650; margin: .65em 0 .28em; line-height: 1.35; color: var(--text-1); }
@@ -5737,29 +6108,129 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 .message.notice, .message.tool, .message.error { max-width: 840px; color: var(--text-2); border-left: 3px solid var(--border); padding-left: 12px; font-size: 14px; }
 .message.error { border-left-color: var(--err); color: #8c1d18; }
 .message.tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; }
-.tool-card { max-width: 840px; border: 1px solid var(--border); border-radius: 8px; margin: 0 0 18px; overflow: hidden; background: var(--bg-surface); animation: slideIn .18s ease-out; }
-.tool-card header { min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-surface-2); border-bottom: 1px solid #eef0f2; }
-.tool-card strong { display: block; font-size: 14px; }
-.tool-card small { display: block; color: var(--text-2); margin-top: 2px; }
-.tool-spinner { width: 14px; height: 14px; border: 2px solid #d7e3f8; border-top-color: var(--brand); border-radius: 50%; animation: spin .85s linear infinite; flex: 0 0 auto; }
-.tool-card.success .tool-spinner, .tool-card.error .tool-spinner { animation: none; border: 0; display: inline-grid; place-items: center; color: var(--fg-on-accent); font-size: 10px; }
-.tool-card.success .tool-spinner { background: #1f8f4c; }
-.tool-card.success .tool-spinner::before { content: "ok"; }
-.tool-card.error .tool-spinner { background: var(--err); }
-.tool-card.error .tool-spinner::before { content: "x"; }
-.tool-card pre { margin: 0; padding: 10px 12px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--text-2); background: var(--bg-surface); }
-.tool-toggle { margin-left: auto; flex: 0 0 auto; background: transparent; border: 0; cursor: pointer; padding: 4px; color: var(--text-2); display: inline-grid; place-items: center; border-radius: 4px; }
-.tool-toggle:hover { background: rgba(0,0,0,.06); color: #4c5055; }
+/* Cursor-like tool timeline: compact rows, muted chrome, expand for I/O. */
+.tool-card {
+  max-width: 820px;
+  margin: 0 auto 4px;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: transparent;
+  animation: slideIn .14s ease-out;
+}
+.tool-card header {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-card header:hover { background: var(--surface-hover); }
+.tool-card .tool-labels {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.tool-card strong {
+  display: inline;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  letter-spacing: 0;
+}
+.tool-card small {
+  display: inline;
+  color: var(--text-muted);
+  margin: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: spin .85s linear infinite;
+  flex: 0 0 auto;
+}
+.tool-card.success .tool-spinner,
+.tool-card.error .tool-spinner {
+  animation: none;
+  border: 0;
+  width: 12px;
+  height: 12px;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0;
+  position: relative;
+}
+.tool-card.success .tool-spinner::before,
+.tool-card.error .tool-spinner::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.tool-card.error .tool-spinner::before { background: var(--err); }
+.tool-card.success strong { color: var(--text-2); }
+.tool-card.error strong { color: #b42318; }
+.tool-card .tool-body {
+  margin: 0 0 6px 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.tool-card pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  background: transparent;
+}
+.tool-toggle {
+  margin-left: auto;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--text-muted);
+  display: inline-grid;
+  place-items: center;
+  border-radius: 4px;
+  opacity: .7;
+}
+.tool-toggle:hover { background: transparent; color: var(--text-2); opacity: 1; }
 .tool-card.collapsed .tool-body { display: none; }
 .tool-card.collapsed .tool-toggle svg { transform: rotate(-90deg); }
-.tool-toggle svg { transition: transform .15s ease; }
-.tool-card.running::after { content: ""; display: block; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: sweep 1.15s infinite; }
-.tool-card.error { border-color: #e5b7b2; }
-.tool-card.success { border-color: #cfe6d8; }
-.result { max-width: 840px; border: 1px solid #e1e1e1; border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
-.result h3 { margin: 0; padding: 10px 12px; font-size: 14px; border-bottom: 1px solid var(--border); background: #fafafa; }
-.result pre { margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; }
-.result .row { padding: 10px 12px; border-top: 1px solid #eeeeee; }
+.tool-toggle svg { width: 14px; height: 14px; transition: transform .15s ease; }
+.tool-card.running header { background: transparent; }
+.tool-card.running::after { display: none; }
+.tool-card.error, .tool-card.success { border-color: transparent; }
+.tool-card.member-tool header { min-height: 24px; padding: 2px 6px; }
+.result { max-width: 820px; margin: 0 auto 14px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg-surface); }
+.result h3 { margin: 0; padding: 8px 12px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-surface); color: var(--text-2); }
+.result pre { margin: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; font-size: 12px; color: var(--text-2); }
+.result .row { padding: 8px 12px; border-top: 1px solid var(--border); }
 .result small { display: block; color: var(--text-2); margin-top: 3px; }
 .composer { margin: 0 max(22px, 12vw) 18px; border: 1px solid var(--border); border-radius: 18px; padding: 10px; background: var(--bg-surface); display: grid; gap: 8px; position: relative; }
 .composer.dragging { border-color: var(--brand); box-shadow: var(--shadow-focus); }
@@ -5961,10 +6432,12 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 /* --- Cursor-like transcript (markdown prose, no bubble chrome). --- */
 .message-row {
   max-width: 820px;
-  margin: 0 auto 24px;
+  margin: 0 auto 18px;
   display: block;
 }
-.message-row.row-user { margin-bottom: 18px; }
+.message-row.row-user { margin-bottom: 14px; }
+.message-row.row-assistant { margin-bottom: 10px; }
+.message-row.row-notice { margin-bottom: 8px; }
 .msg-wrap { min-width: 0; }
 .msg-error-label {
   font-size: 12px;
@@ -6085,7 +6558,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   min-height: 0;
   overflow: auto;
   padding: 20px min(32px, 5vw) 28px;
-  background: #f7f7f8;
+  background: var(--bg-app);
 }
 .transcript > .tool-card,
 .transcript > .system-event { max-width: 820px; margin-left: auto; margin-right: auto; }
@@ -6100,21 +6573,21 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .roster-chip .rc-avatar { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; color: var(--fg-on-accent); flex: 0 0 20px; }
 .roster-chip .rc-avatar .ui-icon { width: 12px; height: 12px; }
 .roster-chip .rc-state { font-size: 10.5px; font-weight: 500; color: var(--text-2); }
-.system-event { display: flex; align-items: center; gap: 10px; max-width: 920px; margin: 14px auto; color: var(--text-2); font-size: 12px; }
-.system-event::before, .system-event::after { content: ""; flex: 1; height: 1px; background: var(--border); }
-.system-event .se-icon { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--bg-app); border: 1px solid var(--border); color: var(--text-2); flex: 0 0 22px; }
+.system-event { display: flex; align-items: center; gap: 10px; max-width: 820px; margin: 10px auto; color: var(--text-muted); font-size: 11.5px; }
+.system-event::before, .system-event::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--border) 80%, transparent); }
+.system-event .se-icon { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; background: transparent; border: 0; color: var(--text-muted); flex: 0 0 18px; }
 .system-event .se-icon .ui-icon { width: 12px; height: 12px; }
 .system-event .se-text { font-weight: 500; }
-.system-event .se-time { color: var(--text-2); font-size: 11px; }
+.system-event .se-time { color: var(--text-muted); font-size: 11px; }
 .message-row.row-member .msg-avatar { background: var(--role-planner); }
 .message-row.row-member .msg-avatar .ui-icon { width: 16px; height: 16px; }
 .message.member { border-radius: 12px; padding: 10px 12px; border: 1px solid var(--border); }
-.msg-attach-card, .msg-pr-card { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); padding: 10px 12px; font-size: 12px; }
-.msg-attach-card strong, .msg-pr-card strong { display: block; margin-bottom: 4px; font-size: 13px; }
-.msg-change-strip { display: inline-flex; gap: 6px; margin-top: 8px; }
-.msg-change-strip span { border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
-.msg-change-strip .add { background: var(--ok-soft); color: var(--ok); }
-.msg-change-strip .del { background: #FEE2E2; color: var(--err); }
+.msg-attach-card, .msg-pr-card { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 8px 10px; font-size: 12px; }
+.msg-attach-card strong, .msg-pr-card strong { display: block; margin-bottom: 4px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.msg-change-strip { display: inline-flex; gap: 6px; margin: 6px 10px 8px; }
+.msg-change-strip span { border-radius: 6px; padding: 1px 6px; font-size: 11px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.msg-change-strip .add { background: transparent; color: var(--ok); }
+.msg-change-strip .del { background: transparent; color: var(--err); }
 .msg-pr-card .pr-review { display: inline-flex; margin-left: 8px; border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 700; background: var(--accent-soft); color: var(--brand); }
 .role-chip.rp-planner { background: rgba(59,130,246,.12); color: var(--role-planner); }
 .role-chip.rp-coder { background: rgba(16,185,129,.12); color: var(--role-coder); }
@@ -6406,8 +6879,8 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .workspace-choice small { color: #73777d; }
 .workspace-choice .workspace-count { color: #7b8086; font-size: 12px; white-space: nowrap; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.dialog-actions button, .settings-savebar button { border: 1px solid var(--border); border-radius: 8px; min-height: 34px; padding: 0 12px; background: var(--bg-surface); }
-.dialog-actions .primary, .settings-savebar .primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
+.dialog-actions button { border: 1px solid var(--border); border-radius: 8px; min-height: 34px; padding: 0 12px; background: var(--bg-surface); }
+.dialog-actions .primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
 .settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: var(--bg-surface); border: 1px solid #cfcfcf; }
 .settings-sidebar { width: 300px; flex: 0 0 300px; padding: 18px 10px; overflow: auto; background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%); border-right: 1px solid var(--border); }
 .back-btn { width: 100%; min-height: 34px; border: 0; background: transparent; text-align: left; color: var(--text-2); border-radius: 8px; padding: 0 10px; margin-bottom: 12px; }
@@ -6539,7 +7012,8 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .runtime-status.configured { background: #fff7e6; color: #8a5a12; }
 .runtime-status.missing { background: var(--bg-surface-2); color: #6f7479; }
 .runtime-hint { font-size: 12px; }
-.settings-savebar { position: fixed; right: min(11vw, 160px); bottom: 24px; display: flex; align-items: center; gap: 10px; background: var(--bg-surface); border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+.settings-autosave-status { position: fixed; right: min(11vw, 160px); bottom: 24px; min-height: 20px; pointer-events: none; }
+.settings-autosave-status .muted { font-size: 12px; }
 .muted { color: var(--text-2); font-size: 13px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(107,130,153,0); } 100% { box-shadow: 0 0 0 0 rgba(107,130,153,0); } }
@@ -6601,6 +7075,9 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 .settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .settings-group-head h2 { margin: 0; }
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
+.router-editor { width: min(720px, 100%); }
+.router-editor textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); font: inherit; }
+.router-route-draft { margin-bottom: 8px; }
 .api-key-row { display: flex; align-items: center; gap: 6px; }
 .api-key-row input { flex: 1; }
 .bridge-models-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
@@ -6672,6 +7149,11 @@ function api(path, options = {}) {
   return fetch(path, Object.assign({}, options, { headers }));
 }
 const __name = (target) => target;
+const PROJECT_STATUSES = ${JSON.stringify(PROJECT_STATUSES)};
+const PROJECT_STATUS_LABELS = ${JSON.stringify(PROJECT_STATUS_LABELS)};
+function isProjectStatus(value) {
+  return typeof value === 'string' && PROJECT_STATUSES.includes(value);
+}
 ${teamPromptScript}
 ${renderMarkdown.toString()}
 function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
@@ -7453,6 +7935,26 @@ function summarizeToolInput(inputValue) {
     return String(inputValue);
   }
 }
+function toolInputHint(inputValue) {
+  if (inputValue == null) return '';
+  try {
+    const obj = typeof inputValue === 'string'
+      ? (() => { try { return JSON.parse(inputValue); } catch { return null; } })()
+      : inputValue;
+    if (obj && typeof obj === 'object') {
+      const pick = obj.command || obj.path || obj.file_path || obj.filePath || obj.pattern || obj.query || obj.url || obj.prompt;
+      if (typeof pick === 'string' && pick.trim()) {
+        const one = pick.trim().replace(/\\s+/g, ' ');
+        return one.length > 72 ? one.slice(0, 72) + '…' : one;
+      }
+    }
+    const text = typeof inputValue === 'string' ? inputValue : JSON.stringify(inputValue);
+    const one = text.trim().replace(/\\s+/g, ' ');
+    return one.length > 72 ? one.slice(0, 72) + '…' : one;
+  } catch {
+    return '';
+  }
+}
 function formatDuration(ms) {
   if (typeof ms !== 'number') return '';
   return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
@@ -7471,6 +7973,13 @@ function formatRelativeTime(iso) {
   if (day < 30) return day + 'd ago';
   return new Date(iso).toLocaleDateString();
 }
+function toggleToolCard(card, toggle, forceCollapsed) {
+  const collapsed = typeof forceCollapsed === 'boolean'
+    ? forceCollapsed
+    : !card.classList.contains('collapsed');
+  card.classList.toggle('collapsed', collapsed);
+  if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
 function addToolActivity(event) {
   const id = event.id || ('tool-' + Date.now() + '-' + Math.random());
   const card = document.createElement('article');
@@ -7479,19 +7988,20 @@ function addToolActivity(event) {
   const header = document.createElement('header');
   const spinner = document.createElement('span');
   spinner.className = 'tool-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
   const labels = document.createElement('div');
+  labels.className = 'tool-labels';
   const title = document.createElement('strong');
   title.textContent = event.name || 'Tool';
   const status = document.createElement('small');
-  status.textContent = 'Calling tool';
+  const hint = toolInputHint(event.input);
+  status.textContent = hint || 'Running…';
   labels.append(title, status);
-  header.append(spinner, labels);
-  // Collapsible body: a toggle button (chevron) + the pre with input/output.
-  // While running the body shows; once complete it collapses (user can expand).
   const toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = 'tool-toggle';
   toggle.title = 'Show / hide details';
+  toggle.setAttribute('aria-expanded', 'true');
   toggle.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
   const body = document.createElement('div');
   body.className = 'tool-body';
@@ -7499,14 +8009,19 @@ function addToolActivity(event) {
   pre.textContent = summarizeToolInput(event.input);
   if (!pre.textContent) pre.classList.add('hidden');
   body.append(pre);
-  toggle.addEventListener('click', () => {
-    const collapsed = card.classList.toggle('collapsed');
-    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  const onToggle = (ev) => {
+    if (ev) ev.stopPropagation();
+    toggleToolCard(card, toggle);
+  };
+  toggle.addEventListener('click', onToggle);
+  header.addEventListener('click', (ev) => {
+    if (ev.target.closest && ev.target.closest('.tool-toggle')) return;
+    onToggle(ev);
   });
   header.append(spinner, labels, toggle);
   card.append(header, body);
   transcript.appendChild(card);
-  state.toolNodes.set(id, { card, status, pre, body, toggle });
+  state.toolNodes.set(id, { card, status, pre, body, toggle, hint });
   setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
   scrollTranscript();
 }
@@ -7514,9 +8029,9 @@ function updateToolProgress(event) {
   const node = state.toolNodes.get(event.id);
   if (!node) return;
   const progress = event.data && typeof event.data === 'object'
-    ? Object.entries(event.data).map(([key, value]) => key + ': ' + String(value)).slice(0, 3).join(' - ')
+    ? Object.entries(event.data).map(([key, value]) => key + ': ' + String(value)).slice(0, 3).join(' · ')
     : String(event.data || '');
-  node.status.textContent = progress || 'Tool is working';
+  node.status.textContent = progress || node.hint || 'Working…';
 }
 function updateToolActivity(event) {
   const id = event.id || ('tool-result-' + Date.now() + '-' + Math.random());
@@ -7528,16 +8043,19 @@ function updateToolActivity(event) {
   }
   node.card.classList.remove('running');
   node.card.classList.add(event.ok ? 'success' : 'error');
-  node.status.textContent = (event.ok ? 'Completed' : 'Failed') + (event.durationMs ? ' in ' + formatDuration(event.durationMs) : '');
+  const duration = event.durationMs ? formatDuration(event.durationMs) : '';
+  const hint = node.hint || toolInputHint(event.input);
+  node.status.textContent = [
+    event.ok ? '' : 'Failed',
+    hint,
+    duration,
+  ].filter(Boolean).join(' · ') || (event.ok ? 'Done' : 'Failed');
   const output = String(event.text || '').trim();
   if (output) {
     node.pre.classList.remove('hidden');
     node.pre.textContent = output.length > 1400 ? output.slice(0, 1400) + '\\n...' : output;
   }
-  // Collapse the body once the tool finishes so the transcript stays compact;
-  // the toggle button (chevron) lets the user expand it again.
-  node.card.classList.add('collapsed');
-  node.toggle.setAttribute('aria-expanded', 'false');
+  toggleToolCard(node.card, node.toggle, true);
   const toolName = String(event.name || '').toLowerCase();
   if (event.ok && (toolName === 'edit' || toolName === 'write')) {
     const stats = parseDiffStats(output);
@@ -7633,27 +8151,33 @@ async function runSettingsCommand(command, status = 'Running command...') {
 function renderSettingsCommandPanels() {
   const snapshot = state.snapshot || {};
   const session = snapshot.session || {};
-  const settings = snapshot.settings || {};
-  el('settingsCurrentRun').textContent = describeParts([
-    'Permission: ' + (snapshot.permissionMode || 'unknown'),
-    'Effort: ' + (snapshot.effort || 'auto'),
-    'Router: ' + (snapshot.activeRouterName || 'off'),
-    'Team: ' + (snapshot.activeTeamName || 'none'),
-  ]);
-  el('settingsCurrentModel').textContent = session.model || settings.defaultModel || 'default';
-  setField('settingsRuntimeModel', session.model || settings.defaultModel || '');
-  setField('settingsRuntimeEffort', snapshot.effort || 'auto');
+  const routerStatus = el('settingsRouterStatus');
+  if (routerStatus) {
+    routerStatus.textContent = snapshot.activeRouterName
+      ? 'Active router: ' + snapshot.activeRouterName
+      : 'Router: off (fixed model from composer / provider config)';
+  }
+  const disableRouterBtn = el('settingsDisableRouter');
+  if (disableRouterBtn) disableRouterBtn.disabled = !snapshot.activeRouterName;
   const routers = snapshot.routers || [];
-  renderSelectOptions(
-    'settingsRouterSelect',
-    routers.map(router => ({ value: router.name, label: router.name })),
-    snapshot.activeRouterName || '',
-    'Fixed model',
-  );
   renderSettingsCardList('settingsRoutersList', routers, (root, router) => {
-    addSettingsCard(root, router.name, router.profile?.routes ? router.profile.routes.length + ' routes' : '', router.source, [
-      { label: router.name === snapshot.activeRouterName ? 'Active' : 'Use', disabled: router.name === snapshot.activeRouterName, handler: () => runSettingsCommand('/model router ' + router.name, 'Applying router...') },
-    ]);
+    const isActive = router.name === snapshot.activeRouterName;
+    const isBuiltIn = router.source === 'built-in';
+    const actions = [
+      { label: isActive ? 'Active' : 'Use', disabled: isActive, handler: () => runSettingsCommand('/model router ' + router.name, 'Applying router...') },
+      { label: isBuiltIn ? 'Customize' : 'Edit', handler: () => openRouterEditor(router) },
+    ];
+    if (!isBuiltIn) {
+      actions.push({
+        label: 'Delete',
+        handler: () => {
+          if (window.confirm('Delete router profile "' + router.name + '"?')) {
+            deleteRouterProfileViaApi(router.name).catch(console.error);
+          }
+        },
+      });
+    }
+    addSettingsCard(root, router.name, router.profile?.routes ? router.profile.routes.length + ' routes' : '', router.source, actions);
   });
   renderSettingsCardList('settingsToolsList', (snapshot.tools || []).slice(0, 40), (root, tool) => {
     addSettingsCard(root, tool.name, describeParts([tool.category, tool.provider, tool.readOnly ? 'read-only' : '']), tool.description);
@@ -8421,7 +8945,12 @@ async function resumeSession(id) {
 }
 function refreshProjectDetailSidebar() {
   if (state.projectView !== 'detail') return;
-  if (!el('convSidebarList')) return;
+  const detailPanel = el('projectDetail');
+  if (!detailPanel || detailPanel.classList.contains('hidden')) return;
+  if (!el('convSidebarList')) {
+    renderProjectDetail();
+    return;
+  }
   renderConvSidebarList();
   renderConvSidebarDetail();
 }
@@ -8446,7 +8975,7 @@ async function switchProject(projectPath, view = 'conversation') {
   transcript.textContent = '';
   state.toolNodes.clear();
   state.sessionsLimit = 16;
-  await loadState();
+  applyLoadedState();
   await hydrateTranscript();
   closeSurface();
   switchProjectView(view);
@@ -8648,7 +9177,11 @@ function overviewProjectsFiltered() {
       || (p.path || '').toLowerCase().includes(query)
       || (p.note || '').toLowerCase().includes(query));
   }
-  if (state.overviewStatusFilter === 'active') projects = projects.filter((p) => p.active);
+  const statusFilter = state.overviewStatusFilter || 'all';
+  if (statusFilter === 'current') projects = projects.filter((p) => p.active);
+  else if (isProjectStatus(statusFilter)) {
+    projects = projects.filter((p) => projectStatusOf(p) === statusFilter);
+  }
   if (state.overviewSort === 'name') {
     projects.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
   } else {
@@ -8683,7 +9216,8 @@ function bindOverviewToolbar() {
   if (statusSel && !statusSel.dataset.bound) {
     statusSel.dataset.bound = '1';
     statusSel.addEventListener('change', () => {
-      state.overviewStatusFilter = statusSel.value === 'active' ? 'active' : 'all';
+      const v = statusSel.value || 'all';
+      state.overviewStatusFilter = (v === 'current' || isProjectStatus(v)) ? v : 'all';
       renderOverview();
     });
   }
@@ -8707,16 +9241,28 @@ function bindOverviewToolbar() {
     });
   }
 }
+function projectStatusLabel(status) {
+  return PROJECT_STATUS_LABELS[status] || PROJECT_STATUS_LABELS.not_started;
+}
+function projectStatusOf(p) {
+  return isProjectStatus(p?.status) ? p.status : 'not_started';
+}
 function buildProjectStatusBadge(p, running) {
   const meta = document.createElement('div');
   meta.className = 'pc-meta';
   const badge = document.createElement('span');
-  badge.className = 'pc-badge' + (p.active ? ' active' : '');
-  badge.textContent = p.active ? 'Active' : 'Idle';
+  badge.className = 'pc-badge status';
+  badge.textContent = projectStatusLabel(projectStatusOf(p));
   meta.appendChild(badge);
+  if (p.active) {
+    const current = document.createElement('span');
+    current.className = 'pc-current-chip';
+    current.textContent = '当前';
+    meta.appendChild(current);
+  }
   if (running) {
     const runBadge = document.createElement('span');
-    runBadge.className = 'pc-badge running';
+    runBadge.className = 'pc-badge';
     runBadge.textContent = running + ' running';
     meta.appendChild(runBadge);
   }
@@ -8789,12 +9335,19 @@ function renderOverviewTable(body, projects, runs) {
     pathCell.title = p.path || '';
     const statusCell = document.createElement('div');
     const statusBadge = document.createElement('span');
-    statusBadge.className = 'pc-badge' + (p.active ? ' active' : '');
-    statusBadge.textContent = p.active ? 'Active' : 'Idle';
+    statusBadge.className = 'pc-badge status';
+    statusBadge.textContent = projectStatusLabel(projectStatusOf(p));
     statusCell.appendChild(statusBadge);
+    if (p.active) {
+      const current = document.createElement('span');
+      current.className = 'pc-current-chip';
+      current.style.marginLeft = '6px';
+      current.textContent = '当前';
+      statusCell.appendChild(current);
+    }
     if (running) {
       const runBadge = document.createElement('span');
-      runBadge.className = 'pc-badge running';
+      runBadge.className = 'pc-badge';
       runBadge.style.marginLeft = '6px';
       runBadge.textContent = running + ' running';
       statusCell.appendChild(runBadge);
@@ -8876,15 +9429,12 @@ function avatarStack(labels) {
   return stack;
 }
 function switchProjectView(view) {
-  if (state.projectView === 'detail' && view !== 'detail') {
+  const prev = state.projectView;
+  if (prev === 'detail' && view !== 'detail') {
     if (state.projectDocDirty) void saveProjectDocNow();
     if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
     state.projectDocEditing = false;
   }
-  state.projectView = view;
-  // Clear the detail preview selection when leaving the detail view so a
-  // stale preview doesn't persist across navigation.
-  if (view !== 'detail') state.detailSelectedId = null;
   const ov = el('projectOverview');
   const dt = el('projectDetail');
   const cv = el('projectConversation');
@@ -8892,12 +9442,18 @@ function switchProjectView(view) {
   ov.classList.toggle('hidden', view !== 'overview');
   dt.classList.toggle('hidden', view !== 'detail');
   cv.classList.toggle('hidden', view !== 'conversation');
-  // Adaptive sidebar (U9): the overview landing keeps the slim 4-nav sidebar
-  // (matches the reference). Detail + conversation views use the full sidebar
-  // so the workspace's chat list stays visible for quick switching — otherwise
-  // switching conversations required going back to the detail card list.
   document.body.dataset.sidebarMode = view === 'overview' ? 'nav' : 'full';
-  if (view === 'detail') renderProjectDetail();
+  state.projectView = view;
+  if (view !== 'detail') state.detailSelectedId = null;
+  else if (prev === 'conversation') state.detailSelectedId = null;
+  if (view === 'detail') {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') document.activeElement.blur();
+    renderProjectDetail();
+    requestAnimationFrame(() => {
+      renderConvSidebarList();
+      renderConvSidebarDetail();
+    });
+  }
   // Manager chat: only inside an opened project (detail view). Hidden on the
   // projects overview, in conversations, and outside the Project region.
   if (view === 'detail') {
@@ -8934,7 +9490,8 @@ function renderOverview() {
     empty.className = 'region-empty';
     if (state.loadError) empty.textContent = 'Could not load projects: ' + state.loadError;
     else if ((el('overviewSearch')?.value || '').trim()) empty.textContent = 'No projects match.';
-    else if (state.overviewStatusFilter === 'active') empty.textContent = 'No active projects.';
+    else if (state.overviewStatusFilter === 'current') empty.textContent = '当前工作区不在列表中。';
+    else if (isProjectStatus(state.overviewStatusFilter)) empty.textContent = '没有该状态的项目。';
     else empty.textContent = 'No projects yet — click + New workspace to add one.';
     body.appendChild(empty);
   }
@@ -9140,6 +9697,32 @@ function setProjectDocStatus(text, kind) {
   status.classList.toggle('dirty', kind === 'dirty');
   status.classList.toggle('error', kind === 'error');
 }
+async function saveProjectStatus(status) {
+  if (!isProjectStatus(status)) return;
+  const select = el('projectStatusSelect');
+  if (select) select.disabled = true;
+  try {
+    const res = await api('/api/project-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status, path: state.snapshot?.workDir || undefined }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setProjectDocStatus(data.error || 'Status save failed', 'error');
+      return;
+    }
+    const data = await res.json();
+    const projects = state.snapshot?.projects || [];
+    const active = projects.find((p) => p.active);
+    if (active) active.status = data.status;
+    setProjectDocStatus('', '');
+  } catch {
+    setProjectDocStatus('Status save failed', 'error');
+  } finally {
+    if (select) select.disabled = false;
+  }
+}
 function scheduleProjectDocSave() {
   state.projectDocDirty = true;
   setProjectDocStatus('Unsaved', 'dirty');
@@ -9207,12 +9790,14 @@ function filteredDetailSessions() {
 }
 function buildCompactConvRow(item, opts) {
   const archived = Boolean(opts?.archived || item.archived);
-  const row = document.createElement('button');
-  row.type = 'button';
+  const row = document.createElement('div');
   row.className = 'conv-sidebar-row' + (item.id === state.detailSelectedId ? ' active' : '');
   row.dataset.sessionId = item.id;
+  row.setAttribute('role', 'button');
+  row.tabIndex = 0;
   const dot = document.createElement('span');
   dot.className = 'csr-dot' + (item.status === 'running' || (!archived && item.id === state.snapshot?.session?.id) ? '' : ' hidden');
+  dot.setAttribute('aria-hidden', 'true');
   const title = document.createElement('span');
   title.className = 'csr-title';
   title.textContent = item.title || item.id || 'Untitled';
@@ -9245,6 +9830,12 @@ function buildCompactConvRow(item, opts) {
   row.append(dot, title, meta);
   row.addEventListener('click', () => selectDetailConversation(item.id));
   row.addEventListener('dblclick', () => { void resumeSession(item.id); });
+  row.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      selectDetailConversation(item.id);
+    }
+  });
   return row;
 }
 function renderConvSidebarList() {
@@ -9366,6 +9957,25 @@ function renderProjectDetail() {
   docTitle.textContent = 'Project document';
   const docActions = document.createElement('div');
   docActions.className = 'project-doc-actions';
+  const statusWrap = document.createElement('div');
+  statusWrap.className = 'project-doc-status-wrap';
+  const statusLabel = document.createElement('label');
+  statusLabel.htmlFor = 'projectStatusSelect';
+  statusLabel.textContent = '状态';
+  const statusSelect = document.createElement('select');
+  statusSelect.id = 'projectStatusSelect';
+  statusSelect.className = 'project-status-select';
+  statusSelect.setAttribute('aria-label', 'Project status');
+  const currentStatus = projectStatusOf(state.snapshot?.projects?.find((p) => p.active) || { status: 'not_started' });
+  for (const value of PROJECT_STATUSES) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = PROJECT_STATUS_LABELS[value];
+    if (value === currentStatus) opt.selected = true;
+    statusSelect.appendChild(opt);
+  }
+  statusSelect.addEventListener('change', () => { void saveProjectStatus(statusSelect.value); });
+  statusWrap.append(statusLabel, statusSelect);
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
   editBtn.id = 'projectDocEditBtn';
@@ -9375,7 +9985,7 @@ function renderProjectDetail() {
   const docStatus = document.createElement('span');
   docStatus.id = 'projectDocStatus';
   docStatus.className = 'project-doc-status';
-  docActions.append(editBtn, docStatus);
+  docActions.append(statusWrap, editBtn, docStatus);
   docToolbar.append(docTitle, docActions);
   const docScroll = document.createElement('div');
   docScroll.id = 'projectDocScroll';
@@ -13702,9 +14312,9 @@ function renderBridgeConfigs() {
   const configs = bs.configs || [];
   renderRuntimeDiscovery();
   el('bridgeActive').innerHTML = active
-    ? (active.runtime === 'hadamard'
+    ? (active.runtime === 'hadamard' && !active.apiKeyMasked && !active.baseURL
       ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`
-      : \`<strong>\${active.name}</strong> · \${active.runtime} · \${active.model || '(default model)'} · key \${active.apiKeyMasked}\${active.baseURL ? ' · ' + active.baseURL : ''}\`)
+      : \`<strong>\${active.name}</strong> · \${active.runtime} · \${active.model || '(default model)'}\${active.apiKeyMasked ? ' · key ' + active.apiKeyMasked : ''}\${active.baseURL ? ' · ' + active.baseURL : ''}\`)
     : 'No active provider config — using the default provider.';
   const root = el('bridgeConfigsList');
   root.textContent = '';
@@ -13727,7 +14337,7 @@ function renderBridgeConfigs() {
     const modelSummary = modelCount > 0
       ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
       : (cfg.model ? cfg.model : 'no models');
-    p.textContent = [cfg.runtime, modelSummary, cfg.runtime !== 'hadamard' ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
+    p.textContent = [cfg.runtime, modelSummary, cfg.apiKeyMasked ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
     card.appendChild(p);
     const footer = document.createElement('footer');
     const editBtn = document.createElement('button');
@@ -13753,9 +14363,10 @@ const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'
 const WRITABLE_LOCAL_RUNTIMES = new Set(['claude', 'codewhale', 'crush', 'codex']);
 function toggleCredentialFields() {
   const runtime = el('bridgeCfgRuntime').value;
-  const isHadamard = runtime === 'hadamard';
+  // Hadamard may use SDK defaults (leave key/URL blank) or override with a
+  // named provider — keep credential fields visible either way.
   const fields = el('bridgeCredentialFields');
-  if (fields) fields.style.display = isHadamard ? 'none' : '';
+  if (fields) fields.style.display = '';
   // Auto-select wire protocol from runtime (user can override).
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
   el('bridgeCfgProvider').value = pv;
@@ -14028,6 +14639,187 @@ async function disableBridge() {
   renderBridgeConfigs();
   addMessage('notice', 'bridge off — using default provider');
 }
+
+let editingRouterProfileName = null;
+let draftRouterRoutes = [];
+
+function clearRouterRouteDraft() {
+  setField('routerRouteRole', '');
+  setField('routerRouteModel', '');
+  setField('routerRouteWhen', '');
+  setField('routerRouteProvider', '');
+  setField('routerRouteBaseUrl', '');
+  setField('routerRouteApiKey', '');
+  setField('routerRouteDescription', '');
+}
+
+function renderRouterRoutes() {
+  const root = el('routerRoutesList');
+  if (!root) return;
+  root.textContent = '';
+  if (draftRouterRoutes.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'No routes yet — add at least one specialist.';
+    root.appendChild(p);
+    return;
+  }
+  for (const [index, route] of draftRouterRoutes.entries()) {
+    const card = document.createElement('article');
+    card.className = 'settings-card';
+    card.style.cssText = 'display:flex;align-items:flex-start;gap:10px;justify-content:space-between;padding:8px 12px';
+    const info = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = route.role || route.name || route.model;
+    info.appendChild(title);
+    const detail = document.createElement('p');
+    detail.className = 'muted';
+    detail.style.margin = '4px 0 0';
+    detail.textContent = describeParts([
+      route.model,
+      route.when ? 'when: ' + route.when : '',
+      route.provider || '',
+      route.baseURL || '',
+      route.apiKey || '',
+      route.description || '',
+    ]);
+    info.appendChild(detail);
+    card.appendChild(info);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = 'Remove';
+    del.addEventListener('click', () => {
+      draftRouterRoutes.splice(index, 1);
+      renderRouterRoutes();
+    });
+    card.appendChild(del);
+    root.appendChild(card);
+  }
+}
+
+function addRouterRouteFromDraft() {
+  const model = el('routerRouteModel').value.trim();
+  const when = el('routerRouteWhen').value.trim();
+  if (!model || !when) {
+    el('routerCfgStatus').textContent = 'Route needs both model and when.';
+    return;
+  }
+  const route = { model, when };
+  const role = el('routerRouteRole').value.trim();
+  const provider = el('routerRouteProvider').value;
+  const baseURL = el('routerRouteBaseUrl').value.trim();
+  const apiKey = el('routerRouteApiKey').value.trim();
+  const description = el('routerRouteDescription').value.trim();
+  if (role) route.role = role;
+  if (provider) route.provider = provider;
+  if (baseURL) route.baseURL = baseURL;
+  if (apiKey) route.apiKey = apiKey;
+  if (description) route.description = description;
+  draftRouterRoutes.push(route);
+  clearRouterRouteDraft();
+  el('routerCfgStatus').textContent = '';
+  renderRouterRoutes();
+}
+
+function openRouterEditor(loaded) {
+  const profile = loaded?.profile || null;
+  const isBuiltIn = loaded?.source === 'built-in';
+  editingRouterProfileName = profile && !isBuiltIn ? profile.name : null;
+  el('routerEditorTitle').textContent = profile
+    ? (isBuiltIn ? 'Customize built-in profile' : 'Edit router profile')
+    : 'New router profile';
+  setField('routerCfgName', profile ? profile.name : '');
+  el('routerCfgName').disabled = Boolean(editingRouterProfileName);
+  setField('routerCfgTarget', loaded?.source === 'personal' ? 'personal' : 'project');
+  setField('routerCfgDescription', profile?.description || '');
+  const leader = profile?.routerModel || {};
+  setField('routerLeaderModel', leader.model || '');
+  setField('routerLeaderProvider', leader.provider || '');
+  setField('routerLeaderBaseUrl', leader.baseURL || '');
+  setField('routerLeaderApiKey', leader.apiKey || '');
+  const fallback = profile?.fallback || {};
+  setField('routerFallbackModel', fallback.model || '');
+  setField('routerFallbackProvider', fallback.provider || '');
+  draftRouterRoutes = Array.isArray(profile?.routes)
+    ? profile.routes.map((route) => ({ ...route }))
+    : [];
+  clearRouterRouteDraft();
+  renderRouterRoutes();
+  el('routerCfgStatus').textContent = isBuiltIn
+    ? 'Built-in profiles are read-only — saving creates a project/personal copy that shadows the built-in.'
+    : (profile ? 'Editing "' + profile.name + '".' : '');
+  el('routerEditorModal').classList.remove('hidden');
+  el('routerCfgName').focus();
+}
+
+function closeRouterEditor() {
+  el('routerEditorModal').classList.add('hidden');
+  editingRouterProfileName = null;
+  draftRouterRoutes = [];
+}
+
+async function saveRouterProfileViaApi() {
+  const name = el('routerCfgName').value.trim();
+  const leaderModel = el('routerLeaderModel').value.trim();
+  if (!name) { el('routerCfgStatus').textContent = 'Profile name is required.'; return; }
+  if (!leaderModel) { el('routerCfgStatus').textContent = 'Leader model is required.'; return; }
+  if (draftRouterRoutes.length === 0) { el('routerCfgStatus').textContent = 'Add at least one specialist route.'; return; }
+  const routerModel = { model: leaderModel };
+  const leaderProvider = el('routerLeaderProvider').value;
+  const leaderBaseUrl = el('routerLeaderBaseUrl').value.trim();
+  const leaderApiKey = el('routerLeaderApiKey').value.trim();
+  if (leaderProvider) routerModel.provider = leaderProvider;
+  if (leaderBaseUrl) routerModel.baseURL = leaderBaseUrl;
+  if (leaderApiKey) routerModel.apiKey = leaderApiKey;
+  const body = {
+    name,
+    target: el('routerCfgTarget').value === 'personal' ? 'personal' : 'project',
+    description: el('routerCfgDescription').value.trim(),
+    routerModel,
+    routes: draftRouterRoutes,
+  };
+  const fallbackModel = el('routerFallbackModel').value.trim();
+  if (fallbackModel) {
+    const fallback = { model: fallbackModel };
+    const fallbackProvider = el('routerFallbackProvider').value;
+    if (fallbackProvider) fallback.provider = fallbackProvider;
+    body.fallback = fallback;
+  }
+  el('routerCfgStatus').textContent = 'Saving...';
+  const res = await api('/api/router/profile', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = await res.text();
+    try { message = JSON.parse(message).error || message; } catch { /* keep text */ }
+    el('routerCfgStatus').textContent = 'Save failed: ' + message;
+    return;
+  }
+  state.snapshot = await res.json();
+  closeRouterEditor();
+  renderSettingsCommandPanels();
+  el('settingsStatus').textContent = 'Router profile saved';
+}
+
+async function deleteRouterProfileViaApi(name) {
+  const res = await api('/api/router/profile/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    let message = await res.text();
+    try { message = JSON.parse(message).error || message; } catch { /* keep text */ }
+    addMessage('error', 'Delete failed: ' + message);
+    return;
+  }
+  state.snapshot = await res.json();
+  renderSettingsCommandPanels();
+  el('settingsStatus').textContent = 'Router profile deleted';
+}
+
 function renderMcpServers() {
   const servers = (state.snapshot && state.snapshot.mcpServers) || [];
   const root = el('mcpServersList');
@@ -14105,13 +14897,6 @@ function resetManagerClientState(nextWorkDir) {
   if (title) title.textContent = 'Project Manager';
   el('managerConfigForm')?.classList.add('hidden');
 }
-function managerPlainText(node) {
-  return node?.innerText || node?.textContent || '';
-}
-function managerCopyText(text) {
-  if (!text) return;
-  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
-}
 function managerUpdateHeaderTitle(text) {
   const title = el('managerHeaderTitle');
   if (!title || !text) return;
@@ -14157,59 +14942,146 @@ function syncManagerVisibility(view) {
   el('managerShell')?.classList.remove('hidden');
   setManagerUiMode(managerUiMode);
 }
-function managerAddMsg(kind, text, opts) {
+const managerToolNodes = new Map();
+let managerCurrentAssistant = null;
+function managerScrollTranscript() {
+  const t = el('managerTranscript');
+  if (t) t.scrollTop = t.scrollHeight;
+}
+function setManagerThinking(visible, label) {
+  const row = el('managerThinking');
+  const text = el('managerThinkingLabel');
+  if (text && label) text.textContent = label;
+  if (!row) return;
+  row.classList.toggle('visible', !!visible);
+  row.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  if (visible) managerScrollTranscript();
+}
+function managerAddMsg(kind, text) {
+  const t = el('managerTranscript');
+  if (!t) return null;
+  if (kind === 'user') managerUpdateHeaderTitle(text);
+  if (kind === 'user' || kind === 'assistant' || kind === 'error' || kind === 'notice') {
+    if (kind === 'assistant') managerCurrentAssistant = null;
+    const row = document.createElement('div');
+    row.className = 'message-row row-' + (kind === 'notice' ? 'system' : kind);
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-wrap';
+    if (kind === 'error') {
+      const label = document.createElement('div');
+      label.className = 'msg-error-label';
+      label.textContent = 'Error';
+      wrap.appendChild(label);
+    }
+    const node = document.createElement('div');
+    const msgKind = kind === 'notice' ? 'system' : kind;
+    node.className = 'message ' + msgKind + ((msgKind === 'user' || msgKind === 'assistant') ? ' md-prose' : '');
+    if (msgKind === 'assistant' && !text) node.dataset.raw = '';
+    setMessageContent(node, msgKind === 'system' ? 'notice' : msgKind, text || '');
+    wrap.appendChild(node);
+    row.appendChild(wrap);
+    t.appendChild(row);
+    if (msgKind === 'assistant') managerCurrentAssistant = node;
+    managerScrollTranscript();
+    return node;
+  }
+  const note = document.createElement('div');
+  note.className = 'manager-msg ' + kind;
+  note.textContent = text;
+  t.appendChild(note);
+  managerScrollTranscript();
+  return note;
+}
+function managerAppendDelta(text) {
+  if (!text) return;
+  setManagerThinking(false);
+  if (!managerCurrentAssistant) managerAddMsg('assistant', '');
+  const node = managerCurrentAssistant;
+  if (!node) return;
+  node.dataset.raw = (node.dataset.raw || '') + text;
+  scheduleMarkdownRender(node);
+  managerScrollTranscript();
+}
+function managerAddToolActivity(event) {
   const t = el('managerTranscript');
   if (!t) return;
-  const when = (opts && opts.at) || new Date().toISOString();
-  if (kind === 'user') {
-    managerUpdateHeaderTitle(text);
-    const turn = document.createElement('div');
-    turn.className = 'manager-turn user';
-    const bubble = document.createElement('div');
-    bubble.className = 'manager-bubble user md-prose';
-    renderMarkdownInto(bubble, text || '');
-    turn.appendChild(bubble);
-    t.appendChild(turn);
-  } else if (kind === 'assistant') {
-    const turn = document.createElement('div');
-    turn.className = 'manager-turn assistant';
-    const avatar = document.createElement('span');
-    avatar.className = 'manager-turn-avatar';
-    avatar.innerHTML = guiIcon('logo');
-    const body = document.createElement('div');
-    body.className = 'manager-turn-body';
-    const bubble = document.createElement('div');
-    bubble.className = 'manager-bubble assistant md-prose';
-    renderMarkdownInto(bubble, text || '');
-    body.appendChild(bubble);
-    const meta = document.createElement('div');
-    meta.className = 'manager-turn-meta';
-    const timeEl = document.createElement('span');
-    const rel = formatRelativeTime(when);
-    timeEl.textContent = rel ? ('Replied ' + rel) : 'Replied just now';
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'manager-copy-btn';
-    copyBtn.title = 'Copy';
-    copyBtn.innerHTML = guiIcon('copy');
-    copyBtn.addEventListener('click', () => managerCopyText(text || managerPlainText(bubble)));
-    meta.append(timeEl, copyBtn);
-    body.appendChild(meta);
-    turn.append(avatar, body);
-    t.appendChild(turn);
-  } else {
-    const note = document.createElement('div');
-    note.className = 'manager-msg ' + kind;
-    note.textContent = text;
-    t.appendChild(note);
+  managerCurrentAssistant = null;
+  setManagerThinking(true, (event.name ? (event.name + '…') : 'Working…'));
+  const id = event.id || ('mgr-tool-' + Date.now() + '-' + Math.random());
+  const card = document.createElement('article');
+  card.className = 'tool-card running';
+  card.dataset.toolId = id;
+  const header = document.createElement('header');
+  const spinner = document.createElement('span');
+  spinner.className = 'tool-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
+  const labels = document.createElement('div');
+  labels.className = 'tool-labels';
+  const title = document.createElement('strong');
+  title.textContent = event.name || 'Tool';
+  const status = document.createElement('small');
+  const hint = toolInputHint(event.input);
+  status.textContent = hint || 'Running…';
+  labels.append(title, status);
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'tool-toggle';
+  toggle.title = 'Show / hide details';
+  toggle.setAttribute('aria-expanded', 'true');
+  toggle.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  const body = document.createElement('div');
+  body.className = 'tool-body';
+  const pre = document.createElement('pre');
+  pre.textContent = summarizeToolInput(event.input);
+  if (!pre.textContent) pre.classList.add('hidden');
+  body.append(pre);
+  const onToggle = (ev) => {
+    if (ev) ev.stopPropagation();
+    toggleToolCard(card, toggle);
+  };
+  toggle.addEventListener('click', onToggle);
+  header.addEventListener('click', (ev) => {
+    if (ev.target.closest && ev.target.closest('.tool-toggle')) return;
+    onToggle(ev);
+  });
+  header.append(spinner, labels, toggle);
+  card.append(header, body);
+  t.appendChild(card);
+  managerToolNodes.set(id, { card, status, pre, body, toggle, hint });
+  managerScrollTranscript();
+}
+function managerUpdateToolActivity(event) {
+  const id = event.id || ('mgr-tool-result-' + Date.now());
+  let node = managerToolNodes.get(id);
+  if (!node) {
+    managerAddToolActivity({ ...event, id });
+    node = managerToolNodes.get(id);
+    if (!node) return;
   }
-  t.scrollTop = t.scrollHeight;
+  node.card.classList.remove('running');
+  node.card.classList.add(event.ok ? 'success' : 'error');
+  const duration = event.durationMs ? formatDuration(event.durationMs) : '';
+  const hint = node.hint || toolInputHint(event.input);
+  node.status.textContent = [
+    event.ok ? '' : 'Failed',
+    hint,
+    duration,
+  ].filter(Boolean).join(' · ') || (event.ok ? 'Done' : 'Failed');
+  const output = String(event.text || '').trim();
+  if (output) {
+    node.pre.classList.remove('hidden');
+    node.pre.textContent = output.length > 1400 ? output.slice(0, 1400) + '\\n...' : output;
+  }
+  toggleToolCard(node.card, node.toggle, true);
+  managerScrollTranscript();
 }
 function hydrateManagerTranscript(items, force) {
   const t = el('managerTranscript');
   if (!t || managerBusy) return;
   if (!force && managerTranscriptHydrated && t.childElementCount > 0) return;
   t.textContent = '';
+  managerToolNodes.clear();
+  managerCurrentAssistant = null;
   for (const msg of items || []) managerAddMsg(msg.kind, msg.text);
   const lastUser = [...(items || [])].reverse().find((m) => m.kind === 'user');
   if (lastUser) managerUpdateHeaderTitle(lastUser.text);
@@ -14230,12 +15102,16 @@ async function refreshManagerState(forceHydrate = false) {
     }
     const line = el('managerStatusLine');
     if (line) {
+      const cfg = data.config || {};
+      const modelLabel = cfg.bridgeConfig
+        ? (cfg.model ? (cfg.bridgeConfig + ' / ' + cfg.model) : cfg.bridgeConfig)
+        : (cfg.model || 'session default');
       const parts = [
         (data.plan.milestones || 0) + ' milestones · ' + (data.plan.today || 0) + ' today · ' + (data.plan.upcoming || 0) + ' upcoming',
-        'model: ' + (data.config?.model || 'session default') + ' (read-only)',
-        'readScope: ' + (data.config?.readScope || 'workspace-only'),
+        'model: ' + modelLabel + ' (read-only)',
+        'readScope: ' + (cfg.readScope || 'workspace-only'),
       ];
-      if (data.config?.mirrorProgressToWorkspace) parts.push('mirror: on');
+      if (cfg.mirrorProgressToWorkspace) parts.push('mirror: on');
       if (data.schedules && data.schedules.length) parts.push(data.schedules.length + ' schedule' + (data.schedules.length === 1 ? '' : 's'));
       line.textContent = parts.join('  ·  ');
     }
@@ -14246,6 +15122,8 @@ async function refreshManagerState(forceHydrate = false) {
 async function managerStream(path, payload) {
   if (managerBusy) { managerAddMsg('error', 'Manager is busy — wait for the current run.'); return; }
   managerBusy = true;
+  managerCurrentAssistant = null;
+  setManagerThinking(true, 'Thinking…');
   el('managerPanel')?.classList.add('running');
   el('managerFab')?.classList.add('running');
   const updateBtn = el('managerUpdateBtn');
@@ -14273,15 +15151,35 @@ async function managerStream(path, payload) {
         if (!lineText) continue;
         let event;
         try { event = JSON.parse(lineText); } catch (e) { continue; }
-        if (event.type === 'status' && event.message) managerAddMsg('tool', event.message);
-        else if (event.type === 'manager.result') managerAddMsg('assistant', event.text || '(no output)');
-        else if (event.type === 'error') managerAddMsg('error', event.message || 'manager error');
+        if (event.type === 'delta' && event.text) managerAppendDelta(event.text);
+        else if (event.type === 'tool.call') managerAddToolActivity(event);
+        else if (event.type === 'tool.result') {
+          managerUpdateToolActivity(event);
+          setManagerThinking(true, 'Thinking…');
+        }
+        else if (event.type === 'status' && event.message) {
+          setManagerThinking(true, String(event.message).replace(/^manager\\s*·\\s*/i, '') || 'Working…');
+        }
+        else if (event.type === 'manager.result') {
+          setManagerThinking(false);
+          if (!managerCurrentAssistant) managerAddMsg('assistant', event.text || '(no output)');
+          else if (event.text && !(managerCurrentAssistant.dataset.raw || '').trim()) {
+            setMessageContent(managerCurrentAssistant, 'assistant', event.text);
+          }
+          managerCurrentAssistant = null;
+        }
+        else if (event.type === 'error') {
+          setManagerThinking(false);
+          managerAddMsg('error', event.message || 'manager error');
+        }
       }
     }
   } catch (e) {
     managerAddMsg('error', e.message || String(e));
   } finally {
     managerBusy = false;
+    managerCurrentAssistant = null;
+    setManagerThinking(false);
     el('managerPanel')?.classList.remove('running');
     el('managerFab')?.classList.remove('running');
     if (updateBtn) updateBtn.disabled = false;
@@ -14289,6 +15187,109 @@ async function managerStream(path, payload) {
     refreshManagerState();
     loadState().catch(() => {});
   }
+}
+function managerBridgeConfigs(configs) {
+  return Array.isArray(configs) && configs.length
+    ? configs
+    : (state.snapshot?.bridgeState?.configs || []);
+}
+function fillManagerBridgeOptions(selected, configs) {
+  const sel = el('managerCfgBridge');
+  if (!sel) return;
+  const list = managerBridgeConfigs(configs);
+  sel.textContent = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'Session default';
+  sel.appendChild(blank);
+  for (const cfg of list) {
+    const opt = document.createElement('option');
+    opt.value = cfg.name;
+    opt.textContent = cfg.name;
+    if (selected && selected === cfg.name) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (selected && !list.some((c) => c.name === selected)) {
+    const orphan = document.createElement('option');
+    orphan.value = selected;
+    orphan.textContent = selected + ' (missing)';
+    orphan.selected = true;
+    sel.appendChild(orphan);
+  }
+}
+function fillManagerModelOptions(selectedModel, bridgeName, configs) {
+  const sel = el('managerCfgModel');
+  if (!sel) return;
+  const list = managerBridgeConfigs(configs);
+  const bridge = bridgeName ? list.find((c) => c.name === bridgeName) : null;
+  const sessionModel = state.snapshot?.session?.model || state.snapshot?.bridgeState?.activeModelLabel || '';
+  const names = [];
+  const addName = (name) => {
+    const n = typeof name === 'string' ? name.trim() : '';
+    if (!n || names.includes(n)) return;
+    names.push(n);
+  };
+  if (bridge) {
+    addName(bridge.model);
+    for (const m of bridge.models || []) addName(typeof m === 'string' ? m : m?.name);
+  } else {
+    addName(sessionModel);
+    for (const cfg of list) {
+      addName(cfg.model);
+      for (const m of cfg.models || []) addName(typeof m === 'string' ? m : m?.name);
+    }
+  }
+  sel.textContent = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = bridge ? 'Config default' : 'Session default';
+  sel.appendChild(blank);
+  for (const name of names) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    if (selectedModel && selectedModel === name) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  if (selectedModel && !names.includes(selectedModel)) {
+    const orphan = document.createElement('option');
+    orphan.value = selectedModel;
+    orphan.textContent = selectedModel + ' (saved)';
+    orphan.selected = true;
+    sel.appendChild(orphan);
+  }
+  if (!selectedModel) blank.selected = true;
+}
+function openManagerConfigForm() {
+  const form = el('managerConfigForm');
+  if (!form) return;
+  if (!form.classList.contains('hidden')) { form.classList.add('hidden'); return; }
+  void (async () => {
+    let cfg = {};
+    let configs = state.snapshot?.bridgeState?.configs || [];
+    try {
+      const [mgrRes] = await Promise.all([
+        api('/api/manager/state'),
+        configs.length ? Promise.resolve(null) : loadState().catch(() => null),
+      ]);
+      if (mgrRes?.ok) {
+        const data = await mgrRes.json();
+        cfg = data.config || {};
+      }
+      configs = state.snapshot?.bridgeState?.configs || configs;
+    } catch (e) { /* open with blanks */ }
+    fillManagerBridgeOptions(cfg.bridgeConfig || '', configs);
+    fillManagerModelOptions(cfg.model || '', cfg.bridgeConfig || '', configs);
+    if (el('managerCfgScope')) el('managerCfgScope').value = cfg.readScope || 'workspace-only';
+    if (el('managerCfgPaths')) el('managerCfgPaths').value = (cfg.allowedReadPaths || []).join('\\n');
+    if (el('managerCfgMirror')) el('managerCfgMirror').checked = !!cfg.mirrorProgressToWorkspace;
+    syncManagerCfgPathsVisibility();
+    form.classList.remove('hidden');
+  })();
+}
+function syncManagerCfgPathsVisibility() {
+  const scope = el('managerCfgScope')?.value || 'workspace-only';
+  el('managerCfgPathsLabel')?.classList.toggle('hidden', scope === 'workspace-only' || scope === 'full-access');
 }
 function wireManagerPanel() {
   const panel = el('managerPanel');
@@ -14303,7 +15304,7 @@ function wireManagerPanel() {
     setManagerUiMode(managerUiMode === 'expanded' ? 'compact' : 'expanded');
   });
   el('managerUpdateQuick')?.addEventListener('click', () => el('managerUpdateBtn')?.click());
-  el('managerSettingsQuick')?.addEventListener('click', () => el('managerConfigBtn')?.click());
+  el('managerSettingsQuick')?.addEventListener('click', () => openManagerConfigForm());
   el('managerUpdateBtn')?.addEventListener('click', async () => {
     if (managerUiMode === 'closed') setManagerUiMode('compact');
     try {
@@ -14318,29 +15319,14 @@ function wireManagerPanel() {
     managerStream('/api/manager/update', {});
   });
   el('managerSchedulesLink')?.addEventListener('click', () => { openSettings('automation').catch(console.error); });
-  // Manager settings (plan M0/M3): model + readScope allowlist + mirror toggle.
-  el('managerConfigBtn')?.addEventListener('click', async () => {
-    const form = el('managerConfigForm');
-    if (!form) return;
-    if (!form.classList.contains('hidden')) { form.classList.add('hidden'); return; }
-    try {
-      const res = await api('/api/manager/state');
-      if (res.ok) {
-        const data = await res.json();
-        const cfg = data.config || {};
-        el('managerCfgModel').value = cfg.model || '';
-        el('managerCfgScope').value = cfg.readScope || 'workspace-only';
-        el('managerCfgPaths').value = (cfg.allowedReadPaths || []).join('\\n');
-        el('managerCfgMirror').checked = !!cfg.mirrorProgressToWorkspace;
-        syncManagerCfgPathsVisibility();
-      }
-    } catch (e) { /* open with blanks */ }
-    form.classList.remove('hidden');
+  el('managerCfgBridge')?.addEventListener('change', () => {
+    // Switching provider resets to that config's default model unless the
+    // current selection still exists in the new list.
+    const prev = el('managerCfgModel')?.value || '';
+    fillManagerModelOptions(prev, el('managerCfgBridge')?.value || '', state.snapshot?.bridgeState?.configs || []);
+    const sel = el('managerCfgModel');
+    if (sel && prev && ![...sel.options].some((o) => o.value === prev)) sel.value = '';
   });
-  function syncManagerCfgPathsVisibility() {
-    const scope = el('managerCfgScope')?.value || 'workspace-only';
-    el('managerCfgPathsLabel')?.classList.toggle('hidden', scope === 'workspace-only');
-  }
   el('managerCfgScope')?.addEventListener('change', syncManagerCfgPathsVisibility);
   el('managerCfgCancel')?.addEventListener('click', () => { el('managerConfigForm')?.classList.add('hidden'); });
   el('managerConfigForm')?.addEventListener('submit', async (e) => {
@@ -14350,6 +15336,7 @@ function wireManagerPanel() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          bridgeConfig: el('managerCfgBridge')?.value || '',
           model: el('managerCfgModel')?.value || '',
           readScope: el('managerCfgScope')?.value || 'workspace-only',
           allowedReadPaths: (el('managerCfgPaths')?.value || '').split('\\n').map((p) => p.trim()).filter(Boolean),
@@ -14377,8 +15364,6 @@ function wireManagerPanel() {
     managerAddMsg('user', text);
     managerStream('/api/manager/chat', { text });
   });
-  // Initial visibility: boot lands on project overview — Manager stays hidden
-  // until the user opens a specific project (detail view).
   if (state.snapshot?.workDir) managerBoundWorkDir = state.snapshot.workDir;
   syncManagerVisibility(state.projectView || 'overview');
 }
@@ -14429,11 +15414,11 @@ function derivePermissionPreset() {
   if (el('settingsDefaultPermission').checked) return 'workspace';
   return '';
 }
-async function saveSettings(event) {
-  event.preventDefault();
-  el('settingsStatus').textContent = 'Saving...';
+let settingsAutosaveTimer = null;
+let settingsAutosaveSeq = 0;
+function collectSettingsBody() {
   const workMode = document.querySelector('input[name="settingsWorkMode"]:checked')?.value || 'coding';
-  const body = {
+  return {
     provider: el('settingsProvider').value,
     defaultModel: el('settingsDefaultModel').value,
     apiKey: el('settingsApiKey').value,
@@ -14453,13 +15438,92 @@ async function saveSettings(event) {
       developerTools: el('settingsDeveloperTools').checked,
     },
   };
-  const res = await api('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) { el('settingsStatus').textContent = 'Save failed'; addMessage('error', await res.text()); return; }
-  state.snapshot = await res.json();
-  applyPreferences(state.snapshot.settings?.preferences);
-  el('settingsStatus').textContent = state.snapshot.settingsApplyError ? 'Saved; restart may be required' : 'Saved';
-  if (state.snapshot.settingsApplyError) addMessage('notice', 'Settings saved, but the active SDK could not reload: ' + state.snapshot.settingsApplyError);
-  await loadState();
+}
+async function persistSettingsNow() {
+  const seq = ++settingsAutosaveSeq;
+  const status = el('settingsStatus');
+  if (status) status.textContent = 'Saving…';
+  try {
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(collectSettingsBody()),
+    });
+    if (seq !== settingsAutosaveSeq) return;
+    if (!res.ok) {
+      if (status) status.textContent = 'Save failed';
+      addMessage('error', await res.text());
+      return;
+    }
+    state.snapshot = await res.json();
+    applyPreferences(state.snapshot.settings?.preferences);
+    if (status) {
+      status.textContent = state.snapshot.settingsApplyError ? 'Saved; restart may be required' : 'Saved';
+    }
+    if (state.snapshot.settingsApplyError) {
+      addMessage('notice', 'Settings saved, but the active SDK could not reload: ' + state.snapshot.settingsApplyError);
+    }
+    // Clear API key field after a successful save so we don't re-send it.
+    if (el('settingsApiKey').value) {
+      setField('settingsApiKey', '');
+      el('settingsApiKey').placeholder = 'Configured; leave blank to keep current key';
+      setChecked('settingsClearApiKey', false);
+    }
+    await loadState();
+    if (seq !== settingsAutosaveSeq) return;
+    if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
+    if (status && status.textContent === 'Saved') {
+      setTimeout(() => {
+        if (settingsAutosaveSeq === seq && status.textContent === 'Saved') status.textContent = '';
+      }, 1600);
+    }
+  } catch (error) {
+    if (seq !== settingsAutosaveSeq) return;
+    if (status) status.textContent = 'Save failed';
+    addMessage('error', error?.message || String(error));
+  }
+}
+function scheduleSettingsAutosave(delayMs = 450) {
+  if (settingsAutosaveTimer) clearTimeout(settingsAutosaveTimer);
+  settingsAutosaveTimer = setTimeout(() => {
+    settingsAutosaveTimer = null;
+    void persistSettingsNow();
+  }, delayMs);
+}
+function wireSettingsAutosave() {
+  const form = el('settingsForm');
+  if (!form || form.dataset.autosaveWired === '1') return;
+  form.dataset.autosaveWired = '1';
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (settingsAutosaveTimer) clearTimeout(settingsAutosaveTimer);
+    settingsAutosaveTimer = null;
+    void persistSettingsNow();
+  });
+  form.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !target.id || !String(target.id).startsWith('settings')) return;
+    // Output style already persists via /output-style; schedule/team fields have their own APIs.
+    if (target.id === 'settingsOutputStyle') return;
+    if (target.id.startsWith('settingsSchedule')) return;
+    if (target.id.startsWith('settingsTeam')) return;
+    // Immediate for toggles/selects; text fields debounce via input.
+    const tag = String(target.tagName || '').toLowerCase();
+    const type = String(target.type || '').toLowerCase();
+    if (tag === 'select' || type === 'checkbox' || type === 'radio') scheduleSettingsAutosave(120);
+    else scheduleSettingsAutosave(450);
+  });
+  form.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target || !target.id || !String(target.id).startsWith('settings')) return;
+    if (target.id === 'settingsOutputStyle') return;
+    if (target.id.startsWith('settingsSchedule')) return;
+    if (target.id.startsWith('settingsTeam')) return;
+    const tag = String(target.tagName || '').toLowerCase();
+    const type = String(target.type || '').toLowerCase();
+    if (tag === 'select' || type === 'checkbox' || type === 'radio') return;
+    scheduleSettingsAutosave(450);
+  });
 }
 document.querySelectorAll('[data-decision]').forEach(button => {
   button.addEventListener('click', async () => {
@@ -14582,16 +15646,6 @@ el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
 el('workspaceBrowseBtn').addEventListener('click', () => { browseWorkspaceFolder().catch(console.error); });
 el('workspaceModal').addEventListener('click', (event) => { if (event.target === el('workspaceModal')) closeWorkspaceDialog(); });
 el('settingsOpenLocation').addEventListener('click', openLocation);
-el('settingsApplyRuntimeModel').addEventListener('click', () => {
-  const model = el('settingsRuntimeModel').value.trim();
-  if (model) runSettingsCommand('/model ' + model, 'Switching model...').catch(console.error);
-});
-el('settingsResetRuntimeModel').addEventListener('click', () => { runSettingsCommand('/model default', 'Switching to default model...').catch(console.error); });
-el('settingsApplyRuntimeEffort').addEventListener('click', () => { runSettingsCommand('/effort ' + el('settingsRuntimeEffort').value, 'Applying effort...').catch(console.error); });
-el('settingsApplyRouter').addEventListener('click', () => {
-  const router = el('settingsRouterSelect').value;
-  if (router) runSettingsCommand('/model router ' + router, 'Applying router...').catch(console.error);
-});
 el('settingsDisableRouter').addEventListener('click', () => { runSettingsCommand('/model router off', 'Disabling router...').catch(console.error); });
 el('settingsOpenTools').addEventListener('click', () => { closeSettings(); openSurface('tools').catch(console.error); });
 el('settingsOpenSkills').addEventListener('click', () => { closeSettings(); openSurface('skills').catch(console.error); });
@@ -14600,7 +15654,7 @@ el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); ope
 el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
 el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
-el('settingsTeamPrefsSave').addEventListener('click', async () => {
+async function saveTeamPreferencesFromSettings() {
   el('settingsStatus').textContent = 'Saving team preferences...';
   try {
     const res = await api('/api/team/preferences', {
@@ -14616,10 +15670,16 @@ el('settingsTeamPrefsSave').addEventListener('click', async () => {
     await loadState();
     renderSettingsCommandPanels();
     el('settingsStatus').textContent = 'Team preferences saved';
+    setTimeout(() => {
+      if (el('settingsStatus')?.textContent === 'Team preferences saved') el('settingsStatus').textContent = '';
+    }, 1600);
   } catch (e) {
     el('settingsStatus').textContent = 'Error: ' + (e.message || e);
   }
-});
+}
+el('settingsTeamAutoInvoke')?.addEventListener('change', () => { saveTeamPreferencesFromSettings().catch(console.error); });
+el('settingsTeamConfirm')?.addEventListener('change', () => { saveTeamPreferencesFromSettings().catch(console.error); });
+el('settingsTeamDefaultAttached')?.addEventListener('change', () => { saveTeamPreferencesFromSettings().catch(console.error); });
 el('settingsEnterWorktree').addEventListener('click', () => {
   const name = el('settingsWorktreeName').value.trim();
   if (name) runSettingsCommand('/worktree enter ' + name, 'Entering worktree...').catch(console.error);
@@ -14636,10 +15696,20 @@ el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('mcpCfgAdd').addEventListener('click', () => { addMcpServerConfig().catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });
-el('settingsBridgeOff').addEventListener('click', () => { disableBridge().catch(console.error); });
 el('bridgeNewConfig').addEventListener('click', () => { openBridgeEditor(null); });
 el('bridgeCfgSave').addEventListener('click', () => { saveBridgeConfig().catch(console.error); });
 el('bridgeCfgReset').addEventListener('click', () => { closeBridgeEditor(); });
+el('routerNewProfile').addEventListener('click', () => { openRouterEditor(null); });
+el('routerCfgSave').addEventListener('click', () => { saveRouterProfileViaApi().catch(console.error); });
+el('routerCfgReset').addEventListener('click', () => { closeRouterEditor(); });
+el('routerRouteAdd').addEventListener('click', () => { addRouterRouteFromDraft(); });
+el('routerEditorForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveRouterProfileViaApi().catch(console.error);
+});
+el('routerEditorModal').addEventListener('click', (event) => {
+  if (event.target === el('routerEditorModal')) closeRouterEditor();
+});
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
 el('bridgeCfgReuse').addEventListener('change', () => { applyReuseConfig(el('bridgeCfgReuse').value); });
 el('bridgeCfgUpdateLocal').addEventListener('click', () => { updateLocalBridgeConfig().catch(console.error); });
@@ -14684,8 +15754,7 @@ el('credentialHintLink').addEventListener('click', (event) => {
   void openSettings('general').catch(console.error);
 });
 el('backToAppBtn').addEventListener('click', closeSettings);
-el('cancelSettings').addEventListener('click', closeSettings);
-el('settingsForm').addEventListener('submit', saveSettings);
+wireSettingsAutosave();
 el('settingsSearch').addEventListener('input', (event) => {
   const query = event.target.value.trim().toLowerCase();
   document.querySelectorAll('.settings-tab').forEach(button => {

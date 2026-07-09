@@ -27,6 +27,7 @@ While the Bash tool can do similar things, it's better to use the built-in tools
   - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together.
   - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail.
   - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
+- When stopping a server you started, kill its specific PID — never \`taskkill /IM node.exe\`, \`killall node\`, or \`Stop-Process -Name node\` (those terminate Actoviq itself).
 - For git commands:
   - Prefer to create a new commit rather than amending an existing commit.
   - Before running destructive operations (e.g., git reset --hard, git push --force, git checkout --), consider whether there is a safer alternative that achieves the same goal. Only use destructive operations when they are truly the best approach.

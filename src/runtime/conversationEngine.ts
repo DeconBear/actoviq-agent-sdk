@@ -81,6 +81,12 @@ export interface ExecuteConversationOptions {
   drainQueuedInputs?: () => string[];
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
+  /**
+   * Optional mid-run persistence hook. Called after each tool-result turn is
+   * appended so a crash / host kill mid-run still leaves a resumable session
+   * on disk (instead of only persisting when the whole run finishes).
+   */
+  onConversationCheckpoint?: (messages: MessageParam[]) => void | Promise<void>;
   skipRunStartedEvent?: boolean;
   modelApi: ModelApi;
   config: ResolvedRuntimeConfig;
@@ -816,6 +822,16 @@ export async function executeConversation(
       ],
     });
     toolResults = [];
+
+    // Persist mid-run so a host kill (e.g. accidental taskkill of node.exe)
+    // still leaves a resumable transcript instead of an empty sessions/.
+    if (options.onConversationCheckpoint) {
+      try {
+        await options.onConversationCheckpoint(deepClone(conversation));
+      } catch {
+        // Never fail the turn over a checkpoint write.
+      }
+    }
 
     if (consecutiveFailures >= 3 && lastFailedTool) {
       const completedAt = nowIso();
