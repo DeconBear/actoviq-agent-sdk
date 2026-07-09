@@ -623,6 +623,33 @@ function isVisibleChatSession(item: Pick<SessionSummary, 'kind'>): boolean {
   return item.kind !== 'manager';
 }
 
+function issueSessionFieldsFromMetadata(metadata: Record<string, unknown> | undefined): Partial<SessionSummary> {
+  if (!metadata) return {};
+  const issueId = typeof metadata.__actoviqIssueId === 'string' && metadata.__actoviqIssueId.trim()
+    ? metadata.__actoviqIssueId.trim()
+    : undefined;
+  const rawNumber = metadata.__actoviqIssueNumber;
+  const issueNumber = typeof rawNumber === 'number'
+    ? rawNumber
+    : typeof rawNumber === 'string' && Number.isFinite(Number(rawNumber))
+      ? Number(rawNumber)
+      : undefined;
+  const issueKey = typeof metadata.__actoviqIssueKey === 'string' && metadata.__actoviqIssueKey.trim()
+    ? metadata.__actoviqIssueKey.trim()
+    : issueNumber !== undefined
+      ? `ISS-${issueNumber}`
+      : undefined;
+  const agentProfile = typeof metadata.__actoviqAgentProfile === 'string' && metadata.__actoviqAgentProfile.trim()
+    ? metadata.__actoviqAgentProfile.trim()
+    : undefined;
+  return {
+    ...(issueId ? { issueId } : {}),
+    ...(issueNumber !== undefined ? { issueNumber } : {}),
+    ...(issueKey ? { issueKey } : {}),
+    ...(agentProfile ? { agentProfile } : {}),
+  };
+}
+
 function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -705,6 +732,7 @@ function storedJsonToSessionSummary(raw: unknown, archived = false): SessionSumm
   const id = typeof session.id === 'string' ? session.id : '';
   if (!id) return null;
   return {
+    ...issueSessionFieldsFromMetadata(session.metadata),
     id,
     title: typeof session.title === 'string' ? session.title : 'Untitled',
     titleSource: session.titleSource === 'manual' ? 'manual' : 'auto',
@@ -1132,6 +1160,7 @@ export async function browseDirectory(requestPath?: string): Promise<BrowseDirec
 function sessionView(session: AgentSession | undefined) {
   if (!session) return null;
   return {
+    ...issueSessionFieldsFromMetadata(session.metadata),
     id: session.id,
     title: session.title,
     model: session.model,
@@ -3174,6 +3203,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             : activeBridgeConfig?.name ?? null,
         },
       });
+      session = workerSession;
 
       const sessionIds = [...new Set([...(issue.sessionIds ?? []), workerSession.id])];
       issue = await updateProjectIssue(targetPath, homeDir, issue.id, {
@@ -3188,6 +3218,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       issue = await transitionProjectIssue(targetPath, homeDir, issue.id, 'in_progress', 'system', storage) ?? issue;
       transitionedToProgress = true;
       send({ type: 'status', message: `dispatched ISS-${issue.number} to session ${workerSession.id}` });
+      send({
+        type: 'issue.dispatched',
+        sessionId: workerSession.id,
+        issueId: issue.id,
+        issueNumber: issue.number,
+        issueKey: `ISS-${issue.number}`,
+        state: await state({ light: true }),
+      });
 
       const issueReportTool = createIssueReportToolForRun({
         targetPath,
@@ -3224,6 +3262,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         '',
         'Operational requirement: update the issue by calling IssueReport before ending the run.',
       ].join('\n');
+      send({ type: 'user', text: workerPrompt });
       const stream = workerSession.stream(workerPrompt, {
         systemPrompt: issueSystemPrompt,
         signal: abort.signal,
@@ -5187,6 +5226,7 @@ export function createActoviqGuiHtml(): string {
           <div class="title-row">
             <h1 id="sessionTitle">Actoviq GUI</h1>
             <span id="conversationStatusPill" class="conv-status-pill hidden"></span>
+            <span id="conversationIssuePill" class="conv-issue-pill hidden"></span>
             <button id="conversationMenu" class="icon-btn" title="Conversation actions" aria-label="Conversation actions">${guiIcon('more')}</button>
           </div>
           <p id="workspace"></p>
@@ -6193,6 +6233,17 @@ body[data-theme="dark"] {
 .issue-transition-row small { color: var(--text-2); font-size: 12px; }
 .issue-dispatch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding-top: 8px; border-top: 1px solid var(--border); }
 .issue-dispatch-row select { min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 9px; font-size: 12.5px; }
+.issue-run-meta { color: var(--brand); font-weight: 600; }
+.issue-sessions-panel { display: grid; gap: 7px; padding-top: 8px; border-top: 1px solid var(--border); }
+.issue-sessions-panel h4 { margin: 0; color: var(--text-1); font-size: 13px; }
+.issue-session-running { display: inline-flex; align-items: center; gap: 6px; color: var(--brand); font-size: 12px; font-weight: 600; }
+.issue-session-running .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); }
+.issue-session-list { display: grid; gap: 6px; }
+.issue-session-row { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 7px 9px; display: grid; gap: 2px; text-align: left; cursor: pointer; }
+.issue-session-row:hover { background: var(--surface-hover); border-color: var(--border-hover); }
+.issue-session-row.active { border-color: var(--border-active); background: var(--surface-selected); }
+.issue-session-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.issue-session-row small { color: var(--text-2); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .issue-comments { display: grid; gap: 8px; }
 .issue-comments h4 { margin: 0; color: var(--text-1); font-size: 13px; }
 .issue-comment { border: 1px solid var(--border); border-radius: 8px; padding: 8px 9px; background: var(--bg-surface-2); }
@@ -7414,6 +7465,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .conv-status-pill.running { background: var(--brand-soft); color: var(--brand); border-color: color-mix(in srgb, var(--brand) 28%, transparent); }
 .conv-status-pill.error { background: #FEE2E2; color: var(--err); border-color: rgba(239,68,68,.25); }
 .conv-status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.conv-issue-pill { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; background: var(--brand-soft); color: var(--brand); border: 1px solid color-mix(in srgb, var(--brand) 28%, transparent); }
 .squad-roster { display: flex; flex-wrap: wrap; gap: 7px; }
 .squad-roster.hidden { display: none; }
 .roster-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 11px 4px 4px; font-size: 12px; font-weight: 600; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-1); }
@@ -8779,6 +8831,21 @@ function setConversationStatus(text, kind) {
   pill.className = 'conv-status-pill' + (kind ? ' ' + kind : '');
   pill.innerHTML = '<span class="dot"></span>' + text;
 }
+function updateConversationIssuePill() {
+  const pill = el('conversationIssuePill');
+  if (!pill) return;
+  const current = state.snapshot?.session;
+  const label = current?.issueKey || (current?.issueNumber ? 'ISS-' + current.issueNumber : '');
+  if (!label) {
+    pill.classList.add('hidden');
+    pill.textContent = '';
+    return;
+  }
+  pill.classList.remove('hidden');
+  pill.textContent = label;
+  pill.title = 'Linked project issue';
+  pill.onclick = () => { void openLinkedIssue(current?.issueId, current?.issueNumber); };
+}
 function addResult(event) {
   const box = document.createElement('div');
   box.className = 'result';
@@ -9576,6 +9643,7 @@ function applyLoadedState() {
   }
   const workDir = state.snapshot.workDir || '';
   el('sessionTitle').textContent = state.snapshot.session?.title || 'Actoviq GUI';
+  updateConversationIssuePill();
   el('workspace').textContent = workDir + ' - ' + (state.snapshot.session?.model || 'default') + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
   state.running = Boolean(state.snapshot.running);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
@@ -10546,6 +10614,12 @@ function buildDetailConvCard(item, opts) {
   configChip.className = 'chip';
   configChip.textContent = sessionConfigDisplay(item);
   meta.append(configChip);
+  if (item.issueKey || item.issueNumber) {
+    const issueChip = document.createElement('span');
+    issueChip.className = 'chip';
+    issueChip.textContent = item.issueKey || ('ISS-' + item.issueNumber);
+    meta.append(issueChip);
+  }
   if (item.model) {
     const m = document.createElement('span');
     m.className = 'chip';
@@ -10821,6 +10895,52 @@ function issueMeta(issue) {
     issue.updatedAt ? formatShortRelativeTime(issue.updatedAt) : ''
   ].filter(Boolean).join(' · ');
 }
+function issueKey(issue) {
+  return 'ISS-' + issue.number;
+}
+function issueSessionIds(issue) {
+  const ids = new Set();
+  if (issue.activeSessionId) ids.add(issue.activeSessionId);
+  for (const id of Array.isArray(issue.sessionIds) ? issue.sessionIds : []) {
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+function issueActiveRun(issue) {
+  const ids = issueSessionIds(issue);
+  return (state.snapshot?.runs || []).find((run) =>
+    run && run.status === 'running' && (
+      run.label === 'issue:' + issue.id ||
+      (run.sessionId && ids.has(run.sessionId))
+    )
+  ) || null;
+}
+function issueLinkedSessions(issue) {
+  const ids = issueSessionIds(issue);
+  return allDetailSessions().filter((item) =>
+    ids.has(item.id) ||
+    item.issueId === issue.id ||
+    item.issueNumber === issue.number ||
+    item.issueKey === issueKey(issue)
+  );
+}
+async function openIssueSession(sessionId) {
+  if (!sessionId) return;
+  await resumeSession(sessionId);
+}
+async function openLinkedIssue(issueId, issueNumber) {
+  state.projectDetailTab = 'issues';
+  switchProjectView('detail');
+  await loadProjectIssues(true);
+  const match = state.issues.find((issue) =>
+    (issueId && issue.id === issueId) ||
+    (issueNumber !== undefined && issue.number === issueNumber)
+  );
+  if (match) {
+    state.issuesSelectedId = match.id;
+    renderProjectIssuesPanel();
+  }
+}
 function renderProjectIssuesPanel() {
   const host = el('projectIssuesPanel');
   if (!host) return;
@@ -10960,6 +11080,13 @@ function buildIssueCard(issue) {
   const meta = document.createElement('small');
   meta.textContent = issueMeta(issue);
   card.append(head, title, meta);
+  const run = issueActiveRun(issue);
+  if (run) {
+    const running = document.createElement('small');
+    running.className = 'issue-run-meta';
+    running.textContent = 'Running' + (run.currentTool ? ' - ' + run.currentTool : '');
+    card.appendChild(running);
+  }
   card.addEventListener('click', () => selectIssue(issue.id));
   return card;
 }
@@ -10969,6 +11096,63 @@ function selectIssue(id) {
 }
 function selectedIssue() {
   return state.issues.find((issue) => issue.id === state.issuesSelectedId) || null;
+}
+function buildIssueSessionsPanel(issue) {
+  const wrap = document.createElement('section');
+  wrap.className = 'issue-sessions-panel';
+  const title = document.createElement('h4');
+  title.textContent = 'Linked sessions';
+  wrap.appendChild(title);
+  const run = issueActiveRun(issue);
+  if (run) {
+    const running = document.createElement('div');
+    running.className = 'issue-session-running';
+    running.innerHTML = '<span class="dot"></span><span></span>';
+    running.querySelector('span:last-child').textContent = 'Running' + (run.currentTool ? ' - ' + run.currentTool : '');
+    wrap.appendChild(running);
+  }
+  const linked = issueLinkedSessions(issue);
+  const list = document.createElement('div');
+  list.className = 'issue-session-list';
+  for (const item of linked) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'issue-session-row' + (item.id === state.snapshot?.session?.id ? ' active' : '');
+    const name = document.createElement('strong');
+    name.textContent = item.title || item.id;
+    const meta = document.createElement('small');
+    meta.textContent = [
+      item.id === issue.activeSessionId ? 'active worker' : '',
+      formatRuntimeDisplay(item.runtime),
+      item.model,
+      (item.messageCount || 0) + ' messages',
+      item.updatedAt ? formatShortRelativeTime(item.updatedAt) : '',
+    ].filter(Boolean).join(' - ');
+    row.append(name, meta);
+    row.addEventListener('click', () => { void openIssueSession(item.id); });
+    list.appendChild(row);
+  }
+  if (!linked.length && issue.activeSessionId) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'issue-session-row';
+    const name = document.createElement('strong');
+    name.textContent = issue.activeSessionId;
+    const meta = document.createElement('small');
+    meta.textContent = 'Session created for this issue';
+    row.append(name, meta);
+    row.addEventListener('click', () => { void openIssueSession(issue.activeSessionId); });
+    list.appendChild(row);
+  }
+  if (!list.childElementCount && !run) {
+    const empty = document.createElement('p');
+    empty.className = 'issue-column-empty';
+    empty.textContent = 'No linked sessions yet.';
+    wrap.appendChild(empty);
+  } else {
+    wrap.appendChild(list);
+  }
+  return wrap;
 }
 function buildIssueDetailPanel() {
   const panel = document.createElement('aside');
@@ -11060,6 +11244,8 @@ function buildIssueDetailPanel() {
     dispatch.append(select, start);
     panel.appendChild(dispatch);
   }
+
+  panel.appendChild(buildIssueSessionsPanel(issue));
 
   const comments = document.createElement('div');
   comments.className = 'issue-comments';
@@ -11159,7 +11345,7 @@ async function startIssueWithAgent(id, agentConfig) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.type === 'error') state.issuesError = event.message || 'Issue dispatch failed';
-        if (event.type === 'notice' || event.type === 'status') addMessage('notice', event.message || '');
+        handleEvent(event);
       }
     }
   } catch (error) {
@@ -11234,6 +11420,12 @@ function buildCompactConvRow(item, opts) {
   const time = document.createElement('span');
   time.className = 'csr-time';
   time.textContent = when ? formatShortRelativeTime(when) : '';
+  if (item.issueKey || item.issueNumber) {
+    const issue = document.createElement('span');
+    issue.className = 'csr-time';
+    issue.textContent = item.issueKey || ('ISS-' + item.issueNumber);
+    meta.append(issue);
+  }
   meta.append(actions, time);
   row.append(dot, title, meta);
   row.addEventListener('click', () => selectDetailConversation(item.id));
@@ -11322,6 +11514,16 @@ function renderConvSidebarDetail() {
     else void resumeSession(selected.id);
   });
   actions.appendChild(continueBtn);
+  if (selected.issueId || selected.issueNumber) {
+    const issueBtn = document.createElement('button');
+    issueBtn.type = 'button';
+    issueBtn.className = 'pill-btn';
+    issueBtn.textContent = 'View issue';
+    issueBtn.addEventListener('click', () => {
+      void openLinkedIssue(selected.issueId, selected.issueNumber);
+    });
+    actions.appendChild(issueBtn);
+  }
   if (!archived) {
     const archiveBtn = document.createElement('button');
     archiveBtn.type = 'button';
@@ -15571,6 +15773,18 @@ function handleEvent(event) {
     scheduleMarkdownRender(state.currentAssistant);
   } else if (event.type === 'status') setRunStatus(event.message || 'Running', 'running');
   else if (event.type === 'notice') addMessage('notice', event.message || '');
+  else if (event.type === 'issue.dispatched') {
+    if (event.state) state.snapshot = event.state;
+    if (event.sessionId) state.activeSessionId = String(event.sessionId);
+    switchProjectView('conversation');
+    transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    setRunStatus('Issue worker running', 'running');
+    setConversationStatus(event.issueKey ? 'Working on ' + event.issueKey : 'Issue worker running', 'running');
+    addSystemEvent('Issue dispatched' + (event.issueKey ? ' 路 ' + event.issueKey : ''));
+    applyLoadedState();
+  }
   else if (event.type === 'tool.call') { finalizeAssistant(); state.currentAssistant = null; addToolActivity(event); }
   else if (event.type === 'tool.progress') updateToolProgress(event);
   else if (event.type === 'tool.result') updateToolActivity(event);

@@ -52,11 +52,19 @@ describe('SessionStore', () => {
 
     created.metadata.__actoviqRuntime = 'claude';
     created.metadata.__actoviqConfigName = 'deepseek';
+    created.metadata.__actoviqIssueId = 'iss_1';
+    created.metadata.__actoviqIssueNumber = 1;
+    created.metadata.__actoviqIssueKey = 'ISS-1';
+    created.metadata.__actoviqAgentProfile = 'Claude reviewer';
     await store.save(created);
     const relisted = await store.list();
     const updated = relisted.find((item) => item.id === created.id);
     expect(updated?.runtime).toBe('claude');
     expect(updated?.configName).toBe('deepseek');
+    expect(updated?.issueId).toBe('iss_1');
+    expect(updated?.issueNumber).toBe(1);
+    expect(updated?.issueKey).toBe('ISS-1');
+    expect(updated?.agentProfile).toBe('Claude reviewer');
     expect(forked.title).toBe('Alpha Copy');
     expect(forked.runs).toHaveLength(0);
 

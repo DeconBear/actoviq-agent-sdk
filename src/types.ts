@@ -1517,6 +1517,11 @@ export interface SessionSummary {
   archived?: boolean;
   /** Session kind — 'manager' sessions belong to the Project Manager panel, not the chat list. */
   kind?: 'main' | 'worktree' | 'manager';
+  /** Project issue linked to this session, when the session was created from an issue dispatch. */
+  issueId?: string;
+  issueNumber?: number;
+  issueKey?: string;
+  agentProfile?: string;
 }
 
 export interface SessionManagerConfig {

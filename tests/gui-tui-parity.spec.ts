@@ -124,6 +124,7 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsTeamsList"');
     expect(html).toContain('id="settingsSessionsList"');
     expect(html).toContain('id="settingsMemoryStatusBtn"');
+    expect(html).toContain('id="conversationIssuePill"');
     expect(html).toContain('class="settings-icon"');
     expect(html).not.toContain('<span>mdl</span>');
     expect(html).not.toContain('<span>cap</span>');
@@ -261,6 +262,11 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('issueDispatchAgent');
     expect(js).toContain('startIssueWithAgent');
     expect(js).toContain('Start with agent');
+    expect(js).toContain('issue.dispatched');
+    expect(js).toContain('updateConversationIssuePill');
+    expect(js).toContain('buildIssueSessionsPanel');
+    expect(js).toContain('openLinkedIssue');
+    expect(js).toContain('openIssueSession');
     expect(gui).toContain('streamIssueDispatch');
     expect(gui).toContain('buildDecomposeIssuePrompt');
     expect(gui).toContain('IssueReport');
@@ -268,6 +274,8 @@ describe('TUI and GUI parity', () => {
     expect(css).toContain('.project-issues-panel');
     expect(css).toContain('.issue-board');
     expect(css).toContain('.issue-dispatch-row');
+    expect(css).toContain('.issue-sessions-panel');
+    expect(css).toContain('.conv-issue-pill');
     expect(js).toContain('conv-sidebar-row');
     expect(js).toContain('renderConvSidebarDetail');
     expect(js).toContain('/api/project-doc');

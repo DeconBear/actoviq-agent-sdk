@@ -259,8 +259,21 @@ export class SessionStore {
     const runtimeRaw = session.metadata.__actoviqRuntime;
     const configRaw = session.metadata.__actoviqConfigName;
     const kind = session.kind ?? (session.metadata.__actoviqKind === 'manager' ? 'manager' : undefined);
+    const issueIdRaw = session.metadata.__actoviqIssueId;
+    const issueNumberRaw = session.metadata.__actoviqIssueNumber;
+    const issueKeyRaw = session.metadata.__actoviqIssueKey;
+    const agentProfileRaw = session.metadata.__actoviqAgentProfile;
+    const issueNumber = typeof issueNumberRaw === 'number'
+      ? issueNumberRaw
+      : typeof issueNumberRaw === 'string' && Number.isFinite(Number(issueNumberRaw))
+        ? Number(issueNumberRaw)
+        : undefined;
     return {
       ...(kind ? { kind } : {}),
+      ...(typeof issueIdRaw === 'string' && issueIdRaw.trim() ? { issueId: issueIdRaw.trim() } : {}),
+      ...(issueNumber !== undefined ? { issueNumber } : {}),
+      ...(typeof issueKeyRaw === 'string' && issueKeyRaw.trim() ? { issueKey: issueKeyRaw.trim() } : {}),
+      ...(typeof agentProfileRaw === 'string' && agentProfileRaw.trim() ? { agentProfile: agentProfileRaw.trim() } : {}),
       id: session.id,
       title: session.title,
       titleSource: session.titleSource,
