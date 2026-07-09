@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import { isRecord } from '../runtime/helpers.js';
 
 export interface ActoviqPluginCatalogEntry {
@@ -16,8 +17,9 @@ export async function discoverActoviqPlugins(options: {
   homeDir: string;
   configuredDirs?: string[];
 }): Promise<ActoviqPluginCatalogEntry[]> {
+  const dataRoot = resolveActoviqHome(options.homeDir);
   const candidates = [
-    path.join(options.homeDir, '.actoviq', 'plugins'),
+    path.join(dataRoot, 'plugins'),
     path.join(options.workDir, '.actoviq', 'plugins'),
     ...(options.configuredDirs ?? []),
   ];

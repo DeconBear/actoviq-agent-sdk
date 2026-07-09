@@ -15,8 +15,8 @@
  * Mirrors mcpServerConfig for persistence.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 export type InProcessProvider = 'anthropic' | 'openai';
 
@@ -104,8 +104,8 @@ function migrateProvider(raw: string): InProcessProvider {
   return LEGACY_PROVIDER_MIGRATION[raw] ?? 'anthropic'; // fallback safe: unknown → anthropic
 }
 
-export function getBridgeConfigsPath(homeDir: string = os.homedir()): string {
-  return path.join(homeDir, '.actoviq', 'bridge-configs.json');
+export function getBridgeConfigsPath(homeDir?: string): string {
+  return path.join(resolveActoviqHome(homeDir), 'bridge-configs.json');
 }
 
 export const VALID_RUNTIMES: BridgeRuntime[] = ['hadamard', 'claude', 'codewhale', 'pi', 'codex', 'reasonix', 'crush'];
@@ -120,7 +120,7 @@ function isValidConfig(value: unknown): value is PersistedBridgeConfig {
   return typeof c.name === 'string' && typeof c.provider === 'string';
 }
 
-export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBridgeConfigs {
+export function readBridgeConfigs(homeDir?: string): PersistedBridgeConfigs {
   const file = getBridgeConfigsPath(homeDir);
   if (!existsSync(file)) return { configs: [] };
   try {
@@ -154,13 +154,13 @@ export function readBridgeConfigs(homeDir: string = os.homedir()): PersistedBrid
   }
 }
 
-export function writeBridgeConfigs(configs: PersistedBridgeConfigs, homeDir: string = os.homedir()): void {
+export function writeBridgeConfigs(configs: PersistedBridgeConfigs, homeDir?: string): void {
   const file = getBridgeConfigsPath(homeDir);
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(configs, null, 2), 'utf-8');
 }
 
-export function addBridgeConfig(config: PersistedBridgeConfig, homeDir: string = os.homedir()): PersistedBridgeConfigs {
+export function addBridgeConfig(config: PersistedBridgeConfig, homeDir?: string): PersistedBridgeConfigs {
   const current = readBridgeConfigs(homeDir);
   const without = current.configs.filter((c) => c.name !== config.name);
   without.push(config);
@@ -169,14 +169,14 @@ export function addBridgeConfig(config: PersistedBridgeConfig, homeDir: string =
   return next;
 }
 
-export function removeBridgeConfig(name: string, homeDir: string = os.homedir()): PersistedBridgeConfigs {
+export function removeBridgeConfig(name: string, homeDir?: string): PersistedBridgeConfigs {
   const current = readBridgeConfigs(homeDir);
   const next = { configs: current.configs.filter((c) => c.name !== name) };
   writeBridgeConfigs(next, homeDir);
   return next;
 }
 
-export function findBridgeConfig(name: string, homeDir: string = os.homedir()): PersistedBridgeConfig | undefined {
+export function findBridgeConfig(name: string, homeDir?: string): PersistedBridgeConfig | undefined {
   return readBridgeConfigs(homeDir).configs.find((c) => c.name === name);
 }
 

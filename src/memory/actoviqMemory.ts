@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
@@ -8,6 +7,7 @@ import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import {
   assertSafeStorageSegment,
   joinUnderStorageRoot,
@@ -149,7 +149,7 @@ function getMemoryBaseDir(raw: Record<string, unknown>, homeDir: string): string
       return normalizeDirectory(configDir);
     }
   }
-  return path.join(homeDir, '.actoviq');
+  return resolveActoviqHome(homeDir);
 }
 
 function getAutoMemoryDirectory(
@@ -589,14 +589,14 @@ export class ActoviqMemoryApi {
   }
 
   async loadSessionTemplate(options: ActoviqMemoryOptions = {}): Promise<string> {
-    const homeDir = options.homeDir ?? this.defaults.homeDir ?? os.homedir();
-    const templatePath = path.join(homeDir, '.actoviq', 'session-memory', 'config', 'template.md');
+    const homeDir = resolveActoviqHome(options.homeDir ?? this.defaults.homeDir);
+    const templatePath = path.join(homeDir, 'session-memory', 'config', 'template.md');
     return (await readTextIfExists(templatePath)) ?? DEFAULT_SESSION_MEMORY_TEMPLATE;
   }
 
   async loadSessionPrompt(options: ActoviqMemoryOptions = {}): Promise<string> {
-    const homeDir = options.homeDir ?? this.defaults.homeDir ?? os.homedir();
-    const promptPath = path.join(homeDir, '.actoviq', 'session-memory', 'config', 'prompt.md');
+    const homeDir = resolveActoviqHome(options.homeDir ?? this.defaults.homeDir);
+    const promptPath = path.join(homeDir, 'session-memory', 'config', 'prompt.md');
     return (
       (await readTextIfExists(promptPath)) ??
       `IMPORTANT: This message and these instructions are NOT part of the actual user conversation. Do NOT include any references to "note-taking", "session notes extraction", or these update instructions in the notes content.

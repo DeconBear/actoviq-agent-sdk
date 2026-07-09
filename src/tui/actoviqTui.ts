@@ -7,7 +7,6 @@
  */
 import { execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import * as readline from 'node:readline';
 
@@ -38,12 +37,19 @@ import {
   readProjectPlanFile,
   readProgressFile,
   managerProgressPath,
+  createProjectIssue,
+  isIssueStatus,
+  isIssueStorageMode,
+  listProjectIssues,
   listScheduledAutomationTasks,
+  resolveActoviqHome,
   listRouterProfiles,
   loadRouterProfile,
   resolveRoutedRun,
+  transitionProjectIssue,
   WorktreeService,
 } from '../index.js';
+import { readProjectMeta } from '../gui/projectMeta.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -299,7 +305,7 @@ function buildSystemPrompt(workDir: string): string {
   ) + projectSection;
 }
 
-// First-run onboarding: guides the user through creating ~/.actoviq/settings.json
+// First-run onboarding: guides the user through creating the Actoviq settings file
 // when no credential is found. Uses plain readline (no TTY required beyond stdin).
 async function onboardCredentials(configPath?: string): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -318,8 +324,7 @@ async function onboardCredentials(configPath?: string): Promise<void> {
   const resolvedBaseURL = baseURL.trim() || 'https://api.deepseek.com';
   const resolvedModel = model.trim() || 'deepseek-chat';
 
-  const home = os.homedir();
-  const dir = path.join(home, '.actoviq');
+  const dir = resolveActoviqHome();
   const file = configPath ?? path.join(dir, 'settings.json');
 
   fs.mkdirSync(dir, { recursive: true });
@@ -1526,6 +1531,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       workflows: '/workflows [run <name>|list]',
       worktree: '/worktree [enter <name>|exit|list]',
       team: '/team [ask <name> <prompt>|list]',
+      issues: '/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]',
       exit: '/exit',
     };
     return usage[name] ?? `/${name}`;
@@ -3331,8 +3337,52 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         // ── Project Manager ──────────────────────────────────────
+        case 'issues': {
+          const homeDir = sdk.config.homeDir;
+          const meta = await readProjectMeta(sdk.config.workDir, homeDir);
+          const storage = isIssueStorageMode(meta.issueStorage) ? meta.issueStorage : 'home';
+          if (!args || args === 'list') {
+            const issues = await listProjectIssues(sdk.config.workDir, homeDir, storage);
+            if (issues.length === 0) {
+              appendStatic([...formatInfoLine('no issues yet; use /issues create <title>'), '']);
+              return;
+            }
+            appendStatic([
+              `${A.cyan}Issues (${storage})${A.reset}`,
+              ...issues.map(issue => `#${issue.number} ${issue.title} ${A.dim}${issue.status} · ${issue.priority}${A.reset}`),
+              '',
+            ]);
+            return;
+          }
+          if (args.startsWith('create ')) {
+            const title = args.slice(7).trim();
+            if (!title) {
+              appendStatic([...formatErrorLine('usage: /issues create <title>'), '']);
+              return;
+            }
+            const issue = await createProjectIssue(sdk.config.workDir, homeDir, { title }, storage);
+            appendStatic([...formatInfoLine(`issue created: #${issue.number} ${issue.title}`), '']);
+            return;
+          }
+          const transitions: Record<string, string> = {
+            start: 'in_progress',
+            review: 'in_review',
+            done: 'done',
+            block: 'blocked',
+          };
+          const [verb, rawId] = args.split(/\s+/, 2);
+          const nextStatus = transitions[verb ?? ''];
+          if (nextStatus && isIssueStatus(nextStatus) && rawId) {
+            const issue = await transitionProjectIssue(sdk.config.workDir, homeDir, rawId.replace(/^#/, ''), nextStatus, 'user', storage);
+            if (!issue) appendStatic([...formatErrorLine(`issue not found: ${rawId}`), '']);
+            else appendStatic([...formatInfoLine(`issue #${issue.number}: ${issue.status}`), '']);
+            return;
+          }
+          appendStatic([...formatErrorLine('usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]'), '']);
+          return;
+        }
         case 'manager': {
-          const homeDir = os.homedir();
+          const homeDir = sdk.config.homeDir;
           if (!args || args === 'status') {
             const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
             const plan = await readProjectPlanFile(sdk.config.workDir, homeDir);

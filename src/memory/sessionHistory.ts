@@ -8,8 +8,8 @@
  */
 
 import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 const MAX_HISTORY_BYTES = 512_000; // ~500 KB soft limit
 const SOFT_CAP_RATIO = 0.8;       // trim back to this fraction when over the cap
@@ -24,7 +24,7 @@ export interface HistoryEntry {
 }
 
 function historyPath(homeDir?: string): string {
-  return path.join(homeDir ?? os.homedir(), '.actoviq', 'history.jsonl');
+  return path.join(resolveActoviqHome(homeDir), 'history.jsonl');
 }
 
 function ensureDir(dir: string): void {

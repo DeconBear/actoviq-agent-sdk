@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import { joinUnderStorageRoot, safeStorageFileName } from '../storage/pathSafety.js';
 
 export interface ListSessionsOptions {
@@ -36,7 +36,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function getPortableConfigDir(): string {
-  return process.env.ACTOVIQ_CONFIG_DIR ?? path.join(os.homedir(), '.actoviq');
+  return process.env.ACTOVIQ_CONFIG_DIR ?? resolveActoviqHome();
 }
 
 function getProjectsRootDir(): string {

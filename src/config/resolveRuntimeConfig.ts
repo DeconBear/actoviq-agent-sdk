@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 
 import { ConfigurationError } from '../errors.js';
@@ -8,6 +7,7 @@ import type {
   ResolvedRuntimeConfig,
 } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
+import { resolveActoviqHome } from './actoviqHome.js';
 import {
   resolveActoviqModelReference,
   selectDefaultActoviqModel,
@@ -61,7 +61,7 @@ function getRuntimeConfigValue(
 export async function resolveRuntimeConfig(
   options: CreateAgentSdkOptions = {},
 ): Promise<ResolvedRuntimeConfig> {
-  const homeDir = options.homeDir ?? os.homedir();
+  const homeDir = resolveActoviqHome(options.homeDir);
   const workDir = path.resolve(options.workDir ?? process.cwd());
   const loadedConfig = getLoadedJsonConfig();
 

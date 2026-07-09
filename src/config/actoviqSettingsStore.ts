@@ -1,10 +1,10 @@
-import os from 'node:os';
 import path from 'node:path';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 
 import { getLoadedJsonConfig, loadJsonConfigFile } from './loadJsonConfigFile.js';
 import { ConfigurationError } from '../errors.js';
 import { isRecord } from '../runtime/helpers.js';
+import { resolveActoviqHome } from './actoviqHome.js';
 
 export interface ResolveActoviqSettingsStoreOptions {
   configPath?: string;
@@ -17,16 +17,16 @@ export interface ResolvedActoviqSettingsStore {
   raw: Record<string, unknown>;
 }
 
-export function getDefaultActoviqSettingsPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, '.actoviq', 'settings.json');
+export function getDefaultActoviqSettingsPath(homeDir?: string): string {
+  return path.join(resolveActoviqHome(homeDir), 'settings.json');
 }
 
 export async function resolveActoviqSettingsStore(
   options: ResolveActoviqSettingsStoreOptions = {},
 ): Promise<ResolvedActoviqSettingsStore> {
   const loaded = getLoadedJsonConfig();
-  const homeDir = options.homeDir ?? os.homedir();
-  const configPath = options.configPath ?? loaded?.path ?? getDefaultActoviqSettingsPath(homeDir);
+  const actoviqHome = resolveActoviqHome(options.homeDir);
+  const configPath = options.configPath ?? loaded?.path ?? path.join(actoviqHome, 'settings.json');
   const raw =
     loaded?.path === configPath && loaded.raw && isRecord(loaded.raw)
       ? structuredClone(loaded.raw)
@@ -34,7 +34,7 @@ export async function resolveActoviqSettingsStore(
 
   return {
     configPath,
-    homeDir,
+    homeDir: actoviqHome,
     raw,
   };
 }

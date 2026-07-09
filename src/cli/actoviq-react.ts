@@ -36,12 +36,18 @@ import {
   readProjectPlanFile,
   readProgressFile,
   managerProgressPath,
+  createProjectIssue,
+  isIssueStatus,
+  isIssueStorageMode,
+  listProjectIssues,
   listScheduledAutomationTasks,
+  resolveActoviqHome,
+  transitionProjectIssue,
   WorktreeService,
 } from 'actoviq-agent-sdk';
+import { readProjectMeta } from '../gui/projectMeta.js';
 import { applyTeamRunEvent, createTeamRunViewState, formatTeamRunTreeLines } from '../team/teamRunView.js';
 import { execSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import * as readline from 'node:readline';
 import { hasVersionFlag, readPackageVersion } from './version.js';
@@ -52,7 +58,7 @@ if (hasVersionFlag(process.argv.slice(2))) {
 }
 
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
-const CONFIG_PATH = process.argv[3] ?? path.join(os.homedir(), '.actoviq', 'settings.json');
+const CONFIG_PATH = process.argv[3] ?? path.join(resolveActoviqHome(), 'settings.json');
 const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
 const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
   'default',
@@ -115,6 +121,7 @@ const CMDS: Record<string, string> = {
   workflows: 'List or run dynamic workflows',
   worktree: 'Enter, exit, or list git worktrees',
   team:    'List, attach, or run Model Teams',
+  issues:  'List or update project issues',
   manager: 'Project Manager: progress docs + status',
 };
 
@@ -562,10 +569,56 @@ async function main() {
           process.stdout.write(`${C.d}Usage: /team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]${C.r}\n\n`);
           return;
         }
+        // Project issues
+        case 'issues': {
+          const sub = sp === -1 ? '' : t.slice(sp + 1).trim();
+          const homeDir = sdk.config.homeDir;
+          const meta = await readProjectMeta(WORK_DIR, homeDir);
+          const storage = isIssueStorageMode(meta.issueStorage) ? meta.issueStorage : 'home';
+          if (!sub || sub === 'list') {
+            const issues = await listProjectIssues(WORK_DIR, homeDir, storage);
+            if (issues.length === 0) {
+              process.stdout.write(`${C.d}No issues yet. Use /issues create <title>${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(`${C.b}Issues (${storage})${C.r}\n`);
+            for (const issue of issues) {
+              process.stdout.write(`#${issue.number} ${issue.title} ${C.d}${issue.status} · ${issue.priority}${C.r}\n`);
+            }
+            process.stdout.write('\n');
+            return;
+          }
+          if (sub.startsWith('create ')) {
+            const title = sub.slice(7).trim();
+            if (!title) {
+              process.stdout.write(`${C.R}Usage: /issues create <title>${C.r}\n\n`);
+              return;
+            }
+            const issue = await createProjectIssue(WORK_DIR, homeDir, { title }, storage);
+            process.stdout.write(`${C.g}issue created: #${issue.number} ${issue.title}${C.r}\n\n`);
+            return;
+          }
+          const transitions: Record<string, string> = {
+            start: 'in_progress',
+            review: 'in_review',
+            done: 'done',
+            block: 'blocked',
+          };
+          const [verb, rawId] = sub.split(/\s+/, 2);
+          const nextStatus = transitions[verb ?? ''];
+          if (nextStatus && isIssueStatus(nextStatus) && rawId) {
+            const issue = await transitionProjectIssue(WORK_DIR, homeDir, rawId.replace(/^#/, ''), nextStatus, 'user', storage);
+            if (!issue) process.stdout.write(`${C.R}Issue not found: ${rawId}${C.r}\n\n`);
+            else process.stdout.write(`${C.g}issue #${issue.number}: ${issue.status}${C.r}\n\n`);
+            return;
+          }
+          process.stdout.write(`${C.d}Usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]${C.r}\n\n`);
+          return;
+        }
         // ── Project Manager ────────────────────────────────────────
         case 'manager': {
           const sub = sp === -1 ? '' : t.slice(sp + 1).trim();
-          const homeDir = os.homedir();
+          const homeDir = sdk.config.homeDir;
           if (!sub || sub === 'status') {
             const cfg = await readManagerConfig(WORK_DIR, homeDir);
             const plan = await readProjectPlanFile(WORK_DIR, homeDir);

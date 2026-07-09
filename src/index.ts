@@ -10,6 +10,15 @@ export {
 } from './config/actoviqSettingsStore.js';
 export { mapActoviqEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
 export {
+  defaultActoviqHome,
+  getActoviqHomePointerPath,
+  migrateActoviqHomeData,
+  resolveActoviqHome,
+  summarizeActoviqHome,
+  writeActoviqHomePointer,
+} from './config/actoviqHome.js';
+export * from './issues/issueStore.js';
+export {
   ActoviqBuddyApi,
   createActoviqBuddyApi,
   getActoviqBuddyIntroText,
