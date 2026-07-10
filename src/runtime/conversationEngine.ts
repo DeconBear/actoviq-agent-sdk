@@ -6,6 +6,7 @@
   ToolUseBlock,
 } from '../provider/types.js';
 
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -80,6 +81,7 @@ export interface ExecuteConversationOptions {
   canUseTool?: AgentRunOptions['canUseTool'];
   hooks?: ActoviqHooks;
   drainQueuedInputs?: () => string[];
+  drainFollowUpInputs?: () => string[];
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
   /**
@@ -146,6 +148,8 @@ export async function executeConversation(
   let streamInterruptionRetries = 0;
   let reactiveCompactAttempted = false;
   let lastRequestInputTokens: number | undefined;
+  let tokenEstimateMultiplier = 1;
+  let lastPromptCachePrefixSignature: string | undefined;
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -160,6 +164,7 @@ export async function executeConversation(
       compactConfig: options.config.compact,
       maxTokens: options.maxTokens ?? options.config.maxTokens,
       lastRequestInputTokens,
+      tokenEstimateMultiplier,
       runKey: options.runId,
       signal: options.signal,
     });
@@ -233,6 +238,10 @@ export async function executeConversation(
       signal: options.signal,
     };
     let requestByteLength = getRequestByteLength(request);
+    let requestTokenEstimate = Math.ceil(
+      (localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter) *
+      tokenEstimateMultiplier,
+    );
     const maxRequestBytes = options.config.compact.apiMicrocompactMaxRequestBytes;
     if (
       !useAnthropicContextManagement &&
@@ -250,6 +259,7 @@ export async function executeConversation(
         messages: deepClone(forcedMessages.messages),
       };
       requestByteLength = getRequestByteLength(request);
+      requestTokenEstimate = Math.ceil(forcedMessages.tokenEstimateAfter * tokenEstimateMultiplier);
       localMicrocompact = {
         enabled: true,
         clearedToolResults: forcedMessages.clearedToolResults,
@@ -264,14 +274,26 @@ export async function executeConversation(
     // on Anthropic API hosts. Multiple breakpoints improve cache retention when
     // only the tail changes between tool-loop iterations.
     if (useAnthropicContextManagement && options.config.promptCachingEnabled !== false) {
-      applyAnthropicPromptCacheBreakpoints(request);
+      const cacheState = applyAnthropicPromptCacheBreakpoints(request);
+      const prefixChanged = lastPromptCachePrefixSignature !== undefined &&
+        lastPromptCachePrefixSignature !== cacheState.prefixSignature;
+      lastPromptCachePrefixSignature = cacheState.prefixSignature;
+      options.emit?.({
+        type: 'request.prompt_cache',
+        runId: options.runId,
+        iteration,
+        prefixSignature: cacheState.prefixSignature,
+        prefixChanged,
+        breakpoints: cacheState.breakpoints,
+        timestamp: nowIso(),
+      });
     }
 
     options.emit?.({
       type: 'request.started',
       runId: options.runId,
       iteration,
-      requestTokenEstimate: localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+      requestTokenEstimate,
       requestByteLength,
       localMicrocompact,
       timestamp: nowIso(),
@@ -398,10 +420,22 @@ export async function executeConversation(
 
     finalMessage = message;
     conversation.push(assistantMessageToParam(message));
-    lastRequestInputTokens =
-      typeof message.usage?.input_tokens === 'number'
-        ? message.usage.input_tokens
-        : undefined;
+    lastRequestInputTokens = getReportedInputTokens(message.usage);
+    if (lastRequestInputTokens !== undefined && requestTokenEstimate > 0) {
+      const observedMultiplier = clamp(
+        lastRequestInputTokens / Math.max(
+          localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+          1,
+        ),
+        0.5,
+        8,
+      );
+      tokenEstimateMultiplier = clamp(
+        (tokenEstimateMultiplier * 0.65) + (observedMultiplier * 0.35),
+        0.5,
+        8,
+      );
+    }
 
     for (const hook of postSamplingHooks) {
       await hook({
@@ -502,7 +536,7 @@ export async function executeConversation(
       usage: message.usage,
       text: extractTextFromContent(message.content),
       createdAt: nowIso(),
-      requestTokenEstimate: localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+      requestTokenEstimate,
       requestByteLength,
       localMicrocompact,
     });
@@ -545,6 +579,28 @@ export async function executeConversation(
           'Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
       });
       continue;
+    }
+
+    if (!preventContinuation && toolUses.length === 0) {
+      const queuedSteering = options.drainQueuedInputs?.() ?? [];
+      const queuedFollowUps = options.drainFollowUpInputs?.() ?? [];
+      if (queuedSteering.length > 0 || queuedFollowUps.length > 0) {
+        conversation.push({
+          role: 'user',
+          content: [
+            ...queuedSteering.map((text) => ({
+              type: 'text' as const,
+              text: `[User steering message sent while you were working — factor it into the current task]\n${text}`,
+            })),
+            ...queuedFollowUps.map((text) => ({
+              type: 'text' as const,
+              text: `[User follow-up queued for after your previous response]\n${text}`,
+            })),
+          ],
+        });
+        maxTokensRecoveryCount = 0;
+        continue;
+      }
     }
 
     if (preventContinuation || toolUses.length === 0) {
@@ -768,6 +824,7 @@ export async function executeConversation(
     // Execute tool batches: consecutive concurrency-safe (read-only) tools run
     // in parallel (limit 10), everything else serially. Results are recorded
     // in the original tool_use order regardless of completion order.
+    let abortedAfterToolBatch = false;
     for (const batch of partitionToolUsesForConcurrency(toolUses, toolMap)) {
       const outcomes =
         batch.concurrent && batch.toolUses.length > 1
@@ -787,6 +844,10 @@ export async function executeConversation(
           result: outcome.record,
           timestamp: outcome.record.completedAt,
         });
+      }
+      if (options.signal?.aborted) {
+        abortedAfterToolBatch = true;
+        break;
       }
     }
 
@@ -867,6 +928,10 @@ export async function executeConversation(
       } catch {
         // Never fail the turn over a checkpoint write.
       }
+    }
+
+    if (abortedAfterToolBatch) {
+      ensureNotAborted(options.signal);
     }
 
     if (consecutiveFailures >= 3 && lastFailedTool) {
@@ -1189,9 +1254,31 @@ function sleep(ms: number): Promise<void> {
  * text block so the breakpoint still applies — otherwise the whole request
  * goes uncached whenever the last message is a plain string.
  */
-function applyAnthropicPromptCacheBreakpoints(request: ModelRequest): void {
+function applyAnthropicPromptCacheBreakpoints(request: ModelRequest): {
+  prefixSignature: string;
+  breakpoints: { system: boolean; tools: boolean; message: boolean };
+} {
+  const prefixSignature = createHash('sha256')
+    .update(JSON.stringify({
+      system: request.system ?? null,
+      tools: (request.tools ?? []).map((tool) => {
+        const normalized = { ...(tool as Record<string, unknown>) };
+        delete normalized.cache_control;
+        return normalized;
+      }),
+    }))
+    .digest('hex')
+    .slice(0, 16);
   applyCacheControlToLastTool(request.tools);
   applyCacheControlToLastMessage(request.messages);
+  return {
+    prefixSignature,
+    breakpoints: {
+      system: typeof request.system === 'string' && request.system.length > 0,
+      tools: Boolean(request.tools?.length),
+      message: request.messages.length > 0,
+    },
+  };
 }
 
 function applyCacheControlToLastTool(tools: ModelRequest['tools']): void {
@@ -1233,6 +1320,25 @@ function getRequestByteLength(request: ModelRequest): number {
     ...request,
     signal: undefined,
   }), 'utf8');
+}
+
+function getReportedInputTokens(usage: AgentRunResult['usage']): number | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const parts = [
+    usage.input_tokens,
+    usage.cache_creation_input_tokens,
+    usage.cache_read_input_tokens,
+  ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return parts.reduce((sum, value) => sum + Math.max(value, 0), 0);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 async function consumeStream(

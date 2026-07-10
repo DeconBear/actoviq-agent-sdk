@@ -68,6 +68,9 @@ describe('GUI agent profile API', () => {
           bridgeConfig: 'sdk-default',
           model: 'claude-sonnet',
           permissionMode: 'acceptEdits',
+          effort: 'max',
+          maxTokens: 12000,
+          temperature: 0.4,
         }),
       });
       expect(created.status).toBe(200);
@@ -77,6 +80,9 @@ describe('GUI agent profile API', () => {
         name: 'reviewer',
         bridgeConfig: 'sdk-default',
         model: 'claude-sonnet',
+        effort: 'max',
+        maxTokens: 12000,
+        temperature: 0.4,
       });
 
       const listed = await api<{ profiles: Array<{ name: string }> }>(server, 'api/agent-profiles');
@@ -98,6 +104,60 @@ describe('GUI agent profile API', () => {
       });
       expect(deleted.status).toBe(200);
       expect(deleted.body.agentProfiles).toEqual([]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('exposes selectable agents and activates by agent name', async () => {
+    const root = await tempRoot('actoviq-gui-agent-activate-');
+    const homeDir = path.join(root, 'home');
+    const workDir = path.join(root, 'work');
+    await mkdir(workDir, { recursive: true });
+    addBridgeConfig({
+      name: 'deepseek',
+      runtime: 'hadamard',
+      provider: 'anthropic',
+      model: 'deepseek-v4-pro',
+      models: [{ name: 'deepseek-v4-pro' }, { name: 'deepseek-v4-flash' }],
+    }, homeDir);
+
+    const server = await startActoviqGuiServer({
+      workDir,
+      homeDir,
+      host: '127.0.0.1',
+      port: 45000 + Math.floor(Math.random() * 10000),
+    });
+
+    try {
+      const state = await api<{
+        selectableAgents: Array<{ name: string; model: string; source: string }>;
+        activeAgent: { name: string } | null;
+      }>(server, 'api/state');
+      expect(state.status).toBe(200);
+      expect(state.body.selectableAgents.length).toBeGreaterThanOrEqual(2);
+      expect(state.body.activeAgent).toBeNull();
+
+      const flash = state.body.selectableAgents.find(a => a.model === 'deepseek-v4-flash');
+      expect(flash).toBeTruthy();
+
+      const activated = await api<{
+        activeAgent: { name: string; model: string };
+        bridgeState: { activeConfig: { name: string; model: string } | null };
+      }>(server, 'api/agent/activate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: flash!.name }),
+      });
+      expect(activated.status).toBe(200);
+      expect(activated.body.activeAgent).toMatchObject({
+        name: flash!.name,
+        model: 'deepseek-v4-flash',
+      });
+      expect(activated.body.bridgeState.activeConfig).toMatchObject({
+        name: 'deepseek',
+        model: 'deepseek-v4-flash',
+      });
     } finally {
       await server.close();
     }

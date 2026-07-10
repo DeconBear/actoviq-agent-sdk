@@ -232,6 +232,7 @@ describe('Manager prompts', () => {
       conversationSummaries: '- [2026-07-05] Fix login (3 msgs)',
       githubDigest: 'Open PRs (1 shown):\n#42 Fix auth',
       currentPlanJson: '{"milestones":[]}',
+      currentIssuesJson: '[{"key":"ISS-1","status":"in_review","linkedSessions":[{"id":"worker-1"}]}]',
       currentProgress: '# Progress',
     });
     expect(prompt).toContain('mark milestone 2 blocked');
@@ -239,6 +240,8 @@ describe('Manager prompts', () => {
     expect(prompt).toContain('Fix login');
     expect(prompt).toContain('Open PRs');
     expect(prompt).toContain('--- Current plan.json ---');
+    expect(prompt).toContain('--- Current issues.json summary ---');
+    expect(prompt).toContain('linked-session evidence');
     expect(prompt).toContain('--- Current PROGRESS.md ---');
   });
 

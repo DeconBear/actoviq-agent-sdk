@@ -161,8 +161,13 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 - **Conversation history on resume** — opening or switching a chat replays its stored messages
 - **Command palette + slash commands**, settings (provider / model / keys / appearance), workspace switching, and empty-chat cleanup
 - **Per-tool permission prompts** (queued so concurrent requests don't collide) and a token-usage readout
+- **Project Documents + Issues** — each Project detail page has `Document` and `Issues` tabs. Issues use the guarded `backlog → todo → in_progress → in_review/blocked → done` lifecycle, support priorities, labels, acceptance criteria, comments, and links back to their worker sessions.
+- **Agent Profiles for issue dispatch** — Settings → Models & routing can bind a named profile to a saved bridge config and model. `/issues start <id> [agent-profile]` asks the Project Manager for a worker brief, starts a linked session without changing the globally active runtime, and requires the worker to report through `IssueReport`.
+- **Movable data root** — Settings → General can copy the complete Actoviq data root to an empty directory, validate it, write the bootstrap pointer, rebuild the SDK/session store, and retain the previous directory for manual cleanup.
 
 **Security model:** the internal API is reachable only from loopback (Host + Origin allowlist, which defeats DNS-rebinding / CSRF) and requires a per-process token; the page ships a strict Content-Security-Policy. Electron runs with `sandbox`, `contextIsolation`, and no `nodeIntegration`.
+
+Actoviq resolves its data root in this order: an explicit SDK `homeDir`, `ACTOVIQ_HOME`, `~/.actoviq/data-root.json`, then `~/.actoviq`. Project issues default to `<data-root>/projects/<workspace-key>/issues.json`; a project can instead use the protected workspace file `.actoviq/issues.json`.
 
 > `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime. The core SDK does not require them.
 >

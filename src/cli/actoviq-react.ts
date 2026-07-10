@@ -37,6 +37,7 @@ import {
   readProgressFile,
   managerProgressPath,
   createProjectIssue,
+  executeProjectIssue,
   isIssueStatus,
   isIssueStorageMode,
   listProjectIssues,
@@ -598,8 +599,63 @@ async function main() {
             process.stdout.write(`${C.g}issue created: #${issue.number} ${issue.title}${C.r}\n\n`);
             return;
           }
+          if (sub.startsWith('show ')) {
+            const rawId = sub.slice(5).trim().replace(/^#/, '');
+            const issues = await listProjectIssues(WORK_DIR, homeDir, storage);
+            const issue = issues.find(candidate =>
+              candidate.id === rawId ||
+              String(candidate.number) === rawId ||
+              `ISS-${candidate.number}` === rawId.toUpperCase(),
+            );
+            if (!issue) {
+              process.stdout.write(`${C.R}Issue not found: ${rawId}${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(
+              `${C.b}ISS-${issue.number} ${issue.title}${C.r}\n` +
+              `${C.d}${issue.status} · ${issue.priority}${C.r}\n` +
+              `${issue.description || '(no description)'}\n` +
+              `${issue.acceptanceCriteria.length ? `\nAcceptance criteria:\n${issue.acceptanceCriteria.map(item => `- ${item}`).join('\n')}` : ''}` +
+              `${issue.brief ? `\n\nManager brief:\n${issue.brief}` : ''}\n\n`,
+            );
+            return;
+          }
+          if (sub.startsWith('start ')) {
+            const [, rawId, agentProfile] = sub.split(/\s+/, 3);
+            const id = rawId?.replace(/^#/, '');
+            const issues = await listProjectIssues(WORK_DIR, homeDir, storage);
+            const issue = issues.find(candidate =>
+              candidate.id === id ||
+              String(candidate.number) === id ||
+              `ISS-${candidate.number}` === id?.toUpperCase(),
+            );
+            if (!issue) {
+              process.stdout.write(`${C.R}Issue not found: ${rawId ?? ''}${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(`${C.d}Decomposing and dispatching ISS-${issue.number}...${C.r}\n`);
+            const dispatched = await executeProjectIssue({
+              sdk,
+              managerSession: await resolveManagerSession(),
+              workDir: WORK_DIR,
+              homeDir,
+              storageMode: storage,
+              issue,
+              agentProfile,
+              defaultModel: session.model,
+              permissionMode: session.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+              systemPrompt: SYSTEM_PROMPT,
+              onEvent: event => {
+                if (event.type === 'response.text.delta') process.stdout.write(event.delta);
+                else if (event.type === 'tool.call') toolLine(event.call.name, event.call.input as Record<string, unknown>);
+                else if (event.type === 'tool.result') resultLine(event.result.isError, event.result.durationMs, event.result.output);
+              },
+            });
+            session = dispatched.session;
+            process.stdout.write(`\n${C.g}ISS-${dispatched.issue.number}: ${dispatched.issue.status} · session ${session.id}${C.r}\n\n`);
+            return;
+          }
           const transitions: Record<string, string> = {
-            start: 'in_progress',
             review: 'in_review',
             done: 'done',
             block: 'blocked',
@@ -612,7 +668,7 @@ async function main() {
             else process.stdout.write(`${C.g}issue #${issue.number}: ${issue.status}${C.r}\n\n`);
             return;
           }
-          process.stdout.write(`${C.d}Usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]${C.r}\n\n`);
+          process.stdout.write(`${C.d}Usage: /issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]${C.r}\n\n`);
           return;
         }
         // ── Project Manager ────────────────────────────────────────
@@ -867,10 +923,32 @@ async function main() {
   rl.prompt();
 
   rl.on('line', async (line) => {
-    abortCtrl = null;
-    try { await processMsg(line); } catch (e: any) {
-      if (e.name === 'AbortError') process.stdout.write(`\n${C.y}  ⏹ aborted${C.r}\n`);
-      else process.stdout.write(`\n${C.R}  ✕ ${(e as Error).message}${C.r}\n`);
+    const queued = line.trim();
+    if (abortCtrl) {
+      if (!queued) {
+        rl.prompt();
+        return;
+      }
+      if (queued.startsWith('/')) {
+        process.stdout.write(`${C.d}Slash commands are unavailable while the agent is working.${C.r}\n`);
+        rl.prompt();
+        return;
+      }
+      session.steer(queued);
+      process.stdout.write(`${C.d}  ⧗ queued steering message${C.r}\n`);
+      rl.prompt();
+      return;
+    }
+    try {
+      await processMsg(line);
+    } catch (e: any) {
+      if (e.name === 'AbortError' || e.name === 'RunAbortedError') {
+        process.stdout.write(`\n${C.y}  ⏹ aborted${C.r}\n`);
+      } else {
+        process.stdout.write(`\n${C.R}  ✕ ${(e as Error).message}${C.r}\n`);
+      }
+    } finally {
+      abortCtrl = null;
     }
     rl.prompt();
   });

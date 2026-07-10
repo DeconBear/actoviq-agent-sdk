@@ -122,11 +122,13 @@ import {
   isIssueStorageMode,
   listProjectIssues,
   migrateIssueStore,
+  resolveIssueStorePath,
   loadWorkflow,
   listScheduledAutomationTasks,
   resolveRoutedRun,
   recordScheduledAutomationRun,
   getActoviqHomePointerPath,
+  listActoviqHomeTopLevelEntries,
   migrateActoviqHomeData,
   resolveActoviqHome,
   summarizeActoviqHome,
@@ -136,9 +138,14 @@ import {
   upsertScheduledAutomationTask,
   deleteScheduledAutomationTask,
   deleteAgentProfile,
+  findSelectableAgent,
   getScheduledAutomationTask,
   listAgentProfiles,
+  listSelectableAgents,
+  matchSelectableAgent,
   resolveAgentProfileRun,
+  resolveSelectableAgentRun,
+  agentProfileRunOverrides,
   transitionProjectIssue,
   updateProjectIssue,
   upsertAgentProfile,
@@ -146,7 +153,7 @@ import {
   type ActoviqAgentClient,
   type AgentProfile,
   type ManagerConfig,
-  type IssueActor,
+  type SelectableAgent,
   type IssueCommentKind,
   type IssueStorageMode,
   type ProjectIssue,
@@ -257,7 +264,7 @@ import type {
   WorkflowNode,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
-import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
+import { extractConversationBrief, extractPreviewFromMessages } from '../runtime/messageUtils.js';
 import { truncateText } from '../runtime/helpers.js';
 import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
 
@@ -495,7 +502,7 @@ function commandUsage(command: string): string {
     case 'workflows': return '/workflows [run <name> [input]]';
     case 'worktree': return '/worktree [enter <name>|exit|list]';
     case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]';
-    case 'issues': return '/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]';
+    case 'issues': return '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]';
     default: return `/${command}`;
   }
 }
@@ -506,6 +513,9 @@ function guiIcon(name: string): string {
     automation: '<path d="M4 12a8 8 0 0 1 13.66-5.66"/><path d="M18 4v5h-5"/><path d="M20 12a8 8 0 0 1-13.66 5.66"/><path d="M6 20v-5h5"/>',
     browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8h.01"/><path d="M12 8h.01"/><path d="M3 10h18"/>',
     chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
+    review: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+    panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+    panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
     chevronUp: '<path d="m18 15-6-6-6 6"/>',
     copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
@@ -613,6 +623,7 @@ interface StoredSessionFile {
   filePath: string;
   messageCount: number;
   title?: string;
+  brief?: string;
   workDir?: string;
   kind?: SessionSummary['kind'];
   updatedAt?: string;
@@ -688,12 +699,15 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
       const title = isPlainRecord(raw) && typeof raw.title === 'string' && raw.title.trim()
         ? raw.title.trim()
         : undefined;
+      const briefRaw = extractConversationBrief(messages as import('../provider/types.js').MessageParam[]);
+      const brief = briefRaw ? truncateText(briefRaw, 100) : '';
       sessions.push({
         id: isPlainRecord(raw) && typeof raw.id === 'string' ? raw.id : storageId,
         storageId,
         filePath,
         messageCount: messages.length,
         ...(title ? { title } : {}),
+        ...(brief ? { brief } : {}),
         workDir: typeof metadata.__actoviqWorkDir === 'string' ? metadata.__actoviqWorkDir : undefined,
         updatedAt,
         ...(kind ? { kind } : {}),
@@ -746,6 +760,7 @@ function storedJsonToSessionSummary(raw: unknown, archived = false): SessionSumm
     status: session.status === 'idle' || session.status === 'closed' ? session.status : 'active',
     tags: Array.isArray(session.tags) ? session.tags.filter((t): t is string => typeof t === 'string') : [],
     preview: truncateText(extractPreviewFromMessages(messages as import('../provider/types.js').MessageParam[]), 160),
+    brief: truncateText(extractConversationBrief(messages as import('../provider/types.js').MessageParam[]), 100),
     messageCount: messages.length,
     runCount: runs.length,
     archived,
@@ -806,6 +821,7 @@ async function collectSessionStoreRoots(homeDir: string, currentSessionDirectory
 type SidebarRecentSession = {
   id: string;
   title: string;
+  brief?: string;
   updatedAt: string;
 };
 
@@ -829,6 +845,7 @@ async function projectSessionOverview(
     candidates.push({
       id: item.id,
       title: item.title || item.id,
+      ...(item.brief ? { brief: item.brief } : {}),
       updatedAt: item.updatedAt || '',
     });
   }
@@ -861,6 +878,7 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     note: string;
     status: ProjectStatus;
     recentSessions: SidebarRecentSession[];
+    issueCounts: { total: number; open: number; review: number; closed: number };
   }>();
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
   const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '', pinned = false) => {
@@ -877,6 +895,7 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
       note: existing?.note ?? '',
       status: existing?.status ?? 'not_started',
       recentSessions: existing?.recentSessions ?? [],
+      issueCounts: existing?.issueCounts ?? { total: 0, open: 0, review: 0, closed: 0 },
     });
   };
   addProject(current, 0);
@@ -901,6 +920,17 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     project.lastUsedAt = maxIso(project.lastUsedAt, overview.lastUsedAt);
     project.status = meta.status;
     project.recentSessions = overview.recentSessions;
+    const issues = await listProjectIssues(
+      project.path,
+      homeDir,
+      isIssueStorageMode(meta.issueStorage) ? meta.issueStorage : 'home',
+    ).catch(() => []);
+    project.issueCounts = {
+      total: issues.length,
+      open: issues.filter(issue => issue.status !== 'done' && issue.status !== 'cancelled').length,
+      review: issues.filter(issue => issue.status === 'in_review').length,
+      closed: issues.filter(issue => issue.status === 'done' || issue.status === 'cancelled').length,
+    };
   }));
   return rows.sort((left, right) => {
     if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
@@ -1073,7 +1103,7 @@ async function pickFolder(): Promise<string | null> {
   }
 }
 
-export type BrowseEntryKind = 'drive' | 'folder';
+export type BrowseEntryKind = 'drive' | 'folder' | 'file';
 export type BrowseEntry = { name: string; path: string; kind: BrowseEntryKind };
 export type BrowseDirectoryResult = {
   path: string;
@@ -1154,6 +1184,44 @@ export async function browseDirectory(requestPath?: string): Promise<BrowseDirec
     return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
   });
 
+  return { path: resolved, parent, entries };
+}
+
+/** List folders + files for the conversation Files panel. */
+export async function listWorkspaceFiles(requestPath?: string, fallbackRoot?: string): Promise<BrowseDirectoryResult> {
+  const trimmed = requestPath?.trim() || fallbackRoot?.trim() || '';
+  if (!trimmed) {
+    throw new Error('No workspace path');
+  }
+  const resolved = path.resolve(trimmed);
+  let stats;
+  try {
+    stats = await stat(resolved);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === 'ENOENT') throw new Error(`Folder not found: ${resolved}`);
+    throw error;
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Not a directory: ${resolved}`);
+  }
+
+  const parent = browseParentPath(resolved);
+  const entries: BrowseEntry[] = [];
+  const children = await readdir(resolved, { withFileTypes: true });
+  for (const entry of children) {
+    if (entry.name === '.' || entry.name === '..') continue;
+    if (entry.name.startsWith('.') && entry.name !== '.actoviq') continue;
+    entries.push({
+      name: entry.name,
+      path: path.join(resolved, entry.name),
+      kind: entry.isDirectory() ? 'folder' : 'file',
+    });
+  }
+  entries.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1;
+    return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+  });
   return { path: resolved, parent, entries };
 }
 
@@ -1474,7 +1542,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             permissionMode: options.permissionMode,
           })
         : await createdSdk.createSession({
-            title: path.basename(workDir),
             model: options.model,
             permissionMode,
           });
@@ -1613,7 +1680,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       // When recovering from a no-credential state the session is a stub (id: ''),
       // so create a fresh session instead of trying to resume an empty id.
       session = needsCredentials
-        ? await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode })
+        ? await nextSdk.createSession({ model: options.model, permissionMode })
         : await nextSdk.resumeSession(session.id, {
           model: options.model,
           permissionMode: options.permissionMode,
@@ -1654,7 +1721,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         ?? sessions.find(item => item.status !== 'closed' && isVisibleChatSession(item));
       session = resumable
         ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
-        : await nextSdk.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        : await nextSdk.createSession({ model: options.model, permissionMode });
       // Tool metadata is not needed to paint project detail; fill after open returns.
       toolMetadata = [];
       sdk = nextSdk;
@@ -1685,6 +1752,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const stored = session?.metadata?.__actoviqEffort;
     if (stored === 'auto') return 'auto';
     return isEffort(stored) ? stored : sdk?.config.effort;
+  };
+  const currentAgentSamplingOverrides = () => {
+    const agent = activeBridgeConfig
+      ? matchSelectableAgent(
+        activeBridgeConfig.name,
+        activeBridgeConfig.model || bridgeModelLabel,
+        resolveGuiHomeDir(),
+      )
+      : undefined;
+    const fromAgent = agentProfileRunOverrides(agent);
+    return {
+      effort: fromAgent.effort ?? currentEffort(),
+      ...(typeof fromAgent.maxTokens === 'number' ? { maxTokens: fromAgent.maxTokens } : {}),
+      ...(typeof fromAgent.temperature === 'number' ? { temperature: fromAgent.temperature } : {}),
+    };
   };
 
   const approver: ActoviqToolApprover = async (context) => {
@@ -1813,6 +1895,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     ]);
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
     const agentProfiles = listAgentProfiles(homeDir);
+    const selectableAgents = listSelectableAgents(homeDir);
+    const activeAgent = activeBridgeConfig
+      ? matchSelectableAgent(activeBridgeConfig.name, activeBridgeConfig.model || bridgeModelLabel, homeDir) ?? null
+      : null;
     // Hide 0-message conversations entirely — they're auto-cleaned on the
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
     // list is noise. The active session is still resumable via the chat view.
@@ -1821,6 +1907,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ? []
       : await listArchivedSessionsForWorkDir(workDir, homeDir);
     const railStore = await readContextRailStore(workDir, homeDir);
+    const activeProject = heavy.projects.find(project => project.active);
     return {
       workDir,
       session: sessionView(session),
@@ -1835,6 +1922,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       tools: toolMetadata,
       projects: heavy.projects,
       projectPlan: await readProjectPlan(workDir, homeDir),
+      issueSummary: activeProject?.issueCounts ?? { total: 0, open: 0, review: 0, closed: 0 },
       sessions,
       archivedSessions,
       workflows,
@@ -1842,6 +1930,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       teams,
       routers,
       agentProfiles,
+      selectableAgents,
+      activeAgent,
       skills,
       agents,
       plugins: heavy.plugins,
@@ -2030,6 +2120,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         bytes: summary.bytes,
         entries: summary.entries,
       },
+      contents: listActoviqHomeTopLevelEntries(root),
       retainedAfterMigration: true,
     };
   }
@@ -2171,7 +2262,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   /** Host-collected read-only context for Manager runs (the Manager has no shell). */
-  async function collectManagerHostContext(): Promise<{ gitSummary: string; conversationSummaries: string }> {
+  async function collectManagerHostContext(): Promise<{
+    gitSummary: string;
+    conversationSummaries: string;
+    sessionSummaries: Array<{
+      id: string;
+      title: string;
+      preview: string;
+      status: string;
+      updatedAt: string;
+      messageCount: number;
+    }>;
+  }> {
     let gitSummary = '';
     try {
       const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: workDir, encoding: 'utf8' }).trim();
@@ -2180,15 +2282,32 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       gitSummary = `branch: ${branch}\ndirty files: ${dirty ? dirty.split('\n').length : 0}\nrecent commits:\n${log}`;
     } catch { /* not a git repo */ }
     let conversationSummaries = '';
+    let sessionSummaries: Array<{
+      id: string;
+      title: string;
+      preview: string;
+      status: string;
+      updatedAt: string;
+      messageCount: number;
+    }> = [];
     try {
       const stored = await sdk!.sessions.list();
-      conversationSummaries = stored
+      sessionSummaries = stored
         .filter(s => s.kind !== 'manager')
+        .map(s => ({
+          id: s.id,
+          title: s.title,
+          preview: s.preview,
+          status: s.status,
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount,
+        }));
+      conversationSummaries = sessionSummaries
         .slice(0, 20)
         .map(s => `- [${s.updatedAt.slice(0, 10)}] ${s.title} (${s.messageCount} msgs): ${s.preview}`)
         .join('\n');
     } catch { /* session listing unavailable */ }
-    return { gitSummary, conversationSummaries };
+    return { gitSummary, conversationSummaries, sessionSummaries };
   }
 
   /**
@@ -2215,7 +2334,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const managerTools = await createManagerTools({ workDir, homeDir, config: cfg, issueStorageMode: managerIssueStorage });
     let prompt: string;
     if (opts.mode === 'update') {
-      const { gitSummary, conversationSummaries } = await collectManagerHostContext();
+      const { gitSummary, conversationSummaries, sessionSummaries } = await collectManagerHostContext();
       const plan = await readProjectPlanFile(workDir, homeDir);
       const progress = await readProgressFile(workDir, homeDir);
       const issues = await listProjectIssues(workDir, homeDir, managerIssueStorage);
@@ -2234,6 +2353,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           priority: issue.priority,
           agentConfig: issue.agentConfig,
           activeSessionId: issue.activeSessionId,
+          linkedSessions: issue.sessionIds
+            .map(id => sessionSummaries.find(summary => summary.id === id))
+            .filter(Boolean),
           updatedAt: issue.updatedAt,
         })), null, 2),
       });
@@ -2420,7 +2542,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             systemPrompt: systemPromptForRun,
             signal: runAbort.signal,
             permissionMode: currentPermissionMode(),
-            effort: currentEffort(),
+            ...currentAgentSamplingOverrides(),
             approver: backgroundApprover,
             classifier: preToolUseHookClassifier,
             canUseTool,
@@ -2432,7 +2554,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             systemPrompt: systemPromptForRun,
             signal: runAbort.signal,
             permissionMode: currentPermissionMode(),
-            effort: currentEffort(),
+            ...currentAgentSamplingOverrides(),
             approver: backgroundApprover,
             classifier: preToolUseHookClassifier,
             canUseTool,
@@ -2872,8 +2994,29 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const issue = await createProjectIssue(workDir, homeDir, { title }, storage);
           return [{ type: 'notice', message: `issue created: #${issue.number} ${issue.title}` }, { type: 'state' }];
         }
+        if (args.startsWith('show ')) {
+          const rawId = args.slice(5).trim().replace(/^#/, '');
+          const issues = await listIssues();
+          const issue = issues.find(candidate =>
+            candidate.id === rawId ||
+            String(candidate.number) === rawId ||
+            `ISS-${candidate.number}` === rawId.toUpperCase(),
+          );
+          if (!issue) return [{ type: 'error', message: `issue not found: ${rawId}` }];
+          return [{
+            type: 'command.result',
+            title: `ISS-${issue.number} ${issue.title}`,
+            text: [
+              `${issue.status} · ${issue.priority}`,
+              issue.description || '(no description)',
+              issue.acceptanceCriteria.length
+                ? `Acceptance criteria:\n${issue.acceptanceCriteria.map(item => `- ${item}`).join('\n')}`
+                : '',
+              issue.brief ? `Manager brief:\n${issue.brief}` : '',
+            ].filter(Boolean).join('\n\n'),
+          }];
+        }
         const transitions: Record<string, string> = {
-          start: 'in_progress',
           review: 'in_review',
           done: 'done',
           block: 'blocked',
@@ -2885,7 +3028,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           if (!issue) return [{ type: 'error', message: `issue not found: ${rawId}` }];
           return [{ type: 'notice', message: `issue #${issue.number}: ${issue.status}` }, { type: 'state' }];
         }
-        return [{ type: 'error', message: 'usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]' }];
+        return [{ type: 'error', message: 'usage: /issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]' }];
       }
       case 'manager': {
         // `/manager update` and `/manager chat <msg>` are intercepted by the
@@ -3169,7 +3312,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const requestedProfile = typeof body.agentConfig === 'string' && body.agentConfig.trim()
         ? body.agentConfig.trim()
         : issue.agentConfig;
-      const resolvedProfile = requestedProfile ? await resolveAgentProfileRun(requestedProfile, homeDir) : null;
+      const resolvedProfile = requestedProfile
+        ? await resolveSelectableAgentRun(requestedProfile, homeDir)
+        : null;
 
       send({ type: 'status', message: `manager - decomposing ISS-${issue.number}` });
       const plan = await readProjectPlanFile(targetPath, homeDir);
@@ -3267,7 +3412,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         systemPrompt: issueSystemPrompt,
         signal: abort.signal,
         permissionMode: workerPermissionMode,
-        effort: currentEffort(),
+        ...agentProfileRunOverrides(resolvedProfile?.profile),
+        ...(resolvedProfile?.profile.effort ? {} : { effort: currentEffort() }),
         approver,
         classifier: preToolUseHookClassifier,
         canUseTool,
@@ -3292,8 +3438,40 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         await addIssueComment(targetPath, homeDir, issue.id, {
           actor: 'system',
           kind: 'system',
-          body: 'Worker session ended without IssueReport; manager reconcile should review this issue.',
+          body: 'Worker session ended without IssueReport; Project Manager reconciliation started.',
         }, storage);
+        send({ type: 'status', message: `manager - reconciling ISS-${issue.number}` });
+        try {
+          await runManagerTurn({
+            mode: 'chat',
+            text: [
+              `Reconcile ISS-${issue.number} because its worker session ended without calling IssueReport.`,
+              `Worker session: ${workerSession.id}`,
+              `Worker final response:\n${result.text || '(no final text)'}`,
+              'Use IssueGet to inspect the issue and its acceptance criteria.',
+              'Then use IssueUpdate to move it to in_review only if the evidence shows the work and self-checks completed,',
+              'to blocked if a concrete blocker remains, or back to todo if additional implementation is required.',
+              'Add an IssueComment explaining the evidence and decision.',
+            ].join('\n\n'),
+            send,
+          });
+        } catch (reconcileError) {
+          await addIssueComment(targetPath, homeDir, issue.id, {
+            actor: 'system',
+            kind: 'system',
+            body: `Automatic manager reconciliation failed: ${(reconcileError as Error).message}`,
+          }, storage).catch(() => undefined);
+        }
+        const reconciled = (await listProjectIssues(targetPath, homeDir, storage))
+          .find(candidate => candidate.id === issue!.id);
+        if (reconciled?.status === 'in_progress') {
+          await addIssueComment(targetPath, homeDir, issue.id, {
+            actor: 'system',
+            kind: 'system',
+            body: 'Manager reconciliation ended without settling the issue; reset to todo for safe redispatch.',
+          }, storage);
+          await transitionProjectIssue(targetPath, homeDir, issue.id, 'todo', 'system', storage);
+        }
       }
       desc.status = 'done';
       send({ type: 'state', state: await state() });
@@ -3496,7 +3674,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           systemPrompt: systemPromptForRun,
           signal: runAbort.signal,
           permissionMode: currentPermissionMode(),
-          effort: currentEffort(),
+          ...currentAgentSamplingOverrides(),
           approver,
           classifier: preToolUseHookClassifier,
           canUseTool,
@@ -3509,7 +3687,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           systemPrompt: systemPromptForRun,
           signal: runAbort.signal,
           permissionMode: currentPermissionMode(),
-          effort: currentEffort(),
+          ...currentAgentSamplingOverrides(),
           approver,
           classifier: preToolUseHookClassifier,
           canUseTool,
@@ -3669,7 +3847,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     // If the active chat was deleted, open a fresh one so the UI stays consistent.
     if (session.id === id) {
-      session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+      session = await sdk!.createSession({ model: options.model, permissionMode });
     }
     invalidateHeavyState();
     return { deleted, state: await state() };
@@ -3694,7 +3872,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
         // If the active chat was archived, open a fresh one.
         if (session.id === id) {
-          session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+          session = await sdk!.createSession({ model: options.model, permissionMode });
         }
         invalidateHeavyState();
         return true;
@@ -3849,11 +4027,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     };
   };
 
-  const issueActorFrom = (value: unknown): IssueActor =>
-    value === 'manager' || value === 'agent' || value === 'system' ? value : 'user';
-
   const issueCommentKindFrom = (value: unknown): IssueCommentKind =>
-    value === 'status_change' || value === 'progress' || value === 'system' ? value : 'comment';
+    value === 'progress' ? 'progress' : 'comment';
 
   function createIssueReportToolForRun(args: {
     targetPath: string;
@@ -4320,6 +4495,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     try {
       const body = await readJson(req);
       if (!isIssueStatus(body.status)) return json(res, 400, { error: 'Invalid issue status' });
+      if (body.status === 'in_progress') {
+        return json(res, 400, { error: 'Use /api/issues/start so in_progress is owned by deterministic dispatch' });
+      }
       const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
       if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') {
         return json(res, 400, { error: 'Missing issue id' });
@@ -4327,7 +4505,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const hd = resolveGuiHomeDir();
       const targetPath = issueTargetPath(body.path);
       const storage = await issueStorageFor(targetPath, hd);
-      const issue = await transitionProjectIssue(targetPath, hd, idOrNumber, body.status, issueActorFrom(body.actor), storage);
+      const issue = await transitionProjectIssue(targetPath, hd, idOrNumber, body.status, 'user', storage);
       if (!issue) return json(res, 404, { error: 'Issue not found' });
       return json(res, 200, { ...(await issuePayload(targetPath, hd)), issue });
     } catch (error) {
@@ -4346,7 +4524,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const storage = await issueStorageFor(targetPath, hd);
       const issue = await addIssueComment(targetPath, hd, idOrNumber, {
         body: typeof body.body === 'string' ? body.body : '',
-        actor: issueActorFrom(body.actor),
+        actor: 'user',
         kind: issueCommentKindFrom(body.kind),
       }, storage);
       if (!issue) return json(res, 404, { error: 'Issue not found' });
@@ -4371,6 +4549,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const deleted = await deleteProjectIssue(targetPath, hd, idOrNumber, storage);
       if (!deleted) return json(res, 404, { error: 'Issue not found' });
       return json(res, 200, await issuePayload(targetPath, hd));
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/issues/storage') {
+    try {
+      const hd = resolveGuiHomeDir();
+      const targetPath = issueTargetPath(url.searchParams.get('path'));
+      const mode = await issueStorageFor(targetPath, hd);
+      return json(res, 200, {
+        path: targetPath,
+        mode,
+        storePath: resolveIssueStorePath(targetPath, hd, mode),
+      });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -4504,6 +4696,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           if (typeof body.permissionMode === 'string' && body.permissionMode.trim()) {
             profile.permissionMode = body.permissionMode.trim() as AgentProfile['permissionMode'];
           }
+          if (typeof body.effort === 'string' && body.effort.trim()) {
+            profile.effort = body.effort.trim() as AgentProfile['effort'];
+          }
+          if (body.maxTokens !== undefined && body.maxTokens !== null && body.maxTokens !== '') {
+            const maxTokens = typeof body.maxTokens === 'number' ? body.maxTokens : Number(body.maxTokens);
+            if (Number.isFinite(maxTokens) && maxTokens > 0) profile.maxTokens = Math.floor(maxTokens);
+          }
+          if (body.temperature !== undefined && body.temperature !== null && body.temperature !== '') {
+            const temperature = typeof body.temperature === 'number' ? body.temperature : Number(body.temperature);
+            if (Number.isFinite(temperature) && temperature >= 0 && temperature <= 2) {
+              profile.temperature = temperature;
+            }
+          }
           const saved = upsertAgentProfile(profile, resolveGuiHomeDir());
           return json(res, 200, { ok: true, profile: saved.profile, warnings: saved.warnings, state: await state() });
         } catch (error) {
@@ -4520,6 +4725,32 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         } catch (error) {
           return json(res, 400, { error: (error as Error).message });
         }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/agent/activate') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing agent name' });
+        try {
+          const resolved = await resolveSelectableAgentRun(name, resolveGuiHomeDir());
+          const cfg = {
+            ...resolved.bridgeConfig,
+            model: resolved.model,
+          };
+          // Persist the selected model on the underlying provider config so the
+          // next activate/read stays aligned with the chosen agent.
+          if (resolved.bridgeConfig.model !== resolved.model) {
+            addBridgeConfig(cfg, resolveGuiHomeDir());
+          }
+          await activateBridgeConfig(cfg);
+          const effort = resolved.profile.effort ?? resolved.selectable.effort;
+          if (effort === 'auto' || isEffort(effort)) {
+            await session.mergeMetadata({ __actoviqEffort: effort });
+          }
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        invalidateHeavyState();
+        return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/activate') {
         const body = await readJson(req);
@@ -4673,6 +4904,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           return json(res, 400, { error: (error as Error).message });
         }
       }
+      if (req.method === 'GET' && url.pathname === '/api/workspace-files') {
+        try {
+          const rawPath = url.searchParams.get('path');
+          return json(res, 200, await listWorkspaceFiles(rawPath ?? undefined, workDir));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/project/open') {
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
@@ -4802,10 +5041,34 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const input = typeof body.text === 'string' ? body.text.trim() : '';
         if (!input) return json(res, 400, { error: 'Missing text' });
+        const issueStart = input.match(/^\/issues\s+start\s+(\S+)(?:\s+(\S+))?\s*$/i);
+        if (issueStart) {
+          return streamIssueDispatch({
+            id: issueStart[1],
+            ...(issueStart[2] ? { agentConfig: issueStart[2] } : {}),
+          }, res);
+        }
         return streamRun(input, res);
       }
+      if (req.method === 'POST' && url.pathname === '/api/session/input') {
+        const body = await readJson(req);
+        const input = typeof body.text === 'string' ? body.text.trim() : '';
+        const mode = body.mode === 'steer' ? 'steer' : 'followUp';
+        if (!input) return json(res, 400, { error: 'Missing text' });
+        const active = [...runs.values()].some(record =>
+          record.desc.status === 'running' && record.desc.sessionId === session.id,
+        );
+        if (!active) return json(res, 409, { error: 'No active run for this session' });
+        if (mode === 'steer') session.steer(input);
+        else session.followUp(input);
+        return json(res, 202, {
+          ok: true,
+          mode,
+          pendingInputCount: session.pendingInputCount,
+        });
+      }
       if (req.method === 'POST' && url.pathname === '/api/session/new') {
-        session = await sdk!.createSession({ title: path.basename(workDir), model: options.model, permissionMode });
+        session = await sdk!.createSession({ model: options.model, permissionMode });
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/session/resume') {
@@ -5011,6 +5274,7 @@ function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void
     case 'response.tool_input.delta':
       send({
         type: 'tool.input.delta',
+        index: event.index,
         id: event.toolUseId,
         name: event.toolName,
         delta: event.delta,
@@ -5247,56 +5511,97 @@ export function createActoviqGuiHtml(): string {
           <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
           <button id="conversationRunSquadBtn" class="pill-btn" title="Run selected squad">Run squad</button>
+          <button id="terminalToggleBtn" class="icon-btn" title="Terminal" aria-label="Toggle terminal" aria-pressed="false">${guiIcon('terminal')}</button>
+          <button id="auxPanelToggleBtn" class="icon-btn" title="Toggle side panel" aria-label="Toggle side panel" aria-pressed="true">${guiIcon('panelRight')}</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
       <div class="workbench">
-        <div class="tabbar">
-          <div class="tabbar-tabs" id="tabbarTabs"></div>
-          <button type="button" id="tabbarAdd" class="tabbar-add" title="Add pane" aria-label="Add pane">${guiIcon('plus')}</button>
-          <div id="tabbarAddMenu" class="tabbar-add-menu hidden">
-            <button type="button" data-add-pane="terminal"><span class="add-icon">${guiIcon('terminal')}</span>Terminal</button>
-            <button type="button" data-add-pane="monitor"><span class="add-icon">${guiIcon('dashboard')}</span>Monitor</button>
-          </div>
-        </div>
-        <div class="pane-stack" id="paneStack">
-          <section class="pane pane-chat active" id="pane-chat-default">
-            <div class="chat-chrome">
-              <section id="statusbar" class="statusbar"></section>
-              <div id="squadRoster" class="squad-roster hidden"></div>
-            </div>
-            <section id="contextBar" class="context-bar hidden"></section>
-            <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
-            <section id="transcript" class="transcript"></section>
-            <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
-            <form id="composer" class="composer">
-              <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
-              <div id="attachmentTray" class="attachment-tray hidden"></div>
-              <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
-              <div id="slashMenu" class="slash-menu hidden"></div>
-              <div id="queueList" class="queue-list hidden"></div>
-              <div class="composer-footer">
-                <div class="composer-left">
-                  <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
-                  <input id="fileInput" type="file" multiple class="hidden-file-input">
-                  <select id="permissionSelect" title="Permission mode">
-                    <option value="full">Full access</option>
-                    <option value="workspace">Workspace</option>
-                    <option value="read-only">Read-only</option>
-                  </select>
-                </div>
-                <div class="composer-right">
-                  <div class="model-picker-wrapper">
-                    <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Model &amp; effort">Auto ▾</button>
-                    <div id="modelPickerMenu" class="model-picker-menu hidden">
-                      <div id="modelPickerItems"></div>
-                    </div>
-                  </div>
-                  <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
-                </div>
+        <div class="workbench-split">
+          <div class="workbench-chat">
+            <section class="pane pane-chat active" id="pane-chat-default">
+              <div class="chat-chrome">
+                <section id="statusbar" class="statusbar"></section>
+                <div id="squadRoster" class="squad-roster hidden"></div>
               </div>
-            </form>
-          </section>
+              <section id="contextBar" class="context-bar hidden"></section>
+              <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
+              <section id="transcript" class="transcript"></section>
+              <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
+              <form id="composer" class="composer">
+                <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
+                <div id="attachmentTray" class="attachment-tray hidden"></div>
+                <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
+                <div id="slashMenu" class="slash-menu hidden"></div>
+                <div id="queueList" class="queue-list hidden"></div>
+                <div class="composer-footer">
+                  <div class="composer-left">
+                    <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
+                    <input id="fileInput" type="file" multiple class="hidden-file-input">
+                    <select id="permissionSelect" title="Permission mode">
+                      <option value="full">Full access</option>
+                      <option value="workspace">Workspace</option>
+                      <option value="read-only">Read-only</option>
+                    </select>
+                  </div>
+                  <div class="composer-right">
+                    <div class="model-picker-wrapper">
+                      <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Choose agent">Choose agent ▾</button>
+                      <div id="modelPickerFlyout" class="model-picker-flyout hidden">
+                        <div id="modelPickerMenu" class="model-picker-menu">
+                          <div class="picker-search-wrap">
+                            <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search agents" autocomplete="off" spellcheck="false">
+                          </div>
+                          <div id="modelPickerItems" class="picker-list"></div>
+                        </div>
+                        <div id="modelPickerEditPopover" class="picker-edit-popover hidden" role="dialog" aria-label="Temporary agent options"></div>
+                      </div>
+                    </div>
+                    <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+          <aside class="aux-panel" id="auxPanel" aria-label="Workbench panel">
+            <header class="aux-chrome">
+              <div class="aux-chrome-spacer"></div>
+              <button type="button" id="auxFocusBtn" class="icon-btn" title="Focus panel" aria-label="Focus panel">${guiIcon('maximize')}</button>
+              <button type="button" id="auxToggleBtn" class="icon-btn" title="Hide panel" aria-label="Hide panel">${guiIcon('panelRight')}</button>
+              <button type="button" id="auxCloseBtn" class="icon-btn hidden" title="Back to actions" aria-label="Back to actions">${guiIcon('close')}</button>
+            </header>
+            <div class="aux-body" id="auxBody">
+              <nav class="aux-launcher" id="auxLauncher" aria-label="Workbench actions">
+                <button type="button" class="aux-action" data-aux="review">
+                  <span class="aux-action-icon">${guiIcon('review')}</span>
+                  <span class="aux-action-label">Review</span>
+                  <kbd class="aux-action-kbd">Ctrl+Shift+G</kbd>
+                </button>
+                <button type="button" class="aux-action" data-aux="terminal">
+                  <span class="aux-action-icon">${guiIcon('terminal')}</span>
+                  <span class="aux-action-label">Terminal</span>
+                </button>
+                <button type="button" class="aux-action" data-aux="browser">
+                  <span class="aux-action-icon">${guiIcon('globe')}</span>
+                  <span class="aux-action-label">Browser</span>
+                  <kbd class="aux-action-kbd">Ctrl+T</kbd>
+                </button>
+                <button type="button" class="aux-action" data-aux="files">
+                  <span class="aux-action-icon">${guiIcon('folder')}</span>
+                  <span class="aux-action-label">Files</span>
+                  <kbd class="aux-action-kbd">Ctrl+P</kbd>
+                </button>
+              </nav>
+              <div class="aux-view hidden" id="auxView"></div>
+            </div>
+          </aside>
+        </div>
+        <div class="terminal-dock hidden" id="terminalDock" aria-label="Terminal">
+          <header class="terminal-dock-header">
+            <div class="terminal-dock-tabs" id="terminalDockTabs"></div>
+            <button type="button" id="terminalDockClose" class="icon-btn" title="Close terminal" aria-label="Close terminal">${guiIcon('close')}</button>
+          </header>
+          <div class="terminal-dock-body" id="terminalDockBody"></div>
         </div>
       </div>
       </section>
@@ -5520,6 +5825,18 @@ export function createActoviqGuiHtml(): string {
         <option value="plan">Plan mode</option>
         <option value="auto">Auto</option>
       </select></label>
+      <div class="two-col">
+        <label class="dialog-field">Effort<select id="agentProfileEffort">
+          <option value="">Session default</option>
+          <option value="auto">Auto</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="max">Max</option>
+        </select></label>
+        <label class="dialog-field">Max tokens<input id="agentProfileMaxTokens" type="number" min="1" step="1" placeholder="e.g. 32000"></label>
+      </div>
+      <label class="dialog-field">Temperature<input id="agentProfileTemperature" type="number" min="0" max="2" step="0.1" placeholder="e.g. 0.7 (0–2, blank = provider default)"></label>
       <label class="dialog-field">System prompt append<textarea id="agentProfileSystemPrompt" rows="4" placeholder="Optional instructions appended when this agent runs"></textarea></label>
       <p id="agentProfileCfgStatus" class="muted"></p>
       <div class="dialog-actions">
@@ -5690,7 +6007,7 @@ export function createActoviqGuiHtml(): string {
             <h2>Provider configs</h2>
             <button type="button" id="bridgeNewConfig" class="primary">+ New config</button>
           </div>
-          <p class="muted">Save named provider/model configs (provider + API key + base URL + models), then pick them from the composer's model menu. The active config runs every prompt through its backend on the same chat, so context survives switching. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
+          <p class="muted">Save named provider/model configs (provider + API key + base URL + models). The chat composer picks <strong>agents</strong> built from these configs (and from Agent profiles below). Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
           <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
@@ -5699,7 +6016,7 @@ export function createActoviqGuiHtml(): string {
             <h2>Agent profiles</h2>
             <button type="button" id="agentProfileNew" class="primary">+ New profile</button>
           </div>
-          <p class="muted">Save reusable agent roles bound to a provider config and one model. Issue dispatch and team members can reuse these profiles without changing the global active runtime.</p>
+          <p class="muted">Reusable agent roles bound to a provider config and one model. They appear in the composer agent picker and Issue dispatch. Auto presets are also created from each config's models when no profile covers them.</p>
           <p id="agentProfilesStatus" class="muted"></p>
           <div id="agentProfilesList" class="settings-card-list"></div>
         </div>
@@ -5734,7 +6051,7 @@ export function createActoviqGuiHtml(): string {
           <label>Density<select id="settingsDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
           <label class="check-row"><input id="settingsEnterToSend" type="checkbox">Enter sends message</label>
           <label class="check-row"><input id="settingsAutoScroll" type="checkbox">Auto-scroll transcript</label>
-          <label class="check-row"><input id="settingsDeveloperTools" type="checkbox">Developer tools <span class="muted">(terminal &amp; monitor panes)</span></label>
+          <label class="check-row"><input id="settingsDeveloperTools" type="checkbox">Developer tools <span class="muted">(extra diagnostics)</span></label>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="personalization">
@@ -5755,7 +6072,7 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
         <h1>Keyboard shortcuts</h1>
-        <div class="settings-group shortcut-list"><div><kbd>Ctrl</kbd> + <kbd>Enter</kbd><span>Send message</span></div><div><kbd>/</kbd><span>Open command flow</span></div><div><kbd>Shift</kbd> + <kbd>Enter</kbd><span>New line when Enter-to-send is on</span></div></div>
+        <div class="settings-group shortcut-list"><div><kbd>Ctrl</kbd> + <kbd>Enter</kbd><span>Send message</span></div><div><kbd>/</kbd><span>Open command flow</span></div><div><kbd>Shift</kbd> + <kbd>Enter</kbd><span>New line when Enter-to-send is on</span></div><div><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd><span>Open Review</span></div><div><kbd>Ctrl</kbd> + <kbd>T</kbd><span>Open Browser</span></div><div><kbd>Ctrl</kbd> + <kbd>P</kbd><span>Open Files</span></div><div><kbd>Ctrl</kbd> + <kbd>\`</kbd><span>Toggle terminal</span></div></div>
       </section>
       <section class="settings-panel" data-settings-panel="capabilities">
         <h1>Capabilities</h1>
@@ -6177,15 +6494,15 @@ body[data-theme="dark"] {
 .project-doc-editor { max-width: 680px; margin: 0 auto; padding: 16px 28px 36px; width: 100%; min-height: 100%; }
 .project-doc-empty { margin: 0; color: var(--text-2); font-size: 13px; text-align: center; padding: 40px 16px; cursor: default; }
 .project-doc-source { width: 100%; min-height: 360px; border: 0; outline: none; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.55; background: transparent; color: var(--text-1); padding: 0; }
-.project-doc-view.md-prose { font-size: 13px; line-height: 1.6; color: var(--text-1); cursor: text; }
+.project-doc-view.md-prose { font-size: 13px; line-height: 1.9; color: var(--text-1); cursor: text; }
 .project-doc-view.md-prose .md-h:first-child { margin-top: 0; }
-.project-doc-view.md-prose h1.md-h { font-size: 1.2em; font-weight: 650; margin: .85em 0 .32em; line-height: 1.35; color: var(--text-1); }
-.project-doc-view.md-prose h2.md-h { font-size: 1.08em; font-weight: 650; margin: .7em 0 .28em; line-height: 1.35; color: var(--text-1); }
-.project-doc-view.md-prose h3.md-h, .project-doc-view.md-prose h4.md-h { font-size: 1em; font-weight: 650; margin: .55em 0 .22em; color: var(--text-1); }
-.project-doc-view.md-prose p.md-p { margin: 0 0 .5em; }
+.project-doc-view.md-prose h1.md-h { font-size: 1.2em; font-weight: 650; margin: 1em 0 .45em; line-height: 1.45; color: var(--text-1); }
+.project-doc-view.md-prose h2.md-h { font-size: 1.08em; font-weight: 650; margin: .85em 0 .4em; line-height: 1.45; color: var(--text-1); }
+.project-doc-view.md-prose h3.md-h, .project-doc-view.md-prose h4.md-h { font-size: 1em; font-weight: 650; margin: .7em 0 .32em; line-height: 1.45; color: var(--text-1); }
+.project-doc-view.md-prose p.md-p { margin: 0 0 .8em; }
 .project-doc-view.md-prose p.md-p:last-child { margin-bottom: 0; }
-.project-doc-view.md-prose ul.md-ul, .project-doc-view.md-prose ol.md-ol { margin: .2em 0 .5em; padding-left: 1.25em; }
-.project-doc-view.md-prose ul.md-ul li, .project-doc-view.md-prose ol.md-ol li { margin: .12em 0; }
+.project-doc-view.md-prose ul.md-ul, .project-doc-view.md-prose ol.md-ol { margin: .3em 0 .8em; padding-left: 1.25em; }
+.project-doc-view.md-prose ul.md-ul li, .project-doc-view.md-prose ol.md-ol li { margin: .28em 0; }
 .project-doc-view.md-prose blockquote.md-quote { margin: .4em 0; padding: .05em 0 .05em 10px; border-left: 2px solid var(--border); color: var(--text-2); }
 .project-doc-view.md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .7em 0; }
 .project-doc-view.md-prose strong { font-weight: 650; color: var(--text-1); }
@@ -6212,6 +6529,8 @@ body[data-theme="dark"] {
 .issue-filter-row { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
 .issue-filter { min-height: 28px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface); color: var(--text-2); padding: 0 10px; font-size: 12px; white-space: nowrap; }
 .issue-filter.active { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 34%, var(--border)); background: var(--brand-soft); }
+.issue-filter-search { min-width: 190px; flex: 1 1 240px; min-height: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 9px; font-size: 12px; }
+.issue-filter-priority { min-height: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 8px; font-size: 12px; }
 .project-issues-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 34%); overflow: hidden; }
 .issue-board { min-height: 0; overflow: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; align-content: start; }
 .issue-column { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); overflow: hidden; box-shadow: var(--shadow-card); }
@@ -6241,10 +6560,22 @@ body[data-theme="dark"] {
 .issue-edit-grid label.wide { grid-column: 1 / -1; }
 .issue-edit-grid input, .issue-edit-grid textarea, .issue-edit-grid select { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; padding: 7px 9px; resize: vertical; }
 .issue-edit-grid button { justify-self: start; }
+.issue-detail-panel .pill-btn {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 550;
+  box-shadow: none;
+}
+.issue-brief { border-top: 1px solid var(--border); padding-top: 10px; }
+.issue-brief h4 { margin: 0 0 7px; font-size: 12px; color: var(--text-2); }
+.issue-brief .md-prose { max-height: 260px; overflow: auto; font-size: 12.5px; }
 .issue-transition-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .issue-transition-row small { color: var(--text-2); font-size: 12px; }
-.issue-dispatch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding-top: 8px; border-top: 1px solid var(--border); }
-.issue-dispatch-row select { min-width: 0; height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 9px; font-size: 12.5px; }
+.issue-dispatch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding-top: 8px; border-top: 1px solid var(--border); }
+.issue-dispatch-row select { min-width: 0; height: 26px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); color: var(--text-1); padding: 0 8px; font-size: 12px; }
 .issue-run-meta { color: var(--brand); font-weight: 600; }
 .issue-sessions-panel { display: grid; gap: 7px; padding-top: 8px; border-top: 1px solid var(--border); }
 .issue-sessions-panel h4 { margin: 0; color: var(--text-1); font-size: 13px; }
@@ -6911,30 +7242,57 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .icon-btn { width: 34px; height: 34px; display: inline-grid; place-items: center; }
 .icon-btn .ui-icon, .round-btn .ui-icon, .send-btn .ui-icon { width: 18px; height: 18px; }
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); position: relative; }
-.workbench { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.tabbar { position: relative; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--bg-sidebar); min-height: 38px; flex: 0 0 auto; }
-.tabbar-tabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.tabbar-tabs::-webkit-scrollbar { height: 6px; }
-.tab { display: inline-flex; align-items: center; gap: 6px; max-width: 210px; padding: 5px 8px 5px 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-2); font-size: 13px; flex: 0 0 auto; }
-.tab .tab-icon, .tab .tab-close { display: inline-grid; place-items: center; flex: 0 0 auto; color: #7a7e83; }
-.tab .tab-icon .ui-icon { width: 15px; height: 15px; }
-.tab .tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tab .tab-close { width: 17px; height: 17px; border-radius: 5px; margin-left: 2px; }
-.tab .tab-close .ui-icon { width: 12px; height: 12px; }
-.tab .tab-close:hover { background: rgba(0,0,0,.1); color: var(--err); }
-.tab:hover { background: rgba(0,0,0,.05); }
-.tab.active { background: var(--bg-surface); border-color: var(--border); color: var(--text-1); }
-.tabbar-add { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 7px; border: 1px solid transparent; flex: 0 0 auto; color: var(--text-2); }
-.tabbar-add:hover { background: rgba(0,0,0,.06); }
-.tabbar-add .ui-icon { width: 16px; height: 16px; }
-.tabbar-add-menu { position: absolute; top: 100%; right: 8px; margin-top: 4px; z-index: 40; min-width: 160px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); box-shadow: 0 6px 20px rgba(0,0,0,.14); padding: 4px; }
-.tabbar-add-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; border-radius: 6px; text-align: left; color: var(--text-1); font-size: 13px; }
-.tabbar-add-menu button:hover { background: rgba(0,0,0,.06); }
-.tabbar-add-menu .add-icon { display: inline-grid; place-items: center; color: var(--text-2); }
-.tabbar-add-menu .add-icon .ui-icon { width: 16px; height: 16px; }
-.pane-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.pane { display: none; min-height: 0; }
-.pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.workbench { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.workbench-split { flex: 1; min-height: 0; display: flex; }
+.workbench-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.workbench-chat .pane-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.aux-panel { flex: 0 0 min(340px, 38vw); width: min(340px, 38vw); min-width: 240px; max-width: 420px; border-left: 1px solid var(--border); background: var(--bg-surface); display: flex; flex-direction: column; min-height: 0; transition: flex-basis .15s ease, width .15s ease, min-width .15s ease; }
+.aux-panel.collapsed { flex: 0 0 40px; width: 40px; min-width: 40px; max-width: 40px; }
+.aux-panel.collapsed .aux-body,
+.aux-panel.collapsed #auxFocusBtn,
+.aux-panel.collapsed #auxCloseBtn,
+.aux-panel.collapsed .aux-chrome-spacer { display: none !important; }
+.aux-panel.collapsed .aux-chrome { flex-direction: column; align-items: center; justify-content: flex-start; gap: 6px; padding: 10px 4px; height: 100%; }
+.aux-panel.collapsed .aux-chrome .icon-btn { width: 30px; height: 30px; }
+.aux-panel.focused { position: absolute; inset: 0; z-index: 30; width: auto; max-width: none; min-width: 0; flex: none; border-left: 0; }
+.top-actions .icon-btn[aria-pressed="true"] { background: rgba(0,0,0,.07); color: var(--text-1); }
+.aux-chrome { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 6px 8px; min-height: 36px; }
+.aux-chrome-spacer { flex: 1; }
+.aux-chrome .icon-btn { width: 28px; height: 28px; color: var(--text-2); }
+.aux-chrome .icon-btn:hover { background: rgba(0,0,0,.05); color: var(--text-1); }
+.aux-chrome .icon-btn .ui-icon { width: 15px; height: 15px; }
+.aux-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.aux-launcher { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: stretch; gap: 2px; padding: 0 28px; max-width: 280px; margin: 0 auto; width: 100%; }
+.aux-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 4px; border: 0; background: transparent; border-radius: 8px; color: var(--text-1); font-size: 14px; text-align: left; cursor: pointer; }
+.aux-action:hover { background: rgba(0,0,0,.04); }
+.aux-action-icon { display: inline-grid; place-items: center; color: var(--text-2); flex: 0 0 auto; }
+.aux-action-icon .ui-icon { width: 18px; height: 18px; }
+.aux-action-label { flex: 1; min-width: 0; font-weight: 450; }
+.aux-action-kbd { flex: 0 0 auto; font-size: 12px; color: var(--text-2); font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 400; background: transparent; border: 0; padding: 0; }
+.aux-view { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.aux-view.hidden, .aux-launcher.hidden { display: none !important; }
+.aux-view-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.aux-view-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.aux-view-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
+.aux-empty { margin: 24px 0; color: var(--text-2); font-size: 13px; text-align: center; }
+.aux-file-row, .aux-browser-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: 7px; border: 0; background: transparent; color: var(--text-1); font-size: 13px; text-align: left; cursor: pointer; }
+.aux-file-row:hover, .aux-browser-row:hover { background: rgba(0,0,0,.05); }
+.aux-file-row .ui-icon, .aux-browser-row .ui-icon { width: 15px; height: 15px; color: var(--text-2); flex: 0 0 auto; }
+.aux-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aux-path-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+.aux-path-bar input { flex: 1; min-width: 0; height: 30px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px; font-size: 12.5px; background: var(--bg-surface); color: var(--text-1); }
+.terminal-dock { flex: 0 0 260px; min-height: 160px; max-height: 45vh; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: #1f2330; color: #e6e9ef; }
+.terminal-dock.hidden { display: none !important; }
+.terminal-dock-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 2px 8px 2px 10px; background: #262b3b; border-bottom: 1px solid #2c3142; min-height: 32px; }
+.terminal-dock-tabs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
+.terminal-dock-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 8px; border-radius: 6px; border: 0; background: transparent; color: #a8aebc; font-size: 12px; }
+.terminal-dock-tab.active { background: #32384a; color: #e6e9ef; }
+.terminal-dock-tab .ui-icon { width: 13px; height: 13px; }
+.terminal-dock-header .icon-btn { width: 26px; height: 26px; color: #a8aebc; }
+.terminal-dock-header .icon-btn:hover { background: #32384a; color: #e6e9ef; }
+.terminal-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal-dock-body .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pane { min-height: 0; }
 .pane-stub { flex: 1; display: grid; place-content: center; place-items: center; gap: 12px; text-align: center; color: var(--text-2); padding: 24px; }
 .pane-stub .stub-icon { display: inline-grid; place-items: center; color: var(--text-2); }
 .pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
@@ -6964,39 +7322,9 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .history-picker .hp-list { margin-top: 6px; max-height: 280px; overflow: auto; display: grid; gap: 2px; }
 .history-picker .hp-row { text-align: left; width: 100%; padding: 7px 9px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: var(--text-1); }
 .history-picker .hp-row:hover { background: var(--surface-hover); }
-/* Monitor pane (plan phase 4): live cards for every active run. */
-.pane-monitor { background: var(--bg-app); overflow: auto; }
-.monitor-list { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
-.monitor-empty { margin: 24px auto; color: var(--text-2); }
-.monitor-card { border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); padding: 10px 12px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
-.monitor-card.clickable { cursor: pointer; }
-.monitor-card.clickable:hover { border-color: var(--border-hover); }
-.monitor-card.status-running { border-left: 3px solid var(--brand); }
-.monitor-card.status-done { border-left: 3px solid #6ad0a8; }
-.monitor-card.status-aborted { border-left: 3px solid #e0a458; }
-.monitor-card.status-error { border-left: 3px solid var(--err); }
-.monitor-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.mc-title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-kind { margin-left: auto; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-on-accent); background: #7a7e83; border-radius: 5px; padding: 1px 6px; }
-.monitor-card.kind-team .mc-kind { background: #6b5fc7; }
-.monitor-card.kind-chat .mc-kind { background: var(--accent); }
-.mc-meta { color: #6b6f75; font-size: 12px; }
-.mc-tool { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--brand); margin-top: 4px; }
-.mc-tail { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--text-2); background: #f4f5f6; border-radius: 5px; padding: 4px 7px; margin-top: 5px; white-space: pre-wrap; max-height: 7em; overflow: hidden; }
-.mc-team { font-size: 12px; color: #6b5fc7; margin-top: 5px; font-weight: 500; }
-.mc-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
-.mc-member { font-size: 11.5px; border-radius: 5px; padding: 2px 7px; background: #eef0f1; color: var(--text-2); }
-.mc-member.status-running { background: var(--brand-soft); color: var(--brand); }
-.mc-member.status-done { background: #e8f6ef; color: #2a7a5a; }
-.mc-member.status-error { background: #fbeceb; color: #8c1d18; }
-/* Developer-tools gate: the add button and the terminal/monitor entries are
-   hidden unless the user opts in via Settings → Appearance. Normal users
-   never see terminal/monitor entry points. */
-body:not([data-dev-tools="true"]) .tabbar-add,
-body:not([data-dev-tools="true"]) .tabbar-add-menu [data-add-pane="terminal"],
-body:not([data-dev-tools="true"]) .tabbar-add-menu [data-add-pane="monitor"] { display: none !important; }
-/* Terminal needs node-pty; hide its entry when the native module isn't loadable. */
-body:not([data-terminal-capable="true"]) .tabbar-add-menu [data-add-pane="terminal"] { display: none !important; }
+/* Terminal needs node-pty; hide Terminal entry points when unavailable. */
+body:not([data-terminal-capable="true"]) .aux-action[data-aux="terminal"],
+body:not([data-terminal-capable="true"]) #terminalToggleBtn { display: none !important; }
 .topbar { min-height: 58px; border-bottom: 1px solid #e7e7e7; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; }
 .title-block { min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 8px; }
@@ -7792,43 +8120,202 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions button { border: 1px solid var(--border); border-radius: 8px; min-height: 34px; padding: 0 12px; background: var(--bg-surface); }
 .dialog-actions .primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
-.settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: var(--bg-surface); border: 1px solid #cfcfcf; }
-.settings-sidebar { width: 300px; flex: 0 0 300px; padding: 18px 10px; overflow: auto; background: linear-gradient(150deg, #f7f2ef 0%, #f2f0e9 58%, #e8f4ee 100%); border-right: 1px solid var(--border); }
-.back-btn { width: 100%; min-height: 34px; border: 0; background: transparent; text-align: left; color: var(--text-2); border-radius: 8px; padding: 0 10px; margin-bottom: 12px; }
-.settings-search { display: grid; gap: 6px; margin-bottom: 18px; color: var(--text-2); font-size: 13px; }
-.settings-tab { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; border-radius: 8px; padding: 0 10px; text-align: left; color: var(--text-1); }
-.settings-icon { color: var(--text-2); }
-.settings-tab:hover, .settings-tab.active, .back-btn:hover { background: rgba(0,0,0,.06); }
-.settings-main { flex: 1; overflow: auto; padding: 84px min(11vw, 160px) 110px; position: relative; }
-.settings-panel { display: none; max-width: 840px; }
+.settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: var(--bg-app); color: var(--text-1); }
+.settings-sidebar {
+  width: 240px;
+  flex: 0 0 240px;
+  padding: 12px 8px;
+  overflow: auto;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+}
+.back-btn {
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: var(--text-2);
+  border-radius: 8px;
+  padding: 0 10px;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+}
+.settings-search { display: grid; gap: 4px; margin-bottom: 12px; color: var(--text-2); font-size: 11.5px; }
+.settings-search input {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.settings-sidebar section { margin-bottom: 10px; }
+.settings-sidebar section h2 {
+  margin: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.settings-tab {
+  width: 100%;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 0 10px;
+  text-align: left;
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.settings-tab .settings-icon,
+.settings-tab .ui-icon { width: 15px; height: 15px; color: var(--text-2); }
+.settings-tab:hover, .back-btn:hover { background: var(--surface-hover); }
+.settings-tab.active { background: var(--surface-selected); font-weight: 600; }
+.settings-tab.active .settings-icon,
+.settings-tab.active .ui-icon { color: var(--text-1); }
+.settings-main {
+  flex: 1;
+  overflow: auto;
+  padding: 28px 24px 72px;
+  position: relative;
+  background: var(--bg-app);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.settings-panel { display: none; width: min(720px, 100%); max-width: 720px; }
 .settings-panel.active { display: block; }
-.settings-panel h1 { font-size: 24px; margin: 0 0 64px; }
-.settings-group { margin-bottom: 42px; }
-.settings-group h2 { font-size: 18px; margin: 0 0 8px; }
-.settings-group p { margin: 0 0 20px; color: #7b7f84; }
-.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.mode-card { min-height: 78px; border: 1px solid #e2e2e2; border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; }
-.mode-card input { order: 2; width: 20px; height: 20px; accent-color: #4a90f7; }
-.mode-card small { display: block; color: var(--text-2); margin-top: 4px; }
-.settings-row { min-height: 82px; border: 1px solid var(--border); border-bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 16px; }
-.settings-row:first-child { border-radius: 12px 12px 0 0; }
-.settings-row:nth-last-child(2) { border-bottom: 1px solid var(--border); border-radius: 0 0 12px 12px; }
-.settings-row small { display: block; color: var(--text-2); margin-top: 4px; }
-.settings-row input[type="checkbox"], .check-row input { width: 22px; height: 22px; accent-color: #4a90f7; }
-.inline-field, .two-col label, .settings-command-row label { display: grid; gap: 7px; color: var(--text-2); font-size: 13px; }
-.inline-field { margin-top: 14px; max-width: 320px; }
+.settings-panel h1 { font-size: 18px; font-weight: 650; margin: 0 0 28px; color: var(--text-1); letter-spacing: -0.01em; }
+.settings-group {
+  margin-bottom: 0;
+  padding: 22px 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-group:last-of-type { border-bottom: 0; padding-bottom: 8px; }
+.settings-group h2 { font-size: 13.5px; font-weight: 600; margin: 0 0 8px; color: var(--text-1); }
+.settings-group p,
+.settings-group > .muted {
+  margin: 0 0 14px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mode-card {
+  min-height: 56px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  font-size: 12.5px;
+}
+.mode-card input { order: 2; width: 16px; height: 16px; accent-color: var(--brand); }
+.mode-card small { display: block; color: var(--text-2); margin-top: 2px; font-size: 11.5px; }
+.settings-row {
+  min-height: 56px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  font-size: 12.5px;
+}
+.settings-row:first-child { border-radius: 10px 10px 0 0; }
+.settings-row:nth-last-child(2) { border-bottom: 1px solid var(--border); border-radius: 0 0 10px 10px; }
+.settings-row:only-of-type,
+.settings-group > .settings-row:last-child { border-bottom: 1px solid var(--border); border-radius: 10px; }
+.settings-row strong { font-size: 12.5px; font-weight: 600; }
+.settings-row small { display: block; color: var(--text-2); margin-top: 3px; font-size: 11.5px; line-height: 1.45; }
+.settings-row input[type="checkbox"], .check-row input { width: 16px; height: 16px; accent-color: var(--brand); }
+.inline-field, .two-col label, .settings-command-row label { display: grid; gap: 4px; color: var(--text-2); font-size: 12px; }
+.inline-field { margin-top: 10px; max-width: 320px; }
 .inline-field.wide { max-width: 520px; }
-.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select, .bridge-model-row input, .bridge-model-row select { min-height: 38px; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; background: var(--bg-surface); color: var(--text-1); }
-.check-row { display: flex !important; align-items: center; gap: 10px; color: var(--text-1) !important; }
-.shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 38px; }
-kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 2px 7px; background: #fafafa; }
-.secondary-btn { border-color: var(--border); background: var(--bg-surface); padding: 0 12px; }
-.settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 10px; margin: 14px 0; }
-.settings-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-.automation-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; gap: 10px; margin: 14px 0 10px; }
-.automation-schedule-grid label, .automation-schedule-payload { display: grid; gap: 7px; color: var(--text-2); font-size: 13px; }
-.automation-schedule-grid input, .automation-schedule-grid select, .automation-schedule-payload textarea { min-height: 38px; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); }
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.two-col input, .two-col select, .inline-field input, .inline-field select, .settings-command-row input, .settings-command-row select, .bridge-model-row input, .bridge-model-row select {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.check-row { display: flex !important; align-items: center; gap: 8px; color: var(--text-1) !important; font-size: 12.5px; }
+.shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
+kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: var(--bg-surface); font-size: 11.5px; }
+.secondary-btn,
+.settings-view .secondary-btn,
+.settings-view button.primary,
+.settings-card button,
+.settings-action-row > button,
+.settings-help-row > button,
+.settings-group-head > button {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-surface-2);
+  color: var(--text-1);
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: none;
+  line-height: 1;
+}
+.secondary-btn:hover,
+.settings-view .secondary-btn:hover,
+.settings-view button.primary:hover,
+.settings-card button:hover,
+.settings-action-row > button:hover,
+.settings-help-row > button:hover,
+.settings-group-head > button:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-hover);
+  color: var(--text-1);
+}
+.settings-view .primary,
+.settings-action-row > button.primary,
+.settings-card button.primary,
+.settings-group-head > button.primary {
+  background: var(--bg-surface-2);
+  color: var(--text-1);
+  border-color: var(--border);
+  font-weight: 600;
+}
+.settings-view .primary:hover,
+.settings-action-row > button.primary:hover,
+.settings-card button.primary:hover,
+.settings-group-head > button.primary:hover {
+  background: var(--accent-strong);
+  border-color: var(--border-hover);
+  color: var(--text-1);
+}
+.settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 8px; margin: 10px 0; }
+.settings-action-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.automation-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; gap: 8px; margin: 10px 0 8px; }
+.automation-schedule-grid label, .automation-schedule-payload { display: grid; gap: 4px; color: var(--text-2); font-size: 12px; }
+.automation-schedule-grid input, .automation-schedule-grid select, .automation-schedule-payload textarea {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
 .automation-schedule-payload { max-width: 760px; }
 .automation-schedule-payload textarea { min-height: 76px; resize: vertical; }
 .automation-region-section { display: grid; gap: 12px; }
@@ -7894,37 +8381,59 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .automation-region-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .automation-region-title h3 { margin: 0; font-size: 15px; color: var(--text-1); }
 .automation-region-title small { color: var(--text-2); }
-.settings-help-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid #eee; }
-.settings-help-row:first-of-type { border-top: 0; }
-.settings-help-row > span { display: grid; gap: 3px; }
-.settings-help-row small { color: var(--text-2); }
-.settings-help-row .secondary-btn { white-space: nowrap; }
+.settings-help-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+.settings-help-row:first-of-type { border-top: 0; padding-top: 0; }
+.settings-help-row > span { display: grid; gap: 4px; min-width: 0; }
+.settings-help-row strong { font-size: 12.5px; font-weight: 600; }
+.settings-help-row small { color: var(--text-2); font-size: 11.5px; line-height: 1.45; }
+.settings-help-row .secondary-btn { white-space: nowrap; flex: 0 0 auto; }
 .switch-field { display: inline-flex; align-items: center; }
-.switch-field input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand); cursor: pointer; }
-.settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; }
+.switch-field input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
+.settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; margin-top: 2px; }
 .settings-card-list.compact { max-height: 260px; }
-.settings-card { border: 1px solid #e3e5e7; border-radius: 8px; padding: 12px; display: grid; gap: 8px; background: var(--bg-surface); }
-.settings-card strong { overflow-wrap: anywhere; font-size: 14px; }
-.settings-card p { margin: 0; color: #6f7479; overflow-wrap: anywhere; }
-.settings-card footer { display: flex; flex-wrap: wrap; gap: 8px; }
-.settings-card button { min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 10px; }
-.runtime-discovery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 14px 0 8px; padding-top: 12px; border-top: 1px solid #eeeeee; }
-.runtime-discovery-head small { color: var(--text-2); }
-.runtime-list { margin-bottom: 12px; }
-.runtime-card { border-left-width: 4px; }
-.runtime-card.status-ready { border-left-color: #1f8f4c; }
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  background: var(--bg-surface);
+  font-size: 12.5px;
+}
+.settings-card.active { border-color: var(--border-active-soft); background: var(--surface-selected); }
+.settings-card strong { overflow-wrap: anywhere; font-size: 12.5px; font-weight: 600; }
+.settings-card p { margin: 0; color: var(--text-2); overflow-wrap: anywhere; font-size: 12px; line-height: 1.45; }
+.settings-card footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.settings-group-head h2 { margin: 0; font-size: 13.5px; }
+.settings-group-head + p,
+.settings-group-head + .muted { margin-top: 0; }
+.runtime-discovery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 16px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.runtime-discovery-head small { color: var(--text-2); font-size: 11.5px; }
+.runtime-list { margin-bottom: 10px; }
+.runtime-card { border-left-width: 3px; }
+.runtime-card.status-ready { border-left-color: var(--ok); }
 .runtime-card.status-detected { border-left-color: var(--brand); }
-.runtime-card.status-configured { border-left-color: #b7791f; }
-.runtime-card.status-missing { border-left-color: #b8bdc5; }
+.runtime-card.status-configured { border-left-color: var(--warn); }
+.runtime-card.status-missing { border-left-color: var(--border-hover); }
 .runtime-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.runtime-status { min-height: 22px; display: inline-flex; align-items: center; border-radius: 999px; padding: 0 9px; font-size: 11px; font-weight: 700; }
-.runtime-status.ready { background: #e8f7ef; color: #18794e; }
+.runtime-status { min-height: 20px; display: inline-flex; align-items: center; border-radius: 999px; padding: 0 8px; font-size: 10.5px; font-weight: 650; }
+.runtime-status.ready { background: var(--ok-soft); color: var(--ok); }
 .runtime-status.detected { background: var(--brand-soft); color: var(--brand); }
-.runtime-status.configured { background: #fff7e6; color: #8a5a12; }
-.runtime-status.missing { background: var(--bg-surface-2); color: #6f7479; }
-.runtime-hint { font-size: 12px; }
-.settings-autosave-status { position: fixed; right: min(11vw, 160px); bottom: 24px; min-height: 20px; pointer-events: none; }
-.settings-autosave-status .muted { font-size: 12px; }
+.runtime-status.configured { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.runtime-status.missing { background: var(--bg-surface-2); color: var(--text-2); }
+.runtime-hint { font-size: 11.5px; }
+.settings-autosave-status {
+  position: sticky;
+  align-self: center;
+  width: min(720px, 100%);
+  margin-top: auto;
+  padding-top: 12px;
+  min-height: 18px;
+  pointer-events: none;
+  text-align: right;
+}
+.settings-autosave-status .muted { font-size: 11.5px; }
 .muted { color: var(--text-2); font-size: 13px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(107,130,153,0); } 100% { box-shadow: 0 0 0 0 rgba(107,130,153,0); } }
@@ -7935,14 +8444,14 @@ body[data-density="compact"] .transcript { padding-top: 14px; padding-bottom: 10
 body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 /* Dark-theme reserves for the new workbench regions (plan/UI_PLAN §2 — U9). */
 @media (max-width: 860px) {
-  .sidebar, .settings-sidebar { width: 86px; flex-basis: 86px; }
+  .sidebar, .settings-sidebar { width: 72px; flex-basis: 72px; }
   .sidebar .search, .command-section, .project-section h2, .project-session-list, .sidebar-link, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
   .transcript { padding: 18px 16px; }
   .composer { margin: 0 12px 12px; }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
   .automation-schedule-grid { grid-template-columns: 1fr; }
-  .settings-main { padding: 48px 22px 110px; }
+  .settings-main { padding: 22px 16px 64px; }
 }
 .context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
 .context-bar.hidden { display: none; }
@@ -7965,26 +8474,155 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 #todosList li.todo-in_progress { font-weight: 500; color: var(--brand); }
 .permission-actions { flex-wrap: wrap; justify-content: flex-end; }
 .permission-actions .danger { color: var(--err); }
-.model-picker-wrapper { display: inline-flex; }
+.model-picker-wrapper { position: relative; display: inline-flex; }
 .model-picker-btn { min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .model-picker-btn:hover { background: var(--bg-surface-2); }
-.model-picker-menu { position: absolute; right: 0; bottom: calc(100% + 6px); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.14); z-index: 15; max-height: 380px; overflow: hidden; }
-.model-picker-menu.hidden { display: none; }
-.picker-cols { display: flex; flex-direction: row-reverse; align-items: flex-start; }
-.picker-col { min-width: 168px; max-height: 360px; overflow-y: auto; padding: 4px; }
-.picker-col + .picker-col { border-right: 1px solid var(--border); }
-.picker-col-hidden { display: none; }
-.picker-item { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; font: inherit; font-size: 13px; color: var(--text-1); cursor: pointer; text-align: left; }
-.picker-item:hover, .picker-item.hover { background: var(--bg-surface-2); }
-.picker-item.selected { background: #e9f2fe; color: var(--brand); }
-.picker-check { flex: 0 0 14px; width: 14px; color: var(--brand); font-weight: 700; text-align: center; }
-.picker-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.picker-item-hint { font-size: 11px; color: var(--text-2); flex-shrink: 0; }
-.picker-item-tags { font-size: 10px; color: var(--text-2); background: var(--bg-surface-2); border-radius: 3px; padding: 0 5px; flex-shrink: 0; }
-.picker-arrow { font-size: 10px; color: #b4b8bd; flex-shrink: 0; width: 12px; text-align: center; }
-.picker-placeholder { padding: 10px 12px; font-size: 12px; color: #b4b8bd; text-align: center; white-space: nowrap; }
-.settings-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.settings-group-head h2 { margin: 0; }
+.model-picker-flyout {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  z-index: 20;
+}
+.model-picker-flyout.hidden { display: none; }
+.model-picker-menu {
+  width: 320px;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0,0,0,.14);
+  overflow: hidden;
+}
+.picker-search-wrap { padding: 8px 8px 4px; flex: 0 0 auto; }
+.picker-search {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-app);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  outline: none;
+}
+.picker-search:focus { border-color: var(--brand); }
+.picker-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 8px; max-height: 320px; }
+.picker-edit-popover {
+  width: 168px;
+  align-self: flex-start;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0,0,0,.14);
+  padding: 6px;
+  overflow: hidden;
+}
+.picker-edit-popover.hidden { display: none; }
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+  box-sizing: border-box;
+}
+.picker-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.picker-item:hover { background: rgba(0,0,0,.045); }
+.picker-item.selected { background: rgba(0,0,0,.06); }
+.picker-item.editing { background: rgba(0,0,0,.07); }
+.picker-item-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.picker-item-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.picker-item-actions {
+  display: none;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+  margin-left: 4px;
+}
+.picker-item.selected .picker-item-actions { display: inline-flex; }
+.picker-reset-btn,
+.picker-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.picker-reset-btn { width: 24px; height: 24px; padding: 0; font-size: 14px; }
+.picker-reset-btn:hover,
+.picker-edit-btn:hover { background: rgba(0,0,0,.06); color: var(--text-1); }
+.picker-edit-btn.open { background: rgba(0,0,0,.08); color: var(--text-1); }
+.picker-check {
+  flex: 0 0 16px;
+  width: 16px;
+  margin-left: 2px;
+  color: var(--text-1);
+  font-weight: 600;
+  text-align: center;
+  font-size: 13px;
+}
+.picker-check.spacer { visibility: hidden; }
+.picker-section-label {
+  padding: 8px 8px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.picker-effort-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-1);
+  cursor: pointer;
+  text-align: left;
+}
+.picker-effort-item:hover { background: rgba(0,0,0,.045); }
+.picker-effort-item.selected { background: transparent; }
+.picker-effort-item .picker-item-label { font-weight: 400; }
+.picker-effort-item .picker-check { margin-left: auto; }
+.picker-placeholder { padding: 14px 12px; font-size: 12px; color: var(--text-2); text-align: center; }
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
 .router-editor { width: min(720px, 100%); }
 .router-editor textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); font: inherit; }
@@ -8033,10 +8671,13 @@ const _ICONS = {
   dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  review: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+  panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
   drive: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/>',
   chevronUp: '<path d="m18 15-6-6-6 6"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-  globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
   memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
   plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
@@ -8077,7 +8718,7 @@ const ISSUE_STATUS_LABELS = {
 const ISSUE_PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'None' };
 const ISSUE_TRANSITIONS = {
   backlog: ['todo', 'cancelled'],
-  todo: ['in_progress', 'cancelled'],
+  todo: ['cancelled'],
   in_progress: ['in_review', 'blocked', 'todo'],
   in_review: ['done', 'todo'],
   blocked: ['todo'],
@@ -8126,11 +8767,14 @@ const state = {
   // only this run is stopped; falls back to the server's foreground run when
   // null (e.g. slash commands, which emit no run.started).
   activeRunId: null,
-  // Workbench: top-tab bar of chat / terminal / monitor panes. The single
-  // chat pane (pane-chat-default) is always present and non-closable; the
-  // terminal/monitor entry points are gated behind developer tools.
-  tabs: [{ id: 'pane-chat-default', type: 'chat', title: 'Chat', closable: false }],
-  activeTabId: 'pane-chat-default',
+  // Workbench: chat stays left; aux panel hosts Review/Browser/Files;
+  // Terminal opens in the bottom dock. Monitor was removed.
+  tabs: [],
+  activeTabId: null,
+  auxView: null,
+  auxCollapsed: false,
+  auxFocused: false,
+  filesBrowsePath: null,
   // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
   // is visible. Project = the existing chat workbench (default).
   activeRegion: 'project',
@@ -8159,11 +8803,16 @@ const state = {
   issuesStorage: 'home',
   issuesSelectedId: null,
   issuesFilter: 'open',
+  issuesQuery: '',
+  issuesPriority: 'all',
   issuesLoading: false,
   issuesError: null,
   activeSessionId: null,
   lastHydratedMessages: null,
   transcriptCache: {},
+  /** Agent name whose temporary effort editor is open in the composer picker. */
+  pickerEditingAgent: null,
+  pickerQuery: '',
   // Team region: selected squad + its expanded definition + selected graph node.
   teamSelected: null,
   teamDefinition: null,
@@ -8198,118 +8847,299 @@ function applyPreferences(preferences) {
   document.body.dataset.density = state.preferences.density === 'compact' ? 'compact' : 'comfortable';
   document.body.dataset.devTools = state.preferences.developerTools ? 'true' : 'false';
 }
-// --- Workbench tabs / panes ---
-function paneIconFor(type) {
-  if (type === 'terminal') return guiIcon('terminal');
-  if (type === 'monitor') return guiIcon('dashboard');
-  return guiIcon('chat');
+// --- Workbench aux panel + terminal dock (Codex-style) ---
+function showAuxLauncher() {
+  state.auxView = null;
+  const launcher = el('auxLauncher');
+  const view = el('auxView');
+  const closeBtn = el('auxCloseBtn');
+  if (launcher) launcher.classList.remove('hidden');
+  if (view) { view.classList.add('hidden'); view.textContent = ''; }
+  if (closeBtn) closeBtn.classList.add('hidden');
 }
-function renderTabs() {
-  const host = el('tabbarTabs');
+function syncAuxChrome() {
+  const panel = el('auxPanel');
+  if (panel) panel.classList.toggle('collapsed', state.auxCollapsed);
+  const title = state.auxCollapsed ? 'Show panel' : 'Hide panel';
+  for (const id of ['auxToggleBtn', 'auxPanelToggleBtn']) {
+    const toggle = el(id);
+    if (!toggle) continue;
+    toggle.title = title;
+    toggle.setAttribute('aria-label', title);
+    toggle.setAttribute('aria-pressed', state.auxCollapsed ? 'false' : 'true');
+    toggle.innerHTML = guiIcon(state.auxCollapsed ? 'panelLeft' : 'panelRight');
+  }
+}
+function ensureAuxVisible() {
+  state.auxCollapsed = false;
+  syncAuxChrome();
+}
+function openAuxView(kind) {
+  ensureAuxVisible();
+  state.auxView = kind;
+  const launcher = el('auxLauncher');
+  const view = el('auxView');
+  const closeBtn = el('auxCloseBtn');
+  if (launcher) launcher.classList.add('hidden');
+  if (view) view.classList.remove('hidden');
+  if (closeBtn) closeBtn.classList.remove('hidden');
+  if (kind === 'review') renderAuxReview().catch(console.error);
+  else if (kind === 'browser') renderAuxBrowser();
+  else if (kind === 'files') renderAuxFiles().catch(console.error);
+}
+function toggleAuxPanel() {
+  state.auxCollapsed = !state.auxCollapsed;
+  if (state.auxCollapsed && state.auxFocused) {
+    state.auxFocused = false;
+    const panel = el('auxPanel');
+    if (panel) panel.classList.remove('focused');
+    const workbench = document.querySelector('.workbench');
+    if (workbench) workbench.classList.remove('aux-focused');
+  }
+  syncAuxChrome();
+}
+function toggleAuxFocus() {
+  state.auxFocused = !state.auxFocused;
+  const panel = el('auxPanel');
+  if (panel) panel.classList.toggle('focused', state.auxFocused);
+  const workbench = document.querySelector('.workbench');
+  if (workbench) workbench.classList.toggle('aux-focused', state.auxFocused);
+}
+async function renderAuxReview() {
+  const view = el('auxView');
+  if (!view) return;
+  view.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'aux-view-header';
+  head.innerHTML = '<span class="aux-view-title">Review</span>';
+  const body = document.createElement('div');
+  body.className = 'aux-view-body';
+  body.innerHTML = '<p class="aux-empty muted">Loading git changes…</p>';
+  view.append(head, body);
+  const data = await gitData();
+  body.textContent = '';
+  if (!data || !data.isRepo) {
+    const note = document.createElement('p');
+    note.className = 'aux-empty muted';
+    note.textContent = data ? 'This workspace is not a git repository.' : 'Git unavailable.';
+    body.appendChild(note);
+    return;
+  }
+  const status = data.status || [];
+  if (!status.length) {
+    const note = document.createElement('p');
+    note.className = 'aux-empty muted';
+    note.textContent = 'Working tree clean.';
+    body.appendChild(note);
+  } else {
+    for (const entry of status) {
+      const row = document.createElement('div');
+      row.className = 'git-row';
+      const code = (entry.x || '') + (entry.y || '');
+      const stat = document.createElement('span');
+      stat.className = 'git-stat' + (code.indexOf('D') !== -1 ? ' del' : '');
+      stat.textContent = code || '•';
+      const file = document.createElement('span');
+      file.className = 'git-mono';
+      file.textContent = entry.file;
+      row.append(stat, file);
+      body.appendChild(row);
+    }
+  }
+  const meta = document.createElement('p');
+  meta.className = 'muted';
+  meta.style.marginTop = '12px';
+  meta.style.fontSize = '12px';
+  const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
+  meta.textContent = 'On ' + data.branch + (data.upstream ? ' → ' + data.upstream : '') + tracking;
+  body.appendChild(meta);
+}
+function renderAuxBrowser() {
+  const view = el('auxView');
+  if (!view) return;
+  view.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'aux-view-header';
+  head.innerHTML = '<span class="aux-view-title">Browser</span>';
+  const body = document.createElement('div');
+  body.className = 'aux-view-body';
+  const bar = document.createElement('div');
+  bar.className = 'aux-path-bar';
+  const input = document.createElement('input');
+  input.type = 'url';
+  input.placeholder = 'https://…';
+  input.value = 'https://';
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.className = 'pill-btn';
+  go.textContent = 'Open';
+  const openUrl = () => {
+    const raw = (input.value || '').trim();
+    if (!raw || raw === 'https://') return;
+    const url = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+  go.addEventListener('click', openUrl);
+  input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); openUrl(); } });
+  bar.append(input, go);
+  const hint = document.createElement('p');
+  hint.className = 'muted';
+  hint.style.fontSize = '12.5px';
+  hint.textContent = 'Opens the URL in your system browser. In-app browsing will land here later.';
+  body.append(bar, hint);
+  view.append(head, body);
+}
+async function renderAuxFiles(targetPath) {
+  const view = el('auxView');
+  if (!view) return;
+  view.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'aux-view-header';
+  head.innerHTML = '<span class="aux-view-title">Files</span>';
+  const body = document.createElement('div');
+  body.className = 'aux-view-body';
+  body.innerHTML = '<p class="aux-empty muted">Loading…</p>';
+  view.append(head, body);
+  const workDir = (state.snapshot && state.snapshot.workDir) || '';
+  const pathToLoad = targetPath || state.filesBrowsePath || workDir;
+  try {
+    const res = await api('/api/workspace-files?path=' + encodeURIComponent(pathToLoad || ''));
+    const data = await res.json();
+    body.textContent = '';
+    if (!res.ok) {
+      const note = document.createElement('p');
+      note.className = 'aux-empty muted';
+      note.textContent = data.error || 'Could not list files.';
+      body.appendChild(note);
+      return;
+    }
+    state.filesBrowsePath = data.path || pathToLoad;
+    const pathLabel = document.createElement('p');
+    pathLabel.className = 'muted';
+    pathLabel.style.fontSize = '11.5px';
+    pathLabel.style.marginBottom = '8px';
+    pathLabel.style.wordBreak = 'break-all';
+    pathLabel.textContent = data.path || workDir || '/';
+    body.appendChild(pathLabel);
+    if (data.parent) {
+      const up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'aux-file-row';
+      up.innerHTML = guiIcon('folder') + '<span class="aux-file-name">..</span>';
+      up.addEventListener('click', () => { renderAuxFiles(data.parent).catch(console.error); });
+      body.appendChild(up);
+    }
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    if (!entries.length) {
+      const note = document.createElement('p');
+      note.className = 'aux-empty muted';
+      note.textContent = 'Empty folder.';
+      body.appendChild(note);
+      return;
+    }
+    for (const entry of entries) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'aux-file-row';
+      row.innerHTML = guiIcon(entry.kind === 'folder' ? 'folder' : 'list') + '<span class="aux-file-name"></span>';
+      row.querySelector('.aux-file-name').textContent = entry.name;
+      if (entry.kind === 'folder') {
+        row.addEventListener('click', () => { renderAuxFiles(entry.path).catch(console.error); });
+      } else {
+        row.title = entry.path;
+        row.addEventListener('click', () => { flashStatus(entry.name); });
+      }
+      body.appendChild(row);
+    }
+  } catch (error) {
+    body.textContent = '';
+    const note = document.createElement('p');
+    note.className = 'aux-empty muted';
+    note.textContent = error && error.message ? error.message : 'Could not list files.';
+    body.appendChild(note);
+  }
+}
+function renderTerminalDockTabs() {
+  const host = el('terminalDockTabs');
   if (!host) return;
   host.textContent = '';
   for (const tab of state.tabs) {
+    if (tab.type !== 'terminal') continue;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'tab' + (tab.id === state.activeTabId ? ' active' : '');
-    btn.dataset.tabId = tab.id;
-    btn.innerHTML = '<span class="tab-icon">' + paneIconFor(tab.type) + '</span>'
-      + '<span class="tab-label">' + tab.title + '</span>'
-      + (tab.closable ? '<span class="tab-close" title="Close">' + guiIcon('close') + '</span>' : '');
-    btn.addEventListener('click', (event) => {
-      if (tab.closable && event.target.closest('.tab-close')) closeTab(tab.id);
-      else switchTab(tab.id);
-    });
+    btn.className = 'terminal-dock-tab' + (tab.id === state.activeTabId ? ' active' : '');
+    btn.innerHTML = '<span class="tab-icon">' + guiIcon('terminal') + '</span><span class="tab-label"></span>';
+    btn.querySelector('.tab-label').textContent = tab.title || 'Terminal';
+    btn.addEventListener('click', () => switchTerminalTab(tab.id));
     host.appendChild(btn);
   }
 }
-function switchTab(id) {
+function switchTerminalTab(id) {
   state.activeTabId = id;
-  document.querySelectorAll('.pane').forEach((pane) => pane.classList.toggle('active', pane.id === id));
-  renderTabs();
-  // Drive the Monitor pane's poller only while a monitor pane is visible.
-  const tab = state.tabs.find((t) => t.id === id);
-  if (tab && tab.type === 'monitor') startMonitorPolling(id);
-  else stopMonitorPolling();
-}
-// Monitor pane (plan phase 4): polls GET /api/state ~800ms and renders state.runs[]
-// as live cards — current tool, tail text, tokens, duration, status, team round/members.
-let monitorTimer = null;
-let monitorPaneId = null;
-function startMonitorPolling(paneId) {
-  stopMonitorPolling();
-  monitorPaneId = paneId;
-  refreshMonitor(paneId);
-  monitorTimer = setInterval(() => { if (monitorPaneId === paneId) refreshMonitor(paneId); }, 800);
-}
-function stopMonitorPolling() {
-  if (monitorTimer) { clearInterval(monitorTimer); monitorTimer = null; }
-  monitorPaneId = null;
-}
-async function refreshMonitor(paneId) {
-  const pane = document.getElementById(paneId);
-  if (!pane) { stopMonitorPolling(); return; }
-  const list = pane.querySelector('.monitor-list');
-  if (!list) return;
-  let runs = [];
-  try {
-    const res = await api('/api/state');
-    if (res.ok) { const st = await res.json(); runs = Array.isArray(st.runs) ? st.runs : []; }
-  } catch { /* transient — keep the last render */ return; }
-  renderMonitorCards(list, runs);
-}
-function renderMonitorCards(list, runs) {
-  list.textContent = '';
-  if (!runs.length) {
-    const empty = document.createElement('p');
-    empty.className = 'monitor-empty muted';
-    empty.textContent = 'No active runs.';
-    list.appendChild(empty);
-    return;
+  const body = el('terminalDockBody');
+  if (body) {
+    body.querySelectorAll('.pane-terminal').forEach((pane) => {
+      pane.style.display = pane.id === id ? 'flex' : 'none';
+    });
   }
-  for (const r of runs) {
-    const card = document.createElement('article');
-    card.className = 'monitor-card kind-' + r.kind + ' status-' + r.status;
-    const head = document.createElement('header');
-    const title = document.createElement('span');
-    title.className = 'mc-title';
-    title.textContent = r.label || r.runId;
-    const badge = document.createElement('span');
-    badge.className = 'mc-kind';
-    badge.textContent = r.kind;
-    head.appendChild(title); head.appendChild(badge);
-    card.appendChild(head);
-    const meta = document.createElement('div');
-    meta.className = 'mc-meta';
-    const dur = r.startedAt ? Math.max(0, Math.round((Date.now() - r.startedAt) / 1000)) + 's' : '';
-    const toks = (r.tokenUsage && ((r.tokenUsage.input || 0) + (r.tokenUsage.output || 0))) || 0;
-    meta.textContent = [r.status, r.model, dur, r.toolCalls ? r.toolCalls + ' tools' : '', toks ? '~' + toks + ' tok' : ''].filter(Boolean).join(' · ');
-    card.appendChild(meta);
-    if (r.currentTool) {
-      const t = document.createElement('div'); t.className = 'mc-tool'; t.textContent = '▸ ' + r.currentTool; card.appendChild(t);
-    }
-    if (r.lastText) {
-      const tail = document.createElement('div'); tail.className = 'mc-tail'; tail.textContent = String(r.lastText).slice(-160); card.appendChild(tail);
-    }
-    if (r.team) {
-      const tm = document.createElement('div'); tm.className = 'mc-team';
-      tm.textContent = 'round ' + r.team.round + ' · ' + r.team.members.length + ' members';
-      card.appendChild(tm);
-      const ml = document.createElement('div'); ml.className = 'mc-members';
-      for (const m of r.team.members) {
-        const mi = document.createElement('span');
-        mi.className = 'mc-member status-' + m.status;
-        mi.textContent = (m.role || m.id) + ' (' + m.model + ')' + (m.currentTool ? ' ▸ ' + m.currentTool : '');
-        ml.appendChild(mi);
-      }
-      card.appendChild(ml);
-    }
-    if (r.kind === 'chat') {
-      card.classList.add('clickable');
-      card.addEventListener('click', () => switchTab('pane-chat-default'));
-    }
-    list.appendChild(card);
+  renderTerminalDockTabs();
+}
+function syncTerminalToggle() {
+  const dock = el('terminalDock');
+  const open = Boolean(dock && !dock.classList.contains('hidden'));
+  const btn = el('terminalToggleBtn');
+  if (btn) {
+    btn.setAttribute('aria-pressed', open ? 'true' : 'false');
+    btn.title = open ? 'Hide terminal' : 'Show terminal';
+    btn.setAttribute('aria-label', btn.title);
   }
+}
+function openTerminalDock() {
+  const dock = el('terminalDock');
+  if (!dock) return;
+  dock.classList.remove('hidden');
+  const existing = state.tabs.find((t) => t.type === 'terminal');
+  if (existing) switchTerminalTab(existing.id);
+  else addTerminalPane();
+  syncTerminalToggle();
+}
+function closeTerminalDock() {
+  for (const tab of [...state.tabs]) {
+    if (tab.type === 'terminal') closeTerminalTab(tab.id);
+  }
+  const dock = el('terminalDock');
+  if (dock) dock.classList.add('hidden');
+  syncTerminalToggle();
+}
+function toggleTerminalDock() {
+  const dock = el('terminalDock');
+  if (!dock) return;
+  if (dock.classList.contains('hidden')) openTerminalDock();
+  else closeTerminalDock();
+}
+function closeTerminalTab(id) {
+  const index = state.tabs.findIndex((t) => t.id === id);
+  if (index === -1) return;
+  const [tab] = state.tabs.splice(index, 1);
+  if (tab) {
+    if (typeof tab.dispose === 'function') tab.dispose();
+    if (tab.terminalId) api('/api/terminal/kill', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: tab.terminalId }) }).catch(() => {});
+  }
+  const pane = document.getElementById(id);
+  if (pane) pane.remove();
+  const next = state.tabs.find((t) => t.type === 'terminal');
+  if (next) switchTerminalTab(next.id);
+  else {
+    state.activeTabId = null;
+    const dock = el('terminalDock');
+    if (dock) dock.classList.add('hidden');
+  }
+  renderTerminalDockTabs();
+  syncTerminalToggle();
+}
+function handleAuxAction(kind) {
+  if (kind === 'terminal') openTerminalDock();
+  else if (kind === 'review' || kind === 'browser' || kind === 'files') openAuxView(kind);
 }
 let paneCounter = 0;
 // Lazily load the vendored xterm UMD assets (same-origin, allowed by script-src
@@ -8345,7 +9175,7 @@ function makeStub(pane, type, note) {
   pane.textContent = '';
   const stub = document.createElement('div');
   stub.className = 'pane-stub';
-  stub.innerHTML = '<span class="stub-icon">' + paneIconFor(type) + '</span><p>' + note + '</p>';
+  stub.innerHTML = '<span class="stub-icon">' + guiIcon(type === 'terminal' ? 'terminal' : 'folder') + '</span><p>' + note + '</p>';
   pane.appendChild(stub);
 }
 // --- Smart terminal helpers (plan phase 5): blocks, history, output→agent ---
@@ -8363,7 +9193,6 @@ function sendOutputToAgent(text) {
   if (!body) return;
   const sep = ta.value && !ta.value.endsWith('\\n') ? '\\n\\n' : '';
   ta.value = ta.value + sep + 'Terminal output:\\n---\\n' + stripAnsiClient(body) + '\\n---';
-  switchTab('pane-chat-default');
   ta.focus();
 }
 function renderBlocksPanel(tab) {
@@ -8516,51 +9345,33 @@ async function initTerminalPane(pane, tab) {
     pump().catch(() => { /* stream aborted on close */ });
   } catch (e) { /* aborted */ }
 }
-function addPane(type) {
+function addTerminalPane() {
   paneCounter += 1;
-  const id = 'pane-' + type + '-' + paneCounter;
-  const title = type === 'terminal' ? 'Terminal' : (type === 'monitor' ? 'Monitor' : 'Chat');
+  const id = 'pane-terminal-' + paneCounter;
   const pane = document.createElement('section');
-  pane.className = 'pane pane-' + type;
+  pane.className = 'pane-terminal';
   pane.id = id;
-  el('paneStack').appendChild(pane);
-  const tab = { id, type, title, closable: true, terminalId: null, dispose: null };
-  if (type === 'terminal') {
-    makeStub(pane, 'terminal', 'Starting terminal…');
-    // Spawn first so we have an id before the stream opens.
-    api('/api/terminal/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols: 80, rows: 24, cwd: (state.snapshot && state.snapshot.workDir) || undefined }) })
-      .then((r) => r.json())
-      .then((data) => {
-        if (!data || !data.ok || !data.id) { makeStub(pane, 'terminal', 'Terminal unavailable (node-pty not loadable).'); return; }
-        tab.terminalId = data.id;
-        initTerminalPane(pane, tab).catch((e) => makeStub(pane, 'terminal', 'Terminal init failed: ' + (e && e.message)));
-      })
-      .catch(() => makeStub(pane, 'terminal', 'Terminal unavailable (node-pty not loadable).'));
-    makeStub(pane, 'terminal', 'Starting terminal…');
-  } else if (type === 'monitor') {
-    const list = document.createElement('div');
-    list.className = 'monitor-list';
-    list.innerHTML = '<p class="monitor-empty muted">No active runs.</p>';
-    pane.appendChild(list);
-  } else {
-    makeStub(pane, type, 'Chat');
-  }
+  pane.style.display = 'flex';
+  pane.style.flex = '1';
+  pane.style.minHeight = '0';
+  pane.style.flexDirection = 'column';
+  const body = el('terminalDockBody');
+  if (!body) return;
+  body.querySelectorAll('.pane-terminal').forEach((p) => { p.style.display = 'none'; });
+  body.appendChild(pane);
+  const tab = { id, type: 'terminal', title: 'Terminal', closable: true, terminalId: null, dispose: null, outputBuf: '' };
   state.tabs.push(tab);
-  switchTab(id);
-  el('tabbarAddMenu').classList.add('hidden');
-}
-function closeTab(id) {
-  const index = state.tabs.findIndex((t) => t.id === id);
-  if (index === -1) return;
-  const [tab] = state.tabs.splice(index, 1);
-  if (tab && tab.type === 'terminal') {
-    if (typeof tab.dispose === 'function') tab.dispose();
-    if (tab.terminalId) api('/api/terminal/kill', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: tab.terminalId }) }).catch(() => {});
-  }
-  const pane = document.getElementById(id);
-  if (pane) pane.remove();
-  if (state.activeTabId === id) switchTab(state.tabs[0] ? state.tabs[0].id : 'pane-chat-default');
-  else renderTabs();
+  state.activeTabId = id;
+  renderTerminalDockTabs();
+  makeStub(pane, 'terminal', 'Starting terminal…');
+  api('/api/terminal/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols: 80, rows: 24, cwd: (state.snapshot && state.snapshot.workDir) || undefined }) })
+    .then((r) => r.json())
+    .then((data) => {
+      if (!data || !data.ok || !data.id) { makeStub(pane, 'terminal', 'Terminal unavailable (node-pty not loadable).'); return; }
+      tab.terminalId = data.id;
+      initTerminalPane(pane, tab).catch((e) => makeStub(pane, 'terminal', 'Terminal init failed: ' + (e && e.message)));
+    })
+    .catch(() => makeStub(pane, 'terminal', 'Terminal unavailable (node-pty not loadable).'));
 }
 const SEND_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
 const STOP_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>';
@@ -8943,6 +9754,20 @@ function formatRelativeTimeShort(iso) {
   if (day < 30) return day + 'd';
   return new Date(iso).toLocaleDateString();
 }
+/** Cursor-style list label: prefer a real title, else first-user-prompt brief. */
+function conversationDisplayLabel(item, projectName) {
+  const title = String(item?.title || '').trim();
+  const brief = String(item?.brief || item?.preview || '').trim();
+  const project = String(projectName || '').trim();
+  const generic = !title
+    || title === 'Untitled'
+    || title === 'Untitled Session'
+    || (project && title.toLowerCase() === project.toLowerCase())
+    || (item?.id && title === item.id);
+  if (!generic) return title;
+  if (brief) return brief;
+  return 'New chat';
+}
 function toggleToolCard(card, toggle, forceCollapsed) {
   const collapsed = typeof forceCollapsed === 'boolean'
     ? forceCollapsed
@@ -8952,6 +9777,21 @@ function toggleToolCard(card, toggle, forceCollapsed) {
 }
 function addToolActivity(event) {
   const id = event.id || ('tool-' + Date.now() + '-' + Math.random());
+  const existing = state.toolNodes.get(id);
+  if (existing) {
+    const hint = toolInputHint(event.input);
+    existing.card.classList.remove('building', 'success', 'error');
+    existing.card.classList.add('running');
+    existing.title.textContent = event.name || existing.title.textContent || 'Tool';
+    existing.hint = hint;
+    existing.status.textContent = hint || 'Running…';
+    const input = summarizeToolInput(event.input);
+    existing.pre.textContent = input;
+    existing.pre.classList.toggle('hidden', !input);
+    setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
+    scrollTranscript();
+    return;
+  }
   const card = document.createElement('article');
   card.className = 'tool-card running';
   card.dataset.toolId = id;
@@ -8991,8 +9831,27 @@ function addToolActivity(event) {
   header.append(spinner, labels, toggle);
   card.append(header, body);
   transcript.appendChild(card);
-  state.toolNodes.set(id, { card, status, pre, body, toggle, hint });
+  state.toolNodes.set(id, { card, title, status, pre, body, toggle, hint });
   setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
+  scrollTranscript();
+}
+function updateStreamingToolInput(event) {
+  const id = event.id || ('stream-tool-' + String(event.index ?? 'pending'));
+  let node = state.toolNodes.get(id);
+  if (!node) {
+    addToolActivity({
+      id,
+      name: event.name || 'Tool',
+      input: { partial_json: event.snapshot || event.delta || '' },
+    });
+    node = state.toolNodes.get(id);
+  }
+  if (!node) return;
+  node.card.classList.add('building');
+  node.status.textContent = 'Building input…';
+  node.pre.classList.remove('hidden');
+  node.pre.textContent = String(event.snapshot || event.delta || '');
+  setRunStatus('Preparing ' + (event.name || 'tool') + ' input…', 'running');
   scrollTranscript();
 }
 function updateToolProgress(event) {
@@ -9411,10 +10270,11 @@ function appendSidebarProjectGroup(root, project) {
       const srow = document.createElement('button');
       srow.type = 'button';
       srow.className = 'sr-session-row' + (state.snapshot?.session?.id === session.id && project.active ? ' active' : '');
-      srow.title = session.title || session.id;
+      const label = conversationDisplayLabel(session, project.name);
+      srow.title = label;
       const title = document.createElement('span');
       title.className = 'sr-session-title';
-      title.textContent = session.title || session.id;
+      title.textContent = label;
       const time = document.createElement('span');
       time.className = 'sr-session-time';
       time.textContent = session.updatedAt ? formatRelativeTimeShort(session.updatedAt) : '';
@@ -9723,256 +10583,291 @@ function renderStatusExtras() {
   if (outStyleSel) outStyleSel.value = snap.outputStyle || 'default';
   renderModelPicker();
 }
-// ── Cascading 3-level model picker ────────────────────────────────────────
-// Level 1: providers (Default + each bridge config)
-// Level 2: models (appears to the right on provider hover)
-// Level 3: effort (appears to the right on model hover)
-// Clicking an effort (or model for default effort) finalises the selection.
+// ── Agent picker (Cursor-style) ──────────────────────────────────────────
+// Click selects an agent. Temporary effort overrides open only via Edit.
 
-const PICKER_EFFORTS = ['low','medium','high','max'];
+const PICKER_EFFORTS = ['low', 'medium', 'high', 'max'];
+
+function formatEffortLabel(effort) {
+  if (!effort || effort === 'auto') return '';
+  return String(effort).charAt(0).toUpperCase() + String(effort).slice(1);
+}
+
+function agentRowMeta(agent, snap, isActive) {
+  if (isActive) {
+    return formatEffortLabel(snap?.effort) || '';
+  }
+  if (agent.effort && agent.effort !== 'auto') return formatEffortLabel(agent.effort);
+  if (agent.source === 'profile') return 'profile';
+  return agent.model || '';
+}
 
 function updatePickerBtn() {
   const btn = el('modelPickerBtn');
-  const bs = (state.snapshot?.bridgeState) || {};
-  const activeConfig = bs.activeConfig;
-  if (activeConfig) {
-    const mLabel = activeConfig.model || '(default)';
-    btn.textContent = mLabel + ' ▾';
-    btn.title = activeConfig.name + ' · ' + mLabel;
+  const snap = state.snapshot || {};
+  const activeAgent = snap.activeAgent;
+  const effortLabel = formatEffortLabel(snap.effort);
+  if (activeAgent) {
+    btn.textContent = activeAgent.name + (effortLabel ? (' ' + effortLabel) : '') + ' ▾';
+    btn.title = (activeAgent.description || (activeAgent.bridgeConfig + ' · ' + activeAgent.model))
+      + (activeAgent.source === 'profile' ? ' (profile)' : ' (from config)')
+      + (effortLabel ? (' · effort ' + effortLabel) : '');
   } else {
-    // No active config: show the first config's model as a hint (not yet activated),
-    // or leave blank when no configs exist.
-    const first = (bs.configs || [])[0];
-    if (first) {
-      const mLabel = first.model || '(default)';
-      btn.textContent = mLabel + ' ▾';
-      btn.title = first.name + ' · ' + mLabel + ' (not active)';
+    const agents = snap.selectableAgents || [];
+    if (agents.length) {
+      btn.textContent = 'Choose agent ▾';
+      btn.title = 'Pick an agent for this chat';
     } else {
       btn.textContent = '';
-      btn.title = 'Add a provider config in Settings';
+      btn.title = 'Add a provider config in Settings → Models';
     }
   }
 }
 
-function makePickerCheck() {
+function makePickerCheck(visible) {
   const c = document.createElement('span');
-  c.className = 'picker-check';
+  c.className = 'picker-check' + (visible ? '' : ' spacer');
   c.textContent = '✓';
+  c.setAttribute('aria-hidden', visible ? 'false' : 'true');
   return c;
 }
 
-function clearPickerCol(n) {
-  const col = el('pickerCol' + n);
-  if (!col) return;
-  col.textContent = '';
-  col.classList.add('picker-col-hidden');
-  if (n === 2) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a provider'; col.appendChild(ph); }
-  if (n === 3) { const ph = document.createElement('div'); ph.className = 'picker-placeholder'; ph.textContent = 'Hover a model'; col.appendChild(ph); }
-}
-
-function renderPickerCol2(cfg, models, activeConfig) {
-  const col2 = el('pickerCol2');
-  if (!col2) return;
-  col2.textContent = '';
-  col2.classList.remove('picker-col-hidden');
-
-  for (const m of models) {
-    const item = document.createElement('button');
-    item.className = 'picker-item';
-    item.type = 'button';
-    const isActive = activeConfig?.name === cfg.name && (!activeConfig.model || activeConfig.model === m.name);
-
-    const arrow = document.createElement('span');
-    arrow.className = 'picker-arrow';
-    arrow.textContent = '◀';
-    item.appendChild(arrow);
-
-    if (isActive) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
-
-    const label = document.createElement('span');
-    label.className = 'picker-item-label';
-    label.textContent = m.name;
-    item.appendChild(label);
-
-    const tags = [m.context1M ? '1M' : '', m.modality === 'multimodal' ? 'Vision' : ''].filter(Boolean);
-    if (tags.length) {
-      const tagSpan = document.createElement('span');
-      tagSpan.className = 'picker-item-tags';
-      tagSpan.textContent = tags.join(' · ');
-      item.appendChild(tagSpan);
-    }
-
-    const expandModel = () => {
-      col2.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
-      item.classList.add('hover');
-      renderPickerCol3(cfg.name, m.name);
-    };
-    // Hover OR click reveals the effort list; the final selection happens by
-    // clicking an effort (auto/low/medium/high/max). Clicking the model does
-    // not pre-select — it opens the effort column.
-    item.addEventListener('mouseenter', expandModel);
-    item.addEventListener('click', expandModel);
-
-    col2.appendChild(item);
+function closePickerEffortEditor() {
+  state.pickerEditingAgent = null;
+  const pop = el('modelPickerEditPopover');
+  if (pop) {
+    pop.textContent = '';
+    pop.classList.add('hidden');
+  }
+  const list = el('modelPickerItems');
+  if (list) {
+    list.querySelectorAll('.picker-item').forEach((row) => row.classList.remove('editing'));
+    list.querySelectorAll('.picker-edit-btn').forEach((btn) => btn.classList.remove('open'));
   }
 }
 
-function renderPickerCol3(configName, modelName) {
-  const col3 = el('pickerCol3');
-  if (!col3) return;
-  col3.textContent = '';
-  col3.classList.remove('picker-col-hidden');
+function renderPickerEffortPopover(agentName) {
+  const pop = el('modelPickerEditPopover');
+  if (!pop) return;
+  pop.textContent = '';
+  pop.classList.remove('hidden');
+  pop.style.marginTop = '0px';
 
-  // Mark the active effort only when this row's model is the one actually
-  // running, so browsing a non-active model's efforts doesn't show a stale
-  // checkmark.
-  const ac = state.snapshot?.bridgeState?.activeConfig;
-  const modelIsActive = !!ac && ac.name === configName && (!ac.model || ac.model === modelName);
+  const heading = document.createElement('div');
+  heading.className = 'picker-section-label';
+  heading.textContent = 'Effort';
+  pop.appendChild(heading);
+
+  const activeAgent = state.snapshot?.activeAgent;
+  const agentIsActive = !!activeAgent && activeAgent.name === agentName;
   const curEffort = (state.snapshot?.effort) || 'auto';
+  const profileEffort = activeAgent?.effort || '';
 
   for (const e of PICKER_EFFORTS) {
     const item = document.createElement('button');
-    item.className = 'picker-item';
     item.type = 'button';
-    if (modelIsActive && e === curEffort) { item.classList.add('selected'); item.appendChild(makePickerCheck()); }
+    item.className = 'picker-effort-item';
     const label = document.createElement('span');
     label.className = 'picker-item-label';
-    label.textContent = e;
+    label.textContent = formatEffortLabel(e);
     item.appendChild(label);
-    item.addEventListener('click', (ev) => { ev.stopPropagation(); selectPickerModel(configName, modelName, e); });
-    col3.appendChild(item);
+    const selected = agentIsActive && (e === curEffort || (curEffort === 'auto' && e === 'medium' && !profileEffort));
+    if (selected) {
+      item.classList.add('selected');
+      item.appendChild(makePickerCheck(true));
+    }
+    if (profileEffort === e) item.title = 'Profile default';
+    item.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      void selectPickerAgent(agentName, e, { close: true });
+    });
+    pop.appendChild(item);
   }
+
+  requestAnimationFrame(() => {
+    const menu = el('modelPickerMenu');
+    const row = el('modelPickerItems')?.querySelector('.picker-item[data-agent-name="' + CSS.escape(agentName) + '"]');
+    if (!menu || !row || !pop) return;
+    const offset = Math.max(0, row.getBoundingClientRect().top - menu.getBoundingClientRect().top);
+    pop.style.marginTop = offset + 'px';
+  });
+}
+
+function openPickerEffortEditor(agentName) {
+  state.pickerEditingAgent = agentName;
+  const list = el('modelPickerItems');
+  if (list) {
+    list.querySelectorAll('.picker-item').forEach((row) => {
+      row.classList.toggle('editing', row.dataset.agentName === agentName);
+    });
+    list.querySelectorAll('.picker-edit-btn').forEach((btn) => {
+      btn.classList.toggle('open', btn.dataset.agentName === agentName);
+    });
+  }
+  renderPickerEffortPopover(agentName);
+}
+
+function filteredPickerAgents() {
+  const agents = state.snapshot?.selectableAgents || [];
+  const query = String(state.pickerQuery || '').trim().toLowerCase();
+  if (!query) return agents;
+  return agents.filter((agent) => {
+    const hay = [agent.name, agent.model, agent.bridgeConfig, agent.description, agent.effort]
+      .filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(query);
+  });
 }
 
 function renderModelPicker() {
   const items = el('modelPickerItems');
+  const search = el('modelPickerSearch');
+  if (!items) return;
   items.textContent = '';
   const snap = state.snapshot;
   if (!snap) return;
-  const bs = snap.bridgeState || {};
-  const configs = bs.configs || [];
-  const activeConfig = bs.activeConfig;
+  if (search && search.value !== (state.pickerQuery || '')) {
+    search.value = state.pickerQuery || '';
+  }
+  const agents = filteredPickerAgents();
+  const activeAgent = snap.activeAgent;
+  const editing = state.pickerEditingAgent;
 
-  const cols = document.createElement('div');
-  cols.className = 'picker-cols';
-
-  // ── Column 1: Providers ──────────────────────────────────────────
-  const col1 = document.createElement('div');
-  col1.className = 'picker-col';
-  if (configs.length === 0) {
+  if ((snap.selectableAgents || []).length === 0) {
     const ph = document.createElement('div');
     ph.className = 'picker-placeholder';
-    ph.textContent = 'No configs — add one in Settings';
-    col1.appendChild(ph);
+    ph.textContent = 'No agents — add a provider config in Settings';
+    items.appendChild(ph);
   }
 
-  for (const cfg of configs) {
-    const provItem = document.createElement('button');
-    provItem.className = 'picker-item';
-    provItem.type = 'button';
-    const isActive = activeConfig?.name === cfg.name;
-
-    const arrow = document.createElement('span');
-    arrow.className = 'picker-arrow';
-    arrow.textContent = '◀';
-    provItem.appendChild(arrow);
-
-    if (isActive) { provItem.classList.add('selected'); provItem.appendChild(makePickerCheck()); }
+  for (const agent of agents) {
+    const item = document.createElement('div');
+    item.className = 'picker-item';
+    item.setAttribute('role', 'button');
+    item.tabIndex = 0;
+    item.dataset.agentName = agent.name;
+    const isActive = activeAgent?.name === agent.name;
+    if (isActive) item.classList.add('selected');
+    if (editing && editing === agent.name) item.classList.add('editing');
 
     const label = document.createElement('span');
     label.className = 'picker-item-label';
-    label.textContent = cfg.name;
-    provItem.appendChild(label);
+    label.textContent = agent.name;
+    item.appendChild(label);
 
-    const hint = document.createElement('span');
-    hint.className = 'picker-item-hint';
-    hint.textContent = cfg.runtime;
-    provItem.appendChild(hint);
+    const metaText = agentRowMeta(agent, snap, isActive);
+    if (metaText) {
+      const meta = document.createElement('span');
+      meta.className = 'picker-item-meta';
+      meta.textContent = metaText;
+      item.appendChild(meta);
+    }
 
-    const models = Array.isArray(cfg.models) && cfg.models.length > 0
-      ? cfg.models
-      : [{ name: cfg.model || '(default)', modality: 'text' }];
+    if (isActive) {
+      const actions = document.createElement('span');
+      actions.className = 'picker-item-actions';
 
-    const expandProvider = () => {
-      col1.querySelectorAll('.picker-item').forEach(el => el.classList.remove('hover'));
-      provItem.classList.add('hover');
-      renderPickerCol2(cfg, models, activeConfig);
-      clearPickerCol(3);
+      const profileEffort = agent.effort || 'auto';
+      const curEffort = snap.effort || 'auto';
+      if (curEffort !== profileEffort) {
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'picker-reset-btn';
+        resetBtn.title = 'Reset effort to agent default';
+        resetBtn.textContent = '↺';
+        resetBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const restore = profileEffort === 'auto' ? 'auto' : profileEffort;
+          void selectPickerAgent(agent.name, restore, { close: false });
+        });
+        actions.appendChild(resetBtn);
+      }
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'picker-edit-btn' + (editing === agent.name ? ' open' : '');
+      editBtn.dataset.agentName = agent.name;
+      editBtn.title = 'Temporarily change effort for this chat';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (state.pickerEditingAgent === agent.name) closePickerEffortEditor();
+        else openPickerEffortEditor(agent.name);
+      });
+      actions.appendChild(editBtn);
+      item.appendChild(actions);
+    }
+
+    item.appendChild(makePickerCheck(isActive));
+
+    const activateAgent = () => {
+      if (isActive) return;
+      closePickerEffortEditor();
+      void selectPickerAgent(agent.name, null, { close: false });
     };
-    provItem.addEventListener('mouseenter', expandProvider);
-
-    // Click expands the model list (same as hover) so clickers aren't left
-    // with a dead row; providers with no registered models activate directly.
-    provItem.addEventListener('click', () => {
-      if (Array.isArray(cfg.models) && cfg.models.length > 0) expandProvider();
-      else selectPickerModel(cfg.name, cfg.model || null, 'medium');
+    item.addEventListener('click', activateAgent);
+    item.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); activateAgent(); }
     });
-
-    col1.appendChild(provItem);
+    items.appendChild(item);
   }
 
-  // ── Column 2: Models (filled on provider hover) ──────────────────
-  const col2 = document.createElement('div');
-  col2.className = 'picker-col picker-col-hidden';
-  col2.id = 'pickerCol2';
-  const ph2 = document.createElement('div');
-  ph2.className = 'picker-placeholder';
-  ph2.textContent = 'Hover a provider';
-  col2.appendChild(ph2);
-
-  // ── Column 3: Efforts (filled on model hover) ────────────────────
-  const col3 = document.createElement('div');
-  col3.className = 'picker-col picker-col-hidden';
-  col3.id = 'pickerCol3';
-  const ph3 = document.createElement('div');
-  ph3.className = 'picker-placeholder';
-  ph3.textContent = 'Hover a model';
-  col3.appendChild(ph3);
-
-  cols.appendChild(col1);
-  cols.appendChild(col2);
-  cols.appendChild(col3);
-  items.appendChild(cols);
+  if (editing && (snap.selectableAgents || []).some((a) => a.name === editing)) {
+    renderPickerEffortPopover(editing);
+  } else {
+    closePickerEffortEditor();
+  }
 
   updatePickerBtn();
 }
 
-async function selectPickerModel(configName, modelName, effort) {
-  if (!configName) {
-    // Default: disable bridge
+async function selectPickerAgent(agentName, effort, opts) {
+  const close = !opts || opts.close !== false;
+  if (!agentName) {
     const res = await api('/api/bridge/off', { method: 'POST' });
     if (res.ok) { state.snapshot = await res.json(); }
   } else {
-    // Update the config's selected model if different from stored. Send the
-    // full config (provider/baseURL/models preserved) so the server's merge
-    // doesn't drop those fields — only apiKey is omitted (blank → preserved).
-    const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
-    if (cfg && cfg.model !== modelName) {
-      const res = await api('/api/bridge/config', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({
-        name: configName,
-        runtime: cfg.runtime || 'claude',
-        provider: cfg.provider,
-        baseURL: cfg.baseURL || '',
-        model: modelName || '',
-        models: Array.isArray(cfg.models) ? cfg.models : [],
-      }) });
-      if (res.ok) { state.snapshot = await res.json(); }
+    const res = await api('/api/agent/activate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: agentName }),
+    });
+    if (res.ok) {
+      state.snapshot = await res.json();
+    } else {
+      const payload = await res.json().catch(() => ({}));
+      console.error(payload.error || 'Failed to activate agent');
     }
-    const actRes = await api('/api/bridge/activate', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: configName }) });
-    if (actRes.ok) { state.snapshot = await actRes.json(); }
   }
-  if (effort && effort !== 'auto') { submitText('/effort ' + effort); }
-  else { loadState().catch(console.error); }
-  el('modelPickerMenu').classList.add('hidden');
+  if (effort) {
+    if (state.snapshot) state.snapshot = Object.assign({}, state.snapshot, { effort });
+    submitText('/effort ' + effort);
+  }
+  state.pickerEditingAgent = null;
+  if (close) {
+    el('modelPickerFlyout').classList.add('hidden');
+    closePickerEffortEditor();
+    updatePickerBtn();
+  } else {
+    renderModelPicker();
+  }
 }
 
 function toggleModelPicker() {
-  const menu = el('modelPickerMenu');
-  if (menu.classList.contains('hidden')) {
+  const flyout = el('modelPickerFlyout');
+  if (flyout.classList.contains('hidden')) {
+    state.pickerEditingAgent = null;
+    state.pickerQuery = '';
     renderModelPicker();
-    menu.classList.remove('hidden');
+    flyout.classList.remove('hidden');
+    const search = el('modelPickerSearch');
+    if (search) {
+      search.value = '';
+      setTimeout(() => search.focus(), 0);
+    }
   } else {
-    menu.classList.add('hidden');
+    state.pickerEditingAgent = null;
+    closePickerEffortEditor();
+    flyout.classList.add('hidden');
   }
 }
 async function resumeSession(id) {
@@ -10335,6 +11230,12 @@ function buildProjectStatusBadge(p, running) {
     runBadge.textContent = running + ' running';
     meta.appendChild(runBadge);
   }
+  if ((p.issueCounts?.open || 0) > 0) {
+    const issueBadge = document.createElement('span');
+    issueBadge.className = 'pc-badge';
+    issueBadge.textContent = p.issueCounts.open + ' open issue' + (p.issueCounts.open === 1 ? '' : 's');
+    meta.appendChild(issueBadge);
+  }
   const activity = document.createElement('span');
   activity.className = 'pc-activity-line';
   const sessions = (p.sessionCount || 0) + ' session' + ((p.sessionCount || 0) === 1 ? '' : 's');
@@ -10407,6 +11308,13 @@ function renderOverviewTable(body, projects, runs) {
       runBadge.style.marginLeft = '6px';
       runBadge.textContent = running + ' running';
       statusCell.appendChild(runBadge);
+    }
+    if ((p.issueCounts?.open || 0) > 0) {
+      const issueBadge = document.createElement('span');
+      issueBadge.className = 'pc-badge';
+      issueBadge.style.marginLeft = '6px';
+      issueBadge.textContent = p.issueCounts.open + ' issues';
+      statusCell.appendChild(issueBadge);
     }
     const sessionsCell = document.createElement('div');
     sessionsCell.className = 'overview-table-sessions';
@@ -10613,10 +11521,13 @@ function buildDetailConvCard(item, opts) {
   main.className = 'conv-main';
   const title = document.createElement('div');
   title.className = 'conv-title';
-  title.textContent = item.title || item.id || 'Untitled';
+  const projectName = (state.snapshot?.projects || []).find((p) => p.active)?.name
+    || String(state.snapshot?.workDir || '').split(/[\\\\/]/).filter(Boolean).pop()
+    || '';
+  title.textContent = conversationDisplayLabel(item, projectName);
   const preview = document.createElement('div');
   preview.className = 'conv-preview';
-  preview.textContent = item.preview || ((item.messageCount || 0) + ' messages');
+  preview.textContent = item.brief || item.preview || ((item.messageCount || 0) + ' messages');
   const meta = document.createElement('div');
   meta.className = 'conv-meta';
   const runtimeChip = document.createElement('span');
@@ -11035,6 +11946,35 @@ function renderProjectIssuesPanel() {
     });
     filters.appendChild(btn);
   }
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'issue-filter-search';
+  search.placeholder = 'Search title, description, or labels';
+  search.value = state.issuesQuery || '';
+  search.addEventListener('input', () => {
+    state.issuesQuery = search.value;
+    renderProjectIssuesPanel();
+    requestAnimationFrame(() => {
+      const next = document.querySelector('.issue-filter-search');
+      if (next) {
+        next.focus();
+        next.setSelectionRange(state.issuesQuery.length, state.issuesQuery.length);
+      }
+    });
+  });
+  const priorityFilter = document.createElement('select');
+  priorityFilter.className = 'issue-filter-priority';
+  priorityFilter.title = 'Filter by priority';
+  priorityFilter.innerHTML = '<option value="all">All priorities</option>' +
+    ISSUE_PRIORITIES.map((priority) =>
+      '<option value="' + priority + '">' + (ISSUE_PRIORITY_LABELS[priority] || priority) + '</option>',
+    ).join('');
+  priorityFilter.value = state.issuesPriority || 'all';
+  priorityFilter.addEventListener('change', () => {
+    state.issuesPriority = priorityFilter.value;
+    renderProjectIssuesPanel();
+  });
+  filters.append(search, priorityFilter);
   host.appendChild(filters);
 
   const body = document.createElement('div');
@@ -11058,9 +11998,21 @@ function renderProjectIssuesPanel() {
       : state.issuesFilter === 'all'
         ? ISSUE_STATUSES
         : ['backlog', 'todo', 'in_progress', 'in_review', 'blocked'];
+  const issueQuery = (state.issuesQuery || '').trim().toLowerCase();
+  const filteredIssues = state.issues.filter((issue) => {
+    if (state.issuesPriority !== 'all' && issue.priority !== state.issuesPriority) return false;
+    if (!issueQuery) return true;
+    const haystack = [
+      issue.title,
+      issue.description,
+      ...(Array.isArray(issue.labels) ? issue.labels : []),
+      ...(Array.isArray(issue.acceptanceCriteria) ? issue.acceptanceCriteria : []),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(issueQuery);
+  });
   let rendered = 0;
   for (const status of visibleStatuses) {
-    const list = state.issues.filter((issue) => issue.status === status);
+    const list = filteredIssues.filter((issue) => issue.status === status);
     if (!list.length && state.issuesFilter !== 'all') continue;
     const column = document.createElement('section');
     column.className = 'issue-column issue-status-' + status;
@@ -11077,10 +12029,10 @@ function renderProjectIssuesPanel() {
     board.appendChild(column);
     rendered += list.length;
   }
-  if (!rendered && state.issues.length === 0) {
+  if (!rendered) {
     const empty = document.createElement('p');
     empty.className = 'region-empty';
-    empty.textContent = 'No issues yet.';
+    empty.textContent = state.issues.length === 0 ? 'No issues yet.' : 'No issues match the current filters.';
     board.appendChild(empty);
   }
 }
@@ -11210,16 +12162,19 @@ function buildIssueDetailPanel() {
     + '</select></label>'
     + '<label class="wide">Description<textarea id="issueEditDescription" rows="5"></textarea></label>'
     + '<label class="wide">Labels<input id="issueEditLabels" placeholder="comma separated"></label>'
+    + '<label class="wide">Acceptance criteria<textarea id="issueEditAcceptance" rows="4" placeholder="one criterion per line"></textarea></label>'
     + '<button id="issueSaveBtn" type="button" class="pill-btn">Save changes</button>';
   panel.appendChild(edit);
   const titleInput = edit.querySelector('#issueEditTitle');
   const priorityInput = edit.querySelector('#issueEditPriority');
   const descInput = edit.querySelector('#issueEditDescription');
   const labelsInput = edit.querySelector('#issueEditLabels');
+  const acceptanceInput = edit.querySelector('#issueEditAcceptance');
   titleInput.value = issue.title || '';
   priorityInput.value = issue.priority || 'none';
   descInput.value = issue.description || '';
   labelsInput.value = Array.isArray(issue.labels) ? issue.labels.join(', ') : '';
+  acceptanceInput.value = Array.isArray(issue.acceptanceCriteria) ? issue.acceptanceCriteria.join('\\n') : '';
   edit.querySelector('#issueSaveBtn').addEventListener('click', () => { void saveIssueEdits(issue.id); });
 
   const transitions = ISSUE_TRANSITIONS[issue.status] || [];
@@ -11240,6 +12195,18 @@ function buildIssueDetailPanel() {
   }
   panel.appendChild(actions);
 
+  if (issue.brief) {
+    const brief = document.createElement('section');
+    brief.className = 'issue-brief';
+    const briefTitle = document.createElement('h4');
+    briefTitle.textContent = 'Manager task brief';
+    const briefBody = document.createElement('div');
+    briefBody.className = 'md-prose';
+    renderMarkdownInto(briefBody, issue.brief);
+    brief.append(briefTitle, briefBody);
+    panel.appendChild(brief);
+  }
+
   if (issue.status === 'todo' || issue.status === 'backlog') {
     const dispatch = document.createElement('div');
     dispatch.className = 'issue-dispatch-row';
@@ -11247,12 +12214,15 @@ function buildIssueDetailPanel() {
     select.id = 'issueDispatchAgent';
     const sessionDefault = document.createElement('option');
     sessionDefault.value = '';
-    sessionDefault.textContent = 'Session default';
+    sessionDefault.textContent = 'Session model (default)';
+    select.title = 'Agent for this issue run. Empty = use the current session model/provider.';
     select.appendChild(sessionDefault);
-    for (const profile of state.snapshot?.agentProfiles || []) {
+    for (const agent of state.snapshot?.selectableAgents || []) {
       const opt = document.createElement('option');
-      opt.value = profile.name;
-      opt.textContent = profile.name + ' - ' + profile.model;
+      opt.value = agent.name;
+      opt.textContent = agent.source === 'profile'
+        ? agent.name + ' · ' + agent.model
+        : agent.name + ' · ' + agent.model;
       select.appendChild(opt);
     }
     select.value = issue.agentConfig || '';
@@ -11260,6 +12230,7 @@ function buildIssueDetailPanel() {
     start.type = 'button';
     start.className = 'pill-btn primary';
     start.textContent = 'Start with agent';
+    start.title = 'Dispatch a worker session for this issue';
     start.addEventListener('click', () => {
       void startIssueWithAgent(issue.id, select.value);
     });
@@ -11293,8 +12264,8 @@ function buildIssueDetailPanel() {
   }
   const form = document.createElement('form');
   form.className = 'issue-comment-form';
-  form.innerHTML = '<input id="issueCommentInput" placeholder="Add a progress note" autocomplete="off">'
-    + '<button type="submit">' + guiIcon('send') + '</button>';
+  form.innerHTML = '<input id="issueCommentInput" placeholder="Add a progress note" title="Manual note on this issue (shown in Activity; not a chat message)" autocomplete="off">'
+    + '<button type="submit" title="Post progress note">' + guiIcon('send') + '</button>';
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     void addIssueCommentFromForm(issue.id);
@@ -11335,12 +12306,14 @@ async function createIssueFromForm() {
 }
 async function saveIssueEdits(id) {
   const labels = (el('issueEditLabels')?.value || '').split(',').map((item) => item.trim()).filter(Boolean);
+  const acceptanceCriteria = (el('issueEditAcceptance')?.value || '').split(/\\r?\\n/).map((item) => item.trim()).filter(Boolean);
   await mutateIssues('/api/issues', {
     id,
     title: el('issueEditTitle')?.value || '',
     description: el('issueEditDescription')?.value || '',
     priority: el('issueEditPriority')?.value || 'none',
     labels,
+    acceptanceCriteria,
   }, id);
 }
 async function transitionIssue(id, status) {
@@ -11395,17 +12368,28 @@ async function deleteIssue(id) {
   await mutateIssues('/api/issues/delete', { id }, null);
 }
 async function changeIssueStorage(mode) {
+  if (mode === state.issuesStorage) return;
+  const targetLabel = mode === 'workspace'
+    ? 'the workspace (.actoviq/issues.json), where it can be shared through version control'
+    : 'Actoviq app data, where it remains local to this machine';
+  if (!window.confirm(
+    'Move this project\\'s issue data to ' + targetLabel + '?\\n\\n' +
+    'The issue store will be merged at the destination and removed from its previous location.',
+  )) {
+    renderProjectIssuesPanel();
+    return;
+  }
   await mutateIssues('/api/issues/storage', { mode }, state.issuesSelectedId);
 }
 function filteredDetailSessions() {
   const query = (state.detailConvQuery || '').trim().toLowerCase();
   const active = (state.snapshot?.sessions || []).filter((item) => {
     if (item.kind === 'manager') return false;
-    const hay = [item.title, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
+    const hay = [item.title, item.brief, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
     return !query || hay.includes(query);
   });
   const archived = (state.snapshot?.archivedSessions || []).filter((item) => {
-    const hay = [item.title, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
+    const hay = [item.title, item.brief, item.id, item.model, item.preview].filter(Boolean).join(' ').toLowerCase();
     return !query || hay.includes(query);
   });
   return { active, archived };
@@ -11422,7 +12406,12 @@ function buildCompactConvRow(item, opts) {
   dot.setAttribute('aria-hidden', 'true');
   const title = document.createElement('span');
   title.className = 'csr-title';
-  title.textContent = item.title || item.id || 'Untitled';
+  const projectName = (state.snapshot?.projects || []).find((p) => p.active)?.name
+    || String(state.snapshot?.workDir || '').split(/[\\\\/]/).filter(Boolean).pop()
+    || '';
+  const label = conversationDisplayLabel(item, projectName);
+  title.textContent = label;
+  title.title = label;
   const meta = document.createElement('span');
   meta.className = 'csr-meta';
   const actions = document.createElement('span');
@@ -11512,7 +12501,10 @@ function renderConvSidebarDetail() {
   }
   const archived = Boolean(selected.archived);
   const title = document.createElement('h4');
-  title.textContent = selected.title || selected.id || 'Untitled';
+  const projectName = (state.snapshot?.projects || []).find((p) => p.active)?.name
+    || String(state.snapshot?.workDir || '').split(/[\\\\/]/).filter(Boolean).pop()
+    || '';
+  title.textContent = conversationDisplayLabel(selected, projectName);
   panel.appendChild(title);
   const meta = document.createElement('div');
   meta.className = 'csd-meta';
@@ -11525,10 +12517,10 @@ function renderConvSidebarDetail() {
     selected.updatedAt ? formatRelativeTime(selected.updatedAt) : '',
   ].filter(Boolean).join(' · ');
   panel.appendChild(meta);
-  if (selected.preview) {
+  if (selected.brief || selected.preview) {
     const preview = document.createElement('div');
     preview.className = 'csd-preview';
-    preview.textContent = selected.preview;
+    preview.textContent = selected.brief || selected.preview;
     panel.appendChild(preview);
   }
   const actions = document.createElement('div');
@@ -11599,7 +12591,8 @@ function renderProjectDetail() {
     btn.type = 'button';
     btn.className = 'project-detail-tab' + (state.projectDetailTab === tab[0] ? ' active' : '');
     btn.dataset.detailTab = tab[0];
-    btn.textContent = tab[1];
+    const issueCount = tab[0] === 'issues' ? (state.snapshot?.issueSummary?.open || 0) : 0;
+    btn.textContent = tab[1] + (issueCount > 0 ? ' ' + issueCount : '');
     btn.addEventListener('click', () => setProjectDetailTab(tab[0]));
     tabs.appendChild(btn);
   }
@@ -11730,7 +12723,10 @@ function buildConversationPreviewPanel(item, sessions) {
   panel.appendChild(heading);
   const title = document.createElement('div');
   title.className = 'context-row';
-  title.append(labelText('Title'), strongText(item.title || item.id || 'Untitled'));
+  const projectName = (state.snapshot?.projects || []).find((p) => p.active)?.name
+    || String(state.snapshot?.workDir || '').split(/[\\\\/]/).filter(Boolean).pop()
+    || '';
+  title.append(labelText('Title'), strongText(conversationDisplayLabel(item, projectName)));
   panel.appendChild(title);
   const runtimeRow = document.createElement('div');
   runtimeRow.className = 'context-row';
@@ -11746,13 +12742,13 @@ function buildConversationPreviewPanel(item, sessions) {
   const metaText = [item.model, (item.messageCount || 0) + ' messages', when ? formatRelativeTime(when) : ''].filter(Boolean).join(' · ');
   meta.append(labelText('Details'), smallText(metaText));
   panel.appendChild(meta);
-  if (item.preview) {
+  if (item.brief || item.preview) {
     const preview = document.createElement('div');
     preview.className = 'context-row';
-    preview.append(labelText('Last message'));
+    preview.append(labelText(item.brief ? 'Brief' : 'Last message'));
     const previewText = document.createElement('div');
     previewText.className = 'conv-preview-text';
-    previewText.textContent = item.preview;
+    previewText.textContent = item.brief || item.preview;
     preview.appendChild(previewText);
     panel.appendChild(preview);
   }
@@ -12652,10 +13648,23 @@ function renderQueue() {
   }
   root.classList.remove('hidden');
 }
-function enqueueText(text) {
-  state.queue.push(text);
-  renderQueue();
-  addMessage('notice', 'queued: ' + text);
+async function enqueueText(text) {
+  try {
+    const res = await api('/api/session/input', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, mode: 'followUp' }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Could not queue follow-up');
+    addMessage('notice', 'follow-up queued: ' + text);
+  } catch {
+    // The run may finish between the local running check and this request.
+    // Preserve the input as the next ordinary turn instead of dropping it.
+    state.queue.push(text);
+    renderQueue();
+    addMessage('notice', 'queued for next turn: ' + text);
+  }
 }
 async function submitText(text) {
   if (!text) return;
@@ -12668,7 +13677,7 @@ async function submitText(text) {
     return;
   }
   if (state.running) {
-    enqueueText(text);
+    await enqueueText(text);
     return;
   }
   await sendText(text);
@@ -15815,6 +16824,8 @@ function handleEvent(event) {
     applyLoadedState();
   }
   else if (event.type === 'tool.call') { finalizeAssistant(); state.currentAssistant = null; addToolActivity(event); }
+  else if (event.type === 'tool.input.delta') updateStreamingToolInput(event);
+  else if (event.type === 'thinking.delta') setRunStatus('Thinking…', 'running');
   else if (event.type === 'tool.progress') updateToolProgress(event);
   else if (event.type === 'tool.result') updateToolActivity(event);
   else if (event.type === 'command.result') addResult(event);
@@ -16155,6 +17166,9 @@ function openAgentProfileEditor(profile) {
   el('agentProfileName').disabled = Boolean(profile);
   setField('agentProfileDescription', profile?.description || '');
   setField('agentProfilePermission', profile?.permissionMode || '');
+  setField('agentProfileEffort', profile?.effort || '');
+  setField('agentProfileMaxTokens', profile?.maxTokens != null ? String(profile.maxTokens) : '');
+  setField('agentProfileTemperature', profile?.temperature != null ? String(profile.temperature) : '');
   setField('agentProfileSystemPrompt', profile?.systemPromptAppend || '');
   populateAgentProfileBridgeOptions(profile?.bridgeConfig || '');
   populateAgentProfileModelOptions(profile?.model || '');
@@ -16181,6 +17195,9 @@ async function saveAgentProfileViaApi() {
     bridgeConfig: el('agentProfileBridge').value,
     model,
     permissionMode: el('agentProfilePermission').value,
+    effort: el('agentProfileEffort').value,
+    maxTokens: el('agentProfileMaxTokens').value.trim(),
+    temperature: el('agentProfileTemperature').value.trim(),
     systemPromptAppend: el('agentProfileSystemPrompt').value.trim(),
   };
   const res = await api('/api/agent-profiles', {
@@ -17262,6 +18279,7 @@ async function changeDataRootFromSettings() {
   } catch { /* preview is optional */ }
   const entries = current?.summary?.entries ?? 0;
   const bytes = current?.summary?.bytes ?? 0;
+  const contents = Array.isArray(current?.contents) ? current.contents : [];
   const confirmed = window.confirm([
     'Move Actoviq data storage?',
     '',
@@ -17272,6 +18290,7 @@ async function changeDataRootFromSettings() {
     targetRoot,
     '',
     'Will copy ' + entries + ' items (' + formatFileSize(bytes) + '). Old data will be kept.',
+    contents.length ? 'Includes: ' + contents.slice(0, 12).join(', ') + (contents.length > 12 ? ', …' : '') : '',
   ].join('\\n'));
   if (!confirmed) return;
   const status = el('settingsStatus');
@@ -17664,14 +18683,15 @@ el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 document.addEventListener('click', (event) => {
   hideContextMenu();
-  const menu = el('modelPickerMenu');
-  if (!menu.classList.contains('hidden') && !event.target.closest('#modelPickerBtn') && !event.target.closest('#modelPickerMenu')) {
-    menu.classList.add('hidden');
+  const flyout = el('modelPickerFlyout');
+  if (flyout && !flyout.classList.contains('hidden')
+    && !event.target.closest('#modelPickerBtn')
+    && !event.target.closest('#modelPickerFlyout')) {
+    closePickerEffortEditor();
+    flyout.classList.add('hidden');
   }
   const addMenu = el('tabbarAddMenu');
-  if (addMenu && !addMenu.classList.contains('hidden') && !event.target.closest('#tabbarAdd') && !event.target.closest('#tabbarAddMenu')) {
-    addMenu.classList.add('hidden');
-  }
+  if (addMenu) addMenu.classList.add('hidden');
 });
 document.addEventListener('contextmenu', (event) => {
   const onTarget = event.target.closest && (event.target.closest('.project-chat-row') || event.target.closest('.workspace-choice'));
@@ -17680,9 +18700,41 @@ document.addEventListener('contextmenu', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hideContextMenu();
   if (event.key === 'Escape') closeTeamModals();
+  if (event.key === 'Escape') {
+    const flyout = el('modelPickerFlyout');
+    if (flyout && !flyout.classList.contains('hidden')) {
+      if (state.pickerEditingAgent) closePickerEffortEditor();
+      else flyout.classList.add('hidden');
+    }
+    if (state.auxView) showAuxLauncher();
+    else if (state.auxFocused) toggleAuxFocus();
+  }
+  const tag = (event.target && event.target.tagName) ? event.target.tagName.toLowerCase() : '';
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || (event.target && event.target.isContentEditable);
+  if (!typing && event.ctrlKey && event.shiftKey && (event.key === 'G' || event.key === 'g')) {
+    event.preventDefault();
+    handleAuxAction('review');
+  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'T' || event.key === 't')) {
+    event.preventDefault();
+    handleAuxAction('browser');
+  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'P' || event.key === 'p')) {
+    event.preventDefault();
+    handleAuxAction('files');
+  } else if (!typing && event.ctrlKey && !event.shiftKey && event.code === 'Backquote') {
+    event.preventDefault();
+    toggleTerminalDock();
+  }
 });
 el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
+el('modelPickerSearch').addEventListener('input', (event) => {
+  state.pickerQuery = event.target.value || '';
+  const keepEditing = state.pickerEditingAgent;
+  renderModelPicker();
+  if (keepEditing) openPickerEffortEditor(keepEditing);
+});
+el('modelPickerSearch').addEventListener('click', (event) => event.stopPropagation());
+el('modelPickerFlyout').addEventListener('click', (event) => event.stopPropagation());
 el('settingsOutputStyle').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
@@ -17710,14 +18762,17 @@ transcript.addEventListener('click', (event) => {
     setTimeout(() => { button.textContent = original; }, 1200);
   }).catch(() => {});
 });
-el('tabbarAdd').addEventListener('click', (event) => {
-  event.stopPropagation();
-  el('tabbarAddMenu').classList.toggle('hidden');
+document.querySelectorAll('#auxLauncher [data-aux]').forEach((button) => {
+  button.addEventListener('click', () => handleAuxAction(button.dataset.aux));
 });
-document.querySelectorAll('#tabbarAddMenu [data-add-pane]').forEach((button) => {
-  button.addEventListener('click', () => addPane(button.dataset.addPane));
-});
-renderTabs();
+el('auxCloseBtn').addEventListener('click', () => showAuxLauncher());
+el('auxToggleBtn').addEventListener('click', () => toggleAuxPanel());
+el('auxPanelToggleBtn').addEventListener('click', () => toggleAuxPanel());
+el('auxFocusBtn').addEventListener('click', () => toggleAuxFocus());
+el('terminalToggleBtn').addEventListener('click', () => toggleTerminalDock());
+el('terminalDockClose').addEventListener('click', () => closeTerminalDock());
+syncAuxChrome();
+syncTerminalToggle();
 loadState().then(hydrateTranscript).catch(error => addMessage('error', error.message));
 `;
 }

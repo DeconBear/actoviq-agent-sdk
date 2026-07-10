@@ -90,6 +90,21 @@ export function extractPreviewFromMessages(messages: MessageParam[]): string {
   return user ? extractTextFromContent(user.content) : '';
 }
 
+/**
+ * Short conversation label for sidebars/lists (Cursor-style): prefer the first
+ * real user prompt, skipping injected system-reminder wrappers.
+ */
+export function extractConversationBrief(messages: MessageParam[]): string {
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const text = extractTextFromContent(message.content).trim();
+    if (!text) continue;
+    if (text.startsWith('<system-reminder>')) continue;
+    return text.replace(/\s+/g, ' ');
+  }
+  return extractPreviewFromMessages(messages).replace(/\s+/g, ' ').trim();
+}
+
 export function extractTextFromToolResultContent(content?: ToolResultBlockParam['content']): string {
   if (typeof content === 'string') {
     return content;

@@ -58,6 +58,16 @@ export function summarizeActoviqHome(root: string): ActoviqHomeMigrationSummary 
   return { sourceRoot: resolved, targetRoot: '', bytes: totals.bytes, entries: totals.entries };
 }
 
+export function listActoviqHomeTopLevelEntries(root: string): string[] {
+  try {
+    return readdirSync(path.resolve(root), { withFileTypes: true })
+      .map(entry => entry.isDirectory() ? `${entry.name}/` : entry.name)
+      .sort((left, right) => left.localeCompare(right));
+  } catch {
+    return [];
+  }
+}
+
 export async function migrateActoviqHomeData(
   options: MigrateActoviqHomeOptions,
 ): Promise<ActoviqHomeMigrationSummary> {
@@ -72,6 +82,9 @@ export async function migrateActoviqHomeData(
   await assertEmptyOrMissingDirectory(targetRoot);
   await mkdir(path.dirname(targetRoot), { recursive: true });
   const sourceExists = await exists(sourceRoot);
+  const sourceTotals = sourceExists
+    ? await walkStats(sourceRoot)
+    : { bytes: 0, entries: 0 };
   if (sourceExists) {
     await cp(sourceRoot, targetRoot, { recursive: true, errorOnExist: false, force: false });
   } else {
@@ -79,6 +92,11 @@ export async function migrateActoviqHomeData(
   }
   await assertWritableDirectory(targetRoot);
   const totals = await walkStats(targetRoot);
+  if (totals.bytes !== sourceTotals.bytes || totals.entries !== sourceTotals.entries) {
+    throw new Error(
+      `Actoviq data-root validation failed after copy: expected ${sourceTotals.entries} entries/${sourceTotals.bytes} bytes, got ${totals.entries} entries/${totals.bytes} bytes`,
+    );
+  }
   if (options.writePointer !== false) {
     await writeActoviqHomePointer(targetRoot, options.osHomeDir);
   }

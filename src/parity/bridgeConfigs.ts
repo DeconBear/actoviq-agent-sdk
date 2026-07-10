@@ -14,7 +14,15 @@
  * readBridgeConfigs auto-migrates these to 'anthropic'|'openai'.
  * Mirrors mcpServerConfig for persistence.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { resolveActoviqHome } from '../config/actoviqHome.js';
 
@@ -120,35 +128,75 @@ function isValidConfig(value: unknown): value is PersistedBridgeConfig {
   return typeof c.name === 'string' && typeof c.provider === 'string';
 }
 
+function normalizeBridgeConfig(c: PersistedBridgeConfig): PersistedBridgeConfig {
+  const out: PersistedBridgeConfig = {
+    name: c.name,
+    provider: migrateProvider(c.provider),
+    // Pre-v0.8 legacy: missing/unknown runtime defaults to 'claude'.
+    runtime: isValidRuntime(c.runtime) ? c.runtime : 'claude',
+  };
+  if (typeof c.apiKey === 'string' && c.apiKey) out.apiKey = c.apiKey;
+  if (typeof c.baseURL === 'string' && c.baseURL) out.baseURL = c.baseURL;
+  if (typeof c.model === 'string' && c.model) out.model = c.model;
+  if (Array.isArray(c.models)) {
+    out.models = c.models.filter(
+      (m: unknown): m is ProviderModelEntry =>
+        typeof m === 'object' && m !== null && typeof (m as ProviderModelEntry).name === 'string',
+    );
+  }
+  return out;
+}
+
+function serializeBridgeConfigs(configs: PersistedBridgeConfigs): string {
+  return `${JSON.stringify(configs, null, 2)}\n`;
+}
+
+/** Write via temp+rename so a crash mid-write cannot leave a 0-byte configs file. */
+function atomicWriteFile(file: string, contents: string): void {
+  mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, contents, 'utf-8');
+  try {
+    renameSync(tmp, file);
+  } catch {
+    try {
+      unlinkSync(file);
+    } catch {
+      /* dest may not exist */
+    }
+    try {
+      renameSync(tmp, file);
+    } catch {
+      copyFileSync(tmp, file);
+      unlinkSync(tmp);
+    }
+  }
+}
+
 export function readBridgeConfigs(homeDir?: string): PersistedBridgeConfigs {
   const file = getBridgeConfigsPath(homeDir);
   if (!existsSync(file)) return { configs: [] };
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf-8'));
+    const raw = readFileSync(file, 'utf-8');
+    // Empty/truncated files must not be treated as a successful empty config list
+    // that later gets persisted — that is how named configs were wiped before.
+    if (!raw.trim()) return { configs: [] };
+    const parsed = JSON.parse(raw);
     const configs = Array.isArray(parsed.configs)
-      ? parsed.configs.filter(isValidConfig).map((c: PersistedBridgeConfig) => {
-          const out: PersistedBridgeConfig = {
-            name: c.name,
-            provider: migrateProvider(c.provider),
-            // Pre-v0.8 legacy: missing/unknown runtime defaults to 'claude'.
-            runtime: isValidRuntime(c.runtime) ? c.runtime : 'claude',
-          };
-          if (typeof c.apiKey === 'string' && c.apiKey) out.apiKey = c.apiKey;
-          if (typeof c.baseURL === 'string' && c.baseURL) out.baseURL = c.baseURL;
-          if (typeof c.model === 'string' && c.model) out.model = c.model;
-          if (Array.isArray(c.models)) {
-            out.models = c.models.filter(
-              (m: unknown): m is ProviderModelEntry =>
-                typeof m === 'object' && m !== null && typeof (m as ProviderModelEntry).name === 'string',
-            );
-          }
-          return out;
-        })
+      ? parsed.configs.filter(isValidConfig).map((c: PersistedBridgeConfig) => normalizeBridgeConfig(c))
       : [];
-    // Best-effort re-save: write the migrated configs back so the file stays
-    // current. Ignore failures (read-only fs, etc.).
-    try { writeFileSync(file, JSON.stringify({ configs }, null, 2), 'utf-8'); } catch { /* ignore */ }
-    return { configs };
+    const next = { configs };
+    const serialized = serializeBridgeConfigs(next);
+    // Only rewrite when migration actually changed on-disk contents. Rewriting on
+    // every read raced with GUI restarts and could truncate the file to 0 bytes.
+    if (raw.replace(/\r\n/g, '\n').trimEnd() !== serialized.replace(/\r\n/g, '\n').trimEnd()) {
+      try {
+        atomicWriteFile(file, serialized);
+      } catch {
+        /* ignore read-only fs, etc. */
+      }
+    }
+    return next;
   } catch {
     return { configs: [] };
   }
@@ -156,8 +204,7 @@ export function readBridgeConfigs(homeDir?: string): PersistedBridgeConfigs {
 
 export function writeBridgeConfigs(configs: PersistedBridgeConfigs, homeDir?: string): void {
   const file = getBridgeConfigsPath(homeDir);
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(configs, null, 2), 'utf-8');
+  atomicWriteFile(file, serializeBridgeConfigs(configs));
 }
 
 export function addBridgeConfig(config: PersistedBridgeConfig, homeDir?: string): PersistedBridgeConfigs {

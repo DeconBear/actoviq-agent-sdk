@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   defaultActoviqHome,
   getActoviqHomePointerPath,
+  listActoviqHomeTopLevelEntries,
   migrateActoviqHomeData,
   resolveActoviqHome,
   summarizeActoviqHome,
@@ -62,6 +63,7 @@ describe('actoviqHome', () => {
     await writeFile(path.join(sourceRoot, 'projects', 'demo', 'note.txt'), 'hello', 'utf8');
 
     const before = summarizeActoviqHome(sourceRoot);
+    expect(listActoviqHomeTopLevelEntries(sourceRoot)).toEqual(['projects/', 'settings.json']);
     const result = await migrateActoviqHomeData({ sourceRoot, targetRoot, osHomeDir });
 
     expect(result.sourceRoot).toBe(path.resolve(sourceRoot));

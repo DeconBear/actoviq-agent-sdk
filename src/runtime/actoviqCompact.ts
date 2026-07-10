@@ -910,6 +910,12 @@ export interface ActoviqLoopCompactContext {
    * estimate cannot see, so it is a better trigger for the next in-loop compact.
    */
   lastRequestInputTokens?: number;
+  /**
+   * Rolling calibration derived from provider usage versus local estimates.
+   * This keeps proactive compaction useful immediately after a compact, when
+   * no directly comparable previous request remains.
+   */
+  tokenEstimateMultiplier?: number;
   /** Circuit-breaker key; use the runId so one bad run cannot poison others. */
   runKey: string;
   signal?: AbortSignal;
@@ -970,7 +976,13 @@ export async function compactActoviqConversationIfNeeded(
   context: ActoviqLoopCompactContext,
 ): Promise<ActoviqLoopCompactOutcome> {
   const config = context.compactConfig;
-  const tokenEstimateBefore = estimateActoviqConversationTokens(messages);
+  const tokenEstimateMultiplier = Math.min(
+    Math.max(context.tokenEstimateMultiplier ?? 1, 0.5),
+    8,
+  );
+  const tokenEstimateBefore = Math.ceil(
+    estimateActoviqConversationTokens(messages) * tokenEstimateMultiplier,
+  );
   const unchanged: ActoviqLoopCompactOutcome = {
     messages: [...messages],
     compacted: false,
@@ -1005,7 +1017,9 @@ export async function compactActoviqConversationIfNeeded(
   // Stage 1: clear old large tool results. This alone may bring the
   // conversation back under the threshold without losing turn structure.
   const microcompacted = compactToolResultContent(messages, config);
-  const afterMicrocompactTokens = estimateActoviqConversationTokens(microcompacted.messages);
+  const afterMicrocompactTokens = Math.ceil(
+    estimateActoviqConversationTokens(microcompacted.messages) * tokenEstimateMultiplier,
+  );
   const actualUsageTriggered =
     !context.force &&
     context.lastRequestInputTokens !== undefined &&
@@ -1130,7 +1144,9 @@ export async function compactActoviqConversationIfNeeded(
     messages: nextMessages,
     compacted: true,
     tokenEstimateBefore,
-    tokenEstimateAfter: estimateActoviqConversationTokens(nextMessages),
+    tokenEstimateAfter: Math.ceil(
+      estimateActoviqConversationTokens(nextMessages) * tokenEstimateMultiplier,
+    ),
     messagesSummarized: messagesToSummarize.length,
     preservedMessages: messagesToKeep.length,
     clearedToolResults: microcompacted.clearedCount,

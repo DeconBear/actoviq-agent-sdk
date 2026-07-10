@@ -7,10 +7,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   deleteAgentProfile,
   findAgentProfile,
+  findSelectableAgent,
   getAgentProfilesPath,
   listAgentProfiles,
+  listSelectableAgents,
+  matchSelectableAgent,
   readAgentProfiles,
   resolveAgentProfileRun,
+  resolveSelectableAgentRun,
   upsertAgentProfile,
 } from '../src/config/agentProfiles.js';
 import { addBridgeConfig } from '../src/parity/bridgeConfigs.js';
@@ -45,11 +49,19 @@ describe('agentProfiles', () => {
       bridgeConfig: 'claude-main',
       model: 'claude-sonnet',
       permissionMode: 'acceptEdits',
+      effort: 'high',
+      maxTokens: 16000,
+      temperature: 0.2,
       systemPromptAppend: 'Focus on regressions.',
     }, home);
 
     expect(saved.warnings).toEqual([]);
-    expect(findAgentProfile('reviewer', home)?.model).toBe('claude-sonnet');
+    expect(findAgentProfile('reviewer', home)).toMatchObject({
+      model: 'claude-sonnet',
+      effort: 'high',
+      maxTokens: 16000,
+      temperature: 0.2,
+    });
     expect(listAgentProfiles(home)).toHaveLength(1);
     await expect(readFile(getAgentProfilesPath(home), 'utf8')).resolves.toContain('reviewer');
   });
@@ -121,5 +133,48 @@ describe('agentProfiles', () => {
 
     expect(after.profiles).toEqual([]);
     expect(listAgentProfiles(home)).toEqual([]);
+  });
+
+  it('lists saved profiles plus auto presets from config models', async () => {
+    const home = await tempRoot('actoviq-selectable-agents-');
+    addBridgeConfig({
+      name: 'deepseek',
+      runtime: 'claude',
+      provider: 'anthropic',
+      apiKey: 'sk-x',
+      model: 'deepseek-v4-pro',
+      models: [{ name: 'deepseek-v4-pro' }, { name: 'deepseek-v4-flash' }],
+    }, home);
+    upsertAgentProfile({
+      name: 'reviewer',
+      bridgeConfig: 'deepseek',
+      model: 'deepseek-v4-pro',
+      effort: 'high',
+      maxTokens: 8000,
+      temperature: 0.3,
+    }, home);
+
+    const agents = listSelectableAgents(home);
+    expect(agents.find(a => a.name === 'reviewer')).toMatchObject({
+      source: 'profile',
+      model: 'deepseek-v4-pro',
+      effort: 'high',
+      maxTokens: 8000,
+      temperature: 0.3,
+    });
+    // Covered by reviewer — no duplicate auto preset for the same config+model.
+    expect(agents.filter(a => a.bridgeConfig === 'deepseek' && a.model === 'deepseek-v4-pro')).toHaveLength(1);
+    const flash = agents.find(a => a.model === 'deepseek-v4-flash');
+    expect(flash).toMatchObject({
+      source: 'config',
+      ephemeral: true,
+      bridgeConfig: 'deepseek',
+    });
+    expect(findSelectableAgent(flash!.name, home)?.model).toBe('deepseek-v4-flash');
+    expect(matchSelectableAgent('deepseek', 'deepseek-v4-pro', home)?.name).toBe('reviewer');
+
+    const resolved = await resolveSelectableAgentRun(flash!.name, home);
+    expect(resolved.model).toBe('deepseek-v4-flash');
+    expect(resolved.selectable.source).toBe('config');
   });
 });
