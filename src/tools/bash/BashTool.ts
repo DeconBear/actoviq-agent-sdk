@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { tool } from '../../runtime/tools.js';
-import type { AgentToolDefinition } from '../../types.js';
+import { isReadOnlyBashCommand } from '../../runtime/bashClassification.js';
+import type { ActoviqBackgroundTaskRecord, AgentToolDefinition } from '../../types.js';
 import { BASH_DESCRIPTION } from './prompt.js';
 
 export const BASH_TOOL_NAME = 'Bash';
@@ -30,13 +32,61 @@ const inputSchema = z.strictObject({
 
 export type BashInput = z.infer<typeof inputSchema>;
 
-export function createBashTool(): AgentToolDefinition {
+interface BashBackgroundTaskLauncher {
+  launch(options: {
+    subagentType: string;
+    description: string;
+    workDir: string;
+    parentRunId?: string;
+    parentSessionId?: string;
+    agentName?: string;
+    outputFile?: string | ((taskId: string) => string);
+    onRun: (
+      signal: AbortSignal,
+      updateProgress: (
+        progress: Partial<
+          Pick<
+            ActoviqBackgroundTaskRecord,
+            | 'partialText'
+            | 'toolCallCount'
+            | 'toolErrorCount'
+            | 'requestCount'
+            | 'currentIteration'
+            | 'currentToolName'
+            | 'progressSummary'
+            | 'queuedMessageCount'
+          >
+        >,
+      ) => Promise<ActoviqBackgroundTaskRecord>,
+      task: ActoviqBackgroundTaskRecord,
+    ) => Promise<{
+      runId: string;
+      sessionId?: string;
+      model: string;
+      text: string;
+      toolCallCount: number;
+      toolErrorCount?: number;
+      requestCount?: number;
+    }>;
+    onSettled?: (task: ActoviqBackgroundTaskRecord) => Promise<void> | void;
+  }): Promise<ActoviqBackgroundTaskRecord>;
+}
+
+export interface BashToolOptions {
+  backgroundTaskManager?: BashBackgroundTaskLauncher;
+  onBackgroundTaskSettled?: (task: ActoviqBackgroundTaskRecord) => Promise<void> | void;
+}
+
+export function createBashTool(options: BashToolOptions = {}): AgentToolDefinition {
   return tool(
     {
       name: BASH_TOOL_NAME,
       description: BASH_DESCRIPTION,
       inputSchema,
-      isDestructive: () => true,
+      isReadOnly: (input?: BashInput) =>
+        typeof input?.command === 'string' && isReadOnlyBashCommand(input.command),
+      isDestructive: (input?: BashInput) =>
+        !(typeof input?.command === 'string' && isReadOnlyBashCommand(input.command)),
       prompt: () => BASH_DESCRIPTION,
     },
     async (input: BashInput, context) => {
@@ -52,6 +102,56 @@ export function createBashTool(): AgentToolDefinition {
       const shell = resolveBashShell();
       try {
         if (input.run_in_background) {
+          if (options.backgroundTaskManager) {
+            const description = input.description?.trim() || summarizeBashCommand(input.command);
+            const task = await options.backgroundTaskManager.launch({
+              subagentType: 'bash',
+              agentName: 'Bash',
+              description,
+              workDir: context.cwd,
+              parentRunId: context.runId,
+              parentSessionId: context.sessionId,
+              outputFile: taskId => backgroundBashLogPath(context.cwd, taskId),
+              onSettled: options.onBackgroundTaskSettled,
+              onRun: async (signal, updateProgress, taskRecord) => {
+                await updateProgress({
+                  currentToolName: BASH_TOOL_NAME,
+                  progressSummary: `Running: ${description}`,
+                  requestCount: 0,
+                  toolCallCount: 1,
+                  toolErrorCount: 0,
+                });
+                const output = await runBashCommand(shell, input.command, context.cwd, timeoutMs, signal);
+                await mkdir(path.dirname(taskRecord.outputFile), { recursive: true });
+                await writeFile(taskRecord.outputFile, output.text, 'utf8');
+                await updateProgress({
+                  partialText: tailText(output.text, 20_000),
+                  progressSummary: `Finished with exit code ${output.exitCode}`,
+                  toolErrorCount: output.exitCode === 0 ? 0 : 1,
+                });
+                return {
+                  runId: context.runId,
+                  sessionId: context.sessionId,
+                  model: 'bash',
+                  text: output.text,
+                  toolCallCount: 1,
+                  toolErrorCount: output.exitCode === 0 ? 0 : 1,
+                  requestCount: 0,
+                };
+              },
+            });
+            return {
+              stdout:
+                `Background bash task launched.\n` +
+                `Task id: ${task.id}\n` +
+                `Output: ${task.outputFile}\n` +
+                'You will be notified when it completes. Use TaskOutput only for explicit manual inspection.',
+              stderr: '',
+              exitCode: 0,
+              backgroundTaskId: task.id,
+              outputFile: task.outputFile,
+            };
+          }
           const child = spawn(shell.executable, [...shell.args, input.command], {
             cwd: context.cwd,
             stdio: 'ignore',
@@ -83,6 +183,70 @@ export function createBashTool(): AgentToolDefinition {
       }
     },
   );
+}
+
+async function runBashCommand(
+  shell: { executable: string; args: string[] },
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string; exitCode: number; text: string }> {
+  try {
+    const output = await execFile(shell.executable, [...shell.args, command], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+      signal,
+    });
+    const stdout = output.stdout.trim();
+    const stderr = output.stderr.trim();
+    return {
+      stdout,
+      stderr,
+      exitCode: 0,
+      text: formatBashTaskOutput(command, 0, stdout, stderr),
+    };
+  } catch (e: any) {
+    const stdout = String(e.stdout ?? '').trim();
+    const stderr = String(e.stderr ?? e.message ?? e).trim();
+    const exitCode = typeof e.code === 'number' ? e.code : 1;
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      text: formatBashTaskOutput(command, exitCode, stdout, stderr),
+    };
+  }
+}
+
+function formatBashTaskOutput(
+  command: string,
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+): string {
+  return [
+    `Command: ${command}`,
+    `Exit code: ${exitCode}`,
+    stdout ? `Stdout:\n${stdout}` : 'Stdout: <empty>',
+    stderr ? `Stderr:\n${stderr}` : 'Stderr: <empty>',
+  ].join('\n\n');
+}
+
+function backgroundBashLogPath(cwd: string, taskId: string): string {
+  return path.join(cwd, '.actoviq-artifacts', 'background-bash', `${taskId}.log`);
+}
+
+function summarizeBashCommand(command: string): string {
+  const normalized = command.trim().replace(/\s+/g, ' ');
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized || 'Background Bash command';
+}
+
+function tailText(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 }
 
 /**

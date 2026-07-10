@@ -148,6 +148,53 @@ describe('reasoning effort request mapping', () => {
     expect(headers?.get('anthropic-beta')).toContain('effort-2025-11-24');
   });
 
+  it('adds a system prompt cache breakpoint when request caching is active', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          id: 'msg_test',
+          type: 'message',
+          role: 'assistant',
+          model: 'test-model',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const api = new ActoviqModelApi(
+      new ActoviqProviderClient({
+        apiKey: 'test-key',
+        baseURL: 'https://example.test',
+        fetch: fetchImpl,
+      }),
+    );
+
+    await api.createMessage({
+      model: 'test-model',
+      system: 'stable system prompt',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'hello', cache_control: { type: 'ephemeral' } },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    });
+
+    const system = body?.system as Array<Record<string, unknown>>;
+    expect(system[0]).toMatchObject({
+      type: 'text',
+      text: 'stable system prompt',
+      cache_control: { type: 'ephemeral' },
+    });
+  });
+
   it('maps max effort to the highest broadly compatible OpenAI effort', async () => {
     let body: Record<string, unknown> | undefined;
     const fetchImpl: typeof fetch = async (_input, init) => {

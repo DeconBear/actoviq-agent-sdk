@@ -183,7 +183,7 @@ import { buildRouteModelApi } from '../router/modelRouter.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { estimateCost } from '../team/pricing.js';
 import { runMemberAgent } from '../team/teamRuntime.js';
-import { createPlanModeTools, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
+import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { recordTurn } from '../memory/sessionHistory.js';
@@ -1436,11 +1436,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const terminalManager = new TerminalManager();
   let terminalCapable = false;
   const buildTools = () => [
-    ...createActoviqCoreTools({ cwd: workDir }),
-    ...createTerminalVisionTools(terminalManager),
-    ...createPlanModeTools(workDir, {
+    ...createActoviqCoreTools({
+      cwd: workDir,
       onPlanModeChange: async (mode) => { if (mode === 'plan') await applyPlanPermission?.(); },
     }),
+    ...createTerminalVisionTools(terminalManager),
   ];
   let tools = buildTools();
   const createCleanSdk = () =>
@@ -5004,6 +5004,18 @@ function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void
       return;
     case 'response.text.delta':
       if (event.delta) send({ type: 'delta', text: event.delta });
+      return;
+    case 'response.thinking.delta':
+      if (event.delta) send({ type: 'thinking.delta', text: event.delta, snapshot: event.snapshot });
+      return;
+    case 'response.tool_input.delta':
+      send({
+        type: 'tool.input.delta',
+        id: event.toolUseId,
+        name: event.toolName,
+        delta: event.delta,
+        snapshot: event.snapshot,
+      });
       return;
     case 'tool.call':
       send({

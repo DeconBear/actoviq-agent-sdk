@@ -321,6 +321,7 @@ export interface ResolvedToolAdapter {
   isDestructive?: (input?: unknown) => boolean;
   requiresUserInteraction?: () => boolean;
   isConcurrencySafe?: () => boolean;
+  interruptBehavior?: 'cancel' | 'block';
   /** Per-tool result size cap in chars before artifacting to disk. */
   maxResultSizeChars?: number;
   checkPermissions?: (
@@ -1271,6 +1272,27 @@ export type AgentEvent =
       type: 'response.text.delta';
       runId: string;
       iteration: number;
+      delta: string;
+      snapshot: string;
+      timestamp: string;
+    }
+  | {
+      type: 'response.thinking.delta';
+      runId: string;
+      iteration: number;
+      index: number;
+      delta: string;
+      snapshot: string;
+      signature?: string;
+      timestamp: string;
+    }
+  | {
+      type: 'response.tool_input.delta';
+      runId: string;
+      iteration: number;
+      index: number;
+      toolUseId?: string;
+      toolName?: string;
       delta: string;
       snapshot: string;
       timestamp: string;

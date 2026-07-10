@@ -19,13 +19,13 @@ import { createTavilySearchTool } from './tavilySearch.js';
 import { createBashTool } from './bash/BashTool.js';
 import { createTodoWriteTool } from './todo/TodoWriteTool.js';
 import { createAskUserQuestionTool } from './askUserQuestion/AskUserQuestionTool.js';
-import { createPlanModeTools } from './planMode/PlanModeTools.js';
+import { createPlanModeTools, type PlanModeToolContext } from './planMode/PlanModeTools.js';
 import { createActoviqTaskTools } from './actoviqTaskTools.js';
 import { createNotebookEditTool } from './actoviqNotebookEdit.js';
 import { createPowerShellTool } from './actoviqShellTools.js';
 import { createActoviqMiscTools } from './actoviqMiscTools.js';
 
-export interface ActoviqCoreToolsOptions extends ActoviqFileToolsOptions {
+export interface ActoviqCoreToolsOptions extends ActoviqFileToolsOptions, PlanModeToolContext {
   bash?: boolean;
   todoWrite?: boolean;
   askUserQuestion?: boolean;
@@ -49,7 +49,10 @@ export function createActoviqCoreTools(
   if (options.askUserQuestion !== false) tools.push(createAskUserQuestionTool());
   // Plan-mode tools let the agent enter/exit planning and present a plan.
   if (options.planModeTools !== false && options.cwd) {
-    tools.push(...createPlanModeTools(options.cwd));
+    tools.push(...createPlanModeTools(options.cwd, {
+      onPlanModeChange: options.onPlanModeChange,
+      planDir: options.planDir,
+    }));
   }
   if (options.webTools !== false) {
     tools.push(...createActoviqWebTools());

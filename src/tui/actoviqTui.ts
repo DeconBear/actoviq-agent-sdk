@@ -354,7 +354,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     // Missing local config is fine; env vars may carry credentials.
   }
 
-  const tools = createActoviqCoreTools({ cwd: workDir });
+  let applyPlanPermission: (() => Promise<void>) | null = null;
+  const tools = createActoviqCoreTools({
+    cwd: workDir,
+    onPlanModeChange: async (mode) => {
+      if (mode === 'plan') await applyPlanPermission?.();
+    },
+  });
   const createCleanSdk = () =>
     createAgentSdk({
       workDir,
@@ -546,6 +552,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
+  let streamedThinkingSeen = false;
   // Track tool names by callId for PostToolUse hook context.
   const toolCallNames = new Map<string, string>();
   // Live todo list (captured from TodoWrite tool calls). Rendered as a
@@ -659,6 +666,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return outcome === 'allow'
       ? { behavior: 'allow', reason: 'Approved in TUI.' }
       : { behavior: 'deny', reason: 'Denied in TUI permission dialog.' };
+  };
+
+  applyPlanPermission = async () => {
+    await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
   };
 
   const canUseTool: ActoviqCanUseTool | undefined =
@@ -1390,6 +1401,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     switch (event.type) {
       case 'run.started':
         streamedTextSeen = false;
+        streamedThinkingSeen = false;
         return;
       case 'request.started':
         lastTokenEstimate = event.requestTokenEstimate;
@@ -1404,8 +1416,19 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         scheduleDynamicRender();
         return;
       }
+      case 'response.thinking.delta': {
+        const delta = typeof event.delta === 'string' ? event.delta : '';
+        if (!delta) return;
+        const lines = formatThinking(delta, screen.width);
+        if (lines.length > 0) appendStatic(lines);
+        streamedThinkingSeen = true;
+        scheduleDynamicRender();
+        return;
+      }
+      case 'response.tool_input.delta':
+        return;
       case 'response.content':
-        if (event.content.type === 'thinking') {
+        if (event.content.type === 'thinking' && !streamedThinkingSeen) {
           const thinking = (event.content as { thinking?: string }).thinking ?? '';
           const lines = formatThinking(thinking, screen.width);
           if (lines.length > 0) appendStatic(lines);

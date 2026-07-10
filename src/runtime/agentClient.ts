@@ -81,6 +81,7 @@ import type {
 } from '../types.js';
 import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
 import { createActoviqFileTools } from '../tools/actoviqFileTools.js';
+import { BASH_TOOL_NAME, createBashTool } from '../tools/bash/BashTool.js';
 import {
   ActoviqWorkspace,
   createGitWorktreeWorkspace,
@@ -726,6 +727,12 @@ export class ActoviqAgentClient {
       existingDelegationTool.aliases = [
         ...new Set([...(existingDelegationTool.aliases ?? []), 'Agent']),
       ];
+    }
+    if (this.defaultTools.some(tool => tool.name === BASH_TOOL_NAME)) {
+      this.replaceDefaultTool(createBashTool({
+        backgroundTaskManager: this.backgroundTaskManager,
+        onBackgroundTaskSettled: task => this.enqueueTaskNotification(task),
+      }));
     }
     this.replaceDefaultTool(this.createSendMessageTool());
     this.replaceDefaultTool(this.createBackgroundTaskListTool());
@@ -3777,6 +3784,10 @@ function formatTaskNotification(task: ActoviqBackgroundTaskRecord): string {
     task.status === 'completed'
       ? task.text ?? task.partialText ?? ''
       : task.partialText ?? '';
+  const actor =
+    task.subagentType === 'bash'
+      ? `Background command "${task.description}"`
+      : `Agent "${task.agentName ?? task.subagentType}"`;
   return [
     '<task_notification>',
     `<task_id>${escapeXml(task.id)}</task_id>`,
@@ -3785,8 +3796,8 @@ function formatTaskNotification(task: ActoviqBackgroundTaskRecord): string {
     `<status>${task.status}</status>`,
     `<summary>${escapeXml(
       task.status === 'completed'
-        ? `Agent "${task.agentName ?? task.subagentType}" completed.`
-        : `Agent "${task.agentName ?? task.subagentType}" ${task.status}.`,
+        ? `${actor} completed.`
+        : `${actor} ${task.status}.`,
     )}</summary>`,
     result ? `<result>${escapeXml(result)}</result>` : undefined,
     task.error ? `<error>${escapeXml(task.error)}</error>` : undefined,

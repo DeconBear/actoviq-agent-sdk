@@ -28,7 +28,7 @@ export interface ActoviqCreateMessageRequest {
   model: string;
   messages: MessageParam[];
   max_tokens: number;
-  system?: string;
+  system?: string | unknown[];
   temperature?: number;
   tools?: Tool[];
   tool_choice?: ToolChoice;

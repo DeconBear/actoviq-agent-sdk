@@ -9,7 +9,7 @@ export class ActoviqModelApi implements ModelApi {
     const { signal, effort, ...body } = request;
     return this.client.messages.create(
       {
-        ...body,
+        ...withCachedSystemPrompt(body),
         ...(effort ? { output_config: { effort } } : {}),
       },
       signal || effort
@@ -25,7 +25,7 @@ export class ActoviqModelApi implements ModelApi {
     const { signal, effort, ...body } = request;
     return this.client.messages.stream(
       {
-        ...body,
+        ...withCachedSystemPrompt(body),
         ...(effort ? { output_config: { effort } } : {}),
       },
       signal || effort
@@ -36,6 +36,26 @@ export class ActoviqModelApi implements ModelApi {
         : undefined,
     );
   }
+}
+
+function withCachedSystemPrompt(
+  body: Omit<ModelRequest, 'signal' | 'effort'>,
+): Omit<ModelRequest, 'signal' | 'effort' | 'system'> & { system?: string | unknown[] } {
+  if (!body.system || !requestHasPromptCacheBreakpoint(body)) {
+    return body;
+  }
+  return {
+    ...body,
+    system: [
+      { type: 'text', text: body.system, cache_control: { type: 'ephemeral' } },
+    ],
+  };
+}
+
+function requestHasPromptCacheBreakpoint(
+  body: Omit<ModelRequest, 'signal' | 'effort'>,
+): boolean {
+  return JSON.stringify({ tools: body.tools, messages: body.messages }).includes('cache_control');
 }
 
 export function createActoviqModelApi(config: ResolvedRuntimeConfig): ModelApi {

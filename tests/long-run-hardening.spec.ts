@@ -33,6 +33,7 @@ async function createSessionDirectory(): Promise<string> {
 function makeMessage(
   content: unknown[],
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens' = 'end_turn',
+  inputTokens = 10,
 ): Message {
   messageCounter += 1;
   return {
@@ -48,7 +49,7 @@ function makeMessage(
       cache_creation_input_tokens: null,
       cache_read_input_tokens: null,
       inference_geo: null,
-      input_tokens: 10,
+      input_tokens: inputTokens,
       output_tokens: 5,
     },
   } as Message;
@@ -212,6 +213,68 @@ describe('concurrent read-only tool execution', () => {
       const result = await sdk.run('Write two things.', { tools: [slowWrite] });
       expect(result.text).toContain('Writes done.');
       expect(maxInFlight).toBe(1);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('tool interrupt behavior', () => {
+  it('only forwards the abort signal to cancel-interrupt tools', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let blockSignal: AbortSignal | undefined;
+    let cancelSignal: AbortSignal | undefined;
+    const modelApi = new MockModelApi({
+      create: (_request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [
+              { type: 'tool_use', id: 'toolu_block', name: 'block_tool', input: {} },
+              { type: 'tool_use', id: 'toolu_cancel', name: 'cancel_tool', input: {} },
+            ],
+            'tool_use',
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'done' }]);
+      },
+    });
+    const blockTool = tool(
+      {
+        name: 'block_tool',
+        description: 'A blocking tool.',
+        inputSchema: z.strictObject({}),
+        interruptBehavior: 'block',
+      },
+      async (_input, context) => {
+        blockSignal = context.signal;
+        return 'blocked';
+      },
+    );
+    const cancelTool = tool(
+      {
+        name: 'cancel_tool',
+        description: 'A cancellable tool.',
+        inputSchema: z.strictObject({}),
+        interruptBehavior: 'cancel',
+      },
+      async (_input, context) => {
+        cancelSignal = context.signal;
+        return 'cancelled';
+      },
+    );
+    const controller = new AbortController();
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      tools: [blockTool, cancelTool],
+    });
+
+    try {
+      await sdk.run('Run both tools.', { signal: controller.signal });
+
+      expect(blockSignal).toBeUndefined();
+      expect(cancelSignal).toBe(controller.signal);
     } finally {
       await sdk.close();
     }
@@ -500,6 +563,146 @@ describe('max_tokens truncation recovery', () => {
       await sdk.close();
     }
   });
+
+  it('returns failed tool results instead of executing truncated tool calls', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let executed = false;
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [{ type: 'tool_use', id: 'toolu_truncated', name: 'echo_tool', input: { raw: '{"value":' } }],
+            'max_tokens',
+          );
+        }
+        const lastMessage = request.messages.at(-1);
+        expect(JSON.stringify(lastMessage)).toContain('JSON arguments were incomplete');
+        return makeMessage([{ type: 'text', text: 'Retried without executing bad input.' }]);
+      },
+    });
+    const echoTool = tool(
+      {
+        name: 'echo_tool',
+        description: 'Echoes a value.',
+        inputSchema: z.strictObject({ value: z.string() }),
+      },
+      async () => {
+        executed = true;
+        return 'should-not-run';
+      },
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      tools: [echoTool],
+    });
+
+    try {
+      const result = await sdk.run('Use a truncated tool call.');
+
+      expect(result.text).toContain('Retried');
+      expect(executed).toBe(false);
+      expect(modelApi.createCalls).toHaveLength(2);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('streamed content deltas', () => {
+  it('emits thinking and tool-input deltas during streamed runs', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      stream: (_request, index) => {
+        if (index > 0) {
+          return {
+            events: [
+              {
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: 'stream done' },
+              } as MessageStreamEvent,
+            ],
+            message: makeMessage([{ type: 'text', text: 'stream done' }]),
+          };
+        }
+        return {
+          events: [
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'thinking', thinking: '' },
+            } as MessageStreamEvent,
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'thinking_delta', thinking: 'considering' },
+            } as MessageStreamEvent,
+            {
+              type: 'content_block_start',
+              index: 1,
+              content_block: { type: 'tool_use', id: 'toolu_stream', name: 'echo_tool', input: {} },
+            } as MessageStreamEvent,
+            {
+              type: 'content_block_delta',
+              index: 1,
+              delta: { type: 'input_json_delta', partial_json: '{"value"' },
+            } as MessageStreamEvent,
+            {
+              type: 'content_block_delta',
+              index: 1,
+              delta: { type: 'input_json_delta', partial_json: ':"hi"}' },
+            } as MessageStreamEvent,
+          ],
+          message: makeMessage(
+            [
+              { type: 'thinking', thinking: 'considering' },
+              { type: 'tool_use', id: 'toolu_stream', name: 'echo_tool', input: { value: 'hi' } },
+            ],
+            'tool_use',
+          ),
+        };
+      },
+    });
+    const echoTool = tool(
+      {
+        name: 'echo_tool',
+        description: 'Echoes a value.',
+        inputSchema: z.strictObject({ value: z.string() }),
+      },
+      async ({ value }) => `echo:${value}`,
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      tools: [echoTool],
+    });
+
+    try {
+      const stream = sdk.stream('Stream tool construction.');
+      const thinking: string[] = [];
+      const toolInputSnapshots: string[] = [];
+
+      for await (const event of stream) {
+        if (event.type === 'response.thinking.delta') {
+          thinking.push(event.delta);
+        }
+        if (event.type === 'response.tool_input.delta') {
+          toolInputSnapshots.push(event.snapshot);
+          expect(event.toolUseId).toBe('toolu_stream');
+          expect(event.toolName).toBe('echo_tool');
+        }
+      }
+
+      await stream.result;
+      expect(thinking.join('')).toBe('considering');
+      expect(toolInputSnapshots.at(-1)).toBe('{"value":"hi"}');
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 
 describe('fallback model switching', () => {
@@ -689,7 +892,7 @@ describe('skill registry tool', () => {
 });
 
 describe('prompt cache breakpoints', () => {
-  it('adds cache_control to the last block of block-content requests on Anthropic hosts', async () => {
+  it('adds cache_control to tools and the last message on Anthropic hosts', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
       create: (_request, index) => {
@@ -721,6 +924,8 @@ describe('prompt cache breakpoints', () => {
       await sdk.run('Echo once.', { tools: [echoTool] });
 
       const secondRequest = modelApi.createCalls[1]!;
+      const lastTool = secondRequest.tools?.at(-1) as Record<string, unknown> | undefined;
+      expect(lastTool?.cache_control).toEqual({ type: 'ephemeral' });
       const lastMessage = secondRequest.messages.at(-1);
       const blocks = Array.isArray(lastMessage?.content) ? lastMessage.content : [];
       const lastBlock = blocks.at(-1) as Record<string, unknown> | undefined;
@@ -762,7 +967,7 @@ describe('prompt cache breakpoints', () => {
     try {
       await sdk.run('Echo once.', { tools: [echoTool] });
       const secondRequest = modelApi.createCalls[1]!;
-      expect(JSON.stringify(secondRequest.messages)).not.toContain('cache_control');
+      expect(JSON.stringify(secondRequest)).not.toContain('cache_control');
     } finally {
       await sdk.close();
     }
