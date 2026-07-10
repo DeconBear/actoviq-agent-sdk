@@ -88,6 +88,7 @@ export function createLocalToolAdapter(
     isDestructive: definition.isDestructive as ((input?: unknown) => boolean) | undefined,
     requiresUserInteraction: definition.requiresUserInteraction,
     isConcurrencySafe: definition.isConcurrencySafe,
+    interruptBehavior: definition.interruptBehavior,
     maxResultSizeChars: definition.maxResultSizeChars,
     checkPermissions: definition.checkPermissions as ResolvedToolAdapter['checkPermissions'],
     execute: async (input: unknown, context: ToolExecutionContext, onProgress?: ToolCallProgress) => {

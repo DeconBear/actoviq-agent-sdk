@@ -17,6 +17,7 @@ interface LaunchActoviqBackgroundTaskOptions {
   resumedFromTaskId?: string;
   worktreePath?: string;
   worktreeBranch?: string;
+  outputFile?: string | ((taskId: string) => string);
   onRun: (
     signal: AbortSignal,
     updateProgress: (
@@ -34,6 +35,7 @@ interface LaunchActoviqBackgroundTaskOptions {
         >
       >,
     ) => Promise<ActoviqBackgroundTaskRecord>,
+    task: ActoviqBackgroundTaskRecord,
   ) => Promise<{
     runId: string;
     sessionId?: string;
@@ -127,7 +129,10 @@ export class ActoviqBackgroundTaskManager {
     });
     task = {
       ...task,
-      outputFile: this.store.taskPath(task.id),
+      outputFile:
+        typeof options.outputFile === 'function'
+          ? options.outputFile(task.id)
+          : options.outputFile ?? this.store.taskPath(task.id),
     };
     await this.store.save(task);
 
@@ -298,6 +303,7 @@ export class ActoviqBackgroundTaskManager {
       const result = await options.onRun(
         abortController.signal,
         progress => this.updateProgress(taskId, progress),
+        current,
       );
       current = await this.requireTask(taskId);
       const completed: ActoviqBackgroundTaskRecord = {

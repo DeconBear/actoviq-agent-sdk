@@ -396,7 +396,7 @@ export class OpenaiModelApi implements ModelApi {
     const openaiMessages = anthropicMessagesToOpenai(request.messages);
 
     // Prepend system message if present
-    if (request.system) {
+    if (typeof request.system === 'string' && request.system) {
       openaiMessages.unshift({ role: 'system', content: request.system });
     }
 

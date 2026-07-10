@@ -904,6 +904,12 @@ export interface ActoviqLoopCompactContext {
   compactConfig: ActoviqCompactConfig;
   /** max_tokens reserved for the model response in regular requests. */
   maxTokens: number;
+  /**
+   * Real input token count reported by the previous provider response. When
+   * available this includes system/tool overhead that the local message-only
+   * estimate cannot see, so it is a better trigger for the next in-loop compact.
+   */
+  lastRequestInputTokens?: number;
   /** Circuit-breaker key; use the runId so one bad run cannot poison others. */
   runKey: string;
   signal?: AbortSignal;
@@ -925,6 +931,9 @@ export interface ActoviqLoopCompactOutcome {
   preservedMessages: number;
   clearedToolResults: number;
   summary?: string;
+  reason?: 'disabled' | 'threshold_not_met' | 'microcompact' | 'compacted' | 'failed' | 'circuit_breaker_open';
+  consecutiveFailures?: number;
+  error?: string;
 }
 
 /**
@@ -973,25 +982,39 @@ export async function compactActoviqConversationIfNeeded(
   };
 
   if (!config.enabled || (!context.force && config.loopAutoCompactEnabled === false)) {
-    return unchanged;
+    return { ...unchanged, reason: 'disabled' };
   }
 
   const threshold = getActoviqLoopAutoCompactThreshold(config, context.maxTokens);
-  if (!context.force && tokenEstimateBefore < threshold) {
-    return unchanged;
+  const triggerTokens = Math.max(context.lastRequestInputTokens ?? 0, tokenEstimateBefore);
+  if (!context.force && triggerTokens < threshold) {
+    return { ...unchanged, reason: 'threshold_not_met' };
   }
 
   const failureKey = `loop:${context.runKey}`;
   const consecutiveFailures = compactionFailureCounts.get(failureKey) ?? 0;
   if (consecutiveFailures >= MAX_CONSECUTIVE_COMPACT_FAILURES) {
-    return unchanged;
+    return {
+      ...unchanged,
+      reason: 'circuit_breaker_open',
+      consecutiveFailures,
+      error: 'In-loop compaction failed repeatedly.',
+    };
   }
 
   // Stage 1: clear old large tool results. This alone may bring the
   // conversation back under the threshold without losing turn structure.
   const microcompacted = compactToolResultContent(messages, config);
   const afterMicrocompactTokens = estimateActoviqConversationTokens(microcompacted.messages);
-  if (!context.force && afterMicrocompactTokens < threshold) {
+  const actualUsageTriggered =
+    !context.force &&
+    context.lastRequestInputTokens !== undefined &&
+    context.lastRequestInputTokens >= threshold &&
+    tokenEstimateBefore < threshold;
+  if (!context.force && !actualUsageTriggered && afterMicrocompactTokens < threshold) {
+    if (microcompacted.clearedCount > 0) {
+      compactionFailureCounts.delete(failureKey);
+    }
     return {
       messages: microcompacted.messages,
       compacted: microcompacted.clearedCount > 0,
@@ -1000,6 +1023,7 @@ export async function compactActoviqConversationIfNeeded(
       messagesSummarized: 0,
       preservedMessages: microcompacted.messages.length,
       clearedToolResults: microcompacted.clearedCount,
+      reason: microcompacted.clearedCount > 0 ? 'microcompact' : 'threshold_not_met',
     };
   }
 
@@ -1027,6 +1051,7 @@ export async function compactActoviqConversationIfNeeded(
       compacted: microcompacted.clearedCount > 0,
       tokenEstimateAfter: afterMicrocompactTokens,
       clearedToolResults: microcompacted.clearedCount,
+      reason: microcompacted.clearedCount > 0 ? 'microcompact' : 'threshold_not_met',
     };
   }
 
@@ -1065,26 +1090,35 @@ export async function compactActoviqConversationIfNeeded(
           continue;
         }
       }
-      compactionFailureCounts.set(failureKey, consecutiveFailures + 1);
+      const nextFailures = consecutiveFailures + 1;
+      compactionFailureCounts.set(failureKey, nextFailures);
+      const message = error instanceof Error ? error.message : String(error);
       return {
         ...unchanged,
         messages: microcompacted.messages,
         compacted: microcompacted.clearedCount > 0,
         tokenEstimateAfter: afterMicrocompactTokens,
         clearedToolResults: microcompacted.clearedCount,
+        reason: 'failed',
+        consecutiveFailures: nextFailures,
+        error: message,
       };
     }
   }
 
   const summary = formatActoviqCompactSummary(extractTextFromContent(response.content));
   if (!summary) {
-    compactionFailureCounts.set(failureKey, consecutiveFailures + 1);
+    const nextFailures = consecutiveFailures + 1;
+    compactionFailureCounts.set(failureKey, nextFailures);
     return {
       ...unchanged,
       messages: microcompacted.messages,
       compacted: microcompacted.clearedCount > 0,
       tokenEstimateAfter: afterMicrocompactTokens,
       clearedToolResults: microcompacted.clearedCount,
+      reason: 'failed',
+      consecutiveFailures: nextFailures,
+      error: 'Compaction returned an empty summary.',
     };
   }
 
@@ -1101,6 +1135,7 @@ export async function compactActoviqConversationIfNeeded(
     preservedMessages: messagesToKeep.length,
     clearedToolResults: microcompacted.clearedCount,
     summary,
+    reason: 'compacted',
   };
 }
 

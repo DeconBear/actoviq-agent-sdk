@@ -1,5 +1,6 @@
 ﻿import type {
   ContentBlockDeltaEvent,
+  ContentBlockStartEvent,
   MessageParam,
   ToolResultBlockParam,
   ToolUseBlock,
@@ -144,6 +145,7 @@ export async function executeConversation(
   let streamInterruptionRetryIteration = 0;
   let streamInterruptionRetries = 0;
   let reactiveCompactAttempted = false;
+  let lastRequestInputTokens: number | undefined;
 
   while (true) {
     ensureNotAborted(options.signal);
@@ -157,10 +159,20 @@ export async function executeConversation(
       modelApi: options.modelApi,
       compactConfig: options.config.compact,
       maxTokens: options.maxTokens ?? options.config.maxTokens,
+      lastRequestInputTokens,
       runKey: options.runId,
       signal: options.signal,
     });
+    if (
+      loopCompact.reason === 'circuit_breaker_open' ||
+      (loopCompact.reason === 'failed' && (loopCompact.consecutiveFailures ?? 0) >= 3)
+    ) {
+      throw new ActoviqSdkError(
+        `In-loop compaction failed ${loopCompact.consecutiveFailures ?? 3} times; stopping to avoid an endless compact/retry loop.${loopCompact.error ? ` Last error: ${loopCompact.error}` : ''}`,
+      );
+    }
     if (loopCompact.compacted) {
+      lastRequestInputTokens = undefined;
       conversation.splice(0, conversation.length, ...loopCompact.messages);
       loopCompactions.push({
         trigger: 'auto',
@@ -248,10 +260,11 @@ export async function executeConversation(
       };
     }
 
-    // Prompt caching: a single cache breakpoint on the last message caches the
-    // entire prefix (tools + system + conversation). Anthropic API hosts only.
+    // Prompt caching: cache stable system/tools prefixes and the latest message
+    // on Anthropic API hosts. Multiple breakpoints improve cache retention when
+    // only the tail changes between tool-loop iterations.
     if (useAnthropicContextManagement && options.config.promptCachingEnabled !== false) {
-      applyCacheControlToLastMessage(request.messages);
+      applyAnthropicPromptCacheBreakpoints(request);
     }
 
     options.emit?.({
@@ -385,6 +398,10 @@ export async function executeConversation(
 
     finalMessage = message;
     conversation.push(assistantMessageToParam(message));
+    lastRequestInputTokens =
+      typeof message.usage?.input_tokens === 'number'
+        ? message.usage.input_tokens
+        : undefined;
 
     for (const hook of postSamplingHooks) {
       await hook({
@@ -491,6 +508,25 @@ export async function executeConversation(
     });
 
     const toolUses = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use');
+
+    if (
+      !preventContinuation &&
+      message.stop_reason === 'max_tokens' &&
+      toolUses.length > 0 &&
+      toolUses.some(isLikelyTruncatedToolUse)
+    ) {
+      conversation.push({
+        role: 'user',
+        content: toolUses.map(toolUse => ({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          is_error: true,
+          content:
+            'The model response hit max_tokens while constructing this tool call, so its JSON arguments were incomplete. Retry the tool call with complete JSON arguments and smaller output.',
+        })),
+      });
+      continue;
+    }
 
     // max_tokens recovery: when the response was truncated mid-thought with no
     // tool calls, nudge the model to resume instead of ending the run on a
@@ -658,7 +694,7 @@ export async function executeConversation(
           : undefined;
 
         const execution = await adapter.execute(toolUse.input, {
-          signal: options.signal,
+          signal: adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
           runId: options.runId,
           sessionId: options.sessionId,
           cwd: workDir,
@@ -1066,6 +1102,16 @@ function appendTextToToolResultContent(block: ToolResultBlockParam, text: string
   }
 }
 
+function isLikelyTruncatedToolUse(toolUse: ToolUseBlock): boolean {
+  const input = toolUse.input;
+  return (
+    input !== null &&
+    typeof input === 'object' &&
+    Object.keys(input).length === 1 &&
+    typeof (input as { raw?: unknown }).raw === 'string'
+  );
+}
+
 function buildTodoReminderText(todos: ReturnType<typeof getActoviqTodoSnapshot>): string {
   if (todos.length === 0) {
     return [
@@ -1143,6 +1189,18 @@ function sleep(ms: number): Promise<void> {
  * text block so the breakpoint still applies — otherwise the whole request
  * goes uncached whenever the last message is a plain string.
  */
+function applyAnthropicPromptCacheBreakpoints(request: ModelRequest): void {
+  applyCacheControlToLastTool(request.tools);
+  applyCacheControlToLastMessage(request.messages);
+}
+
+function applyCacheControlToLastTool(tools: ModelRequest['tools']): void {
+  const lastTool = tools?.at(-1);
+  if (lastTool && typeof lastTool === 'object') {
+    (lastTool as Record<string, unknown>).cache_control = { type: 'ephemeral' };
+  }
+}
+
 function applyCacheControlToLastMessage(messages: MessageParam[]): void {
   const last = messages.at(-1);
   if (!last) {
@@ -1186,8 +1244,19 @@ async function consumeStream(
 ) {
   const stream = modelApi.streamMessage(request);
   let textSnapshot = '';
+  const thinkingSnapshots = new Map<number, string>();
+  const toolInputSnapshots = new Map<number, string>();
+  const toolBlocks = new Map<number, { id?: string; name?: string }>();
   for await (const event of stream) {
-    if (isTextDeltaEvent(event)) {
+    if (isContentBlockStartEvent(event)) {
+      const block = event.content_block;
+      if (block.type === 'tool_use') {
+        toolBlocks.set(event.index, {
+          id: typeof block.id === 'string' ? block.id : undefined,
+          name: typeof block.name === 'string' ? block.name : undefined,
+        });
+      }
+    } else if (isTextDeltaEvent(event)) {
       textSnapshot += event.delta.text;
       emit?.({
         type: 'response.text.delta',
@@ -1197,9 +1266,53 @@ async function consumeStream(
         snapshot: textSnapshot,
         timestamp: nowIso(),
       });
+    } else if (isThinkingDeltaEvent(event)) {
+      const previous = thinkingSnapshots.get(event.index) ?? '';
+      const snapshot = `${previous}${event.delta.thinking}`;
+      thinkingSnapshots.set(event.index, snapshot);
+      emit?.({
+        type: 'response.thinking.delta',
+        runId,
+        iteration,
+        index: event.index,
+        delta: event.delta.thinking,
+        snapshot,
+        ...(typeof event.delta.signature === 'string' ? { signature: event.delta.signature } : {}),
+        timestamp: nowIso(),
+      });
+    } else if (isInputJsonDeltaEvent(event)) {
+      const previous = toolInputSnapshots.get(event.index) ?? '';
+      const snapshot = `${previous}${event.delta.partial_json}`;
+      toolInputSnapshots.set(event.index, snapshot);
+      const toolBlock = toolBlocks.get(event.index);
+      emit?.({
+        type: 'response.tool_input.delta',
+        runId,
+        iteration,
+        index: event.index,
+        toolUseId: toolBlock?.id,
+        toolName: toolBlock?.name,
+        delta: event.delta.partial_json,
+        snapshot,
+        timestamp: nowIso(),
+      });
     }
   }
   return stream.finalMessage();
+}
+
+function isContentBlockStartEvent(event: unknown): event is ContentBlockStartEvent {
+  return (
+    typeof event === 'object' &&
+    event !== null &&
+    'type' in event &&
+    event.type === 'content_block_start' &&
+    'index' in event &&
+    typeof event.index === 'number' &&
+    'content_block' in event &&
+    typeof event.content_block === 'object' &&
+    event.content_block !== null
+  );
 }
 
 function isTextDeltaEvent(event: unknown): event is ContentBlockDeltaEvent & {
@@ -1217,6 +1330,46 @@ function isTextDeltaEvent(event: unknown): event is ContentBlockDeltaEvent & {
     event.delta.type === 'text_delta' &&
     'text' in event.delta &&
     typeof event.delta.text === 'string'
+  );
+}
+
+function isThinkingDeltaEvent(event: unknown): event is ContentBlockDeltaEvent & {
+  delta: { type: 'thinking_delta'; thinking: string; signature?: string };
+} {
+  return (
+    typeof event === 'object' &&
+    event !== null &&
+    'type' in event &&
+    event.type === 'content_block_delta' &&
+    'index' in event &&
+    typeof event.index === 'number' &&
+    'delta' in event &&
+    typeof event.delta === 'object' &&
+    event.delta !== null &&
+    'type' in event.delta &&
+    event.delta.type === 'thinking_delta' &&
+    'thinking' in event.delta &&
+    typeof event.delta.thinking === 'string'
+  );
+}
+
+function isInputJsonDeltaEvent(event: unknown): event is ContentBlockDeltaEvent & {
+  delta: { type: 'input_json_delta'; partial_json: string };
+} {
+  return (
+    typeof event === 'object' &&
+    event !== null &&
+    'type' in event &&
+    event.type === 'content_block_delta' &&
+    'index' in event &&
+    typeof event.index === 'number' &&
+    'delta' in event &&
+    typeof event.delta === 'object' &&
+    event.delta !== null &&
+    'type' in event.delta &&
+    event.delta.type === 'input_json_delta' &&
+    'partial_json' in event.delta &&
+    typeof event.delta.partial_json === 'string'
   );
 }
 

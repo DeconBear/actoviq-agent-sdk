@@ -33,7 +33,11 @@ async function createSessionDirectory(): Promise<string> {
   return dir;
 }
 
-function makeMessage(content: unknown[], stopReason: 'end_turn' | 'tool_use' = 'end_turn'): Message {
+function makeMessage(
+  content: unknown[],
+  stopReason: 'end_turn' | 'tool_use' = 'end_turn',
+  inputTokens = 10,
+): Message {
   messageCounter += 1;
   return {
     id: `msg_${messageCounter}`,
@@ -48,7 +52,7 @@ function makeMessage(content: unknown[], stopReason: 'end_turn' | 'tool_use' = '
       cache_creation_input_tokens: null,
       cache_read_input_tokens: null,
       inference_geo: null,
-      input_tokens: 10,
+      input_tokens: inputTokens,
       output_tokens: 5,
     },
   } as Message;
@@ -337,6 +341,56 @@ describe('conversation engine in-loop auto-compact', () => {
 
       // The final conversation also starts from the summary boundary.
       expect(String(result.messages[0]?.content ?? '')).toContain('LOOP_COMPACT_SUMMARY');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('uses provider-reported input tokens to trigger in-loop compact', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (isLoopCompactRequest(request)) {
+          return makeMessage([{ type: 'text', text: 'USAGE_TRIGGERED_SUMMARY' }]);
+        }
+        const regularIndex = index - (index > 0 ? 1 : 0);
+        if (regularIndex === 0) {
+          return makeMessage(
+            [
+              { type: 'tool_use', id: 'toolu_usage_1', name: 'small_lookup', input: {} },
+            ],
+            'tool_use',
+            5_000,
+          );
+        }
+        return makeMessage([{ type: 'text', text: 'Done after usage-triggered compact.' }]);
+      },
+    });
+    const smallLookup = tool(
+      {
+        name: 'small_lookup',
+        description: 'Returns a small payload.',
+        inputSchema: z.strictObject({}),
+        isReadOnly: () => true,
+      },
+      async () => 'small',
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      compact: {
+        loopAutoCompactThresholdTokens: 100,
+        preserveRecentMessages: 1,
+        microcompactEnabled: false,
+      },
+    });
+
+    try {
+      const result = await sdk.run('Trigger compact from real usage.', { tools: [smallLookup] });
+
+      expect(result.text).toContain('Done after usage-triggered compact.');
+      expect(modelApi.createCalls.filter(isLoopCompactRequest)).toHaveLength(1);
     } finally {
       await sdk.close();
     }
