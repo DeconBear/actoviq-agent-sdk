@@ -47,7 +47,19 @@ async function tools(config = DEFAULT_MANAGER_CONFIG): Promise<AgentToolDefiniti
 describe('Manager tool surface (plan §4.2 hard constraints)', () => {
   it('exposes only the restricted read + progress-write tools', async () => {
     const names = (await tools()).map((t) => t.name).sort();
-    expect(names).toEqual(['Glob', 'Grep', 'PlanWrite', 'ProgressWrite', 'Read', 'WebFetch'].sort());
+    expect(names).toEqual([
+      'Glob',
+      'Grep',
+      'IssueComment',
+      'IssueCreate',
+      'IssueGet',
+      'IssueList',
+      'IssueUpdate',
+      'PlanWrite',
+      'ProgressWrite',
+      'Read',
+      'WebFetch',
+    ].sort());
   });
 
   it('has no shell, edit, team, or delegation tools', async () => {
