@@ -281,6 +281,83 @@ describe('tool interrupt behavior', () => {
   });
 });
 
+describe('session steering and follow-up queues', () => {
+  it('injects steering queued during a tool before the next model request', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let sawSteering = false;
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (index === 0) {
+          return makeMessage(
+            [{ type: 'tool_use', id: 'toolu_steer', name: 'steer_tool', input: {} }],
+            'tool_use',
+          );
+        }
+        sawSteering = JSON.stringify(request.messages).includes('updated user guidance');
+        return makeMessage([{ type: 'text', text: 'Steering applied.' }]);
+      },
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+    const session = await sdk.createSession({ title: 'steering' });
+    const steerTool = tool(
+      {
+        name: 'steer_tool',
+        description: 'Queues steering while a tool is active.',
+        inputSchema: z.strictObject({}),
+      },
+      async () => {
+        session.steer('updated user guidance');
+        return 'tool complete';
+      },
+    );
+
+    try {
+      const result = await session.send('Run the steering tool.', { tools: [steerTool] });
+
+      expect(result.text).toContain('Steering applied');
+      expect(sawSteering).toBe(true);
+      expect(session.pendingInputCount).toBe(0);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('continues the same run with queued follow-up input after a natural stop', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let sawFollowUp = false;
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (index === 0) {
+          return makeMessage([{ type: 'text', text: 'Initial answer.' }]);
+        }
+        sawFollowUp = JSON.stringify(request.messages).includes('verify the edge case');
+        return makeMessage([{ type: 'text', text: 'Follow-up complete.' }]);
+      },
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+    const session = await sdk.createSession({ title: 'follow-up' });
+    session.followUp('verify the edge case');
+
+    try {
+      const result = await session.send('Give the initial answer.');
+
+      expect(result.text).toContain('Follow-up complete');
+      expect(sawFollowUp).toBe(true);
+      expect(session.pendingInputCount).toBe(0);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
 describe('tool result size budgets', () => {
   it('artifacts results above the per-tool declared cap', async () => {
     const tempDir = await createSessionDirectory();

@@ -59,7 +59,12 @@ describe('GUI data root settings', () => {
     });
 
     try {
-      const before = await api<{ root: string; pointerPath: string; summary: { entries: number; bytes: number } }>(
+      const before = await api<{
+        root: string;
+        pointerPath: string;
+        summary: { entries: number; bytes: number };
+        contents: string[];
+      }>(
         server,
         'api/settings/data-root',
       );
@@ -67,6 +72,7 @@ describe('GUI data root settings', () => {
       expect(before.body.root).toBe(sourceRoot);
       expect(before.body.pointerPath).toBe(getActoviqHomePointerPath(homeDir));
       expect(before.body.summary.entries).toBeGreaterThanOrEqual(2);
+      expect(before.body.contents).toEqual(expect.arrayContaining(['mcp.json', 'settings.json']));
 
       const unconfirmed = await api<{ error: string }>(server, 'api/settings/data-root', {
         method: 'POST',

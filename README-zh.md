@@ -116,6 +116,13 @@ npx actoviq-tui [工作目录] [选项]
 npx actoviq-gui [工作目录] [选项]
 ```
 
+- Project 详情提供 `Document` / `Issues` 双 Tab。Issue 支持优先级、标签、验收标准、评论，以及受守卫保护的 `backlog → todo → in_progress → in_review/blocked → done` 生命周期。
+- Settings → Models & routing 可创建 Agent Profile，将 bridge config 与模型绑定。`/issues start <id> [agent-profile]` 会先让 Project Manager 生成任务书，再创建关联会话；执行 agent 通过 `IssueReport` 汇报待审或阻塞状态。
+- Issue 与会话可双向跳转。Issue 默认保存在 `<data-root>/projects/<workspace-key>/issues.json`，也可切换到受保护的工作区文件 `.actoviq/issues.json`。
+- Settings → General 可将完整数据根目录迁移到空目录：复制并校验数据、写入 bootstrap 指针、重建 SDK/session store，并保留旧目录供手动清理。
+
+数据根目录解析优先级为：显式 SDK `homeDir` → `ACTOVIQ_HOME` → `~/.actoviq/data-root.json` → `~/.actoviq`。
+
 ## 开发者笔记
 
 - **启动 CLI/GUI 前构建：** `npm run build`（clean + `tsc`）。仅类型检查用 `npm run typecheck`；运行测试套件用 `npm test -- --run`。

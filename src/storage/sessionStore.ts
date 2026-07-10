@@ -12,7 +12,7 @@ import type {
   StoredSession,
 } from '../types.js';
 import { createId, deepClone, nowIso, truncateText } from '../runtime/helpers.js';
-import { extractPreviewFromMessages } from '../runtime/messageUtils.js';
+import { extractConversationBrief, extractPreviewFromMessages } from '../runtime/messageUtils.js';
 import { writeJsonAtomic } from './atomicJsonWrite.js';
 import {
   assertSafeStorageSegment,
@@ -287,6 +287,7 @@ export class SessionStore {
       status: session.status,
       tags: [...session.tags],
       preview: truncateText(extractPreviewFromMessages(session.messages), 160),
+      brief: truncateText(extractConversationBrief(session.messages), 100),
       messageCount: session.messages.length,
       runCount: session.runs.length,
     };

@@ -672,6 +672,7 @@ export function buildUpdateProgressPrompt(context: ManagerUpdateContext): string
     '',
     '1. Update the structured plan with PlanWrite: reconcile milestones/today/upcoming with what actually happened.',
     '2. Update PROGRESS.md with ProgressWrite: refresh the status summary, note risks/blockers, and append a dated changelog entry for this update.',
+    '3. Reconcile the issue board with IssueGet/IssueUpdate/IssueComment using linked-session evidence. Move in_review to done only when completion is supported; otherwise record what remains.',
     'Keep both faithful to the evidence; do not invent progress.',
   ];
   if (context.instruction?.trim()) {

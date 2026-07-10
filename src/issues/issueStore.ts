@@ -286,6 +286,9 @@ export function applyIssueTransition(
 ): ProjectIssue {
   if (!isIssueStatus(nextStatus)) throw new Error(`Invalid issue status: ${String(nextStatus)}`);
   if (issue.status === nextStatus) return { ...issue };
+  if (nextStatus === 'in_progress' && actor !== 'system') {
+    throw new Error('Only deterministic issue dispatch can move an issue to in_progress');
+  }
   if (!TRANSITIONS[issue.status].includes(nextStatus)) {
     throw new Error(`Invalid issue transition: ${issue.status} -> ${nextStatus}`);
   }
@@ -446,8 +449,10 @@ function mergeDuplicateIssue(existing: ProjectIssue, incoming: ProjectIssue): Pr
   for (const comment of [...existing.comments, ...incoming.comments]) {
     comments.set(comment.id, comment);
   }
+  const preferred = incoming.updatedAt > existing.updatedAt ? incoming : existing;
   return {
-    ...existing,
+    ...preferred,
+    sessionIds: [...new Set([...existing.sessionIds, ...incoming.sessionIds])],
     comments: [...comments.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     updatedAt: existing.updatedAt > incoming.updatedAt ? existing.updatedAt : incoming.updatedAt,
   };

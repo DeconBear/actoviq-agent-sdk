@@ -12,6 +12,7 @@ export { mapActoviqEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
 export {
   defaultActoviqHome,
   getActoviqHomePointerPath,
+  listActoviqHomeTopLevelEntries,
   migrateActoviqHomeData,
   resolveActoviqHome,
   summarizeActoviqHome,
@@ -20,11 +21,16 @@ export {
 export {
   deleteAgentProfile,
   findAgentProfile,
+  findSelectableAgent,
   getAgentProfilesPath,
   listAgentProfileBridgeModels,
   listAgentProfiles,
+  listSelectableAgents,
+  matchSelectableAgent,
   readAgentProfiles,
   resolveAgentProfileRun,
+  resolveSelectableAgentRun,
+  agentProfileRunOverrides,
   upsertAgentProfile,
   validateAgentProfile,
   writeAgentProfiles,
@@ -34,8 +40,10 @@ export type {
   AgentProfileValidationResult,
   PersistedAgentProfiles,
   ResolvedAgentProfileRun,
+  SelectableAgent,
 } from './config/agentProfiles.js';
 export * from './issues/issueStore.js';
+export * from './issues/issueExecution.js';
 export {
   ActoviqBuddyApi,
   createActoviqBuddyApi,

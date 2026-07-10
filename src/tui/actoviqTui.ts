@@ -38,6 +38,7 @@ import {
   readProgressFile,
   managerProgressPath,
   createProjectIssue,
+  executeProjectIssue,
   isIssueStatus,
   isIssueStorageMode,
   listProjectIssues,
@@ -559,7 +560,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // persistent panel in the dynamic region so the user can see what the agent
   // is working on / what remains — Claude Code's main progress affordance.
   let currentTodos: { content: string; status: string; activeForm?: string }[] = [];
-  const queuedInputs: string[] = [];
   const currentPermissionMode = (): ActoviqPermissionMode =>
     session.permissionContext.mode ?? permissionMode;
   const currentEffort = (): ActoviqRunEffort | undefined => {
@@ -1056,7 +1056,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     const elapsed = Math.max(Math.round((Date.now() - runStartedAt) / 1000), 0);
     const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
     const note = statusNote ? ` · ${statusNote}` : '';
-    const queued = queuedInputs.length > 0 ? ` · ${queuedInputs.length} queued` : '';
+    const queued = session.pendingInputCount > 0 ? ` · ${session.pendingInputCount} queued` : '';
     return [
       `${A.cyan}${frame}${A.reset} ${A.bold}Working…${A.reset}${A.dim} (${elapsed}s · ${runToolCount} tool${runToolCount === 1 ? '' : 's'}${note}${queued} · esc to interrupt)${A.reset}`,
       modeLine,
@@ -1300,9 +1300,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       // Branch the event source. Bridge mode spawns the configured runtime CLI
       // and adapts its events into the same AgentEvent stream the rest of this
       // loop consumes — so a bridge run reuses the spinner, tool cards, Esc
-      // interrupt, steering queue, and history exactly like a normal run. The
-      // bridge stream has no mid-run drain, so steering typed during a bridge
-      // run queues and becomes the next turn (handled by the tail below).
+      // interrupt, first-class session steering, and history exactly like a
+      // normal run.
       let eventStream: AsyncIterable<AgentEvent>;
       let resultPromise: Promise<AgentRunResult>;
       if (bridgeMode && activeBridgeModelApi) {
@@ -1323,10 +1322,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           modelApi: activeBridgeModelApi.modelApi,
           ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           ...(canUseTool ? { canUseTool } : {}),
-          drainQueuedInputs: () => {
-            const drained = queuedInputs.splice(0);
-            return drained;
-          },
         });
         eventStream = stream;
         resultPromise = stream.result;
@@ -1341,10 +1336,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           ...(routed ? { model: routed.model, modelApi: routed.modelApi } : {}),
           ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [...tools, activeTeamTool] } : {}),
           ...(canUseTool ? { canUseTool } : {}),
-          drainQueuedInputs: () => {
-            const drained = queuedInputs.splice(0);
-            return drained;
-          },
         });
         eventStream = stream;
         resultPromise = stream.result;
@@ -1386,11 +1377,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       renderDynamic();
     }
 
-    // Steering messages typed too late to drain mid-run become the next turn.
-    if (queuedInputs.length > 0 && !shuttingDown) {
-      const next = queuedInputs.splice(0).join('\n');
-      await startRun(next);
-    }
   }
 
   function runHadNoStreamedText(): boolean {
@@ -1425,8 +1411,14 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         scheduleDynamicRender();
         return;
       }
-      case 'response.tool_input.delta':
+      case 'response.tool_input.delta': {
+        const name = event.toolName || 'tool';
+        const snapshot = event.snapshot.trim().replace(/\s+/g, ' ');
+        const preview = snapshot.length > 72 ? `${snapshot.slice(0, 69)}...` : snapshot;
+        statusNote = preview ? `preparing ${name}: ${preview}` : `preparing ${name}`;
+        scheduleDynamicRender();
         return;
+      }
       case 'response.content':
         if (event.content.type === 'thinking' && !streamedThinkingSeen) {
           const thinking = (event.content as { thinking?: string }).thinking ?? '';
@@ -1554,7 +1546,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       workflows: '/workflows [run <name>|list]',
       worktree: '/worktree [enter <name>|exit|list]',
       team: '/team [ask <name> <prompt>|list]',
-      issues: '/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]',
+      issues: '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]',
       exit: '/exit',
     };
     return usage[name] ?? `/${name}`;
@@ -3387,8 +3379,65 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             appendStatic([...formatInfoLine(`issue created: #${issue.number} ${issue.title}`), '']);
             return;
           }
+          if (args.startsWith('show ')) {
+            const rawId = args.slice(5).trim().replace(/^#/, '');
+            const issues = await listProjectIssues(sdk.config.workDir, homeDir, storage);
+            const issue = issues.find(candidate =>
+              candidate.id === rawId ||
+              String(candidate.number) === rawId ||
+              `ISS-${candidate.number}` === rawId.toUpperCase(),
+            );
+            if (!issue) {
+              appendStatic([...formatErrorLine(`issue not found: ${rawId}`), '']);
+              return;
+            }
+            appendStatic([
+              `${A.bold}ISS-${issue.number} ${issue.title}${A.reset}`,
+              `${A.dim}${issue.status} · ${issue.priority}${A.reset}`,
+              issue.description || '(no description)',
+              ...(issue.acceptanceCriteria.length
+                ? ['', 'Acceptance criteria:', ...issue.acceptanceCriteria.map(item => `- ${item}`)]
+                : []),
+              ...(issue.brief ? ['', 'Manager brief:', issue.brief] : []),
+              '',
+            ]);
+            return;
+          }
+          if (args.startsWith('start ')) {
+            const [, rawId, agentProfile] = args.split(/\s+/, 3);
+            const id = rawId?.replace(/^#/, '');
+            const issues = await listProjectIssues(sdk.config.workDir, homeDir, storage);
+            const issue = issues.find(candidate =>
+              candidate.id === id ||
+              String(candidate.number) === id ||
+              `ISS-${candidate.number}` === id?.toUpperCase(),
+            );
+            if (!issue) {
+              appendStatic([...formatErrorLine(`issue not found: ${rawId ?? ''}`), '']);
+              return;
+            }
+            appendStatic([...formatInfoLine(`decomposing and dispatching ISS-${issue.number}...`), '']);
+            const dispatched = await executeProjectIssue({
+              sdk,
+              managerSession: await resolveManagerTuiSession(),
+              workDir: sdk.config.workDir,
+              homeDir,
+              storageMode: storage,
+              issue,
+              agentProfile,
+              defaultModel: session.model,
+              permissionMode: currentPermissionMode(),
+              systemPrompt,
+            });
+            session = dispatched.session;
+            appendStatic([
+              ...formatInfoLine(`ISS-${dispatched.issue.number}: ${dispatched.issue.status} · session ${session.id}`),
+              ...(dispatched.result.text ? [dispatched.result.text] : []),
+              '',
+            ]);
+            return;
+          }
           const transitions: Record<string, string> = {
-            start: 'in_progress',
             review: 'in_review',
             done: 'done',
             block: 'blocked',
@@ -3401,7 +3450,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             else appendStatic([...formatInfoLine(`issue #${issue.number}: ${issue.status}`), '']);
             return;
           }
-          appendStatic([...formatErrorLine('usage: /issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]'), '']);
+          appendStatic([...formatErrorLine('usage: /issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]'), '']);
           return;
         }
         case 'manager': {
@@ -3583,7 +3632,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         renderDynamic();
         return;
       }
-      queuedInputs.push(text);
+      session.steer(text);
       appendStatic(formatQueuedPrompt(text));
       renderDynamic();
       return;

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { transitionProjectIssue } from '../src/issues/issueStore.js';
 
 const tempDirs: string[] = [];
 
@@ -82,24 +83,32 @@ describe('GUI issues API', () => {
       }>(server, 'api/issues', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: 'Polish project detail UI', priority: 'high', labels: ['ui'] }),
+        body: JSON.stringify({ title: 'Polish project detail UI', status: 'backlog', priority: 'high', labels: ['ui'] }),
       });
       expect(created.status).toBe(200);
       expect(created.body.issue.number).toBe(1);
-      expect(created.body.issue.status).toBe('todo');
+      expect(created.body.issue.status).toBe('backlog');
       expect(created.body.issue.priority).toBe('high');
       expect(created.body.issues).toHaveLength(1);
 
-      const inProgress = await api<{
+      const ready = await api<{
         issue: { id: string; status: string; comments: Array<{ kind: string; toStatus?: string }> };
       }>(server, 'api/issues/status', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: created.body.issue.id, status: 'in_progress' }),
+        body: JSON.stringify({ id: created.body.issue.id, status: 'todo' }),
       });
-      expect(inProgress.status).toBe(200);
-      expect(inProgress.body.issue.status).toBe('in_progress');
-      expect(inProgress.body.issue.comments.at(-1)).toMatchObject({ kind: 'status_change', toStatus: 'in_progress' });
+      expect(ready.status).toBe(200);
+      expect(ready.body.issue.status).toBe('todo');
+      expect(ready.body.issue.comments.at(-1)).toMatchObject({ kind: 'status_change', toStatus: 'todo' });
+
+      const manualStart = await api<{ error: string }>(server, 'api/issues/status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: created.body.issue.id, status: 'in_progress', actor: 'system' }),
+      });
+      expect(manualStart.status).toBe(400);
+      expect(manualStart.body.error).toContain('/api/issues/start');
 
       const commented = await api<{
         issue: { comments: Array<{ body: string; kind: string }> };
@@ -186,13 +195,14 @@ describe('GUI issues API', () => {
       expect(created.status).toBe(200);
       expect(created.body.issue.status).toBe('todo');
 
-      const inProgress = await api<{ issue: { id: string; status: string } }>(server, 'api/issues/status', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: created.body.issue.id, status: 'in_progress' }),
-      });
-      expect(inProgress.status).toBe(200);
-      expect(inProgress.body.issue.status).toBe('in_progress');
+      const inProgress = await transitionProjectIssue(
+        workDir,
+        homeDir,
+        created.body.issue.id,
+        'in_progress',
+        'system',
+      );
+      expect(inProgress?.status).toBe('in_progress');
 
       const res = await apiRaw(server, 'api/issues/start', {
         method: 'POST',

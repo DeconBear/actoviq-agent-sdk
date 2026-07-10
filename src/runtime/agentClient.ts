@@ -2049,10 +2049,18 @@ export class ActoviqAgentClient {
         : this.config;
     const notificationKey = session?.id ?? runId;
     const drainQueuedInputs =
-      notificationKey || options.drainQueuedInputs
+      notificationKey || options.drainQueuedInputs || liveSession
         ? () => [
+            ...(liveSession?.drainSteeringInputs() ?? []),
             ...(options.drainQueuedInputs?.() ?? []),
             ...this.drainRuntimeNotifications(notificationKey),
+          ]
+        : undefined;
+    const drainFollowUpInputs =
+      options.drainFollowUpInputs || liveSession
+        ? () => [
+            ...(liveSession?.drainFollowUpInputs() ?? []),
+            ...(options.drainFollowUpInputs?.() ?? []),
           ]
         : undefined;
 
@@ -2083,6 +2091,7 @@ export class ActoviqAgentClient {
       canUseTool: options.canUseTool,
       hooks: augmentations?.hooks,
       drainQueuedInputs,
+      drainFollowUpInputs,
       streaming,
       // Activate paths-conditional skills when the agent touches matching files.
       emit: (event: AgentEvent) => {

@@ -93,6 +93,9 @@ describe('issueStore', () => {
     await mkdir(workDir, { recursive: true });
 
     const issue = await createProjectIssue(workDir, homeDir, { title: 'Run task' });
+    expect(() => applyIssueTransition(issue, 'in_progress', 'user')).toThrow(
+      'Only deterministic issue dispatch',
+    );
     const running = await transitionProjectIssue(workDir, homeDir, issue.number, 'in_progress', 'system');
     const review = await transitionProjectIssue(workDir, homeDir, issue.number, 'in_review', 'agent');
 
@@ -133,5 +136,38 @@ describe('issueStore', () => {
     expect(migrated.nextNumber).toBe(2);
     await expect(readFile(resolveIssueStorePath(workDir, homeDir, 'home'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await listProjectIssues(workDir, homeDir, 'workspace')).toHaveLength(1);
+  });
+
+  it('keeps the newest duplicate fields and merges linked sessions during migration', async () => {
+    const root = await tempRoot('actoviq-issues-migrate-newest-');
+    const homeDir = path.join(root, 'home');
+    const workDir = path.join(root, 'work');
+    await mkdir(workDir, { recursive: true });
+
+    const source = await createProjectIssue(workDir, homeDir, { title: 'Incoming newer issue' }, 'home');
+    await writeIssueStore(workDir, homeDir, {
+      version: 1,
+      nextNumber: 2,
+      issues: [{
+        ...source,
+        updatedAt: '2999-01-01T00:00:00.000Z',
+        sessionIds: ['incoming-session'],
+      }],
+    }, 'home');
+    await writeIssueStore(workDir, homeDir, {
+      version: 1,
+      nextNumber: 2,
+      issues: [{
+        ...source,
+        title: 'Older workspace issue',
+        updatedAt: '2000-01-01T00:00:00.000Z',
+        sessionIds: ['existing-session'],
+      }],
+    }, 'workspace');
+
+    const migrated = await migrateIssueStore({ workDir, homeDir, from: 'home', to: 'workspace' });
+
+    expect(migrated.issues[0]?.title).toBe('Incoming newer issue');
+    expect(migrated.issues[0]?.sessionIds).toEqual(['existing-session', 'incoming-session']);
   });
 });

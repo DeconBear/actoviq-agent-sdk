@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -91,10 +91,10 @@ describe('bridgeConfigs persistence', () => {
 });
 
 describe('legacy provider migration', () => {
-  const HOME = os.tmpdir();
-
-  it('migrates legacy RuntimeProviderId → in-process provider on read', () => {
-    const file = getBridgeConfigsPath(HOME);
+  it('migrates legacy RuntimeProviderId → in-process provider on read', async () => {
+    // Must use an isolated temp home — never os.tmpdir()/.actoviq, which is shared.
+    const home = await makeHome();
+    const file = getBridgeConfigsPath(home);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({ configs: [
       { name: 'legacy-claude', provider: 'claude', apiKey: 'sk-c', baseURL: 'https://x.com' },
@@ -105,7 +105,7 @@ describe('legacy provider migration', () => {
       { name: 'legacy-crush', provider: 'crush' },
     ] }));
 
-    const read = readBridgeConfigs(HOME);
+    const read = readBridgeConfigs(home);
 
     const byName: Record<string, string> = {};
     for (const c of read.configs) byName[c.name] = c.provider;
@@ -116,7 +116,9 @@ describe('legacy provider migration', () => {
     expect(byName['legacy-codewhale']).toBe('anthropic');
     expect(byName['legacy-reasonix']).toBe('openai');
     expect(byName['legacy-crush']).toBe('openai');
-    // Migrated file is re-saved (best-effort).
+    // Migrated file is re-saved only when contents change.
+    const saved = JSON.parse(readFileSync(file, 'utf-8')) as { configs: Array<{ provider: string }> };
+    expect(saved.configs.every((c) => c.provider === 'anthropic' || c.provider === 'openai')).toBe(true);
   });
 
   it('leaves already-correct anthropic/openai untouched', async () => {

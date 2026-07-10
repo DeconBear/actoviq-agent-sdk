@@ -65,6 +65,7 @@ describe('TUI and GUI parity', () => {
     const css = createActoviqGuiStyles();
     const js = createActoviqGuiClientScript();
     const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const tui = readFileSync(join(import.meta.dirname, '..', 'src', 'tui', 'actoviqTui.ts'), 'utf8');
 
     expect(html).not.toContain('id="commands"');
     expect(html).not.toContain('class="command-section"');
@@ -252,6 +253,9 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('transcriptCacheFresh');
     expect(js).toContain('refreshSessionInBackground');
     expect(js).toContain('renderMarkdownInto');
+    expect(js).toContain('updateStreamingToolInput');
+    expect(js).toContain("event.type === 'tool.input.delta'");
+    expect(js).toContain("event.type === 'thinking.delta'");
     expect(js).toContain('detailArchivedExpanded');
     expect(js).toContain('mountProjectDoc');
     expect(js).toContain('renderProjectDocPreview');
@@ -273,6 +277,9 @@ describe('TUI and GUI parity', () => {
     expect(gui).toContain('buildDecomposeIssuePrompt');
     expect(gui).toContain('IssueReport');
     expect(gui).toContain('resolveAgentProfileRun');
+    expect(gui).toContain("case 'response.tool_input.delta'");
+    expect(tui).toContain("case 'response.tool_input.delta'");
+    expect(tui).toContain('preparing ${name}');
     expect(css).toContain('.project-issues-panel');
     expect(css).toContain('.issue-board');
     expect(css).toContain('.issue-dispatch-row');
@@ -328,16 +335,19 @@ describe('TUI and GUI parity', () => {
 
   it('keeps /issues available on all three surfaces (project issue workflow)', () => {
     const root = join(import.meta.dirname, '..');
-    expect(SUBCOMMANDS.issues).toEqual(['list', 'create', 'start', 'review', 'done', 'block']);
+    expect(SUBCOMMANDS.issues).toEqual(['list', 'show', 'create', 'start', 'review', 'done', 'block']);
     const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
     const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
     for (const source of [repl, tui, gui]) {
-      expect(source).toContain('/issues [list|create <title>|start <id>|review <id>|done <id>|block <id>]');
+      expect(source).toContain('/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]');
       expect(source).toContain('createProjectIssue');
       expect(source).toContain('transitionProjectIssue');
       expect(source).toContain('listProjectIssues');
     }
+    expect(repl).toContain('executeProjectIssue');
+    expect(tui).toContain('executeProjectIssue');
+    expect(gui).toContain('streamIssueDispatch');
   });
 
   it('keeps /manager chat available on all three surfaces (plan §4.6)', () => {

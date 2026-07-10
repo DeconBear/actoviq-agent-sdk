@@ -95,6 +95,9 @@ interface AgentSessionBindings {
 }
 
 export class AgentSession {
+  private readonly steeringInputs: string[] = [];
+  private readonly followUpInputs: string[] = [];
+
   constructor(
     private readonly bindings: AgentSessionBindings,
     private readonly store: SessionStore,
@@ -129,8 +132,47 @@ export class AgentSession {
     return getPersistedActoviqSessionPermissionState(this.stored.metadata);
   }
 
+  get pendingInputCount(): number {
+    return this.steeringInputs.length + this.followUpInputs.length;
+  }
+
   snapshot(): StoredSession {
     return deepClone(this.stored);
+  }
+
+  /**
+   * Queue guidance for the next model sample in the active run. If the model
+   * is currently streaming its final response, the engine continues the run
+   * once that response reaches a natural stopping point.
+   */
+  steer(input: string): void {
+    const normalized = input.trim();
+    if (!normalized) {
+      throw new Error('Steering input cannot be empty.');
+    }
+    this.steeringInputs.push(normalized);
+  }
+
+  /**
+   * Queue a follow-up that runs after the current response completes. This is
+   * distinct from steering, which may be injected immediately after tools.
+   */
+  followUp(input: string): void {
+    const normalized = input.trim();
+    if (!normalized) {
+      throw new Error('Follow-up input cannot be empty.');
+    }
+    this.followUpInputs.push(normalized);
+  }
+
+  /** @internal Runtime bridge for the conversation engine. */
+  drainSteeringInputs(): string[] {
+    return this.steeringInputs.splice(0);
+  }
+
+  /** @internal Runtime bridge for the conversation engine. */
+  drainFollowUpInputs(): string[] {
+    return this.followUpInputs.splice(0);
   }
 
   async send(

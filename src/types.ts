@@ -844,6 +844,12 @@ export interface AgentRunOptions {
    * next tool-result user message so the model sees them on its next request.
    */
   drainQueuedInputs?: () => string[];
+  /**
+   * Follow-up queue: drained only after the model reaches a natural stopping
+   * point. Follow-ups continue the same run without racing a second session
+   * turn against the active one.
+   */
+  drainFollowUpInputs?: () => string[];
   /** Override the runtime working directory for this run. */
   workDir?: string;
   /** When parent is in a worktree, inherit the worktree directory. Default: true. */
@@ -1269,6 +1275,19 @@ export type AgentEvent =
       timestamp: string;
     }
   | {
+      type: 'request.prompt_cache';
+      runId: string;
+      iteration: number;
+      prefixSignature: string;
+      prefixChanged: boolean;
+      breakpoints: {
+        system: boolean;
+        tools: boolean;
+        message: boolean;
+      };
+      timestamp: string;
+    }
+  | {
       type: 'response.text.delta';
       runId: string;
       iteration: number;
@@ -1533,6 +1552,8 @@ export interface SessionSummary {
   status: SessionStatus;
   tags: string[];
   preview: string;
+  /** First-user-prompt style label for conversation lists. */
+  brief?: string;
   messageCount: number;
   runCount: number;
   /** True when the session file lives in the project archive/ directory. */
