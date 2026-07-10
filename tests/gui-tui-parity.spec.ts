@@ -259,6 +259,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/issues');
     expect(js).toContain('/api/issues/start');
     expect(js).toContain('renderProjectIssuesPanel');
+    expect(js).toContain('ISSUE_CREATE_TITLE_REQUIRED');
+    expect(js).toContain('aria-required="true" aria-label="New issue title"');
     expect(js).toContain('issueDispatchAgent');
     expect(js).toContain('startIssueWithAgent');
     expect(js).toContain('Start with agent');

@@ -8064,6 +8064,7 @@ const PROJECT_STATUSES = ${JSON.stringify(PROJECT_STATUSES)};
 const PROJECT_STATUS_LABELS = ${JSON.stringify(PROJECT_STATUS_LABELS)};
 const ISSUE_STATUSES = ${JSON.stringify(ISSUE_STATUSES)};
 const ISSUE_PRIORITIES = ${JSON.stringify(ISSUE_PRIORITIES)};
+const ISSUE_CREATE_TITLE_REQUIRED = 'Enter an issue title before creating an issue.';
 const ISSUE_STATUS_LABELS = {
   backlog: 'Backlog',
   todo: 'To do',
@@ -10993,7 +10994,7 @@ function renderProjectIssuesPanel() {
 
   const quick = document.createElement('form');
   quick.className = 'issue-quick-create';
-  quick.innerHTML = '<input id="issueQuickTitle" placeholder="New issue title" autocomplete="off">'
+  quick.innerHTML = '<input id="issueQuickTitle" placeholder="New issue title" autocomplete="off" aria-required="true" aria-label="New issue title">'
     + '<select id="issueQuickPriority" title="Priority">'
     + ISSUE_PRIORITIES.map((p) => '<option value="' + p + '">' + (ISSUE_PRIORITY_LABELS[p] || p) + '</option>').join('')
     + '</select>'
@@ -11004,6 +11005,15 @@ function renderProjectIssuesPanel() {
   });
   const quickPriority = quick.querySelector('#issueQuickPriority');
   if (quickPriority) quickPriority.value = 'none';
+  const quickTitle = quick.querySelector('#issueQuickTitle');
+  if (quickTitle) {
+    quickTitle.addEventListener('input', () => {
+      if (state.issuesError !== ISSUE_CREATE_TITLE_REQUIRED) return;
+      state.issuesError = null;
+      const error = host.querySelector('.project-issues-error');
+      if (error) error.remove();
+    });
+  }
   host.appendChild(quick);
 
   const filters = document.createElement('div');
@@ -11311,7 +11321,13 @@ async function mutateIssues(path, body, preferredId) {
 }
 async function createIssueFromForm() {
   const title = (el('issueQuickTitle')?.value || '').trim();
-  if (!title) return;
+  if (!title) {
+    state.issuesError = ISSUE_CREATE_TITLE_REQUIRED;
+    renderProjectIssuesPanel();
+    requestAnimationFrame(() => el('issueQuickTitle')?.focus());
+    return;
+  }
+  if (state.issuesError === ISSUE_CREATE_TITLE_REQUIRED) state.issuesError = null;
   const priority = el('issueQuickPriority')?.value || 'none';
   await mutateIssues('/api/issues', { title, priority }, null);
   const input = el('issueQuickTitle');
