@@ -167,7 +167,7 @@ describe('Actoviq memory helpers', () => {
       autoMemory: true,
       autoDream: true,
     });
-    expect(state.paths.autoMemoryDir).toBe(path.join(tempDir, 'custom-memory'));
+    expect(state.paths.autoMemoryDir).toBe(path.join(tempDir, '.actoviq', 'custom-memory'));
     expect(state.sessionMemory).toMatchObject({
       exists: true,
       isEmpty: true,

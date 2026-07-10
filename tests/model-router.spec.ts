@@ -153,7 +153,7 @@ describe('built-in dispatch profile', () => {
 
   it('is shadowed by a user profile of the same name (not duplicated)', () => {
     const home = tempHome();
-    const dir = path.join(home, 'routers');
+    const dir = path.join(home, '.actoviq', 'routers');
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       path.join(dir, 'dispatch.json'),
