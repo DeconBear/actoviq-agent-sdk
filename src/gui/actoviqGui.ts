@@ -1892,7 +1892,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         })),
         runtimeDiscovery: runtimeDiscovery.map(runtime => {
           const local = runtime.runtime !== 'hadamard'
-            ? detectRuntimeLocalConfig(runtime.runtime, homeDir)
+            ? detectRuntimeLocalConfig(runtime.runtime, pointerHomeDir())
             : null;
           return {
             id: runtime.id,
@@ -4413,7 +4413,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect-local') {
         const runtime = url.searchParams.get('runtime') || '';
-        const hd = resolveGuiHomeDir();
+        const hd = pointerHomeDir();
         return json(res, 200, detectRuntimeLocalConfig(runtime, hd) || {});
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/update-local') {
@@ -4421,7 +4421,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const body = await readJson(req);
           const runtime = typeof body.runtime === 'string' ? body.runtime.trim() : '';
           if (!runtime) return json(res, 400, { error: 'Missing runtime' });
-          const hd = resolveGuiHomeDir();
+          const hd = pointerHomeDir();
           const result = updateRuntimeLocalConfig(runtime, {
             model: typeof body.model === 'string' ? body.model : undefined,
             baseURL: typeof body.baseURL === 'string' ? body.baseURL : undefined,
@@ -15424,10 +15424,11 @@ function renderGraphModeCanvas(g, def, name) {
   viewport.appendChild(stage);
   canvas.appendChild(viewport);
   g.append(toolbar, canvas);
+  const freshViewport = !graphViewportStates.has(viewport);
   wireGraphBoardViewport(viewport, stage, board);
   scheduleGraphBoardEdgeRedraw(board, svg, def, () => {
     const tryFit = () => {
-      if (!state.teamGraphFitView) {
+      if (!state.teamGraphFitView && !freshViewport) {
         applyGraphViewportTransform(viewport, stage);
         return;
       }
