@@ -13,8 +13,10 @@ import { z } from 'zod';
 import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
 import {
+  parseGitCommitLog,
   readGitDiff,
   readWorkspaceFile,
+  writeWorkspaceFile,
 } from './projectWorkbench.js';
 
 /**
@@ -206,11 +208,14 @@ import {
 } from '../mcp/mcpServerConfig.js';
 import {
   createPreToolUseHookClassifier,
+  normalizeUserHooksConfig,
   readPostToolUseHooks,
   readPreToolUseHooks,
   readSessionStartHooks,
+  readUserHooksConfig,
   runPostToolUseHooks,
   runSessionStartHooks,
+  toSettingsHooksBlock,
 } from '../hooks/userHooks.js';
 import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import { encodeActoviqProjectPath, getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
@@ -222,6 +227,7 @@ import { readPackageVersion } from '../cli/version.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import { renderMarkdown } from './guiMarkdown.js';
+import { detectEditorLanguage, highlightCode } from './guiSyntaxHighlight.js';
 import {
   ContextRailReminderScheduler,
   normalizeContextRailStore,
@@ -359,6 +365,8 @@ interface GuiPreferences {
   enterToSend: boolean;
   autoScroll: boolean;
   developerTools: boolean;
+  outputStyle: OutputStyleId;
+  showBranchInComposer: boolean;
 }
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
@@ -368,7 +376,13 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   enterToSend: true,
   autoScroll: true,
   developerTools: false,
+  outputStyle: 'default',
+  showBranchInComposer: true,
 };
+
+function isOutputStyleId(value: unknown): value is OutputStyleId {
+  return typeof value === 'string' && OUTPUT_STYLES.some((style) => style.id === value);
+}
 
 function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'coding'): string {
   let isGit = false;
@@ -613,6 +627,12 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     developerTools: typeof source.developerTools === 'boolean'
       ? source.developerTools
       : DEFAULT_GUI_PREFERENCES.developerTools,
+    outputStyle: isOutputStyleId(source.outputStyle)
+      ? source.outputStyle
+      : DEFAULT_GUI_PREFERENCES.outputStyle,
+    showBranchInComposer: typeof source.showBranchInComposer === 'boolean'
+      ? source.showBranchInComposer
+      : DEFAULT_GUI_PREFERENCES.showBranchInComposer,
   };
 }
 
@@ -1645,6 +1665,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let bridgeModelLabel: string | null = null;
   // /output-style prompt prefix swap (applied per turn; 'default' is a no-op).
   let outputStyle: OutputStyleId = 'default';
+  try {
+    const prefsStore = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
+    outputStyle = readGuiPreferences(prefsStore.raw).outputStyle;
+  } catch {
+    // Keep default when settings cannot be read.
+  }
   // Usage totals for /cost, /usage, /stats. Per-config breakdown attributes spend
   // to each bridge config so the user can compare backends (mirrors the TUI).
   let totalInputTokens = 0;
@@ -2113,6 +2139,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     raw.gui = preferences;
     guiWorkMode = preferences.workMode;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+    outputStyle = preferences.outputStyle;
     await persistActoviqSettingsStore(store.configPath, raw);
     await loadJsonConfigFile(store.configPath);
 
@@ -3243,10 +3270,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const post = readPostToolUseHooks(raw);
         const start = readSessionStartHooks(raw);
         const lines: string[] = [];
-        const fmt = (h: { matcher?: string; command?: string }) => `  ${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
+        const fmt = (h: { matcher?: string; command?: string; enabled?: boolean }) =>
+          `  ${h.enabled === false ? '[disabled] ' : ''}${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
         lines.push(`PreToolUse (${pre.length}):`); pre.forEach(h => lines.push(fmt(h)));
         lines.push(`PostToolUse (${post.length}):`); post.forEach(h => lines.push(fmt(h)));
-        lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(`  ${h.command}`));
+        lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(fmt(h)));
         if (pre.length + post.length + start.length === 0) {
           lines.push('', 'No hooks configured. Add to settings.json:', '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $ACTOVIQ_HOOK_TOOL" }] } }');
         }
@@ -3828,13 +3856,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           return { name: rest.join('\t') || line.trim(), current: head === '*' };
         })
       : [];
-    const logRaw = gitText(['log', '--pretty=format:%h\t%s\t%cr\t%an', '-n', '30']);
-    const commits = logRaw
-      ? logRaw.split('\n').filter(Boolean).map((line) => {
-          const [hash, subject, date, author] = line.split('\t');
-          return { hash: hash ?? '', subject: subject ?? '', date: date ?? '', author: author ?? '' };
-        })
-      : [];
+    const commits = parseGitCommitLog(
+      gitText(['log', '--decorate=short', '--pretty=format:%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%aI%x1f%p%x1f%D%x1e', '-n', '30']),
+    );
     const upstream = gitText(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
     let ahead = 0;
     let behind = 0;
@@ -3844,7 +3868,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       behind = Number(b) || 0;
       ahead = Number(a) || 0;
     }
-    return { isRepo: true, branch: gitText(['rev-parse', '--abbrev-ref', 'HEAD']), upstream, ahead, behind, status, branches, commits };
+    return {
+      isRepo: true,
+      cwd: workDir,
+      branch: gitText(['rev-parse', '--abbrev-ref', 'HEAD']),
+      upstream,
+      ahead,
+      behind,
+      status,
+      branches,
+      commits,
+      userName: gitText(['config', 'user.name']) || null,
+      userEmail: gitText(['config', 'user.email']) || null,
+    };
   }
 
   async function deleteSession(id: string): Promise<Record<string, unknown>> {
@@ -4634,8 +4670,44 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         openPathInSystem(root);
         return json(res, 200, { ok: true, path: root });
       }
+      if (req.method === 'POST' && url.pathname === '/api/settings/open-config') {
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: currentHomeInput(),
+        }).catch(() => undefined);
+        if (!store?.configPath) return json(res, 404, { error: 'Settings path unavailable' });
+        openPathInSystem(store.configPath);
+        return json(res, 200, { ok: true, path: store.configPath });
+      }
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         return json(res, 200, await saveSettings(await readJson(req)));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/hooks') {
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: currentHomeInput(),
+        }).catch(() => undefined);
+        return json(res, 200, {
+          configPath: store?.configPath ?? null,
+          hooks: readUserHooksConfig(store?.raw ?? getLoadedJsonConfig()?.raw),
+        });
+      }
+      if (req.method === 'PUT' && url.pathname === '/api/hooks') {
+        try {
+          const body = await readJson(req);
+          const store = await resolveActoviqSettingsStore({
+            configPath: options.configPath,
+            homeDir: currentHomeInput(),
+          });
+          const raw = structuredClone(store.raw);
+          const hooks = normalizeUserHooksConfig(body);
+          raw.hooks = toSettingsHooksBlock(hooks);
+          await persistActoviqSettingsStore(store.configPath, raw);
+          await loadJsonConfigFile(store.configPath);
+          return json(res, 200, { ok: true, configPath: store.configPath, hooks });
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
         return json(res, 200, { providers: await detectBridgeProviders() });
@@ -4954,6 +5026,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const rawPath = url.searchParams.get('path');
           if (!rawPath) return json(res, 400, { error: 'Missing file path' });
           return json(res, 200, await readWorkspaceFile(rawPath, workDir));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if ((req.method === 'PUT' || req.method === 'POST') && url.pathname === '/api/workspace-file') {
+        try {
+          const body = await readJson(req);
+          const rawPath = typeof body.path === 'string' ? body.path : '';
+          const text = body.text;
+          if (!rawPath) return json(res, 400, { error: 'Missing file path' });
+          if (typeof text !== 'string') return json(res, 400, { error: 'File content must be text' });
+          return json(res, 200, await writeWorkspaceFile(rawPath, text, workDir));
         } catch (error) {
           return json(res, 400, { error: (error as Error).message });
         }
@@ -5718,7 +5802,7 @@ export function createActoviqGuiHtml(): string {
       <header class="region-header">
         <div class="region-titles">
           <h1>Automation</h1>
-          <p>Workflow scripts and scheduled runs</p>
+          <p>Scheduled and webhook-driven tasks</p>
         </div>
         <div class="region-actions">
           <button type="button" id="automationRefreshBtn" class="pill-btn">Refresh</button>
@@ -6144,7 +6228,7 @@ export function createActoviqGuiHtml(): string {
         <h1>Personalization</h1>
         <div class="settings-group">
           <h2>Output style</h2>
-          <p class="muted">Adjusts the agent's response shape. Applied per turn as a system-prompt prefix; <code>default</code> adds nothing.</p>
+          <p class="muted">Adjusts the agent's response shape. Applied per turn as a system-prompt prefix; <code>default</code> adds nothing. Saved to local GUI preferences.</p>
           <label class="inline-field">Style
             <select id="settingsOutputStyle">
               <option value="default">default — standard responses</option>
@@ -6154,11 +6238,16 @@ export function createActoviqGuiHtml(): string {
             </select>
           </label>
         </div>
-        <div class="settings-group"><p>Personalization uses local settings plus Actoviq memory. Keep stable preferences in memory; keep credentials in configuration.</p></div>
+        <div class="settings-group">
+          <h2>Durable memory</h2>
+          <p class="muted">Stable preferences about you and this project live in Actoviq memory (not credentials).</p>
+          <div class="settings-action-row"><button type="button" id="settingsOpenMemory" class="secondary-btn">Open Memory settings</button></div>
+        </div>
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
         <h1>Keyboard shortcuts</h1>
-        <div class="settings-group shortcut-list"><div><kbd>Ctrl</kbd> + <kbd>Enter</kbd><span>Send message</span></div><div><kbd>/</kbd><span>Open command flow</span></div><div><kbd>Shift</kbd> + <kbd>Enter</kbd><span>New line when Enter-to-send is on</span></div><div><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd><span>Open Review</span></div><div><kbd>Ctrl</kbd> + <kbd>T</kbd><span>Open Browser</span></div><div><kbd>Ctrl</kbd> + <kbd>P</kbd><span>Open Files</span></div><div><kbd>Ctrl</kbd> + <kbd>\`</kbd><span>Toggle terminal</span></div></div>
+        <p class="muted">Read-only reference matching the live key bindings. Remapping is not supported yet.</p>
+        <div id="settingsShortcutsList" class="settings-group shortcut-list"></div>
       </section>
       <section class="settings-panel" data-settings-panel="capabilities">
         <h1>Capabilities</h1>
@@ -6205,12 +6294,6 @@ export function createActoviqGuiHtml(): string {
           </div>
           <p id="settingsScheduleStatus" class="muted"></p>
           <div id="settingsScheduledTasksList" class="settings-card-list"></div>
-        </div>
-        <div class="settings-group">
-          <h2>Workflows</h2>
-          <p>Run saved workflow scripts without typing /workflows.</p>
-          <label class="inline-field wide">Workflow input<input id="settingsWorkflowInput" autocomplete="off" placeholder="optional input"></label>
-          <div id="settingsWorkflowsList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
           <h2>Teams</h2>
@@ -6298,14 +6381,29 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="hooks">
         <h1>Hooks</h1>
-        <div class="settings-group"><p>Hooks are loaded from Actoviq configuration and agent definitions.</p></div>
+        <div class="settings-group">
+          <p class="muted">Shell hooks from <code>settings.json</code> (<code>hooks.PreToolUse</code> / <code>PostToolUse</code> / <code>SessionStart</code>). These are not SDK TypeScript callbacks. Toggle to disable without deleting; remove to drop an entry. Edit commands in the settings file.</p>
+          <div class="settings-action-row">
+            <button type="button" id="settingsHooksOpenConfig" class="secondary-btn">Open settings.json</button>
+            <button type="button" id="settingsHooksRefresh" class="secondary-btn">Refresh</button>
+          </div>
+          <p id="settingsHooksPath" class="muted"></p>
+          <div id="settingsHooksList"></div>
+        </div>
       </section>
       <section class="settings-panel" data-settings-panel="git">
         <h1>Git</h1>
         <div class="settings-group">
+          <h2>Repository</h2>
           <p id="settingsGitSummary" class="muted">Reading repository…</p>
-          <div class="settings-help-row"><span><strong>Git tree</strong><small>Browse branches, working-tree changes, and recent commits for this workspace.</small></span><button type="button" id="settingsGitTreeBtn" class="secondary-btn">View Git tree</button></div>
+          <p id="settingsGitIdentity" class="muted"></p>
+          <div class="settings-help-row"><span><strong>Project Git</strong><small>Open the project workbench Git tab (changes, history, diff).</small></span><button type="button" id="settingsProjectGitBtn" class="secondary-btn">Open Project → Git</button></div>
+          <div class="settings-help-row"><span><strong>Git tree</strong><small>Browse branches, working-tree changes, and recent commits in the side drawer.</small></span><button type="button" id="settingsGitTreeBtn" class="secondary-btn">View Git tree</button></div>
           <div class="settings-help-row"><span><strong>Workspace folder</strong><small>Open this project's folder in your system file manager.</small></span><button type="button" id="settingsOpenLocation" class="secondary-btn">Open location</button></div>
+        </div>
+        <div class="settings-group">
+          <h2>Composer</h2>
+          <div class="settings-help-row"><span><strong>Show branch in composer</strong><small>Display the current git branch chip above the message box.</small></span><label class="switch-field"><input type="checkbox" id="settingsShowBranchInComposer"></label></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="env">
@@ -6418,6 +6516,15 @@ button { cursor: pointer; }
   --term-btn-fg: #3f3f46;
   --term-accent: #16a34a;
   --term-block-bg: #fafafa;
+  /* Files editor syntax tokens (VS Code Light+-ish). */
+  --syn-keyword: #0000ff;
+  --syn-string: #a31515;
+  --syn-comment: #008000;
+  --syn-number: #098658;
+  --syn-func: #795e26;
+  --syn-type: #267f99;
+  --syn-attr: #e50000;
+  --syn-meta: #af00db;
 }
 body[data-theme="dark"] {
   --bg-app: #09090b;
@@ -6473,6 +6580,15 @@ body[data-theme="dark"] {
   --term-btn-fg: #c8cdd9;
   --term-accent: #6ad0a8;
   --term-block-bg: #232838;
+  /* Files editor syntax tokens (VS Code Dark+). */
+  --syn-keyword: #569cd6;
+  --syn-string: #ce9178;
+  --syn-comment: #6a9955;
+  --syn-number: #b5cea8;
+  --syn-func: #dcdcaa;
+  --syn-type: #4ec9b0;
+  --syn-attr: #9cdcfe;
+  --syn-meta: #c586c0;
 }
 /* --- App shell: 4-region navigation (plan/UI_PLAN §3). --- */
 .new-chat-btn { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; font-weight: 600; }
@@ -6649,11 +6765,50 @@ body[data-theme="dark"] {
 .project-wb-meta { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-wb-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .project-panel-empty { padding: 24px 16px; text-align: center; font-size: 13px; }
-.project-files-split, .project-git-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 0.42fr) minmax(0, 1fr); }
-.project-tree, .project-git-tree { min-height: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--bg-app); padding: 6px 0; }
+.project-files-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 0.42fr) minmax(0, 1fr); }
+.project-git-split { flex: 1; min-height: 0; display: flex; flex-direction: row; align-items: stretch; }
+.project-tree { min-height: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--bg-app); padding: 6px 0; }
+.project-git-tree { flex: 0 0 auto; width: var(--git-sidebar-width, 320px); min-width: 200px; max-width: 72%; min-height: 0; overflow: auto; background: var(--bg-app); padding: 6px 0; }
+.project-git-splitter { flex: 0 0 5px; cursor: col-resize; position: relative; background: var(--border); touch-action: none; }
+.project-git-splitter::after { content: ''; position: absolute; inset: 0 -3px; }
+.project-git-splitter:hover, .project-git-splitter.dragging { background: var(--brand); opacity: .55; }
 .project-files-preview, .project-git-diff { min-height: 0; overflow: auto; display: flex; flex-direction: column; background: var(--bg-surface); }
+.project-git-diff { flex: 1 1 auto; min-width: 180px; }
 .files-preview-head, .git-diff-head { flex: 0 0 auto; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.files-preview-head { display: flex; align-items: center; gap: 8px; }
+.files-preview-path { flex: 1; min-width: 0; }
+.files-preview-dirty { color: var(--warning, #d97706); font-weight: 600; }
+.files-preview-save { flex: 0 0 auto; padding: 2px 10px; font-size: 12px; min-height: 26px; }
+.files-preview-modes { display: inline-flex; flex: 0 0 auto; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
+.files-preview-mode { min-height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 11.5px; font-weight: 600; }
+.files-preview-mode:hover { color: var(--text-1); background: var(--surface-hover); }
+.files-preview-mode.active { color: var(--text-1); background: var(--bg-surface); box-shadow: 0 0 0 1px var(--border); }
+.files-preview-lang { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .files-preview-body, .git-diff-body { flex: 1; margin: 0; padding: 10px 12px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; background: var(--code-bg, var(--bg-app)); color: var(--text-1); border: 0; border-radius: 0; }
+.files-editor-wrap { flex: 1; min-height: 0; display: flex; align-items: stretch; overflow: hidden; background: var(--code-bg, var(--bg-app)); border-top: 0; }
+.files-editor-wrap.split { flex-direction: row; }
+.files-line-gutter { flex: 0 0 auto; overflow: hidden; background: color-mix(in srgb, var(--bg-app) 82%, var(--border)); border-right: 1px solid var(--border); }
+.files-line-numbers { margin: 0; padding: 10px 8px 10px 12px; min-width: 2.75em; text-align: right; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; color: var(--text-2); background: transparent; overflow: visible; user-select: none; white-space: pre; box-sizing: border-box; }
+.files-preview-editor { resize: none; outline: none; flex: 1 1 auto; width: auto; min-width: 0; min-height: 0; box-sizing: border-box; tab-size: 2; white-space: pre; overflow: auto; word-break: normal; padding: 10px 12px; }
+.files-editor-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; align-items: stretch; overflow: hidden; }
+.files-editor-wrap.split .files-editor-pane,
+.files-editor-wrap.split .files-md-preview { flex: 1 1 50%; }
+.files-editor-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+.files-highlight-layer { position: absolute; inset: 0; margin: 0; padding: 10px 12px; overflow: hidden; pointer-events: none; white-space: pre; tab-size: 2; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; color: var(--text-1); background: transparent; z-index: 0; }
+.files-preview-editor.files-hl-overlay { position: relative; z-index: 1; background: transparent !important; color: transparent; caret-color: var(--text-1); -webkit-text-fill-color: transparent; }
+.files-preview-editor.files-hl-overlay::selection { background: color-mix(in srgb, var(--brand) 38%, transparent); color: transparent; -webkit-text-fill-color: transparent; }
+.files-md-preview { flex: 1 1 50%; min-width: 0; min-height: 0; overflow: auto; padding: 14px 18px; background: var(--bg-surface); color: var(--text-1); border-left: 1px solid var(--border); }
+.files-md-preview.md-only { flex: 1 1 auto; border-left: 0; }
+.files-md-preview.md-prose { font-size: 13px; line-height: 1.75; }
+.files-md-preview.md-prose .md-h:first-child { margin-top: 0; }
+.tok-keyword { color: var(--syn-keyword); }
+.tok-string { color: var(--syn-string); }
+.tok-comment { color: var(--syn-comment); font-style: italic; }
+.tok-number { color: var(--syn-number); }
+.tok-func { color: var(--syn-func); }
+.tok-type { color: var(--syn-type); }
+.tok-attr { color: var(--syn-attr); }
+.tok-meta { color: var(--syn-meta); }
 .tree-row { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 26px; padding: 0 10px 0 calc(8px + var(--tree-depth, 0) * 14px); border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; box-sizing: border-box; }
 .tree-row:hover { background: var(--surface-hover); }
 .tree-row.selected { background: var(--brand-soft); color: var(--brand); }
@@ -6669,10 +6824,28 @@ body[data-theme="dark"] {
 .git-group-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 0 10px; border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
 .git-group-head:hover { background: var(--surface-hover); }
 .git-group-body { padding-bottom: 4px; }
-.git-history-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 8px; padding: 6px 12px; font-size: 12px; }
-.git-history-row .git-hash { font-family: ui-monospace, Consolas, monospace; color: var(--brand); }
-.git-history-subject { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
-.git-history-row .git-meta { grid-column: 2; font-size: 11px; color: var(--text-2); }
+.git-history-list { padding: 0; }
+.git-history-row { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 2px 7px; min-height: 44px; padding: 6px 10px 6px 5px; font-size: 12px; }
+.git-history-row:hover { background: var(--surface-hover); }
+.git-history-graph { grid-row: 1 / span 2; position: relative; align-self: stretch; min-height: 100%; overflow: visible; }
+.git-history-lane { position: absolute; top: -6px; bottom: -6px; width: 2px; border-radius: 0; opacity: .8; pointer-events: none; }
+.git-history-row:first-child .git-history-lane { top: 18px; }
+.git-history-row:last-child .git-history-lane { bottom: auto; top: -6px; height: 25px; }
+.git-history-dot { position: absolute; top: 14px; width: 9px; height: 9px; border: 2px solid var(--bg-app); border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 40%, transparent); z-index: 1; }
+.git-history-dot.merge { border-radius: 3px; transform: rotate(45deg); }
+.git-history-merge { position: absolute; top: 18px; width: 15px; height: 2px; transform-origin: left center; opacity: .68; }
+.git-history-main { grid-column: 2; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.git-history-subject { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.git-history-refs { display: inline-flex; flex: 0 0 auto; gap: 3px; max-width: 46%; overflow: hidden; }
+.git-history-ref { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 132px; border: 1px solid color-mix(in srgb, var(--brand) 34%, var(--border)); border-radius: 4px; padding: 1px 4px; color: var(--brand); background: var(--brand-soft); font-size: 10px; line-height: 14px; font-weight: 600; }
+.git-history-ref.head { color: var(--text-1); border-color: color-mix(in srgb, var(--text-1) 28%, var(--border)); background: var(--surface-muted); }
+.git-history-ref.remote { color: var(--text-2); background: var(--surface-muted); border-color: var(--border); }
+.git-history-ref.tag { color: #8250df; border-color: color-mix(in srgb, #8250df 35%, var(--border)); background: color-mix(in srgb, #8250df 9%, var(--bg-app)); }
+body[data-theme="dark"] .git-history-ref.tag { color: #d2a8ff; border-color: color-mix(in srgb, #d2a8ff 35%, var(--border)); background: color-mix(in srgb, #d2a8ff 12%, var(--bg-app)); }
+.git-history-meta { grid-column: 2; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-2); }
+.git-history-row .git-hash { flex: 0 0 auto; font-family: ui-monospace, Consolas, monospace; color: var(--brand); }
+.git-history-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.git-history-when { flex: 0 0 auto; white-space: nowrap; }
 .git-diff-line.add { color: #1a7f37; }
 .git-diff-line.del { color: #cf222e; }
 .git-diff-line.hunk { color: #8250df; }
@@ -6684,8 +6857,11 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .project-terminal-host > .terminal-dock { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; }
 .project-terminal-host > .terminal-dock.hidden { display: flex !important; }
 @media (max-width: 960px) {
-  .project-files-split, .project-git-split { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 40%) minmax(0, 1fr); }
-  .project-tree, .project-git-tree { border-right: 0; border-bottom: 1px solid var(--border); }
+  .project-files-split { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 40%) minmax(0, 1fr); }
+  .project-git-split { flex-direction: column; }
+  .project-git-tree { width: 100% !important; max-width: none; max-height: 42%; border-bottom: 1px solid var(--border); }
+  .project-git-splitter { flex-basis: 5px; cursor: row-resize; width: 100%; }
+  .project-tree { border-right: 0; border-bottom: 1px solid var(--border); }
 }
 .project-issues-toolbar { flex: 0 0 auto; min-height: 48px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
 .project-issues-title { min-width: 0; display: grid; gap: 1px; }
@@ -8598,6 +8774,17 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 }
 .check-row { display: flex !important; align-items: center; gap: 8px; color: var(--text-1) !important; font-size: 12.5px; }
 .shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
+.shortcut-group { margin-bottom: 14px; }
+.shortcut-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.hooks-event-block { margin-bottom: 16px; }
+.hooks-event-block h3 { margin: 0 0 8px; font-size: 13px; }
+.hooks-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg-surface); }
+.hooks-card.disabled { opacity: 0.62; }
+.hooks-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.hooks-card-title { font-weight: 600; font-size: 13px; }
+.hooks-card-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.hooks-card-desc { margin-top: 4px; font-size: 12px; color: var(--text-2); }
+.hooks-card-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: var(--bg-surface); font-size: 11.5px; }
 .secondary-btn,
 .settings-view .secondary-btn,
@@ -9155,6 +9342,8 @@ function isProjectStatus(value) {
 }
 ${teamPromptScript}
 ${renderMarkdown.toString()}
+${detectEditorLanguage.toString()}
+${highlightCode.toString()}
 function renderMarkdownInto(node, value) { node.innerHTML = renderMarkdown(value || ''); }
 let markdownRenderTimer = null;
 function scheduleMarkdownRender(node) {
@@ -9204,9 +9393,12 @@ const state = {
   filesTreeCache: {},
   filesSelectedPath: null,
   filesPreview: null,
+  filesPreviewRequest: 0,
+  filesViewMode: 'edit',
   gitPanelData: null,
   gitDiff: null,
-  gitGroupCollapsed: { staged: false, unstaged: false, history: true },
+  gitGroupCollapsed: { staged: false, unstaged: false, history: false },
+  gitSidebarWidth: 320,
   gitSelected: null,
   gitTreeExpanded: {},
   // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
@@ -9264,7 +9456,7 @@ const state = {
   lastTeamMemberRole: null,
   // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
   pluginsView: 'plugins',
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false }
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true }
 };
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
@@ -9328,6 +9520,8 @@ function applyPreferences(preferences) {
   const T = tx();
   if (T) T.setAutoScroll(shouldAutoScroll());
   refreshOpenTerminalThemes();
+  renderComposerMeta();
+  if (el('settingsModal') && !el('settingsModal').classList.contains('hidden')) renderShortcutsPanel();
 }
 function currentGuiTheme() {
   return document.body.dataset.theme === 'dark' ? 'dark' : 'light';
@@ -10590,14 +10784,6 @@ function renderSettingsCommandPanels() {
   renderSettingsCardList('settingsMcpList', (snapshot.tools || []).filter(tool => tool.provider === 'mcp'), (root, tool) => {
     addSettingsCard(root, tool.name, tool.server || 'mcp', tool.description);
   });
-  renderSettingsCardList('settingsWorkflowsList', snapshot.workflows || [], (root, workflow) => {
-    addSettingsCard(root, workflow.name, workflow.description, workflow.source, [
-      { label: 'Run', handler: () => {
-        const task = el('settingsWorkflowInput').value.trim();
-        return runSettingsCommand('/workflows run ' + workflow.name + (task ? ' ' + task : ''), 'Running workflow...');
-      } },
-    ]);
-  });
   renderWorkflowNameOptions(snapshot.workflows || []);
   if (!el('settingsScheduleCron').value.trim()) setField('settingsScheduleCron', '0 9 * * *');
   renderScheduledTasksList(snapshot.scheduledTasks || []);
@@ -11210,8 +11396,10 @@ function renderComposerMeta() {
   const branchChip = el('composerMetaBranch');
   const branch = typeof git.branch === 'string' && git.branch ? git.branch : null;
   const isRepo = Boolean(git.isRepo) && Boolean(branch);
+  const showBranch = state.preferences.showBranchInComposer !== false;
   if (branchLabel) branchLabel.textContent = isRepo ? branch : 'not a git repo';
   if (branchChip) {
+    branchChip.classList.toggle('hidden', !showBranch);
     branchChip.classList.toggle('muted', !isRepo);
     branchChip.title = isRepo ? ('Git branch: ' + branch) : 'Not a git repository';
     branchChip.disabled = !isRepo;
@@ -12613,10 +12801,72 @@ function paintFilesPreview() {
     preview.appendChild(note);
     return;
   }
+  if (data.loading) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Loading…';
+    preview.appendChild(note);
+    return;
+  }
+  const filePath = data.path || state.filesSelectedPath || '';
+  const language = detectEditorLanguage(filePath);
+  const isMarkdown = language === 'markdown';
+  let viewMode = state.filesViewMode || 'edit';
+  if (!isMarkdown && viewMode !== 'edit') viewMode = 'edit';
+  if (isMarkdown && viewMode !== 'edit' && viewMode !== 'preview' && viewMode !== 'split') viewMode = 'edit';
+  state.filesViewMode = viewMode;
+
   const head = document.createElement('div');
   head.className = 'files-preview-head';
-  head.textContent = data.path || state.filesSelectedPath || '';
+  const pathEl = document.createElement('span');
+  pathEl.className = 'files-preview-path';
+  pathEl.textContent = filePath;
+  head.appendChild(pathEl);
+  const langBadge = document.createElement('span');
+  langBadge.className = 'files-preview-lang';
+  langBadge.textContent = language;
+  head.appendChild(langBadge);
+  if (data.dirty) {
+    const dirty = document.createElement('span');
+    dirty.className = 'files-preview-dirty';
+    dirty.textContent = 'Unsaved';
+    head.appendChild(dirty);
+  }
+  const canEdit = !data.binary && !data.truncated && typeof data.text === 'string';
+  if (isMarkdown && canEdit) {
+    const modes = document.createElement('div');
+    modes.className = 'files-preview-modes';
+    modes.setAttribute('role', 'tablist');
+    for (const mode of ['edit', 'split', 'preview']) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'files-preview-mode' + (viewMode === mode ? ' active' : '');
+      btn.textContent = mode === 'edit' ? 'Edit' : mode === 'split' ? 'Split' : 'Preview';
+      btn.addEventListener('click', () => {
+        state.filesViewMode = mode;
+        paintFilesPreview();
+      });
+      modes.appendChild(btn);
+    }
+    head.appendChild(modes);
+  }
+  if (canEdit) {
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'pill-btn files-preview-save';
+    save.textContent = 'Save';
+    save.disabled = !data.dirty;
+    save.addEventListener('click', () => { void saveFilesPreview(); });
+    head.appendChild(save);
+  }
   preview.appendChild(head);
+  if (data.error) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = data.error;
+    preview.appendChild(note);
+    return;
+  }
   if (data.binary) {
     const note = document.createElement('p');
     note.className = 'muted';
@@ -12624,39 +12874,146 @@ function paintFilesPreview() {
     preview.appendChild(note);
     return;
   }
-  const pre = document.createElement('pre');
-  pre.className = 'files-preview-body code-block';
-  pre.textContent = data.text || '';
-  preview.appendChild(pre);
+
+  const draftText = typeof data.draft === 'string' ? data.draft : (data.text || '');
+  const showEditor = !isMarkdown || viewMode === 'edit' || viewMode === 'split';
+  const showMdPreview = isMarkdown && (viewMode === 'preview' || viewMode === 'split');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'files-editor-wrap' + (showEditor && showMdPreview ? ' split' : '');
+
+  let editor = null;
+  let highlightLayer = null;
+  let gutter = null;
+  let syncHighlight = null;
+
+  if (showEditor) {
+    const pane = document.createElement('div');
+    pane.className = 'files-editor-pane';
+    const gutterWrap = document.createElement('div');
+    gutterWrap.className = 'files-line-gutter';
+    gutter = document.createElement('pre');
+    gutter.className = 'files-line-numbers';
+    gutter.setAttribute('aria-hidden', 'true');
+    gutterWrap.appendChild(gutter);
+    const stack = document.createElement('div');
+    stack.className = 'files-editor-stack';
+    highlightLayer = document.createElement('pre');
+    highlightLayer.className = 'files-highlight-layer';
+    highlightLayer.setAttribute('aria-hidden', 'true');
+    editor = document.createElement('textarea');
+    editor.className = 'files-preview-body files-preview-editor files-hl-overlay';
+    editor.spellcheck = false;
+    editor.value = draftText;
+    editor.readOnly = Boolean(data.truncated);
+    stack.append(highlightLayer, editor);
+    pane.append(gutterWrap, stack);
+    wrap.appendChild(pane);
+
+    syncHighlight = () => {
+      const text = editor.value || '';
+      const count = Math.max(1, text.split('\\n').length);
+      const lines = [];
+      for (let i = 1; i <= count; i += 1) lines.push(String(i));
+      gutter.textContent = lines.join('\\n');
+      highlightLayer.innerHTML = highlightCode(text, language) + '\\n';
+    };
+    syncHighlight();
+
+    editor.addEventListener('input', () => {
+      data.draft = editor.value;
+      data.dirty = data.draft !== (data.text || '');
+      if (syncHighlight) syncHighlight();
+      if (showMdPreview) {
+        const mdNode = preview.querySelector('.files-md-preview');
+        if (mdNode) renderMarkdownInto(mdNode, data.draft || '');
+      }
+      const dirty = head.querySelector('.files-preview-dirty');
+      if (data.dirty && !dirty) {
+        const marker = document.createElement('span');
+        marker.className = 'files-preview-dirty';
+        marker.textContent = 'Unsaved';
+        const saveBtn = head.querySelector('.files-preview-save');
+        if (saveBtn) head.insertBefore(marker, saveBtn);
+        else head.appendChild(marker);
+      } else if (!data.dirty && dirty) {
+        dirty.remove();
+      }
+      const save = head.querySelector('.files-preview-save');
+      if (save) save.disabled = !data.dirty;
+    });
+    editor.addEventListener('scroll', () => {
+      gutter.style.transform = 'translateY(' + (-editor.scrollTop) + 'px)';
+      highlightLayer.style.transform = 'translate(' + (-editor.scrollLeft) + 'px, ' + (-editor.scrollTop) + 'px)';
+    });
+    editor.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void saveFilesPreview();
+      }
+    });
+  }
+
+  if (showMdPreview) {
+    const mdView = document.createElement('div');
+    mdView.className = 'files-md-preview md-prose' + (showEditor ? '' : ' md-only');
+    renderMarkdownInto(mdView, draftText);
+    wrap.appendChild(mdView);
+  }
+
+  preview.appendChild(wrap);
   if (data.truncated) {
     const tip = document.createElement('p');
     tip.className = 'muted';
-    tip.textContent = 'Preview truncated.';
+    tip.textContent = 'Preview truncated; editing is disabled to protect the rest of the file.';
     preview.appendChild(tip);
   }
 }
 async function openFilesPreview(filePath) {
   state.filesSelectedPath = filePath;
+  const request = ++state.filesPreviewRequest;
+  state.filesPreview = { path: filePath, loading: true };
   paintProjectFilesTree();
-  const preview = el('projectFilesPreview');
-  if (preview) {
-    preview.textContent = '';
-    const note = document.createElement('p');
-    note.className = 'muted project-panel-empty';
-    note.textContent = 'Loading…';
-    preview.appendChild(note);
-  }
+  paintFilesPreview();
   try {
     const res = await api('/api/workspace-file?path=' + encodeURIComponent(filePath));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Could not read file');
-    state.filesPreview = data;
+    if (request !== state.filesPreviewRequest || state.filesSelectedPath !== filePath) return;
+    state.filesPreview = Object.assign({}, data, { draft: data.text || '', dirty: false });
   } catch (error) {
-    state.filesPreview = null;
+    if (request !== state.filesPreviewRequest || state.filesSelectedPath !== filePath) return;
+    state.filesPreview = {
+      path: filePath,
+      error: error && error.message ? error.message : 'Could not read file.',
+    };
     flashStatus(error && error.message ? error.message : 'Could not read file');
   }
   paintFilesPreview();
   paintProjectFilesTree();
+}
+async function saveFilesPreview() {
+  const data = state.filesPreview;
+  if (!data || data.loading || data.binary || data.truncated || !data.dirty || !data.path) return;
+  const text = typeof data.draft === 'string' ? data.draft : '';
+  try {
+    const res = await api('/api/workspace-file', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: data.path, text }),
+    });
+    const saved = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(saved.error || 'Could not save file');
+    if (state.filesPreview !== data) return;
+    data.text = text;
+    data.draft = text;
+    data.size = saved.size || data.size;
+    data.dirty = false;
+    paintFilesPreview();
+    flashStatus('Saved ' + (data.path || state.filesSelectedPath || 'file'));
+  } catch (error) {
+    flashStatus(error && error.message ? error.message : 'Could not save file');
+  }
 }
 async function renderProjectFilesPanel(force) {
   const host = el('projectFilesPanel');
@@ -12936,7 +13293,7 @@ async function renderProjectGitPanel(force) {
   const histHead = document.createElement('button');
   histHead.type = 'button';
   histHead.className = 'git-group-head';
-  const histCollapsed = state.gitGroupCollapsed.history !== false;
+  const histCollapsed = state.gitGroupCollapsed.history === true;
   histHead.innerHTML = '<span class="tree-chevron' + (histCollapsed ? ' collapsed' : '') + '">' + guiIcon('chevronDown') + '</span>';
   const histLabel = document.createElement('span');
   const commits = Array.isArray(data.commits) ? data.commits : [];
@@ -12949,20 +13306,89 @@ async function renderProjectGitPanel(force) {
   history.appendChild(histHead);
   if (!histCollapsed) {
     const body = document.createElement('div');
-    body.className = 'git-group-body';
+    body.className = 'git-group-body git-history-list';
+    const graphLanes = [];
+    const laneColors = ['#4f8cff', '#d9730d', '#8b5cf6', '#16a34a', '#dc4c64', '#0891b2'];
     for (const commit of commits.slice(0, 30)) {
+      let lane = graphLanes.indexOf(commit.hash);
+      if (lane < 0) {
+        lane = graphLanes.length;
+        graphLanes.push(commit.hash);
+      }
+      const parents = Array.isArray(commit.parents) ? commit.parents.filter(Boolean) : [];
+      if (parents.length) {
+        graphLanes[lane] = parents[0];
+        for (let index = parents.length - 1; index >= 1; index -= 1) {
+          if (!graphLanes.includes(parents[index])) graphLanes.splice(lane + 1, 0, parents[index]);
+        }
+      } else graphLanes.splice(lane, 1);
+      const renderLane = Math.min(lane, 2);
+      const visibleLanes = Math.min(Math.max(graphLanes.length, renderLane + 1), 3);
+      const color = laneColors[renderLane % laneColors.length];
       const row = document.createElement('div');
       row.className = 'git-history-row';
+      const graph = document.createElement('span');
+      graph.className = 'git-history-graph';
+      for (let index = 0; index < visibleLanes; index += 1) {
+        const rail = document.createElement('i');
+        rail.className = 'git-history-lane';
+        rail.style.left = (10 + index * 11) + 'px';
+        rail.style.background = laneColors[index % laneColors.length];
+        graph.appendChild(rail);
+      }
+      const dot = document.createElement('i');
+      dot.className = 'git-history-dot' + (parents.length > 1 ? ' merge' : '');
+      dot.style.left = (7 + renderLane * 11) + 'px';
+      dot.style.background = color;
+      dot.style.color = color;
+      graph.appendChild(dot);
+      if (parents.length > 1) {
+        const mergeLine = document.createElement('i');
+        mergeLine.className = 'git-history-merge';
+        mergeLine.style.left = (12 + renderLane * 11) + 'px';
+        mergeLine.style.background = color;
+        mergeLine.style.transform = 'rotate(28deg)';
+        graph.appendChild(mergeLine);
+      }
       const hash = document.createElement('span');
       hash.className = 'git-hash';
       hash.textContent = commit.hash || '';
+      const main = document.createElement('div');
+      main.className = 'git-history-main';
       const subject = document.createElement('span');
       subject.className = 'git-history-subject';
       subject.textContent = commit.subject || '';
-      const metaLine = document.createElement('span');
-      metaLine.className = 'git-meta';
-      metaLine.textContent = [commit.date, commit.author].filter(Boolean).join(' · ');
-      row.append(hash, subject, metaLine);
+      main.appendChild(subject);
+      const refs = Array.isArray(commit.refs) ? commit.refs : [];
+      if (refs.length) {
+        const refsEl = document.createElement('span');
+        refsEl.className = 'git-history-refs';
+        for (const ref of refs.slice(0, 3)) {
+          const name = typeof ref === 'string' ? ref : (ref && ref.name) || '';
+          const kind = typeof ref === 'string'
+            ? (ref === 'HEAD' ? 'head' : ref.includes('/') ? 'remote' : /^v?\d/.test(ref) ? 'tag' : 'local')
+            : (ref && ref.kind) || 'local';
+          if (!name) continue;
+          const badge = document.createElement('span');
+          badge.className = 'git-history-ref' + (kind === 'local' ? '' : ' ' + kind);
+          badge.textContent = name;
+          badge.title = name;
+          refsEl.appendChild(badge);
+        }
+        main.appendChild(refsEl);
+      }
+      const metaLine = document.createElement('div');
+      metaLine.className = 'git-history-meta';
+      const author = document.createElement('span');
+      author.className = 'git-history-author';
+      author.textContent = commit.author || 'Unknown author';
+      if (commit.authorEmail) author.title = commit.author + ' <' + commit.authorEmail + '>';
+      const when = document.createElement('time');
+      when.className = 'git-history-when';
+      when.textContent = commit.relativeDate || commit.date || '';
+      when.title = commit.absoluteDate ? new Date(commit.absoluteDate).toLocaleString() : '';
+      metaLine.append(hash, author, when);
+      row.append(graph, main, metaLine);
       body.appendChild(row);
     }
     if (!commits.length) {
@@ -12975,9 +13401,62 @@ async function renderProjectGitPanel(force) {
     history.appendChild(body);
   }
   left.appendChild(history);
-  split.append(left, right);
+  const splitter = document.createElement('div');
+  splitter.className = 'project-git-splitter';
+  splitter.title = 'Drag to resize';
+  splitter.setAttribute('role', 'separator');
+  splitter.setAttribute('aria-orientation', 'vertical');
+  const width = Math.max(200, Number(state.gitSidebarWidth) || 320);
+  left.style.width = width + 'px';
+  split.style.setProperty('--git-sidebar-width', width + 'px');
+  split.append(left, splitter, right);
   host.appendChild(split);
+  bindGitSidebarResize(split, left, splitter);
   paintGitDiff();
+}
+function bindGitSidebarResize(split, left, handle) {
+  if (!split || !left || !handle) return;
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+  const onMove = (event) => {
+    if (!dragging) return;
+    const vertical = window.matchMedia('(max-width: 960px)').matches;
+    if (vertical) {
+      const bounds = split.getBoundingClientRect();
+      const next = Math.max(140, Math.min(bounds.height - 140, event.clientY - bounds.top));
+      left.style.width = '100%';
+      left.style.maxHeight = next + 'px';
+      left.style.flex = '0 0 auto';
+      return;
+    }
+    const bounds = split.getBoundingClientRect();
+    const next = Math.max(200, Math.min(bounds.width * 0.72, startWidth + (event.clientX - startX)));
+    state.gitSidebarWidth = Math.round(next);
+    left.style.width = state.gitSidebarWidth + 'px';
+    split.style.setProperty('--git-sidebar-width', state.gitSidebarWidth + 'px');
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    dragging = true;
+    startX = event.clientX;
+    startWidth = left.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    document.body.style.cursor = window.matchMedia('(max-width: 960px)').matches ? 'row-resize' : 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
 }
 function currentIssuePath() {
   return state.snapshot?.workDir || '';
@@ -15081,7 +15560,6 @@ async function renderAutomationRegion() {
   if (!body) return;
   body.textContent = '';
   const tasks = state.snapshot?.scheduledTasks || [];
-  const workflows = state.snapshot?.workflows || [];
   const section = document.createElement('section');
   section.className = 'automation-region-section';
   const head = document.createElement('div');
@@ -15123,7 +15601,6 @@ async function renderAutomationRegion() {
     section.appendChild(grid);
   }
   body.appendChild(section);
-  body.appendChild(createAutomationSection('Workflows', workflows.length + ' saved scripts', workflows, renderAutomationWorkflowCard));
 }
 function renderAutomationRow(task) {
   const row = document.createElement('div');
@@ -15362,75 +15839,6 @@ function openAutomationDialog(task) {
   overlay.appendChild(panel);
   overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
-}
-function createAutomationSection(title, subtitle, items, renderItem) {
-  const section = document.createElement('section');
-  section.className = 'automation-region-section';
-  const head = document.createElement('div');
-  head.className = 'automation-region-title';
-  const h = document.createElement('h3');
-  h.textContent = title;
-  const small = document.createElement('small');
-  small.textContent = subtitle;
-  head.append(h, small);
-  section.appendChild(head);
-  if (!items || items.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'region-empty';
-    empty.textContent = 'Nothing configured.';
-    section.appendChild(empty);
-    return section;
-  }
-  const grid = document.createElement('div');
-  grid.className = 'region-list-grid';
-  for (const item of items) grid.appendChild(renderItem(item));
-  section.appendChild(grid);
-  return section;
-}
-function renderAutomationWorkflowCard(workflow) {
-  const card = document.createElement('article');
-  card.className = 'rl-card';
-  const head = document.createElement('div');
-  head.className = 'rl-head';
-  const icon = document.createElement('span');
-  icon.className = 'rl-icon';
-  icon.innerHTML = guiIcon('automation');
-  const titles = document.createElement('div');
-  titles.style.cssText = 'min-width:0;display:grid;gap:1px;';
-  const title = document.createElement('span');
-  title.className = 'rl-title';
-  title.textContent = workflow.name || '(unnamed)';
-  const source = document.createElement('span');
-  source.className = 'rl-source';
-  source.textContent = workflow.source || '';
-  titles.append(title, source);
-  head.append(icon, titles);
-  const desc = document.createElement('p');
-  desc.className = 'rl-desc';
-  desc.textContent = workflow.description || '';
-  const footer = document.createElement('div');
-  footer.className = 'rl-footer';
-  const run = document.createElement('button');
-  run.type = 'button';
-  run.className = 'rl-btn';
-  run.textContent = 'Run';
-  run.addEventListener('click', () => {
-    const task = window.prompt('Workflow input', '');
-    submitText('/workflows run ' + workflow.name + (task && task.trim() ? ' ' + task.trim() : ''));
-  });
-  const schedule = document.createElement('button');
-  schedule.type = 'button';
-  schedule.className = 'rl-btn';
-  schedule.textContent = 'Schedule';
-  schedule.addEventListener('click', async () => {
-    await openSettings('automation');
-    clearScheduledTaskForm();
-    setField('settingsScheduleName', workflow.name);
-    setField('settingsScheduleWorkflow', workflow.name);
-  });
-  footer.append(run, schedule);
-  card.append(head, desc, footer);
-  return card;
 }
 async function renderPluginsRegion(view) {
   state.pluginsView = view;
@@ -17877,7 +18285,8 @@ async function openGitSurface() {
     subject.textContent = commit.subject;
     const meta = document.createElement('span');
     meta.className = 'git-meta';
-    meta.textContent = commit.date + (commit.author ? ' · ' + commit.author : '');
+    meta.textContent = (commit.relativeDate || commit.date || '') + (commit.author ? ' · ' + commit.author : '');
+    if (commit.absoluteDate) meta.title = new Date(commit.absoluteDate).toLocaleString();
     row.append(hash, subject, meta);
     commits.appendChild(row);
   }
@@ -17892,15 +18301,23 @@ async function openGitSurface() {
 }
 async function refreshGitSettingsSummary() {
   const target = el('settingsGitSummary');
+  const identity = el('settingsGitIdentity');
   if (!target) return;
   const data = await gitData();
   if (!data || !data.isRepo) {
     target.textContent = data ? 'Not a git repository.' : 'Git information unavailable.';
+    if (identity) identity.textContent = '';
     return;
   }
   const changed = (data.status || []).length;
   const tracking = (data.ahead ? ' · ↑' + data.ahead : '') + (data.behind ? ' · ↓' + data.behind : '');
-  target.textContent = 'On branch ' + data.branch + ' · ' + changed + ' changed file' + (changed === 1 ? '' : 's') + tracking;
+  const cwd = data.cwd || state.snapshot?.workDir || '';
+  target.textContent = (cwd ? cwd + ' · ' : '') + 'On branch ' + data.branch + ' · ' + changed + ' changed file' + (changed === 1 ? '' : 's') + tracking;
+  if (identity) {
+    const name = data.userName || '(unset)';
+    const email = data.userEmail || '(unset)';
+    identity.textContent = 'user.name ' + name + ' · user.email ' + email;
+  }
 }
 async function deleteChat(id) {
   const wasActive = state.snapshot?.session?.id === id;
@@ -19048,10 +19465,226 @@ async function removeMcpServerConfig(name) {
   state.snapshot = await res.json();
   renderMcpServers();
 }
+let settingsHooksCache = { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+let settingsHooksConfigPath = '';
+async function refreshHooksSettings() {
+  const root = el('settingsHooksList');
+  const pathEl = el('settingsHooksPath');
+  if (!root) return;
+  root.textContent = '';
+  try {
+    const res = await api('/api/hooks');
+    if (!res.ok) throw new Error('load failed');
+    const data = await res.json();
+    settingsHooksCache = data.hooks || { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+    settingsHooksConfigPath = data.configPath || '';
+    if (pathEl) pathEl.textContent = settingsHooksConfigPath ? ('Config: ' + settingsHooksConfigPath) : 'Settings path unavailable';
+  } catch (err) {
+    if (pathEl) pathEl.textContent = 'Could not load hooks.';
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'Failed to load hooks: ' + (err.message || err);
+    root.appendChild(note);
+    return;
+  }
+  const events = [
+    ['PreToolUse', 'Before tool use (can deny)'],
+    ['PostToolUse', 'After tool use (fire-and-forget)'],
+    ['SessionStart', 'When a session starts'],
+  ];
+  let total = 0;
+  for (const [eventName, blurb] of events) {
+    const list = settingsHooksCache[eventName] || [];
+    total += list.length;
+    const block = document.createElement('div');
+    block.className = 'hooks-event-block';
+    const h = document.createElement('h3');
+    h.textContent = eventName + ' (' + list.length + ')';
+    const sub = document.createElement('p');
+    sub.className = 'muted';
+    sub.textContent = blurb;
+    block.append(h, sub);
+    if (list.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'None configured.';
+      block.appendChild(empty);
+    } else {
+      list.forEach((hook, index) => {
+        const card = document.createElement('article');
+        const enabled = hook.enabled !== false;
+        card.className = 'hooks-card' + (enabled ? '' : ' disabled');
+        const head = document.createElement('div');
+        head.className = 'hooks-card-head';
+        const title = document.createElement('div');
+        title.className = 'hooks-card-title';
+        title.textContent = eventName === 'SessionStart' ? 'SessionStart' : (hook.matcher || '*');
+        const actions = document.createElement('div');
+        actions.className = 'hooks-card-actions';
+        const toggle = document.createElement('label');
+        toggle.className = 'switch-field';
+        toggle.title = 'Enabled';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = enabled;
+        checkbox.addEventListener('change', () => {
+          void updateHookEnabled(eventName, index, checkbox.checked);
+        });
+        toggle.appendChild(checkbox);
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'secondary-btn';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => { void removeHookEntry(eventName, index); });
+        actions.append(toggle, removeBtn);
+        head.append(title, actions);
+        const cmd = document.createElement('div');
+        cmd.className = 'hooks-card-cmd';
+        cmd.textContent = hook.command || '';
+        card.append(head, cmd);
+        if (hook.description) {
+          const desc = document.createElement('div');
+          desc.className = 'hooks-card-desc';
+          desc.textContent = hook.description;
+          card.appendChild(desc);
+        }
+        block.appendChild(card);
+      });
+    }
+    root.appendChild(block);
+  }
+  if (total === 0) {
+    const tip = document.createElement('p');
+    tip.className = 'muted';
+    tip.textContent = 'Add hooks in settings.json, then Refresh. Example: { "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $ACTOVIQ_HOOK_TOOL" }] } }';
+    root.appendChild(tip);
+  }
+}
+async function persistHooksCache() {
+  const res = await api('/api/hooks', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ hooks: settingsHooksCache }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || ('save failed (' + res.status + ')'));
+  }
+  const data = await res.json();
+  settingsHooksCache = data.hooks || settingsHooksCache;
+}
+async function updateHookEnabled(eventName, index, enabled) {
+  const list = settingsHooksCache[eventName] || [];
+  if (!list[index]) return;
+  list[index] = { ...list[index], enabled: enabled ? true : false };
+  try {
+    await persistHooksCache();
+    await refreshHooksSettings();
+    el('settingsStatus').textContent = enabled ? 'Hook enabled' : 'Hook disabled';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+async function removeHookEntry(eventName, index) {
+  const list = settingsHooksCache[eventName] || [];
+  if (!list[index]) return;
+  if (!window.confirm('Remove this ' + eventName + ' hook?')) return;
+  list.splice(index, 1);
+  settingsHooksCache[eventName] = list;
+  try {
+    await persistHooksCache();
+    await refreshHooksSettings();
+    el('settingsStatus').textContent = 'Hook removed';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+function renderShortcutsPanel() {
+  const root = el('settingsShortcutsList');
+  if (!root) return;
+  root.textContent = '';
+  const enterToSend = state.preferences.enterToSend !== false;
+  const groups = [
+    {
+      title: 'Composer',
+      rows: enterToSend
+        ? [
+            [['Enter'], 'Send message'],
+            [['Shift', 'Enter'], 'Insert new line'],
+            [['/'], 'Open command flow'],
+          ]
+        : [
+            [['Ctrl', 'Enter'], 'Send message (Cmd+Enter on macOS)'],
+            [['Enter'], 'Insert new line'],
+            [['/'], 'Open command flow'],
+          ],
+    },
+    {
+      title: 'Aux panels',
+      rows: [
+        [['Ctrl', 'Shift', 'G'], 'Open Review'],
+        [['Ctrl', 'T'], 'Open Browser'],
+        [['Ctrl', 'P'], 'Open Files'],
+        [['Ctrl', '\`'], 'Toggle terminal'],
+      ],
+    },
+    {
+      title: 'Global',
+      rows: [
+        [['Escape'], 'Close menus, pickers, and aux focus'],
+      ],
+    },
+  ];
+  for (const group of groups) {
+    const wrap = document.createElement('div');
+    wrap.className = 'shortcut-group';
+    const h = document.createElement('h3');
+    h.textContent = group.title;
+    wrap.appendChild(h);
+    for (const [keys, label] of group.rows) {
+      const row = document.createElement('div');
+      keys.forEach((key, i) => {
+        if (i > 0) row.appendChild(document.createTextNode(' + '));
+        const kbd = document.createElement('kbd');
+        kbd.textContent = key;
+        row.appendChild(kbd);
+      });
+      const span = document.createElement('span');
+      span.textContent = label;
+      row.appendChild(span);
+      wrap.appendChild(row);
+    }
+    root.appendChild(wrap);
+  }
+  const note = document.createElement('p');
+  note.className = 'muted';
+  note.textContent = enterToSend
+    ? 'Enter-to-send is on (Appearance). Turn it off to require Ctrl/Cmd+Enter to send.'
+    : 'Enter-to-send is off (Appearance). Press Ctrl/Cmd+Enter to send.';
+  root.appendChild(note);
+}
+function openProjectGitFromSettings() {
+  closeSettings();
+  if (state.projectView === 'detail') {
+    setProjectDetailTab('git');
+    return;
+  }
+  const active = (state.snapshot?.projects || []).find((p) => p.active);
+  if (active) {
+    void openProjectFromOverview(active).then(() => setProjectDetailTab('git'));
+    return;
+  }
+  switchProjectView('detail');
+  setProjectDetailTab('git');
+}
 function showSettingsTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
+  if (tab === 'hooks') refreshHooksSettings().catch(() => undefined);
+  if (tab === 'shortcuts') renderShortcutsPanel();
   if (tab === 'models') renderBridgeConfigs();
   if (tab === 'mcp') renderMcpServers();
   if (tab === 'sessions') renderArchived();
@@ -19659,8 +20292,11 @@ async function openSettings(tab = 'general') {
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
   setChecked('settingsDeveloperTools', preferences.developerTools === true);
+  setChecked('settingsShowBranchInComposer', preferences.showBranchInComposer !== false);
+  setField('settingsOutputStyle', preferences.outputStyle || state.snapshot?.outputStyle || 'default');
   renderBridgeConfigs();
   renderMcpServers();
+  renderShortcutsPanel();
   el('settingsStatus').textContent = '';
   renderSettingsCommandPanels();
   el('settingsModal').classList.remove('hidden');
@@ -19696,6 +20332,8 @@ function collectSettingsBody() {
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
       developerTools: el('settingsDeveloperTools').checked,
+      outputStyle: el('settingsOutputStyle')?.value || 'default',
+      showBranchInComposer: el('settingsShowBranchInComposer')?.checked !== false,
     },
   };
 }
@@ -19763,10 +20401,14 @@ function wireSettingsAutosave() {
   form.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id || !String(target.id).startsWith('settings')) return;
-    // Output style already persists via /output-style; schedule/team fields have their own APIs.
-    if (target.id === 'settingsOutputStyle') return;
+    // Schedule/team fields have their own APIs. Output style persists via preferences + /output-style.
     if (target.id.startsWith('settingsSchedule')) return;
     if (target.id.startsWith('settingsTeam')) return;
+    if (target.id === 'settingsOutputStyle') {
+      submitText('/output-style ' + target.value);
+      scheduleSettingsAutosave(120);
+      return;
+    }
     // Immediate for toggles/selects; text fields debounce via input.
     const tag = String(target.tagName || '').toLowerCase();
     const type = String(target.type || '').toLowerCase();
@@ -19993,6 +20635,17 @@ el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
 // edits by an accidental click.
 el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
+el('settingsProjectGitBtn')?.addEventListener('click', () => { openProjectGitFromSettings(); });
+el('settingsOpenMemory')?.addEventListener('click', () => { showSettingsTab('memory'); });
+el('settingsHooksRefresh')?.addEventListener('click', () => { refreshHooksSettings().catch(console.error); });
+el('settingsHooksOpenConfig')?.addEventListener('click', () => {
+  api('/api/settings/open-config', { method: 'POST' }).catch(console.error);
+});
+el('settingsShowBranchInComposer')?.addEventListener('change', () => {
+  scheduleSettingsAutosave(120);
+  state.preferences.showBranchInComposer = !!el('settingsShowBranchInComposer')?.checked;
+  renderComposerMeta();
+});
 document.addEventListener('click', (event) => {
   hideContextMenu();
   const flyout = el('modelPickerFlyout');
@@ -20054,7 +20707,6 @@ el('modelPickerSearch').addEventListener('input', (event) => {
 });
 el('modelPickerSearch').addEventListener('click', (event) => event.stopPropagation());
 el('modelPickerFlyout').addEventListener('click', (event) => event.stopPropagation());
-el('settingsOutputStyle').addEventListener('change', (event) => submitText('/output-style ' + event.target.value));
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
 el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === el('surfaceDrawer')) closeSurface(); });
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });

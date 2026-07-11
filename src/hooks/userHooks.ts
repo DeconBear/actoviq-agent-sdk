@@ -23,22 +23,138 @@ export interface PreToolUseHook {
   command: string;
   /** Optional human-readable label for the /hooks list. */
   description?: string;
+  /** When false, the hook is kept in settings but skipped at runtime. Default true. */
+  enabled?: boolean;
+}
+
+export interface PostToolUseHook {
+  matcher: string;
+  command: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+export interface SessionStartHook {
+  command: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+export interface UserHooksConfig {
+  PreToolUse: PreToolUseHook[];
+  PostToolUse: PostToolUseHook[];
+  SessionStart: SessionStartHook[];
+}
+
+function isHookEnabled(hook: { enabled?: boolean }): boolean {
+  return hook.enabled !== false;
+}
+
+function optionalDescription(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function optionalEnabled(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function normalizePreToolUseHook(raw: unknown): PreToolUseHook | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const h = raw as Record<string, unknown>;
+  if (typeof h.matcher !== 'string' || typeof h.command !== 'string') return null;
+  const description = optionalDescription(h.description);
+  const enabled = optionalEnabled(h.enabled);
+  return {
+    matcher: h.matcher,
+    command: h.command,
+    ...(description ? { description } : {}),
+    ...(enabled === undefined ? {} : { enabled }),
+  };
+}
+
+function normalizePostToolUseHook(raw: unknown): PostToolUseHook | null {
+  return normalizePreToolUseHook(raw);
+}
+
+function normalizeSessionStartHook(raw: unknown): SessionStartHook | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const h = raw as Record<string, unknown>;
+  if (typeof h.command !== 'string') return null;
+  const description = optionalDescription(h.description);
+  const enabled = optionalEnabled(h.enabled);
+  return {
+    command: h.command,
+    ...(description ? { description } : {}),
+    ...(enabled === undefined ? {} : { enabled }),
+  };
 }
 
 /** Read the hooks block from a settings object (already loaded JSON). */
 export function readPreToolUseHooks(raw: unknown): PreToolUseHook[] {
   const hooks = (raw as { hooks?: { PreToolUse?: unknown } } | null)?.hooks?.PreToolUse;
   if (!Array.isArray(hooks)) return [];
-  return hooks
-    .filter((h): h is PreToolUseHook =>
-      typeof h === 'object' && h !== null &&
-      typeof (h as PreToolUseHook).matcher === 'string' &&
-      typeof (h as PreToolUseHook).command === 'string')
-    .map(h => ({
-      matcher: h.matcher,
-      command: h.command,
-      ...(h.description ? { description: h.description } : {}),
-    }));
+  return hooks.map(normalizePreToolUseHook).filter((h): h is PreToolUseHook => h !== null);
+}
+
+export function readPostToolUseHooks(raw: unknown): PostToolUseHook[] {
+  const hooks = (raw as { hooks?: { PostToolUse?: unknown } } | null)?.hooks?.PostToolUse;
+  if (!Array.isArray(hooks)) return [];
+  return hooks.map(normalizePostToolUseHook).filter((h): h is PostToolUseHook => h !== null);
+}
+
+export function readSessionStartHooks(raw: unknown): SessionStartHook[] {
+  const hooks = (raw as { hooks?: { SessionStart?: unknown } } | null)?.hooks?.SessionStart;
+  if (!Array.isArray(hooks)) return [];
+  return hooks.map(normalizeSessionStartHook).filter((h): h is SessionStartHook => h !== null);
+}
+
+export function readUserHooksConfig(raw: unknown): UserHooksConfig {
+  return {
+    PreToolUse: readPreToolUseHooks(raw),
+    PostToolUse: readPostToolUseHooks(raw),
+    SessionStart: readSessionStartHooks(raw),
+  };
+}
+
+/**
+ * Validate a PUT body for /api/hooks. Accepts either `{ hooks: {...} }` or a
+ * bare `{ PreToolUse?, PostToolUse?, SessionStart? }` object. Missing event
+ * keys become empty arrays (replace semantics per event type present in input;
+ * if the top-level object omits an event key entirely, that event is cleared
+ * when writing via `toSettingsHooksBlock`).
+ */
+export function normalizeUserHooksConfig(input: unknown): UserHooksConfig {
+  const root = (typeof input === 'object' && input !== null && 'hooks' in (input as object)
+    ? (input as { hooks: unknown }).hooks
+    : input) as Record<string, unknown> | null;
+  const source = typeof root === 'object' && root !== null ? root : {};
+  return {
+    PreToolUse: Array.isArray(source.PreToolUse)
+      ? source.PreToolUse.map(normalizePreToolUseHook).filter((h): h is PreToolUseHook => h !== null)
+      : [],
+    PostToolUse: Array.isArray(source.PostToolUse)
+      ? source.PostToolUse.map(normalizePostToolUseHook).filter((h): h is PostToolUseHook => h !== null)
+      : [],
+    SessionStart: Array.isArray(source.SessionStart)
+      ? source.SessionStart.map(normalizeSessionStartHook).filter((h): h is SessionStartHook => h !== null)
+      : [],
+  };
+}
+
+/** Serialize hooks for settings.json (omit default-true `enabled`). */
+export function toSettingsHooksBlock(config: UserHooksConfig): Record<string, unknown> {
+  const pack = <T extends { enabled?: boolean; description?: string }>(hooks: T[]) =>
+    hooks.map((h) => {
+      const out: Record<string, unknown> = { ...h };
+      if (out.enabled === true) delete out.enabled;
+      if (!out.description) delete out.description;
+      return out;
+    });
+  return {
+    PreToolUse: pack(config.PreToolUse),
+    PostToolUse: pack(config.PostToolUse),
+    SessionStart: pack(config.SessionStart),
+  };
 }
 
 function toolMatches(matcher: string, toolName: string): boolean {
@@ -54,13 +170,14 @@ function toolMatches(matcher: string, toolName: string): boolean {
 /**
  * Build a PreToolUse classifier. `loadHooks` is a function that returns the
  * current hook list (so settings edits are picked up without rebuilding) —
- * typically `() => readPreToolUseHooks(getLoadedJsonConfig())`.
+ * typically `() => readPreToolUseHooks(getLoadedJsonConfig())`. Disabled hooks
+ * (`enabled: false`) are skipped.
  */
 export function createPreToolUseHookClassifier(
   loadHooks: () => PreToolUseHook[],
 ): ActoviqToolClassifier {
   return async (ctx): Promise<ActoviqClassifierOutcome | void> => {
-    const hooks = loadHooks();
+    const hooks = loadHooks().filter(isHookEnabled);
     if (hooks.length === 0) return undefined;
     const matched = hooks.filter(h => toolMatches(h.matcher, ctx.publicName));
     if (matched.length === 0) return undefined;
@@ -104,42 +221,6 @@ export function createPreToolUseHookClassifier(
   };
 }
 
-// ── PostToolUse hooks (fire-and-forget after a tool completes) ──────────
-
-export interface PostToolUseHook {
-  matcher: string;
-  command: string;
-  description?: string;
-}
-
-export interface SessionStartHook {
-  command: string;
-  description?: string;
-}
-
-export function readPostToolUseHooks(raw: unknown): PostToolUseHook[] {
-  const hooks = (raw as { hooks?: { PostToolUse?: unknown } } | null)?.hooks?.PostToolUse;
-  if (!Array.isArray(hooks)) return [];
-  return hooks.filter((h): h is PostToolUseHook =>
-    typeof h === 'object' && h !== null &&
-    typeof (h as PostToolUseHook).matcher === 'string' &&
-    typeof (h as PostToolUseHook).command === 'string');
-}
-
-export function readSessionStartHooks(raw: unknown): SessionStartHook[] {
-  const hooks = (raw as { hooks?: { SessionStart?: unknown } } | null)?.hooks?.SessionStart;
-  if (!Array.isArray(hooks)) return [];
-  return hooks.filter((h): h is SessionStartHook =>
-    typeof h === 'object' && h !== null &&
-    typeof (h as SessionStartHook).command === 'string');
-}
-
-function toolMatchesPattern(matcher: string, toolName: string): boolean {
-  if (matcher === '*' || matcher === '') return true;
-  const re = new RegExp('^' + matcher.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
-  return re.test(toolName);
-}
-
 /**
  * Run matching PostToolUse shell commands after a tool completes.
  * Fire-and-forget — a failing hook is reported but never blocks the run.
@@ -151,7 +232,7 @@ export function runPostToolUseHooks(
   output: unknown,
   workDir: string,
 ): void {
-  const hooks = loadHooks().filter(h => toolMatchesPattern(h.matcher, publicName));
+  const hooks = loadHooks().filter(isHookEnabled).filter(h => toolMatches(h.matcher, publicName));
   if (hooks.length === 0) return;
   for (const hook of hooks) {
     try {
@@ -183,7 +264,7 @@ export function runSessionStartHooks(
   loadHooks: () => SessionStartHook[],
   workDir: string,
 ): void {
-  const hooks = loadHooks();
+  const hooks = loadHooks().filter(isHookEnabled);
   for (const hook of hooks) {
     try {
       spawnSync(hook.command, {

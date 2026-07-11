@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export type GitStatusEntry = { x: string; y: string; file: string };
@@ -104,12 +104,105 @@ export function gitStatusBadge(entry: GitStatusEntry, side: 'staged' | 'unstaged
   return entry.y || entry.x || 'M';
 }
 
-function isPathInsideRoot(candidate: string, root: string): boolean {
+export type GitCommitRef = {
+  name: string;
+  kind: 'head' | 'local' | 'remote' | 'tag';
+};
+
+export type GitCommitInfo = {
+  hash: string;
+  subject: string;
+  author: string;
+  authorEmail: string;
+  /** Relative date primary display (e.g. "2 hours ago"). */
+  relativeDate: string;
+  /** ISO absolute author date. */
+  absoluteDate: string;
+  /** Back-compat alias for relativeDate (older Git surface). */
+  date: string;
+  parents: string[];
+  decorations: string[];
+  refs: GitCommitRef[];
+};
+
+/** Parse `git log --decorate=short --pretty=format:%h%x1f...%D%x1e` records. */
+export function parseGitCommitLog(raw: string): GitCommitInfo[] {
+  if (!raw.trim()) return [];
+  return raw
+    .split('\x1e')
+    .map((record) => record.replace(/^\r?\n/, '').trimEnd())
+    .filter(Boolean)
+    .map((record) => {
+      const [
+        hash = '',
+        subject = '',
+        author = '',
+        authorEmail = '',
+        relativeDate = '',
+        absoluteDate = '',
+        parentsRaw = '',
+        decorationsRaw = '',
+      ] = record.split('\x1f');
+      const decorations = decorationsRaw
+        .split(',')
+        .map((decoration) => decoration.trim())
+        .filter(Boolean);
+      const refs: GitCommitRef[] = [];
+      const pushRef = (name: string, kind: GitCommitRef['kind']) => {
+        if (!name) return;
+        if (refs.some((ref) => ref.name === name && ref.kind === kind)) return;
+        refs.push({ name, kind });
+      };
+      for (const decoration of decorations) {
+        if (decoration === 'HEAD') {
+          pushRef('HEAD', 'head');
+          continue;
+        }
+        if (decoration.startsWith('HEAD -> ')) {
+          pushRef('HEAD', 'head');
+          pushRef(decoration.slice('HEAD -> '.length), 'local');
+          continue;
+        }
+        if (decoration.startsWith('tag: ')) {
+          pushRef(decoration.slice('tag: '.length), 'tag');
+          continue;
+        }
+        if (decoration.includes('/')) pushRef(decoration, 'remote');
+        else pushRef(decoration, 'local');
+      }
+      return {
+        hash,
+        subject,
+        author,
+        authorEmail,
+        relativeDate,
+        absoluteDate,
+        date: relativeDate,
+        parents: parentsRaw.split(/\s+/).filter(Boolean),
+        decorations,
+        refs,
+      };
+    });
+}
+
+function normalizeFsPath(candidate: string): string {
   const resolved = path.resolve(candidate);
-  const resolvedRoot = path.resolve(root);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInsideRoot(candidate: string, root: string): boolean {
+  const resolved = normalizeFsPath(candidate);
+  const resolvedRoot = normalizeFsPath(root);
   if (resolved === resolvedRoot) return true;
   const prefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
   return resolved.startsWith(prefix);
+}
+
+/** Resolve a request path against the workspace root (absolute or relative). */
+function resolveWorkspacePath(requestPath: string, workDir: string): string {
+  const trimmed = requestPath.trim();
+  const root = path.resolve(workDir);
+  return path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(root, trimmed);
 }
 
 export type WorkspaceFileReadResult = {
@@ -125,7 +218,7 @@ const TEXT_EXT = new Set([
   '.yml', '.yaml', '.toml', '.ini', '.cfg', '.conf', '.env', '.sh', '.bash', '.zsh', '.ps1',
   '.py', '.rb', '.go', '.rs', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.cs',
   '.sql', '.graphql', '.vue', '.svelte', '.xml', '.svg', '.gitignore', '.dockerignore',
-  '.editorconfig', '.npmrc', '.nvmrc',
+  '.editorconfig', '.npmrc', '.nvmrc', '.d.ts',
 ]);
 
 function looksBinary(buf: Buffer): boolean {
@@ -138,6 +231,14 @@ function looksBinary(buf: Buffer): boolean {
   return suspicious / Math.max(sample.length, 1) > 0.3;
 }
 
+function isForcedTextPath(resolved: string): boolean {
+  const ext = path.extname(resolved).toLowerCase();
+  const base = path.basename(resolved);
+  // Treat multi-suffix TypeScript declarations as text even when extname is ".ts".
+  if (base.toLowerCase().endsWith('.d.ts')) return true;
+  return TEXT_EXT.has(ext) || TEXT_EXT.has(base) || !ext;
+}
+
 /** Read a workspace file for the Project Files preview panel. */
 export async function readWorkspaceFile(
   requestPath: string,
@@ -147,16 +248,14 @@ export async function readWorkspaceFile(
   const trimmed = requestPath?.trim() || '';
   if (!trimmed) throw new Error('Missing file path');
   const root = path.resolve(workDir);
-  const resolved = path.resolve(trimmed);
+  const resolved = resolveWorkspacePath(trimmed, root);
   if (!isPathInsideRoot(resolved, root)) {
     throw new Error('Path escapes workspace');
   }
   const info = await stat(resolved);
   if (!info.isFile()) throw new Error('Not a file: ' + resolved);
   const size = info.size;
-  const ext = path.extname(resolved).toLowerCase();
-  const base = path.basename(resolved);
-  const forceText = TEXT_EXT.has(ext) || TEXT_EXT.has(base) || !ext;
+  const forceText = isForcedTextPath(resolved);
   const buf = await readFile(resolved);
   if (!forceText && looksBinary(buf)) {
     return { path: resolved, size, binary: true };
@@ -169,6 +268,43 @@ export async function readWorkspaceFile(
     text,
     truncated: buf.length > maxBytes,
   };
+}
+
+export type WorkspaceFileWriteResult = {
+  path: string;
+  size: number;
+};
+
+/** Write a text workspace file after applying the same preview confinement checks. */
+export async function writeWorkspaceFile(
+  requestPath: string,
+  text: string,
+  workDir: string,
+  maxBytes = 512 * 1024,
+): Promise<WorkspaceFileWriteResult> {
+  const trimmed = requestPath?.trim() || '';
+  if (!trimmed) throw new Error('Missing file path');
+  if (typeof text !== 'string') throw new Error('File content must be text');
+
+  const root = path.resolve(workDir);
+  const resolved = resolveWorkspacePath(trimmed, root);
+  if (!isPathInsideRoot(resolved, root)) {
+    throw new Error('Path escapes workspace');
+  }
+
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error('Not a file: ' + resolved);
+  const existing = await readFile(resolved);
+  if (!isForcedTextPath(resolved) && looksBinary(existing)) {
+    throw new Error('Cannot write binary file');
+  }
+
+  const byteLength = Buffer.byteLength(text, 'utf8');
+  if (byteLength > maxBytes) {
+    throw new Error(`File content exceeds ${maxBytes} byte limit`);
+  }
+  await writeFile(resolved, text, 'utf8');
+  return { path: resolved, size: byteLength };
 }
 
 export type GitDiffResult = {

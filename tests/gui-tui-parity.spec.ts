@@ -121,7 +121,11 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsToolsList"');
     expect(html).toContain('id="settingsSkillsList"');
     expect(html).toContain('id="settingsAgentsList"');
-    expect(html).toContain('id="settingsWorkflowsList"');
+    expect(html).not.toContain('id="settingsWorkflowsList"');
+    expect(js).not.toContain("createAutomationSection('Workflows'");
+    expect(js).not.toContain('renderAutomationWorkflowCard');
+    expect(html).toContain('Scheduled and webhook-driven tasks');
+    expect(html).not.toContain('Workflow scripts and scheduled runs');
     expect(html).toContain('id="settingsTeamsList"');
     expect(html).toContain('id="settingsSessionsList"');
     expect(html).toContain('id="settingsMemoryStatusBtn"');
@@ -151,6 +155,15 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsGitTreeBtn"');
     expect(html).toContain('class="brand"');
     expect(html).toContain('id="settingsOutputStyle"');
+    expect(html).toContain('id="settingsOpenMemory"');
+    expect(html).toContain('id="settingsShortcutsList"');
+    expect(html).toContain('id="settingsHooksList"');
+    expect(html).toContain('id="settingsProjectGitBtn"');
+    expect(html).toContain('id="settingsShowBranchInComposer"');
+    expect(js).toContain('/api/hooks');
+    expect(js).toContain('refreshHooksSettings');
+    expect(js).toContain('renderShortcutsPanel');
+    expect(js).toContain('showBranchInComposer');
     expect(css).toContain('.sidebar');
     expect(html).toContain('id="sidebarRecents"');
     expect(html).toContain('id="sidebarPinnedList"');
