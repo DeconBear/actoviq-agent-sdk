@@ -44,6 +44,8 @@ export function createAskUserQuestionTool(): AgentToolDefinition {
         answers: z.record(z.string(), z.string()).optional().describe('User answers collected by the permission component'),
       }),
       isReadOnly: () => true,
+      // Force interactive approval even in bypassPermissions so the GUI/TUI can collect answers.
+      requiresUserInteraction: () => true,
       prompt: () => ASK_USER_QUESTION_PROMPT,
     },
     async ({ questions, answers }) => {

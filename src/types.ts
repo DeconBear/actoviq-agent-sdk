@@ -80,6 +80,8 @@ export interface ActoviqPermissionDecision {
   source: 'mode' | 'rule' | 'classifier' | 'approver' | 'canUseTool';
   matchedRule?: string;
   timestamp: string;
+  /** When set, the conversation engine executes the tool with this input instead of the model-provided input. */
+  updatedInput?: unknown;
 }
 
 export type ActoviqClassifierOutcome =
@@ -115,6 +117,8 @@ export type ActoviqToolApprovalOutcome =
   | {
       behavior: 'allow' | 'deny';
       reason?: string;
+      /** Optional replacement tool input (e.g. AskUserQuestion answers). */
+      updatedInput?: unknown;
     };
 
 export type ActoviqToolApprover = (
