@@ -416,7 +416,7 @@ async function resolveActoviqAskPermission(
     matchedRule: baseDecision.matchedRule,
   });
 
-  return decision(
+  const resolved = decision(
     input,
     approval?.behavior === 'allow' ? 'allow' : 'deny',
     approval?.reason ??
@@ -427,4 +427,8 @@ async function resolveActoviqAskPermission(
     timestamp,
     baseDecision.matchedRule,
   );
+  if (approval?.behavior === 'allow' && approval.updatedInput !== undefined) {
+    resolved.updatedInput = approval.updatedInput;
+  }
+  return resolved;
 }

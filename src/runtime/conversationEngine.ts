@@ -749,7 +749,11 @@ export async function executeConversation(
             }
           : undefined;
 
-        const execution = await adapter.execute(toolUse.input, {
+        const executionInput =
+          permissionDecision.updatedInput !== undefined
+            ? permissionDecision.updatedInput
+            : toolUse.input;
+        const execution = await adapter.execute(executionInput, {
           signal: adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
           runId: options.runId,
           sessionId: options.sessionId,

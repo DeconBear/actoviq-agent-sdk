@@ -241,6 +241,7 @@ import {
   setWorkspacePinned,
 } from './workspaceRegistry.js';
 import { resolveGuiAssetsDir } from './guiAssets.js';
+import { getTranscriptClientScript, getTranscriptStyles } from './transcript/index.js';
 import type {
   ActoviqCanUseTool,
   ActoviqEffort,
@@ -307,7 +308,11 @@ interface PendingPermission {
   id: string;
   toolName: string;
   summary: string;
-  resolve: (outcome: 'allow' | 'always' | 'always-user' | 'deny') => void;
+  input?: unknown;
+  resolve: (outcome: {
+    decision: 'allow' | 'always' | 'always-user' | 'deny';
+    answers?: Record<string, string>;
+  }) => void;
 }
 
 // RunRegistry — tracks every active agent run so the GUI can host concurrent
@@ -530,7 +535,11 @@ function guiIcon(name: string): string {
     environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
+    hand: '<path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v8"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>',
+    shieldAlert: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
     git: '<path d="M16 3 21 8l-5 5"/><path d="M8 3 3 8l5 5"/><path d="M12 21v-9"/><path d="M8 12h8"/>',
+    gitBranch: '<path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
     globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>',
     hooks: '<path d="M9 18a5 5 0 0 1 0-10h1"/><path d="M15 6a5 5 0 0 1 0 10h-1"/><path d="M8 13h8"/>',
     keyboard: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h.01"/><path d="M11 9h.01"/><path d="M15 9h.01"/><path d="M7 13h10"/><path d="M8 17h8"/>',
@@ -1291,6 +1300,7 @@ function renderableHistory(session: AgentSession): GuiRunEvent[] {
         const result = results.get(call.id);
         events.push({
           type: 'tool',
+          id: call.id,
           name: call.name,
           input: call.input,
           ok: result ? result.ok : true,
@@ -1771,11 +1781,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const approver: ActoviqToolApprover = async (context) => {
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const pending = await new Promise<'allow' | 'always' | 'always-user' | 'deny'>((resolve) => {
+    const pending = await new Promise<{
+      decision: 'allow' | 'always' | 'always-user' | 'deny';
+      answers?: Record<string, string>;
+    }>((resolve) => {
       const request: PendingPermission = {
         id,
         toolName: context.publicName,
         summary: summarizeInput(context.input),
+        input: context.input,
         resolve,
       };
       pendingPermissions.set(id, request);
@@ -1784,15 +1798,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         id,
         toolName: request.toolName,
         summary: request.summary,
+        input: context.input,
       });
     });
     pendingPermissions.delete(id);
-    if (pending === 'always' || pending === 'always-user') {
+    if (pending.decision === 'always' || pending.decision === 'always-user') {
       const state = session.permissionContext;
       const permissions = state.permissions.filter(
         rule => !(rule.toolName === context.publicName && rule.behavior === 'allow'),
       );
-      const source: 'project' | 'user' = pending === 'always-user' ? 'user' : 'project';
+      const source: 'project' | 'user' = pending.decision === 'always-user' ? 'user' : 'project';
       permissions.push({ toolName: context.publicName, behavior: 'allow', source });
       await session.setPermissionContext({
         mode: state.mode ?? permissionMode,
@@ -1801,9 +1816,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       });
       return { behavior: 'allow', reason: `Approved (always — ${source} scope) in GUI.` };
     }
-    return pending === 'allow'
-      ? { behavior: 'allow', reason: 'Approved in GUI.' }
-      : { behavior: 'deny', reason: 'Denied in GUI permission dialog.' };
+    if (pending.decision !== 'allow') {
+      return { behavior: 'deny', reason: 'Denied in GUI permission dialog.' };
+    }
+    if (pending.answers && context.publicName === 'AskUserQuestion') {
+      const base =
+        context.input && typeof context.input === 'object' && !Array.isArray(context.input)
+          ? { ...(context.input as Record<string, unknown>) }
+          : {};
+      return {
+        behavior: 'allow',
+        reason: 'Answered AskUserQuestion in GUI.',
+        updatedInput: { ...base, answers: pending.answers },
+      };
+    }
+    return { behavior: 'allow', reason: 'Approved in GUI.' };
   };
 
   // Read-only Bash auto-allow + mutating-tool prompt (mirrors the TUI's
@@ -2034,6 +2061,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       terminalCapable,
       railItems: sortContextRailItems(railStore.items),
       railNotifications: railReminderScheduler.drainNotifications(),
+      git: gitBranchSummary(),
     };
   }
 
@@ -3778,6 +3806,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       return '';
     }
   }
+  function gitBranchSummary(): { isRepo: boolean; branch: string | null } {
+    if (gitText(['rev-parse', '--is-inside-work-tree']) !== 'true') return { isRepo: false, branch: null };
+    const branch = gitText(['rev-parse', '--abbrev-ref', 'HEAD']);
+    return { isRepo: true, branch: branch || null };
+  }
   function gitInfo(): Record<string, unknown> {
     if (gitText(['rev-parse', '--is-inside-work-tree']) !== 'true') return { isRepo: false };
     const statusRaw = gitText(['status', '--porcelain=v1']);
@@ -5098,7 +5131,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (decision !== 'allow' && decision !== 'always' && decision !== 'always-user' && decision !== 'deny') {
           return json(res, 400, { error: 'Invalid decision' });
         }
-        pending.resolve(decision as 'allow' | 'always' | 'always-user' | 'deny');
+        const answers =
+          body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers)
+            ? Object.fromEntries(
+                Object.entries(body.answers as Record<string, unknown>)
+                  .filter(([, v]) => typeof v === 'string')
+                  .map(([k, v]) => [k, String(v)]),
+              )
+            : undefined;
+        pending.resolve({
+          decision: decision as 'allow' | 'always' | 'always-user' | 'deny',
+          answers,
+        });
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
@@ -5528,21 +5572,39 @@ export function createActoviqGuiHtml(): string {
               <details id="todosPanel" class="todos-panel hidden"><summary><span id="todosSummary">Todos</span></summary><ol id="todosList"></ol></details>
               <section id="transcript" class="transcript"></section>
               <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
-              <form id="composer" class="composer">
+              <div class="composer-stack">
+                <div class="composer-meta" id="composerMeta" aria-label="Workspace context">
+                  <span class="composer-meta-chip" id="composerMetaProject" title="Workspace">
+                    <span class="composer-meta-icon">${guiIcon('folder')}</span>
+                    <span class="composer-meta-label" id="composerMetaProjectLabel">—</span>
+                  </span>
+                  <span class="composer-meta-chip" id="composerMetaEnv" title="Environment">
+                    <span class="composer-meta-icon">${guiIcon('computer')}</span>
+                    <span class="composer-meta-label">本地</span>
+                  </span>
+                  <button type="button" class="composer-meta-chip composer-meta-branch" id="composerMetaBranch" title="Git branch">
+                    <span class="composer-meta-icon">${guiIcon('gitBranch')}</span>
+                    <span class="composer-meta-label" id="composerMetaBranchLabel">—</span>
+                  </button>
+                </div>
+                <form id="composer" class="composer">
                 <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
                 <div id="attachmentTray" class="attachment-tray hidden"></div>
-                <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…  (type / to browse commands)"></textarea>
+                <textarea id="promptInput" rows="3" placeholder="Ask Actoviq…"></textarea>
                 <div id="slashMenu" class="slash-menu hidden"></div>
                 <div id="queueList" class="queue-list hidden"></div>
                 <div class="composer-footer">
                   <div class="composer-left">
                     <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
                     <input id="fileInput" type="file" multiple class="hidden-file-input">
-                    <select id="permissionSelect" title="Permission mode">
-                      <option value="full">Full access</option>
-                      <option value="workspace">Workspace</option>
-                      <option value="read-only">Read-only</option>
-                    </select>
+                    <div class="permission-picker-wrapper">
+                      <button type="button" id="permissionPickerBtn" class="permission-picker-btn" title="Permission mode" aria-haspopup="listbox" aria-expanded="false">
+                        <span class="permission-picker-icon" id="permissionPickerIcon">${guiIcon('shield')}</span>
+                        <span class="permission-picker-label" id="permissionPickerLabel">Full access</span>
+                        <span class="permission-picker-caret" aria-hidden="true">▾</span>
+                      </button>
+                      <div id="permissionPickerMenu" class="permission-picker-menu hidden" role="listbox" aria-label="Permission mode"></div>
+                    </div>
                   </div>
                   <div class="composer-right">
                     <div class="model-picker-wrapper">
@@ -5560,7 +5622,8 @@ export function createActoviqGuiHtml(): string {
                     <button id="sendBtn" class="send-btn" title="Send" aria-label="Send message">${guiIcon('send')}</button>
                   </div>
                 </div>
-              </form>
+                </form>
+              </div>
             </section>
           </div>
           <aside class="aux-panel" id="auxPanel" aria-label="Workbench panel">
@@ -6311,6 +6374,27 @@ button { cursor: pointer; }
   --btn-primary-bg: #18181b;
   --btn-primary-fg: #fafafa;
   --btn-primary-bg-hover: #27272a;
+  /* Code / terminal surfaces follow the app theme (light = white, dark = charcoal). */
+  --code-bg: #ffffff;
+  --code-fg: #24292f;
+  --code-border: #e4e4e7;
+  --code-copy-border: rgba(24, 24, 27, .14);
+  --code-copy-bg: #fafafa;
+  --code-copy-fg: #52525b;
+  --code-lang-fg: #71717a;
+  --bash-cmd: #0550ae;
+  --bash-prompt: #1a7f37;
+  --term-bg: #ffffff;
+  --term-fg: #18181b;
+  --term-chrome: #f4f4f5;
+  --term-chrome-2: #ececef;
+  --term-border: #e4e4e7;
+  --term-muted: #71717a;
+  --term-btn-bg: #fafafa;
+  --term-btn-border: #d4d4d8;
+  --term-btn-fg: #3f3f46;
+  --term-accent: #16a34a;
+  --term-block-bg: #fafafa;
 }
 body[data-theme="dark"] {
   --bg-app: #09090b;
@@ -6346,6 +6430,26 @@ body[data-theme="dark"] {
   --btn-primary-bg: #fafafa;
   --btn-primary-fg: #18181b;
   --btn-primary-bg-hover: #e4e4e7;
+  --code-bg: #1e1e1e;
+  --code-fg: #d4d4d4;
+  --code-border: #2d2d2d;
+  --code-copy-border: rgba(255, 255, 255, .22);
+  --code-copy-bg: rgba(255, 255, 255, .08);
+  --code-copy-fg: #e6e9ef;
+  --code-lang-fg: rgba(230, 233, 239, .5);
+  --bash-cmd: #9cdcfe;
+  --bash-prompt: #6a9955;
+  --term-bg: #1f2330;
+  --term-fg: #e6e9ef;
+  --term-chrome: #262b3b;
+  --term-chrome-2: #32384a;
+  --term-border: #2c3142;
+  --term-muted: #7a8094;
+  --term-btn-bg: #2f3547;
+  --term-btn-border: #3a4054;
+  --term-btn-fg: #c8cdd9;
+  --term-accent: #6ad0a8;
+  --term-block-bg: #232838;
 }
 /* --- App shell: 4-region navigation (plan/UI_PLAN §3). --- */
 .new-chat-btn { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; font-weight: 600; }
@@ -6385,7 +6489,7 @@ body[data-theme="dark"] {
 .rl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; color: var(--text-2); }
 .region-empty { margin: 24px auto; color: var(--text-2); font-size: 14px; }
 /* --- Project overview (plan/UI_PLAN §4.1): workspace card wall. --- */
-.project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-app); }
+.project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-surface); }
 .project-overview > .region-header { background: linear-gradient(180deg, var(--bg-surface) 0%, var(--surface-muted) 100%); border-bottom: 1px solid var(--border); box-shadow: 0 1px 0 rgba(255,255,255,.6); }
 .project-overview > .overview-toolbar { background: var(--bg-surface); border-bottom: 1px solid var(--border); box-shadow: 0 2px 8px rgba(24,24,27,.04); }
 /* Conversation view wraps the existing topbar + workbench; it must be a flex
@@ -6873,8 +6977,8 @@ body[data-theme="dark"] {
 .manager-transcript .md-prose hr.md-hr { border: 0; border-top: 1px solid var(--border); margin: .65em 0; }
 .manager-transcript .md-prose strong { font-weight: 650; color: var(--text-1); }
 .manager-transcript .md-prose .inline-code { font-family: ui-monospace, monospace; font-size: .92em; background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: 5px; padding: .05em .35em; }
-.manager-transcript .md-prose .code-block { margin: .45em 0; border-radius: 8px; overflow: auto; background: #0f172a; border: 1px solid #1e293b; }
-.manager-transcript .md-prose .code-block code { display: block; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45; color: #e2e8f0; white-space: pre; }
+.manager-transcript .md-prose .code-block { margin: .45em 0; border-radius: 8px; overflow: auto; background: var(--code-bg); border: 1px solid var(--code-border); }
+.manager-transcript .md-prose .code-block code { display: block; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; line-height: 1.45; color: var(--code-fg); white-space: pre; }
 .manager-transcript .md-prose a { color: var(--brand); text-decoration: none; }
 .manager-transcript .md-prose a:hover { text-decoration: underline; }
 .manager-composer {
@@ -7066,7 +7170,7 @@ body[data-theme="dark"] {
   gap: 10px;
   padding: 14px 10px 12px;
   overflow: hidden;
-  background: var(--bg-sidebar);
+  background: var(--bg-app);
   border-right: 1px solid var(--border);
 }
 /* Sidebar is nav + Pinned/Recent only. Chat lists live in the project detail
@@ -7281,15 +7385,15 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .aux-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aux-path-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .aux-path-bar input { flex: 1; min-width: 0; height: 30px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px; font-size: 12.5px; background: var(--bg-surface); color: var(--text-1); }
-.terminal-dock { flex: 0 0 260px; min-height: 160px; max-height: 45vh; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: #1f2330; color: #e6e9ef; }
+.terminal-dock { flex: 0 0 260px; min-height: 160px; max-height: 45vh; display: flex; flex-direction: column; border-top: 1px solid var(--term-border); background: var(--term-bg); color: var(--term-fg); }
 .terminal-dock.hidden { display: none !important; }
-.terminal-dock-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 2px 8px 2px 10px; background: #262b3b; border-bottom: 1px solid #2c3142; min-height: 32px; }
+.terminal-dock-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 2px 8px 2px 10px; background: var(--term-chrome); border-bottom: 1px solid var(--term-border); min-height: 32px; }
 .terminal-dock-tabs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; overflow-x: auto; }
-.terminal-dock-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 8px; border-radius: 6px; border: 0; background: transparent; color: #a8aebc; font-size: 12px; }
-.terminal-dock-tab.active { background: #32384a; color: #e6e9ef; }
+.terminal-dock-tab { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 8px; border-radius: 6px; border: 0; background: transparent; color: var(--term-muted); font-size: 12px; }
+.terminal-dock-tab.active { background: var(--term-chrome-2); color: var(--term-fg); }
 .terminal-dock-tab .ui-icon { width: 13px; height: 13px; }
-.terminal-dock-header .icon-btn { width: 26px; height: 26px; color: #a8aebc; }
-.terminal-dock-header .icon-btn:hover { background: #32384a; color: #e6e9ef; }
+.terminal-dock-header .icon-btn { width: 26px; height: 26px; color: var(--term-muted); }
+.terminal-dock-header .icon-btn:hover { background: var(--term-chrome-2); color: var(--term-fg); }
 .terminal-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-dock-body .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane { min-height: 0; }
@@ -7297,26 +7401,26 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .pane-stub .stub-icon { display: inline-grid; place-items: center; color: var(--text-2); }
 .pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
 .pane-stub p { margin: 0; font-size: 14px; }
-/* Terminal pane: xterm fills the pane on a dark surface. */
-.pane-terminal { background: #1f2330; color: #e6e9ef; }
-.pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid #2c3142; background: #262b3b; }
-.pane-terminal .tb-toggle { min-height: 24px; padding: 0 10px; border-radius: 6px; border: 1px solid #3a4054; background: #2f3547; color: #c8cdd9; font-size: 12px; }
-.pane-terminal .tb-toggle:hover { background: #3a4054; }
-.pane-terminal .term-hint { font-size: 11px; color: #7a8094; }
+/* Terminal pane: xterm fills the pane; chrome follows app theme. */
+.pane-terminal { background: var(--term-bg); color: var(--term-fg); }
+.pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid var(--term-border); background: var(--term-chrome); }
+.pane-terminal .tb-toggle { min-height: 24px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--term-btn-border); background: var(--term-btn-bg); color: var(--term-btn-fg); font-size: 12px; }
+.pane-terminal .tb-toggle:hover { background: var(--term-chrome-2); }
+.pane-terminal .term-hint { font-size: 11px; color: var(--term-muted); }
 .pane-terminal .term-body { flex: 1; min-height: 0; display: flex; }
-.pane-terminal .term-mount { flex: 1; min-width: 0; padding: 6px 8px; overflow: hidden; }
+.pane-terminal .term-mount { flex: 1; min-width: 0; padding: 6px 8px; overflow: hidden; background: var(--term-bg); }
 .pane-terminal .term-mount .xterm { height: 100%; }
-.pane-terminal .term-mount .xterm-viewport { background: #1f2330 !important; }
+.pane-terminal .term-mount .xterm-viewport { background: var(--term-bg) !important; }
 /* Smart terminal blocks panel + history picker (plan phase 5). */
-.pane-terminal .term-blocks { flex: 0 0 320px; min-width: 0; overflow: auto; padding: 8px; background: #1a1e2b; border-left: 1px solid #2c3142; display: flex; flex-direction: column; gap: 8px; }
+.pane-terminal .term-blocks { flex: 0 0 320px; min-width: 0; overflow: auto; padding: 8px; background: var(--term-chrome); border-left: 1px solid var(--term-border); display: flex; flex-direction: column; gap: 8px; }
 .pane-terminal .term-blocks.hidden { display: none; }
-.pane-terminal .tb-empty { color: #6b7180; font-size: 12px; }
-.pane-terminal .term-block { border: 1px solid #2c3142; border-radius: 7px; background: #232838; padding: 7px 9px; }
-.pane-terminal .tb-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #6ad0a8; white-space: pre-wrap; word-break: break-all; }
-.pane-terminal .tb-out { margin: 5px 0 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #b9bec9; white-space: pre-wrap; word-break: break-word; max-height: 7em; overflow: hidden; }
+.pane-terminal .tb-empty { color: var(--term-muted); font-size: 12px; }
+.pane-terminal .term-block { border: 1px solid var(--term-border); border-radius: 7px; background: var(--term-block-bg); padding: 7px 9px; }
+.pane-terminal .tb-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--term-accent); white-space: pre-wrap; word-break: break-all; }
+.pane-terminal .tb-out { margin: 5px 0 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: var(--term-muted); white-space: pre-wrap; word-break: break-word; max-height: 7em; overflow: hidden; }
 .pane-terminal .tb-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.pane-terminal .tb-btn { min-height: 22px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid #3a4054; background: #2f3547; color: #c8cdd9; }
-.pane-terminal .tb-btn:hover { background: #3a4054; }
+.pane-terminal .tb-btn { min-height: 22px; padding: 0 8px; font-size: 11px; border-radius: 5px; border: 1px solid var(--term-btn-border); background: var(--term-btn-bg); color: var(--term-btn-fg); }
+.pane-terminal .tb-btn:hover { background: var(--term-chrome-2); }
 .history-picker { position: absolute; top: 38px; left: 50%; transform: translateX(-50%); z-index: 60; width: min(520px, 80%); background: var(--bg-surface); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,.22); padding: 8px; }
 .history-picker .hp-input { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px; outline: none; }
 .history-picker .hp-list { margin-top: 6px; max-height: 280px; overflow: auto; display: grid; gap: 2px; }
@@ -7337,11 +7441,11 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 .statusbar.running::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 45%, transparent); animation: pulse 1.2s infinite; }
 .statusbar.error::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
 .transcript { flex: 1; overflow: auto; }
-.code-block { position: relative; margin: 10px 0; padding: 12px 14px; background: #1e1e1e; color: #d4d4d4; border-radius: 8px; overflow: auto; border: 1px solid #2d2d2d; }
+.code-block { position: relative; margin: 10px 0; padding: 12px 14px; background: var(--code-bg); color: var(--code-fg); border-radius: 8px; overflow: auto; border: 1px solid var(--code-border); }
 .code-block code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; line-height: 1.5; white-space: pre; }
-.copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.08); color: #e6e9ef; padding: 0 8px; font-size: 12px; }
-.copy-btn:hover { background: rgba(255,255,255,.16); }
-.code-lang { position: absolute; top: 6px; left: 12px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; color: rgba(230,233,239,.5); letter-spacing: .04em; }
+.copy-btn { position: absolute; top: 6px; right: 6px; min-height: 24px; border: 1px solid var(--code-copy-border); border-radius: 6px; background: var(--code-copy-bg); color: var(--code-copy-fg); padding: 0 8px; font-size: 12px; }
+.copy-btn:hover { filter: brightness(0.97); }
+.code-lang { position: absolute; top: 6px; left: 12px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-transform: lowercase; color: var(--code-lang-fg); letter-spacing: .04em; }
 .code-block:has(.code-lang) code { margin-top: 6px; display: block; }
 .message.notice, .message.tool, .message.error { max-width: 840px; color: var(--text-2); border-left: 3px solid var(--border); padding-left: 12px; font-size: 14px; }
 .message.error { border-left-color: var(--err); color: #8c1d18; }
@@ -7470,9 +7574,85 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 .result pre { margin: 0; padding: 10px 12px; overflow: auto; white-space: pre-wrap; font-size: 12px; color: var(--text-2); }
 .result .row { padding: 8px 12px; border-top: 1px solid var(--border); }
 .result small { display: block; color: var(--text-2); margin-top: 3px; }
-.composer { margin: 0 max(22px, 12vw) 18px; border: 1px solid var(--border); border-radius: 18px; padding: 10px; background: var(--bg-surface); display: grid; gap: 8px; position: relative; }
+.composer-stack {
+  width: calc(100% - 64px);
+  max-width: 920px;
+  margin: 0 auto 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  flex: 0 0 auto;
+}
+.composer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  width: calc(100% - 28px);
+  max-width: 100%;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  background: var(--bg-app);
+  color: var(--text-2);
+  box-sizing: border-box;
+}
+.composer-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+  cursor: default;
+}
+button.composer-meta-chip {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+button.composer-meta-chip:hover {
+  background: var(--surface-hover);
+  color: var(--text-1);
+}
+.composer-meta-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+.composer-meta-icon .ui-icon { width: 13px; height: 13px; }
+.composer-meta-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-meta-branch.muted .composer-meta-label { color: var(--text-muted); }
+.composer {
+  width: 100%;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 12px 14px 10px;
+  background: var(--bg-surface);
+  display: grid;
+  gap: 8px;
+  position: relative;
+  box-shadow: 0 4px 18px rgba(24, 24, 27, .06);
+}
 .composer.dragging { border-color: var(--brand); box-shadow: var(--shadow-focus); }
-.composer textarea { resize: none; border: 0; outline: none; min-height: 58px; max-height: 190px; width: 100%; }
+.composer textarea { resize: none; border: 0; outline: none; min-height: 58px; max-height: 190px; width: 100%; background: transparent; color: var(--text-1); }
 .hidden-file-input { display: none; }
 .drop-overlay { position: absolute; inset: 8px; z-index: 3; border: 1px dashed var(--brand); border-radius: 14px; background: color-mix(in srgb, var(--brand-soft) 92%, transparent); color: var(--brand); display: grid; place-items: center; font-weight: 600; pointer-events: none; }
 .drop-overlay.hidden { display: none; }
@@ -7491,12 +7671,105 @@ select { border: 1px solid var(--border); background: var(--bg-surface); color: 
 .queue-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .queue-item:last-child { border-bottom: 0; }
 .queue-item button { border: 0; background: transparent; color: var(--text-2); }
-.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.composer-left, .composer-right { display: flex; align-items: center; gap: 8px; }
+.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.composer-left, .composer-right { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .round-btn, .send-btn { width: 34px; height: 34px; border-radius: 50%; display: inline-grid; place-items: center; }
 .round-btn { background: transparent; border: 1px solid var(--border); color: #4c5055; }
 .send-btn { border: 0; background: var(--text-1); color: var(--fg-on-accent); }
 .send-btn.stopping { background: var(--err); }
+/* Composer footer: frameless + / permission / model picker (reference: no chrome boxes). */
+.composer .round-btn {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  border-radius: 8px;
+}
+.composer .round-btn:hover { background: var(--surface-hover); color: var(--text-1); }
+.permission-picker-wrapper { position: relative; display: inline-flex; }
+.permission-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  max-width: min(200px, 40vw);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.permission-picker-btn:hover { background: var(--surface-hover); color: var(--text-1); }
+.permission-picker-icon {
+  width: 15px; height: 15px; flex: 0 0 15px;
+  display: inline-grid; place-items: center; color: var(--text-muted);
+}
+.permission-picker-icon .ui-icon { width: 14px; height: 14px; }
+.permission-picker-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.permission-picker-caret { font-size: 10px; color: var(--text-muted); }
+.permission-picker-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: min(360px, calc(100vw - 48px));
+  padding: 6px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
+  overflow: hidden;
+}
+.permission-picker-menu.hidden { display: none; }
+.permission-option {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  gap: 10px;
+  align-items: start;
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  padding: 10px 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.permission-option:hover { background: var(--surface-hover); }
+.permission-option.selected { background: transparent; }
+.permission-option-icon {
+  width: 28px; height: 28px; border-radius: 8px;
+  display: inline-grid; place-items: center;
+  background: var(--bg-app); color: var(--text-2);
+}
+.permission-option-icon .ui-icon { width: 15px; height: 15px; }
+.permission-option-copy { min-width: 0; display: grid; gap: 2px; }
+.permission-option-copy strong { font-size: 13px; font-weight: 600; color: var(--text-1); }
+.permission-option-copy small { font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.permission-option .picker-check { margin-top: 4px; }
+.composer .model-picker-btn {
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-1);
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: min(280px, 42vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer .model-picker-btn:hover { background: var(--surface-hover); }
 /* --- UI plan visual polish (30 Jun 2026). --- */
 body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .app { border: 0; background: var(--bg-app); }
@@ -7509,7 +7782,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .nav-btn { min-height: 34px; border-radius: 8px; padding: 0 8px; font-size: 13px; }
 
 .sidebar-footer { padding-top: 8px; border-top: 1px solid var(--border); }
-.region, .chat, .project-overview, .project-detail, .project-conversation { background: var(--bg-app); }
+.region, .chat, .project-overview, .project-detail, .project-conversation { background: var(--bg-surface); }
 .region-header { min-height: 48px; padding: 0 16px; background: var(--bg-surface); }
 .region-header h1 { font-size: 15px; font-weight: 600; }
 .region-actions { flex-wrap: wrap; justify-content: flex-end; }
@@ -7531,7 +7804,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .view-toggle { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface-2); }
 .view-toggle button { width: 34px; min-height: 32px; padding: 0; display: inline-grid; place-items: center; border-color: transparent; box-shadow: none; }
 .view-toggle button.active { background: var(--bg-surface); border-color: var(--border); color: var(--brand); }
-.overview-body { padding: 16px 18px 24px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; background: var(--bg-app); min-width: 0; }
+.overview-body { padding: 16px 18px 24px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; background: var(--bg-surface); min-width: 0; }
 .overview-body.overview-table { display: block; padding: 16px 18px 24px; grid-template-columns: none; min-width: 0; overflow: hidden; }
 .proj-card { min-height: 0; grid-template-columns: 1fr; column-gap: 0; padding: 10px 14px; border-radius: 12px; gap: 5px; }
 .proj-card .pc-body { display: grid; gap: 8px; min-width: 0; }
@@ -7639,7 +7912,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .checkline.done i { background: var(--ok); border-color: var(--ok); box-shadow: inset 0 0 0 3px #fff; }
 .context-actions { display: flex; gap: 8px; }
 /* --- Chat pane chrome + transcript column (plan/UI_PLAN §6). --- */
-.pane-chat { background: var(--bg-app); }
+.pane-chat { background: var(--bg-surface); }
 .chat-chrome {
   flex: 0 0 auto;
   width: 100%;
@@ -7692,7 +7965,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 }
 .message-row .message.user {
   padding: 14px 16px;
-  background: var(--bg-surface);
+  background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 12px;
   color: var(--text-1);
@@ -7759,10 +8032,10 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .message-row .md-prose .code-block {
   margin: .8em 0;
   padding: 12px 14px;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--code-bg);
+  color: var(--code-fg);
   border-radius: 8px;
-  border: 1px solid #2d2d2d;
+  border: 1px solid var(--code-border);
 }
 .message-row .md-prose .code-block code {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -7771,16 +8044,16 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   white-space: pre;
 }
 .message-row .message.user .code-block {
-  background: var(--bg-surface-2);
-  color: #24292f;
-  border-color: var(--border);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-color: var(--code-border);
 }
 .message-row .message.user .code-block .copy-btn {
-  border-color: rgba(27,31,36,.15);
-  background: var(--bg-surface);
-  color: #57606a;
+  border-color: var(--code-copy-border);
+  background: var(--code-copy-bg);
+  color: var(--code-copy-fg);
 }
-.message-row .message.user .code-block .code-lang { color: rgba(87,96,106,.75); }
+.message-row .message.user .code-block .code-lang { color: var(--code-lang-fg); }
 .message-row.row-member {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr);
@@ -7796,7 +8069,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   min-height: 0;
   overflow: auto;
   padding: 20px min(32px, 5vw) 28px;
-  background: var(--bg-app);
+  background: var(--bg-surface);
 }
 .transcript > .tool-card,
 .transcript > .system-event { max-width: 820px; margin-left: auto; margin-right: auto; }
@@ -7843,7 +8116,8 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .topbar h1 { font-size: 20px; font-weight: 700; }
 .workbench { background: var(--bg-surface); }
 .tabbar { background: #FBFCFD; padding: 6px 12px; }
-.composer { max-width: 920px; width: calc(100% - 64px); margin: 0 auto 20px; border-radius: 16px; border-color: var(--border); box-shadow: 0 12px 32px rgba(17,24,39,.08); }
+.composer-stack { width: calc(100% - 64px); max-width: 920px; margin: 0 auto 20px; }
+.composer { max-width: none; width: 100%; margin: 0; border-radius: 20px; border-color: var(--border); box-shadow: 0 4px 18px rgba(17,24,39,.06); }
 .team-layout { flex: 1; min-height: 0; height: 100%; padding: 0; overflow: hidden; align-content: stretch; display: grid; grid-template-columns: minmax(0, 1fr); background: var(--bg-app); }
 .team-main { display: grid; grid-template-columns: 240px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); min-height: 0; height: 100%; }
 .team-squad-bar { grid-row: 1 / span 2; grid-column: 1; display: grid; align-content: start; gap: 10px; padding: 18px 12px; border-right: 1px solid var(--border); border-bottom: 0; background: var(--bg-surface); overflow: auto; }
@@ -8120,13 +8394,13 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog-actions button { border: 1px solid var(--border); border-radius: 8px; min-height: 34px; padding: 0 12px; background: var(--bg-surface); }
 .dialog-actions .primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
-.settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: var(--bg-app); color: var(--text-1); }
+.settings-view { position: fixed; inset: 0; z-index: 20; display: flex; background: var(--bg-sidebar); color: var(--text-1); }
 .settings-sidebar {
   width: 240px;
   flex: 0 0 240px;
   padding: 12px 8px;
   overflow: auto;
-  background: var(--bg-sidebar);
+  background: var(--bg-app);
   border-right: 1px solid var(--border);
 }
 .back-btn {
@@ -8185,7 +8459,7 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   overflow: auto;
   padding: 28px 24px 72px;
   position: relative;
-  background: var(--bg-app);
+  background: var(--bg-sidebar);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -8441,13 +8715,17 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 @keyframes slideIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 body[data-density="compact"] .message { margin-bottom: 10px; line-height: 1.42; }
 body[data-density="compact"] .transcript { padding-top: 14px; padding-bottom: 10px; }
-body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
+body[data-density="compact"] .composer { margin-bottom: 0; padding: 8px; }
+body[data-density="compact"] .composer-stack { margin-bottom: 10px; }
+body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 /* Dark-theme reserves for the new workbench regions (plan/UI_PLAN §2 — U9). */
 @media (max-width: 860px) {
   .sidebar, .settings-sidebar { width: 72px; flex-basis: 72px; }
   .sidebar .search, .command-section, .project-section h2, .project-session-list, .sidebar-link, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
   .transcript { padding: 18px 16px; }
-  .composer { margin: 0 12px 12px; }
+  .composer-stack { width: calc(100% - 24px); margin: 0 auto 12px; }
+  .composer { margin: 0; }
+  .composer-meta { width: calc(100% - 16px); }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
   .automation-schedule-grid { grid-template-columns: 1fr; }
@@ -8477,6 +8755,8 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 .model-picker-wrapper { position: relative; display: inline-flex; }
 .model-picker-btn { min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .model-picker-btn:hover { background: var(--bg-surface-2); }
+.composer .model-picker-btn { border: 0; background: transparent; min-height: 30px; padding: 0 6px; font-size: 12.5px; }
+.composer .model-picker-btn:hover { background: var(--surface-hover); }
 .model-picker-flyout {
   position: absolute;
   right: 0;
@@ -8494,33 +8774,33 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 12px 36px rgba(0,0,0,.14);
+  border: 0;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
   overflow: hidden;
 }
-.picker-search-wrap { padding: 8px 8px 4px; flex: 0 0 auto; }
+.picker-search-wrap { padding: 10px 10px 4px; flex: 0 0 auto; }
 .picker-search {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 10px;
   background: var(--bg-app);
   color: var(--text-1);
   font: inherit;
   font-size: 13px;
-  padding: 7px 10px;
+  padding: 8px 12px;
   outline: none;
 }
-.picker-search:focus { border-color: var(--brand); }
+.picker-search:focus { box-shadow: inset 0 0 0 1px var(--border-active); }
 .picker-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 8px; max-height: 320px; }
 .picker-edit-popover {
   width: 168px;
   align-self: flex-start;
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 12px 36px rgba(0,0,0,.14);
+  border: 0;
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
   padding: 6px;
   overflow: hidden;
 }
@@ -8530,10 +8810,10 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
   align-items: center;
   gap: 6px;
   width: 100%;
-  min-height: 34px;
-  padding: 5px 8px;
+  min-height: 36px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   font: inherit;
   font-size: 13px;
@@ -8543,9 +8823,9 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
   box-sizing: border-box;
 }
 .picker-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
-.picker-item:hover { background: rgba(0,0,0,.045); }
-.picker-item.selected { background: rgba(0,0,0,.06); }
-.picker-item.editing { background: rgba(0,0,0,.07); }
+.picker-item:hover { background: var(--surface-hover); }
+.picker-item.selected { background: transparent; }
+.picker-item.editing { background: var(--surface-hover); }
 .picker-item-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .picker-item-meta {
   flex: 0 1 auto;
@@ -8637,6 +8917,7 @@ body[data-density="compact"] .composer { margin-bottom: 10px; padding: 8px; }
 .bridge-model-controls > .check-row { flex: 0 0 auto; }
 .bridge-model-controls > select { flex: 0 0 130px; }
 .bridge-model-controls > button { flex: 0 0 auto; }
+${getTranscriptStyles()}
 }`;
 }
 
@@ -8653,6 +8934,7 @@ export function createActoviqGuiClientScript(): string {
     getTeamGraphBezierClientScript(),
   ].join('\n');
   return `
+${getTranscriptClientScript()}
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
 // Client-side icon helper. eye/eyeOff are runtime-toggled; the workbench tab
 // bar is rendered client-side, so the pane icons it needs live here too.
@@ -8671,6 +8953,11 @@ const _ICONS = {
   dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+  computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
+  hand: '<path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v8"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>',
+  shieldAlert: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  gitBranch: '<path d="M6 3v12"/><circle cx="6" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   review: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/>',
   panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
@@ -8836,8 +9123,52 @@ const transcript = el('transcript');
 const input = el('promptInput');
 const statusbar = el('statusbar');
 
+function tx() { return window.__ActoviqTranscript; }
+function initTranscriptUi() {
+  const T = tx();
+  if (!T || !transcript) return;
+  T.init({
+    root: transcript,
+    autoScroll: state.preferences.autoScroll !== false,
+    renderMarkdownInto,
+    scheduleMarkdownRender,
+    guiIcon,
+    onPermissionDecision: async (id, decision) => {
+      state.pendingPermissionId = null;
+      try {
+        await api('/api/permission', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id, decision }),
+        });
+      } catch (err) { console.error(err); }
+      showNextPermission();
+    },
+    onAskUserSubmit: async (id, answers) => {
+      state.pendingPermissionId = null;
+      try {
+        await api('/api/permission', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id, decision: 'allow', answers }),
+        });
+      } catch (err) { console.error(err); }
+      showNextPermission();
+    },
+  });
+}
+initTranscriptUi();
+
 function shouldAutoScroll() { return state.preferences.autoScroll !== false; }
-function scrollTranscript() { if (shouldAutoScroll()) transcript.scrollTop = transcript.scrollHeight; }
+function scrollTranscript() {
+  const T = tx();
+  if (T) {
+    T.setAutoScroll(shouldAutoScroll());
+    T.scroll();
+    return;
+  }
+  if (shouldAutoScroll()) transcript.scrollTop = transcript.scrollHeight;
+}
 function applyPreferences(preferences) {
   state.preferences = { ...state.preferences, ...(preferences || {}) };
   const theme = state.preferences.theme === 'dark' || state.preferences.theme === 'light'
@@ -8846,6 +9177,69 @@ function applyPreferences(preferences) {
   document.body.dataset.theme = theme;
   document.body.dataset.density = state.preferences.density === 'compact' ? 'compact' : 'comfortable';
   document.body.dataset.devTools = state.preferences.developerTools ? 'true' : 'false';
+  const T = tx();
+  if (T) T.setAutoScroll(shouldAutoScroll());
+  refreshOpenTerminalThemes();
+}
+function currentGuiTheme() {
+  return document.body.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+function xtermThemeForGui() {
+  if (currentGuiTheme() === 'dark') {
+    return {
+      background: '#1f2330',
+      foreground: '#e6e9ef',
+      cursor: '#e6e9ef',
+      cursorAccent: '#1f2330',
+      selectionBackground: 'rgba(148,168,188,0.28)',
+      black: '#1f2330',
+      red: '#ef4444',
+      green: '#22c55e',
+      yellow: '#facc15',
+      blue: '#60a5fa',
+      magenta: '#c084fc',
+      cyan: '#22d3ee',
+      white: '#e6e9ef',
+      brightBlack: '#7a8094',
+      brightRed: '#f87171',
+      brightGreen: '#4ade80',
+      brightYellow: '#fde047',
+      brightBlue: '#93c5fd',
+      brightMagenta: '#d8b4fe',
+      brightCyan: '#67e8f9',
+      brightWhite: '#ffffff',
+    };
+  }
+  return {
+    background: '#ffffff',
+    foreground: '#18181b',
+    cursor: '#18181b',
+    cursorAccent: '#ffffff',
+    selectionBackground: 'rgba(24,24,27,0.16)',
+    black: '#18181b',
+    red: '#dc2626',
+    green: '#16a34a',
+    yellow: '#ca8a04',
+    blue: '#2563eb',
+    magenta: '#9333ea',
+    cyan: '#0891b2',
+    white: '#f4f4f5',
+    brightBlack: '#71717a',
+    brightRed: '#ef4444',
+    brightGreen: '#22c55e',
+    brightYellow: '#eab308',
+    brightBlue: '#3b82f6',
+    brightMagenta: '#a855f7',
+    brightCyan: '#06b6d4',
+    brightWhite: '#ffffff',
+  };
+}
+function refreshOpenTerminalThemes() {
+  const theme = xtermThemeForGui();
+  for (const tab of state.tabs || []) {
+    if (tab.type !== 'terminal' || !tab.xterm) continue;
+    try { tab.xterm.options.theme = theme; } catch (e) { /* ignore */ }
+  }
 }
 // --- Workbench aux panel + terminal dock (Codex-style) ---
 function showAuxLauncher() {
@@ -9267,10 +9661,19 @@ async function initTerminalPane(pane, tab) {
   const blocksPanel = document.createElement('aside'); blocksPanel.className = 'term-blocks hidden';
   body.appendChild(mount); body.appendChild(blocksPanel);
   pane.appendChild(header); pane.appendChild(body);
-  const term = new window.Terminal({ convertEol: true, cols: 80, rows: 24, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 13, cursorBlink: true });
+  const term = new window.Terminal({
+    convertEol: true,
+    cols: 80,
+    rows: 24,
+    fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+    fontSize: 13,
+    cursorBlink: true,
+    theme: xtermThemeForGui(),
+  });
   const fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(mount);
+  tab.xterm = term;
   try { fit.fit(); } catch (e) { /* layout not ready yet */ }
   // Smart-terminal block tracking (plan phase 5): each Enter finalizes a
   // command+output block for the Blocks panel and persists the command.
@@ -9317,7 +9720,7 @@ async function initTerminalPane(pane, tab) {
     api('/api/terminal/input', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: tab.terminalId, data }) }).catch(() => {});
   });
   const ctrl = new AbortController();
-  tab.dispose = () => { ctrl.abort(); ro.disconnect(); closeHistoryPicker(tab); try { term.dispose(); } catch (e) {} };
+  tab.dispose = () => { ctrl.abort(); ro.disconnect(); closeHistoryPicker(tab); try { term.dispose(); } catch (e) {} tab.xterm = null; };
   try {
     const res = await api('/api/terminal/output?id=' + encodeURIComponent(tab.terminalId), { signal: ctrl.signal });
     if (!res.ok || !res.body) { term.writeln('\\x1b[31mFailed to open terminal stream.\\x1b[0m'); return; }
@@ -9435,6 +9838,12 @@ function readyLabel() {
 }
 function finalizeAssistant() {
   if (markdownRenderTimer) { clearTimeout(markdownRenderTimer); markdownRenderTimer = null; }
+  const T = tx();
+  if (T) {
+    T.finalizeAssistant();
+    state.currentAssistant = T.getCurrentAssistantNode();
+    return;
+  }
   if (state.currentAssistant && state.currentAssistant.dataset.raw) {
     renderMarkdownInto(state.currentAssistant, state.currentAssistant.dataset.raw);
     scrollTranscript();
@@ -9445,6 +9854,15 @@ function displayUserText(text) {
   return value.length > 1800 ? value.slice(0, 1800) + '\\n\\n[message truncated in UI; full prompt was sent]' : value;
 }
 function addMessage(kind, text) {
+  const T = tx();
+  if (T && (kind === 'user' || kind === 'assistant' || kind === 'notice' || kind === 'error' || kind === 'system')) {
+    if (kind === 'user') T.applyEvent({ type: 'user', text: displayUserText(text) });
+    else if (kind === 'assistant') T.applyEvent({ type: 'assistant', text: text || '' });
+    else if (kind === 'error') T.applyEvent({ type: 'error', message: text || 'Error' });
+    else T.applyEvent({ type: kind === 'system' ? 'system' : 'notice', message: text || '', text: text || '' });
+    state.currentAssistant = kind === 'assistant' ? T.getCurrentAssistantNode() : null;
+    return state.currentAssistant;
+  }
   const row = document.createElement('div');
   row.className = 'message-row row-' + kind;
   const wrap = document.createElement('div');
@@ -10403,6 +10821,87 @@ function permissionSelectValue(mode) {
   if (mode === 'acceptEdits') return 'workspace';
   return 'read-only';
 }
+const PERMISSION_PRESETS = [
+  {
+    value: 'read-only',
+    title: 'Ask to approve',
+    description: 'Always ask before editing files or using the network.',
+    icon: 'hand',
+  },
+  {
+    value: 'workspace',
+    title: 'Approve for me',
+    description: 'Only ask for approval on risky operations.',
+    icon: 'shield',
+  },
+  {
+    value: 'full',
+    title: 'Full access',
+    description: 'Unrestricted access to the network and local files.',
+    icon: 'shieldAlert',
+  },
+];
+function permissionPresetForValue(value) {
+  return PERMISSION_PRESETS.find((item) => item.value === value) || PERMISSION_PRESETS[2];
+}
+function closePermissionPicker() {
+  const menu = el('permissionPickerMenu');
+  const btn = el('permissionPickerBtn');
+  if (menu) menu.classList.add('hidden');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+function togglePermissionPicker() {
+  const menu = el('permissionPickerMenu');
+  const btn = el('permissionPickerBtn');
+  if (!menu || !btn) return;
+  const open = menu.classList.contains('hidden');
+  if (open) {
+    closeModelPicker();
+    renderPermissionPicker();
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+  } else {
+    closePermissionPicker();
+  }
+}
+function renderPermissionPicker() {
+  const menu = el('permissionPickerMenu');
+  const btn = el('permissionPickerBtn');
+  const label = el('permissionPickerLabel');
+  const iconHost = el('permissionPickerIcon');
+  if (!menu || !btn) return;
+  const current = permissionSelectValue(state.snapshot?.permissionMode);
+  const active = permissionPresetForValue(current);
+  if (label) label.textContent = active.title;
+  if (iconHost) iconHost.innerHTML = guiIcon(active.icon);
+  btn.title = active.description;
+  menu.textContent = '';
+  for (const preset of PERMISSION_PRESETS) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'permission-option' + (preset.value === current ? ' selected' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', preset.value === current ? 'true' : 'false');
+    row.dataset.value = preset.value;
+    const icon = document.createElement('span');
+    icon.className = 'permission-option-icon';
+    icon.innerHTML = guiIcon(preset.icon);
+    const copy = document.createElement('span');
+    copy.className = 'permission-option-copy';
+    const title = document.createElement('strong');
+    title.textContent = preset.title;
+    const desc = document.createElement('small');
+    desc.textContent = preset.description;
+    copy.append(title, desc);
+    row.append(icon, copy, makePickerCheck(preset.value === current));
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closePermissionPicker();
+      if (preset.value !== current) submitText('/permissions ' + preset.value);
+    });
+    menu.appendChild(row);
+  }
+}
 const TRANSCRIPT_CACHE_TTL_MS = 10 * 60 * 1000;
 const TRANSCRIPT_CACHE_MAX = 16;
 function transcriptCacheFresh(entry) {
@@ -10434,6 +10933,18 @@ function stashCurrentSessionCache() {
   }
 }
 function renderTranscriptFromMessages(messages) {
+  const T = tx();
+  if (T) {
+    const entries = (messages || []).map((entry) => {
+      if (entry.type === 'user') return { type: 'user', text: displayUserText(entry.text) };
+      return entry;
+    });
+    T.hydrate(entries);
+    state.toolNodes.clear();
+    state.currentAssistant = T.getCurrentAssistantNode();
+    setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
+    return;
+  }
   transcript.textContent = '';
   state.toolNodes.clear();
   state.currentAssistant = null;
@@ -10445,7 +10956,7 @@ function renderTranscriptFromMessages(messages) {
       node.dataset.raw = entry.text || '';
       renderMarkdownInto(node, entry.text || '');
     } else if (entry.type === 'tool') {
-      const toolId = 'hist-' + Math.random().toString(36).slice(2);
+      const toolId = entry.id || ('hist-' + Math.random().toString(36).slice(2));
       addToolActivity({ id: toolId, name: entry.name, input: entry.input });
       updateToolActivity({ id: toolId, name: entry.name, ok: entry.ok, text: entry.text });
     }
@@ -10520,7 +11031,8 @@ function applyLoadedState() {
   el('workspace').textContent = workDir + ' - ' + (state.snapshot.session?.model || 'default') + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
   state.running = Boolean(state.snapshot.running);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
-  el('permissionSelect').value = permissionSelectValue(state.snapshot.permissionMode);
+  renderComposerMeta();
+  renderPermissionPicker();
   renderProjects();
   renderOverview();
   bindOverviewToolbar();
@@ -10535,6 +11047,26 @@ function applyLoadedState() {
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
   refreshProjectDetailSidebar();
+}
+function renderComposerMeta() {
+  const snap = state.snapshot || {};
+  const workDir = String(snap.workDir || '');
+  const projectName = workDir.split(/[\\\\/]/).filter(Boolean).pop() || workDir || '—';
+  const projectLabel = el('composerMetaProjectLabel');
+  const projectChip = el('composerMetaProject');
+  if (projectLabel) projectLabel.textContent = projectName;
+  if (projectChip) projectChip.title = workDir || 'Workspace';
+  const git = snap.git || {};
+  const branchLabel = el('composerMetaBranchLabel');
+  const branchChip = el('composerMetaBranch');
+  const branch = typeof git.branch === 'string' && git.branch ? git.branch : null;
+  const isRepo = Boolean(git.isRepo) && Boolean(branch);
+  if (branchLabel) branchLabel.textContent = isRepo ? branch : 'not a git repo';
+  if (branchChip) {
+    branchChip.classList.toggle('muted', !isRepo);
+    branchChip.title = isRepo ? ('Git branch: ' + branch) : 'Not a git repository';
+    branchChip.disabled = !isRepo;
+  }
 }
 function renderStatusExtras() {
   const snap = state.snapshot || {};
@@ -10852,9 +11384,17 @@ async function selectPickerAgent(agentName, effort, opts) {
   }
 }
 
+function closeModelPicker() {
+  const flyout = el('modelPickerFlyout');
+  if (flyout) flyout.classList.add('hidden');
+  state.pickerEditingAgent = null;
+  closePickerEffortEditor();
+}
+
 function toggleModelPicker() {
   const flyout = el('modelPickerFlyout');
   if (flyout.classList.contains('hidden')) {
+    closePermissionPicker();
     state.pickerEditingAgent = null;
     state.pickerQuery = '';
     renderModelPicker();
@@ -10865,9 +11405,7 @@ function toggleModelPicker() {
       setTimeout(() => search.focus(), 0);
     }
   } else {
-    state.pickerEditingAgent = null;
-    closePickerEffortEditor();
-    flyout.classList.add('hidden');
+    closeModelPicker();
   }
 }
 async function resumeSession(id) {
@@ -16803,33 +17341,77 @@ async function sendText(text) {
   }
 }
 function handleEvent(event) {
-  if (event.type === 'user') { finalizeAssistant(); state.currentAssistant = null; addMessage('user', displayUserText(event.text)); }
+  const T = tx();
+  if (event.type === 'user') {
+    finalizeAssistant();
+    state.currentAssistant = null;
+    if (T) T.applyEvent({ type: 'user', text: displayUserText(event.text) });
+    else addMessage('user', displayUserText(event.text));
+  }
   else if (event.type === 'run.started') { if (event.runId) state.activeRunId = String(event.runId); startRailPolling(); }
   else if (event.type === 'delta') {
-    if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
-    state.currentAssistant.dataset.raw += event.text || '';
-    scheduleMarkdownRender(state.currentAssistant);
+    if (T) {
+      T.applyEvent(event);
+      state.currentAssistant = T.getCurrentAssistantNode();
+      setRunStatus('Streaming…', 'running');
+    } else {
+      if (!state.currentAssistant) { state.currentAssistant = addMessage('assistant', ''); state.currentAssistant.dataset.raw = ''; }
+      state.currentAssistant.dataset.raw += event.text || '';
+      scheduleMarkdownRender(state.currentAssistant);
+    }
   } else if (event.type === 'status') setRunStatus(event.message || 'Running', 'running');
-  else if (event.type === 'notice') addMessage('notice', event.message || '');
+  else if (event.type === 'notice') {
+    if (T) T.applyEvent({ type: 'notice', message: event.message || '' });
+    else addMessage('notice', event.message || '');
+  }
   else if (event.type === 'issue.dispatched') {
     if (event.state) state.snapshot = event.state;
     if (event.sessionId) state.activeSessionId = String(event.sessionId);
     switchProjectView('conversation');
-    transcript.textContent = '';
+    if (T) T.reset();
+    else transcript.textContent = '';
     state.toolNodes.clear();
     state.currentAssistant = null;
     setRunStatus('Issue worker running', 'running');
     setConversationStatus(event.issueKey ? 'Working on ' + event.issueKey : 'Issue worker running', 'running');
-    addSystemEvent('Issue dispatched' + (event.issueKey ? ' 路 ' + event.issueKey : ''));
+    addSystemEvent('Issue dispatched' + (event.issueKey ? ' · ' + event.issueKey : ''));
     applyLoadedState();
   }
-  else if (event.type === 'tool.call') { finalizeAssistant(); state.currentAssistant = null; addToolActivity(event); }
-  else if (event.type === 'tool.input.delta') updateStreamingToolInput(event);
-  else if (event.type === 'thinking.delta') setRunStatus('Thinking…', 'running');
-  else if (event.type === 'tool.progress') updateToolProgress(event);
-  else if (event.type === 'tool.result') updateToolActivity(event);
+  else if (event.type === 'tool.call') {
+    finalizeAssistant();
+    state.currentAssistant = null;
+    if (T) T.applyEvent(event);
+    else addToolActivity(event);
+    setRunStatus('Calling ' + (event.name || 'tool') + '...', 'running');
+  }
+  else if (event.type === 'tool.input.delta') {
+    if (T) T.applyEvent(event);
+    else updateStreamingToolInput(event);
+  }
+  else if (event.type === 'thinking.delta') {
+    if (T) {
+      T.applyEvent(event);
+      setRunStatus('Thinking…', 'running');
+    } else setRunStatus('Thinking…', 'running');
+  }
+  else if (event.type === 'tool.progress') {
+    if (T) T.applyEvent(event);
+    else updateToolProgress(event);
+  }
+  else if (event.type === 'tool.result') {
+    if (T) T.applyEvent(event);
+    else updateToolActivity(event);
+    setRunStatus((event.ok ? 'Completed ' : 'Failed ') + (event.name || 'tool'), event.ok ? 'running' : 'error');
+  }
   else if (event.type === 'command.result') addResult(event);
-  else if (event.type === 'clear') { transcript.textContent = ''; state.toolNodes.clear(); state.currentAssistant = null; clearSquadRoster(); setConversationStatus(null); }
+  else if (event.type === 'clear') {
+    if (T) T.reset();
+    else transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    clearSquadRoster();
+    setConversationStatus(null);
+  }
   else if (event.type === 'permission.request') showPermission(event);
   else if (event.type === 'agent.prompt') { if (event.text) { state.queue.push(String(event.text)); renderQueue(); } }
   else if (event.type === 'batch.queue') {
@@ -16842,6 +17424,7 @@ function handleEvent(event) {
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
   else if (event.type === 'done') {
     finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail();
+    if (T) T.applyEvent({ type: 'done' });
     if (event.usage) state.lastUsageText = formatUsage(event.usage);
     setRunStatus(readyLabel()); setConversationStatus(null); void processQueue();
     void (async () => {
@@ -16855,7 +17438,13 @@ function handleEvent(event) {
       } catch { /* cache refresh best-effort */ }
     })();
   }
-  else if (event.type === 'error') { finalizeAssistant(); state.currentAssistant = null; setRunStatus(event.message || 'Error', 'error'); addMessage('error', event.message || 'Error'); }
+  else if (event.type === 'error') {
+    finalizeAssistant();
+    state.currentAssistant = null;
+    setRunStatus(event.message || 'Error', 'error');
+    if (T) T.applyEvent({ type: 'error', message: event.message || 'Error' });
+    else addMessage('error', event.message || 'Error');
+  }
   // Live team events (plan/UI_PLAN §6): render as role-colored message rows +
   // SystemEventDivider handoff lines + squad roster, not plain text notices.
   else if (event.type === 'team.started') {
@@ -16922,6 +17511,19 @@ function showNextPermission() {
     return;
   }
   state.pendingPermissionId = next.id;
+  const T = tx();
+  if (T) {
+    // Inline approval / AskUserQuestion on the matching tool card.
+    T.applyEvent({
+      type: 'permission.request',
+      id: next.id,
+      toolName: next.toolName,
+      summary: next.summary,
+      input: next.input,
+    });
+    el('permissionModal').classList.add('hidden');
+    return;
+  }
   el('permissionTool').textContent = next.toolName || '';
   el('permissionSummary').textContent = next.summary || '(no arguments)';
   el('permissionModal').classList.remove('hidden');
@@ -17887,6 +18489,13 @@ function managerAddToolActivity(event) {
   managerCurrentAssistant = null;
   setManagerThinking(true, (event.name ? (event.name + '…') : 'Working…'));
   const id = event.id || ('mgr-tool-' + Date.now() + '-' + Math.random());
+  const T = tx();
+  if (T && typeof T.renderToolEvent === 'function') {
+    const rendered = T.renderToolEvent({ ...event, id }, t);
+    managerToolNodes.set(id, { card: rendered.card, viaTranscript: true });
+    managerScrollTranscript();
+    return;
+  }
   const card = document.createElement('article');
   card.className = 'tool-card running';
   card.dataset.toolId = id;
@@ -17936,6 +18545,13 @@ function managerUpdateToolActivity(event) {
     managerAddToolActivity({ ...event, id });
     node = managerToolNodes.get(id);
     if (!node) return;
+  }
+  const T = tx();
+  if (node.viaTranscript && T && typeof T.updateEphemeralToolCard === 'function') {
+    const fresh = T.updateEphemeralToolCard(node.card, { ...event, id });
+    managerToolNodes.set(id, { card: fresh, viaTranscript: true });
+    managerScrollTranscript();
+    return;
   }
   node.card.classList.remove('running');
   node.card.classList.add(event.ok ? 'success' : 'error');
@@ -18578,6 +19194,7 @@ el('teamSquadModal').addEventListener('click', (event) => {
 });
 el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
+el('composerMetaBranch')?.addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
 el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
@@ -18687,8 +19304,13 @@ document.addEventListener('click', (event) => {
   if (flyout && !flyout.classList.contains('hidden')
     && !event.target.closest('#modelPickerBtn')
     && !event.target.closest('#modelPickerFlyout')) {
-    closePickerEffortEditor();
-    flyout.classList.add('hidden');
+    closeModelPicker();
+  }
+  const permMenu = el('permissionPickerMenu');
+  if (permMenu && !permMenu.classList.contains('hidden')
+    && !event.target.closest('#permissionPickerBtn')
+    && !event.target.closest('#permissionPickerMenu')) {
+    closePermissionPicker();
   }
   const addMenu = el('tabbarAddMenu');
   if (addMenu) addMenu.classList.add('hidden');
@@ -18704,8 +19326,9 @@ document.addEventListener('keydown', (event) => {
     const flyout = el('modelPickerFlyout');
     if (flyout && !flyout.classList.contains('hidden')) {
       if (state.pickerEditingAgent) closePickerEffortEditor();
-      else flyout.classList.add('hidden');
+      else closeModelPicker();
     }
+    closePermissionPicker();
     if (state.auxView) showAuxLauncher();
     else if (state.auxFocused) toggleAuxFocus();
   }
@@ -18725,7 +19348,8 @@ document.addEventListener('keydown', (event) => {
     toggleTerminalDock();
   }
 });
-el('permissionSelect').addEventListener('change', (event) => submitText('/permissions ' + event.target.value));
+el('permissionPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); togglePermissionPicker(); });
+el('permissionPickerMenu').addEventListener('click', (event) => event.stopPropagation());
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('modelPickerSearch').addEventListener('input', (event) => {
   state.pickerQuery = event.target.value || '';
