@@ -12,6 +12,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
+import {
+  readGitDiff,
+  readWorkspaceFile,
+} from './projectWorkbench.js';
 
 /**
  * Agent TUI vision (plan phase 6). The TerminalSnapshot tool lets the chat
@@ -4945,6 +4949,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           return json(res, 400, { error: (error as Error).message });
         }
       }
+      if (req.method === 'GET' && url.pathname === '/api/workspace-file') {
+        try {
+          const rawPath = url.searchParams.get('path');
+          if (!rawPath) return json(res, 400, { error: 'Missing file path' });
+          return json(res, 200, await readWorkspaceFile(rawPath, workDir));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/project/open') {
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
@@ -4953,6 +4966,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'GET' && url.pathname === '/api/git') {
         return json(res, 200, gitInfo());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/git/diff') {
+        try {
+          const filePath = url.searchParams.get('path') || '';
+          if (!filePath) return json(res, 400, { error: 'Missing path' });
+          const staged = url.searchParams.get('staged') === '1' || url.searchParams.get('staged') === 'true';
+          return json(res, 200, readGitDiff(workDir, filePath, staged));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/session/delete') {
         const body = await readJson(req);
@@ -6619,6 +6642,51 @@ body[data-theme="dark"] {
 .project-doc-view.md-prose li.md-task-done { color: var(--text-2); }
 .project-doc-view.md-prose .md-table { font-size: 12px; }
 .project-issues-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-app); }
+.project-workbench-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-surface); }
+.project-workbench-panel.hidden { display: none !important; }
+.project-wb-toolbar { flex: 0 0 auto; min-height: 44px; padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.project-wb-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-1); }
+.project-wb-meta { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-wb-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.project-panel-empty { padding: 24px 16px; text-align: center; font-size: 13px; }
+.project-files-split, .project-git-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(200px, 0.42fr) minmax(0, 1fr); }
+.project-tree, .project-git-tree { min-height: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--bg-app); padding: 6px 0; }
+.project-files-preview, .project-git-diff { min-height: 0; overflow: auto; display: flex; flex-direction: column; background: var(--bg-surface); }
+.files-preview-head, .git-diff-head { flex: 0 0 auto; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.files-preview-body, .git-diff-body { flex: 1; margin: 0; padding: 10px 12px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; background: var(--code-bg, var(--bg-app)); color: var(--text-1); border: 0; border-radius: 0; }
+.tree-row { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 26px; padding: 0 10px 0 calc(8px + var(--tree-depth, 0) * 14px); border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; box-sizing: border-box; }
+.tree-row:hover { background: var(--surface-hover); }
+.tree-row.selected { background: var(--brand-soft); color: var(--brand); }
+.tree-chevron { flex: 0 0 14px; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); transition: transform .12s ease; }
+.tree-chevron .ui-icon { width: 12px; height: 12px; }
+.tree-chevron.collapsed { transform: rotate(-90deg); }
+.tree-chevron.spacer { visibility: hidden; }
+.tree-icon { flex: 0 0 16px; color: var(--text-2); display: inline-flex; }
+.tree-icon .ui-icon { width: 14px; height: 14px; }
+.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-badge { flex: 0 0 auto; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--brand); min-width: 14px; text-align: center; }
+.git-group { border-bottom: 1px solid var(--border); }
+.git-group-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 0 10px; border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
+.git-group-head:hover { background: var(--surface-hover); }
+.git-group-body { padding-bottom: 4px; }
+.git-history-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 8px; padding: 6px 12px; font-size: 12px; }
+.git-history-row .git-hash { font-family: ui-monospace, Consolas, monospace; color: var(--brand); }
+.git-history-subject { grid-column: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.git-history-row .git-meta { grid-column: 2; font-size: 11px; color: var(--text-2); }
+.git-diff-line.add { color: #1a7f37; }
+.git-diff-line.del { color: #cf222e; }
+.git-diff-line.hunk { color: #8250df; }
+body[data-theme="dark"] .git-diff-line.add { color: #3fb950; }
+body[data-theme="dark"] .git-diff-line.del { color: #f85149; }
+body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
+.project-terminal-panel { background: var(--term-bg, var(--bg-app)); }
+.project-terminal-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.project-terminal-host > .terminal-dock { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; }
+.project-terminal-host > .terminal-dock.hidden { display: flex !important; }
+@media (max-width: 960px) {
+  .project-files-split, .project-git-split { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 40%) minmax(0, 1fr); }
+  .project-tree, .project-git-tree { border-right: 0; border-bottom: 1px solid var(--border); }
+}
 .project-issues-toolbar { flex: 0 0 auto; min-height: 48px; padding: 8px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
 .project-issues-title { min-width: 0; display: grid; gap: 1px; }
 .project-issues-title h2 { margin: 0; font-size: 14px; font-weight: 650; color: var(--text-1); }
@@ -8933,8 +9001,78 @@ export function createActoviqGuiClientScript(): string {
     computeTeamGraphAutoLayoutLanes.toString(),
     getTeamGraphBezierClientScript(),
   ].join('\n');
+  // Hand-written browser copies — avoid Function#toString leaking TS annotations under tsx.
+  const workbenchHelpers = `
+function splitGitStatus(status) {
+  const staged = [];
+  const unstaged = [];
+  for (const entry of status) {
+    const x = entry.x || '';
+    const y = entry.y || '';
+    if (x && x !== '?') staged.push(entry);
+    if ((y && y !== '?') || x === '?') unstaged.push(entry);
+  }
+  return { staged, unstaged };
+}
+function buildPathTree(leaves) {
+  const root = { name: '', relPath: '', kind: 'dir', children: [], childMap: new Map() };
+  for (const leaf of leaves) {
+    const parts = leaf.file.replace(/\\\\/g, '/').split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+    let node = root;
+    let rel = '';
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      rel = rel ? rel + '/' + part : part;
+      const isFile = i === parts.length - 1;
+      if (!node.childMap) node.childMap = new Map();
+      let next = node.childMap.get(part);
+      if (!next) {
+        next = {
+          name: part,
+          relPath: rel,
+          kind: isFile ? 'file' : 'dir',
+          children: isFile ? undefined : [],
+          childMap: isFile ? undefined : new Map(),
+        };
+        node.childMap.set(part, next);
+        if (!node.children) node.children = [];
+        node.children.push(next);
+      } else if (isFile) {
+        next.kind = 'file';
+      }
+      if (isFile) {
+        next.badge = leaf.badge;
+        next.entry = leaf.entry;
+      }
+      node = next;
+    }
+  }
+  function sortNode(node) {
+    if (node.children && node.childMap) {
+      node.children.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+      node.children = node.children.map((child) => sortNode(child));
+    }
+    const clean = { name: node.name, relPath: node.relPath, kind: node.kind };
+    if (node.children) clean.children = node.children;
+    if (node.badge) clean.badge = node.badge;
+    if (node.entry) clean.entry = node.entry;
+    return clean;
+  }
+  return (root.children || []).map((child) => sortNode(child));
+}
+function gitStatusBadge(entry, side) {
+  if (side === 'staged') return entry.x || 'M';
+  if (entry.x === '?' || entry.y === '?') return 'U';
+  return entry.y || entry.x || 'M';
+}
+`;
   return `
 ${getTranscriptClientScript()}
+${workbenchHelpers}
 const ACTOVIQ_TOKEN = window.__ACTOVIQ_TOKEN__ || '';
 // Client-side icon helper. eye/eyeOff are runtime-toggled; the workbench tab
 // bar is rendered client-side, so the pane icons it needs live here too.
@@ -9062,6 +9200,15 @@ const state = {
   auxCollapsed: false,
   auxFocused: false,
   filesBrowsePath: null,
+  filesTreeExpanded: {},
+  filesTreeCache: {},
+  filesSelectedPath: null,
+  filesPreview: null,
+  gitPanelData: null,
+  gitDiff: null,
+  gitGroupCollapsed: { staged: false, unstaged: false, history: true },
+  gitSelected: null,
+  gitTreeExpanded: {},
   // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
   // is visible. Project = the existing chat workbench (default).
   activeRegion: 'project',
@@ -9080,6 +9227,7 @@ const state = {
   detailArchivedExpanded: false,
   detailConvQuery: '',
   projectDetailTab: 'document',
+  terminalHostMode: 'dock',
   projectDocLoadedFor: null,
   projectDocRaw: '',
   projectDocEditing: false,
@@ -9489,6 +9637,7 @@ function syncTerminalToggle() {
   }
 }
 function openTerminalDock() {
+  parkTerminalDock();
   const dock = el('terminalDock');
   if (!dock) return;
   dock.classList.remove('hidden');
@@ -11936,6 +12085,7 @@ function switchProjectView(view) {
     if (state.projectDocDirty) void saveProjectDocNow();
     if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
     state.projectDocEditing = false;
+    if (state.projectDetailTab === 'terminal' || state.terminalHostMode === 'project') parkTerminalDock();
   }
   const ov = el('projectOverview');
   const dt = el('projectDetail');
@@ -12290,19 +12440,544 @@ async function mountProjectDoc(force) {
   setProjectDocStatus('', '');
 }
 function setProjectDetailTab(tab) {
-  const next = tab === 'issues' ? 'issues' : 'document';
-  if (state.projectDetailTab === next) return;
+  const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1 };
+  const next = allowed[tab] ? tab : 'document';
+  if (state.projectDetailTab === next) {
+    if (next === 'terminal') mountProjectTerminal();
+    return;
+  }
   if (state.projectDetailTab === 'document' && state.projectDocDirty) void saveProjectDocNow();
+  if (state.projectDetailTab === 'terminal' && next !== 'terminal') {
+    parkTerminalDock();
+  }
   state.projectDetailTab = next;
   document.querySelectorAll('.project-detail-tab').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.detailTab === next);
   });
-  const docPanel = el('projectDocumentPanel');
-  const issuesPanel = el('projectIssuesPanel');
-  if (docPanel) docPanel.classList.toggle('hidden', next !== 'document');
-  if (issuesPanel) issuesPanel.classList.toggle('hidden', next !== 'issues');
+  const panels = {
+    document: el('projectDocumentPanel'),
+    issues: el('projectIssuesPanel'),
+    git: el('projectGitPanel'),
+    terminal: el('projectTerminalPanel'),
+    files: el('projectFilesPanel'),
+  };
+  for (const key of Object.keys(panels)) {
+    if (panels[key]) panels[key].classList.toggle('hidden', key !== next);
+  }
   if (next === 'document') void mountProjectDoc(false);
-  else void loadProjectIssues(false);
+  else if (next === 'issues') void loadProjectIssues(false);
+  else if (next === 'git') void renderProjectGitPanel(false);
+  else if (next === 'files') void renderProjectFilesPanel(false);
+  else if (next === 'terminal') mountProjectTerminal();
+}
+function workbenchHome() {
+  return document.querySelector('#projectConversation .workbench') || el('projectConversation');
+}
+function parkTerminalDock() {
+  const dock = el('terminalDock');
+  const home = workbenchHome();
+  if (!dock || !home) return;
+  if (dock.parentElement !== home) home.appendChild(dock);
+  if (state.projectView !== 'conversation') dock.classList.add('hidden');
+  state.terminalHostMode = 'dock';
+  syncTerminalToggle();
+}
+function mountProjectTerminal() {
+  const host = el('projectTerminalHost');
+  const dock = el('terminalDock');
+  if (!host || !dock) return;
+  if (!(state.snapshot && state.snapshot.terminalCapable)) {
+    host.textContent = '';
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Terminal unavailable (node-pty not loadable).';
+    host.appendChild(note);
+    return;
+  }
+  host.textContent = '';
+  host.appendChild(dock);
+  dock.classList.remove('hidden');
+  state.terminalHostMode = 'project';
+  const existing = state.tabs.find((t) => t.type === 'terminal');
+  if (existing) switchTerminalTab(existing.id);
+  else addTerminalPane();
+  syncTerminalToggle();
+  requestAnimationFrame(() => {
+    const active = state.tabs.find((t) => t.id === state.activeTabId);
+    if (active && active.xterm && active.fitAddon && typeof active.fitAddon.fit === 'function') {
+      try { active.fitAddon.fit(); } catch { /* ignore */ }
+    }
+  });
+}
+function fileTreeIcon(name, kind) {
+  if (kind === 'folder') return guiIcon('folder');
+  return guiIcon('list');
+}
+async function loadFilesTreeChildren(dirPath) {
+  if (state.filesTreeCache[dirPath]) return state.filesTreeCache[dirPath];
+  const res = await api('/api/workspace-files?path=' + encodeURIComponent(dirPath || ''));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Could not list files');
+  const entries = Array.isArray(data.entries) ? data.entries : [];
+  state.filesTreeCache[dirPath] = entries;
+  return entries;
+}
+function renderFileTreeRows(host, dirPath, depth) {
+  const entries = state.filesTreeCache[dirPath] || [];
+  for (const entry of entries) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'tree-row' + (state.filesSelectedPath === entry.path ? ' selected' : '');
+    row.style.setProperty('--tree-depth', String(depth));
+    row.title = entry.path;
+    const chevron = document.createElement('span');
+    chevron.className = 'tree-chevron';
+    if (entry.kind === 'folder') {
+      const open = Boolean(state.filesTreeExpanded[entry.path]);
+      chevron.innerHTML = guiIcon('chevronDown');
+      chevron.classList.toggle('collapsed', !open);
+    } else {
+      chevron.className = 'tree-chevron spacer';
+    }
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.innerHTML = fileTreeIcon(entry.name, entry.kind);
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = entry.name;
+    row.append(chevron, icon, label);
+    if (entry.kind === 'folder') {
+      row.addEventListener('click', () => { void toggleFilesFolder(entry.path); });
+    } else {
+      row.addEventListener('click', () => { void openFilesPreview(entry.path); });
+    }
+    host.appendChild(row);
+    if (entry.kind === 'folder' && state.filesTreeExpanded[entry.path]) {
+      if (state.filesTreeCache[entry.path]) renderFileTreeRows(host, entry.path, depth + 1);
+      else {
+        const loading = document.createElement('div');
+        loading.className = 'tree-row muted';
+        loading.style.setProperty('--tree-depth', String(depth + 1));
+        loading.textContent = 'Loading…';
+        host.appendChild(loading);
+      }
+    }
+  }
+}
+async function toggleFilesFolder(dirPath) {
+  if (state.filesTreeExpanded[dirPath]) {
+    delete state.filesTreeExpanded[dirPath];
+    paintProjectFilesTree();
+    return;
+  }
+  state.filesTreeExpanded[dirPath] = true;
+  paintProjectFilesTree();
+  try {
+    await loadFilesTreeChildren(dirPath);
+  } catch (error) {
+    delete state.filesTreeExpanded[dirPath];
+    flashStatus(error && error.message ? error.message : 'Could not open folder');
+  }
+  paintProjectFilesTree();
+}
+function paintProjectFilesTree() {
+  const tree = el('projectFilesTree');
+  if (!tree) return;
+  tree.textContent = '';
+  const root = (state.snapshot && state.snapshot.workDir) || '';
+  if (!root) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'No workspace open.';
+    tree.appendChild(note);
+    return;
+  }
+  if (!state.filesTreeCache[root]) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Loading…';
+    tree.appendChild(note);
+    return;
+  }
+  renderFileTreeRows(tree, root, 0);
+}
+function paintFilesPreview() {
+  const preview = el('projectFilesPreview');
+  if (!preview) return;
+  preview.textContent = '';
+  const data = state.filesPreview;
+  if (!data) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Select a file to preview.';
+    preview.appendChild(note);
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'files-preview-head';
+  head.textContent = data.path || state.filesSelectedPath || '';
+  preview.appendChild(head);
+  if (data.binary) {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'Binary file (' + (data.size || 0) + ' bytes) — preview unavailable.';
+    preview.appendChild(note);
+    return;
+  }
+  const pre = document.createElement('pre');
+  pre.className = 'files-preview-body code-block';
+  pre.textContent = data.text || '';
+  preview.appendChild(pre);
+  if (data.truncated) {
+    const tip = document.createElement('p');
+    tip.className = 'muted';
+    tip.textContent = 'Preview truncated.';
+    preview.appendChild(tip);
+  }
+}
+async function openFilesPreview(filePath) {
+  state.filesSelectedPath = filePath;
+  paintProjectFilesTree();
+  const preview = el('projectFilesPreview');
+  if (preview) {
+    preview.textContent = '';
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Loading…';
+    preview.appendChild(note);
+  }
+  try {
+    const res = await api('/api/workspace-file?path=' + encodeURIComponent(filePath));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not read file');
+    state.filesPreview = data;
+  } catch (error) {
+    state.filesPreview = null;
+    flashStatus(error && error.message ? error.message : 'Could not read file');
+  }
+  paintFilesPreview();
+  paintProjectFilesTree();
+}
+async function renderProjectFilesPanel(force) {
+  const host = el('projectFilesPanel');
+  if (!host) return;
+  const root = (state.snapshot && state.snapshot.workDir) || '';
+  host.textContent = '';
+  const toolbar = document.createElement('header');
+  toolbar.className = 'project-wb-toolbar';
+  const title = document.createElement('h2');
+  title.textContent = 'Files';
+  const actions = document.createElement('div');
+  actions.className = 'project-wb-actions';
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.className = 'icon-btn';
+  refreshBtn.title = 'Refresh';
+  refreshBtn.innerHTML = guiIcon('refresh');
+  refreshBtn.addEventListener('click', () => { void renderProjectFilesPanel(true); });
+  const collapseBtn = document.createElement('button');
+  collapseBtn.type = 'button';
+  collapseBtn.className = 'icon-btn';
+  collapseBtn.title = 'Collapse All';
+  collapseBtn.innerHTML = guiIcon('chevronUp');
+  collapseBtn.addEventListener('click', () => {
+    state.filesTreeExpanded = {};
+    paintProjectFilesTree();
+  });
+  actions.append(refreshBtn, collapseBtn);
+  toolbar.append(title, actions);
+  const split = document.createElement('div');
+  split.className = 'project-files-split';
+  const tree = document.createElement('div');
+  tree.id = 'projectFilesTree';
+  tree.className = 'project-tree';
+  const preview = document.createElement('div');
+  preview.id = 'projectFilesPreview';
+  preview.className = 'project-files-preview';
+  split.append(tree, preview);
+  host.append(toolbar, split);
+  if (!root) {
+    paintProjectFilesTree();
+    paintFilesPreview();
+    return;
+  }
+  if (force) {
+    state.filesTreeCache = {};
+    state.filesTreeExpanded = {};
+    state.filesPreview = null;
+    state.filesSelectedPath = null;
+  }
+  try {
+    await loadFilesTreeChildren(root);
+  } catch (error) {
+    tree.textContent = '';
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = error && error.message ? error.message : 'Could not list files.';
+    tree.appendChild(note);
+    return;
+  }
+  paintProjectFilesTree();
+  paintFilesPreview();
+}
+function paintGitDiff() {
+  const pane = el('projectGitDiff');
+  if (!pane) return;
+  pane.textContent = '';
+  const data = state.gitDiff;
+  if (!data) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = 'Select a changed file to view the diff.';
+    pane.appendChild(note);
+    return;
+  }
+  const head = document.createElement('div');
+  head.className = 'git-diff-head';
+  head.textContent = (data.staged ? 'Staged · ' : 'Changes · ') + (data.path || '');
+  pane.appendChild(head);
+  const pre = document.createElement('pre');
+  pre.className = 'git-diff-body code-block';
+  const patch = data.patch || '';
+  if (!patch) {
+    pre.textContent = 'No textual diff.';
+    pane.appendChild(pre);
+    return;
+  }
+  for (const line of patch.split('\\n')) {
+    const row = document.createElement('div');
+    row.className = 'git-diff-line';
+    if (line.startsWith('+') && !line.startsWith('+++')) row.classList.add('add');
+    else if (line.startsWith('-') && !line.startsWith('---')) row.classList.add('del');
+    else if (line.startsWith('@@')) row.classList.add('hunk');
+    row.textContent = line;
+    pre.appendChild(row);
+  }
+  pane.appendChild(pre);
+  if (data.truncated) {
+    const tip = document.createElement('p');
+    tip.className = 'muted';
+    tip.textContent = 'Diff truncated.';
+    pane.appendChild(tip);
+  }
+}
+function appendGitTreeNodes(host, nodes, depth, side) {
+  for (const node of nodes) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'tree-row' + (
+      state.gitSelected && state.gitSelected.path === node.relPath && state.gitSelected.side === side ? ' selected' : ''
+    );
+    row.style.setProperty('--tree-depth', String(depth));
+    const chevron = document.createElement('span');
+    chevron.className = 'tree-chevron' + (node.kind === 'dir' ? '' : ' spacer');
+    if (node.kind === 'dir') {
+      const key = side + ':' + node.relPath;
+      const open = state.gitTreeExpanded[key] !== false;
+      chevron.innerHTML = guiIcon('chevronDown');
+      chevron.classList.toggle('collapsed', !open);
+    }
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.innerHTML = guiIcon(node.kind === 'dir' ? 'folder' : 'list');
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = node.name;
+    row.append(chevron, icon, label);
+    if (node.badge) {
+      const badge = document.createElement('span');
+      badge.className = 'git-badge';
+      badge.textContent = node.badge;
+      row.appendChild(badge);
+    }
+    if (node.kind === 'dir') {
+      row.addEventListener('click', () => {
+        const key = side + ':' + node.relPath;
+        if (state.gitTreeExpanded[key] === false) delete state.gitTreeExpanded[key];
+        else state.gitTreeExpanded[key] = false;
+        void renderProjectGitPanel(false);
+      });
+    } else {
+      row.addEventListener('click', () => { void openProjectGitDiff(node.relPath, side === 'staged'); });
+    }
+    host.appendChild(row);
+    if (node.kind === 'dir' && node.children) {
+      const key = side + ':' + node.relPath;
+      if (state.gitTreeExpanded[key] !== false) appendGitTreeNodes(host, node.children, depth + 1, side);
+    }
+  }
+}
+async function openProjectGitDiff(filePath, staged) {
+  state.gitSelected = { path: filePath, side: staged ? 'staged' : 'unstaged' };
+  state.gitDiff = null;
+  paintGitDiff();
+  try {
+    const res = await api('/api/git/diff?path=' + encodeURIComponent(filePath) + '&staged=' + (staged ? '1' : '0'));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not load diff');
+    state.gitDiff = data;
+  } catch (error) {
+    flashStatus(error && error.message ? error.message : 'Could not load diff');
+  }
+  void renderProjectGitPanel(false);
+  paintGitDiff();
+}
+async function renderProjectGitPanel(force) {
+  const hostStart = el('projectGitPanel');
+  if (!hostStart) return;
+  const epoch = (state.gitPanelEpoch = (state.gitPanelEpoch || 0) + 1);
+  if (force || !state.gitPanelData) {
+    hostStart.textContent = '';
+    const loading = document.createElement('p');
+    loading.className = 'muted project-panel-empty';
+    loading.textContent = 'Loading…';
+    hostStart.appendChild(loading);
+    try {
+      state.gitPanelData = await gitData();
+    } catch (error) {
+      if (epoch !== state.gitPanelEpoch) return;
+      const hostErr = el('projectGitPanel');
+      if (!hostErr) return;
+      state.gitPanelData = null;
+      hostErr.textContent = '';
+      const note = document.createElement('p');
+      note.className = 'muted project-panel-empty';
+      note.textContent = error && error.message ? error.message : 'Could not load git status.';
+      hostErr.appendChild(note);
+      return;
+    }
+  }
+  if (epoch !== state.gitPanelEpoch) return;
+  const host = el('projectGitPanel');
+  if (!host) return;
+  const data = state.gitPanelData;
+  host.textContent = '';
+  const toolbar = document.createElement('header');
+  toolbar.className = 'project-wb-toolbar';
+  const title = document.createElement('h2');
+  title.textContent = 'Git';
+  const meta = document.createElement('span');
+  meta.className = 'project-wb-meta';
+  if (!data || !data.isRepo) meta.textContent = data ? 'Not a git repository' : 'Git unavailable';
+  else {
+    const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
+    meta.textContent = (data.branch || 'HEAD') + (data.upstream ? ' → ' + data.upstream : '') + tracking;
+  }
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.className = 'icon-btn';
+  refreshBtn.title = 'Refresh';
+  refreshBtn.innerHTML = guiIcon('refresh');
+  refreshBtn.addEventListener('click', () => {
+    state.gitPanelData = null;
+    state.gitDiff = null;
+    void renderProjectGitPanel(true);
+  });
+  toolbar.append(title, meta, refreshBtn);
+  host.appendChild(toolbar);
+  if (!data || !data.isRepo) {
+    const note = document.createElement('p');
+    note.className = 'muted project-panel-empty';
+    note.textContent = data ? 'This workspace is not a git repository.' : 'Could not read git information.';
+    host.appendChild(note);
+    return;
+  }
+  const split = document.createElement('div');
+  split.className = 'project-git-split';
+  const left = document.createElement('div');
+  left.className = 'project-git-tree';
+  const right = document.createElement('div');
+  right.id = 'projectGitDiff';
+  right.className = 'project-git-diff';
+  const splitStatus = splitGitStatus(Array.isArray(data.status) ? data.status : []);
+  const groups = [
+    ['staged', 'Staged Changes', splitStatus.staged],
+    ['unstaged', 'Changes', splitStatus.unstaged],
+  ];
+  for (const [side, label, entries] of groups) {
+    const group = document.createElement('section');
+    group.className = 'git-group';
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'git-group-head';
+    const collapsed = Boolean(state.gitGroupCollapsed[side]);
+    head.innerHTML = '<span class="tree-chevron' + (collapsed ? ' collapsed' : '') + '">' + guiIcon('chevronDown') + '</span>';
+    const headLabel = document.createElement('span');
+    headLabel.textContent = label + ' (' + entries.length + ')';
+    head.appendChild(headLabel);
+    head.addEventListener('click', () => {
+      state.gitGroupCollapsed[side] = !state.gitGroupCollapsed[side];
+      void renderProjectGitPanel(false);
+    });
+    group.appendChild(head);
+    if (!collapsed) {
+      const body = document.createElement('div');
+      body.className = 'git-group-body';
+      if (!entries.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.style.padding = '4px 10px';
+        empty.textContent = side === 'staged' ? 'No staged changes.' : 'Working tree clean.';
+        body.appendChild(empty);
+      } else {
+        const leaves = entries.map((entry) => ({
+          file: entry.file,
+          badge: gitStatusBadge(entry, side),
+          entry,
+        }));
+        appendGitTreeNodes(body, buildPathTree(leaves), 0, side);
+      }
+      group.appendChild(body);
+    }
+    left.appendChild(group);
+  }
+  const history = document.createElement('section');
+  history.className = 'git-group';
+  const histHead = document.createElement('button');
+  histHead.type = 'button';
+  histHead.className = 'git-group-head';
+  const histCollapsed = state.gitGroupCollapsed.history !== false;
+  histHead.innerHTML = '<span class="tree-chevron' + (histCollapsed ? ' collapsed' : '') + '">' + guiIcon('chevronDown') + '</span>';
+  const histLabel = document.createElement('span');
+  const commits = Array.isArray(data.commits) ? data.commits : [];
+  histLabel.textContent = 'History (' + commits.length + ')';
+  histHead.appendChild(histLabel);
+  histHead.addEventListener('click', () => {
+    state.gitGroupCollapsed.history = !histCollapsed;
+    void renderProjectGitPanel(false);
+  });
+  history.appendChild(histHead);
+  if (!histCollapsed) {
+    const body = document.createElement('div');
+    body.className = 'git-group-body';
+    for (const commit of commits.slice(0, 30)) {
+      const row = document.createElement('div');
+      row.className = 'git-history-row';
+      const hash = document.createElement('span');
+      hash.className = 'git-hash';
+      hash.textContent = commit.hash || '';
+      const subject = document.createElement('span');
+      subject.className = 'git-history-subject';
+      subject.textContent = commit.subject || '';
+      const metaLine = document.createElement('span');
+      metaLine.className = 'git-meta';
+      metaLine.textContent = [commit.date, commit.author].filter(Boolean).join(' · ');
+      row.append(hash, subject, metaLine);
+      body.appendChild(row);
+    }
+    if (!commits.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.style.padding = '4px 10px';
+      empty.textContent = 'No commits.';
+      body.appendChild(empty);
+    }
+    history.appendChild(body);
+  }
+  left.appendChild(history);
+  split.append(left, right);
+  host.appendChild(split);
+  paintGitDiff();
 }
 function currentIssuePath() {
   return state.snapshot?.workDir || '';
@@ -13093,6 +13768,7 @@ function renderConvSidebarDetail() {
   panel.appendChild(actions);
 }
 function renderProjectDetail() {
+  if (state.terminalHostMode === 'project') parkTerminalDock();
   const name = projectNameFromSnapshot();
   const w = state.snapshot?.workDir || '';
   const bc = el('detailBreadcrumb');
@@ -13124,13 +13800,16 @@ function renderProjectDetail() {
   for (const tab of [
     ['document', 'Document'],
     ['issues', 'Issues'],
+    ['git', 'Git'],
+    ['terminal', 'Terminal'],
+    ['files', 'Files'],
   ]) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'project-detail-tab' + (state.projectDetailTab === tab[0] ? ' active' : '');
     btn.dataset.detailTab = tab[0];
     const issueCount = tab[0] === 'issues' ? (state.snapshot?.issueSummary?.open || 0) : 0;
-    btn.textContent = tab[1] + (issueCount > 0 ? ' ' + issueCount : '');
+    btn.textContent = tab[1] + (issueCount > 0 ? ' (' + issueCount + ')' : '');
     btn.addEventListener('click', () => setProjectDetailTab(tab[0]));
     tabs.appendChild(btn);
   }
@@ -13206,7 +13885,20 @@ function renderProjectDetail() {
   const issuesPanel = document.createElement('section');
   issuesPanel.id = 'projectIssuesPanel';
   issuesPanel.className = 'project-issues-panel' + (state.projectDetailTab === 'issues' ? '' : ' hidden');
-  main.append(tabs, docPanel, issuesPanel);
+  const gitPanel = document.createElement('section');
+  gitPanel.id = 'projectGitPanel';
+  gitPanel.className = 'project-workbench-panel' + (state.projectDetailTab === 'git' ? '' : ' hidden');
+  const terminalPanel = document.createElement('section');
+  terminalPanel.id = 'projectTerminalPanel';
+  terminalPanel.className = 'project-workbench-panel project-terminal-panel' + (state.projectDetailTab === 'terminal' ? '' : ' hidden');
+  const terminalHost = document.createElement('div');
+  terminalHost.id = 'projectTerminalHost';
+  terminalHost.className = 'project-terminal-host';
+  terminalPanel.appendChild(terminalHost);
+  const filesPanel = document.createElement('section');
+  filesPanel.id = 'projectFilesPanel';
+  filesPanel.className = 'project-workbench-panel' + (state.projectDetailTab === 'files' ? '' : ' hidden');
+  main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel);
   const sidebar = document.createElement('aside');
   sidebar.className = 'detail-sidebar';
   const top = document.createElement('div');
@@ -13241,6 +13933,9 @@ function renderProjectDetail() {
   renderConvSidebarList();
   renderConvSidebarDetail();
   if (state.projectDetailTab === 'issues') void loadProjectIssues(false);
+  else if (state.projectDetailTab === 'git') void renderProjectGitPanel(false);
+  else if (state.projectDetailTab === 'files') void renderProjectFilesPanel(false);
+  else if (state.projectDetailTab === 'terminal') mountProjectTerminal();
   else void mountProjectDoc(false);
 }
 function selectDetailConversation(id) {
