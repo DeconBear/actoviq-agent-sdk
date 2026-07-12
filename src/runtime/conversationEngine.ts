@@ -4,6 +4,7 @@
   MessageParam,
   ToolResultBlockParam,
   ToolUseBlock,
+  Usage,
 } from '../provider/types.js';
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -35,6 +36,7 @@ import type {
 } from '../types.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
+import { withDeadline } from './deadline.js';
 import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
 import {
   compactActoviqConversationIfNeeded,
@@ -127,6 +129,7 @@ export async function executeConversation(
   const resolvedTools = await options.mcpManager.resolveToolAdapters(
     options.tools ?? [],
     options.mcpServers ?? [],
+    { signal: options.signal, timeoutMs: options.config.mcpTimeoutMs },
   );
   const toolMap = new Map(resolvedTools.map((tool) => [tool.publicName, tool]));
   const requestSummaries: AgentRequestSummary[] = [];
@@ -404,7 +407,11 @@ export async function executeConversation(
         : undefined;
 
     for (const hook of postSamplingHooks) {
-      await hook({
+      await withDeadline(
+        'postSampling hook',
+        options.config.hookTimeoutMs,
+        options.signal,
+        ({ signal }) => hook({
         runId: options.runId,
         sessionId: options.sessionId,
         workDir: workDir,
@@ -422,12 +429,13 @@ export async function executeConversation(
           toolChoice: options.toolChoice,
           userId: options.userId,
           metadata: options.metadata,
-          signal: options.signal,
+          signal,
         },
         systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
         assistantMessage: deepClone(message),
         messages: deepClone(conversation),
-      });
+        }),
+      );
     }
 
     // Run stop hooks — allow termination or error injection before tool loop
@@ -438,14 +446,20 @@ export async function executeConversation(
     for (let hookIdx = 0; hookIdx < stopHooks.length; hookIdx++) {
       const stopHook = stopHooks[hookIdx]!;
       const hookStarted = Date.now();
-      const result = await stopHook({
+      const result = await withDeadline(
+        'stop hook',
+        options.config.hookTimeoutMs,
+        options.signal,
+        ({ signal }) => stopHook({
         runId: options.runId,
         sessionId: options.sessionId,
         messages: deepClone(conversation),
         assistantMessage: deepClone(message),
         systemPrompt: options.systemPrompt ?? options.config.systemPrompt,
         stopHookActive: true,
-      });
+        signal,
+      }),
+      );
       const durationMs = Date.now() - hookStarted;
       hookDurations.push({ index: hookIdx, durationMs });
       if (result?.preventContinuation) {
@@ -561,7 +575,7 @@ export async function executeConversation(
         messages: conversation,
         stopReason: finalMessage.stop_reason ?? null,
         hookStopReason,
-        usage: finalMessage.usage,
+        usage: aggregateRequestUsage(requestSummaries),
         requests: requestSummaries,
         toolCalls,
         permissionDecisions,
@@ -596,7 +610,7 @@ export async function executeConversation(
           incompleteReason: `max_tool_iterations_exceeded:${options.config.maxToolIterations}`,
           maxToolIterationsExceeded: true,
           hookStopReason,
-          usage: finalMessage.usage,
+          usage: aggregateRequestUsage(requestSummaries),
           requests: requestSummaries,
           toolCalls,
           permissionDecisions,
@@ -693,8 +707,12 @@ export async function executeConversation(
             }
           : undefined;
 
-        const execution = await adapter.execute(toolUse.input, {
-          signal: adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
+        const execution = await withDeadline(
+          `Tool ${toolUse.name}`,
+          options.config.toolTimeoutMs,
+          adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
+          ({ signal }) => adapter.execute(toolUse.input, {
+          signal,
           runId: options.runId,
           sessionId: options.sessionId,
           cwd: workDir,
@@ -710,7 +728,8 @@ export async function executeConversation(
           model,
           provider: options.config.provider,
           effort,
-        }, onProgress);
+        }, onProgress),
+        );
         // Per-tool declared cap first (default 50k via tool factory), clamped
         // by the global artifact ceiling. MCP tools without a declared cap use
         // the global ceiling only.
@@ -882,7 +901,7 @@ export async function executeConversation(
           stopReason: finalMessage.stop_reason ?? null,
           incompleteReason: `consecutive_tool_failures:${lastFailedTool}`,
           hookStopReason,
-          usage: finalMessage.usage,
+          usage: aggregateRequestUsage(requestSummaries),
           requests: requestSummaries,
           toolCalls,
           permissionDecisions,
@@ -1379,6 +1398,38 @@ function ensureNotAborted(signal?: AbortSignal): void {
   } catch (error) {
     throw new RunAbortedError(asError(error).message, { cause: error });
   }
+}
+
+function aggregateRequestUsage(requests: readonly AgentRequestSummary[]): Usage | undefined {
+  const usages = requests
+    .map((request) => request.usage)
+    .filter((usage): usage is Usage => usage != null);
+  if (usages.length === 0) {
+    return undefined;
+  }
+
+  const aggregate: Usage = { ...usages.at(-1) };
+  for (const field of ['input_tokens', 'output_tokens'] as const) {
+    const values = usages
+      .map((usage) => usage[field])
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (values.length > 0) {
+      aggregate[field] = values.reduce((sum, value) => sum + value, 0);
+    } else {
+      delete aggregate[field];
+    }
+  }
+  for (const field of ['cache_creation_input_tokens', 'cache_read_input_tokens'] as const) {
+    const values = usages
+      .map((usage) => usage[field])
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    aggregate[field] = values.length > 0
+      ? values.reduce((sum, value) => sum + value, 0)
+      : usages.some((usage) => usage[field] === null)
+        ? null
+        : undefined;
+  }
+  return aggregate;
 }
 
 function isAnthropicAPI(baseURL?: string): boolean {

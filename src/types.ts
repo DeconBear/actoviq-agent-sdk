@@ -340,6 +340,15 @@ export interface ResolvedRuntimeConfig {
   modelTiers: ActoviqModelTierConfig;
   maxTokens: number;
   temperature?: number;
+  /** Whole-run wall-clock deadline, including model/tool iterations. */
+  runTimeoutMs: number;
+  /** Local and MCP tool deadline. */
+  toolTimeoutMs: number;
+  /** Individual hook deadline. */
+  hookTimeoutMs: number;
+  /** MCP connect/catalog/call deadline. */
+  mcpTimeoutMs: number;
+  /** Provider request timeout retained for compatibility. */
   timeoutMs: number;
   maxRetries: number;
   workDir: string;
@@ -427,6 +436,7 @@ export interface ActoviqStopHookContext {
   assistantMessage: Message;
   systemPrompt?: string;
   stopHookActive: boolean;
+  signal?: AbortSignal;
 }
 
 export interface ActoviqHookBlockingError {
@@ -712,6 +722,10 @@ export interface CreateAgentSdkOptions {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  runTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  hookTimeoutMs?: number;
+  mcpTimeoutMs?: number;
   timeoutMs?: number;
   maxRetries?: number;
   workDir?: string;
@@ -1495,6 +1509,8 @@ export type SessionStatus = 'active' | 'idle' | 'closed';
 
 export interface StoredSession {
   version: 1;
+  /** Monotonic compare-and-swap revision. Legacy v1 snapshots without it load as revision 0. */
+  revision: number;
   id: string;
   title: string;
   titleSource: 'auto' | 'manual';
@@ -2777,6 +2793,12 @@ export interface TeamAskOptions {
   workDir?: string;
   /** Receives progress events as the team deliberates. */
   onEvent?: (event: TeamEvent) => void;
+  /** Permission policy inherited by every member runtime. Defaults to `default`, never bypass. */
+  permissionMode?: ActoviqPermissionMode;
+  permissions?: ActoviqPermissionRule[];
+  classifier?: ActoviqToolClassifier;
+  approver?: ActoviqToolApprover;
+  hooks?: ActoviqHooks;
   /**
    * Internal recursion guard for `type: 'team'` graph nodes: the chain of team
    * refs currently being executed. The top-level call omits this; each team node

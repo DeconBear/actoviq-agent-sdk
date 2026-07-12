@@ -33,6 +33,44 @@ function createMockSdk() {
 
 // ── StructuredOutput schema enforcement ───────────────────────────
 
+describe('WorkflowScriptRuntime trust boundary', () => {
+  it('rejects scripts that were not explicitly marked trusted', async () => {
+    const { WorkflowScriptRuntime } = await import('../src/workflow/workflowScriptRuntime.js');
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+
+    await expect(runtime.execute(
+      'export const meta = { name: "untrusted", description: "test" };\nreturn "no";',
+    )).rejects.toMatchObject({
+      code: 'CONFIGURATION_ERROR',
+      message: expect.stringContaining('explicitly trusted'),
+    });
+  });
+
+  it('enforces a wall-clock deadline for asynchronous trusted scripts', async () => {
+    const { WorkflowScriptRuntime } = await import('../src/workflow/workflowScriptRuntime.js');
+    const neverResolvingSdk = {
+      createSession: async () => ({
+        id: 'never',
+        send: async () => new Promise(() => {}),
+      }),
+      getTool: () => undefined,
+    };
+    const runtime = new WorkflowScriptRuntime({
+      sdk: neverResolvingSdk as any,
+      trust: 'trusted',
+      scriptTimeoutMs: 25,
+    });
+
+    await expect(runtime.execute([
+      'export const meta = { name: "deadline", description: "test" };',
+      'await agent("never completes");',
+    ].join('\n'))).rejects.toMatchObject({
+      code: 'RUN_ABORTED',
+      message: expect.stringContaining('25ms deadline'),
+    });
+  });
+});
+
 describe('StructuredOutput schema enforcement', () => {
   it('agent call with schema passes schema to tool', async () => {
     const { WorkflowScriptRuntime } = await import('../src/workflow/workflowScriptRuntime.js');
@@ -58,7 +96,7 @@ describe('StructuredOutput schema enforcement', () => {
       required: ['title', 'count'],
     };
 
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "schema-test", description: "test" };',
@@ -108,7 +146,7 @@ describe('StructuredOutput schema enforcement', () => {
       required: ['name', 'value'],
     };
 
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "retry-test", description: "test" };',
@@ -225,7 +263,7 @@ describe('Workflow resume state', () => {
     const { WorkflowScriptRuntime } = await import('../src/workflow/workflowScriptRuntime.js');
     const sdk = createMockSdk();
 
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "resume-test", description: "test" };',
@@ -244,6 +282,7 @@ describe('Workflow resume state', () => {
     // Resume: create new runtime with resumeState, execute same script
     const runtime2 = new WorkflowScriptRuntime({
       sdk: sdk as any,
+      trust: 'trusted',
       resumeState,
     });
 

@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://actoviq.dev/schemas/runtime-benchmark-report-v1.json",
+  "title": "Actoviq runtime benchmark report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "suite",
+    "mode",
+    "generatedAt",
+    "configurationFingerprint",
+    "environment",
+    "workload",
+    "status",
+    "metrics",
+    "invariants"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "suite": { "const": "actoviq-runtime" },
+    "mode": { "enum": ["smoke", "full"] },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "configurationFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "workload": { "$ref": "#/$defs/workload" },
+    "status": { "enum": ["passed", "failed"] },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/metric" }
+    },
+    "invariants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/invariant" }
+    }
+  },
+  "$defs": {
+    "nonNegativeNumber": { "type": "number", "minimum": 0 },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "positiveIntegerArray": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/positiveInteger" }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "platform", "arch", "cpuModel", "cpuCount", "totalMemoryBytes"],
+      "properties": {
+        "node": { "type": "string" },
+        "platform": { "type": "string" },
+        "arch": { "type": "string" },
+        "cpuModel": { "type": "string" },
+        "cpuCount": { "$ref": "#/$defs/positiveInteger" },
+        "totalMemoryBytes": { "$ref": "#/$defs/positiveInteger" }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "samples",
+        "warmupIterations",
+        "mcpToolCounts",
+        "sessionItemCounts",
+        "streamDeltaCount",
+        "streamBufferCapacity",
+        "childCounts",
+        "compactionToolResults",
+        "compactionPayloadChars",
+        "noNetwork"
+      ],
+      "properties": {
+        "samples": { "$ref": "#/$defs/positiveInteger" },
+        "warmupIterations": { "type": "integer", "minimum": 0 },
+        "mcpToolCounts": { "$ref": "#/$defs/positiveIntegerArray" },
+        "sessionItemCounts": { "$ref": "#/$defs/positiveIntegerArray" },
+        "streamDeltaCount": { "$ref": "#/$defs/positiveInteger" },
+        "streamBufferCapacity": { "$ref": "#/$defs/positiveInteger" },
+        "childCounts": { "$ref": "#/$defs/positiveIntegerArray" },
+        "compactionToolResults": { "$ref": "#/$defs/positiveInteger" },
+        "compactionPayloadChars": { "$ref": "#/$defs/positiveInteger" },
+        "noNetwork": { "const": true }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scenario",
+        "variant",
+        "measure",
+        "unit",
+        "direction",
+        "regression",
+        "samples",
+        "sampleCount",
+        "min",
+        "max",
+        "p50",
+        "p95"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "scenario": { "type": "string", "minLength": 1 },
+        "variant": { "type": "string", "minLength": 1 },
+        "measure": { "enum": ["latency", "cpu", "memory", "size", "overhead"] },
+        "unit": { "enum": ["ms", "bytes", "ratio"] },
+        "direction": { "enum": ["lower-is-better", "informational"] },
+        "regression": { "type": "boolean" },
+        "samples": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonNegativeNumber" }
+        },
+        "sampleCount": { "$ref": "#/$defs/positiveInteger" },
+        "min": { "$ref": "#/$defs/nonNegativeNumber" },
+        "max": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p50": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p95": { "$ref": "#/$defs/nonNegativeNumber" },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean"] }
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "invariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "passed", "expected", "actual"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" },
+        "expected": { "type": "string" },
+        "actual": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

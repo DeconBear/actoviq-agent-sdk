@@ -101,9 +101,10 @@ export class AgentPool {
   }
 }
 
-/** Singleton pool shared across all features. */
+/** @deprecated Inject an AgentPool owned by the runtime instead. */
 let _globalPool: AgentPool | null = null;
 
+/** @deprecated Inject an AgentPool owned by the runtime instead. */
 export function getGlobalAgentPool(): AgentPool {
   if (!_globalPool) {
     _globalPool = new AgentPool();
@@ -111,6 +112,7 @@ export function getGlobalAgentPool(): AgentPool {
   return _globalPool;
 }
 
+/** @deprecated Runtime-owned pools should be reset by their owner. */
 export function resetGlobalAgentPool(maxConcurrent?: number): void {
   _globalPool?.reset();
   _globalPool = new AgentPool(maxConcurrent);

@@ -46,6 +46,9 @@ import {
   WorktreeService,
 } from 'actoviq-agent-sdk';
 import { readProjectMeta } from '../gui/projectMeta.js';
+import {
+  LegacySurfaceEventPipeline,
+} from '../surfaces/index.js';
 import { applyTeamRunEvent, createTeamRunViewState, formatTeamRunTreeLines } from '../team/teamRunView.js';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
@@ -80,6 +83,20 @@ const C = {
 
 function stripAnsi(s: string): number {
   return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+function surfaceRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function surfaceString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function surfaceInteger(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : undefined;
 }
 
 // ── System prompt ────────────────────────────────────────────────────
@@ -390,6 +407,7 @@ async function main() {
               const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
               const runtime = new WorkflowScriptRuntime({
                 sdk: sdk as any,
+                trust: 'trusted',
                 args: wfTask,
                 onEvent: (e: any) => {
                   if (e.type === 'workflow.log') process.stdout.write(`${C.d}  │ ${e.message}${C.r}\n`);
@@ -738,9 +756,23 @@ async function main() {
                 __actoviqAllowedTools: managerTools.map(tool => tool.name),
               } as Parameters<typeof managerSession.stream>[1];
               const stream = managerSession.stream(prompt, runOptions);
+              const managerSurfaceEvents = new LegacySurfaceEventPipeline();
               for await (const event of stream) {
-                if (event.type === 'tool.call') toolLine(event.call.name, event.call.input as Record<string, unknown>);
-                else if (event.type === 'tool.result') resultLine(event.result.isError, undefined, event.result.output);
+                for (const surfaceEvent of managerSurfaceEvents.projectFor(event, 'cli')) {
+                  const data = surfaceEvent.data;
+                  if (surfaceEvent.type === 'tool.started') {
+                    toolLine(
+                      surfaceString(data.name) ?? surfaceString(data.publicName) ?? 'tool',
+                      surfaceRecord(data.input) ?? {},
+                    );
+                  } else if (
+                    surfaceEvent.type === 'tool.completed'
+                    || surfaceEvent.type === 'tool.failed'
+                    || surfaceEvent.type === 'tool.rejected'
+                  ) {
+                    resultLine(data.isError === true, undefined, data.output);
+                  }
+                }
               }
               const result = await stream.result;
               if (result.text) process.stdout.write(`${result.text}\n`);
@@ -778,47 +810,61 @@ async function main() {
     let iteration = 0;
     let hasText = false;
     const activeTools = new Map<string, { name: string; start: number }>();
+    const surfaceEvents = new LegacySurfaceEventPipeline();
 
     for await (const event of stream) {
-      switch (event.type) {
+      for (const surfaceEvent of surfaceEvents.projectFor(event, 'cli')) {
+        const data = surfaceEvent.data;
+        switch (surfaceEvent.type) {
         case 'request.started':
-          iteration = event.iteration;
+          iteration = surfaceInteger(data.iteration) ?? iteration;
           if (iteration > 1) process.stdout.write(`\n${C.d}── iteration ${iteration} ──${C.r}\n`);
           break;
-        case 'response.text.delta': {
-          const txt = typeof event.delta === 'string' ? event.delta : (event.delta as any)?.text ?? '';
+        case 'text.delta': {
+          const txt = surfaceString(data.delta) ?? '';
           process.stdout.write(txt);
           hasText = true;
           break;
         }
-        case 'response.content':
-          if (event.content.type === 'thinking') {
-            const th = ((event.content as any).thinking ?? '').slice(0, 250);
+        case 'model.content': {
+          const content = surfaceRecord(data.content);
+          if (data.kind === 'content' && content?.type === 'thinking') {
+            const th = (surfaceString(content.thinking) ?? '').slice(0, 250);
             process.stdout.write(`\n${C.d}💭 ${th}${C.r}\n`);
           }
           break;
-        case 'tool.call': {
-          activeTools.set(event.call.id, { name: event.call.name, start: Date.now() });
-          toolLine(event.call.name, event.call.input as Record<string, unknown>);
+        }
+        case 'tool.started': {
+          const callId = surfaceString(data.callId);
+          const name = surfaceString(data.name) ?? surfaceString(data.publicName) ?? 'tool';
+          if (callId) activeTools.set(callId, { name, start: Date.now() });
+          toolLine(name, surfaceRecord(data.input) ?? {});
           break;
         }
         case 'tool.progress': {
-          const p = event.data as any;
-          if (p?.message) process.stdout.write(`\r\x1b[K${C.d}     ${p.message}${C.r}`);
+          const message = surfaceString(data.message)
+            ?? surfaceString(surfaceRecord(data.progress)?.message);
+          if (message) process.stdout.write(`\r\x1b[K${C.d}     ${message}${C.r}`);
           break;
         }
-        case 'tool.result': {
-          const info = activeTools.get(event.result.id);
-          activeTools.delete(event.result.id);
-          resultLine(event.result.isError, info ? Date.now() - info.start : undefined, event.result.output);
+        case 'tool.completed':
+        case 'tool.failed':
+        case 'tool.rejected': {
+          const callId = surfaceString(data.callId);
+          const info = callId ? activeTools.get(callId) : undefined;
+          if (callId) activeTools.delete(callId);
+          resultLine(data.isError === true, info ? Date.now() - info.start : undefined, data.output);
           break;
         }
-        case 'session.compacted':
+        case 'compaction.completed':
           process.stdout.write(`\n${C.d}── context compacted ──${C.r}\n`);
           break;
         case 'error':
-          process.stdout.write(`\n${C.R}  ✕ ${event.error.message}${C.r}\n`);
+          process.stdout.write(`\n${C.R}  ✕ ${surfaceString(data.message) ?? 'run failed'}${C.r}\n`);
           break;
+        default:
+          break;
+        }
       }
     }
     if (!hasText) { const r = await stream.result; if (r.text) process.stdout.write(r.text); }

@@ -483,9 +483,12 @@ describe('Hadamard SDK subagent parity', () => {
       const agentCall = result.toolCalls.find(call => call.publicName === 'Agent');
       const output = agentCall?.output as { worktreePath?: string };
       worktreePath = output.worktreePath;
-      expect(worktreePath).toBeTruthy();
+      const parentEdit = await readFile(path.join(repository, 'agent.txt'), 'utf8')
+        .catch(() => undefined);
+      const diagnostic = `Agent tool output: ${JSON.stringify(output)}`;
+      expect(parentEdit, diagnostic).toBeUndefined();
+      expect(worktreePath, diagnostic).toBeTruthy();
       expect(await readFile(path.join(worktreePath!, 'agent.txt'), 'utf8')).toBe('isolated\n');
-      await expect(readFile(path.join(repository, 'agent.txt'), 'utf8')).rejects.toThrow();
     } finally {
       await sdk.close();
       if (worktreePath) {

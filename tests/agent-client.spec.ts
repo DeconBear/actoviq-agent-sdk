@@ -236,6 +236,7 @@ describe('ActoviqAgentClient', () => {
       expect(result.toolCalls).toHaveLength(1);
       expect(result.toolCalls[0]?.outputText).toContain('5');
       expect(result.text).toContain('5');
+      expect(result.usage).toMatchObject({ input_tokens: 20, output_tokens: 10 });
       expect(modelApi.createCalls).toHaveLength(2);
       expect(modelApi.createCalls[1]?.messages.at(-1)).toMatchObject({ role: 'user' });
     } finally {
@@ -273,6 +274,62 @@ describe('ActoviqAgentClient', () => {
       expect(session.title.length).toBeGreaterThan(0);
     } finally {
       await sdk.close();
+    }
+  });
+
+  it('persists the resolved per-run workDir and restores it after an SDK restart', async () => {
+    const root = await createSessionDirectory();
+    const sessionDirectory = path.join(root, 'sessions');
+    const initialWorkDir = path.join(root, 'initial-workspace');
+    const overrideWorkDir = path.join(root, 'worktree-workspace');
+    const restartedWorkDir = path.join(root, 'restarted-default');
+    await Promise.all([
+      mkdir(initialWorkDir, { recursive: true }),
+      mkdir(overrideWorkDir, { recursive: true }),
+      mkdir(restartedWorkDir, { recursive: true }),
+    ]);
+
+    const firstSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      workDir: initialWorkDir,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'Worktree turn complete.' }]),
+      }),
+    });
+    const session = await firstSdk.createSession();
+    await session.send('Run inside the worktree.', { workDir: overrideWorkDir });
+    const sessionId = session.id;
+    await firstSdk.close();
+
+    const stored = await new SessionStore(sessionDirectory).load(sessionId);
+    expect(stored.metadata.__actoviqWorkDir).toBe(overrideWorkDir);
+
+    let resumedHookWorkDir: string | undefined;
+    const secondSdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      workDir: restartedWorkDir,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'Resumed in worktree.' }]),
+      }),
+      hooks: {
+        sessionStart: [
+          (context) => {
+            resumedHookWorkDir = context.workDir;
+          },
+        ],
+      },
+    });
+
+    try {
+      const resumed = await secondSdk.resumeSession(sessionId);
+      await resumed.send('Continue in the persisted workspace.');
+      expect(resumedHookWorkDir).toBe(overrideWorkDir);
+      expect((await new SessionStore(sessionDirectory).load(sessionId)).metadata.__actoviqWorkDir)
+        .toBe(overrideWorkDir);
+    } finally {
+      await secondSdk.close();
     }
   });
 

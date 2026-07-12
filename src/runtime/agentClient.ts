@@ -15,6 +15,7 @@ import {
 } from '../computer/actoviqComputerUse.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
 import { resolveActoviqModelReference } from '../config/modelTiers.js';
+import { recordCompatUsage } from '../compat/diagnostics.js';
 import {
   mergeActoviqHooks,
   normalizeActoviqHookMessages,
@@ -87,7 +88,9 @@ import {
   createGitWorktreeWorkspace,
 } from '../workspace/actoviqWorkspace.js';
 import {
+  ACTOVIQ_RUN_STATE_KEY,
   ActoviqAgentsApi,
+  createActoviqRunToolState,
   createActoviqTaskTool,
   summarizeActoviqAgentDefinition,
 } from './actoviqAgents.js';
@@ -136,6 +139,8 @@ import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
 import { createActoviqModelApi } from './actoviqModelApi.js';
 import { createOpenaiModelApi } from '../provider/openai-model-api.js';
 import { AgentRunStream } from './asyncQueue.js';
+import { SessionTurnCoordinator } from './sessionTurnCoordinator.js';
+import { withDeadline } from './deadline.js';
 import { executeConversation } from './conversationEngine.js';
 import { asError, createId, deepClone, isRecord, nowIso, truncateText } from './helpers.js';
 import { tool } from './tools.js';
@@ -209,6 +214,7 @@ interface InternalAgentRunOptions extends AgentRunOptions {
   __actoviqDisallowedTools?: string[];
   __actoviqPreloadedSkills?: string[];
   __actoviqWorkDir?: string;
+  __actoviqPersistedWorkDir?: string;
   __actoviqInitialPrompt?: string;
 }
 
@@ -590,6 +596,7 @@ export class ActoviqAgentClient {
   readonly slashCommands: ActoviqSlashCommandsApi;
   readonly workflow: WorkflowApi;
   private readonly sessionManager: SessionManager;
+  private readonly sessionTurnCoordinator = new SessionTurnCoordinator();
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
   private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
   /** Names of `paths:`-conditional skills activated by touching matching files. */
@@ -812,6 +819,8 @@ export class ActoviqAgentClient {
     const mcpManager = new McpConnectionManager({
       name: config.clientName,
       version: config.clientVersion,
+    }, {
+      requestTimeoutMs: config.mcpTimeoutMs,
     });
     const loadedSkills = await loadActoviqSkillDefinitions({
       homeDir: config.homeDir,
@@ -899,18 +908,22 @@ export class ActoviqAgentClient {
   ): AgentRunStream {
     const runId = createId();
     return new AgentRunStream(async (controller) => {
+      const runOptions = {
+        ...options,
+        signal: combineAbortSignals(options.signal, controller.signal),
+      };
       try {
-        const augmentations = await this.prepareRunAugmentations(runId, input, options);
+        const augmentations = await this.prepareRunAugmentations(runId, input, runOptions);
         const result = await this.executeRun(
           runId,
           input,
-          options,
+          runOptions,
           undefined,
           true,
           controller.emit,
           augmentations,
         );
-        const hookOutcome = await this.applyPostRunHooks(runId, input, options, result);
+        const hookOutcome = await this.applyPostRunHooks(runId, input, runOptions, result);
         if (hookOutcome.sessionMetadata) {
           result.sessionHookMetadata = hookOutcome.sessionMetadata;
         }
@@ -939,7 +952,7 @@ export class ActoviqAgentClient {
         });
         throw error;
       }
-    });
+    }, { signal: options.signal });
   }
 
   async parallel<T>(
@@ -1886,13 +1899,25 @@ export class ActoviqAgentClient {
     });
   }
 
-  private async runOnSession(
+  private runOnSession(
     session: AgentSession,
     input: string | MessageParam['content'],
     options: AgentRunOptions = {},
   ): Promise<AgentRunResult> {
+    return this.sessionTurnCoordinator.runExclusive(
+      session.id,
+      () => this.runOnSessionExclusive(session, input, options),
+    );
+  }
+
+  private async runOnSessionExclusive(
+    session: AgentSession,
+    input: string | MessageParam['content'],
+    options: AgentRunOptions,
+  ): Promise<AgentRunResult> {
     const runId = createId();
-    const initialSnapshot = session.snapshot();
+    const initialSnapshot = await this.store.load(session.id);
+    session.replace(initialSnapshot);
     const resolvedOptions = this.applySessionRuntimeOverrides(
       session.id,
       this.resolveSessionAgentOptions(initialSnapshot, options),
@@ -1924,6 +1949,7 @@ export class ActoviqAgentClient {
       hookOutcome,
     );
     await this.sessionManager.touch(session.id);
+    session.replace(await this.store.load(session.id));
     return execution.result;
   }
 
@@ -1933,13 +1959,19 @@ export class ActoviqAgentClient {
     options: AgentRunOptions = {},
   ): AgentRunStream {
     const runId = createId();
-    const initialSnapshot = session.snapshot();
 
-    return new AgentRunStream(async (controller) => {
+    return new AgentRunStream((controller) =>
+      this.sessionTurnCoordinator.runExclusive(session.id, async () => {
+      const runOptions = {
+        ...options,
+        signal: combineAbortSignals(options.signal, controller.signal),
+      };
       try {
+        const initialSnapshot = await this.store.load(session.id);
+        session.replace(initialSnapshot);
         const resolvedOptions = this.applySessionRuntimeOverrides(
           session.id,
-          this.resolveSessionAgentOptions(initialSnapshot, options),
+          this.resolveSessionAgentOptions(initialSnapshot, runOptions),
         );
         const execution = await this.executeSessionRunWithReactiveCompact({
           runId,
@@ -1969,6 +2001,8 @@ export class ActoviqAgentClient {
           execution.augmentations.surfacedMemories,
           hookOutcome,
         );
+        await this.sessionManager.touch(session.id);
+        session.replace(await this.store.load(session.id));
         controller.emit({
           type: 'response.completed',
           runId,
@@ -1990,7 +2024,7 @@ export class ActoviqAgentClient {
         });
         throw error;
       }
-    });
+    }), { signal: options.signal });
   }
 
   private async executeRun(
@@ -2009,14 +2043,10 @@ export class ActoviqAgentClient {
       ...(session?.metadata ?? {}),
       ...(augmentations?.metadata ?? {}),
       ...(options.metadata ?? {}),
+      [ACTOVIQ_RUN_STATE_KEY]: createActoviqRunToolState(),
     };
 
-    // Resolve working directory: sessionWorkDir (from worktree) takes priority
-    // unless inheritWorktree is explicitly false.
-    const inheritWorktree = options.inheritWorktree !== false;
-    const workDir = inheritWorktree
-      ? (options.__actoviqWorkDir ?? options.sessionWorkDir ?? options.workDir ?? this.config.workDir)
-      : (options.__actoviqWorkDir ?? options.workDir ?? this.config.workDir);
+    const workDir = this.resolveRunWorkDir(options);
     const mergedTools = filterAgentTools(
       mergeUniqueByName(
       options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
@@ -2056,7 +2086,12 @@ export class ActoviqAgentClient {
           ]
         : undefined;
 
-    return executeConversation({
+    let checkpointSession = session ? deepClone(session) : undefined;
+    return withDeadline(
+      `Agent run ${runId}`,
+      runtimeConfig.runTimeoutMs,
+      options.signal,
+      ({ signal }) => executeConversation({
       runId,
       input,
       messages: session?.messages,
@@ -2075,7 +2110,7 @@ export class ActoviqAgentClient {
       toolChoice: options.toolChoice,
       userId: options.userId ?? this.config.userId,
       metadata,
-      signal: options.signal,
+      signal,
       permissionMode: options.permissionMode ?? this.defaultPermissionMode,
       permissions: options.permissions ?? this.defaultPermissions,
       classifier: options.classifier ?? this.defaultClassifier,
@@ -2089,17 +2124,18 @@ export class ActoviqAgentClient {
         this.activateConditionalSkillsFromEvent(event);
         emit?.(event);
       },
-      onConversationCheckpoint: session
+      onConversationCheckpoint: checkpointSession
         ? async (messages) => {
-            const snap = deepClone(session);
+            const snap = deepClone(checkpointSession!);
             snap.messages = deepClone(messages);
             snap.updatedAt = nowIso();
             snap.metadata = {
               ...snap.metadata,
-              __actoviqWorkDir: this.config.workDir,
+              __actoviqWorkDir: workDir,
               ...(options.metadata ?? {}),
             };
             await this.store.save(snap);
+            checkpointSession = snap;
             // Keep the live AgentSession (if any) in sync so a subsequent
             // persistSessionAfterRun / reactive compact sees the checkpoint.
             liveSession?.replace(snap);
@@ -2111,7 +2147,8 @@ export class ActoviqAgentClient {
       modelApi: options.modelApi ?? this.modelApi,
       config: runtimeConfig,
       mcpManager: this.mcpManager,
-    }).then(result => ({
+    }),
+    ).then(result => ({
       ...result,
       surfacedMemories: augmentations?.surfacedMemories.length
         ? deepClone(augmentations.surfacedMemories)
@@ -2159,7 +2196,7 @@ export class ActoviqAgentClient {
         }
         return {
           result,
-          snapshot: currentSnapshot,
+          snapshot: args.session.snapshot(),
           augmentations: currentAugmentations,
         };
       } catch (error) {
@@ -2243,7 +2280,7 @@ export class ActoviqAgentClient {
     const preloadedSkillMessages = await this.preparePreloadedAgentSkillMessages(
       internalOptions.__actoviqPreloadedSkills,
       session?.id,
-      internalOptions.__actoviqWorkDir ?? internalOptions.workDir ?? this.config.workDir,
+      this.resolveRunWorkDir(internalOptions),
     );
     const hooks = mergeActoviqHooks(this.hooks, options.hooks);
     const prefixedMessages = [
@@ -2258,15 +2295,20 @@ export class ActoviqAgentClient {
     const metadata: Record<string, unknown> = {};
 
     for (const hook of resolveActoviqSessionStartHooks(hooks)) {
-      const result = await hook({
+      const result = await withDeadline(
+        'sessionStart hook',
+        this.config.hookTimeoutMs,
+        options.signal,
+        ({ signal }) => hook({
         runId,
         input,
         promptText,
         sessionId: session?.id,
         session: session ? deepClone(session) : undefined,
-        workDir: internalOptions.__actoviqWorkDir ?? internalOptions.workDir ?? this.config.workDir,
-        options,
-      });
+        workDir: this.resolveRunWorkDir(internalOptions),
+        options: { ...options, signal },
+      }),
+      );
       if (!result) {
         continue;
       }
@@ -2338,7 +2380,7 @@ export class ActoviqAgentClient {
     ) {
       return [];
     }
-    const workDir = options.__actoviqWorkDir ?? options.workDir ?? this.config.workDir;
+    const workDir = this.resolveRunWorkDir(options);
     const root =
       scope === 'user'
         ? path.join(this.config.homeDir, 'agent-memory', agentName)
@@ -2377,19 +2419,21 @@ export class ActoviqAgentClient {
     const tags = new Set<string>();
 
     for (const hook of resolveActoviqPostRunHooks(hooks)) {
-      const output = await hook({
+      const output = await withDeadline(
+        'postRun hook',
+        this.config.hookTimeoutMs,
+        options.signal,
+        ({ signal }) => hook({
         runId,
         input,
         promptText,
         sessionId: session?.id,
         session: session ? deepClone(session) : undefined,
-        workDir:
-          (options as InternalAgentRunOptions).__actoviqWorkDir ??
-          options.workDir ??
-          this.config.workDir,
-        options,
+        workDir: this.resolveRunWorkDir(options),
+        options: { ...options, signal },
         result,
-      });
+      }),
+      );
       if (!output) {
         continue;
       }
@@ -2621,7 +2665,7 @@ export class ActoviqAgentClient {
         trigger: 'reactive',
       },
       {
-        workDir: this.config.workDir,
+        workDir: this.resolveRunWorkDir(options),
         systemPrompt: snapshot.systemPrompt ?? this.config.systemPrompt,
         model: this.resolveModel(options.model ?? snapshot.model),
         modelApi: this.modelApi,
@@ -3420,10 +3464,11 @@ export class ActoviqAgentClient {
     snapshot: StoredSession,
     input: string | MessageParam['content'],
     result: AgentRunResult,
-    options: AgentRunOptions,
+    options: InternalAgentRunOptions,
     surfacedMemories: readonly ActoviqSurfacedMemory[] = [],
     hookOutcome: { sessionMetadata?: Record<string, unknown>; tags?: string[] } = {},
   ): Promise<void> {
+    const workDir = this.resolveRunWorkDir(options);
     const next = deepClone(snapshot);
     next.model = result.model;
     next.systemPrompt = options.systemPrompt ?? next.systemPrompt;
@@ -3432,7 +3477,7 @@ export class ActoviqAgentClient {
     next.lastRunAt = result.completedAt;
     next.metadata = {
       ...next.metadata,
-      __actoviqWorkDir: this.config.workDir,
+      __actoviqWorkDir: workDir,
       ...(options.metadata ?? {}),
       ...(hookOutcome.sessionMetadata ?? {}),
     };
@@ -3547,7 +3592,7 @@ export class ActoviqAgentClient {
       await appendMessagesToTranscript(
         paths.projectStateDir,
         session.id,
-        this.config.workDir,
+        workDir,
         newMessages,
       );
     }
@@ -3562,7 +3607,7 @@ export class ActoviqAgentClient {
     await this.applySessionMemoryState(session, next, extraction.state);
 
     const compacted = await compactActoviqSession(next, { trigger: 'auto' }, {
-      workDir: this.config.workDir,
+      workDir,
       systemPrompt: next.systemPrompt ?? this.config.systemPrompt,
       model: this.resolveModel(options.model ?? next.model),
       modelApi: this.modelApi,
@@ -3604,18 +3649,41 @@ export class ActoviqAgentClient {
     return cloneSkillDefinition(definition);
   }
 
+  private resolveRunWorkDir(options: AgentRunOptions): string {
+    const internal = options as InternalAgentRunOptions;
+    if (options.inheritWorktree === false) {
+      return internal.__actoviqWorkDir ?? options.workDir ?? this.config.workDir;
+    }
+    return (
+      internal.__actoviqWorkDir ??
+      options.sessionWorkDir ??
+      options.workDir ??
+      internal.__actoviqPersistedWorkDir ??
+      this.config.workDir
+    );
+  }
+
   private resolveSessionAgentOptions(
     session: StoredSession,
     options: AgentRunOptions,
   ): InternalAgentRunOptions {
+    const persistedWorkDir =
+      typeof session.metadata.__actoviqWorkDir === 'string' &&
+      session.metadata.__actoviqWorkDir.trim().length > 0
+        ? session.metadata.__actoviqWorkDir
+        : undefined;
+    const sessionOptions: InternalAgentRunOptions = {
+      ...options,
+      __actoviqPersistedWorkDir: persistedWorkDir,
+    };
     const agentName =
       typeof session.metadata.__actoviqAgentDefinition === 'string'
         ? session.metadata.__actoviqAgentDefinition
         : undefined;
     if (!agentName) {
-      return options;
+      return sessionOptions;
     }
-    return this.mergeAgentRunOptions(this.requireAgentDefinition(agentName), options);
+    return this.mergeAgentRunOptions(this.requireAgentDefinition(agentName), sessionOptions);
   }
 
   private mergeAgentRunOptions(
@@ -3707,6 +3775,7 @@ export class ActoviqAgentClient {
 export async function createAgentSdk(
   options: CreateAgentSdkOptions = {},
 ): Promise<ActoviqAgentClient> {
+  recordCompatUsage('createAgentSdk');
   return ActoviqAgentClient.create(options);
 }
 
@@ -3749,6 +3818,13 @@ function joinPromptParts(...parts: Array<string | undefined>): string | undefine
     return undefined;
   }
   return normalized.join('\n\n');
+}
+
+function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const available = signals.filter((signal): signal is AbortSignal => signal != null);
+  if (available.length === 0) return undefined;
+  if (available.length === 1) return available[0];
+  return AbortSignal.any(available);
 }
 
 function mergeAgentDefinitions(

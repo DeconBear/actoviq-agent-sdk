@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## v1.0.0 release candidate - 2026-07-11
+
+### Stable SDK contracts
+
+- Added responsibility-based public subpaths: `/core`, `/providers`, `/runtime`, `/events`, `/surfaces`, `/orchestration`, `/workflow`, `/profiles`, `/node`, and `/compat`.
+- Added provider-neutral canonical items, immutable `AgentSpec`, structured output, guardrails, aggregate usage, and versioned run errors.
+- Added `ModelProvider`, capability preflight, registry/transport contracts, and OpenAI Responses, OpenAI Chat compatibility, and Anthropic adapters.
+- Added `AgentRuntime`, fixed-stage middleware, lazy `RuntimeServices`, bounded streaming, unified cancellation/deadlines, tool policy, interruption, checkpoint, and resume contracts.
+- Reserved model/tool terminals now fail closed when middleware omits `next()`; model rewrites are post-validated, while ToolRunner parses once, freezes the validated result, and rejects wrapper replacement so capability/policy/schema invariants cannot be bypassed.
+- Added a fair, abort-aware top-level runtime concurrency gate; acceptance now covers 100 same-session turns and 1000 independent sessions without exceeding the configured provider concurrency.
+- GUI issue dispatch now persists a durable child/checkpoint before executing the legacy session adapter, with SQLite query/resume across coordinator restart and no second SDK/runtime instance.
+
+### Durable state and orchestration
+
+- Added tenant-scoped SQLite session, checkpoint, memory, artifact, and durable child stores with CAS and append-only item journals.
+- Added backup-first JSON v1 migration with canonical message conversion, migration ledger/idempotency, transaction rollback, legacy run filtering, and runtime cutover coverage.
+- Added agent-as-tool, handoff, durable background spawn, run-tree cancellation, inherited budget/policy/workspace/trace scope, workflow graph/reducer, and team/router/reviewer/swarm presets.
+- Explicit handoff now invokes the source runtime's `beforeHandoff` stage before child execution and ownership transfer; model-produced handoff items are not implicitly dispatched.
+- Split trusted compatibility workflow execution from fail-closed untrusted process/sandbox execution.
+
+### Agent profiles and product surfaces
+
+- Added chat, coding, research, workflow, supervisor, and background profiles sharing one runtime contract.
+- Added versioned `RunEvent` processing, redaction, trace propagation, OpenTelemetry-compatible export, and shared CLI/TUI/GUI/Bridge semantics.
+- Added `AgentRuntimeBridgeAdapter`, a thin Bridge projection over an existing runtime that owns no duplicate provider or service container.
+- Retained the 0.x root API and `createAgentSdk` as the 1.x compatibility façade, with provider adapters and local opt-in migration diagnostics.
+
+### Reliability, security, and release gates
+
+- Fixed same-session concurrency, bounded queue cancellation, side-effect retry safety, MCP configuration identity/catalog caching, team permission inheritance, work directory persistence, and usage aggregation.
+- Windows provider detection no longer executes `.cmd`/`.bat` shims for best-effort version display, preventing descendant leaks when the host denies process-tree termination; availability remains detectable and version is reported as unknown.
+- Added Node.js 22.13+/24 support policy, exact minimum-version CI gates, `SECURITY.md`, threat/failure policy, ten ADRs, migration/cutover/rollback guidance, and a 1.0 migration guide. The 22.13 floor reflects when `node:sqlite` became available without a host process flag.
+- Added runtime performance benchmarks, public API snapshots, package subpath clean-import verification, package dry-run, SDK layer coverage gates, and Node/OS CI matrices.
+
+### Compatibility notes
+
+- Node.js 18/20 and Node.js 22.0–22.4 are no longer supported.
+- Unknown legacy provider blocks remain durable for audit but are not replayed into a different provider's active transcript.
+- Local process workflow isolation is not an adversarial multi-tenant sandbox.
+
 ## v0.4.0 - 2026-06-15
 
 ### Features
