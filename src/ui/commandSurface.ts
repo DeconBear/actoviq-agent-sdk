@@ -30,7 +30,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   dream: 'Inspect or run memory consolidation',
   workflows: 'Browse saved dynamic workflows',
   worktree: 'Enter, exit, or list git worktrees',
-  team: 'List, attach, or run Model Team definitions',
+  team: 'List, attach, or run Model Team definitions (Graph = collab DAG; Workflow = light tree; blocks ≠ second engine)',
   issues: 'List or update project issues',
   manager: 'Project Manager: progress docs + project chat',
   bridge: 'Configure / run bridge runtimes (6 providers)',
