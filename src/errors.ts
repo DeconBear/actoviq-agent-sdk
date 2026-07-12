@@ -20,6 +20,31 @@ export class SessionNotFoundError extends ActoviqSdkError {
   }
 }
 
+export class SessionConflictError extends ActoviqSdkError {
+  readonly sessionId: string;
+  readonly expectedRevision: number;
+  readonly actualRevision: number;
+
+  constructor(sessionId: string, expectedRevision: number, actualRevision: number) {
+    super(
+      `Session "${sessionId}" changed since it was loaded (expected revision ${expectedRevision}, actual revision ${actualRevision}).`,
+      'SESSION_CONFLICT',
+    );
+    this.sessionId = sessionId;
+    this.expectedRevision = expectedRevision;
+    this.actualRevision = actualRevision;
+  }
+}
+
+export class SessionDataError extends ActoviqSdkError {
+  readonly sessionId: string;
+
+  constructor(sessionId: string, message: string, options?: { cause?: unknown }) {
+    super(`Session "${sessionId}" is invalid: ${message}`, 'SESSION_DATA_INVALID', options);
+    this.sessionId = sessionId;
+  }
+}
+
 export class ToolExecutionError extends ActoviqSdkError {
   readonly toolName: string;
 
@@ -32,6 +57,17 @@ export class ToolExecutionError extends ActoviqSdkError {
 export class RunAbortedError extends ActoviqSdkError {
   constructor(message = 'The run was aborted.', options?: { cause?: unknown }) {
     super(message, 'RUN_ABORTED', options);
+  }
+}
+
+export class DeadlineExceededError extends ActoviqSdkError {
+  readonly scope: string;
+  readonly timeoutMs: number;
+
+  constructor(scope: string, timeoutMs: number, options?: { cause?: unknown }) {
+    super(`${scope} exceeded its ${timeoutMs}ms deadline.`, 'DEADLINE_EXCEEDED', options);
+    this.scope = scope;
+    this.timeoutMs = timeoutMs;
   }
 }
 

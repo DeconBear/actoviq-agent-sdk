@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -14,6 +14,18 @@ import { BRIDGE_PROVIDER_CREDENTIALS, claudeProvider, piProvider, codexProvider 
 const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
 const originalConfigDir = process.env.ACTOVIQ_CONFIG_DIR;
+const providerPathEnvKeys = [
+  'ACTOVIQ_CLAUDE_PATH',
+  'ACTOVIQ_PI_PATH',
+  'ACTOVIQ_CODEX_PATH',
+  'ACTOVIQ_CODEWHALE_PATH',
+  'ACTOVIQ_REASONIX_PATH',
+  'ACTOVIQ_CRUSH_PATH',
+] as const;
+const originalProviderPaths = new Map(
+  providerPathEnvKeys.map(key => [key, process.env[key]] as const),
+);
+const originalProbePidFile = process.env.ACTOVIQ_BRIDGE_PROBE_PID_FILE;
 
 afterEach(async () => {
   clearLoadedJsonConfig();
@@ -22,16 +34,13 @@ afterEach(async () => {
   } else {
     process.env.ACTOVIQ_CONFIG_DIR = originalConfigDir;
   }
-  // Clean env overrides that individual tests may set.
-  const restore: Array<{ key: string; val: string | undefined }> = [
-    { key: 'ACTOVIQ_CLAUDE_PATH', val: undefined },
-    { key: 'ACTOVIQ_PI_PATH', val: undefined },
-    { key: 'ACTOVIQ_CODEX_PATH', val: undefined },
-  ];
-  for (const { key, val } of restore) {
-    if (val == null) delete process.env[key];
-    else process.env[key] = val;
+  for (const key of providerPathEnvKeys) {
+    const original = originalProviderPaths.get(key);
+    if (original == null) delete process.env[key];
+    else process.env[key] = original;
   }
+  if (originalProbePidFile == null) delete process.env.ACTOVIQ_BRIDGE_PROBE_PID_FILE;
+  else process.env.ACTOVIQ_BRIDGE_PROBE_PID_FILE = originalProbePidFile;
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
@@ -39,6 +48,51 @@ async function createTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+function maskProviderExecutablesAsMissing(): void {
+  for (const key of providerPathEnvKeys) {
+    process.env[key] = path.join(os.tmpdir(), 'actoviq-definitely-missing-provider');
+  }
+}
+
+async function createHangingVersionExecutable(): Promise<{
+  executablePath: string;
+  pidFile: string;
+}> {
+  const tempDir = await createTempDir('bridge-prov-hanging-');
+  const pidFile = path.join(tempDir, 'pids.txt');
+  const scriptPath = path.join(tempDir, 'hang-version.mjs');
+  const script = [
+    `import { appendFileSync } from 'node:fs';`,
+    `appendFileSync(process.env.ACTOVIQ_BRIDGE_PROBE_PID_FILE, String(process.pid) + '\\n');`,
+    `setInterval(() => {}, 1_000);`,
+    '',
+  ].join('\n');
+
+  if (process.platform !== 'win32') {
+    await writeFile(scriptPath, `#!/usr/bin/env node\n${script}`, 'utf8');
+    await chmod(scriptPath, 0o755);
+    return { executablePath: scriptPath, pidFile };
+  }
+
+  await writeFile(scriptPath, script, 'utf8');
+  const wrapperPath = path.join(tempDir, 'hang-version.cmd');
+  await writeFile(
+    wrapperPath,
+    `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`,
+    'utf8',
+  );
+  return { executablePath: wrapperPath, pidFile };
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 describe('Bridge provider: resolveExecutable precedence', () => {
@@ -103,6 +157,7 @@ describe('Bridge provider: resolveExecutable precedence', () => {
 
 describe('detectBridgeProviders', () => {
   it('returns entries for all six registered providers', async () => {
+    maskProviderExecutablesAsMissing();
     const results = await detectBridgeProviders();
     expect(results).toHaveLength(6);
 
@@ -119,8 +174,9 @@ describe('detectBridgeProviders', () => {
   });
 
   it('reports unavailable when a provider is unresolvable', async () => {
-    // Point pi at a definitely-broken path; env overrides skip PATH.
-    process.env.ACTOVIQ_PI_PATH = '/no/such/pi-binary';
+    // Broken env overrides skip PATH and keep this test independent from
+    // whatever provider CLIs happen to be installed on the host.
+    maskProviderExecutablesAsMissing();
     const results = await detectBridgeProviders();
     const piResult = results.find(r => r.id === 'pi');
     expect(piResult?.available).toBe(false);
@@ -137,6 +193,7 @@ describe('detectBridgeProviders', () => {
       'utf8',
     );
     await loadJsonConfigFile(configPath);
+    maskProviderExecutablesAsMissing();
 
     // getDefaultProviderId is used internally by resolveProvider and
     // ActoviqBridgeSdkClient.create. The detect API itself doesn't
@@ -146,24 +203,53 @@ describe('detectBridgeProviders', () => {
     expect(results.find(r => r.id === 'codex')).toBeDefined();
     expect(results).toHaveLength(6);
   });
+
+  it('bounds direct probes and avoids unkillable Windows batch-shim trees', async () => {
+    const { executablePath, pidFile } = await createHangingVersionExecutable();
+    process.env.ACTOVIQ_BRIDGE_PROBE_PID_FILE = pidFile;
+    for (const key of providerPathEnvKeys) process.env[key] = executablePath;
+
+    const startedAt = Date.now();
+    const results = await detectBridgeProviders({ probeTimeoutMs: 750 });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(results).toHaveLength(6);
+    expect(results.every(result => result.available && result.version === undefined)).toBe(true);
+    // Windows batch shims are deliberately not executed because restricted
+    // hosts may deny taskkill /T; direct probes on other platforms time out.
+    expect(elapsedMs).toBeLessThan(process.platform === 'win32' ? 5_000 : 4_000);
+
+    const pidText = await readFile(pidFile, 'utf8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+      throw error;
+    });
+    const pids = pidText
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(Number)
+      .filter(Number.isFinite);
+    if (process.platform === 'win32') {
+      expect(pids).toEqual([]);
+      return;
+    }
+    expect(pids.length).toBeGreaterThan(0);
+    const alivePids = pids.filter(isProcessAlive);
+    expect(alivePids, `Timed-out provider probes still alive: ${alivePids.join(', ')}`).toEqual([]);
+  }, 10_000);
 });
 
 describe('Bridge provider: probeVersion (best-effort)', () => {
   it('returns undefined when --version spawn fails (non-executable .mjs)', async () => {
-    // The fake CLIs are .mjs node scripts — they can't be `execFile`d
+    // The fake CLIs are .mjs node scripts — they can't be spawned
     // directly. probeVersion wraps in try/catch → undefined.
     const version = await claudeProvider.probeVersion(fixtureCliPath);
     expect(version).toBeUndefined();
   });
 
-  it('returns a string for a real binary (claude on PATH)', async () => {
-    // Only run this if claude is actually on PATH (it is on this machine).
-    const claudePath = await claudeProvider.resolveExecutable().catch(() => undefined);
-    if (!claudePath) return; // skip in CI / where claude is missing
-    const version = await claudeProvider.probeVersion(claudePath);
-    // On this machine claude is a .cmd shim → should return a version string.
-    expect(typeof version).toBe('string');
-    expect(version!.length).toBeGreaterThan(0);
+  it('returns a version for a real binary without consulting a shell profile', async () => {
+    const version = await claudeProvider.probeVersion(process.execPath);
+    expect(version).toBe(process.version);
   });
 });
 

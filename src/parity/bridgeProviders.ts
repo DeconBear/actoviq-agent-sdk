@@ -18,7 +18,8 @@
  * deltas), so each provider hands back a fresh normalizer per run.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
+import path from 'node:path';
 
 import type {
   ActoviqBridgeJsonEvent,
@@ -37,16 +38,152 @@ import {
   pathExists,
 } from './bridgeExecResolver.js';
 
-function execFileAsync(
-  file: string,
-  args: string[],
-  options: Parameters<typeof execFile>[2],
-): Promise<{ stdout: string; stderr: string }> {
+const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000;
+const VERSION_PROBE_MAX_BUFFER_BYTES = 1024 * 1024;
+const PROCESS_TREE_KILL_TIMEOUT_MS = 2_500;
+const PROCESS_EXIT_OBSERVE_TIMEOUT_MS = 250;
+const WINDOWS_PROCESS_TREE_SETTLE_MS = 250;
+const WINDOWS_PROCESS_TREE_BATCH_MS = 25;
+const pendingWindowsTreeKills: Array<{ pid: number; resolve: () => void }> = [];
+let pendingWindowsTreeKillTimer: NodeJS.Timeout | undefined;
+let windowsProcessTreeKillTail = Promise.resolve();
+
+function normalizedProbeTimeout(timeoutMs: number | undefined): number {
+  return timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.max(1, Math.floor(timeoutMs))
+    : DEFAULT_VERSION_PROBE_TIMEOUT_MS;
+}
+
+function versionProbeInvocation(executablePath: string): {
+  file: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
+} | undefined {
+  // A Windows batch shim must run under cmd.exe, and Node cannot guarantee
+  // descendant cleanup when taskkill /T is unavailable (for example in a
+  // restricted service or sandbox). Version display is best-effort, so do not
+  // create a process tree that the runtime may be unable to reclaim.
+  if (IS_WINDOWS && /\.(?:cmd|bat)$/i.test(executablePath)) return undefined;
+  return { file: executablePath, args: ['--version'] };
+}
+
+function hasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForChildExit(child: ChildProcess): Promise<void> {
+  if (hasExited(child)) return Promise.resolve();
+  return new Promise(resolve => {
+    const finish = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, PROCESS_EXIT_OBSERVE_TIMEOUT_MS);
+    child.once('close', finish);
+  });
+}
+
+async function terminateProcessTree(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (!pid || hasExited(child)) return;
+
+  if (IS_WINDOWS) {
+    // Concurrent taskkill /T processes contend inside Windows and can time
+    // out while leaving descendants alive. Coalesce probe expirations into a
+    // single taskkill invocation; probe deadlines themselves remain parallel.
+    await taskkillProcessTree(pid);
+  }
+
+  if (!hasExited(child)) child.kill('SIGKILL');
+  await waitForChildExit(child);
+  // taskkill can report completion while Windows still exposes a just-killed
+  // descendant through OpenProcess. Do not resolve provider detection until
+  // that terminating state has settled; callers rely on timeout cleanup being
+  // complete, not merely requested.
+  if (IS_WINDOWS) {
+    await new Promise(resolve => setTimeout(resolve, WINDOWS_PROCESS_TREE_SETTLE_MS));
+  }
+}
+
+function taskkillProcessTree(pid: number): Promise<void> {
+  return new Promise(resolve => {
+    pendingWindowsTreeKills.push({ pid, resolve });
+    if (!pendingWindowsTreeKillTimer) {
+      pendingWindowsTreeKillTimer = setTimeout(
+        flushWindowsProcessTreeKills,
+        WINDOWS_PROCESS_TREE_BATCH_MS,
+      );
+    }
+  });
+}
+
+function flushWindowsProcessTreeKills(): void {
+  pendingWindowsTreeKillTimer = undefined;
+  const batch = pendingWindowsTreeKills.splice(0);
+  if (batch.length === 0) return;
+  const pids = batch.map(({ pid }) => pid);
+  const operation = windowsProcessTreeKillTail.then(() => taskkillProcessTrees(pids));
+  windowsProcessTreeKillTail = operation;
+  void operation.finally(() => {
+    for (const request of batch) request.resolve();
+  });
+}
+
+function taskkillProcessTrees(pids: readonly number[]): Promise<void> {
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
+  const taskkillPath = path.join(systemRoot, 'System32', 'taskkill.exe');
+  const args = pids.flatMap(pid => ['/pid', String(pid)]);
+  args.push('/t', '/f');
+  return new Promise(resolve => {
+    execFile(
+      taskkillPath,
+      args,
+      {
+        shell: false,
+        timeout: PROCESS_TREE_KILL_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      () => resolve(),
+    );
+  });
+}
+
+function probeExecutableVersion(
+  executablePath: string,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  const invocation = versionProbeInvocation(executablePath);
+  if (!invocation) return Promise.resolve(undefined);
   return new Promise((resolve, reject) => {
-    execFile(file, args, options, (error, stdout, stderr) => {
-      if (error) reject(error);
-      else resolve({ stdout: stdout as string, stderr: stderr as string });
-    });
+    let timedOut = false;
+    const child = execFile(
+      invocation.file,
+      invocation.args,
+      {
+        encoding: 'utf8',
+        maxBuffer: VERSION_PROBE_MAX_BUFFER_BYTES,
+        shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      },
+      (error, stdout) => {
+        if (timedOut) return;
+        clearTimeout(timer);
+        if (error) {
+          reject(error);
+          return;
+        }
+        const version = stdout.trim();
+        resolve(version || undefined);
+      },
+    );
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void terminateProcessTree(child).finally(() => {
+        reject(new Error('Bridge provider version probe timed out.'));
+      });
+    }, timeoutMs);
   });
 }
 
@@ -84,9 +221,9 @@ export interface RuntimeProvider {
    * Best-effort `<binary> --version` probe. Returns the version string on
    * success, or `undefined` if the binary cannot be probed (missing, exits
    * non-zero, hangs, etc.). Used by `detectBridgeProviders()` only — never on
-   * the run path.
+   * the run path. `timeoutMs` is a finite per-process deadline.
    */
-  probeVersion(executablePath: string): Promise<string | undefined>;
+  probeVersion(executablePath: string, timeoutMs?: number): Promise<string | undefined>;
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[];
   /**
    * Build the child env. `settingsEnv` is the `~/.actoviq/settings.json` env
@@ -170,18 +307,15 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     );
   }
 
-  async probeVersion(executablePath: string): Promise<string | undefined> {
-    // Windows npm shims are `.cmd`/`.bat` and need a shell to run. Mirror the
-    // spawn shape used by actoviqBridgeSdk.ts:1536.
+  async probeVersion(
+    executablePath: string,
+    timeoutMs?: number,
+  ): Promise<string | undefined> {
     try {
-      const { stdout } = await execFileAsync(executablePath, ['--version'], {
-        shell: IS_WINDOWS && /\.(?:cmd|bat)$/i.test(executablePath),
-        windowsHide: true,
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      });
-      const trimmed = (stdout ?? '').trim();
-      return trimmed || undefined;
+      return await probeExecutableVersion(
+        executablePath,
+        normalizedProbeTimeout(timeoutMs),
+      );
     } catch {
       return undefined;
     }
@@ -262,12 +396,23 @@ export function resolveProvider(id?: RuntimeProviderId): RuntimeProvider {
 /**
  * Probe the locally installed agent CLIs. Resolves each provider via the
  * env/settings/PATH chain (so env overrides are honored) and best-effort
- * `--version`. Never throws — a missing provider is reported as
- * `available: false` with `path: undefined`.
+ * `--version`. Probes run concurrently under individual finite deadlines.
+ * Never throws — a missing provider is reported as `available: false` with
+ * `path: undefined`.
  */
-export async function detectBridgeProviders(): Promise<BridgeProviderDetection[]> {
-  const results: BridgeProviderDetection[] = [];
-  for (const provider of [claudeProvider, piProvider, codexProvider, codewhaleProvider, reasonixProvider, crushProvider]) {
+export async function detectBridgeProviders(
+  options: { probeTimeoutMs?: number } = {},
+): Promise<BridgeProviderDetection[]> {
+  const probeTimeoutMs = normalizedProbeTimeout(options.probeTimeoutMs);
+  const providers = [
+    claudeProvider,
+    piProvider,
+    codexProvider,
+    codewhaleProvider,
+    reasonixProvider,
+    crushProvider,
+  ];
+  return Promise.all(providers.map(async provider => {
     let path: string | undefined;
     let available = false;
     let version: string | undefined;
@@ -275,20 +420,19 @@ export async function detectBridgeProviders(): Promise<BridgeProviderDetection[]
       path = await provider.resolveExecutable();
       available = Boolean(path);
       if (path) {
-        version = await provider.probeVersion(path);
+        version = await provider.probeVersion(path, probeTimeoutMs);
       }
     } catch {
       // Not installed / not configured — report unavailable.
     }
-    results.push({
+    return {
       id: provider.id,
       displayName: provider.displayName,
       path,
       available,
       version,
-    });
-  }
-  return results;
+    };
+  }));
 }
 
 /** Package-private seam for tests that need the ambient provider. */

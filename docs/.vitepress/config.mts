@@ -11,6 +11,12 @@ const zhSidebar = [
       { text: '04 Agents、Swarm、Memory 与 Workspace', link: '/zh/04-agents-swarm-memory-workspace' },
       { text: '05 测试、排错与速查', link: '/zh/05-testing-troubleshooting-cheatsheet' },
       { text: '06 从 0 到 1 做完整 Clean Agent', link: '/zh/06-build-a-complete-clean-agent' },
+      { text: '07 Workflow 编排', link: '/zh/07-workflow-orchestration' },
+      { text: '08 SDK 架构审计与优化规划', link: '/zh/08-sdk-architecture-audit-and-optimization-plan' },
+      { text: '09 SDK 1.0 迁移指南', link: '/zh/09-sdk-v2-migration-guide' },
+      { text: '10 支持、安全与 SemVer', link: '/zh/10-support-security-semver-and-failure-model' },
+      { text: '11 JSON v1 → SQLite Runbook', link: '/zh/11-json-v1-to-sqlite-migration-runbook' },
+      { text: '12 SDK 1.0 实施验收报告', link: '/zh/12-sdk-1.0-implementation-and-verification-report' },
     ],
   },
 ];
@@ -43,7 +49,7 @@ const blogSidebar = [
 
 export default defineConfig({
   title: 'Actoviq Agent SDK',
-  description: 'Clean-first SDK docs for building multi-tool, multi-session agents.',
+  description: 'Actoviq 1.0 SDK docs for provider-neutral, durable, multi-agent runtimes.',
   base: '/actoviq-agent-sdk/',
   cleanUrls: true,
   lastUpdated: true,

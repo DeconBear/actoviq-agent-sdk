@@ -9,7 +9,7 @@
 
 文档站地址：https://deconbear.github.io/actoviq-agent-sdk/
 
-**Actoviq** 是一个 agent team 平台 —— 一个 TypeScript 框架，用于将多个 AI agent、运行时和提供商组合成协作的多 agent 系统。它起源于可编程 agent SDK，但现在的目标是解决 **多 agent、多运行时状态管理** 和 **model team 协作**：协调多个专用模型、跨提供商路由、以及使用共享上下文编排 agent 集群。
+**Actoviq 1.0** 是 TypeScript agent SDK 与 agent team 平台。稳定 SDK 将 provider-neutral agent 声明、模型 provider、runtime/service 所有权、durable state、event、orchestration、workflow trust、profile 与兼容表面明确分层；现有 Team、Bridge、TUI、GUI 继续构建在这些契约之上。
 
 受 Claude Code、Codex、Deepagents 等项目启发。Actoviq 保持独立，拥有自己的公开 API 与文档。
 
@@ -21,9 +21,9 @@
 
 ## 亮点
 
-- **Model Team** — `panel-analysis`（并行调查 + 收敛）和 `reviewer`（只报告可验证问题的审计者）。集中化运行时（`src/team/teamRuntime.ts`），每个成员有稳定身份，流式 `TeamEvent`，每成员独立 provider 配置，全局 AgentPool。
+- **Model Team** — `panel-analysis`（并行调查 + 收敛）和 `reviewer`（只报告可验证问题的审计者）。runtime-owned 成员池、流式 `TeamEvent`、成员 provider 配置，以及继承的权限/重试边界。
 - **Model Router / Leader-Dispatch** — 每轮由 leader 分派到最佳 specialist（任意模型/提供商），执行者自身也可召集 team。Profile 位于 `~/.actoviq/routers/`。
-- **Dynamic Workflows** — JS 脚本多 agent 编排：`agent()`/`parallel()`/`pipeline()` 原语，沙箱运行时，Schema 强制。
+- **Dynamic Workflows** — 显式信任等级的 JS 编排：trusted 兼容执行、隔离 local-process，或由 host 提供的远程/container 强 sandbox；local process 不宣传为对抗性多租户沙箱。
 - **Bridge（命名连接配置）** — 进程内运行时切换：预配置 `anthropic`/`openai` 后端，命名 + apiKey + baseURL + model，命名切换，多轮上下文保留。`/bridge config` 单页编辑器；`/bridge` 列出已保存配置；`/cost` 中按配置展示用量。
 - **桌面 GUI (`actoviq-gui`)** — Electron 聊天 UI：流式 transcript、对话历史、命令面板、设置、每工具权限提示。安全增强。
 - **TUI (`actoviq-tui`)** — 终端 UI，25+ 斜杠命令，Claude Code 风格 UX：`/team`、`/bridge`、`/plan`、`/hooks`、`/mcp`、`/review`、`/context`、`/cost`、`/doctor` 等。实时状态旋转器、滚动 transcript、todo 面板、项目/用户级权限对话框、子命令自动补全。
@@ -31,6 +31,16 @@
 - **Worktree 工具** — `EnterWorktree`/`ExitWorktree`，栈式 cwd，`.worktreeinclude`，PR checkout。
 - **TavilySearch** — AI 优化网络搜索，纯 TypeScript。
 - **Standard Benchmark** — 自包含框架，DeepSeek judge，HTML dashboard，4-agent 对比。
+
+## 1.0 SDK 架构
+
+- `core`：不可变 `AgentSpec`、canonical items、structured output、guardrail、usage 与 run error。
+- `providers`：统一 `ModelProvider` contract，以及 capability-checked OpenAI Responses、OpenAI Chat-compatible、Anthropic adapter。
+- `runtime`：单一 `AgentRuntime`、lazy `RuntimeServices`、固定阶段 middleware、tool/policy、有界 stream、checkpoint、interruption/resume。
+- `node`：tenant-scoped SQLite session/checkpoint/memory/artifact store 与 backup-first JSON v1 migration。
+- `events` / `surfaces`：版本化、可 trace 的 `RunEvent`，以及统一 CLI/TUI/GUI/Bridge 语义和 redaction。
+- `orchestration` / `workflow` / `profiles`：agent-as-tool、handoff、durable spawn、graph/preset、workflow trust 与六类 profile。
+- `compat`：0.x root façade 与迁移 adapter，在整个 1.x 保留。
 
 ## 路线图 — 迈向 agent team
 
@@ -40,6 +50,9 @@
 - **Model team IDE** — 可视化团队构建器、成员角色编辑器、团队健康仪表板。
 
 ## 安装
+
+要求 Node.js 22.13+ 或 Node.js 24。Node 22.5–22.12 的 `node:sqlite` 仍要求宿主进程 flag，
+因此不属于默认 Runtime 支持范围。
 
 ```bash
 npm install actoviq-agent-sdk zod
@@ -53,36 +66,41 @@ npm install actoviq-agent-sdk zod
 
 也可以使用 `loadJsonConfigFile(...)` 预加载自定义 JSON 文件。
 
-## 快速开始
+## 快速开始（1.0 runtime）
 
 ```ts
-import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import type { AgentSpec } from 'actoviq-agent-sdk/core';
+import { ModelRegistry, OpenAIResponsesProvider } from 'actoviq-agent-sdk/providers';
+import { AgentRuntime } from 'actoviq-agent-sdk/runtime';
 
-await loadDefaultActoviqSettings();
-
-// 默认 Anthropic 协议
-const sdk = await createAgentSdk();
-
-// 或使用 OpenAI / OpenAI 兼容 API
-const sdk = await createAgentSdk({
-  provider: 'openai',
-  baseURL: 'https://api.deepseek.com',
-  model: 'deepseek-chat',
+const runtime = new AgentRuntime({
+  models: new ModelRegistry([
+    new OpenAIResponsesProvider({ apiKey: process.env.OPENAI_API_KEY }),
+  ]),
 });
+const agent: AgentSpec = {
+  id: 'concise-chat',
+  name: 'Concise chat',
+  instructions: '请用一句话回答。',
+  model: 'openai-responses:gpt-4.1-mini',
+};
 
 try {
-  const result = await sdk.run('简要介绍一下你自己。');
-  console.log(result.text);
+  const result = await runtime.run(agent, '什么是 CAS？');
+  console.log(result.output, result.usage.totalTokens);
 } finally {
-  await sdk.close();
+  await runtime.close();
 }
 ```
+
+0.x 应用可继续从 package root 或 `/compat` 导入 `createAgentSdk`。新应用应使用上述职责 subpath；迁移步骤见 [1.0 迁移指南](./docs/zh/09-sdk-v2-migration-guide.md)。
 
 运行仓库示例：
 
 ```bash
 npm run example:actoviq-quickstart
 npm run example:actoviq-agent-helpers
+npm run example:profiles
 ```
 
 ## CLI REPL
@@ -140,6 +158,16 @@ npx actoviq-gui [工作目录] [选项]
 - [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
 - [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+- [examples/profiles/all-profiles.ts](./examples/profiles/all-profiles.ts)
+
+架构与运维文档：
+
+- [架构审计与实施规划](./docs/zh/08-sdk-architecture-audit-and-optimization-plan.md)
+- [1.0 迁移指南](./docs/zh/09-sdk-v2-migration-guide.md)
+- [支持、安全、SemVer 与 failure model](./docs/zh/10-support-security-semver-and-failure-model.md)
+- [JSON v1 → SQLite 迁移 Runbook](./docs/zh/11-json-v1-to-sqlite-migration-runbook.md)
+- [1.0 实施与端到端验收报告](./docs/zh/12-sdk-1.0-implementation-and-verification-report.md)
+- [安全报告政策](./SECURITY.md)
 
 ## 参与贡献
 

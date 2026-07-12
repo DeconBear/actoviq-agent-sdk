@@ -43,6 +43,10 @@ import { extractTextFromContent } from '../runtime/messageUtils.js';
 import { asError, isRecord, nowIso } from '../runtime/helpers.js';
 import type { AgentSession } from '../runtime/agentSession.js';
 import { mergeActoviqHooks } from '../hooks/actoviqHooks.js';
+import {
+  LegacySurfaceEventPipeline,
+  type SurfaceSemanticEvent,
+} from '../surfaces/index.js';
 
 type InternalBridgeCleanRunOptions = AgentRunOptions & {
   __actoviqUseDefaultTools?: boolean;
@@ -1155,10 +1159,13 @@ export class ActoviqCleanBridgeSdkClient {
       const startedAt = nowIso();
       const bridgeEvents: ActoviqBridgeJsonEvent[] = [];
       const cleanStream = runner(plan);
+      const surfaceEvents = new LegacySurfaceEventPipeline();
       for await (const cleanEvent of cleanStream) {
-        for (const bridgeEvent of cleanEventToBridgeEvents(cleanEvent, plan.bridgeOptions)) {
-          bridgeEvents.push(structuredClone(bridgeEvent));
-          controller.emit(bridgeEvent);
+        for (const surfaceEvent of surfaceEvents.projectFor(cleanEvent, 'bridge')) {
+          for (const bridgeEvent of surfaceEventToBridgeEvents(surfaceEvent, plan.bridgeOptions)) {
+            bridgeEvents.push(structuredClone(bridgeEvent));
+            controller.emit(bridgeEvent);
+          }
         }
       }
       const cleanResult = await cleanStream.result;
@@ -1509,72 +1516,107 @@ function synthesizeBridgeEvents(
   return [initEvent, assistant, resultEvent];
 }
 
-function cleanEventToBridgeEvents(
-  event: AgentEvent,
+function surfaceEventToBridgeEvents(
+  event: SurfaceSemanticEvent,
   options: ActoviqBridgeRunOptions,
 ): ActoviqBridgeJsonEvent[] {
+  const data = event.data;
   switch (event.type) {
     case 'run.started':
       return [{
         type: 'system',
         subtype: 'init',
-        session_id: event.sessionId,
-        model: event.model,
+        session_id: typeof data.sessionId === 'string' ? data.sessionId : undefined,
+        model: typeof data.model === 'string'
+          ? data.model
+          : isRecord(data.model) ? data.model.model : undefined,
         permissionMode: options.permissionMode,
         bridge_compat: true,
         uuid: event.runId,
         timestamp: event.timestamp,
       }];
-    case 'response.text.delta':
+    case 'text.delta':
       if (options.includePartialMessages === false) {
         return [];
       }
       return [{
         type: 'assistant',
         subtype: 'text_delta',
-        delta: event.delta,
-        text: event.snapshot,
+        delta: data.delta,
+        text: data.snapshot,
         uuid: event.runId,
         timestamp: event.timestamp,
       }];
-    case 'response.content':
-      return [{
-        type: 'assistant',
-        subtype: 'content',
-        content: event.content,
-        uuid: event.runId,
-        timestamp: event.timestamp,
-      }];
-    case 'response.message':
-      return [{
-        type: 'assistant',
-        subtype: 'message',
-        message: event.message,
-        uuid: event.message.id,
-        timestamp: event.timestamp,
-      }];
-    case 'tool.call':
+    case 'model.content': {
+      if (data.kind === 'content') {
+        return [{
+          type: 'assistant',
+          subtype: 'content',
+          content: data.content,
+          uuid: event.runId,
+          timestamp: event.timestamp,
+        }];
+      }
+      if (data.kind === 'message' && isRecord(data.message)) {
+        return [{
+          type: 'assistant',
+          subtype: 'message',
+          message: data.message,
+          uuid: typeof data.message.id === 'string' ? data.message.id : undefined,
+          timestamp: event.timestamp,
+        }];
+      }
+      return [];
+    }
+    case 'tool.started': {
+      const call = isRecord(data.call)
+        ? data.call
+        : {
+            id: data.callId,
+            name: data.name,
+            publicName: data.publicName,
+            provider: data.provider,
+            input: data.input,
+            startedAt: data.startedAt,
+          };
       return [{
         type: 'assistant',
         subtype: 'tool_use',
-        tool_use: event.call,
-        uuid: event.call.id,
+        tool_use: call,
+        uuid: typeof data.callId === 'string' ? data.callId : undefined,
         timestamp: event.timestamp,
       }];
-    case 'tool.result':
+    }
+    case 'tool.completed':
+    case 'tool.failed':
+    case 'tool.rejected': {
+      const result = isRecord(data.result)
+        ? data.result
+        : {
+            id: data.callId,
+            name: data.name,
+            publicName: data.publicName,
+            provider: data.provider,
+            output: data.output,
+            outputText: data.outputText,
+            isError: data.isError,
+            completedAt: data.completedAt,
+            durationMs: data.durationMs,
+          };
       return [{
         type: 'user',
         subtype: 'tool_result',
-        tool_result: event.result,
-        uuid: event.result.id,
+        tool_result: result,
+        uuid: typeof data.callId === 'string' ? data.callId : undefined,
         timestamp: event.timestamp,
       }];
+    }
     case 'tool.permission':
       return options.includeHookEvents
         ? [{
             type: 'hook',
             subtype: 'tool_permission',
-            decision: event.decision,
+            decision: data.decision,
             timestamp: event.timestamp,
           }]
         : [];
@@ -1583,36 +1625,50 @@ function cleanEventToBridgeEvents(
         ? [{
             type: 'hook',
             subtype: 'tool_progress',
-            tool_use_id: event.toolUseId,
-            data: event.data,
+            tool_use_id: data.callId,
+            data: data.progress,
             timestamp: event.timestamp,
           }]
         : [];
-    case 'session.compacted':
-      return [{
-        type: 'system',
-        subtype: 'compact_boundary',
-        session_id: event.sessionId,
-        compactMetadata: event.result,
-        timestamp: event.timestamp,
-      }];
-    case 'response.completed':
-      return [makeResultEvent(event.result, options)];
+    case 'compaction.completed':
+      return data.scope === 'session'
+        ? [{
+            type: 'system',
+            subtype: 'compact_boundary',
+            session_id: typeof data.sessionId === 'string' ? data.sessionId : undefined,
+            compactMetadata: data.result,
+            timestamp: event.timestamp,
+          }]
+        : [];
+    case 'terminal':
+      return data.status === 'completed' && isRecord(data.result)
+        ? [makeResultEvent(data.result as unknown as AgentRunResult, options)]
+        : [];
     case 'error':
       return [{
         type: 'result',
         subtype: 'error',
         is_error: true,
-        error: event.error,
+        error: data,
         duration_ms: 0,
         timestamp: event.timestamp,
       }];
     default:
-      if ('workflowName' in event && options.includeHookEvents) {
+      if (event.type === 'extension' && 'workflowName' in data && options.includeHookEvents) {
+        const subtype = event.sourceType.startsWith('legacy.')
+          ? event.sourceType.slice('legacy.'.length)
+          : event.sourceType;
+        const legacyData = { ...data };
+        delete legacyData.producerType;
         return [{
           type: 'hook',
-          subtype: event.type,
-          event,
+          subtype,
+          event: {
+            type: subtype,
+            runId: event.runId,
+            ...legacyData,
+            timestamp: event.timestamp,
+          },
           timestamp: event.timestamp,
         }];
       }

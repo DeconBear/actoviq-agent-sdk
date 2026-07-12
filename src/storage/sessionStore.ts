@@ -1,7 +1,11 @@
-import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { SessionNotFoundError } from '../errors.js';
+import {
+  SessionConflictError,
+  SessionDataError,
+  SessionNotFoundError,
+} from '../errors.js';
 import type {
   SessionCheckpoint,
   SessionCheckpointSummary,
@@ -19,6 +23,10 @@ import {
   joinUnderStorageRoot,
   safeStorageFileName,
 } from './pathSafety.js';
+
+const SESSION_LOCK_TIMEOUT_MS = 5_000;
+const SESSION_LOCK_STALE_MS = 30_000;
+const SESSION_LOCK_RETRY_MS = 10;
 
 export class SessionStore {
   constructor(private readonly rootDirectory: string) {}
@@ -38,6 +46,7 @@ export class SessionStore {
     const createdAt = nowIso();
     const session: StoredSession = {
       version: 1,
+      revision: 0,
       id: options.id ?? createId(),
       title: options.title?.trim() || 'Untitled Session',
       titleSource: options.title?.trim() ? 'manual' : 'auto',
@@ -59,7 +68,27 @@ export class SessionStore {
   async save(session: StoredSession): Promise<void> {
     await this.ensureReady();
     const filePath = this.sessionPath(session.id);
-    await writeJsonAtomic(filePath, session);
+    await this.withSessionLock(session.id, async () => {
+      const current = await this.loadIfExists(session.id);
+      const expectedRevision = normalizeRevision(session.revision, session.id);
+      const actualRevision = current?.revision ?? 0;
+
+      if (current && actualRevision !== expectedRevision) {
+        throw new SessionConflictError(session.id, expectedRevision, actualRevision);
+      }
+      if (!current && expectedRevision !== 0) {
+        throw new SessionConflictError(session.id, expectedRevision, 0);
+      }
+
+      const nextRevision = actualRevision + 1;
+      const next: StoredSession = {
+        ...deepClone(session),
+        revision: nextRevision,
+      };
+      validateStoredSession(next, session.id);
+      await writeJsonAtomic(filePath, next);
+      session.revision = nextRevision;
+    });
   }
 
   async load(sessionId: string): Promise<StoredSession> {
@@ -67,7 +96,7 @@ export class SessionStore {
     const filePath = this.sessionPath(sessionId);
     try {
       const raw = await readFile(filePath, 'utf8');
-      return JSON.parse(raw) as StoredSession;
+      return parseStoredSession(raw, sessionId);
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
       if (nodeError.code === 'ENOENT') {
@@ -89,7 +118,8 @@ export class SessionStore {
       const filePath = path.join(this.sessionsDirectory(), file);
       try {
         const raw = await readFile(filePath, 'utf8');
-        const session = JSON.parse(raw) as StoredSession;
+        const sessionId = file.slice(0, -'.json'.length);
+        const session = parseStoredSession(raw, sessionId);
         sessions.push(this.toSummary(session));
       } catch (error) {
         // A single corrupt or unreadable session file should not hide the
@@ -138,6 +168,7 @@ export class SessionStore {
     const createdAt = nowIso();
     const forked: StoredSession = {
       ...deepClone(original),
+      revision: 0,
       id: createId(),
       title: options.title?.trim() || `${original.title} Copy`,
       titleSource: options.title?.trim() ? 'manual' : 'auto',
@@ -255,6 +286,64 @@ export class SessionStore {
     );
   }
 
+  private async loadIfExists(sessionId: string): Promise<StoredSession | undefined> {
+    try {
+      const raw = await readFile(this.sessionPath(sessionId), 'utf8');
+      return parseStoredSession(raw, sessionId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private async withSessionLock<T>(sessionId: string, action: () => Promise<T>): Promise<T> {
+    const lockPath = `${this.sessionPath(sessionId)}.lock`;
+    const deadline = Date.now() + SESSION_LOCK_TIMEOUT_MS;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+    while (!handle) {
+      try {
+        handle = await open(lockPath, 'wx');
+      } catch (error) {
+        const nodeError = error as NodeJS.ErrnoException;
+        if (nodeError.code !== 'EEXIST') {
+          throw error;
+        }
+        await this.removeStaleLock(lockPath);
+        if (Date.now() >= deadline) {
+          throw new SessionDataError(
+            sessionId,
+            `could not acquire its write lock within ${SESSION_LOCK_TIMEOUT_MS}ms`,
+            { cause: error },
+          );
+        }
+        await delay(SESSION_LOCK_RETRY_MS);
+      }
+    }
+
+    try {
+      return await action();
+    } finally {
+      await handle.close().catch(() => undefined);
+      await rm(lockPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async removeStaleLock(lockPath: string): Promise<void> {
+    try {
+      const lockStat = await stat(lockPath);
+      if (Date.now() - lockStat.mtimeMs > SESSION_LOCK_STALE_MS) {
+        await rm(lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
   private toSummary(session: StoredSession): SessionSummary {
     const runtimeRaw = session.metadata.__actoviqRuntime;
     const configRaw = session.metadata.__actoviqConfigName;
@@ -292,4 +381,75 @@ export class SessionStore {
       runCount: session.runs.length,
     };
   }
+}
+
+function parseStoredSession(raw: string, sessionId: string): StoredSession {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    throw new SessionDataError(sessionId, 'the JSON document cannot be parsed', {
+      cause: error,
+    });
+  }
+  return validateStoredSession(value, sessionId);
+}
+
+function validateStoredSession(value: unknown, sessionId: string): StoredSession {
+  if (!isRecord(value)) {
+    throw new SessionDataError(sessionId, 'the root value must be an object');
+  }
+  if (value.version !== 1) {
+    throw new SessionDataError(sessionId, `unsupported version ${String(value.version)}`);
+  }
+  if (typeof value.id !== 'string' || value.id.length === 0) {
+    throw new SessionDataError(sessionId, 'id must be a non-empty string');
+  }
+  if (value.id !== sessionId) {
+    throw new SessionDataError(sessionId, `stored id is "${value.id}"`);
+  }
+  for (const field of ['title', 'model', 'createdAt', 'updatedAt'] as const) {
+    if (typeof value[field] !== 'string') {
+      throw new SessionDataError(sessionId, `${field} must be a string`);
+    }
+  }
+  if (value.titleSource !== 'auto' && value.titleSource !== 'manual') {
+    throw new SessionDataError(sessionId, 'titleSource must be "auto" or "manual"');
+  }
+  if (value.status !== 'active' && value.status !== 'idle' && value.status !== 'closed') {
+    throw new SessionDataError(sessionId, 'status is invalid');
+  }
+  if (!Array.isArray(value.tags) || !value.tags.every((tag) => typeof tag === 'string')) {
+    throw new SessionDataError(sessionId, 'tags must be an array of strings');
+  }
+  if (!isRecord(value.metadata)) {
+    throw new SessionDataError(sessionId, 'metadata must be an object');
+  }
+  if (!Array.isArray(value.messages)) {
+    throw new SessionDataError(sessionId, 'messages must be an array');
+  }
+  if (!Array.isArray(value.runs)) {
+    throw new SessionDataError(sessionId, 'runs must be an array');
+  }
+
+  const revision = value.revision == null ? 0 : normalizeRevision(value.revision, sessionId);
+  return {
+    ...(value as unknown as StoredSession),
+    revision,
+  };
+}
+
+function normalizeRevision(value: unknown, sessionId: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new SessionDataError(sessionId, 'revision must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

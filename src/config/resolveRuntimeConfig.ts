@@ -149,6 +149,10 @@ export async function resolveRuntimeConfig(
     modelTiers,
     maxTokens: options.maxTokens ?? 32000,
     temperature: options.temperature,
+    runTimeoutMs: resolvePositiveTimeout(options.runTimeoutMs, 15 * 60_000, 'runTimeoutMs'),
+    toolTimeoutMs: resolvePositiveTimeout(options.toolTimeoutMs, 2 * 60_000, 'toolTimeoutMs'),
+    hookTimeoutMs: resolvePositiveTimeout(options.hookTimeoutMs, 30_000, 'hookTimeoutMs'),
+    mcpTimeoutMs: resolvePositiveTimeout(options.mcpTimeoutMs, 2 * 60_000, 'mcpTimeoutMs'),
     timeoutMs: options.timeoutMs ?? 600000,
     // Claude Code uses DEFAULT_MAX_RETRIES=10; long runs need to survive
     // transient 429/5xx windows instead of failing the whole session.
@@ -173,4 +177,16 @@ export async function resolveRuntimeConfig(
     provider,
     effort: requestedEffort as ResolvedRuntimeConfig['effort'],
   };
+}
+
+function resolvePositiveTimeout(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new ConfigurationError(`${name} must be a positive safe integer.`);
+  }
+  return resolved;
 }
