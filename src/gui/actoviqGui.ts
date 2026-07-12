@@ -18,6 +18,14 @@ import {
   readWorkspaceFile,
   writeWorkspaceFile,
 } from './projectWorkbench.js';
+import {
+  buildGraphTeamFromTemplate,
+  insertLoopAsNestedTeam,
+  insertLoopBlock,
+  insertParallelAsNestedTeam,
+  insertParallelBlock,
+  type GraphTeamTemplate,
+} from '../team/teamGraphScaffold.js';
 
 /**
  * Agent TUI vision (plan phase 6). The TerminalSnapshot tool lets the chat
@@ -2999,7 +3007,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
           return [{
             type: 'notice',
-            message: `team attached: ${definition.name} · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — use Run squad or /team ask'}`,
+            message: `agent attached: ${definition.name} · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — use Run agent or /team ask'}`,
           }, { type: 'state' }];
         }
         if (args.startsWith('clone ')) {
@@ -4299,6 +4307,84 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       return json(res, 400, { error: (error as Error).message });
     }
   }
+  if (req.method === 'POST' && url.pathname === '/api/team/scaffold') {
+    try {
+      const body = await readJson(req);
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name) return json(res, 400, { error: 'name is required' });
+      const description = typeof body.description === 'string' ? body.description.trim() : undefined;
+      const template = (body.template === 'parallel' || body.template === 'review-loop' ? body.template : 'blank') as GraphTeamTemplate;
+      const definition = buildGraphTeamFromTemplate(name, template, description || undefined, {
+        parallel: isPlainRecord(body.parallel) ? body.parallel as never : undefined,
+        loop: isPlainRecord(body.loop) ? body.loop as never : undefined,
+      });
+      return json(res, 200, { definition });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/team/apply-block') {
+    try {
+      const body = await readJson(req);
+      const def = body.definition as TeamDefinition;
+      if (!def || typeof def.name !== 'string') return json(res, 400, { error: 'definition is required' });
+      const block = body.block === 'loop' ? 'loop' : 'parallel';
+      const options = isPlainRecord(body.options) ? body.options : {};
+      if (block === 'parallel') {
+        const members = Array.isArray(options.members) ? options.members : [];
+        const parallelOpts = {
+          members: members as never,
+          join: options.join === 'any' ? 'any' as const : 'all' as const,
+          synthesizer: options.synthesizer !== false,
+          synthesizerId: typeof options.synthesizerId === 'string' ? options.synthesizerId : undefined,
+          returnMode: options.returnMode === 'payload' ? 'payload' as const : 'void' as const,
+        };
+        if (options.mode === 'nested' || options.saveAsNested === true) {
+          const nestedName = typeof options.nestedName === 'string' && options.nestedName.trim()
+            ? options.nestedName.trim()
+            : `${def.name}-parallel`;
+          const result = insertParallelAsNestedTeam(def, { ...parallelOpts, nestedName });
+          return json(res, 200, { definition: result.definition, nested: result.nested });
+        }
+        const definition = insertParallelBlock(def, parallelOpts);
+        return json(res, 200, { definition });
+      }
+      if (options.mode === 'nested' || options.saveAsNested === true) {
+        const nestedName = typeof options.nestedName === 'string' && options.nestedName.trim()
+          ? options.nestedName.trim()
+          : `${def.name}-review-loop`;
+        const result = insertLoopAsNestedTeam(def, {
+          executorId: typeof options.executorId === 'string' ? options.executorId : undefined,
+          reviewerId: typeof options.reviewerId === 'string' ? options.reviewerId : undefined,
+          maxRounds: typeof options.maxRounds === 'number' ? options.maxRounds : undefined,
+          returnMode: options.returnMode === 'payload' ? 'payload' : 'void',
+          nestedName,
+        });
+        return json(res, 200, { definition: result.definition, nested: result.nested });
+      }
+      const definition = insertLoopBlock(def, {
+        executorId: typeof options.executorId === 'string' ? options.executorId : undefined,
+        reviewerId: typeof options.reviewerId === 'string' ? options.reviewerId : undefined,
+        maxRounds: typeof options.maxRounds === 'number' ? options.maxRounds : undefined,
+        returnMode: options.returnMode === 'payload' ? 'payload' : 'void',
+      });
+      return json(res, 200, { definition });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/team/validate') {
+    try {
+      const body = await readJson(req);
+      const def = body.definition as TeamDefinition;
+      if (!def) return json(res, 400, { error: 'definition is required' });
+      const migrated = ensureConfiguredTeamGraph(migrateTeamDefinitionToGraph(def));
+      const problems = validateTeamGraph(migrated);
+      return json(res, 200, { ok: problems.length === 0, problems, definition: migrated });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/api/team/upgrade') {
     // Migrate a legacy (v1) definition to graph orchestration (v2) — returns
     // the migrated definition for editing; nothing is saved until /api/team/save.
@@ -5582,7 +5668,7 @@ export function createActoviqGuiHtml(): string {
       <button id="newSession" class="nav-btn new-chat-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
       <nav class="primary-nav" aria-label="Primary">
         <button id="navProject" class="nav-btn region-nav active" data-region="project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
-        <button id="navTeam" class="nav-btn region-nav" data-region="team"><span class="nav-icon">${guiIcon('team')}</span><span>Team</span></button>
+        <button id="navTeam" class="nav-btn region-nav" data-region="team"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
         <button id="navAutomation" class="nav-btn region-nav" data-region="automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
         <button id="navPlugins" class="nav-btn region-nav" data-region="plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
       </nav>
@@ -5661,7 +5747,7 @@ export function createActoviqGuiHtml(): string {
         <div class="top-actions">
           <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
           <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
-          <button id="conversationRunSquadBtn" class="pill-btn" title="Run selected squad">Run squad</button>
+          <button id="conversationRunSquadBtn" class="pill-btn" title="Run selected agent">Run agent</button>
           <button id="terminalToggleBtn" class="icon-btn" title="Terminal" aria-label="Toggle terminal" aria-pressed="false">${guiIcon('terminal')}</button>
           <button id="auxPanelToggleBtn" class="icon-btn" title="Toggle side panel" aria-label="Toggle side panel" aria-pressed="true">${guiIcon('panelRight')}</button>
           <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
@@ -5776,18 +5862,18 @@ export function createActoviqGuiHtml(): string {
       </div>
       </section>
     </main>
-    <section class="region hidden" data-region="team" id="regionTeam" aria-label="Team">
+    <section class="region hidden" data-region="team" id="regionTeam" aria-label="Agent">
       <header class="region-header">
         <div class="region-titles">
-          <h1>Team</h1>
-          <p>Compose agent squads and runtime collaboration graphs</p>
+          <h1>Agent</h1>
+          <p>Compose agents, workflows, and collaboration graphs (teams)</p>
         </div>
         <div class="region-actions">
           <select id="teamEnvSelect" class="team-env-select" title="Environment"><option value="dev">Dev</option><option value="staging">Staging</option><option value="prod">Prod</option></select>
           <span id="teamSavedStatus" class="team-saved-status saved">${guiIcon('gear')}<span>Saved</span></span>
           <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
-          <button type="button" id="teamEditToggleBtn" class="pill-btn">Squad settings</button>
-          <button type="button" id="teamNewSquadBtn" class="pill-btn">+ New squad</button>
+          <button type="button" id="teamEditToggleBtn" class="pill-btn">Agent settings</button>
+          <button type="button" id="teamNewSquadBtn" class="pill-btn">+ New agent</button>
         </div>
       </header>
       <div class="region-body team-layout">
@@ -6296,13 +6382,13 @@ export function createActoviqGuiHtml(): string {
           <div id="settingsScheduledTasksList" class="settings-card-list"></div>
         </div>
         <div class="settings-group">
-          <h2>Teams</h2>
-          <p>Attach a model team or disable team orchestration.</p>
-          <div class="settings-help-row"><span><strong>Auto-invoke</strong><small>When a team is attached, let the main agent call it as a tool. Off = manual /team ask only.</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamAutoInvoke"></label></div>
+          <h2>Agents</h2>
+          <p>Attach a configured agent (graph team / workflow / subagent) or disable orchestration.</p>
+          <div class="settings-help-row"><span><strong>Auto-invoke</strong><small>When an agent is attached, let the main agent call it as a tool. Off = manual /team ask only.</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamAutoInvoke"></label></div>
           <div class="settings-help-row"><span><strong>Confirm before run</strong><small>Ask before /team ask starts (members + models).</small></span><label class="switch-field"><input type="checkbox" id="settingsTeamConfirm"></label></div>
-          <label class="inline-field wide">Default team for new conversations<select id="settingsTeamDefaultAttached"></select></label>
+          <label class="inline-field wide">Default agent for new conversations<select id="settingsTeamDefaultAttached"></select></label>
           <div class="settings-action-row">
-            <button type="button" id="settingsTeamOff" class="secondary-btn">No team</button>
+            <button type="button" id="settingsTeamOff" class="secondary-btn">No agent</button>
           </div>
           <div id="settingsTeamsList" class="settings-card-list"></div>
         </div>
@@ -14674,10 +14760,10 @@ function renderConversationBreadcrumb() {
   c3.className = 'crumb-current';
   c3.textContent = sessionTitle;
   bc.append(c1, s1, c2, s2, c3);
-  // Persistent status pill: show "Squad ready" when a team is attached and no
-  // run is in flight. During a run, team.* events override with "Squad running".
+  // Persistent status pill: show "Agent ready" when an agent is attached and no
+  // run is in flight. During a run, team.* events override with "Agent running".
   if (!state.running && state.snapshot?.activeTeamName) {
-    setConversationStatus('Squad ready', null);
+    setConversationStatus('Agent ready', null);
   } else if (!state.running) {
     setConversationStatus(null);
   }
@@ -15114,6 +15200,11 @@ function renderTeamRunTree(teamRun) {
   title.className = 'team-tree-head';
   title.textContent = (teamRun.label || 'team') + ' · ' + (team.mode || '') + (running ? ' · running' : '');
   section.appendChild(title);
+  const returnHint = document.createElement('p');
+  returnHint.className = 'te-hint';
+  returnHint.style.cssText = 'margin:4px 0 8px;font-size:11px;';
+  returnHint.textContent = 'First Return reached ends the graph.';
+  section.appendChild(returnHint);
 
   // children[id] = ids delivered to from id (first-delivery wins for placement).
   const placed = new Set();
@@ -15422,7 +15513,7 @@ function surfaceData(kind) {
   if (kind === 'skills') return { title: 'Skills', subtitle: 'Available skills', items: snapshot.skills || [] };
   if (kind === 'agents') return { title: 'Subagents', subtitle: 'Available agent definitions', items: snapshot.agents || [] };
   if (kind === 'mcp') return { title: 'MCP servers', subtitle: 'MCP-provided tools', items: (snapshot.tools || []).filter(tool => tool.provider === 'mcp') };
-  if (kind === 'teams') return { title: 'Teams', subtitle: 'Attach a model team to the main agent', items: snapshot.teams || [] };
+  if (kind === 'teams') return { title: 'Agents', subtitle: 'Attach a configured agent to the main session', items: snapshot.teams || [] };
   if (kind === 'routers') return { title: 'Model routers', subtitle: 'Route turns by profile', items: snapshot.routers || [] };
   return { title: 'Panel', subtitle: '', items: [] };
 }
@@ -15876,11 +15967,17 @@ function splitCsv(value) {
 function memberRef(member) {
   return String(member?.id || member?.name || member?.role || member?.model || '').trim();
 }
+function squadTypeLabel(squadType) {
+  if (squadType === 'workflow') return 'Workflow';
+  if (squadType === 'subagent') return 'Subagent';
+  return 'Graph (team)';
+}
 function teamListForRegion() {
   // snapshot.teams already includes built-in presets (see hydrateSettingsForm).
   return (state.snapshot?.teams || []).map((t) => ({
     name: t.name,
     source: t.source || 'project',
+    squadType: t.definition?.squadType || t.squadType || 'graph',
   }));
 }
 async function refreshTeamsSnapshot() {
@@ -15914,7 +16011,7 @@ function renderTeamSquadBar() {
     const label = document.createElement('strong');
     label.textContent = t.name;
     const small = document.createElement('small');
-    small.textContent = t.source === 'built-in' ? 'Built-in squad' : 'Project squad';
+    small.textContent = squadTypeLabel(t.squadType) + ' · ' + (t.source === 'built-in' ? 'Built-in' : 'Project');
     labels.append(label, small);
     chip.append(dot, labels);
     chip.addEventListener('click', () => {
@@ -15934,41 +16031,77 @@ function openNewSquadDialog() {
   overlay.className = 'modal';
   const panel = document.createElement('div');
   panel.className = 'auto-dialog';
-  panel.style.cssText = 'max-width:480px;width:min(480px,92vw);';
+  panel.style.cssText = 'max-width:520px;width:min(520px,92vw);';
   let chosen = 'graph';
+  let graphTemplate = 'blank';
   const head = document.createElement('div');
   head.className = 'ins-head';
-  head.innerHTML = '<h3>New squad</h3>';
+  head.innerHTML = '<h3>New agent</h3>';
   panel.appendChild(head);
   const host = document.createElement('div');
   host.style.cssText = 'padding:0 18px 18px;display:grid;gap:12px;';
   panel.appendChild(host);
   const typeField = document.createElement('div');
   typeField.className = 'te-field';
-  typeField.innerHTML = '<label>Squad type</label>';
+  typeField.innerHTML = '<label>Type</label>';
   const typeRow = document.createElement('div');
   typeRow.className = 'auto-freq-row';
   const types = [
-    { v: 'graph', label: 'Graph', hint: 'Collaboration graph — Task → agents → Return. Complex team logic.' },
+    { v: 'graph', label: 'Graph (team)', hint: 'Collaboration graph — Task → agents → Return. This is a team.' },
     { v: 'workflow', label: 'Workflow', hint: 'Linear/tree work-flow — nodes + if/else routing. Batch pipelines.' },
     { v: 'subagent', label: 'Subagent', hint: 'Single agent — prompt + tools + workspace + runtime.' },
   ];
+  const hint = document.createElement('p');
+  hint.className = 'te-hint';
+  hint.style.cssText = 'min-height:32px;';
+  hint.textContent = types[0].hint;
+  const graphTemplateField = document.createElement('div');
+  graphTemplateField.className = 'te-field';
+  graphTemplateField.innerHTML = '<label>Graph template</label>';
+  const templateRow = document.createElement('div');
+  templateRow.className = 'auto-freq-row';
+  const templates = [
+    { v: 'blank', label: 'Blank', hint: 'Minimal Task → agent → Return (ready to save).' },
+    { v: 'parallel', label: 'Parallel panel', hint: 'Same prompt fans out to researchers, then synthesizer.' },
+    { v: 'review-loop', label: 'Review loop', hint: 'Executor ↔ reviewer with CONTINUE/FINALIZE loop.' },
+  ];
+  const syncTemplateVisibility = () => {
+    graphTemplateField.style.display = chosen === 'graph' ? '' : 'none';
+  };
   types.forEach((t) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = t.label;
     b.title = t.hint;
     b.className = t.v === chosen ? 'active' : '';
-    b.addEventListener('click', () => { chosen = t.v; [...typeRow.children].forEach((c, i) => c.className = types[i].v === chosen ? 'active' : ''); });
+    b.addEventListener('click', () => {
+      chosen = t.v;
+      [...typeRow.children].forEach((c, i) => { c.className = types[i].v === chosen ? 'active' : ''; });
+      hint.textContent = chosen === 'graph'
+        ? (templates.find((x) => x.v === graphTemplate)?.hint || t.hint)
+        : t.hint;
+      syncTemplateVisibility();
+    });
     typeRow.appendChild(b);
   });
   typeField.appendChild(typeRow);
   host.appendChild(typeField);
-  const hint = document.createElement('p');
-  hint.className = 'te-hint';
-  hint.style.cssText = 'min-height:32px;';
-  hint.textContent = types[0].hint;
-  typeRow.addEventListener('click', () => { const t = types.find((x) => x.v === chosen); if (t) hint.textContent = t.hint; });
+  templates.forEach((t) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = t.label;
+    b.title = t.hint;
+    b.className = t.v === graphTemplate ? 'active' : '';
+    b.addEventListener('click', () => {
+      graphTemplate = t.v;
+      [...templateRow.children].forEach((c, i) => { c.className = templates[i].v === graphTemplate ? 'active' : ''; });
+      if (chosen === 'graph') hint.textContent = t.hint;
+    });
+    templateRow.appendChild(b);
+  });
+  graphTemplateField.appendChild(templateRow);
+  host.appendChild(graphTemplateField);
+  syncTemplateVisibility();
   host.appendChild(hint);
   const name = teFieldLive('Name', '', function () {});
   host.appendChild(name);
@@ -15983,11 +16116,27 @@ function openNewSquadDialog() {
   create.addEventListener('click', async () => {
     const nameInput = name.querySelector('input');
     const squadName = (nameInput && nameInput.value.trim()) || '';
-    if (!squadName) { window.alert('Please enter a squad name.'); return; }
+    if (!squadName) { window.alert('Please enter an agent name.'); return; }
     const descEl = host.querySelector('textarea');
     const desc = descEl ? descEl.value.trim() : '';
-    const def = { name: squadName, description: desc || undefined, mode: 'graph', version: 3, orchestration: 'graph', squadType: chosen, members: [], nodes: [], edges: [] };
+    let def;
     try {
+      if (chosen === 'graph') {
+        const sc = await api('/api/team/scaffold', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: squadName, description: desc || undefined, template: graphTemplate }),
+        });
+        if (!sc.ok) {
+          const j = await sc.json().catch(() => ({}));
+          window.alert('Create failed: ' + (j.error || sc.status));
+          return;
+        }
+        const payload = await sc.json();
+        def = payload.definition;
+      } else {
+        def = { name: squadName, description: desc || undefined, mode: 'graph', version: 3, orchestration: 'graph', squadType: chosen, members: [], nodes: [], edges: [] };
+      }
       const res = await api('/api/team/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ definition: def, target: 'project' }) });
       if (!res.ok) { const j = await res.json().catch(() => ({})); window.alert('Create failed: ' + (j.error || res.status)); return; }
       overlay.remove();
@@ -16012,7 +16161,7 @@ async function renderTeamRegion() {
     await selectTeam(target);
   } else {
     const g = el('teamGraph');
-    if (g) { g.textContent = ''; const e = document.createElement('p'); e.className = 'region-empty'; e.textContent = 'No squads — click + New squad.'; g.appendChild(e); }
+    if (g) { g.textContent = ''; const e = document.createElement('p'); e.className = 'region-empty'; e.textContent = 'No agents — click + New agent.'; g.appendChild(e); }
   }
 }
 async function selectTeam(name, opts) {
@@ -16068,7 +16217,7 @@ async function runSelectedSquad() {
     return;
   }
   state.teamSelected = name;
-  const input = window.prompt('Run squad "' + name + '" with prompt:', '');
+  const input = window.prompt('Run agent "' + name + '" with prompt:', '');
   if (!input || !input.trim()) return;
   await switchRegion('project');
   switchProjectView('conversation');
@@ -16333,18 +16482,29 @@ function renderTeamNodeEditorPanel(node, def) {
     renderTeamGraph(def, def.name);
   }));
   if (node.type === 'team') {
-    const teamNames = teamListForRegion().map((t) => t.name);
+    const selfName = def.name || '';
+    const teamNames = teamListForRegion().map((t) => t.name).filter((n) => n && n !== selfName);
     if (teamNames.length) {
-      host.appendChild(teSelect('Team', node.teamRef || '', teamNames, (v) => {
+      const current = node.teamRef && teamNames.includes(node.teamRef) ? node.teamRef : '';
+      if (!node.teamRef) {
+        // Require an explicit teamRef — empty until user picks.
+      }
+      host.appendChild(teSelect('Team (teamRef required)', current || teamNames[0], teamNames, (v) => {
         node.teamRef = v || undefined;
         setTeamSavedStatus(false);
       }));
+      if (!node.teamRef && teamNames[0]) {
+        node.teamRef = teamNames[0];
+      }
     } else {
-      host.appendChild(teFieldLive('Team (name)', node.teamRef || '', (v) => { node.teamRef = v.trim() || undefined; setTeamSavedStatus(false); }));
+      host.appendChild(teFieldLive('Team (teamRef required)', node.teamRef || '', (v) => {
+        node.teamRef = v.trim() || undefined;
+        setTeamSavedStatus(false);
+      }));
     }
     const teamHint = document.createElement('p');
     teamHint.className = 'te-hint';
-    teamHint.textContent = 'type=team: invokes the selected team as a sub-agent; its answer becomes this node output. Model/tools below are ignored.';
+    teamHint.textContent = 'type=team: invokes the selected team as a sub-agent; its answer becomes this node output. teamRef is required — do not self-reference this squad. Model/tools below are ignored.';
     host.appendChild(teamHint);
   } else if (node.type === 'single') {
     const singleHint = document.createElement('p');
@@ -16454,11 +16614,11 @@ function renderTeamReturnEditorPanel(node, def) {
   if (!host) return;
   host.textContent = '';
   const h = document.createElement('h3');
-  h.textContent = 'Return exit · ' + (graphRefOf(node) || 'return');
+  h.textContent = 'Return · ' + (node.returnMode || 'void') + ' · ' + (graphRefOf(node) || 'return');
   host.appendChild(h);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
-  hint.textContent = 'Return ports terminate the graph. void = no structured return (streaming output stays in the conversation). payload = structured return value for the Team tool.';
+  hint.textContent = 'Return ports terminate the graph. void = no structured return (streaming output stays in the conversation). payload = structured return value for the Team tool. First Return reached ends the graph.';
   host.appendChild(hint);
   host.appendChild(teFieldLive('Node id', node.id || 'return', (v) => { node.id = v.trim() || 'return'; renderTeamGraph(def, def.name); }));
   host.appendChild(teSelect('Return mode', node.returnMode || 'void', ['void', 'payload'], (v) => {
@@ -16472,6 +16632,10 @@ function renderTeamReturnEditorPanel(node, def) {
   }
   const returns = (def.nodes || []).filter((n) => n.kind === 'return');
   if (returns.length > 1) {
+    const multi = document.createElement('p');
+    multi.className = 'te-hint';
+    multi.textContent = 'Multiple Returns: the first Return reached ends the graph (others are alternate exits).';
+    host.appendChild(multi);
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'te-btn danger';
@@ -16496,7 +16660,7 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
   host.appendChild(head);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
-  hint.textContent = 'Directed (→): flows from → to; canvas shows an arrow. Undirected (↔): bidirectional — both agents can receive (runtime expands a reverse path). Loop edges are always one-way.';
+  hint.textContent = 'Directed (→): flows from → to; canvas shows an arrow. Undirected (↔): bidirectional — both agents can receive (runtime expands a reverse path). Loop edges are always one-way. First Return reached ends the graph.';
   host.appendChild(hint);
   const refs = graphNodeRefs(def);
   host.appendChild(teSelect('From', edge.from, refs, (v) => {
@@ -16537,6 +16701,7 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
         return cap != null && cap > 0;
       });
       if (!hasCap) def.maxRounds = def.maxRounds ?? 100;
+      // Squad maxRounds is editable in Agent settings; only auto-fills when unset.
     }
     renderTeamGraph(def, def.name);
   }));
@@ -16572,13 +16737,22 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
 function renderTeamSquadPanel(def, host) {
   host.textContent = '';
   const h = document.createElement('h3');
-  h.textContent = 'Squad settings · ' + (def.name || '');
+  h.textContent = 'Agent settings · ' + (def.name || '');
   host.appendChild(h);
   const hint = document.createElement('p');
   hint.className = 'te-hint';
-  hint.textContent = 'Runtime limits (timeout, iterations, loop rounds, reconnect) are configured per agent — double-click an agent node on the graph.';
+  hint.textContent = 'Graph = collab DAG (Task → agents → Return). Workflow = light tree. Insert Parallel / Insert Loop are product blocks on the same engine — not a second runtime.';
   host.appendChild(hint);
   host.appendChild(teFieldLive('Description', def.description || '', (v) => { def.description = v.trim() || undefined; setTeamSavedStatus(false); }, true));
+  host.appendChild(teHintField(
+    'Max rounds (squad)',
+    'Only applies when the graph has loop edges (CONTINUE/FINALIZE). Convergence safety cap (≥2). Empty = unset (engine may default when you mark a loop edge).',
+    formatTeamInfinityField(def.maxRounds),
+    (v) => {
+      def.maxRounds = parseTeamInfinityField(v);
+      setTeamSavedStatus(false);
+    },
+  ));
   host.appendChild(saveTargetField());
   const actions = document.createElement('div');
   actions.className = 'te-actions';
@@ -16602,6 +16776,7 @@ function renderTeamSquadPanel(def, host) {
   save.textContent = 'Save squad';
   save.addEventListener('click', () => { void saveTeamDefinition(); });
   host.appendChild(save);
+  void liveValidateTeamGraph(def);
 }
 function addGraphNodeQuick(def) {
   def.nodes = def.nodes || [];
@@ -16642,11 +16817,39 @@ function removeGraphAgentNode(def, node) {
 }
 function addGraphEdgeQuick(def, name) {
   def.edges = def.edges || [];
-  const refs = graphNodeRefs(def);
-  const taskRef = (def.nodes || []).find((n) => n.kind === 'task');
-  const taskId = taskRef ? graphRefOf(taskRef) : 'task';
-  const from = refs.find((r) => r !== taskId) || refs[0] || '';
-  const to = refs.find((r) => r !== from && r !== taskId) || '';
+  const nodes = def.nodes || [];
+  const taskNode = nodes.find((n) => n.kind === 'task');
+  const taskId = taskNode ? graphRefOf(taskNode) : 'task';
+  const returnNodes = nodes.filter((n) => n.kind === 'return');
+  const agents = nodes.filter((n) => !n.kind || n.kind === 'agent');
+  const inbound = new Set((def.edges || []).map((e) => String(e.to || '').trim()).filter(Boolean));
+  let from = '';
+  let to = '';
+  // Prefer Task → agent with no inbound edges.
+  const orphan = agents.find((a) => {
+    const ref = graphRefOf(a);
+    return ref && !inbound.has(ref);
+  });
+  if (taskNode && orphan) {
+    from = taskId;
+    to = graphRefOf(orphan);
+  } else if (agents.length && returnNodes.length) {
+    // Prefer agent → Return when that edge is missing.
+    const returnId = graphRefOf(returnNodes[0]);
+    const agentOut = agents.find((a) => {
+      const ref = graphRefOf(a);
+      return ref && returnId && !def.edges.some((e) => e.from === ref && e.to === returnId);
+    });
+    if (agentOut && returnId) {
+      from = graphRefOf(agentOut);
+      to = returnId;
+    }
+  }
+  if (!from || !to) {
+    const refs = graphNodeRefs(def);
+    from = refs.find((r) => r !== taskId) || refs[0] || '';
+    to = refs.find((r) => r !== from && r !== taskId) || '';
+  }
   if (!from || !to) {
     window.alert('Need at least two connectable nodes to add an edge.');
     return;
@@ -16672,6 +16875,257 @@ function addGraphReturnNode(def) {
   });
   setTeamSavedStatus(false);
   renderTeamGraph(def, def.name);
+}
+async function applyTeamGraphBlock(def, block, options) {
+  const res = await api('/api/team/apply-block', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ definition: def, block, options }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
+  if (payload.nested && payload.nested.name) {
+    const saveNested = await api('/api/team/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ definition: payload.nested, target: state.teamSaveTarget || 'project' }),
+    });
+    if (!saveNested.ok) {
+      const err = await saveNested.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to save nested team');
+    }
+  }
+  const next = payload.definition;
+  if (!next) throw new Error('apply-block returned no definition');
+  state.teamDefinition = next;
+  state.teamDefinitionCache[next.name] = structuredClone(next);
+  setTeamSavedStatus(false);
+  if (payload.nested) await refreshTeamsSnapshot();
+  renderTeamGraph(next, next.name);
+  void liveValidateTeamGraph(next);
+  return next;
+}
+function openInsertParallelDialog(def) {
+  const old = document.getElementById('insertParallelDialog');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'insertParallelDialog';
+  overlay.className = 'modal';
+  const panel = document.createElement('div');
+  panel.className = 'auto-dialog';
+  panel.style.cssText = 'max-width:560px;width:min(560px,92vw);';
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  head.innerHTML = '<h3>Insert Parallel</h3>';
+  panel.appendChild(head);
+  const host = document.createElement('div');
+  host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
+  panel.appendChild(host);
+  const note = document.createElement('p');
+  note.className = 'te-hint';
+  note.textContent = 'Fan-out block on this Graph (keeps exactly one Task). Blocks are templates — not a second engine. Graph = collab DAG; Workflow = light tree.';
+  host.appendChild(note);
+  const membersBox = document.createElement('div');
+  membersBox.className = 'te-field';
+  membersBox.innerHTML = '<label>Members (≥2)</label>';
+  const membersList = document.createElement('div');
+  membersList.style.cssText = 'display:grid;gap:8px;';
+  const members = [
+    { id: 'researcher', role: 'researcher', model: '' },
+    { id: 'skeptic', role: 'skeptic', model: '' },
+  ];
+  const modelOpts = teamModelSelectOptions();
+  const redrawMembers = () => {
+    membersList.textContent = '';
+    members.forEach((m, idx) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;align-items:center;';
+      const idInp = document.createElement('input');
+      idInp.placeholder = 'id';
+      idInp.value = m.id;
+      idInp.addEventListener('input', () => { m.id = idInp.value; });
+      const roleInp = document.createElement('input');
+      roleInp.placeholder = 'role';
+      roleInp.value = m.role;
+      roleInp.addEventListener('input', () => { m.role = roleInp.value; });
+      const modelSel = document.createElement('select');
+      for (const opt of modelOpts) {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (opt.value === (m.model || '')) o.selected = true;
+        modelSel.appendChild(o);
+      }
+      modelSel.addEventListener('change', () => { m.model = modelSel.value; });
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'te-btn';
+      rm.textContent = '✕';
+      rm.disabled = members.length <= 2;
+      rm.addEventListener('click', () => {
+        if (members.length <= 2) return;
+        members.splice(idx, 1);
+        redrawMembers();
+      });
+      row.append(idInp, roleInp, modelSel, rm);
+      membersList.appendChild(row);
+    });
+  };
+  redrawMembers();
+  const addMember = document.createElement('button');
+  addMember.type = 'button';
+  addMember.className = 'te-btn';
+  addMember.textContent = '+ Member';
+  addMember.addEventListener('click', () => {
+    members.push({ id: 'member-' + (members.length + 1), role: 'member', model: '' });
+    redrawMembers();
+  });
+  membersBox.append(membersList, addMember);
+  host.appendChild(membersBox);
+  let join = 'all';
+  let returnMode = 'void';
+  let useSynth = true;
+  let saveAsNested = false;
+  host.appendChild(teSelect('Join', join, ['all', 'any'], (v) => { join = v === 'any' ? 'any' : 'all'; }));
+  host.appendChild(teCheck('Include synthesizer', useSynth, (v) => { useSynth = v; }));
+  host.appendChild(teSelect('Return mode', returnMode, ['void', 'payload'], (v) => { returnMode = v === 'payload' ? 'payload' : 'void'; }));
+  const nestedNameField = teFieldLive('Nested agent name', (def.name || 'graph') + '-parallel', function () {});
+  nestedNameField.style.display = 'none';
+  host.appendChild(teCheck('Save as nested agent (type=team + teamRef)', saveAsNested, (v) => {
+    saveAsNested = v;
+    nestedNameField.style.display = v ? '' : 'none';
+  }));
+  host.appendChild(nestedNameField);
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'te-btn'; cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => overlay.remove());
+  const apply = document.createElement('button');
+  apply.type = 'button'; apply.className = 'te-btn primary'; apply.textContent = 'Insert';
+  apply.addEventListener('click', async () => {
+    const cleaned = members.map((m) => ({
+      id: String(m.id || '').trim(),
+      role: String(m.role || '').trim() || undefined,
+      model: String(m.model || '').trim() || undefined,
+    })).filter((m) => m.id);
+    if (cleaned.length < 2) { window.alert('Need at least 2 members.'); return; }
+    const nestedNameInp = nestedNameField.querySelector('input');
+    const nestedName = nestedNameInp ? nestedNameInp.value.trim() : '';
+    try {
+      await applyTeamGraphBlock(def, 'parallel', {
+        members: cleaned,
+        join,
+        synthesizer: useSynth,
+        returnMode,
+        mode: saveAsNested ? 'nested' : 'inline',
+        nestedName: saveAsNested ? (nestedName || ((def.name || 'graph') + '-parallel')) : undefined,
+      });
+      overlay.remove();
+    } catch (e) {
+      window.alert('Insert Parallel failed: ' + (e && e.message || e));
+    }
+  });
+  actions.append(cancel, apply);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+function openInsertLoopDialog(def) {
+  const old = document.getElementById('insertLoopDialog');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'insertLoopDialog';
+  overlay.className = 'modal';
+  const panel = document.createElement('div');
+  panel.className = 'auto-dialog';
+  panel.style.cssText = 'max-width:520px;width:min(520px,92vw);';
+  const head = document.createElement('div');
+  head.className = 'ins-head';
+  head.innerHTML = '<h3>Insert Loop</h3>';
+  panel.appendChild(head);
+  const host = document.createElement('div');
+  host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
+  panel.appendChild(host);
+  const note = document.createElement('p');
+  note.className = 'te-hint';
+  note.textContent = 'Review loop uses CONTINUE/FINALIZE edges + maxRounds. Default is inline on this graph; nested mode adds one team node only.';
+  host.appendChild(note);
+  let executorId = 'executor';
+  let reviewerId = 'reviewer';
+  let maxRounds = 8;
+  let returnMode = 'void';
+  let asNested = false;
+  host.appendChild(teFieldLive('Executor id', executorId, (v) => { executorId = v.trim() || 'executor'; }));
+  host.appendChild(teFieldLive('Reviewer id', reviewerId, (v) => { reviewerId = v.trim() || 'reviewer'; }));
+  host.appendChild(teHintField('Max rounds', 'Squad/loop convergence cap (≥2). Only applies with loop edges.', String(maxRounds), (v) => {
+    const n = Number(v);
+    maxRounds = Number.isFinite(n) && n >= 2 ? Math.floor(n) : 8;
+  }));
+  host.appendChild(teSelect('Return mode', returnMode, ['void', 'payload'], (v) => { returnMode = v === 'payload' ? 'payload' : 'void'; }));
+  const nestedNameField = teFieldLive('Nested subgraph name', (def.name || 'graph') + '-review-loop', function () {});
+  nestedNameField.style.display = 'none';
+  host.appendChild(teCheck('As nested subgraph (parent gets one team node)', asNested, (v) => {
+    asNested = v;
+    nestedNameField.style.display = v ? '' : 'none';
+  }));
+  host.appendChild(nestedNameField);
+  const exitHint = document.createElement('p');
+  exitHint.className = 'te-hint';
+  exitHint.textContent = 'Exit edge: reviewer → Return with condition FINALIZE. First Return reached ends the graph.';
+  host.appendChild(exitHint);
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'te-btn'; cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => overlay.remove());
+  const apply = document.createElement('button');
+  apply.type = 'button'; apply.className = 'te-btn primary'; apply.textContent = 'Insert';
+  apply.addEventListener('click', async () => {
+    const nestedNameInp = nestedNameField.querySelector('input');
+    const nestedName = nestedNameInp ? nestedNameInp.value.trim() : '';
+    try {
+      await applyTeamGraphBlock(def, 'loop', {
+        executorId,
+        reviewerId,
+        maxRounds,
+        returnMode,
+        mode: asNested ? 'nested' : 'inline',
+        nestedName: asNested ? (nestedName || ((def.name || 'graph') + '-review-loop')) : undefined,
+      });
+      overlay.remove();
+    } catch (e) {
+      window.alert('Insert Loop failed: ' + (e && e.message || e));
+    }
+  });
+  actions.append(cancel, apply);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+let _liveValidateTimer = null;
+async function liveValidateTeamGraph(def) {
+  if (!def || (def.squadType && def.squadType !== 'graph')) {
+    showTeamGraphProblems(null);
+    return;
+  }
+  try {
+    const res = await api('/api/team/validate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ definition: def }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    showTeamGraphProblems(Array.isArray(payload.problems) ? payload.problems : null);
+  } catch {
+    /* offline / transient */
+  }
+}
+function scheduleLiveValidateTeamGraph(def) {
+  if (_liveValidateTimer) clearTimeout(_liveValidateTimer);
+  _liveValidateTimer = setTimeout(() => { void liveValidateTeamGraph(def); }, 280);
 }
 // Full-screen team editor retired — all squads use the graph canvas + inspector.
 function renderTeamEditor() {
@@ -16809,18 +17263,23 @@ async function saveTeamDefinition() {
 }
 // Inline validation problems (from the engine's validateTeamGraph) in the editor.
 function showTeamGraphProblems(problems) {
-  const box = document.getElementById('teamGraphProblems');
-  if (!box) return;
-  box.textContent = '';
-  if (!problems || !problems.length) { box.classList.add('hidden'); return; }
-  box.classList.remove('hidden');
-  const title = document.createElement('strong');
-  title.textContent = 'The engine rejected this graph:';
-  box.appendChild(title);
-  for (const p of problems) {
-    const li = document.createElement('div');
-    li.textContent = '• ' + p;
-    box.appendChild(li);
+  const boxes = [
+    document.getElementById('teamGraphProblems'),
+    document.getElementById('teamGraphCanvasProblems'),
+  ].filter(Boolean);
+  if (!boxes.length) return;
+  for (const box of boxes) {
+    box.textContent = '';
+    if (!problems || !problems.length) { box.classList.add('hidden'); continue; }
+    box.classList.remove('hidden');
+    const title = document.createElement('strong');
+    title.textContent = 'The engine rejected this graph:';
+    box.appendChild(title);
+    for (const p of problems) {
+      const li = document.createElement('div');
+      li.textContent = '• ' + p;
+      box.appendChild(li);
+    }
   }
 }
 function setTeamSavedStatus(saved) {
@@ -16833,6 +17292,7 @@ function setTeamSavedStatus(saved) {
   // Reflect dirty state on the Save button so users can see when a save is needed.
   const saveBtn = document.querySelector('#teamGraph .graph-save-btn');
   if (saveBtn) saveBtn.classList.toggle('save-dirty', !saved);
+  if (!saved && state.teamDefinition) scheduleLiveValidateTeamGraph(state.teamDefinition);
 }
 function graphNodeEl(node, def, isPrimary, opts) {
   if (isPortNodeKind(node)) return graphPortNodeEl(node, def, opts);
@@ -16952,13 +17412,13 @@ function graphPortNodeEl(node, def, opts) {
   icon.innerHTML = guiIcon(isTask ? 'automation' : 'gear');
   const nameEl = document.createElement('span');
   nameEl.className = 'gn-name';
-  nameEl.textContent = isTask ? 'Task' : 'Return';
+  nameEl.textContent = isTask ? 'Task' : ('Return · ' + (node.returnMode || 'void'));
   head.append(icon, nameEl);
   const role = document.createElement('div');
   role.className = 'gn-role';
   role.textContent = isTask
     ? graphRefOf(node)
-    : ((node.returnMode || 'void') + (node.returnMode === 'payload' ? ' · payload' : ''));
+    : (node.returnMode === 'payload' ? 'payload exit' : 'void exit');
   card.append(head, role);
   if (opts.editable && isTask) {
     const outPort = document.createElement('span');
@@ -17992,7 +18452,7 @@ function renderGraphModeCanvas(g, def, name) {
   toolbar.className = 'graph-toolbar';
   const left = document.createElement('div');
   left.className = 'graph-tabs';
-  left.innerHTML = '<button class="active">Graph</button>';
+  left.innerHTML = '<button class="active">Graph (team)</button>';
   const right = document.createElement('div');
   right.className = 'graph-tools';
   const pill = document.createElement('span');
@@ -18023,10 +18483,22 @@ function renderGraphModeCanvas(g, def, name) {
     addBtn.textContent = '+ Agent';
     addBtn.addEventListener('click', () => addGraphNodeQuick(def));
     right.appendChild(addBtn);
+    const parallelBtn = document.createElement('button');
+    parallelBtn.type = 'button';
+    parallelBtn.textContent = 'Insert Parallel';
+    parallelBtn.title = 'Fan-out block (Task → members → synthesizer → Return)';
+    parallelBtn.addEventListener('click', () => openInsertParallelDialog(def));
+    right.appendChild(parallelBtn);
+    const loopBtn = document.createElement('button');
+    loopBtn.type = 'button';
+    loopBtn.textContent = 'Insert Loop';
+    loopBtn.title = 'Executor ↔ reviewer loop with FINALIZE exit';
+    loopBtn.addEventListener('click', () => openInsertLoopDialog(def));
+    right.appendChild(loopBtn);
     const edgeBtn = document.createElement('button');
     edgeBtn.type = 'button';
     edgeBtn.textContent = '+ Edge';
-    edgeBtn.title = 'Add edge — or drag bottom port → top port on the canvas';
+    edgeBtn.title = 'Add edge — prefers Task→orphan agent, then agent→Return';
     edgeBtn.addEventListener('click', () => addGraphEdgeQuick(def, name));
     right.appendChild(edgeBtn);
     if (nodes.length) {
@@ -18058,18 +18530,29 @@ function renderGraphModeCanvas(g, def, name) {
   if (!nodes.length) {
     const e = document.createElement('p');
     e.className = 'region-empty';
-    e.textContent = editable ? 'No agents yet — click + Agent to add the first node.' : 'This graph has no nodes.';
+    e.textContent = editable
+      ? 'Need Task → agents → Return. Use Insert Parallel / Insert Loop next to + Agent, or add nodes manually.'
+      : 'This graph has no nodes.';
     canvas.appendChild(e);
+    const problems = document.createElement('div');
+    problems.id = 'teamGraphCanvasProblems';
+    problems.className = 'te-problems hidden';
+    canvas.appendChild(problems);
     g.append(toolbar, canvas);
+    scheduleLiveValidateTeamGraph(def);
     return;
   }
   ensureGraphNodeLayout(def);
   if (editable) {
     const hint = document.createElement('p');
     hint.className = 'graph-board-hint';
-    hint.textContent = '滚轮缩放 · 空白处拖动画布 · 双击节点/边编辑 · 拖动节点移动 · 单击边后拖动圆点调整曲线 · 底 port→顶 port 或 + Edge 连线';
+    hint.textContent = 'Need Task → agents → Return. Insert Parallel / Insert Loop next to + Agent. 滚轮缩放 · 空白处拖动画布 · 双击节点/边编辑 · First Return reached ends the graph.';
     canvas.appendChild(hint);
   }
+  const canvasProblems = document.createElement('div');
+  canvasProblems.id = 'teamGraphCanvasProblems';
+  canvasProblems.className = 'te-problems hidden';
+  canvas.appendChild(canvasProblems);
   const board = document.createElement('div');
   board.className = 'graph-board';
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -18111,6 +18594,7 @@ function renderGraphModeCanvas(g, def, name) {
   });
   observeGraphBoardResize(board, svg, def);
   if (editable) wireGraphBoardConnect(board, svg, def, name);
+  scheduleLiveValidateTeamGraph(def);
 }
 // Renders a surface-data list inline into a region body (reuses surfaceData/
 // itemTitle/itemDescription so the region and the drawer stay in sync).
@@ -18563,7 +19047,7 @@ function handleEvent(event) {
     finalizeAssistant(); state.currentAssistant = null;
     state.lastTeamMemberId = null;
     state.lastTeamMemberRole = null;
-    setConversationStatus('Squad running', 'running');
+    setConversationStatus('Agent running', 'running');
     renderSquadRoster(event.members);
     addSystemEvent('Squad started · ' + event.mode + ' · ' + (Array.isArray(event.members) ? event.members.length : '?') + ' members');
   }
