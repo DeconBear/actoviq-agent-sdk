@@ -9,7 +9,7 @@
 
 Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
-**Actoviq 1.0** is a TypeScript agent SDK and agent-team platform. Its stable SDK contracts separate provider-neutral agent declarations, model providers, runtime/service ownership, durable state, events, orchestration, workflow trust, profiles, and compatibility surfaces. The existing team, Bridge, TUI, and GUI products remain available on top of those contracts.
+**Actoviq** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**. The GUI still hides some under-development panels (see `CHANGELOG.md` for 0.4.7).
 
 Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Actoviq remains independent with its own public surface and documentation.
 

@@ -9,7 +9,7 @@
 
 文档站地址：https://deconbear.github.io/actoviq-agent-sdk/
 
-**Actoviq 1.0** 是 TypeScript agent SDK 与 agent team 平台。稳定 SDK 将 provider-neutral agent 声明、模型 provider、runtime/service 所有权、durable state、event、orchestration、workflow trust、profile 与兼容表面明确分层；现有 Team、Bridge、TUI、GUI 继续构建在这些契约之上。
+**Actoviq**（`0.4.x`）是 TypeScript agent SDK 与 agent-team 平台，含 TUI、GUI、Bridge 与多 agent 协作。未来的 **1.0** 线将稳定 package subpath 契约；该表面**尚未发布**。GUI 仍隐藏部分开发中面板（详见 `CHANGELOG.md` 的 0.4.7）。
 
 受 Claude Code、Codex、Deepagents 等项目启发。Actoviq 保持独立，拥有自己的公开 API 与文档。
 

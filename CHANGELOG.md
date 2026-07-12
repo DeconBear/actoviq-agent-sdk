@@ -4,7 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
-## v1.0.0 release candidate - 2026-07-11
+## v0.4.7 - 2026-07-12
+
+### GUI
+
+- Hide incomplete Settings panels (**Profile**, **Browser**, **Computer control**, dedicated **Worktrees**) from the sidebar; markup and handlers remain in the codebase for a later release.
+- Hide the main **Agent** region nav entry (team graph UI) the same way — code retained, not deleted.
+- Settings sidebar notes which surfaces are still under development in this release.
+
+### Still under development (not product-ready in 0.4.7)
+
+- Main **Agent** / team-graph region UI
+- Settings: **Profile**, **Browser**, **Computer control**, dedicated **Worktrees** tab
+- Keyboard shortcut remapping (reference list only)
+- Full 1.0 runtime/package surface (tracked as unreleased below)
+
+### Notes
+
+- This release stays on the **0.4.x** line. **1.0.0 is not published yet.**
+
+## Unreleased — v1.0.0 (not published)
+
+> Draft notes for a future 1.0.0. Do not treat this section as shipped.
+
+### Stable SDK contracts
 
 ### Stable SDK contracts
 
