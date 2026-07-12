@@ -90,11 +90,12 @@ jobs:
           - name: Linux x64
             runner: ubuntu-latest
             eb_args: --linux AppImage --x64
-            artifact_glob: Actoviq-*-linux-x64.AppImage
+            # electron-builder names AppImage arch x86_64 (not x64).
+            artifact_glob: 'Actoviq-*-linux-x86_64.AppImage'
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             eb_args: --linux AppImage --arm64
-            artifact_glob: Actoviq-*-linux-arm64.AppImage
+            artifact_glob: 'Actoviq-*-linux-arm64.AppImage'
 
     steps:
       - name: Checkout repository

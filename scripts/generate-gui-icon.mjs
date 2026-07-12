@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SIZE = 256;
+const SIZE = 512; // macOS DMG requires ≥512; Windows/Linux accept this too.
 const px = Buffer.alloc(SIZE * SIZE * 4); // transparent RGBA
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
