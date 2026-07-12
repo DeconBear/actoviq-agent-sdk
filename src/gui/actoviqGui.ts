@@ -5981,7 +5981,8 @@ export function createActoviqGuiHtml(): string {
       <button id="newSession" class="nav-btn new-chat-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
       <nav class="primary-nav" aria-label="Primary">
         <button id="navProject" class="nav-btn region-nav active" data-region="project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
-        <button id="navTeam" class="nav-btn region-nav" data-region="team"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
+        <!-- WIP: Agent region UI retained but hidden until ready for 0.4.7. -->
+        <button id="navTeam" class="nav-btn region-nav wip-hidden" data-region="team" data-wip="agent-region" hidden aria-hidden="true"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
         <button id="navAutomation" class="nav-btn region-nav" data-region="automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
         <button id="navPlugins" class="nav-btn region-nav" data-region="plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
       </nav>
@@ -6512,7 +6513,8 @@ export function createActoviqGuiHtml(): string {
         <h2>Personal</h2>
         <button type="button" class="settings-tab active" data-settings-tab="general"><span class="settings-icon">${guiIcon('gear')}</span>General</button>
         <button type="button" class="settings-tab" data-settings-tab="models"><span class="settings-icon">${guiIcon('model')}</span>Models & routing</button>
-        <button type="button" class="settings-tab" data-settings-tab="profile"><span class="settings-icon">${guiIcon('profile')}</span>Profile</button>
+        <!-- WIP: Profile settings panel retained but hidden until ready. -->
+        <button type="button" class="settings-tab wip-hidden" data-settings-tab="profile" data-wip="settings-profile" hidden aria-hidden="true"><span class="settings-icon">${guiIcon('profile')}</span>Profile</button>
         <button type="button" class="settings-tab" data-settings-tab="appearance"><span class="settings-icon">${guiIcon('palette')}</span>Appearance</button>
         <button type="button" class="settings-tab" data-settings-tab="personalization"><span class="settings-icon">${guiIcon('agent')}</span>Personalization</button>
         <button type="button" class="settings-tab" data-settings-tab="shortcuts"><span class="settings-icon">${guiIcon('keyboard')}</span>Keyboard shortcuts</button>
@@ -6527,16 +6529,19 @@ export function createActoviqGuiHtml(): string {
       <section>
         <h2>Integrations</h2>
         <button type="button" class="settings-tab" data-settings-tab="mcp"><span class="settings-icon">${guiIcon('plug')}</span>MCP servers</button>
-        <button type="button" class="settings-tab" data-settings-tab="browser"><span class="settings-icon">${guiIcon('browser')}</span>Browser</button>
-        <button type="button" class="settings-tab" data-settings-tab="computer"><span class="settings-icon">${guiIcon('computer')}</span>Computer control</button>
+        <!-- WIP: Browser / Computer control settings retained but hidden until ready. -->
+        <button type="button" class="settings-tab wip-hidden" data-settings-tab="browser" data-wip="settings-browser" hidden aria-hidden="true"><span class="settings-icon">${guiIcon('browser')}</span>Browser</button>
+        <button type="button" class="settings-tab wip-hidden" data-settings-tab="computer" data-wip="settings-computer" hidden aria-hidden="true"><span class="settings-icon">${guiIcon('computer')}</span>Computer control</button>
       </section>
       <section>
         <h2>Coding</h2>
         <button type="button" class="settings-tab" data-settings-tab="hooks"><span class="settings-icon">${guiIcon('hooks')}</span>Hooks</button>
         <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
         <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
-        <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
+        <!-- WIP: dedicated Worktrees settings tab retained but hidden (controls remain under Automation). -->
+        <button type="button" class="settings-tab wip-hidden" data-settings-tab="worktree" data-wip="settings-worktree" hidden aria-hidden="true"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
       </section>
+      <p class="settings-wip-note muted">Under development (hidden in this release): Agent region, Profile, Browser, Computer control, Worktrees settings.</p>
     </aside>
     <form id="settingsForm" class="settings-main">
       <section class="settings-panel active" data-settings-panel="general">
@@ -6609,7 +6614,7 @@ export function createActoviqGuiHtml(): string {
           <div id="runtimeDiscoveryList" class="settings-card-list compact runtime-list"></div>
         </div>
       </section>
-      <section class="settings-panel" data-settings-panel="profile">
+      <section class="settings-panel wip-hidden" data-settings-panel="profile" data-wip="settings-profile" hidden aria-hidden="true">
         <h1>Profile</h1>
         <div class="settings-group"><p>User profile settings are stored in local Actoviq settings and memories. Use /memory and /dream to inspect durable context.</p></div>
       </section>
@@ -6770,11 +6775,11 @@ export function createActoviqGuiHtml(): string {
           <div id="mcpServersList" class="settings-card-list"></div>
         </div>
       </section>
-      <section class="settings-panel" data-settings-panel="browser">
+      <section class="settings-panel wip-hidden" data-settings-panel="browser" data-wip="settings-browser" hidden aria-hidden="true">
         <h1>Browser</h1>
         <div class="settings-group"><p>Browser automation uses registered MCP/tools when available. Inspect tools from the main toolbar.</p></div>
       </section>
-      <section class="settings-panel" data-settings-panel="computer">
+      <section class="settings-panel wip-hidden" data-settings-panel="computer" data-wip="settings-computer" hidden aria-hidden="true">
         <h1>Computer control</h1>
         <div class="settings-group"><p>Computer control appears when the matching tools are registered for this workspace.</p></div>
       </section>
@@ -6820,7 +6825,7 @@ export function createActoviqGuiHtml(): string {
           <label>Max model<input id="settingsMaxModel" autocomplete="off"></label>
         </div>
       </section>
-      <section class="settings-panel" data-settings-panel="worktree">
+      <section class="settings-panel wip-hidden" data-settings-panel="worktree" data-wip="settings-worktree" hidden aria-hidden="true">
         <h1>Worktrees</h1>
         <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
       </section>
@@ -7001,6 +7006,14 @@ body[data-theme="dark"] {
 }
 .region-nav.active .nav-icon { color: var(--brand); }
 .region-nav:not(.active):hover { background: var(--bg-surface-2); }
+/* 0.4.7: hide incomplete GUI surfaces without deleting their markup/JS. */
+.wip-hidden { display: none !important; }
+.settings-wip-note {
+  margin: 16px 12px 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
 .region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
 .region-header { min-height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; gap: 14px; flex: 0 0 auto; background: var(--bg-surface); }
 .region-header .region-titles { min-width: 0; }
@@ -15939,6 +15952,8 @@ async function openSurface(kind) {
 // their content inline here. The surface DRAWER remains for browse-style
 // surfaces (sessions, git, tools, skills, agents, mcp, routers, projects).
 async function switchRegion(name) {
+  // 0.4.7: Agent region is WIP-hidden; keep code paths but bounce to Project.
+  if (name === 'team') name = 'project';
   state.activeRegion = name;
   document.querySelectorAll('[data-region]:not(.region-nav)').forEach((node) => {
     node.classList.toggle('hidden', node.getAttribute('data-region') !== name);
@@ -20477,6 +20492,9 @@ function openProjectGitFromSettings() {
   setProjectDetailTab('git');
 }
 function showSettingsTab(tab) {
+  // 0.4.7: empty/stub settings panels are WIP-hidden; bounce to General.
+  const wipSettingsTabs = new Set(['profile', 'browser', 'computer', 'worktree']);
+  if (wipSettingsTabs.has(tab)) tab = 'general';
   document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
   document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
   if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);

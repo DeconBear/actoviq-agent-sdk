@@ -131,6 +131,15 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('aria-label="Agent"');
     expect(html).toContain('<h1>Agent</h1>');
     expect(html).toContain('<h2>Agents</h2>');
+    // 0.4.7: Agent nav + stub settings remain in markup but are WIP-hidden.
+    expect(html).toContain('id="navTeam"');
+    expect(html).toMatch(/id="navTeam"[^>]*\bwip-hidden\b/);
+    expect(html).toMatch(/data-settings-tab="profile"[^>]*\bwip-hidden\b|class="[^"]*\bwip-hidden\b[^"]*"[^>]*data-settings-tab="profile"/);
+    expect(html).toMatch(/data-settings-tab="browser"[^>]*\bwip-hidden\b|class="[^"]*\bwip-hidden\b[^"]*"[^>]*data-settings-tab="browser"/);
+    expect(html).toMatch(/data-settings-tab="computer"[^>]*\bwip-hidden\b|class="[^"]*\bwip-hidden\b[^"]*"[^>]*data-settings-tab="computer"/);
+    expect(html).toMatch(/data-settings-tab="worktree"[^>]*\bwip-hidden\b|class="[^"]*\bwip-hidden\b[^"]*"[^>]*data-settings-tab="worktree"/);
+    expect(html).toContain('settings-wip-note');
+    expect(html).toContain('Under development (hidden in this release)');
     expect(js).toContain('Graph (team)');
     expect(js).toContain("label: 'Graph (team)'");
     expect(js).toContain("label: 'Blank'");

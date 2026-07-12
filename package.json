@@ -1,6 +1,6 @@
 {
   "name": "actoviq-agent-sdk",
-  "version": "1.0.0",
+  "version": "0.4.7",
   "description": "Agent team platform — multi-agent, multi-runtime, model team collaboration with TUI, GUI, and MCP.",
   "repository": {
     "type": "git",
