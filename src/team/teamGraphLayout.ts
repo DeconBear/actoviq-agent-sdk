@@ -114,7 +114,124 @@ export function clearEdgeBezierUiForNodeRef(
   }
 }
 
-/** Join bezier helpers for injection into the GUI client script bundle. */
+export type GraphSide = 'n' | 'e' | 's' | 'w';
+
+export interface GraphRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Anchor point on a node rect for a given side + snap index. */
+export function sideAnchor(
+  rect: GraphRect,
+  side: GraphSide,
+  portIndex = 1,
+  portCount = 3,
+): GraphPoint {
+  const count = Math.max(1, portCount);
+  const idx = Math.min(Math.max(0, portIndex), count - 1);
+  const t = count <= 1 ? 0.5 : (idx + 1) / (count + 1);
+  switch (side) {
+    case 'n':
+      return { x: rect.x + rect.w * t, y: rect.y };
+    case 's':
+      return { x: rect.x + rect.w * t, y: rect.y + rect.h };
+    case 'w':
+      return { x: rect.x, y: rect.y + rect.h * t };
+    case 'e':
+      return { x: rect.x + rect.w, y: rect.y + rect.h * t };
+  }
+}
+
+/**
+ * Pick the nearest (fromSide, toSide, fromPort, toPort) by Euclidean distance.
+ * When fromPort/toPort are omitted, searches every snap index on each side.
+ */
+export function pickShortestSides(
+  fromRect: GraphRect,
+  toRect: GraphRect,
+  opts?: {
+    fromSides?: GraphSide[];
+    toSides?: GraphSide[];
+    fromPort?: number;
+    toPort?: number;
+    fromPortCount?: number;
+    toPortCount?: number;
+  },
+): { fromSide: GraphSide; toSide: GraphSide; fromPort: number; toPort: number } {
+  const fromSides = opts?.fromSides ?? (['n', 'e', 's', 'w'] as GraphSide[]);
+  const toSides = opts?.toSides ?? (['n', 'e', 's', 'w'] as GraphSide[]);
+  const fromPortCount = Math.max(1, opts?.fromPortCount ?? 3);
+  const toPortCount = Math.max(1, opts?.toPortCount ?? 3);
+  const fromPorts = opts?.fromPort != null
+    ? [Math.min(Math.max(0, opts.fromPort), fromPortCount - 1)]
+    : Array.from({ length: fromPortCount }, (_, i) => i);
+  const toPorts = opts?.toPort != null
+    ? [Math.min(Math.max(0, opts.toPort), toPortCount - 1)]
+    : Array.from({ length: toPortCount }, (_, i) => i);
+  let best: { fromSide: GraphSide; toSide: GraphSide; fromPort: number; toPort: number } | null = null;
+  let bestDist = Infinity;
+  for (const fs of fromSides) {
+    for (const ts of toSides) {
+      for (const fp of fromPorts) {
+        for (const tp of toPorts) {
+          const a = sideAnchor(fromRect, fs, fp, fromPortCount);
+          const b = sideAnchor(toRect, ts, tp, toPortCount);
+          const d = Math.hypot(b.x - a.x, b.y - a.y);
+          if (d < bestDist) {
+            bestDist = d;
+            best = { fromSide: fs, toSide: ts, fromPort: fp, toPort: tp };
+          }
+        }
+      }
+    }
+  }
+  return best ?? {
+    fromSide: 's',
+    toSide: 'n',
+    fromPort: Math.floor(fromPortCount / 2),
+    toPort: Math.floor(toPortCount / 2),
+  };
+}
+
+/** Migrate legacy top-in/bottom-out ports to sides (does not set sideLocked). */
+export function migrateLegacyEdgeSides(edge: TeamGraphEdge): void {
+  if (edge.ui?.fromSide && edge.ui?.toSide) return;
+  edge.ui = {
+    ...edge.ui,
+    fromSide: edge.ui?.fromSide ?? 's',
+    toSide: edge.ui?.toSide ?? 'n',
+  };
+}
+
+/** Axis-aligned bounds of member nodes for a visual uiGroup (GUI-only). */
+export function computeGroupBounds(
+  nodes: Array<{ ui?: { x?: number; y?: number }; kind?: string }>,
+  memberRefs: string[],
+  refOf: (n: { ui?: { x?: number; y?: number }; kind?: string }, i: number) => string,
+  sizeOf: (n: { kind?: string }) => { w: number; h: number },
+): GraphRect | null {
+  const set = new Set(memberRefs.map((r) => r.trim()).filter(Boolean));
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  nodes.forEach((n, i) => {
+    const ref = refOf(n, i);
+    if (!set.has(ref) || n.ui?.x == null || n.ui?.y == null) return;
+    const { w, h } = sizeOf(n);
+    minX = Math.min(minX, n.ui.x);
+    minY = Math.min(minY, n.ui.y);
+    maxX = Math.max(maxX, n.ui.x + w);
+    maxY = Math.max(maxY, n.ui.y + h);
+  });
+  if (!Number.isFinite(minX)) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/** Join bezier + smart-side helpers for injection into the GUI client script bundle. */
 export function getTeamGraphBezierClientScript(): string {
   return [
     'const MIN_CONTROL_TENSION = 36;',
@@ -126,6 +243,10 @@ export function getTeamGraphBezierClientScript(): string {
     writeEdgeBezierUi.toString(),
     clearEdgeBezierUi.toString(),
     clearEdgeBezierUiForNodeRef.toString(),
+    sideAnchor.toString(),
+    pickShortestSides.toString(),
+    migrateLegacyEdgeSides.toString(),
+    computeGroupBounds.toString(),
   ].join('\n');
 }
 

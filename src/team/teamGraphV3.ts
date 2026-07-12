@@ -109,8 +109,8 @@ export function validateTeamGraphV3(definition: TeamDefinition): string[] {
   if (tasks.length !== 1) {
     errors.push(`graph v3 requires exactly one Task entry node (found ${tasks.length})`);
   }
-  if (returns.length === 0) {
-    errors.push('graph v3 requires at least one Return exit node');
+  if (returns.length !== 1) {
+    errors.push(`graph v3 requires exactly one Caller Exit (Return) node (found ${returns.length})`);
   }
 
   const seenRefs = new Map<string, number>();
@@ -163,7 +163,7 @@ export function validateTeamGraphV3(definition: TeamDefinition): string[] {
       return pathExistsToReturn(graph, graph.taskIndex, target);
     });
     if (!reachableReturn) {
-      errors.push('no path from Task entry to any Return exit');
+      errors.push('no path from Task entry to the Caller Exit');
     }
   }
 
@@ -253,10 +253,32 @@ function taskDispatchTargets(edges: TeamGraphEdge[], taskRef = 'task'): string[]
 /**
  * Task is a one-shot dispatch port — no incoming edges. Loop rounds re-hand off
  * to Task's dispatch targets instead of routing back through Task.
+ * Also consolidates multiple Return nodes into exactly one Caller Exit.
  */
 export function sanitizeV3GraphTopology(definition: TeamDefinition): TeamDefinition {
-  const nodes = definition.nodes ?? [];
-  const taskNode = nodes.find((n) => graphNodeKind(n) === 'task');
+  const nodes = [...(definition.nodes ?? [])];
+  const returns = nodes
+    .map((n, i) => ({ n, i }))
+    .filter(({ n }) => graphNodeKind(n) === 'return');
+  if (returns.length > 1) {
+    // Prefer void Exit; else keep the first. Rewire inbound edges; drop extras.
+    const keep = returns.find(({ n }) => n.returnMode === 'void') ?? returns[0]!;
+    const keepRef = portRef(keep.n);
+    const dropRefs = new Set(
+      returns.filter((r) => r.i !== keep.i).map((r) => portRef(r.n)).filter(Boolean),
+    );
+    const edges = [...(definition.edges ?? [])];
+    for (const edge of edges) {
+      if (dropRefs.has(edge.to.trim())) edge.to = keepRef;
+      if (dropRefs.has(edge.from.trim())) edge.from = keepRef;
+    }
+    definition.nodes = nodes.filter((n) => !dropRefs.has(portRef(n)));
+    definition.edges = edges.filter(
+      (e) => !dropRefs.has(e.from.trim()) && e.from.trim() !== e.to.trim(),
+    );
+  }
+
+  const taskNode = (definition.nodes ?? []).find((n) => graphNodeKind(n) === 'task');
   if (!taskNode) return definition;
   const taskRef = portRef(taskNode);
   const edges = [...(definition.edges ?? [])];

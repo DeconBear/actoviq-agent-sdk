@@ -2674,7 +2674,7 @@ export type TeamGraphReturnMode = 'void' | 'payload';
  * confirmation (product rule, enforced at the UI layer).
  *
  * v3: `kind: 'task'` (exactly one per graph) dispatches `run.prompt`; `kind:
- * 'return'` (≥1) terminates the run. Absent `kind` → `agent` (v2 compat).
+ * 'return'` (exactly one Caller Exit) terminates the run. Absent `kind` → `agent` (v2 compat).
  */
 export interface TeamGraphNode extends Omit<TeamMember, 'model'> {
   /** Agent nodes require a model; task/return ports omit it. */
@@ -2705,8 +2705,11 @@ export interface TeamGraphNode extends Omit<TeamMember, 'model'> {
    * `any`: OR-join — wake on the first in-edge that delivers a payload.
    */
   join?: 'all' | 'any';
-  /** GUI canvas position (pixels). Ignored by the graph engine. */
-  ui?: { x?: number; y?: number };
+  /**
+   * GUI canvas position / grouping (pixels). Ignored by the graph engine.
+   * `groupId` ties the node to a visual `TeamDefinition.uiGroups` cluster.
+   */
+  ui?: { x?: number; y?: number; groupId?: string };
   /** Per-node ReAct tool-iteration cap. Omit or ≤0 = unlimited. */
   maxIterations?: number;
   /** Per-node run timeout (ms). Omit → squad default. */
@@ -2763,7 +2766,23 @@ export interface TeamGraphEdge {
      */
     fromPort?: number;
     toPort?: number;
+    /**
+     * GUI-only attachment side for smart routing (`n`/`e`/`s`/`w`).
+     * When absent, the canvas migrates from legacy top-in/bottom-out ports.
+     */
+    fromSide?: 'n' | 'e' | 's' | 'w';
+    toSide?: 'n' | 'e' | 's' | 'w';
+    /** When true, auto `pickShortestSides` skips this edge after a manual endpoint drag. */
+    sideLocked?: boolean;
   };
+}
+
+/** GUI-only visual cluster for Parallel/Loop insert shortcuts (engine ignores). */
+export interface TeamGraphUiGroup {
+  id: string;
+  kind: 'parallel' | 'loop';
+  label?: string;
+  memberRefs: string[];
 }
 
 export interface TeamDefinition {
@@ -2799,6 +2818,11 @@ export interface TeamDefinition {
   nodes?: TeamGraphNode[];
   /** Graph edges (mode `graph`, version 2). */
   edges?: TeamGraphEdge[];
+  /**
+   * GUI-only Parallel/Loop visual clusters. Ignored by the graph engine.
+   * Insert Parallel/Loop writes these; users can ungroup without changing topology.
+   */
+  uiGroups?: TeamGraphUiGroup[];
   /** Entry node refs; alternative to per-node `entry: true` (union of both applies). */
   entryNodeIds?: string[];
   /** Max panel members dispatched concurrently within this team (still bounded by the global AgentPool). Default: all members. */

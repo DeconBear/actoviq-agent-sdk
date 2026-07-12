@@ -150,8 +150,11 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('Insert Loop');
     expect(js).toContain('openInsertParallelDialog');
     expect(js).toContain('openInsertLoopDialog');
-    expect(js).toContain('Need Task → agents → Return');
-    expect(js).toContain('First Return reached ends the graph');
+    expect(js).toContain('Need Dispatch → agents → Exit');
+    expect(js).toContain('Design with agent');
+    expect(js).toContain('/api/team/propose');
+    expect(js).toContain('openTeamDesignerDrawer');
+    expect(js).not.toContain('First Return reached ends the graph');
     expect(js).toContain('squadTypeLabel');
     expect(gui).toContain('/api/team/scaffold');
     expect(gui).toContain('/api/team/apply-block');

@@ -8,8 +8,10 @@ import type {
   TeamGraphEdge,
   TeamGraphNode,
   TeamGraphReturnMode,
+  TeamGraphUiGroup,
 } from '../types.js';
 import { ensureConfiguredTeamGraph, migrateTeamDefinitionToGraph, validateTeamGraph } from './teamGraph.js';
+import { graphNodeRef } from './teamGraph.js';
 
 export type GraphTeamTemplate = 'blank' | 'parallel' | 'review-loop';
 
@@ -332,6 +334,14 @@ export function insertParallelBlock(def: TeamDefinition, options: ParallelBlockO
     }
   }
 
+  const groupRefs = members.map((m) => m.id.trim());
+  if (useSynth) groupRefs.push(synthId);
+  attachUiGroup(base, {
+    kind: 'parallel',
+    label: 'Parallel',
+    memberRefs: groupRefs,
+  });
+
   return finalizeGraph(base);
 }
 
@@ -392,6 +402,11 @@ export function insertLoopBlock(def: TeamDefinition, options: LoopBlockOptions =
     });
   }
   base.maxRounds = Math.max(base.maxRounds ?? 0, maxRounds);
+  attachUiGroup(base, {
+    kind: 'loop',
+    label: 'Review loop',
+    memberRefs: [executorId, reviewerId],
+  });
   return finalizeGraph(base);
 }
 
@@ -489,6 +504,27 @@ function ensureTaskAndReturn(def: TeamDefinition, returnMode: TeamGraphReturnMod
       ...(returnMode === 'payload' ? { payloadTemplate: '{{from.output}}' } : {}),
       ui: { x: 720, y: 160 },
     });
+  }
+}
+
+function attachUiGroup(
+  def: TeamDefinition,
+  group: Omit<TeamGraphUiGroup, 'id'> & { id?: string },
+): void {
+  const id = group.id || `${group.kind}-${Date.now().toString(36)}`;
+  const memberRefs = [...new Set(group.memberRefs.map((r) => r.trim()).filter(Boolean))];
+  def.uiGroups = def.uiGroups || [];
+  def.uiGroups.push({
+    id,
+    kind: group.kind,
+    label: group.label,
+    memberRefs,
+  });
+  for (const node of def.nodes || []) {
+    const ref = graphNodeRef(node);
+    if (memberRefs.includes(ref)) {
+      node.ui = { ...(node.ui || {}), groupId: id };
+    }
   }
 }
 

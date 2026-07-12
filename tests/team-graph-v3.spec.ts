@@ -45,9 +45,9 @@ describe('isTeamGraphV3 / validateTeamGraphV3', () => {
     expect(isTeamGraphV3({ name: 'x', mode: 'graph', version: 2, members: [], nodes: [agent('a')] })).toBe(false);
   });
 
-  it('requires exactly one Task and at least one Return', () => {
+  it('requires exactly one Task and exactly one Caller Exit', () => {
     const missingReturn = v3Def({ nodes: [{ kind: 'task', id: 'task' }, agent('a')] });
-    expect(validateTeamGraphV3(missingReturn).some((e) => e.includes('Return'))).toBe(true);
+    expect(validateTeamGraphV3(missingReturn).some((e) => e.includes('Caller Exit') || e.includes('Return'))).toBe(true);
 
     const twoTasks = v3Def({
       nodes: [
@@ -57,6 +57,21 @@ describe('isTeamGraphV3 / validateTeamGraphV3', () => {
       ],
     });
     expect(validateTeamGraphV3(twoTasks).some((e) => e.includes('exactly one Task'))).toBe(true);
+
+    const twoReturns = v3Def({
+      nodes: [
+        { kind: 'task', id: 'task' },
+        agent('a'),
+        { kind: 'return', id: 'return-void', returnMode: 'void' },
+        { kind: 'return', id: 'return', returnMode: 'payload' },
+      ],
+      edges: [
+        { from: 'task', to: 'a', payloadTemplate: '{{run.prompt}}' },
+        { from: 'a', to: 'return-void' },
+        { from: 'a', to: 'return' },
+      ],
+    });
+    expect(validateTeamGraphV3(twoReturns).some((e) => e.includes('exactly one Caller Exit'))).toBe(true);
   });
 
   it('requires a path from Task to Return', () => {
