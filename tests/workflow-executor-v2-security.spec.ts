@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -24,7 +24,9 @@ import type {
 let workspaceDir: string;
 
 beforeEach(async () => {
-  workspaceDir = await mkdtemp(path.join(tmpdir(), 'actoviq-workflow-v2-'));
+  // Resolve 8.3 short paths (e.g. RUNNER~1) so Windows CI matches the
+  // realpath the isolated worker may surface in capability context.
+  workspaceDir = await realpath(await mkdtemp(path.join(tmpdir(), 'actoviq-workflow-v2-')));
 });
 
 afterEach(async () => {
