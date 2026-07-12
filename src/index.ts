@@ -124,6 +124,30 @@ export {
   createDefaultActoviqComputerUseExecutor,
 } from './computer/actoviqComputerUse.js';
 export {
+  ActoviqBrowserSession,
+} from './browser/actoviqBrowserSession.js';
+export type {
+  ActoviqBrowserElementRef,
+  ActoviqBrowserSnapshot,
+  ActoviqBrowserSessionOptions,
+  ActoviqBrowserTabInfo,
+} from './browser/actoviqBrowserSession.js';
+export {
+  createActoviqBrowserTools,
+  createActoviqBrowserUseMcpServer,
+  createActoviqBrowserUseToolkit,
+  sessionOptionsFromBrowserUse,
+} from './browser/actoviqBrowserTools.js';
+export type {
+  ActoviqBrowserSessionLike,
+  ActoviqBrowserUseToolkit,
+} from './browser/actoviqBrowserTools.js';
+export {
+  readActoviqBrowserSettings,
+  writeActoviqBrowserSettings,
+} from './browser/browserSettings.js';
+export type { ActoviqBrowserSettings } from './browser/browserSettings.js';
+export {
   ActoviqSdkError,
   ActoviqProviderApiError,
   ActoviqBridgeProcessError,

@@ -13,6 +13,10 @@ import {
   createActoviqComputerUseMcpServer,
   createActoviqComputerUseTools,
 } from '../computer/actoviqComputerUse.js';
+import {
+  createActoviqBrowserUseMcpServer,
+  createActoviqBrowserTools,
+} from '../browser/actoviqBrowserTools.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
 import { resolveActoviqModelReference } from '../config/modelTiers.js';
 import { recordCompatUsage } from '../compat/diagnostics.js';
@@ -75,6 +79,7 @@ import type {
   ActoviqToolClassifier,
   CreateAgentSdkOptions,
   CreateActoviqComputerUseOptions,
+  CreateActoviqBrowserUseOptions,
   SessionCreateOptions,
   SessionResumeOptions,
   SessionSummary,
@@ -849,6 +854,15 @@ export class ActoviqAgentClient {
         defaultMcpServers.push(createActoviqComputerUseMcpServer(computerUseOptions));
       } else {
         defaultTools.push(...createActoviqComputerUseTools(computerUseOptions));
+      }
+    }
+    if (options.browserUse) {
+      const browserUseOptions: CreateActoviqBrowserUseOptions =
+        typeof options.browserUse === 'object' ? options.browserUse : {};
+      if (browserUseOptions.asMcpServer) {
+        defaultMcpServers.push(createActoviqBrowserUseMcpServer(browserUseOptions));
+      } else {
+        defaultTools.push(...createActoviqBrowserTools(browserUseOptions));
       }
     }
     const client = new ActoviqAgentClient(

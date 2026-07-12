@@ -89,6 +89,9 @@ const XTERM_TYPES = new Map<string, string>([
 import {
   createActoviqCoreTools,
   createAgentSdk,
+  createActoviqBrowserUseToolkit,
+  readActoviqBrowserSettings,
+  writeActoviqBrowserSettings,
   createModelTeam,
   createTeamTool,
   detectBridgeProviders,
@@ -1654,14 +1657,48 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // TerminalSnapshot vision tool (plan phase 6) can close over it at build time.
   const terminalManager = new TerminalManager();
   let terminalCapable = false;
-  const buildTools = () => [
+  let browserSessionClose: (() => Promise<void>) | null = null;
+  const rebuildTools = async () => {
+    if (browserSessionClose) {
+      await browserSessionClose().catch(() => undefined);
+      browserSessionClose = null;
+    }
+    const base = [
+      ...createActoviqCoreTools({
+        cwd: workDir,
+        onPlanModeChange: async (mode) => { if (mode === 'plan') await applyPlanPermission?.(); },
+      }),
+      ...createTerminalVisionTools(terminalManager),
+    ];
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: currentHomeInput(),
+    }).catch(() => undefined);
+    const browser = readActoviqBrowserSettings(store?.raw ?? {});
+    if (!browser.enabled) {
+      tools = base;
+      return;
+    }
+    const toolkit = createActoviqBrowserUseToolkit({
+      headless: browser.headless !== false,
+      channel: browser.channel,
+      cdpUrl: browser.cdpUrl,
+      userDataDir: browser.userDataDir,
+      allowedDomains: browser.allowedDomains,
+      defaultTimeoutMs: browser.defaultTimeoutMs,
+      allowEvaluate: browser.allowEvaluate === true,
+    });
+    tools = [...base, ...toolkit.tools];
+    browserSessionClose = () => toolkit.session.close();
+  };
+  let tools = [
     ...createActoviqCoreTools({
       cwd: workDir,
       onPlanModeChange: async (mode) => { if (mode === 'plan') await applyPlanPermission?.(); },
     }),
     ...createTerminalVisionTools(terminalManager),
   ];
-  let tools = buildTools();
+  await rebuildTools();
   const createCleanSdk = () =>
     createAgentSdk({
       ...(currentHomeInput() ? { homeDir: currentHomeInput() } : {}),
@@ -1841,6 +1878,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   };
 
   async function reloadSdk(): Promise<void> {
+    await rebuildTools();
     const previousSdk = sdk;
     const nextSdk = await createCleanSdk();
     try {
@@ -1873,7 +1911,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const previousSdk = sdk;
     workDir = resolved;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
-    tools = buildTools();
+    await rebuildTools();
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
@@ -2129,6 +2167,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         maxModel: env.ACTOVIQ_DEFAULT_MAX_MODEL ?? '',
         apiKeyConfigured: Boolean(env.ACTOVIQ_API_KEY || env.ACTOVIQ_AUTH_TOKEN),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
+        browser: readActoviqBrowserSettings(store?.raw ?? {}),
         bridge: store?.raw?.bridge ?? {},
         dataRoot: {
           root: homeDir,
@@ -2258,6 +2297,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // Bridge settings: write per-provider paths + default provider.
     if (isPlainRecord(body.bridge)) {
       raw.bridge = { ...(isPlainRecord(raw.bridge) ? raw.bridge : {}), ...body.bridge };
+    }
+
+    if (isPlainRecord(body.browser)) {
+      const browserBody = body.browser;
+      const channelRaw = browserBody.channel;
+      writeActoviqBrowserSettings(raw, {
+        enabled: browserBody.enabled === true,
+        headless: browserBody.headless !== false,
+        channel:
+          channelRaw === 'chrome' || channelRaw === 'msedge' || channelRaw === 'chromium'
+            ? channelRaw
+            : undefined,
+        cdpUrl: typeof browserBody.cdpUrl === 'string' ? browserBody.cdpUrl : undefined,
+        userDataDir: typeof browserBody.userDataDir === 'string' ? browserBody.userDataDir : undefined,
+        allowedDomains: typeof browserBody.allowedDomains === 'string'
+          ? browserBody.allowedDomains.split(',').map((item) => item.trim()).filter(Boolean)
+          : Array.isArray(browserBody.allowedDomains)
+            ? browserBody.allowedDomains.filter((item): item is string => typeof item === 'string')
+            : undefined,
+        defaultTimeoutMs:
+          typeof browserBody.defaultTimeoutMs === 'number'
+            ? browserBody.defaultTimeoutMs
+            : typeof browserBody.defaultTimeoutMs === 'string' && browserBody.defaultTimeoutMs.trim()
+              ? Number(browserBody.defaultTimeoutMs)
+              : undefined,
+        allowEvaluate: browserBody.allowEvaluate === true,
+      });
     }
 
     const preferences = isPlainRecord(body.preferences)
@@ -6772,7 +6838,24 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="browser">
         <h1>Browser</h1>
-        <div class="settings-group"><p>Browser automation uses registered MCP/tools when available. Inspect tools from the main toolbar.</p></div>
+        <div class="settings-group">
+          <p class="muted">Playwright-powered page automation for the agent (browser-use style: snapshot → indexed click/type). Separate from OS-level Computer control. Requires <code>playwright</code> and <code>npx playwright install chromium</code>.</p>
+          <label class="check-row"><input id="settingsBrowserEnabled" type="checkbox">Enable browser tools in this GUI</label>
+          <label class="check-row"><input id="settingsBrowserHeadless" type="checkbox" checked>Headless Chromium</label>
+        </div>
+        <div class="settings-group two-col">
+          <label>Channel<select id="settingsBrowserChannel"><option value="chromium">Chromium (bundled)</option><option value="chrome">Google Chrome</option><option value="msedge">Microsoft Edge</option></select></label>
+          <label>Default timeout (ms)<input id="settingsBrowserTimeoutMs" type="number" min="1000" max="180000" step="1000" value="30000"></label>
+        </div>
+        <div class="settings-group">
+          <label>Allowed domains<input id="settingsBrowserAllowedDomains" autocomplete="off" placeholder="example.com, github.com"></label>
+          <p class="muted">Comma-separated host allowlist. Empty allows all domains.</p>
+          <label>User data dir<input id="settingsBrowserUserDataDir" autocomplete="off" placeholder="Leave empty for ephemeral profile"></label>
+          <p class="muted">Optional persistent Chromium profile (reuses logins).</p>
+          <label>CDP URL<input id="settingsBrowserCdpUrl" autocomplete="off" placeholder="http://127.0.0.1:9222"></label>
+          <p class="muted">Connect to an already-running Chrome/Edge instead of launching.</p>
+          <label class="check-row"><input id="settingsBrowserAllowEvaluate" type="checkbox">Allow <code>browser_evaluate</code> (dangerous)</label>
+        </div>
       </section>
       <section class="settings-panel" data-settings-panel="computer">
         <h1>Computer control</h1>
@@ -10120,7 +10203,7 @@ function renderAuxBrowser() {
   const hint = document.createElement('p');
   hint.className = 'muted';
   hint.style.fontSize = '12.5px';
-  hint.textContent = 'Opens the URL in your system browser. In-app browsing will land here later.';
+  hint.textContent = 'Quick-open uses the system browser. Enable Settings → Browser for agent Playwright tools (snapshot / click / type).';
   body.append(bar, hint);
   view.append(head, body);
 }
@@ -21091,6 +21174,15 @@ async function openSettings(tab = 'general') {
   setChecked('settingsDeveloperTools', preferences.developerTools === true);
   setChecked('settingsShowBranchInComposer', preferences.showBranchInComposer !== false);
   setField('settingsOutputStyle', preferences.outputStyle || state.snapshot?.outputStyle || 'default');
+  const browser = settings.browser || {};
+  setChecked('settingsBrowserEnabled', browser.enabled === true);
+  setChecked('settingsBrowserHeadless', browser.headless !== false);
+  setField('settingsBrowserChannel', browser.channel || 'chromium');
+  setField('settingsBrowserAllowedDomains', Array.isArray(browser.allowedDomains) ? browser.allowedDomains.join(', ') : '');
+  setField('settingsBrowserUserDataDir', browser.userDataDir || '');
+  setField('settingsBrowserCdpUrl', browser.cdpUrl || '');
+  setField('settingsBrowserTimeoutMs', String(browser.defaultTimeoutMs || 30000));
+  setChecked('settingsBrowserAllowEvaluate', browser.allowEvaluate === true);
   renderBridgeConfigs();
   renderMcpServers();
   renderShortcutsPanel();
@@ -21131,6 +21223,16 @@ function collectSettingsBody() {
       developerTools: el('settingsDeveloperTools').checked,
       outputStyle: el('settingsOutputStyle')?.value || 'default',
       showBranchInComposer: el('settingsShowBranchInComposer')?.checked !== false,
+    },
+    browser: {
+      enabled: !!el('settingsBrowserEnabled')?.checked,
+      headless: el('settingsBrowserHeadless')?.checked !== false,
+      channel: el('settingsBrowserChannel')?.value || 'chromium',
+      allowedDomains: el('settingsBrowserAllowedDomains')?.value || '',
+      userDataDir: el('settingsBrowserUserDataDir')?.value || '',
+      cdpUrl: el('settingsBrowserCdpUrl')?.value || '',
+      defaultTimeoutMs: Number(el('settingsBrowserTimeoutMs')?.value || 30000),
+      allowEvaluate: !!el('settingsBrowserAllowEvaluate')?.checked,
     },
   };
 }

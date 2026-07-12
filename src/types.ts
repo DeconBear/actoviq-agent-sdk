@@ -762,6 +762,8 @@ export interface CreateAgentSdkOptions {
   classifier?: ActoviqToolClassifier;
   approver?: ActoviqToolApprover;
   computerUse?: boolean | CreateActoviqComputerUseOptions;
+  /** Opt-in Playwright browser automation tools (browser-use style snapshot/index actions). */
+  browserUse?: boolean | CreateActoviqBrowserUseOptions;
   provider?: 'anthropic' | 'openai';
   effort?: ActoviqEffort;
   modelApi?: ModelApi;
@@ -1266,6 +1268,39 @@ export interface CreateActoviqComputerUseOptions {
   executor?: ActoviqComputerUseExecutor;
   asMcpServer?: boolean;
   serverName?: string;
+}
+
+export interface CreateActoviqBrowserUseOptions {
+  prefix?: string;
+  asMcpServer?: boolean;
+  serverName?: string;
+  headless?: boolean;
+  channel?: 'chromium' | 'chrome' | 'msedge';
+  cdpUrl?: string;
+  userDataDir?: string;
+  allowedDomains?: string[];
+  defaultTimeoutMs?: number;
+  viewport?: { width: number; height: number };
+  /** Enable browser_evaluate (off by default). */
+  allowEvaluate?: boolean;
+  /** Inject a session (tests / custom backends). */
+  session?: {
+    navigate(url: string, opts?: { newTab?: boolean }): Promise<{ tabId: string; url: string; title: string }>;
+    goBack(): Promise<{ url: string; title: string }>;
+    wait(ms: number): Promise<void>;
+    snapshot(opts?: { interactiveOnly?: boolean; maxElements?: number }): Promise<unknown>;
+    click(target: { index?: number; x?: number; y?: number }): Promise<{ ok: true }>;
+    type(input: { index: number; text: string; clear?: boolean; submit?: boolean }): Promise<{ ok: true }>;
+    press(keys: string): Promise<{ ok: true }>;
+    scroll(input: { direction: 'up' | 'down'; pages?: number; index?: number }): Promise<{ ok: true }>;
+    screenshot(opts?: { path?: string; fullPage?: boolean }): Promise<{ path?: string; base64?: string }>;
+    tabsDetailed(): Promise<unknown>;
+    switchTab(tabId: string): Promise<{ ok: true; tabId: string }>;
+    closeTab(tabId?: string): Promise<{ ok: true; closed: string }>;
+    extract(): Promise<{ url: string; title: string; text: string }>;
+    evaluate?(expression: string): Promise<{ result: unknown }>;
+    close(): Promise<void>;
+  };
 }
 
 export interface WaitForActoviqBackgroundTaskOptions {
