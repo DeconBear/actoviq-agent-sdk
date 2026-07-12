@@ -49,10 +49,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ steps.tag.outputs.tag }}" \
-            --generate-notes
+          # Idempotent with publish-gui.yml (both may race on tag push).
+          if gh api "repos/${{ github.repository }}/releases/tags/${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Release already created by another workflow."
+          else
+            gh release create "${{ steps.tag.outputs.tag }}" \
+              --repo "${{ github.repository }}" \
+              --title "${{ steps.tag.outputs.tag }}" \
+              --generate-notes
+          fi
 
       - name: Load release metadata
         id: release
