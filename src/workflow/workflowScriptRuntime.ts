@@ -1,9 +1,10 @@
 /**
  * WorkflowScriptRuntime — executes dynamic workflow JavaScript scripts
- * in a sandboxed vm.Module with Host Bridge for agent()/parallel()/pipeline().
+ * in a trusted node:vm compatibility context with a Host Bridge for
+ * agent()/parallel()/pipeline().
  *
- * The script VM has ZERO fs/net/process access. All external calls go
- * through the Host Bridge via message-passing.
+ * node:vm is not a security boundary. Omitting fs/net/process reduces accidental
+ * capability exposure; untrusted scripts require an isolated executor.
  */
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -20,6 +21,7 @@ import type {
   AgentToolDefinition,
 } from '../types.js';
 import type { ActoviqAgentClient } from '../runtime/agentClient.js';
+import { ConfigurationError, RunAbortedError } from '../errors.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  StructuredOutput tool for schema enforcement (append mode)
@@ -102,6 +104,10 @@ function tryParseStructuredOutput(text: string): { parsed: unknown; json: string
 
 export interface WorkflowRuntimeOptions {
   sdk: ActoviqAgentClient;
+  /** Required for the in-process node:vm compatibility executor. */
+  trust?: 'trusted' | 'untrusted';
+  /** Wall-clock and synchronous CPU deadline. Default: 60 seconds. */
+  scriptTimeoutMs?: number;
   maxConcurrent?: number;
   budgetTotal?: number | null;
   signal?: AbortSignal;
@@ -178,11 +184,11 @@ function extractMeta(script: string): WorkflowMeta {
     throw new Error('Workflow meta must be a pure literal — no function calls or computed values.');
   }
 
-  // Evaluate the meta object in a sandbox
+  // Evaluate the already-literal-validated metadata in a separate VM context.
   try {
-    const sandbox = {};
-    vm.createContext(sandbox);
-    const metaObj = vm.runInContext(`(${metaBlock})`, sandbox) as WorkflowMeta;
+    const metadataContext = {};
+    vm.createContext(metadataContext);
+    const metaObj = vm.runInContext(`(${metaBlock})`, metadataContext) as WorkflowMeta;
     if (!metaObj.name || !metaObj.description) {
       throw new Error('Workflow meta must include name and description.');
     }
@@ -655,17 +661,26 @@ export class WorkflowScriptRuntime {
     resumeState: WorkflowResumeState;
     logs: string[];
   }> {
+    if (this.options.trust !== 'trusted') {
+      throw new ConfigurationError(
+        'WorkflowScriptRuntime uses node:vm, which is only available for explicitly trusted scripts. Use an isolated WorkflowExecutor for untrusted input.',
+      );
+    }
     // Validate
     validateScript(script);
 
     // Extract meta
     const meta = extractMeta(script);
 
-    // Create Host Bridge
-    const bridge = new HostBridge(this.options);
+    const scriptTimeoutMs = normalizeScriptTimeout(this.options.scriptTimeoutMs);
+    const deadlineController = new AbortController();
+    const signal = this.options.signal
+      ? AbortSignal.any([this.options.signal, deadlineController.signal])
+      : deadlineController.signal;
+    const bridge = new HostBridge({ ...this.options, signal });
 
-    // Build sandbox context
-    const sandbox: WorkflowScriptContext = {
+    // Build the restricted host API exposed to the trusted compatibility context.
+    const hostApi: WorkflowScriptContext = {
       agent: (prompt: string, opts?: WorkflowAgentOptions) =>
         bridge.agent(prompt, opts),
       parallel: <T>(thunks: Array<() => Promise<T>>) =>
@@ -685,10 +700,10 @@ export class WorkflowScriptRuntime {
     const body = script.replace(/export\s+const\s+meta\s*=\s*\{[\s\S]*?\};/, '').trim();
 
     // Wrap in async IIFE (vm.runInContext doesn't support top-level await).
-    // Store the result in __sandbox__.__result so we can read it after execution.
+    // Wrap in an async IIFE and return its result.
     const wrappedScript = [
       `(async () => {`,
-      `const { agent, parallel, pipeline, phase, log, budget, args, meta } = __sandbox__;`,
+      `const { agent, parallel, pipeline, phase, log, budget, args, meta } = __hostApi__;`,
       body,
       `}).call(null);`,
     ].join('\n');
@@ -704,9 +719,9 @@ export class WorkflowScriptRuntime {
     const startedAt = Date.now();
 
     try {
-      // Execute in vm.Script (not vm.Module since we handle modules differently)
+      // node:vm is a trusted compatibility mechanism, not a security sandbox.
       const vmContext = vm.createContext({
-        __sandbox__: sandbox,
+        __hostApi__: hostApi,
         console: {
           log: (...args: any[]) => bridge.log(args.map(String).join(' ')),
           error: (...args: any[]) => bridge.log(`[ERROR] ${args.map(String).join(' ')}`),
@@ -723,10 +738,16 @@ export class WorkflowScriptRuntime {
         child_process: undefined,
       });
 
-      const result = await vm.runInContext(wrappedScript, vmContext, {
+      const execution = Promise.resolve(vm.runInContext(wrappedScript, vmContext, {
         filename: `workflow-${meta.name}.js`,
-        timeout: 600_000, // 10 min max
-      });
+        timeout: scriptTimeoutMs,
+      }));
+      const result = await raceWorkflowDeadline(
+        execution,
+        scriptTimeoutMs,
+        deadlineController,
+        this.options.signal,
+      );
 
       const durationMs = Date.now() - startedAt;
       const state = bridge.getRunState();
@@ -777,6 +798,61 @@ export class WorkflowScriptRuntime {
       throw err;
     }
   }
+}
+
+function normalizeScriptTimeout(value: number | undefined): number {
+  if (value == null) {
+    return 60_000;
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ConfigurationError('scriptTimeoutMs must be a positive safe integer.');
+  }
+  return value;
+}
+
+async function raceWorkflowDeadline<T>(
+  execution: Promise<T>,
+  timeoutMs: number,
+  deadlineController: AbortController,
+  parentSignal?: AbortSignal,
+): Promise<T> {
+  const signal = parentSignal
+    ? AbortSignal.any([parentSignal, deadlineController.signal])
+    : deadlineController.signal;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      const reason = signal.reason;
+      finish(() => reject(new RunAbortedError(
+        reason instanceof Error ? reason.message : 'The workflow run was aborted.',
+        { cause: reason },
+      )));
+    };
+    const timer = setTimeout(() => {
+      deadlineController.abort(
+        new Error(`Workflow script exceeded its ${timeoutMs}ms deadline.`),
+      );
+    }, timeoutMs);
+    if (typeof timer === 'object') {
+      timer.unref?.();
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    execution.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }
 
 function delay(ms: number): Promise<void> {

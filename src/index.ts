@@ -128,7 +128,10 @@ export {
   ActoviqProviderApiError,
   ActoviqBridgeProcessError,
   ConfigurationError,
+  DeadlineExceededError,
   RunAbortedError,
+  SessionConflictError,
+  SessionDataError,
   SessionNotFoundError,
   ToolExecutionError,
 } from './errors.js';
@@ -239,7 +242,16 @@ export {
   upsertScheduledAutomationTask,
 } from './scheduling/index.js';
 export { AgentSession } from './runtime/agentSession.js';
-export { AgentRunStream } from './runtime/asyncQueue.js';
+export {
+  AgentRunStream,
+  AsyncQueueOverflowError,
+  DEFAULT_AGENT_RUN_STREAM_BUFFER_CAPACITY,
+} from './runtime/asyncQueue.js';
+export type {
+  AgentRunStreamController,
+  AgentRunStreamOptions,
+  AsyncQueueOverflowStrategy,
+} from './runtime/asyncQueue.js';
 export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
 export { OpenaiModelApi, createOpenaiModelApi } from './provider/openai-model-api.js';
 export {

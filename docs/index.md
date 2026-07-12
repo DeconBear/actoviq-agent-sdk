@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: "Actoviq Agent SDK"
-  text: "Clean-first docs for building real agents"
-  tagline: "Use the SDK, examples, and bilingual tutorials to build streaming, multi-tool, multi-session agents."
+  text: "Stable contracts for real agent runtimes"
+  tagline: "Build provider-neutral, durable, observable, multi-agent systems with Actoviq 1.0."
   actions:
     - theme: brand
       text: Start with English
@@ -17,10 +17,10 @@ hero:
       link: https://github.com/DeconBear/actoviq-agent-sdk
 
 features:
-  - title: Hadamard SDK First
-    details: Learn the public Actoviq SDK path for sessions, tools, skills, memory, swarm, and workspace flows.
+  - title: Actoviq 1.0 Runtime
+    details: Compose immutable agents, capability-checked providers, lazy services, durable state, tools, and orchestration around one runtime.
   - title: Bilingual Tutorials
     details: Read full guides in English and Chinese, including step-by-step practical project walkthroughs.
-  - title: Ready for GitHub Pages
-    details: This site is built from the repository docs and can be deployed automatically from the main branch.
+  - title: Migration and Operations
+    details: Follow the architecture plan, 1.0 migration guide, security/failure policy, and JSON-to-SQLite cutover runbook.
 ---

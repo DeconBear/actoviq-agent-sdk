@@ -34,14 +34,14 @@ function createMockSdk() {
 
 describe('WorkflowScriptRuntime validation', () => {
   it('rejects scripts without meta export', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     await expect(runtime.execute('agent("test");'))
       .rejects.toThrow('export const meta');
   });
 
   it('rejects scripts with Date.now()', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "test", description: "test" };',
@@ -52,7 +52,7 @@ describe('WorkflowScriptRuntime validation', () => {
   });
 
   it('rejects scripts with Math.random()', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "test", description: "test" };',
@@ -63,7 +63,7 @@ describe('WorkflowScriptRuntime validation', () => {
   });
 
   it('rejects scripts with new Date()', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "test", description: "test" };',
@@ -74,7 +74,7 @@ describe('WorkflowScriptRuntime validation', () => {
   });
 
   it('rejects meta with non-literal computed values', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     // Variable reference in meta
     const script = [
@@ -90,7 +90,7 @@ describe('WorkflowScriptRuntime validation', () => {
 
 describe('Meta parsing', () => {
   it('extracts valid meta from script', async () => {
-    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: createMockSdk() as any, trust: 'trusted' });
 
     const script = [
       'export const meta = {',
@@ -113,7 +113,7 @@ describe('Meta parsing', () => {
 describe('agent() primitive', () => {
   it('calls sdk.createSession and returns result', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "test", description: "test" };',
@@ -133,6 +133,7 @@ describe('agent() primitive', () => {
     let phaseLog: string[] = [];
     const runtime = new WorkflowScriptRuntime({
       sdk: sdk as any,
+      trust: 'trusted',
       onEvent: (e) => {
         if (e.type === 'workflow.phase.start') phaseLog.push(e.phase);
       },
@@ -179,7 +180,7 @@ describe('agent() primitive', () => {
       getTool: () => undefined,
     };
 
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "cache-test", description: "test" };',
@@ -198,7 +199,11 @@ describe('agent() primitive', () => {
 
   it('respects budget limits', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, budgetTotal: 50 });
+    const runtime = new WorkflowScriptRuntime({
+      sdk: sdk as any,
+      trust: 'trusted',
+      budgetTotal: 50,
+    });
 
     const script = [
       'export const meta = { name: "budget-test", description: "test" };',
@@ -222,7 +227,7 @@ describe('agent() primitive', () => {
 describe('log() primitive', () => {
   it('emits log messages', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "log-test", description: "test" };',
@@ -242,7 +247,7 @@ describe('log() primitive', () => {
 describe('parallel() primitive', () => {
   it('resolves all thunks in parallel', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     // parallel with custom thunks that don't call agent
     const script = [
@@ -265,7 +270,7 @@ describe('parallel() primitive', () => {
 
   it('returns null for failed thunks', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "par-fail", description: "test" };',
@@ -288,7 +293,7 @@ describe('parallel() primitive', () => {
 describe('pipeline() primitive', () => {
   it('processes items through stages sequentially', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "pipe-test", description: "test" };',
@@ -307,7 +312,7 @@ describe('pipeline() primitive', () => {
 
   it('handles null stage returns (skip item)', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "pipe-skip", description: "test" };',
@@ -325,7 +330,7 @@ describe('pipeline() primitive', () => {
 
   it('handles stage errors without aborting other items', async () => {
     const sdk = createMockSdk();
-    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any });
+    const runtime = new WorkflowScriptRuntime({ sdk: sdk as any, trust: 'trusted' });
 
     const script = [
       'export const meta = { name: "pipe-err", description: "test" };',
@@ -354,6 +359,7 @@ describe('Event emission', () => {
     const sdk = createMockSdk();
     const runtime = new WorkflowScriptRuntime({
       sdk: sdk as any,
+      trust: 'trusted',
       onEvent: (e) => events.push(e),
     });
 

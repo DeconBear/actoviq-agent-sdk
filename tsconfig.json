@@ -5,7 +5,19 @@
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
     "paths": {
-      "actoviq-agent-sdk": ["./src/index.ts"]
+      "actoviq-agent-sdk": ["./src/index.ts"],
+      "actoviq-agent-sdk/core": ["./src/core/index.ts"],
+      "actoviq-agent-sdk/runtime": ["./src/runtime-v2/index.ts"],
+      "actoviq-agent-sdk/providers": ["./src/providers-v2/index.ts"],
+      "actoviq-agent-sdk/providers/anthropic": ["./src/providers-v2/anthropic.ts"],
+      "actoviq-agent-sdk/providers/openai-responses": ["./src/providers-v2/openai-responses.ts"],
+      "actoviq-agent-sdk/providers/openai-chat": ["./src/providers-v2/openai-chat.ts"],
+      "actoviq-agent-sdk/events": ["./src/events/index.ts"],
+      "actoviq-agent-sdk/orchestration": ["./src/orchestration/index.ts"],
+      "actoviq-agent-sdk/workflow": ["./src/workflow-v2/index.ts"],
+      "actoviq-agent-sdk/profiles": ["./src/profiles/index.ts"],
+      "actoviq-agent-sdk/node": ["./src/node/index.ts"],
+      "actoviq-agent-sdk/compat": ["./src/compat/index.ts"]
     },
     "lib": ["ES2023", "DOM"],
     "strict": true,

@@ -15,6 +15,16 @@ import type {
 import { ConfigurationError } from '../errors.js';
 import { tool } from './tools.js';
 
+export const ACTOVIQ_RUN_STATE_KEY = '__actoviqRunState';
+
+export interface ActoviqRunToolState {
+  subagentFanout: number;
+}
+
+export function createActoviqRunToolState(): ActoviqRunToolState {
+  return { subagentFanout: 0 };
+}
+
 export interface ActoviqAgentSessionLike {
   readonly id: string;
   send(input: string | MessageParam['content'], options?: AgentRunOptions): Promise<AgentRunResult>;
@@ -217,7 +227,6 @@ export function createActoviqTaskTool(options: {
   maxFanout?: number;
 }): AgentToolDefinition<ActoviqTaskToolInput, ActoviqTaskToolResult> {
   const name = options.name ?? 'Agent';
-  const fanoutByRun = new Map<string, number>();
   const description =
     options.description ??
     'Delegate a focused task to a named subagent and return its final response.';
@@ -361,12 +370,13 @@ export function createActoviqTaskTool(options: {
           `Subagent "${resolvedSubagent}" is not allowed in this delegated context.`,
         );
       }
-      const currentFanout = fanoutByRun.get(context.runId) ?? 0;
+      const runState = getActoviqRunToolState(context.metadata);
+      const currentFanout = runState.subagentFanout;
       const maxFanout = options.maxFanout ?? 8;
       if (currentFanout >= maxFanout) {
         throw new ConfigurationError(`Subagent fanout limit reached (${maxFanout}).`);
       }
-      fanoutByRun.set(context.runId, currentFanout + 1);
+      runState.subagentFanout = currentFanout + 1;
 
       const inheritedOptions = extractInheritedDelegationOptions(context, {
         depth: parentDepth + 1,
@@ -451,6 +461,21 @@ export function createActoviqTaskTool(options: {
       };
     },
   );
+}
+
+function getActoviqRunToolState(metadata: Record<string, unknown>): ActoviqRunToolState {
+  const existing = metadata[ACTOVIQ_RUN_STATE_KEY];
+  if (
+    typeof existing === 'object' &&
+    existing !== null &&
+    'subagentFanout' in existing &&
+    typeof existing.subagentFanout === 'number'
+  ) {
+    return existing as ActoviqRunToolState;
+  }
+  const created = createActoviqRunToolState();
+  metadata[ACTOVIQ_RUN_STATE_KEY] = created;
+  return created;
 }
 
 /**
@@ -584,6 +609,8 @@ function extractInheritedDelegationOptions(
     model?: string;
   },
 ): AgentRunOptions | undefined {
+  const inheritedMetadata = { ...(context.metadata ?? {}) };
+  delete inheritedMetadata[ACTOVIQ_RUN_STATE_KEY];
   return {
     permissionMode: context.permissionMode,
     permissions: context.permissions,
@@ -593,7 +620,7 @@ function extractInheritedDelegationOptions(
     effort: context.effort,
     model: delegation.model,
     metadata: {
-      ...(context.metadata ?? {}),
+      ...inheritedMetadata,
       __actoviqAgentDepth: delegation.depth,
       ...(delegation.allowedAgents
         ? { __actoviqAllowedAgents: [...delegation.allowedAgents] }

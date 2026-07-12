@@ -315,8 +315,8 @@ describe('TUI and GUI parity', () => {
     expect(gui).toContain('buildDecomposeIssuePrompt');
     expect(gui).toContain('IssueReport');
     expect(gui).toContain('resolveAgentProfileRun');
-    expect(gui).toContain("case 'response.tool_input.delta'");
-    expect(tui).toContain("case 'response.tool_input.delta'");
+    expect(gui).toContain("case 'tool.input.delta'");
+    expect(tui).toContain("case 'tool.input.delta'");
     expect(tui).toContain('preparing ${name}');
     expect(css).toContain('.project-issues-panel');
     expect(css).toContain('.issue-board');

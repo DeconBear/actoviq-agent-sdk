@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { createHash } from 'node:crypto';
 import type { Tool as ProviderTool } from '../provider/types.js';
 
 import type {
@@ -25,18 +26,51 @@ type ExternalServerDefinition = StdioMcpServerDefinition | StreamableHttpMcpServ
 
 interface ExternalConnection {
   key: string;
-  server: ExternalServerDefinition;
-  client: Client;
+  /** Retain only non-secret identity; transport credentials stay in the client. */
+  server: Pick<ExternalServerDefinition, 'kind' | 'name'>;
+  client: McpClientLike;
+  catalog?: {
+    expiresAt: number;
+    tools: Awaited<ReturnType<Client['listTools']>>['tools'];
+  };
+}
+
+export type McpClientLike = Pick<Client, 'connect' | 'listTools' | 'callTool' | 'close'>;
+
+export interface McpConnectionManagerOptions {
+  requestTimeoutMs?: number;
+  catalogTtlMs?: number;
+  clientFactory?: () => McpClientLike;
+}
+
+export interface ResolveMcpToolsOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export class McpConnectionManager {
   private readonly connections = new Map<string, ExternalConnection>();
+  private readonly pendingConnections = new Map<string, Promise<ExternalConnection>>();
+  private readonly requestTimeoutMs: number;
+  private readonly catalogTtlMs: number;
+  private readonly clientFactory: () => McpClientLike;
 
-  constructor(private readonly clientInfo: { name: string; version: string }) {}
+  constructor(
+    private readonly clientInfo: { name: string; version: string },
+    options: McpConnectionManagerOptions = {},
+  ) {
+    this.requestTimeoutMs = positiveInteger(
+      options.requestTimeoutMs ?? 120_000,
+      'requestTimeoutMs',
+    );
+    this.catalogTtlMs = positiveInteger(options.catalogTtlMs ?? 30_000, 'catalogTtlMs');
+    this.clientFactory = options.clientFactory ?? (() => new Client(this.clientInfo));
+  }
 
   async resolveToolAdapters(
     localTools: AgentToolDefinition[] = [],
     servers: AgentMcpServerDefinition[] = [],
+    options: ResolveMcpToolsOptions = {},
   ): Promise<ResolvedToolAdapter[]> {
     const adapters: ResolvedToolAdapter[] = [];
     for (const localTool of localTools) {
@@ -46,6 +80,7 @@ export class McpConnectionManager {
       }
     }
 
+    const externalServers: ExternalServerDefinition[] = [];
     for (const server of servers) {
       if (server.kind === 'local') {
         const prefix = server.prefix ?? sanitizeToolSegment(server.name);
@@ -71,16 +106,20 @@ export class McpConnectionManager {
         }
         continue;
       }
+      externalServers.push(server);
+    }
 
-      const connection = await this.getConnection(server);
-      const listed = await connection.client.listTools();
+    const externalAdapters = await Promise.all(externalServers.map(async (server) => {
+      const connection = await this.getConnection(server, options);
+      const listedTools = await this.listTools(connection, options);
       const prefix = server.prefix ?? sanitizeToolSegment(server.name);
+      const serverAdapters: ResolvedToolAdapter[] = [];
 
-      for (const listedTool of listed.tools) {
+      for (const listedTool of listedTools) {
         const publicName = qualifyToolName(prefix, listedTool.name);
         assertPublicToolName(publicName);
 
-        adapters.push({
+        serverAdapters.push({
           publicName,
           sourceName: listedTool.name,
           provider: 'mcp',
@@ -93,66 +132,153 @@ export class McpConnectionManager {
             input_schema: listedTool.inputSchema as ProviderTool['input_schema'],
             readonly: (listedTool as { annotations?: { readOnlyHint?: boolean } }).annotations?.readOnlyHint ?? undefined,
           },
+          interruptBehavior: 'cancel',
           execute: (input, context) =>
             this.callExternalTool(connection, listedTool.name, input, context),
         });
       }
-    }
+      return serverAdapters;
+    }));
+    adapters.push(...externalAdapters.flat());
 
     ensureUniqueToolNames(adapters);
     return adapters;
   }
 
   async closeAll(): Promise<void> {
+    const pending = await Promise.allSettled(this.pendingConnections.values());
+    for (const result of pending) {
+      if (result.status === 'fulfilled') {
+        this.connections.set(result.value.key, result.value);
+      }
+    }
     for (const connection of this.connections.values()) {
       await connection.client.close().catch(() => undefined);
     }
     this.connections.clear();
+    this.pendingConnections.clear();
   }
 
-  private async getConnection(server: ExternalServerDefinition): Promise<ExternalConnection> {
+  private async getConnection(
+    server: ExternalServerDefinition,
+    options: ResolveMcpToolsOptions,
+  ): Promise<ExternalConnection> {
     const key = connectionKey(server);
     const existing = this.connections.get(key);
     if (existing) {
       return existing;
     }
 
-    const client = new Client({
-      name: this.clientInfo.name,
-      version: this.clientInfo.version,
-    });
-
-    if (server.kind === 'stdio') {
-      const transport = new StdioClientTransport({
-        command: server.command,
-        args: server.args,
-        env: server.env,
-        cwd: server.cwd,
-        stderr: server.stderr ?? 'inherit',
-      });
-      await client.connect(transport);
-    } else {
-      const transport = new StreamableHTTPClientTransport(new URL(server.url), {
-        requestInit: server.headers ? { headers: server.headers } : undefined,
-        sessionId: server.sessionId,
-      });
-      await client.connect(transport);
+    const pending = this.pendingConnections.get(key);
+    if (pending) {
+      return pending;
     }
 
-    const connection: ExternalConnection = {
+    const connecting = this.connect(server, key, options);
+    this.pendingConnections.set(key, connecting);
+    try {
+      const connection = await connecting;
+      await this.evictSupersededConnections(server, key);
+      this.connections.set(key, connection);
+      return connection;
+    } finally {
+      this.pendingConnections.delete(key);
+    }
+  }
+
+  private async connect(
+    server: ExternalServerDefinition,
+    key: string,
+    options: ResolveMcpToolsOptions,
+  ): Promise<ExternalConnection> {
+    const client = this.clientFactory();
+    const requestOptions = this.requestOptions(options);
+
+    try {
+      if (server.kind === 'stdio') {
+        const transport = new StdioClientTransport({
+          command: server.command,
+          args: server.args,
+          env: server.env,
+          cwd: server.cwd,
+          stderr: server.stderr ?? 'inherit',
+        });
+        await client.connect(transport, requestOptions);
+      } else {
+        const transport = new StreamableHTTPClientTransport(new URL(server.url), {
+          requestInit: server.headers ? { headers: server.headers } : undefined,
+          sessionId: server.sessionId,
+        });
+        await client.connect(transport, requestOptions);
+      }
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      throw error;
+    }
+
+    return {
       key,
-      server,
+      server: { kind: server.kind, name: server.name },
       client,
     };
-    this.connections.set(key, connection);
-    return connection;
+  }
+
+  private async listTools(
+    connection: ExternalConnection,
+    options: ResolveMcpToolsOptions,
+  ): Promise<Awaited<ReturnType<Client['listTools']>>['tools']> {
+    if (connection.catalog && connection.catalog.expiresAt > Date.now()) {
+      return connection.catalog.tools;
+    }
+    try {
+      const listed = await connection.client.listTools(undefined, this.requestOptions(options));
+      connection.catalog = {
+        expiresAt: Date.now() + this.catalogTtlMs,
+        tools: listed.tools,
+      };
+      return listed.tools;
+    } catch (error) {
+      await this.invalidateConnection(connection);
+      throw error;
+    }
+  }
+
+  private requestOptions(options: ResolveMcpToolsOptions) {
+    const timeout = options.timeoutMs ?? this.requestTimeoutMs;
+    return {
+      signal: options.signal,
+      timeout,
+      maxTotalTimeout: timeout,
+    };
+  }
+
+  private async evictSupersededConnections(
+    server: ExternalServerDefinition,
+    currentKey: string,
+  ): Promise<void> {
+    const superseded = [...this.connections.values()].filter(
+      connection =>
+        connection.key !== currentKey &&
+        connection.server.kind === server.kind &&
+        connection.server.name === server.name,
+    );
+    for (const connection of superseded) {
+      await this.invalidateConnection(connection);
+    }
+  }
+
+  private async invalidateConnection(connection: ExternalConnection): Promise<void> {
+    if (this.connections.get(connection.key) === connection) {
+      this.connections.delete(connection.key);
+    }
+    await connection.client.close().catch(() => undefined);
   }
 
   private async callExternalTool(
     connection: ExternalConnection,
     toolName: string,
     input: unknown,
-    _context: ToolExecutionContext,
+    context: ToolExecutionContext,
   ): Promise<ResolvedToolExecutionResult> {
     if (!isRecord(input)) {
       throw new ConfigurationError(
@@ -160,10 +286,19 @@ export class McpConnectionManager {
       );
     }
 
-    const result = await connection.client.callTool({
-      name: toolName,
-      arguments: input,
-    });
+    let result: Awaited<ReturnType<Client['callTool']>>;
+    try {
+      result = await connection.client.callTool(
+        { name: toolName, arguments: input },
+        undefined,
+        this.requestOptions({ signal: context.signal }),
+      );
+    } catch (error) {
+      // Never replay a tool call here: the remote side may have completed its
+      // side effect before the transport failed. Reconnect on the next call.
+      await this.invalidateConnection(connection);
+      throw error;
+    }
 
     const text = mcpCallResultToText(result);
     const isError = isRecord(result) && result.isError === true;
@@ -178,10 +313,40 @@ export class McpConnectionManager {
 }
 
 function connectionKey(server: ExternalServerDefinition): string {
-  if (server.kind === 'stdio') {
-    return `stdio:${server.name}:${server.command}:${(server.args ?? []).join(' ')}`;
+  const fingerprint = server.kind === 'stdio'
+    ? {
+        kind: server.kind,
+        name: server.name,
+        command: server.command,
+        args: server.args ?? [],
+        env: sortRecord(server.env),
+        cwd: server.cwd ?? null,
+        stderr: server.stderr ?? 'inherit',
+      }
+    : {
+        kind: server.kind,
+        name: server.name,
+        url: String(server.url),
+        headers: sortRecord(server.headers),
+        sessionId: server.sessionId ?? null,
+      };
+  return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
+}
+
+function sortRecord(
+  value: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!value) return undefined;
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) =>
+    left.localeCompare(right),
+  ));
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer.`);
   }
-  return `streamable_http:${server.name}:${String(server.url)}`;
+  return value;
 }
 
 function ensureUniqueToolNames(adapters: ResolvedToolAdapter[]): void {
