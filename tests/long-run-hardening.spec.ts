@@ -220,7 +220,7 @@ describe('concurrent read-only tool execution', () => {
 });
 
 describe('tool interrupt behavior', () => {
-  it('only forwards the abort signal to cancel-interrupt tools', async () => {
+  it('forwards caller cancellation only to cancel tools while every tool gets a deadline signal', async () => {
     const sessionDirectory = await createSessionDirectory();
     let blockSignal: AbortSignal | undefined;
     let cancelSignal: AbortSignal | undefined;
@@ -273,8 +273,104 @@ describe('tool interrupt behavior', () => {
     try {
       await sdk.run('Run both tools.', { signal: controller.signal });
 
-      expect(blockSignal).toBeUndefined();
-      expect(cancelSignal).toBe(controller.signal);
+      expect(blockSignal).toBeDefined();
+      expect(cancelSignal).toBeDefined();
+      expect(blockSignal?.aborted).toBe(false);
+      expect(cancelSignal?.aborted).toBe(false);
+
+      controller.abort(new Error('caller stopped'));
+      expect(cancelSignal?.aborted).toBe(true);
+      expect(blockSignal?.aborted).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('turns a hung local tool into a bounded tool error and continues the loop', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: (_request, index) => index === 0
+        ? makeMessage(
+            [{ type: 'tool_use', id: 'toolu_hung', name: 'hung_tool', input: {} }],
+            'tool_use',
+          )
+        : makeMessage([{ type: 'text', text: 'Recovered from the tool timeout.' }]),
+    });
+    const hungTool = tool(
+      {
+        name: 'hung_tool',
+        description: 'Never completes.',
+        inputSchema: z.strictObject({}),
+      },
+      async () => new Promise<string>(() => {}),
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      tools: [hungTool],
+      toolTimeoutMs: 20,
+    });
+
+    try {
+      const result = await sdk.run('Call the hung tool.');
+      expect(result.text).toContain('Recovered');
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0]).toMatchObject({
+        isError: true,
+        outputText: expect.stringContaining('20ms deadline'),
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+describe('run and hook deadlines', () => {
+  it('bounds a model implementation that ignores AbortSignal', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi: ModelApi = {
+      createMessage: async () => new Promise<Message>(() => {}),
+      streamMessage: () => {
+        throw new Error('Unexpected stream call.');
+      },
+    };
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      runTimeoutMs: 20,
+    });
+
+    try {
+      await expect(sdk.run('Never completes.')).rejects.toMatchObject({
+        code: 'DEADLINE_EXCEEDED',
+        timeoutMs: 20,
+      });
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('bounds a hook that ignores AbortSignal', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi: new MockModelApi({
+        create: () => makeMessage([{ type: 'text', text: 'unreachable' }]),
+      }),
+      hookTimeoutMs: 20,
+      hooks: {
+        sessionStart: [async () => new Promise<never>(() => {})],
+      },
+    });
+
+    try {
+      await expect(sdk.run('Hook hangs.')).rejects.toMatchObject({
+        code: 'DEADLINE_EXCEEDED',
+        scope: 'sessionStart hook',
+      });
     } finally {
       await sdk.close();
     }

@@ -1,6 +1,6 @@
 {
   "name": "actoviq-agent-sdk",
-  "version": "0.4.6",
+  "version": "1.0.0",
   "description": "Agent team platform — multi-agent, multi-runtime, model team collaboration with TUI, GUI, and MCP.",
   "repository": {
     "type": "git",
@@ -71,6 +71,58 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./core": {
+      "types": "./dist/src/core/index.d.ts",
+      "default": "./dist/src/core/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/src/runtime-v2/index.d.ts",
+      "default": "./dist/src/runtime-v2/index.js"
+    },
+    "./providers": {
+      "types": "./dist/src/providers-v2/index.d.ts",
+      "default": "./dist/src/providers-v2/index.js"
+    },
+    "./providers/anthropic": {
+      "types": "./dist/src/providers-v2/anthropic.d.ts",
+      "default": "./dist/src/providers-v2/anthropic.js"
+    },
+    "./providers/openai-responses": {
+      "types": "./dist/src/providers-v2/openai-responses.d.ts",
+      "default": "./dist/src/providers-v2/openai-responses.js"
+    },
+    "./providers/openai-chat": {
+      "types": "./dist/src/providers-v2/openai-chat.d.ts",
+      "default": "./dist/src/providers-v2/openai-chat.js"
+    },
+    "./events": {
+      "types": "./dist/src/events/index.d.ts",
+      "default": "./dist/src/events/index.js"
+    },
+    "./surfaces": {
+      "types": "./dist/src/surfaces/index.d.ts",
+      "default": "./dist/src/surfaces/index.js"
+    },
+    "./orchestration": {
+      "types": "./dist/src/orchestration/index.d.ts",
+      "default": "./dist/src/orchestration/index.js"
+    },
+    "./workflow": {
+      "types": "./dist/src/workflow-v2/index.d.ts",
+      "default": "./dist/src/workflow-v2/index.js"
+    },
+    "./profiles": {
+      "types": "./dist/src/profiles/index.d.ts",
+      "default": "./dist/src/profiles/index.js"
+    },
+    "./node": {
+      "types": "./dist/src/node/index.d.ts",
+      "default": "./dist/src/node/index.js"
+    },
+    "./compat": {
+      "types": "./dist/src/compat/index.d.ts",
+      "default": "./dist/src/compat/index.js"
     }
   },
   "files": [
@@ -78,10 +130,12 @@
     "assets",
     "README.md",
     "README-zh.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "vendor/actoviq-runtime/cli.js"
   ],
   "engines": {
-    "node": ">=18"
+    "node": "^22.13.0 || ^24.0.0"
   },
   "scripts": {
     "clean": "node scripts/clean-dist.mjs",
@@ -100,7 +154,16 @@
     "dist:win": "npm run prepare:xterm && npm run build && electron-builder --win --x64 && electron-builder --win --arm64",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:sdk-v2:coverage": "vitest run --config vitest.sdk-v2.config.ts && node scripts/verify-sdk-v2-coverage.mjs",
+    "verify:package": "node scripts/verify-package-exports.mjs && node scripts/public-api.mjs",
+    "verify:packed": "node scripts/verify-packed-package.mjs",
+    "package:check": "npm run build && npm run verify:package && npm run verify:packed && npm pack --dry-run",
+    "api:check": "node scripts/public-api.mjs",
+    "api:update": "npm run build && node scripts/public-api.mjs --update",
     "bench:standard": "tsx bench/standard/run-all.ts",
+    "bench:runtime:smoke": "tsx bench/runtime/run.ts --mode smoke --output tmp/runtime-benchmark-smoke.json",
+    "bench:runtime": "tsx bench/runtime/run.ts --mode full --output tmp/runtime-benchmark-full.json",
+    "bench:runtime:compare": "tsx bench/runtime/compare.ts",
     "smoke": "npm run build && tsx scripts/integration-smoke.ts",
     "example:actoviq-quickstart": "npm run build && tsx examples/actoviq-quickstart.ts",
     "example:actoviq-session": "npm run build && tsx examples/actoviq-session.ts",
@@ -128,7 +191,8 @@
     "example:bridge-sessions": "npm run build && tsx examples/bridge-sessions.ts",
     "example:bridge-session-messages": "npm run build && tsx examples/bridge-session-messages.ts",
     "example:actoviq-buddy": "npm run build && tsx examples/actoviq-buddy.ts",
-    "example:bridge-sdk": "npm run build && tsx examples/bridge-sdk.ts"
+    "example:bridge-sdk": "npm run build && tsx examples/bridge-sdk.ts",
+    "example:profiles": "tsx examples/profiles/all-profiles.ts"
   },
   "keywords": [
     "agent",
@@ -155,6 +219,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.161",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^4.1.2",
     "electron-builder": "^26.0.0",
     "playwright": "^1.61.0",
     "rcedit": "^4.0.1",

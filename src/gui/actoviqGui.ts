@@ -180,8 +180,21 @@ import {
   computeTeamGraphAutoLayoutLanes,
 } from '../team/teamGraphLayout.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
+import {
+  DurableIssueCoordinator,
+  type DurableIssueExecutionRequest,
+} from '../issues/durableIssueCoordinator.js';
+import { SqliteDurableChildStore } from '../node/sqliteDurableChildStore.js';
+import { SqliteStorageV2 } from '../storage-v2/sqliteStorage.js';
+import {
+  emptyUsage,
+  type AgentSpec,
+  type JsonValue,
+  type Usage,
+} from '../core/index.js';
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { estimateCost } from '../team/pricing.js';
+import { AgentPool } from '../team/agentPool.js';
 import { runMemberAgent } from '../team/teamRuntime.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
@@ -219,6 +232,10 @@ import {
   writeContextRailStore,
 } from './contextRailStore.js';
 import { readWorkspaceNote, writeWorkspaceNote } from './workspaceNote.js';
+import {
+  LegacySurfaceEventPipeline,
+  type SurfaceSemanticEvent,
+} from '../surfaces/index.js';
 import {
   PROJECT_STATUS_LABELS,
   PROJECT_STATUSES,
@@ -334,6 +351,96 @@ interface GuiRunRecord {
   desc: GuiRunDescriptor;
   abort: AbortController;
   sink: (event: GuiRunEvent) => void;
+}
+
+interface GuiDurableIssueContext {
+  targetPath: string;
+  homeDir: string;
+  storage: IssueStorageMode;
+  issueId: string;
+  issueNumber: number;
+  sessionId: string;
+  requestedProfile: string | null;
+  bridgeConfigName: string | null;
+  workerModel: string | null;
+  permissionMode: ActoviqPermissionMode;
+  effort: string;
+  systemPrompt: string;
+  prompt: string;
+}
+
+const GUI_DURABLE_ISSUE_AGENT: AgentSpec<JsonValue | undefined, JsonValue> = Object.freeze({
+  id: 'product:gui-issue-worker',
+  name: 'GUI issue worker',
+  instructions: 'Execute one persisted GUI issue dispatch through the compatibility runtime adapter.',
+});
+
+function parseDurableIssueContext(value: JsonValue | undefined): GuiDurableIssueContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Durable issue child context is missing or invalid.');
+  }
+  const record = value as Record<string, JsonValue>;
+  const requiredString = (key: string): string => {
+    const item = record[key];
+    if (typeof item !== 'string' || !item.trim()) {
+      throw new Error(`Durable issue child context.${key} must be a non-empty string.`);
+    }
+    return item;
+  };
+  const nullableString = (key: string): string | null => {
+    const item = record[key];
+    if (item === null || item === undefined) return null;
+    if (typeof item !== 'string') throw new Error(`Durable issue child context.${key} is invalid.`);
+    return item;
+  };
+  const storage = requiredString('storage');
+  if (!isIssueStorageMode(storage)) throw new Error(`Invalid durable issue storage mode: ${storage}`);
+  const permissionMode = requiredString('permissionMode');
+  if (!['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'].includes(permissionMode)) {
+    throw new Error(`Invalid durable issue permission mode: ${permissionMode}`);
+  }
+  const issueNumber = record.issueNumber;
+  if (!Number.isSafeInteger(issueNumber) || Number(issueNumber) < 1) {
+    throw new Error('Durable issue child context.issueNumber must be a positive safe integer.');
+  }
+  return {
+    targetPath: requiredString('targetPath'),
+    homeDir: requiredString('homeDir'),
+    storage,
+    issueId: requiredString('issueId'),
+    issueNumber: Number(issueNumber),
+    sessionId: requiredString('sessionId'),
+    requestedProfile: nullableString('requestedProfile'),
+    bridgeConfigName: nullableString('bridgeConfigName'),
+    workerModel: nullableString('workerModel'),
+    permissionMode: permissionMode as ActoviqPermissionMode,
+    effort: requiredString('effort'),
+    systemPrompt: requiredString('systemPrompt'),
+    prompt: requiredString('prompt'),
+  };
+}
+
+function canonicalGuiUsage(value: unknown): Usage {
+  const record = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {};
+  const count = (key: string): number => {
+    const candidate = record[key];
+    return typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+      ? candidate
+      : 0;
+  };
+  const inputTokens = count('input_tokens');
+  const outputTokens = count('output_tokens');
+  return {
+    ...emptyUsage(),
+    requests: 1,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    cacheReadTokens: count('cache_read_input_tokens'),
+    cacheWriteTokens: count('cache_creation_input_tokens'),
+  };
 }
 
 interface GuiPreferences {
@@ -1264,6 +1371,7 @@ async function runSubagentSquad(
   def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
   onEvent?: (e: TeamEvent) => void,
 ): Promise<ModelTeamResult> {
+  const pool = new AgentPool();
   const member = def.members?.[0];
   if (!member) throw new Error('subagent squad has no member');
   const identity = { id: member.role || def.name, model: member.model || '', role: member.role || def.name };
@@ -1277,8 +1385,8 @@ async function runSubagentSquad(
     tools: [],
     maxIterations: (member as { maxIterations?: number }).maxIterations ?? Infinity,
     timeoutMs: def.timeoutMs ?? 300000,
-    reconnectAttempts: 10,
     signal,
+    pool,
     round: 1,
     onEvent,
   });
@@ -1299,6 +1407,7 @@ async function runWorkflowSquad(
   def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
   onEvent?: (e: TeamEvent) => void,
 ): Promise<ModelTeamResult> {
+  const pool = new AgentPool();
   const startedAt = Date.now();
   const statuses: any[] = [];
   let totalInput = 0, totalOutput = 0;
@@ -1315,8 +1424,8 @@ async function runWorkflowSquad(
       tools: [],
       maxIterations: Infinity,
       timeoutMs: def.timeoutMs ?? 300000,
-      reconnectAttempts: 10,
       signal,
+      pool,
       round: 1,
       onEvent,
     });
@@ -1459,6 +1568,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let sdk: ActoviqAgentClient | null;
   let toolMetadata: Awaited<ReturnType<ActoviqAgentClient['listToolMetadata']>> = [];
   let session: AgentSession;
+  const durableIssueResources = new Map<string, {
+    coordinator: DurableIssueCoordinator;
+    storage: SqliteStorageV2;
+  }>();
+  const durableIssueResourcePending = new Map<string, Promise<{
+    coordinator: DurableIssueCoordinator;
+    storage: SqliteStorageV2;
+  }>>();
+  const durableIssueSinks = new Map<string, (event: GuiRunEvent) => void>();
+  const durableIssueReported = new Set<string>();
   try {
     const createdSdk = await createCleanSdk();
     sdk = createdSdk;
@@ -2103,6 +2222,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
     const runtime = new WorkflowScriptRuntime({
       sdk: sdk as any,
+      trust: 'trusted',
       args: input,
       onEvent: (event: any) => {
         if (event.type === 'workflow.phase.start') events.push({ type: 'notice', message: `phase: ${event.title}` });
@@ -3135,6 +3255,141 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
 
+  async function durableIssueCoordinatorFor(targetPath: string, homeDir: string): Promise<DurableIssueCoordinator> {
+    const key = `${path.resolve(homeDir)}\u0000${path.resolve(targetPath)}`;
+    const existing = durableIssueResources.get(key);
+    if (existing) return existing.coordinator;
+    const pending = durableIssueResourcePending.get(key);
+    if (pending) return (await pending).coordinator;
+
+    const opening = (async () => {
+      const storage = await SqliteStorageV2.open({
+        filename: path.join(
+          getActoviqProjectSessionDirectory(targetPath, homeDir),
+          'issue-dispatch-v2.sqlite',
+        ),
+      });
+      try {
+        const coordinator = new DurableIssueCoordinator({
+          store: new SqliteDurableChildStore({
+            store: storage.checkpoints,
+            tenantId: 'local-gui',
+            prefix: 'gui-issue:',
+          }),
+          executor: executeDurableIssueWorker,
+          ownerId: `gui:${process.pid}:${randomBytes(4).toString('hex')}`,
+        }).registerAgent(GUI_DURABLE_ISSUE_AGENT);
+        const resource = { coordinator, storage };
+        durableIssueResources.set(key, resource);
+        return resource;
+      } catch (error) {
+        await storage.close().catch(() => undefined);
+        throw error;
+      }
+    })();
+    durableIssueResourcePending.set(key, opening);
+    try {
+      return (await opening).coordinator;
+    } finally {
+      durableIssueResourcePending.delete(key);
+    }
+  }
+
+  async function executeDurableIssueWorker(
+    request: DurableIssueExecutionRequest,
+  ): Promise<{ output: JsonValue; usage: Usage; metadata: Record<string, JsonValue> }> {
+    if (!sdk) throw new Error('Issue runtime is unavailable because the SDK is not initialized.');
+    const context = parseDurableIssueContext(request.context);
+    const runId = request.options.runId ?? `issue:${context.issueId}`;
+    const send = durableIssueSinks.get(runId) ?? (() => undefined);
+    const issue = (await listProjectIssues(context.targetPath, context.homeDir, context.storage))
+      .find(candidate => candidate.id === context.issueId);
+    if (!issue) throw new Error(`Issue not found while resuming durable child: ${context.issueId}`);
+
+    const resolvedProfile = context.requestedProfile
+      ? await resolveAgentProfileRun(context.requestedProfile, context.homeDir)
+      : null;
+    let modelApi = resolvedProfile?.modelApi;
+    let model = resolvedProfile?.model ?? context.workerModel ?? undefined;
+    if (!modelApi && context.bridgeConfigName) {
+      const bridge = findBridgeConfig(context.bridgeConfigName, context.homeDir);
+      if (bridge) {
+        const usesDefaults = bridge.runtime === 'hadamard'
+          && !(typeof bridge.apiKey === 'string' && bridge.apiKey.trim())
+          && !(typeof bridge.baseURL === 'string' && bridge.baseURL.trim());
+        if (!usesDefaults) {
+          const routed = await buildRouteModelApi({
+            model: model ?? bridge.model ?? 'default',
+            provider: bridge.provider,
+            baseURL: bridge.baseURL,
+            apiKey: bridge.apiKey,
+            maxTokens: 32000,
+          });
+          model = routed.model;
+          modelApi = routed.modelApi;
+        }
+      }
+    }
+
+    const workerSession = await sdk.resumeSession(context.sessionId, {
+      model,
+      permissionMode: context.permissionMode,
+    });
+    let reported = false;
+    const issueReportTool = createIssueReportToolForRun({
+      targetPath: context.targetPath,
+      homeDir: context.homeDir,
+      storage: context.storage,
+      issueId: context.issueId,
+      onReported: () => {
+        reported = true;
+        durableIssueReported.add(runId);
+      },
+    });
+    const stream = workerSession.stream(context.prompt, {
+      systemPrompt: context.systemPrompt,
+      signal: request.options.signal,
+      permissionMode: context.permissionMode,
+      effort: context.effort as NonNullable<Parameters<typeof workerSession.stream>[1]>['effort'],
+      approver,
+      classifier: preToolUseHookClassifier,
+      canUseTool,
+      ...(model ? { model } : {}),
+      ...(modelApi ? { modelApi } : {}),
+      tools: [issueReportTool],
+    });
+    for await (const event of stream) {
+      forwardAgentEvent(event, send, runId);
+      const desc = runs.get(runId)?.desc;
+      if (!desc) continue;
+      if (event.type === 'tool.call') {
+        desc.toolCalls += 1;
+        desc.currentTool = event.call.publicName;
+      } else if (event.type === 'tool.result') {
+        desc.currentTool = undefined;
+      } else if (event.type === 'response.text.delta' && event.delta) {
+        desc.lastText = (desc.lastText || '') + event.delta;
+      }
+    }
+    const result = await stream.result;
+    if (!reported) {
+      await addIssueComment(context.targetPath, context.homeDir, context.issueId, {
+        actor: 'system',
+        kind: 'system',
+        body: 'Worker session ended without IssueReport; manager reconcile should review this issue.',
+      }, context.storage);
+    }
+    return {
+      output: result.text ?? '',
+      usage: canonicalGuiUsage(result.usage),
+      metadata: {
+        issueId: context.issueId,
+        issueNumber: context.issueNumber,
+        sessionId: context.sessionId,
+      },
+    };
+  }
+
   async function streamIssueDispatch(body: Record<string, unknown>, res: ServerResponse): Promise<void> {
     const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
     res.writeHead(200, {
@@ -3184,7 +3439,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         ?? (bridgeMode && activeBridgeModelApi ? activeBridgeModelApi.model : undefined)
         ?? (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard' ? activeBridgeConfig.model : undefined)
         ?? session.model;
-      const workerModelApi = resolvedProfile?.modelApi ?? (bridgeMode ? activeBridgeModelApi?.modelApi : undefined);
       const workerPermissionMode = resolvedProfile?.profile.permissionMode ?? currentPermissionMode();
       const workerSession = await sdk.createSession({
         title,
@@ -3227,13 +3481,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         state: await state({ light: true }),
       });
 
-      const issueReportTool = createIssueReportToolForRun({
-        targetPath,
-        homeDir,
-        storage,
-        issueId: issue.id,
-        onReported: () => { reported = true; },
-      });
       const runId = 'r-iss-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       workerRunId = runId;
       const abort = new AbortController();
@@ -3263,43 +3510,49 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         'Operational requirement: update the issue by calling IssueReport before ending the run.',
       ].join('\n');
       send({ type: 'user', text: workerPrompt });
-      const stream = workerSession.stream(workerPrompt, {
-        systemPrompt: issueSystemPrompt,
+      durableIssueSinks.set(runId, send);
+      const coordinator = await durableIssueCoordinatorFor(targetPath, homeDir);
+      const result = await coordinator.run({
+        childId: runId,
+        parentRunId: `issue-dispatch:${issue.id}:${workerSession.id}`,
+        agent: GUI_DURABLE_ISSUE_AGENT,
+        input: workerPrompt,
+        context: {
+          targetPath,
+          homeDir,
+          storage,
+          issueId: issue.id,
+          issueNumber: issue.number,
+          sessionId: workerSession.id,
+          requestedProfile: requestedProfile ?? null,
+          bridgeConfigName: resolvedProfile?.bridgeConfig.name ?? activeBridgeConfig?.name ?? null,
+          workerModel: workerModel ?? null,
+          permissionMode: workerPermissionMode,
+          effort: currentEffort(),
+          systemPrompt: issueSystemPrompt,
+          prompt: workerPrompt,
+        } as unknown as JsonValue,
         signal: abort.signal,
-        permissionMode: workerPermissionMode,
-        effort: currentEffort(),
-        approver,
-        classifier: preToolUseHookClassifier,
-        canUseTool,
-        ...(workerModel ? { model: workerModel } : {}),
-        ...(workerModelApi ? { modelApi: workerModelApi } : {}),
-        tools: [issueReportTool],
+        tenantId: 'local-gui',
+        sessionId: workerSession.id,
+        workspaceId: targetPath,
+        workspaceRoot: targetPath,
+        metadata: {
+          issueId: issue.id,
+          issueNumber: issue.number,
+          issueKey: `ISS-${issue.number}`,
+        },
       });
-      for await (const event of stream) {
-        forwardAgentEvent(event, send, runId);
-        if (event.type === 'tool.call') {
-          desc.toolCalls += 1;
-          desc.currentTool = event.call.publicName;
-        } else if (event.type === 'tool.result') {
-          desc.currentTool = undefined;
-        } else if (event.type === 'response.text.delta' && event.delta) {
-          desc.lastText = (desc.lastText || '') + event.delta;
-        }
-      }
-      const result = await stream.result;
-      if (result.text) send({ type: 'delta', text: result.text });
-      if (!reported) {
-        await addIssueComment(targetPath, homeDir, issue.id, {
-          actor: 'system',
-          kind: 'system',
-          body: 'Worker session ended without IssueReport; manager reconcile should review this issue.',
-        }, storage);
+      reported = durableIssueReported.has(runId);
+      if (typeof result.output === 'string' && result.output) {
+        send({ type: 'delta', text: result.output });
       }
       desc.status = 'done';
       send({ type: 'state', state: await state() });
-      send({ type: 'done', usage: (result as any).usage });
+      send({ type: 'done', usage: result.usage });
     } catch (error) {
       const message = (error as Error).message;
+      if (workerRunId) reported = durableIssueReported.has(workerRunId);
       if (workerRunId) {
         const record = runs.get(workerRunId);
         if (record) record.desc.status = 'error';
@@ -3321,7 +3574,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       send({ type: 'state', state: await state() });
       send({ type: 'done' });
     } finally {
-      if (workerRunId) runs.delete(workerRunId);
+      if (workerRunId) {
+        runs.delete(workerRunId);
+        durableIssueSinks.delete(workerRunId);
+        durableIssueReported.delete(workerRunId);
+      }
       invalidateHeavyState();
       res.end();
     }
@@ -4942,6 +5199,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     terminalManager.closeAll();
     if (sdk) await sdk.close().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await Promise.allSettled([...durableIssueResources.values()].flatMap(resource => [
+      resource.coordinator.services.close(),
+      resource.storage.close(),
+    ]));
+    durableIssueResources.clear();
+    durableIssueResourcePending.clear();
   };
   return { url, token: authToken, close };
 }
@@ -4994,80 +5257,126 @@ export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<vo
   }
 }
 
+const guiSurfacePipelines = new WeakMap<
+  (event: GuiRunEvent) => void,
+  LegacySurfaceEventPipeline
+>();
+
 function forwardAgentEvent(event: AgentEvent, send: (event: GuiRunEvent) => void, runId?: string): void {
+  let pipeline = guiSurfacePipelines.get(send);
+  if (!pipeline) {
+    pipeline = new LegacySurfaceEventPipeline();
+    guiSurfacePipelines.set(send, pipeline);
+  }
+  for (const surfaceEvent of pipeline.projectFor(event, 'gui')) {
+    forwardSurfaceEvent(surfaceEvent, send, runId);
+  }
+}
+
+function forwardSurfaceEvent(
+  event: SurfaceSemanticEvent,
+  send: (event: GuiRunEvent) => void,
+  runId?: string,
+): void {
+  const data = event.data;
   switch (event.type) {
     case 'run.started':
-      send({ type: 'run.started', runId, model: event.model });
-      return;
-    case 'request.started':
-      send({ type: 'status', message: `request ${event.iteration}${event.requestTokenEstimate ? ` · ~${event.requestTokenEstimate} tokens` : ''}` });
-      return;
-    case 'response.text.delta':
-      if (event.delta) send({ type: 'delta', text: event.delta });
-      return;
-    case 'response.thinking.delta':
-      if (event.delta) send({ type: 'thinking.delta', text: event.delta, snapshot: event.snapshot });
-      return;
-    case 'response.tool_input.delta':
       send({
-        type: 'tool.input.delta',
-        id: event.toolUseId,
-        name: event.toolName,
-        delta: event.delta,
-        snapshot: event.snapshot,
+        type: 'run.started',
+        runId,
+        model: typeof data.model === 'string'
+          ? data.model
+          : isPlainRecord(data.model) && typeof data.model.model === 'string'
+            ? data.model.model
+            : undefined,
       });
       return;
-    case 'tool.call':
+    case 'request.started':
+      send({
+        type: 'status',
+        message: `request ${Number.isSafeInteger(data.iteration) ? data.iteration : 0}${data.requestTokenEstimate ? ` · ~${data.requestTokenEstimate} tokens` : ''}`,
+      });
+      return;
+    case 'text.delta':
+      if (typeof data.delta === 'string' && data.delta) send({ type: 'delta', text: data.delta });
+      return;
+    case 'reasoning.delta':
+      if (typeof data.delta === 'string' && data.delta) {
+        send({ type: 'thinking.delta', text: data.delta, snapshot: data.snapshot });
+      }
+      return;
+    case 'tool.input.delta':
+      send({
+        type: 'tool.input.delta',
+        id: data.callId,
+        name: data.name,
+        delta: data.delta,
+        snapshot: data.snapshot,
+      });
+      return;
+    case 'tool.started':
       send({
         type: 'tool.call',
-        id: event.call.id,
+        id: data.callId,
         runId: event.runId,
-        iteration: event.iteration,
-        name: event.call.publicName,
-        provider: event.call.provider,
-        input: event.call.input,
-        startedAt: event.call.startedAt,
+        iteration: data.iteration,
+        name: data.publicName ?? data.name,
+        provider: data.provider,
+        input: data.input,
+        startedAt: data.startedAt,
       });
       return;
     case 'tool.permission':
-      send({ type: 'tool.permission', toolName: event.decision.publicName, behavior: event.decision.behavior, reason: event.decision.reason });
+      if (isPlainRecord(data.decision)) {
+        send({
+          type: 'tool.permission',
+          toolName: data.decision.publicName,
+          behavior: data.decision.behavior,
+          reason: data.decision.reason,
+        });
+      }
       return;
-    case 'tool.result':
+    case 'tool.completed':
+    case 'tool.failed':
+    case 'tool.rejected':
       send({
         type: 'tool.result',
-        id: event.result.id,
+        id: data.callId,
         runId: event.runId,
-        iteration: event.iteration,
-        name: event.result.publicName,
-        ok: !event.result.isError,
-        text: event.result.outputText,
-        durationMs: event.result.durationMs,
-        completedAt: event.result.completedAt,
+        iteration: data.iteration,
+        name: data.publicName ?? data.name,
+        ok: data.isError !== true,
+        text: data.outputText,
+        durationMs: data.durationMs,
+        completedAt: data.completedAt,
       });
       return;
     case 'tool.progress':
       send({
         type: 'tool.progress',
-        id: event.toolUseId,
+        id: data.callId,
         runId: event.runId,
-        iteration: event.iteration,
-        data: event.data,
+        iteration: data.iteration,
+        data: data.progress,
       });
       return;
-    case 'session.compacted':
-      send({ type: 'notice', message: `session compacted: ${event.result.messagesRemoved ?? '?'} messages summarized` });
+    case 'compaction.completed': {
+      const result = isPlainRecord(data.result) ? data.result : undefined;
+      if (data.scope === 'session') {
+        send({ type: 'notice', message: `session compacted: ${result?.messagesRemoved ?? '?'} messages summarized` });
+      } else {
+        send({ type: 'notice', message: `conversation compacted: ${data.messagesSummarized ?? '?'} messages summarized` });
+      }
       return;
-    case 'conversation.compacted':
-      send({ type: 'notice', message: `conversation compacted: ${event.messagesSummarized} messages summarized` });
-      return;
+    }
     case 'model.fallback':
-      send({ type: 'notice', message: `model fallback: ${event.fromModel} -> ${event.toModel}` });
+      send({ type: 'notice', message: `model fallback: ${data.fromModel} -> ${data.toModel}` });
       return;
-    case 'request.interrupted':
+    case 'interruption.requested':
       send({ type: 'notice', message: 'request interrupted' });
       return;
     case 'error':
-      send({ type: 'error', message: event.error.message });
+      send({ type: 'error', message: typeof data.message === 'string' ? data.message : 'run failed' });
       return;
     default:
       return;

@@ -88,6 +88,10 @@ import { applyTeamRunEvent, createTeamRunViewState, formatTeamRunTreeLines } fro
 import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { loadProjectContext } from '../memory/projectContext.js';
+import {
+  LegacySurfaceEventPipeline,
+  type SurfaceSemanticEvent,
+} from '../surfaces/index.js';
 import { pathToFileURL } from 'node:url';
 import {
   ACTOVIQ_INTERACTIVE_COMMANDS,
@@ -1349,8 +1353,11 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         eventStream = stream;
         resultPromise = stream.result;
       }
+      const surfaceEvents = new LegacySurfaceEventPipeline();
       for await (const event of eventStream) {
-        handleAgentEvent(event);
+        for (const surfaceEvent of surfaceEvents.projectFor(event, 'tui')) {
+          handleSurfaceEvent(surfaceEvent);
+        }
       }
       const result = await resultPromise;
       // Accumulate token + USD usage for /cost and /usage. The model is the
@@ -1397,18 +1404,21 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return !streamedTextSeen;
   }
 
-  function handleAgentEvent(event: AgentEvent): void {
+  function handleSurfaceEvent(event: SurfaceSemanticEvent): void {
+    const data = event.data;
     switch (event.type) {
       case 'run.started':
         streamedTextSeen = false;
         streamedThinkingSeen = false;
         return;
       case 'request.started':
-        lastTokenEstimate = event.requestTokenEstimate;
+        lastTokenEstimate = typeof data.requestTokenEstimate === 'number'
+          ? data.requestTokenEstimate
+          : undefined;
         renderDynamic();
         return;
-      case 'response.text.delta': {
-        const delta = typeof event.delta === 'string' ? event.delta : '';
+      case 'text.delta': {
+        const delta = typeof data.delta === 'string' ? data.delta : '';
         if (!delta) return;
         streamedTextSeen = true;
         const flushed = flusher.push(delta);
@@ -1416,8 +1426,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         scheduleDynamicRender();
         return;
       }
-      case 'response.thinking.delta': {
-        const delta = typeof event.delta === 'string' ? event.delta : '';
+      case 'reasoning.delta': {
+        const delta = typeof data.delta === 'string' ? data.delta : '';
         if (!delta) return;
         const lines = formatThinking(delta, screen.width);
         if (lines.length > 0) appendStatic(lines);
@@ -1425,31 +1435,38 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         scheduleDynamicRender();
         return;
       }
-      case 'response.tool_input.delta':
+      case 'tool.input.delta':
         return;
-      case 'response.content':
-        if (event.content.type === 'thinking' && !streamedThinkingSeen) {
-          const thinking = (event.content as { thinking?: string }).thinking ?? '';
+      case 'model.content': {
+        const content = isRecord(data.content) ? data.content : undefined;
+        if (data.kind === 'content' && content?.type === 'thinking' && !streamedThinkingSeen) {
+          const thinking = typeof content.thinking === 'string' ? content.thinking : '';
           const lines = formatThinking(thinking, screen.width);
           if (lines.length > 0) appendStatic(lines);
         }
         return;
-      case 'tool.call': {
+      }
+      case 'tool.started': {
+        const callId = typeof data.callId === 'string' ? data.callId : '';
+        const publicName = typeof data.publicName === 'string'
+          ? data.publicName
+          : typeof data.name === 'string' ? data.name : 'tool';
+        const input = data.input;
         const pending = flusher.drain();
         if (pending.length > 0) appendStatic(pending);
         runToolCount += 1;
-        statusNote = event.call.publicName;
-        toolCallNames.set(event.call.id, event.call.publicName);
+        statusNote = publicName;
+        if (callId) toolCallNames.set(callId, publicName);
         // Render Edit calls as a colored old→new diff instead of a one-liner.
         appendStatic(
-          event.call.publicName === 'Edit'
-            ? formatEditCall(event.call.input, screen.width)
-            : formatToolCall(event.call.publicName, event.call.input, screen.width),
+          publicName === 'Edit'
+            ? formatEditCall(input, screen.width)
+            : formatToolCall(publicName, input, screen.width),
         );
         // Capture the live todo list from TodoWrite calls so the persistent
         // panel (renderDynamic) reflects the agent's current plan + progress.
-        if (event.call.publicName === 'TodoWrite') {
-          const todos = (event.call.input as { todos?: unknown } | null)?.todos;
+        if (publicName === 'TodoWrite') {
+          const todos = (isRecord(input) ? input.todos : undefined);
           if (Array.isArray(todos)) {
             currentTodos = todos
               .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
@@ -1465,53 +1482,62 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         return;
       }
       case 'tool.progress': {
-        const data = event.data as { message?: string } | undefined;
-        if (data?.message) {
-          statusNote = data.message;
+        const progress = isRecord(data.progress) ? data.progress : undefined;
+        const message = typeof data.message === 'string'
+          ? data.message
+          : typeof progress?.message === 'string' ? progress.message : undefined;
+        if (message) {
+          statusNote = message;
           scheduleDynamicRender();
         }
         return;
       }
-      case 'tool.result':
+      case 'tool.completed':
+      case 'tool.failed':
+      case 'tool.rejected': {
+        const callId = typeof data.callId === 'string' ? data.callId : '';
+        const outputText = typeof data.outputText === 'string' ? data.outputText : '';
         statusNote = '';
         appendStatic(
           formatToolResult(
             {
-              isError: event.result.isError,
-              durationMs: event.result.durationMs,
-              outputText: event.result.outputText,
+              isError: data.isError === true,
+              durationMs: typeof data.durationMs === 'number' ? data.durationMs : 0,
+              outputText,
             },
             screen.width,
           ),
         );
         // Run matching PostToolUse hooks (fire-and-forget, never block).
-        const toolName = toolCallNames.get(event.result.id);
+        const toolName = callId ? toolCallNames.get(callId) : undefined;
         if (toolName) {
           runPostToolUseHooks(
             () => readPostToolUseHooks(getLoadedJsonConfig()?.raw),
             toolName,
             null as unknown,
-            event.result.outputText ?? '',
+            outputText,
             sdk.config.workDir,
           );
         }
         renderDynamic();
         return;
-      case 'conversation.compacted':
-        appendStatic(
-          formatCompactNotice(event.trigger ?? 'auto', event.tokenEstimateBefore, event.tokenEstimateAfter),
-        );
-        return;
-      case 'session.compacted':
-        appendStatic(formatCompactNotice(event.trigger));
+      }
+      case 'compaction.completed':
+        appendStatic(formatCompactNotice(
+          typeof data.trigger === 'string' ? data.trigger : 'auto',
+          typeof data.tokenEstimateBefore === 'number' ? data.tokenEstimateBefore : undefined,
+          typeof data.tokenEstimateAfter === 'number' ? data.tokenEstimateAfter : undefined,
+        ));
         return;
       case 'tool.permission':
-        if (event.decision.behavior === 'deny') {
-          appendStatic(formatInfoLine(`permission denied: ${event.decision.publicName} — ${event.decision.reason}`));
+        if (isRecord(data.decision) && data.decision.behavior === 'deny') {
+          appendStatic(formatInfoLine(
+            `permission denied: ${String(data.decision.publicName ?? 'tool')} — ${String(data.decision.reason ?? '')}`,
+          ));
         }
         return;
       case 'error':
-        appendStatic(formatErrorLine(event.error.message));
+        appendStatic(formatErrorLine(typeof data.message === 'string' ? data.message : 'run failed'));
         return;
       default:
         return;
@@ -3039,6 +3065,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               const { WorkflowScriptRuntime } = await import('../workflow/workflowScriptRuntime.js');
               const runtime = new WorkflowScriptRuntime({
                 sdk: sdk as any,
+                trust: 'trusted',
                 args: wfTask,
                 onEvent: (e: any) => {
                   if (e.type === 'workflow.phase.start') {

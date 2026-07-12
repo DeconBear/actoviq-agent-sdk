@@ -9,7 +9,7 @@
 
 Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
-**Actoviq** is an agent team platform — a TypeScript framework for composing multiple AI agents, runtimes, and providers into collaborative multi-agent systems. It grew out of a programmable agent SDK but now targets the **multi-agent, multi-runtime state management** and **model team collaboration** space: coordinating specialized models, routing turns across providers, and orchestrating agent swarms with shared context.
+**Actoviq 1.0** is a TypeScript agent SDK and agent-team platform. Its stable SDK contracts separate provider-neutral agent declarations, model providers, runtime/service ownership, durable state, events, orchestration, workflow trust, profiles, and compatibility surfaces. The existing team, Bridge, TUI, and GUI products remain available on top of those contracts.
 
 Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Actoviq remains independent with its own public surface and documentation.
 
@@ -21,9 +21,9 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 
 ## Highlights
 
-- **Model Team** — `panel-analysis` (parallel investigation + convergence) and `reviewer` (verifiable-issues-only auditor). Centralized runtime (`src/team/teamRuntime.ts`) per stable member identity, streamed `TeamEvent`s, per-member provider config, `$ENV_VAR` apiKey resolution, global AgentPool.
+- **Model Team** — `panel-analysis` (parallel investigation + convergence) and `reviewer` (verifiable-issues-only auditor). Runtime-owned member pooling, streamed `TeamEvent`s, per-member provider config, and inherited permission/retry boundaries.
 - **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.actoviq/routers/`.
-- **Dynamic Workflows** — JS script-based multi-agent orchestration: `agent()`/`parallel()`/`pipeline()` primitives, sandboxed runtime, schema enforcement.
+- **Dynamic Workflows** — JS script-based orchestration with explicit trust levels: trusted compatibility execution, isolated local-process execution, or a host-supplied remote/container sandbox for adversarial inputs.
 - **Bridge (named connection configs)** — in-process runtime switching: pre-configure `anthropic`/`openai` backends with name + apiKey + baseURL + model, switch by name mid-session, multi-turn context survives (same session). `/bridge config` single-page editor; `/bridge` lists saved configs; per-config usage tracking in `/cost`.
 - **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened.
 - **TUI (`actoviq-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
@@ -31,6 +31,16 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout.
 - **TavilySearch** — AI-optimized web search, pure TypeScript.
 - **Standard Benchmark** — Self-contained framework with DeepSeek judge, HTML dashboard, 4-agent comparison.
+
+## 1.0 SDK architecture
+
+- `core`: immutable `AgentSpec`, canonical input/output items, structured output, guardrails, usage, and run errors.
+- `providers`: capability-checked OpenAI Responses, OpenAI Chat-compatible, and Anthropic adapters behind one `ModelProvider` contract.
+- `runtime`: one `AgentRuntime`, lazy `RuntimeServices`, fixed-stage middleware, tools/policy, bounded streams, checkpoints, interruption, and resume.
+- `node`: tenant-scoped SQLite session/checkpoint/memory/artifact stores and backup-first JSON v1 migration.
+- `events` and `surfaces`: versioned traceable `RunEvent`s plus shared CLI/TUI/GUI/Bridge semantics and redaction.
+- `orchestration`, `workflow`, and `profiles`: agent-as-tool, handoff, durable spawn, graphs/presets, explicit workflow trust, and six composable agent profiles.
+- `compat`: the 0.x root façade and migration adapters, retained throughout the 1.x line.
 
 ## Roadmap — toward agent teams
 
@@ -40,6 +50,10 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 - **Model team IDE** — visual team builder, member role editor, team health dashboard.
 
 ## Install
+
+Node.js 22.13+ or Node.js 24 is required. Node 22.5–22.12 exposes
+`node:sqlite` only behind a process flag and is therefore outside the default
+runtime support contract.
 
 ```bash
 npm install actoviq-agent-sdk zod
@@ -53,36 +67,41 @@ For local examples, place your config at:
 
 You can also preload a custom JSON file with `loadJsonConfigFile(...)`.
 
-## Quick Start
+## Quick Start (1.0 runtime)
 
 ```ts
-import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import type { AgentSpec } from 'actoviq-agent-sdk/core';
+import { ModelRegistry, OpenAIResponsesProvider } from 'actoviq-agent-sdk/providers';
+import { AgentRuntime } from 'actoviq-agent-sdk/runtime';
 
-await loadDefaultActoviqSettings();
-
-// Default: Anthropic protocol
-const sdk = await createAgentSdk();
-
-// Or use OpenAI / OpenAI-compatible APIs (DeepSeek, vLLM, etc.)
-const sdk = await createAgentSdk({
-  provider: 'openai',
-  baseURL: 'https://api.deepseek.com',
-  model: 'deepseek-chat',
+const runtime = new AgentRuntime({
+  models: new ModelRegistry([
+    new OpenAIResponsesProvider({ apiKey: process.env.OPENAI_API_KEY }),
+  ]),
 });
+const agent: AgentSpec = {
+  id: 'concise-chat',
+  name: 'Concise chat',
+  instructions: 'Answer in one short sentence.',
+  model: 'openai-responses:gpt-4.1-mini',
+};
 
 try {
-  const result = await sdk.run('Introduce yourself in one short sentence.');
-  console.log(result.text);
+  const result = await runtime.run(agent, 'What is compare-and-swap?');
+  console.log(result.output, result.usage.totalTokens);
 } finally {
-  await sdk.close();
+  await runtime.close();
 }
 ```
+
+Existing 0.x applications may keep importing `createAgentSdk` from the package root or `/compat`. See the [1.0 migration guide](./docs/zh/09-sdk-v2-migration-guide.md); new applications should use the responsibility subpaths above.
 
 Run the repository examples with:
 
 ```bash
 npm run example:actoviq-quickstart
 npm run example:actoviq-agent-helpers
+npm run example:profiles
 ```
 
 ## CLI REPL
@@ -187,6 +206,16 @@ Start with these examples:
 - [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
 - [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
 - [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+- [examples/profiles/all-profiles.ts](./examples/profiles/all-profiles.ts)
+
+Architecture and operations:
+
+- [Architecture audit and implementation plan](./docs/zh/08-sdk-architecture-audit-and-optimization-plan.md)
+- [1.0 migration guide](./docs/zh/09-sdk-v2-migration-guide.md)
+- [Support, security, SemVer, and failure model](./docs/zh/10-support-security-semver-and-failure-model.md)
+- [JSON v1 to SQLite migration runbook](./docs/zh/11-json-v1-to-sqlite-migration-runbook.md)
+- [1.0 implementation and verification report](./docs/zh/12-sdk-1.0-implementation-and-verification-report.md)
+- [Security policy](./SECURITY.md)
 
 ## Contributing
 

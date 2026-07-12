@@ -6,6 +6,8 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * *'
 
 permissions:
   contents: read
@@ -15,6 +17,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-minimum-node:
+    name: Linux / minimum Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22.13.0
+          - 24.0.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup exact minimum Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Linux rolldown native binding
+        run: npm install --no-save --package-lock=false @rolldown/binding-linux-x64-gnu@1.0.0-rc.12
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: |
+          npm install --no-save --package-lock=false electron@42.4.1
+          npm run build
+
   test-linux:
     name: Linux / Node ${{ matrix.node }}
     runs-on: ubuntu-latest
@@ -22,8 +60,8 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - 20
           - 22
+          - 24
 
     steps:
       - name: Checkout repository
@@ -46,17 +84,29 @@ jobs:
       - name: Test
         run: npm test
 
-      # electron 42 requires Node ≥22, so the src/gui build only runs there.
-      # The npm package ships gui sources; electron-builder compiles them in dist:win.
-      - name: Build
+      - name: Runtime benchmark smoke
         if: matrix.node == 22
+        run: npm run bench:runtime:smoke
+
+      - name: SDK v2 coverage gate
+        if: matrix.node == 22
+        run: npm run test:sdk-v2:coverage
+
+      # The desktop TypeScript build is verified on every supported Node LTS.
+      - name: Build
         run: |
           npm install --no-save --package-lock=false electron@42.4.1
           npm run build
 
   test-windows:
-    name: Windows / Node 22
+    name: Windows / Node ${{ matrix.node }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22
+          - 24
 
     steps:
       - name: Checkout repository
@@ -65,7 +115,39 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  test-macos-nightly:
+    name: macOS nightly / Node ${{ matrix.node }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         run: npm ci
@@ -83,6 +165,7 @@ jobs:
     name: Package Dry Run
     runs-on: ubuntu-latest
     needs:
+      - test-minimum-node
       - test-linux
       - test-windows
 
@@ -107,6 +190,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify package exports and public API snapshot
+        run: npm run verify:package
+
+      - name: Verify clean tarball install and imports
+        run: npm run verify:packed
 
       - name: Verify npm package contents
         run: npm pack --dry-run

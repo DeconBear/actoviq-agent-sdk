@@ -10,6 +10,11 @@
 5. [05-testing-troubleshooting-cheatsheet.md](./05-testing-troubleshooting-cheatsheet.md)
 6. [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)
 7. [07-workflow-orchestration.md](./07-workflow-orchestration.md)
+8. [08-sdk-architecture-audit-and-optimization-plan.md](./08-sdk-architecture-audit-and-optimization-plan.md)
+9. [09-sdk-v2-migration-guide.md](./09-sdk-v2-migration-guide.md)
+10. [10-support-security-semver-and-failure-model.md](./10-support-security-semver-and-failure-model.md)
+11. [11-json-v1-to-sqlite-migration-runbook.md](./11-json-v1-to-sqlite-migration-runbook.md)
+12. [12-sdk-1.0-implementation-and-verification-report.md](./12-sdk-1.0-implementation-and-verification-report.md)
 
 如果你想最快跑起来：
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
@@ -25,4 +30,4 @@
    - `buddy`：见 [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)
    - `dream`：见 [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md) 和 [03-tools-permissions-mcp.md](./03-tools-permissions-mcp.md)
 
-整个教程里的主路径是 `createAgentSdk()`，适合绝大多数业务开发和二次封装。
+01–07 保留 `createAgentSdk()` 兼容教程，适合维护 0.x 应用；新项目从 08–11 的架构与迁移说明开始，使用 `/core`、`/providers`、`/runtime` 等 1.0 职责 subpath。兼容 façade 在整个 1.x 继续支持。

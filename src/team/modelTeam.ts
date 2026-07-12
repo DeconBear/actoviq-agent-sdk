@@ -24,6 +24,7 @@ import {
 import { buildGraphNodeTools, canonicalizeTeamDefinition, createNotifyTeammateTool, migrateTeamDefinitionToV3, orchestrateGraph } from './teamGraph.js';
 import { listTeamAgentLabels, loadTeamDefinition } from './teamDefinitions.js';
 import { resolveGraphNodeSystemPrompt } from './teamPrompts.js';
+import { AgentPool } from './agentPool.js';
 
 // ═══════════════════════════════════════════════════════════════════
 //  Helpers
@@ -160,6 +161,8 @@ async function runGraphMode(
   onEvent?: (event: TeamEvent) => void,
   reviewerContext?: string,
   teamStack: string[] = [],
+  pool: AgentPool = new AgentPool(),
+  executionOptions: TeamAskOptions = {},
 ): Promise<GraphTeamResult> {
   const startedAt = Date.now();
   const execDef = migrateTeamDefinitionToV3(definition);
@@ -228,8 +231,13 @@ async function runGraphMode(
         }
         const subStarted = Date.now();
         try {
-          const subTeam = new ModelTeam(loaded.definition);
-          const subResult = await subTeam.ask(task, signal, { workDir: cwd, onEvent, teamStack: [...teamStack, ref] });
+          const subTeam = new ModelTeam(loaded.definition, pool);
+          const subResult = await subTeam.ask(task, signal, {
+            ...executionOptions,
+            workDir: cwd,
+            onEvent,
+            teamStack: [...teamStack, ref],
+          });
           for (const m of subResult.memberStatuses ?? []) memberStatuses.push(m);
           const subIn = subResult.cost?.totalInputTokens ?? 0;
           const subOut = subResult.cost?.totalOutputTokens ?? 0;
@@ -270,8 +278,13 @@ async function runGraphMode(
         tools,
         maxIterations: nodeType === 'single' ? 1 : resolveMemberMaxIterations(node),
         timeoutMs: resolveMemberTimeout(node),
-        reconnectAttempts: node.reconnectAttempts ?? 10,
         signal,
+        permissionMode: executionOptions.permissionMode,
+        permissions: executionOptions.permissions,
+        classifier: executionOptions.classifier,
+        approver: executionOptions.approver,
+        hooks: executionOptions.hooks,
+        pool,
         round: 1,
         onEvent,
       });
@@ -344,7 +357,7 @@ export class ModelTeam {
   /** Canonical graph v3 definition (Task + Return ports) used at runtime. */
   readonly definition: TeamDefinition;
 
-  constructor(definition: TeamDefinition) {
+  constructor(definition: TeamDefinition, private readonly pool = new AgentPool()) {
     this.definition = canonicalizeTeamDefinition(definition);
     this.name = this.definition.name;
   }
@@ -355,7 +368,17 @@ export class ModelTeam {
    * has a single payload-return agent (reviewer-style presets).
    */
   async ask(prompt: string, signal?: AbortSignal, opts?: TeamAskOptions): Promise<ModelTeamResult> {
-    return runGraphMode(prompt, this.definition, signal, opts?.workDir, opts?.onEvent, opts?.context, opts?.teamStack);
+    return runGraphMode(
+      prompt,
+      this.definition,
+      signal,
+      opts?.workDir,
+      opts?.onEvent,
+      opts?.context,
+      opts?.teamStack,
+      this.pool,
+      opts,
+    );
   }
 }
 
@@ -461,7 +484,7 @@ export function createTeamTool(
           // intermittent "schema error" rejections that silently skipped the panel.
           additionalProperties: true,
         },
-    async execute(input: unknown) {
+    async execute(input: unknown, context) {
       // Accept the call however the model phrases it (bare string or any of a few
       // common keys) so a formatting quirk never drops the invocation.
       const obj = (input ?? {}) as Record<string, unknown>;
@@ -471,8 +494,16 @@ export function createTeamTool(
         if (!task) {
           throw new Error(`Reviewer "${definition.name}" requires a non-empty "task" string.`);
         }
-        const context = typeof obj.context === 'string' ? obj.context : undefined;
-        const result = await team.ask(task, undefined, { context });
+        const reviewerContext = typeof obj.context === 'string' ? obj.context : undefined;
+        const result = await team.ask(task, context.signal, {
+          context: reviewerContext,
+          workDir: context.cwd,
+          permissionMode: context.permissionMode,
+          permissions: context.permissions,
+          classifier: context.classifier,
+          approver: context.approver,
+          hooks: context.hooks,
+        });
         return JSON.stringify({
           answer: result.answer,
           mode: result.mode,
@@ -489,7 +520,14 @@ export function createTeamTool(
       if (!prompt) {
         throw new Error(`Team "${definition.name}" requires a non-empty "prompt" string.`);
       }
-      const result = await team.ask(prompt);
+      const result = await team.ask(prompt, context.signal, {
+        workDir: context.cwd,
+        permissionMode: context.permissionMode,
+        permissions: context.permissions,
+        classifier: context.classifier,
+        approver: context.approver,
+        hooks: context.hooks,
+      });
       const toolAnswer = result.returnMode === 'void'
         ? (result.answer.trim() || 'Team completed.')
         : result.returnValue ?? result.answer;
