@@ -19,14 +19,14 @@
     "appId": "com.actoviq.desktop",
     "productName": "Actoviq",
     "copyright": "Copyright Actoviq",
-    "artifactName": "Actoviq-Setup-${version}-${arch}.${ext}",
+    "artifactName": "Actoviq-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist_electron"
     },
     "extraMetadata": {
       "main": "dist/src/gui/electronMain.js"
     },
-    "icon": "assets/actoviq-icon.ico",
+    "icon": "assets/actoviq-icon.png",
     "files": [
       "dist/**/*",
       "assets/**/*",
@@ -41,13 +41,17 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/node-pty/**",
-      "assets/actoviq-icon.ico"
+      "assets/actoviq-icon.ico",
+      "assets/actoviq-icon.png"
     ],
     "npmRebuild": false,
+    "publish": null,
     "win": {
       "target": [
         "nsis"
-      ]
+      ],
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false
     },
     "nsis": {
       "oneClick": false,
@@ -56,6 +60,23 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Actoviq"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "forceCodeSigning": false
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "maintainer": "Actoviq"
     }
   },
   "main": "./dist/src/index.js",
@@ -152,6 +173,9 @@
     "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist:win": "npm run prepare:xterm && npm run build && electron-builder --win --x64 && electron-builder --win --arm64",
+    "dist:mac": "npm run prepare:xterm && npm run build && electron-builder --mac --x64 && electron-builder --mac --arm64",
+    "dist:linux": "npm run prepare:xterm && npm run build && electron-builder --linux --x64",
+    "dist:gui": "npm run prepare:xterm && npm run build && electron-builder --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:sdk-v2:coverage": "vitest run --config vitest.sdk-v2.config.ts && node scripts/verify-sdk-v2-coverage.mjs",

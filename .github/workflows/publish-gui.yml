@@ -1,0 +1,154 @@
+name: Publish GUI Installers
+
+# Build unsigned Electron installers on native runners and attach them to the
+# GitHub Release for the matching v* tag. Signing/notarization is intentionally
+# skipped (CSC_IDENTITY_AUTO_DISCOVERY=false); macOS users may need to allow the
+# app via System Settings → Privacy & Security on first launch.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag name whose GitHub Release should receive GUI installers
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-gui-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+jobs:
+  ensure-release:
+    name: Ensure GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v ]]; then
+            echo "Tag must start with v (got: $TAG)"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if gh api "repos/${{ github.repository }}/releases/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists."
+          else
+            gh release create "${TAG}" \
+              --repo "${{ github.repository }}" \
+              --title "${TAG}" \
+              --generate-notes
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: ensure-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            eb_args: --win --x64
+            artifact_glob: Actoviq-*-win-x64.exe
+          - name: Windows arm64
+            runner: windows-latest
+            eb_args: --win --arm64
+            artifact_glob: Actoviq-*-win-arm64.exe
+          - name: macOS x64
+            runner: macos-latest
+            eb_args: --mac --x64
+            artifact_glob: Actoviq-*-mac-x64.dmg
+          - name: macOS arm64
+            runner: macos-latest
+            eb_args: --mac --arm64
+            artifact_glob: Actoviq-*-mac-arm64.dmg
+          - name: Linux x64
+            runner: ubuntu-latest
+            eb_args: --linux AppImage --x64
+            artifact_glob: Actoviq-*-linux-x64.AppImage
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+            eb_args: --linux AppImage --arm64
+            artifact_glob: Actoviq-*-linux-arm64.AppImage
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          # Tag push: build the tagged commit.
+          # Manual dispatch: build the branch that runs the workflow (usually main)
+          # so we can package an existing release with the current builder config.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.ensure-release.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux AppImage dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libfuse2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare xterm assets and build
+        run: |
+          npm run prepare:xterm
+          npm run build
+
+      - name: Package installer
+        run: npx electron-builder ${{ matrix.eb_args }}
+
+      - name: Upload installer to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.ensure-release.outputs.tag }}"
+          shopt -s nullglob
+          files=(dist_electron/${{ matrix.artifact_glob }})
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No artifacts matched dist_electron/${{ matrix.artifact_glob }}"
+            ls -la dist_electron || true
+            exit 1
+          fi
+          # Also attach .blockmap when present (useful for future auto-update).
+          for f in "${files[@]}"; do
+            extras=()
+            if [[ -f "${f}.blockmap" ]]; then
+              extras+=("${f}.blockmap")
+            fi
+            gh release upload "${TAG}" "${f}" "${extras[@]}" \
+              --repo "${{ github.repository }}" \
+              --clobber
+          done
