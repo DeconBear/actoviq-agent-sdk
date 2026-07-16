@@ -45,6 +45,8 @@ import {
   serializeActoviqSessionMemoryRuntimeState,
 } from '../memory/actoviqSessionMemoryState.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
+import { RunAbortedError } from '../errors.js';
+import { AgentExecutionStore } from '../storage/agentExecutionStore.js';
 import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
 import { MailboxStore } from '../storage/mailboxStore.js';
 import { SessionStore } from '../storage/sessionStore.js';
@@ -53,6 +55,7 @@ import type {
   ActoviqAgentDefinition,
   ActoviqAgentDefinitionSummary,
   ActoviqBackgroundTaskRecord,
+  ActoviqBackgroundTaskQueuedInput,
   ActoviqAgentContinuityState,
   ActoviqCompactStateOptions,
   ActoviqDreamRunResult,
@@ -94,6 +97,7 @@ import {
 } from '../workspace/actoviqWorkspace.js';
 import {
   ACTOVIQ_RUN_STATE_KEY,
+  type ActoviqAgentDelegationContext,
   ActoviqAgentsApi,
   createActoviqRunToolState,
   createActoviqTaskTool,
@@ -155,6 +159,31 @@ import {
   extractTextFromContent,
 } from './messageUtils.js';
 import { AgentSession } from './agentSession.js';
+import {
+  ACTOVIQ_EXECUTION_ID_KEY,
+  ACTOVIQ_PARENT_EXECUTION_ID_KEY,
+  ACTOVIQ_ROOT_EXECUTION_ID_KEY,
+  ACTOVIQ_AGENT_PATH_KEY,
+  ActoviqAgentExecutionsApi,
+  createChildAgentExecutionIdentity,
+  resolveAgentExecutionIdentity,
+  serializeAgentExecutionIdentity,
+  type AgentExecutionEdgeInput,
+  type AgentExecutionIdentity,
+} from './actoviqAgentExecutions.js';
+
+function withoutExecutionIdentityMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata) return undefined;
+  const sanitized = { ...metadata };
+  delete sanitized[ACTOVIQ_EXECUTION_ID_KEY];
+  delete sanitized[ACTOVIQ_ROOT_EXECUTION_ID_KEY];
+  delete sanitized[ACTOVIQ_PARENT_EXECUTION_ID_KEY];
+  delete sanitized[ACTOVIQ_AGENT_PATH_KEY];
+  delete sanitized.__actoviqParentSessionId;
+  return sanitized;
+}
 
 const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
 const AGENT_CONTINUITY_STATE_KEY = '__actoviqAgentContinuityState';
@@ -600,6 +629,8 @@ export class ActoviqAgentClient {
   readonly context: ActoviqContextApi;
   readonly slashCommands: ActoviqSlashCommandsApi;
   readonly workflow: WorkflowApi;
+  /** Persistent, project-scoped root/child Agent execution graph. */
+  readonly executions: ActoviqAgentExecutionsApi;
   private readonly sessionManager: SessionManager;
   private readonly sessionTurnCoordinator = new SessionTurnCoordinator();
   private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
@@ -611,7 +642,6 @@ export class ActoviqAgentClient {
     string,
     Array<{ taskId: string; text: string }>
   >();
-  private readonly subagentInputQueues = new Map<string, string[]>();
   private readonly sessionRuntimeOverrides = new Map<string, SessionRuntimeOverrides>();
   private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
   private readonly defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'];
@@ -622,6 +652,7 @@ export class ActoviqAgentClient {
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
     private readonly store: SessionStore,
+    executionStore: AgentExecutionStore,
     private readonly backgroundTaskStore: BackgroundTaskStore,
     private readonly mailboxStore: MailboxStore,
     private readonly teammateStore: TeammateStore,
@@ -641,6 +672,7 @@ export class ActoviqAgentClient {
     private readonly maxSubagentFanout = 8,
   ) {
     this.sessionManager = new SessionManager(this.store, sessionManagerConfig);
+    this.executions = new ActoviqAgentExecutionsApi(executionStore);
     this.sessions = new AgentSessionsApi(
       this.store,
       (sessionId, options) => this.resumeSession(sessionId, options),
@@ -813,6 +845,7 @@ export class ActoviqAgentClient {
   static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
     const config = await resolveRuntimeConfig(options);
     const store = new SessionStore(config.sessionDirectory);
+    const executionStore = new AgentExecutionStore(config.sessionDirectory);
     const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
     const mailboxStore = new MailboxStore(config.sessionDirectory);
     const teammateStore = new TeammateStore(config.sessionDirectory);
@@ -868,6 +901,7 @@ export class ActoviqAgentClient {
     const client = new ActoviqAgentClient(
       config,
       store,
+      executionStore,
       backgroundTaskStore,
       mailboxStore,
       teammateStore,
@@ -886,7 +920,8 @@ export class ActoviqAgentClient {
       options.maxSubagentDepth,
       options.maxSubagentFanout,
     );
-    await client.backgroundTaskManager.reconcileInterruptedTasks();
+    const interruptedTasks = await client.backgroundTaskManager.reconcileInterruptedTasks();
+    await client.reconcileInterruptedAgentExecutions(interruptedTasks);
     return client;
   }
 
@@ -922,6 +957,16 @@ export class ActoviqAgentClient {
   ): AgentRunStream {
     const runId = createId();
     return new AgentRunStream(async (controller) => {
+      const unsubscribeExecution = this.executions.subscribe(runId, ({ event, snapshot }) => {
+        controller.emit({
+          type: 'agent.execution',
+          runId,
+          rootExecutionId: runId,
+          event,
+          snapshot,
+          timestamp: event.occurredAt,
+        });
+      });
       const runOptions = {
         ...options,
         signal: combineAbortSignals(options.signal, controller.signal),
@@ -965,6 +1010,8 @@ export class ActoviqAgentClient {
           timestamp: nowIso(),
         });
         throw error;
+      } finally {
+        unsubscribeExecution();
       }
     }, { signal: options.signal });
   }
@@ -991,6 +1038,9 @@ export class ActoviqAgentClient {
       systemPrompt: options.systemPrompt ?? this.config.systemPrompt,
       model,
       tags: options.tags,
+      kind: options.kind,
+      parentSessionId: options.parentSessionId,
+      originalWorkDir: options.originalWorkDir,
       metadata: {
         ...(options.metadata ?? {}),
         __actoviqWorkDir: this.config.workDir,
@@ -1013,13 +1063,58 @@ export class ActoviqAgentClient {
     sessionId: string,
     options: SessionResumeOptions = {},
   ): Promise<AgentSession> {
-    const loaded = options.fork
-      ? await this.store.fork(sessionId, {
-          title: options.title,
-          tags: options.tags,
-          metadata: options.metadata,
-        })
-      : await this.store.load(sessionId);
+    if (!options.fork) {
+      if (!this.hasPersistedSessionResumeOverrides(options)) {
+        const loaded = await this.store.load(sessionId);
+        if (loaded.status === 'active') {
+          return this.hydrateSession(loaded);
+        }
+        const reactivated = await this.store.runExclusiveTurn(sessionId, () =>
+          this.store.mutate(
+            sessionId,
+            current => this.prepareResumedStoredSession(current, options, false),
+          ),
+        );
+        return this.hydrateSession(reactivated);
+      }
+      const stored = await this.store.runExclusiveTurn(sessionId, () =>
+        this.store.mutate(
+          sessionId,
+          loaded => this.prepareResumedStoredSession(loaded, options, true),
+        ),
+      );
+      return this.hydrateSession(stored);
+    }
+
+    const stored = await this.store.runExclusiveTurn(sessionId, async () => {
+      const forked = await this.store.fork(sessionId, {
+        title: options.title,
+        tags: options.tags,
+        metadata: options.metadata,
+      });
+      const prepared = this.prepareResumedStoredSession(forked, options, false);
+      await this.store.save(prepared);
+      return prepared;
+    });
+    return this.hydrateSession(stored);
+  }
+
+  private hasPersistedSessionResumeOverrides(options: SessionResumeOptions): boolean {
+    return Boolean(
+      options.model ||
+      options.title?.trim() ||
+      options.tags ||
+      options.metadata ||
+      options.permissionMode !== undefined ||
+      options.permissions !== undefined
+    );
+  }
+
+  private prepareResumedStoredSession(
+    loaded: StoredSession,
+    options: SessionResumeOptions,
+    applyNonForkOverrides: boolean,
+  ): StoredSession {
     const stored = deepClone(loaded);
     if (options.model) {
       stored.model = this.resolveModel(options.model);
@@ -1036,7 +1131,7 @@ export class ActoviqAgentClient {
               : currentPermissionState.permissions,
         });
     }
-    if (!options.fork) {
+    if (applyNonForkOverrides) {
       if (options.title?.trim()) {
         stored.title = options.title.trim();
         stored.titleSource = 'manual';
@@ -1051,8 +1146,7 @@ export class ActoviqAgentClient {
     stored.status = 'active';
     stored.lastActiveAt = nowIso();
     stored.updatedAt = stored.lastActiveAt;
-    await this.store.save(stored);
-    return this.hydrateSession(stored);
+    return stored;
   }
 
   resolveModel(model?: string): string {
@@ -1157,6 +1251,7 @@ export class ActoviqAgentClient {
     const definition = this.requireAgentDefinition(agent);
     return this.createSession({
       ...options,
+      kind: options.kind ?? 'agent',
       model: options.model ?? definition.model,
       systemPrompt: joinPromptParts(definition.systemPrompt, options.systemPrompt),
       metadata: {
@@ -1343,8 +1438,21 @@ export class ActoviqAgentClient {
             ? message
             : JSON.stringify(message);
         const routed = await this.routeMessageToAgent(to.trim(), text, {
+          callId: context.toolUseId ?? createId(),
           parentRunId: context.runId,
           parentSessionId: context.sessionId,
+          parentExecutionId:
+            typeof context.metadata?.[ACTOVIQ_EXECUTION_ID_KEY] === 'string'
+              ? context.metadata[ACTOVIQ_EXECUTION_ID_KEY]
+              : undefined,
+          rootExecutionId:
+            typeof context.metadata?.[ACTOVIQ_ROOT_EXECUTION_ID_KEY] === 'string'
+              ? context.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY]
+              : undefined,
+          parentAgentPath:
+            typeof context.metadata?.[ACTOVIQ_AGENT_PATH_KEY] === 'string'
+              ? context.metadata[ACTOVIQ_AGENT_PATH_KEY]
+              : undefined,
           runOptions: {
             permissionMode: context.permissionMode,
             permissions: context.permissions,
@@ -1920,7 +2028,11 @@ export class ActoviqAgentClient {
   ): Promise<AgentRunResult> {
     return this.sessionTurnCoordinator.runExclusive(
       session.id,
-      () => this.runOnSessionExclusive(session, input, options),
+      () => this.store.runExclusiveTurn(
+        session.id,
+        () => this.runOnSessionExclusive(session, input, options),
+        options.signal,
+      ),
     );
   }
 
@@ -1976,68 +2088,90 @@ export class ActoviqAgentClient {
 
     return new AgentRunStream((controller) =>
       this.sessionTurnCoordinator.runExclusive(session.id, async () => {
-      const runOptions = {
-        ...options,
-        signal: combineAbortSignals(options.signal, controller.signal),
-      };
-      try {
-        const initialSnapshot = await this.store.load(session.id);
-        session.replace(initialSnapshot);
-        const resolvedOptions = this.applySessionRuntimeOverrides(
-          session.id,
-          this.resolveSessionAgentOptions(initialSnapshot, runOptions),
-        );
-        const execution = await this.executeSessionRunWithReactiveCompact({
-          runId,
-          session,
-          input,
-          options: resolvedOptions,
-          snapshot: initialSnapshot,
-          streaming: true,
-          emit: controller.emit,
-        });
-        const hookOutcome = await this.applyPostRunHooks(
-          runId,
-          input,
-          resolvedOptions,
-          execution.result,
-          execution.snapshot,
-        );
-        if (hookOutcome.sessionMetadata) {
-          execution.result.sessionHookMetadata = hookOutcome.sessionMetadata;
-        }
-        await this.persistSessionAfterRun(
-          session,
-          execution.snapshot,
-          input,
-          execution.result,
-          resolvedOptions,
-          execution.augmentations.surfacedMemories,
-          hookOutcome,
-        );
-        await this.sessionManager.touch(session.id);
-        session.replace(await this.store.load(session.id));
-        controller.emit({
-          type: 'response.completed',
-          runId,
-          result: execution.result,
-          timestamp: execution.result.completedAt,
-        });
-        return execution.result;
-      } catch (error) {
-        const normalized = asError(error);
-        controller.emit({
-          type: 'error',
-          runId,
-          error: {
-            message: normalized.message,
-            code: normalized.code,
-            stack: normalized.stack,
-          },
-          timestamp: nowIso(),
-        });
-        throw error;
-      }
+        const runOptions = {
+          ...options,
+          signal: combineAbortSignals(options.signal, controller.signal),
+        };
+        return this.store.runExclusiveTurn(session.id, async () => {
+          let unsubscribeExecution: () => void = () => undefined;
+          try {
+            const initialSnapshot = await this.store.load(session.id);
+            session.replace(initialSnapshot);
+            const rootExecutionId =
+              typeof initialSnapshot.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY] === 'string'
+                ? initialSnapshot.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY]
+                : session.id;
+            unsubscribeExecution = this.executions.subscribe(
+              rootExecutionId,
+              ({ event, snapshot }) => {
+                controller.emit({
+                  type: 'agent.execution',
+                  runId,
+                  rootExecutionId,
+                  event,
+                  snapshot,
+                  timestamp: event.occurredAt,
+                });
+              },
+            );
+            const resolvedOptions = this.applySessionRuntimeOverrides(
+              session.id,
+              this.resolveSessionAgentOptions(initialSnapshot, runOptions),
+            );
+            const execution = await this.executeSessionRunWithReactiveCompact({
+              runId,
+              session,
+              input,
+              options: resolvedOptions,
+              snapshot: initialSnapshot,
+              streaming: true,
+              emit: controller.emit,
+            });
+            const hookOutcome = await this.applyPostRunHooks(
+              runId,
+              input,
+              resolvedOptions,
+              execution.result,
+              execution.snapshot,
+            );
+            if (hookOutcome.sessionMetadata) {
+              execution.result.sessionHookMetadata = hookOutcome.sessionMetadata;
+            }
+            await this.persistSessionAfterRun(
+              session,
+              execution.snapshot,
+              input,
+              execution.result,
+              resolvedOptions,
+              execution.augmentations.surfacedMemories,
+              hookOutcome,
+            );
+            await this.sessionManager.touch(session.id);
+            session.replace(await this.store.load(session.id));
+            controller.emit({
+              type: 'response.completed',
+              runId,
+              result: execution.result,
+              timestamp: execution.result.completedAt,
+            });
+            return execution.result;
+          } catch (error) {
+            const normalized = asError(error);
+            controller.emit({
+              type: 'error',
+              runId,
+              error: {
+                message: normalized.message,
+                code: normalized.code,
+                stack: normalized.stack,
+              },
+              timestamp: nowIso(),
+            });
+            throw error;
+          } finally {
+            unsubscribeExecution();
+          }
+        }, runOptions.signal);
     }), { signal: options.signal });
   }
 
@@ -2051,16 +2185,32 @@ export class ActoviqAgentClient {
     augmentations?: PreparedRunAugmentations,
     skipRunStartedEvent = false,
     liveSession?: AgentSession,
+    deferPromptTooLongSettlement = false,
+    skipInitialInput = false,
+    onInitialInputCheckpointed?: () => void,
   ): Promise<AgentRunResult> {
+    const workDir = this.resolveRunWorkDir(options);
+    const model = this.resolveModel(options.model ?? session?.model);
+    const executionIdentity = resolveAgentExecutionIdentity({
+      runId,
+      session,
+      metadata: withoutExecutionIdentityMetadata(options.metadata),
+      model,
+      cwd: workDir,
+      runtime: 'hadamard',
+    });
+    await this.executions.startTurn(executionIdentity, runId).catch((error) => {
+      console.warn(`[AgentExecution] Failed to start ${runId}: ${asError(error).message}`);
+    });
     const metadata = {
       ...this.config.metadata,
       ...(session?.metadata ?? {}),
       ...(augmentations?.metadata ?? {}),
       ...(options.metadata ?? {}),
+      ...serializeAgentExecutionIdentity(executionIdentity),
       [ACTOVIQ_RUN_STATE_KEY]: createActoviqRunToolState(),
     };
 
-    const workDir = this.resolveRunWorkDir(options);
     const mergedTools = filterAgentTools(
       mergeUniqueByName(
       options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
@@ -2094,9 +2244,9 @@ export class ActoviqAgentClient {
     const notificationKey = session?.id ?? runId;
     const drainQueuedInputs =
       notificationKey || options.drainQueuedInputs || liveSession
-        ? () => [
+        ? async () => [
             ...(liveSession?.drainSteeringInputs() ?? []),
-            ...(options.drainQueuedInputs?.() ?? []),
+            ...((await options.drainQueuedInputs?.()) ?? []),
             ...this.drainRuntimeNotifications(notificationKey),
           ]
         : undefined;
@@ -2109,77 +2259,101 @@ export class ActoviqAgentClient {
         : undefined;
 
     let checkpointSession = session ? deepClone(session) : undefined;
-    return withDeadline(
-      `Agent run ${runId}`,
-      runtimeConfig.runTimeoutMs,
-      options.signal,
-      ({ signal }) => executeConversation({
-      runId,
-      input,
-      messages: session?.messages,
-      prefixedMessages: augmentations?.prefixedMessages,
-      sessionId: session?.id,
-      systemPrompt,
-      tools: mergedTools,
-      mcpServers: mergeUniqueByName(
-        options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
-        options.mcpServers ?? [],
-      ),
-      model: this.resolveModel(options.model ?? session?.model),
-      maxTokens: options.maxTokens,
-      temperature: options.temperature,
-      effort: options.effort,
-      toolChoice: options.toolChoice,
-      userId: options.userId ?? this.config.userId,
-      metadata,
-      signal,
-      permissionMode: options.permissionMode ?? this.defaultPermissionMode,
-      permissions: options.permissions ?? this.defaultPermissions,
-      classifier: options.classifier ?? this.defaultClassifier,
-      approver: options.approver ?? this.defaultApprover,
-      canUseTool: options.canUseTool,
-      hooks: augmentations?.hooks,
-      drainQueuedInputs,
-      drainFollowUpInputs,
-      streaming,
-      // Activate paths-conditional skills when the agent touches matching files.
-      emit: (event: AgentEvent) => {
-        this.activateConditionalSkillsFromEvent(event);
-        emit?.(event);
-      },
-      onConversationCheckpoint: checkpointSession
-        ? async (messages) => {
-            const snap = deepClone(checkpointSession!);
-            snap.messages = deepClone(messages);
-            snap.updatedAt = nowIso();
-            snap.metadata = {
-              ...snap.metadata,
-              __actoviqWorkDir: workDir,
-              ...(options.metadata ?? {}),
-            };
-            await this.store.save(snap);
-            checkpointSession = snap;
-            // Keep the live AgentSession (if any) in sync so a subsequent
-            // persistSessionAfterRun / reactive compact sees the checkpoint.
-            liveSession?.replace(snap);
-          }
-        : undefined,
-      skipRunStartedEvent,
-      // Per-run model client override (the /model router uses this to route a
-      // turn to a different model/provider); falls back to the SDK default.
-      modelApi: options.modelApi ?? this.modelApi,
-      config: runtimeConfig,
-      mcpManager: this.mcpManager,
-    }),
-    ).then(result => ({
-      ...result,
-      surfacedMemories: augmentations?.surfacedMemories.length
-        ? deepClone(augmentations.surfacedMemories)
-        : undefined,
-      invokedSkills: augmentations?.invokedSkills.length
-        ? deepClone(augmentations.invokedSkills)
-        : undefined,
-    }));
+    try {
+      const rawResult = await withDeadline(
+        `Agent run ${runId}`,
+        runtimeConfig.runTimeoutMs,
+        options.signal,
+        ({ signal }) => executeConversation({
+          runId,
+          input,
+          messages: session?.messages,
+          prefixedMessages: augmentations?.prefixedMessages,
+          sessionId: session?.id,
+          systemPrompt,
+          tools: mergedTools,
+          mcpServers: mergeUniqueByName(
+            options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
+            options.mcpServers ?? [],
+          ),
+          model,
+          maxTokens: options.maxTokens,
+          temperature: options.temperature,
+          effort: options.effort,
+          toolChoice: options.toolChoice,
+          userId: options.userId ?? this.config.userId,
+          metadata,
+          signal,
+          permissionMode: options.permissionMode ?? this.defaultPermissionMode,
+          permissions: options.permissions ?? this.defaultPermissions,
+          classifier: options.classifier ?? this.defaultClassifier,
+          approver: options.approver ?? this.defaultApprover,
+          canUseTool: options.canUseTool,
+          hooks: augmentations?.hooks,
+          drainQueuedInputs,
+          drainFollowUpInputs,
+          streaming,
+          emit: (event: AgentEvent) => {
+            this.executions.recordRuntimeEvent(executionIdentity, event);
+            this.activateConditionalSkillsFromEvent(event);
+            emit?.(event);
+          },
+          onConversationCheckpoint: checkpointSession
+            ? async (messages) => {
+                const snap = deepClone(checkpointSession!);
+                snap.messages = deepClone(messages);
+                snap.updatedAt = nowIso();
+                snap.metadata = {
+                  ...snap.metadata,
+                  __actoviqWorkDir: workDir,
+                  ...(options.metadata ?? {}),
+                  ...serializeAgentExecutionIdentity(executionIdentity),
+                };
+                await this.store.save(snap);
+                checkpointSession = snap;
+                liveSession?.replace(snap);
+                if (!skipInitialInput) {
+                  onInitialInputCheckpointed?.();
+                }
+              }
+            : undefined,
+          skipRunStartedEvent,
+          skipInitialInput,
+          modelApi: options.modelApi ?? this.modelApi,
+          config: runtimeConfig,
+          mcpManager: this.mcpManager,
+        }),
+      );
+      const result: AgentRunResult = {
+        ...rawResult,
+        executionId: executionIdentity.rootExecutionId,
+        executionNodeId: executionIdentity.executionId,
+        surfacedMemories: augmentations?.surfacedMemories.length
+          ? deepClone(augmentations.surfacedMemories)
+          : undefined,
+        invokedSkills: augmentations?.invokedSkills.length
+          ? deepClone(augmentations.invokedSkills)
+          : undefined,
+      };
+      await this.executions.settleTurn(executionIdentity, runId, {
+        outcome: 'completed',
+        result,
+      }).catch((error) => {
+        console.warn(`[AgentExecution] Failed to complete ${runId}: ${asError(error).message}`);
+      });
+      return result;
+    } catch (error) {
+      if (!isActoviqPromptTooLongError(error) || !deferPromptTooLongSettlement) {
+        const interrupted = options.signal?.aborted || error instanceof RunAbortedError;
+        await this.executions.settleTurn(executionIdentity, runId, {
+          outcome: interrupted ? 'interrupted' : 'errored',
+          error: asError(error).message,
+        }).catch((executionError) => {
+          console.warn(`[AgentExecution] Failed to settle ${runId}: ${asError(executionError).message}`);
+        });
+      }
+      throw error;
+    }
   }
 
   private async executeSessionRunWithReactiveCompact(args: {
@@ -2200,6 +2374,7 @@ export class ActoviqAgentClient {
     );
     let lastReactiveCompact: ActoviqSessionCompactResult | undefined;
     let attempts = 0;
+    let initialInputCheckpointed = false;
 
     while (true) {
       try {
@@ -2213,6 +2388,11 @@ export class ActoviqAgentClient {
           currentAugmentations,
           attempts > 0,
           args.session,
+          true,
+          initialInputCheckpointed,
+          () => {
+            initialInputCheckpointed = true;
+          },
         );
         if (lastReactiveCompact) {
           result.reactiveCompact = lastReactiveCompact;
@@ -2223,30 +2403,55 @@ export class ActoviqAgentClient {
           augmentations: currentAugmentations,
         };
       } catch (error) {
-        if (!isActoviqPromptTooLongError(error) || attempts >= MAX_REACTIVE_COMPACT_ATTEMPTS) {
+        if (!isActoviqPromptTooLongError(error)) {
+          throw error;
+        }
+        currentSnapshot = args.session.snapshot();
+        if (attempts >= MAX_REACTIVE_COMPACT_ATTEMPTS) {
+          await this.settleTerminalPromptTooLong(args, currentSnapshot, error);
           throw error;
         }
 
-        const reactiveCompact = await this.tryReactiveCompactSession(
-          args.session,
-          currentSnapshot,
-          args.options,
-          args.runId,
-          args.emit,
-        );
+        let reactiveCompact:
+          | { snapshot: StoredSession; result: ActoviqSessionCompactResult }
+          | undefined;
+        try {
+          reactiveCompact = await this.tryReactiveCompactSession(
+            args.session,
+            currentSnapshot,
+            args.options,
+            args.runId,
+            args.emit,
+          );
+          if (reactiveCompact) {
+            attempts += 1;
+            currentSnapshot = reactiveCompact.snapshot;
+            currentAugmentations = await this.prepareRunAugmentations(
+              args.runId,
+              args.input,
+              args.options,
+              currentSnapshot,
+            );
+            lastReactiveCompact = reactiveCompact.result;
+          }
+        } catch (recoveryError) {
+          if (
+            recoveryError instanceof Error &&
+            recoveryError !== error &&
+            recoveryError.cause === undefined
+          ) {
+            Object.defineProperty(recoveryError, 'cause', {
+              value: error,
+              configurable: true,
+            });
+          }
+          await this.settleTerminalPromptTooLong(args, currentSnapshot, recoveryError);
+          throw recoveryError;
+        }
         if (!reactiveCompact) {
+          await this.settleTerminalPromptTooLong(args, currentSnapshot, error);
           throw error;
         }
-
-        attempts += 1;
-        currentSnapshot = reactiveCompact.snapshot;
-        currentAugmentations = await this.prepareRunAugmentations(
-          args.runId,
-          args.input,
-          args.options,
-          currentSnapshot,
-        );
-        lastReactiveCompact = reactiveCompact.result;
       }
     }
   }
@@ -2721,16 +2926,184 @@ export class ActoviqAgentClient {
     };
   }
 
+  private delegatedExecutionContext(
+    definition: ActoviqAgentDefinition,
+    delegation: ActoviqAgentDelegationContext,
+    runOptions: AgentRunOptions,
+    workDir: string,
+    sessionId: string,
+    fallback: { parentRunId: string; parentSessionId?: string },
+  ): {
+    parent: AgentExecutionIdentity;
+    child: AgentExecutionIdentity;
+    edge: AgentExecutionEdgeInput;
+  } {
+    const parentExecutionId = delegation.parentExecutionId
+      ?? fallback.parentSessionId
+      ?? fallback.parentRunId;
+    const rootExecutionId = delegation.rootExecutionId ?? parentExecutionId;
+    const parentSessionId = delegation.parentSessionId ?? fallback.parentSessionId;
+    const parent: AgentExecutionIdentity = {
+      executionId: parentExecutionId,
+      sessionId: parentSessionId ?? parentExecutionId,
+      rootExecutionId,
+      parentExecutionId: null,
+      parentSessionId: null,
+      canonicalPath: delegation.parentAgentPath ?? '/root',
+      agentName:
+        typeof runOptions.metadata?.__actoviqAgentDefinition === 'string'
+          ? runOptions.metadata.__actoviqAgentDefinition
+          : 'Hadamard',
+      nickname:
+        typeof runOptions.metadata?.__actoviqAgentName === 'string'
+          ? runOptions.metadata.__actoviqAgentName
+          : null,
+      role: null,
+      kind: parentExecutionId === rootExecutionId ? 'root' : 'subagent',
+      runtime: 'hadamard',
+      model: runOptions.model ?? null,
+      cwd: this.resolveRunWorkDir(runOptions),
+    };
+    const child = createChildAgentExecutionIdentity({
+      sessionId,
+      parent,
+      agentName: definition.name,
+      nickname: delegation.name,
+      model: definition.model ?? runOptions.model,
+      cwd: workDir,
+    });
+    return {
+      parent,
+      child,
+      edge: {
+        callId: delegation.callId ?? createId(),
+        kind: 'delegate',
+        source: parent,
+        target: child,
+        summary: delegation.description,
+      },
+    };
+  }
+
+  private existingAgentExecutionContext(
+    session: AgentSession | StoredSession,
+    definition: ActoviqAgentDefinition,
+    delegation: ActoviqAgentDelegationContext,
+    runOptions: AgentRunOptions,
+    workDir: string,
+    fallback: { parentRunId: string; parentSessionId?: string },
+    kind: 'message' | 'resume',
+  ): {
+    parent: AgentExecutionIdentity;
+    child: AgentExecutionIdentity;
+    edge: AgentExecutionEdgeInput;
+  } {
+    const snapshot = session instanceof AgentSession ? session.snapshot() : session;
+    const base = this.delegatedExecutionContext(
+      definition,
+      delegation,
+      runOptions,
+      workDir,
+      snapshot.id,
+      fallback,
+    );
+    const child = resolveAgentExecutionIdentity({
+      runId: snapshot.id,
+      session: snapshot,
+      metadata: withoutExecutionIdentityMetadata(runOptions.metadata),
+      model: definition.model ?? runOptions.model,
+      cwd: workDir,
+    });
+
+    // A completed child keeps its original tree identity when resumed. This
+    // mirrors Codex's stable ThreadId semantics and prevents duplicate nodes.
+    const parent = child.rootExecutionId === base.parent.rootExecutionId
+      ? base.parent
+      : {
+          ...base.parent,
+          executionId: child.parentExecutionId ?? base.parent.executionId,
+          sessionId: child.parentSessionId ?? base.parent.sessionId,
+          rootExecutionId: child.rootExecutionId,
+          canonicalPath: child.canonicalPath.split('/').slice(0, -1).join('/') || '/root',
+          kind: child.parentExecutionId === child.rootExecutionId ? 'root' : 'subagent',
+        } satisfies AgentExecutionIdentity;
+
+    return {
+      parent,
+      child,
+      edge: {
+        callId: delegation.callId ?? createId(),
+        kind,
+        source: parent,
+        target: child,
+        summary: delegation.description,
+      },
+    };
+  }
+
+  private async tryStartExecutionEdge(edge: AgentExecutionEdgeInput): Promise<boolean> {
+    try {
+      await this.executions.startEdge(edge);
+      return true;
+    } catch (error) {
+      console.warn(
+        `[AgentExecution] Failed to start ${edge.kind} edge ${edge.callId}: ${asError(error).message}`,
+      );
+      return false;
+    }
+  }
+
+  private async tryCompleteExecutionEdge(
+    edge: AgentExecutionEdgeInput,
+    result?: string,
+  ): Promise<void> {
+    await this.executions.completeEdge(edge, result).catch((error) => {
+      console.warn(
+        `[AgentExecution] Failed to complete ${edge.kind} edge ${edge.callId}: ${asError(error).message}`,
+      );
+    });
+  }
+
+  private async tryFailExecutionEdge(
+    edge: AgentExecutionEdgeInput,
+    error: string,
+  ): Promise<void> {
+    await this.executions.failEdge(edge, error).catch((executionError) => {
+      console.warn(
+        `[AgentExecution] Failed to fail ${edge.kind} edge ${edge.callId}: ${asError(executionError).message}`,
+      );
+    });
+  }
+
+  private async tryCompleteExecutionEdgeByCallId(
+    rootExecutionId: string,
+    callId: string,
+    result?: string,
+  ): Promise<void> {
+    await this.executions.completeEdgeByCallId(rootExecutionId, callId, result).catch((error) => {
+      console.warn(
+        `[AgentExecution] Failed to complete edge ${callId}: ${asError(error).message}`,
+      );
+    });
+  }
+
+  private async tryFailExecutionEdgeByCallId(
+    rootExecutionId: string,
+    callId: string,
+    error: string,
+  ): Promise<void> {
+    await this.executions.failEdgeByCallId(rootExecutionId, callId, error).catch((executionError) => {
+      console.warn(
+        `[AgentExecution] Failed to fail edge ${callId}: ${asError(executionError).message}`,
+      );
+    });
+  }
+
   private async runDelegatedAgentTask(
     agent: string,
     prompt: string,
     runOptions: AgentRunOptions = {},
-    delegation: {
-      description: string;
-      name?: string;
-      isolation?: 'worktree';
-      cwd?: string;
-    } = { description: prompt },
+    delegation: ActoviqAgentDelegationContext = { description: prompt },
   ): Promise<{
     result: AgentRunResult;
     sessionId: string;
@@ -2739,22 +3112,41 @@ export class ActoviqAgentClient {
   }> {
     const definition = this.requireAgentDefinition(agent);
     const prepared = await this.prepareDelegatedWorkspace(definition, delegation);
+    const childSessionId = createId();
+    const execution = this.delegatedExecutionContext(
+      definition,
+      delegation,
+      runOptions,
+      prepared.workDir,
+      childSessionId,
+      {
+        parentRunId: delegation.parentRunId ?? delegation.parentExecutionId ?? createId(),
+        parentSessionId: delegation.parentSessionId,
+      },
+    );
+    let edgeStarted = false;
     try {
       const session = await this.createAgentSession(agent, {
+        id: childSessionId,
+        kind: 'agent',
+        parentSessionId: execution.child.parentSessionId ?? undefined,
         title: `${delegation.name ?? definition.name}: ${truncateText(delegation.description, 80)}`,
         metadata: {
           __actoviqAgentName: delegation.name,
           __actoviqAgentWorkDir: prepared.workDir,
           __actoviqAgentWorktreePath: prepared.workspace?.path,
           __actoviqAgentWorktreeBranch: prepared.workspace?.metadata.branch,
+          ...serializeAgentExecutionIdentity(execution.child),
         },
       });
+      edgeStarted = await this.tryStartExecutionEdge(execution.edge);
       const result = await session.send(prompt, this.prepareDelegatedRunOptions(
         runOptions,
         prepared.workDir,
-        session.id,
+        execution.child,
       ));
       const retained = await this.finalizeDelegatedWorkspace(prepared.workspace);
+      await this.tryCompleteExecutionEdge(execution.edge, result.text);
       return {
         result,
         sessionId: session.id,
@@ -2762,6 +3154,9 @@ export class ActoviqAgentClient {
         worktreeBranch: retained ? prepared.workspace?.metadata.branch : undefined,
       };
     } catch (error) {
+      if (edgeStarted) {
+        await this.tryFailExecutionEdge(execution.edge, asError(error).message);
+      }
       await this.finalizeDelegatedWorkspace(prepared.workspace);
       throw error;
     }
@@ -2771,8 +3166,12 @@ export class ActoviqAgentClient {
     address: string,
     message: string,
     context: {
+      callId: string;
       parentRunId: string;
       parentSessionId?: string;
+      parentExecutionId?: string;
+      rootExecutionId?: string;
+      parentAgentPath?: string;
       runOptions: AgentRunOptions;
     },
   ): Promise<Record<string, unknown>> {
@@ -2782,23 +3181,87 @@ export class ActoviqAgentClient {
       candidate.sessionId === address ||
       candidate.agentName === address,
     );
-    if (task?.sessionId && (task.status === 'queued' || task.status === 'running')) {
-      const queue = this.subagentInputQueues.get(task.sessionId) ?? [];
-      queue.push(message);
-      this.subagentInputQueues.set(task.sessionId, queue);
-      await this.backgroundTaskManager.updateProgress(task.id, {
-        queuedMessageCount: queue.length,
-        progressSummary: `Queued follow-up message for ${task.agentName ?? task.subagentType}.`,
-      });
-      return {
-        status: 'queued',
-        taskId: task.id,
-        agentId: task.sessionId,
-        agentName: task.agentName,
+    let messageInput: ActoviqBackgroundTaskQueuedInput | undefined;
+    let messageTask = task;
+    if (task?.sessionId) {
+      const session = await this.store.load(task.sessionId);
+      const definition = this.requireAgentDefinition(task.subagentType);
+      const workDir =
+        typeof session.metadata.__actoviqAgentWorkDir === 'string'
+          ? session.metadata.__actoviqAgentWorkDir
+          : task.workDir;
+      const execution = this.existingAgentExecutionContext(
+        session,
+        definition,
+        {
+          callId: context.callId,
+          description: `Message ${task.agentName ?? definition.name}`,
+          name: task.agentName,
+          parentRunId: context.parentRunId,
+          parentSessionId: context.parentSessionId,
+          parentExecutionId: context.parentExecutionId,
+          rootExecutionId: context.rootExecutionId,
+          parentAgentPath: context.parentAgentPath,
+        },
+        context.runOptions,
+        workDir,
+        {
+          parentRunId: context.parentRunId,
+          parentSessionId: context.parentSessionId,
+        },
+        'message',
+      );
+      const input: ActoviqBackgroundTaskQueuedInput = {
+        id: context.callId,
+        text: message,
+        rootExecutionId: execution.edge.source.rootExecutionId,
+        edgeCallId: execution.edge.callId,
       };
+      let edgeStarted = false;
+      try {
+        edgeStarted = await this.tryStartExecutionEdge(execution.edge);
+        const reservation = await this.backgroundTaskManager.reserveInput(task.id, input);
+        messageTask = reservation.task;
+        if (reservation.rejected) {
+          if (edgeStarted) {
+            await this.tryFailExecutionEdge(execution.edge, reservation.rejected);
+          }
+          return {
+            status: 'rejected',
+            taskId: reservation.task.id,
+            agentId: reservation.task.sessionId,
+            agentName: reservation.task.agentName,
+            error: reservation.rejected,
+          };
+        }
+        if (!reservation.accepted) {
+          return {
+            status: 'duplicate',
+            taskStatus: reservation.task.status,
+            taskId: reservation.task.id,
+            agentId: reservation.task.sessionId,
+            agentName: reservation.task.agentName,
+            replayed: true,
+          };
+        }
+        messageInput = input;
+        if (reservation.queued) {
+          return {
+            status: 'queued',
+            taskId: reservation.task.id,
+            agentId: reservation.task.sessionId,
+            agentName: reservation.task.agentName,
+          };
+        }
+      } catch (error) {
+        if (edgeStarted) {
+          await this.tryFailExecutionEdge(execution.edge, asError(error).message);
+        }
+        throw error;
+      }
     }
 
-    const sessionId = task?.sessionId ?? address;
+    const sessionId = messageTask?.sessionId ?? address;
     let session: AgentSession;
     try {
       session = await this.resumeSession(sessionId);
@@ -2812,30 +3275,50 @@ export class ActoviqAgentClient {
     if (!agentName) {
       throw new Error(`Session "${sessionId}" is not an agent session.`);
     }
-    const resumed = await this.launchBackgroundOnSession(
-      session,
-      agentName,
-      message,
-      {
-        parentRunId: context.parentRunId,
-        parentSessionId: context.parentSessionId,
-      },
-      context.runOptions,
-      {
-        description: `Continue ${task?.agentName ?? agentName}`,
-        name: task?.agentName,
-        cwd:
-          typeof session.metadata.__actoviqAgentWorkDir === 'string'
-            ? session.metadata.__actoviqAgentWorkDir
-            : undefined,
-      },
-      task?.id,
-    );
+    let resumed: ActoviqBackgroundTaskRecord;
+    try {
+      resumed = await this.launchBackgroundOnSession(
+        session,
+        agentName,
+        message,
+        {
+          parentRunId: context.parentRunId,
+          parentSessionId: context.parentSessionId,
+        },
+        context.runOptions,
+        {
+          callId: messageInput ? `${context.callId}:resume` : context.callId,
+          description: `Continue ${messageTask?.agentName ?? agentName}`,
+          name: messageTask?.agentName,
+          parentRunId: context.parentRunId,
+          parentSessionId: context.parentSessionId,
+          parentExecutionId: context.parentExecutionId,
+          rootExecutionId: context.rootExecutionId,
+          parentAgentPath: context.parentAgentPath,
+          cwd:
+            typeof session.metadata.__actoviqAgentWorkDir === 'string'
+              ? session.metadata.__actoviqAgentWorkDir
+              : undefined,
+        },
+        messageTask?.id,
+        messageInput ? [messageInput] : [],
+        messageTask?.seenInputIds ?? [],
+      );
+    } catch (error) {
+      if (messageInput) {
+        await this.tryFailExecutionEdgeByCallId(
+          messageInput.rootExecutionId,
+          messageInput.edgeCallId,
+          asError(error).message,
+        );
+      }
+      throw error;
+    }
     return {
       status: 'resumed',
       taskId: resumed.id,
       agentId: session.id,
-      agentName: task?.agentName,
+      agentName: messageTask?.agentName,
     };
   }
 
@@ -2870,18 +3353,25 @@ export class ActoviqAgentClient {
   private prepareDelegatedRunOptions(
     runOptions: AgentRunOptions,
     workDir: string,
-    sessionId: string,
+    executionIdentity?: AgentExecutionIdentity,
+    backgroundTaskId?: string,
   ): AgentRunOptions {
     return {
       ...runOptions,
       workDir,
+      metadata: {
+        ...(runOptions.metadata ?? {}),
+        ...(executionIdentity ? serializeAgentExecutionIdentity(executionIdentity) : {}),
+      },
       tools: [
         ...createActoviqFileTools({ cwd: workDir }),
         ...(runOptions.tools ?? []),
       ],
-      drainQueuedInputs: () => [
-        ...(runOptions.drainQueuedInputs?.() ?? []),
-        ...this.drainSubagentInputs(sessionId),
+      drainQueuedInputs: async () => [
+        ...((await runOptions.drainQueuedInputs?.()) ?? []),
+        ...(backgroundTaskId
+          ? await this.drainBackgroundTaskInputs(backgroundTaskId)
+          : []),
       ],
     };
   }
@@ -2900,10 +3390,14 @@ export class ActoviqAgentClient {
     return true;
   }
 
-  private drainSubagentInputs(sessionId: string): string[] {
-    const queued = this.subagentInputQueues.get(sessionId) ?? [];
-    this.subagentInputQueues.delete(sessionId);
-    return queued;
+  private async drainBackgroundTaskInputs(taskId: string): Promise<string[]> {
+    const queued = await this.backgroundTaskManager.drainInputs(taskId);
+    await Promise.all(queued.map(input => this.tryCompleteExecutionEdgeByCallId(
+      input.rootExecutionId,
+      input.edgeCallId,
+      'Delivered at the next Agent tool boundary.',
+    )));
+    return queued.map(input => input.text);
   }
 
   private async collectPendingTaskNotifications(parentSessionId: string): Promise<string[]> {
@@ -2947,14 +3441,15 @@ export class ActoviqAgentClient {
   }
 
   private async markTaskNotificationDelivered(taskId: string): Promise<void> {
-    const task = await this.backgroundTaskManager.get(taskId);
-    if (!task || task.notificationDeliveredAt) {
-      return;
-    }
-    await this.backgroundTaskStore.save({
-      ...task,
-      notificationDeliveredAt: nowIso(),
-      updatedAt: nowIso(),
+    await this.backgroundTaskStore.mutate(taskId, task => {
+      if (task.notificationDeliveredAt) {
+        return task;
+      }
+      return {
+        ...task,
+        notificationDeliveredAt: nowIso(),
+        updatedAt: nowIso(),
+      };
     });
   }
 
@@ -2966,17 +3461,25 @@ export class ActoviqAgentClient {
       parentSessionId?: string;
     },
     runOptions: AgentRunOptions = {},
-    delegation: {
-      description: string;
-      name?: string;
-      isolation?: 'worktree';
-      cwd?: string;
-    } = { description: prompt },
+    delegation: ActoviqAgentDelegationContext = { description: prompt },
   ): Promise<ActoviqBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
     const prepared = await this.prepareDelegatedWorkspace(definition, delegation);
+    const childSessionId = createId();
+    const execution = this.delegatedExecutionContext(
+      definition,
+      delegation,
+      runOptions,
+      prepared.workDir,
+      childSessionId,
+      options,
+    );
+    let edgeStarted = false;
     try {
       const session = await this.createAgentSession(agent, {
+        id: childSessionId,
+        kind: 'agent',
+        parentSessionId: execution.child.parentSessionId ?? undefined,
         title: `${delegation.name ?? definition.name}: ${truncateText(delegation.description, 80)}`,
         metadata: {
           __actoviqBackgroundParentRunId: options.parentRunId,
@@ -2985,6 +3488,7 @@ export class ActoviqAgentClient {
           __actoviqAgentWorkDir: prepared.workDir,
           __actoviqAgentWorktreePath: prepared.workspace?.path,
           __actoviqAgentWorktreeBranch: prepared.workspace?.metadata.branch,
+          ...serializeAgentExecutionIdentity(execution.child),
         },
       });
       if (runOptions.hooks) {
@@ -3003,17 +3507,20 @@ export class ActoviqAgentClient {
           approver: runOptions.approver,
         });
       }
-      return this.backgroundTaskManager.launch({
+      edgeStarted = await this.tryStartExecutionEdge(execution.edge);
+      return await this.backgroundTaskManager.launch({
         subagentType: definition.name,
         description: delegation.description,
         workDir: prepared.workDir,
         parentRunId: options.parentRunId,
         parentSessionId: options.parentSessionId,
         sessionId: session.id,
+        executionId: execution.child.rootExecutionId,
+        executionNodeId: execution.child.executionId,
         agentName: delegation.name,
         worktreePath: prepared.workspace?.path,
         worktreeBranch: prepared.workspace?.metadata.branch,
-        onRun: (signal, updateProgress) =>
+        onRun: (signal, updateProgress, task) =>
           this.runBackgroundAgentSession({
             session,
             prompt,
@@ -3022,16 +3529,36 @@ export class ActoviqAgentClient {
             runOptions: this.prepareDelegatedRunOptions(
               runOptions,
               prepared.workDir,
-              session.id,
+              execution.child,
+              task.id,
             ),
             workspace: prepared.workspace,
           }),
-        onSettled: task => {
+        onSettled: async task => {
           this.updatePendingDelegation(options.parentSessionId ?? options.parentRunId, task);
           this.enqueueTaskNotification(task);
+          if (task.status === 'completed') {
+            await this.tryCompleteExecutionEdge(execution.edge, task.text);
+          } else {
+            await this.tryFailExecutionEdge(
+              execution.edge,
+              task.error ?? `Background agent ${task.status}.`,
+            );
+          }
+          await this.resumeLateSubagentInputs({
+            session,
+            definition,
+            options,
+            runOptions,
+            delegation,
+            settledTask: task,
+          });
         },
       });
     } catch (error) {
+      if (edgeStarted) {
+        await this.tryFailExecutionEdge(execution.edge, asError(error).message);
+      }
       await this.finalizeDelegatedWorkspace(prepared.workspace);
       throw error;
     }
@@ -3046,56 +3573,185 @@ export class ActoviqAgentClient {
       parentSessionId?: string;
     },
     runOptions: AgentRunOptions = {},
-    delegation: {
-      description: string;
-      name?: string;
-      isolation?: 'worktree';
-      cwd?: string;
-    } = { description: prompt },
+    delegation: ActoviqAgentDelegationContext = { description: prompt },
     resumedFromTaskId?: string,
+    deliveredMessageInputs: ActoviqBackgroundTaskQueuedInput[] = [],
+    inheritedSeenInputIds: string[] = [],
   ): Promise<ActoviqBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
+    const workDir = delegation.cwd ?? this.config.workDir;
+    const execution = this.existingAgentExecutionContext(
+      session,
+      definition,
+      delegation,
+      runOptions,
+      workDir,
+      options,
+      'resume',
+    );
+    const hasCollaborationEdge = execution.parent.executionId !== execution.child.executionId;
+    const parentSessionId = options.parentSessionId === session.id
+      ? execution.child.parentSessionId ?? undefined
+      : options.parentSessionId ?? execution.child.parentSessionId ?? undefined;
+    const notificationParent = parentSessionId ?? options.parentRunId;
     if (runOptions.hooks) {
       session.setHooks(runOptions.hooks);
     }
-    if (
-      runOptions.permissionMode ||
-      runOptions.permissions ||
-      runOptions.classifier ||
-      runOptions.approver
-    ) {
-      await session.setPermissionContext({
-        mode: runOptions.permissionMode,
-        permissions: runOptions.permissions,
-        classifier: runOptions.classifier,
-        approver: runOptions.approver,
-      });
-    }
-    return this.backgroundTaskManager.launch({
-      subagentType: definition.name,
-      description: delegation.description,
-      workDir: delegation.cwd ?? this.config.workDir,
-      parentRunId: options.parentRunId,
-      parentSessionId: options.parentSessionId ?? session.id,
-      sessionId: session.id,
-      agentName: delegation.name,
-      resumedFromTaskId,
-      onRun: (signal, updateProgress) =>
-        this.runBackgroundAgentSession({
-          session,
-          prompt,
-          signal,
-          updateProgress,
-          runOptions: this.prepareDelegatedRunOptions(
+    let edgeStarted = false;
+    try {
+      if (hasCollaborationEdge) {
+        edgeStarted = await this.tryStartExecutionEdge(execution.edge);
+      }
+      return await this.backgroundTaskManager.launch({
+        subagentType: definition.name,
+        description: delegation.description,
+        workDir,
+        parentRunId: options.parentRunId,
+        parentSessionId,
+        sessionId: session.id,
+        executionId: execution.child.rootExecutionId,
+        executionNodeId: execution.child.executionId,
+        agentName: delegation.name,
+        resumedFromTaskId,
+        seenInputIds: [
+          ...new Set([
+            ...inheritedSeenInputIds,
+            ...deliveredMessageInputs.map(input => input.id),
+          ]),
+        ],
+        onRun: async (signal, updateProgress, task) => {
+          const result = await this.runBackgroundAgentSession({
+            session,
+            prompt,
+            signal,
+            updateProgress,
+            runOptions: this.prepareDelegatedRunOptions(
+              runOptions,
+              workDir,
+              execution.child,
+              task.id,
+            ),
+          });
+          await Promise.all(deliveredMessageInputs.map(input =>
+            this.tryCompleteExecutionEdgeByCallId(
+              input.rootExecutionId,
+              input.edgeCallId,
+              'Delivered in the resumed Agent turn.',
+            ),
+          ));
+          return result;
+        },
+        onSettled: async task => {
+          this.updatePendingDelegation(notificationParent, task);
+          this.enqueueTaskNotification(task);
+          if (task.status === 'completed' && hasCollaborationEdge) {
+            await this.tryCompleteExecutionEdge(execution.edge, task.text);
+          } else if (task.status !== 'completed' && hasCollaborationEdge) {
+            await this.tryFailExecutionEdge(
+              execution.edge,
+              task.error ?? `Background agent ${task.status}.`,
+            );
+          }
+          if (task.status !== 'completed') {
+            await Promise.all(deliveredMessageInputs.map(input =>
+              this.tryFailExecutionEdgeByCallId(
+                input.rootExecutionId,
+                input.edgeCallId,
+                task.error ?? `Resumed Agent ${task.status}.`,
+              ),
+            ));
+          }
+          await this.resumeLateSubagentInputs({
+            session,
+            definition,
+            options: { ...options, parentSessionId },
             runOptions,
-            delegation.cwd ?? this.config.workDir,
-            session.id,
-          ),
-        }),
-      onSettled: task => {
-        this.updatePendingDelegation(options.parentSessionId ?? options.parentRunId, task);
-        this.enqueueTaskNotification(task);
-      },
+            delegation,
+            settledTask: task,
+          });
+        },
+      });
+    } catch (error) {
+      if (edgeStarted) {
+        await this.tryFailExecutionEdge(execution.edge, asError(error).message);
+      }
+      throw error;
+    }
+  }
+
+  private async resumeLateSubagentInputs(args: {
+    session: AgentSession;
+    definition: ActoviqAgentDefinition;
+    options: { parentRunId: string; parentSessionId?: string };
+    runOptions: AgentRunOptions;
+    delegation: ActoviqAgentDelegationContext;
+    settledTask: ActoviqBackgroundTaskRecord;
+  }): Promise<void> {
+    const queued = await this.backgroundTaskManager.drainInputs(args.settledTask.id);
+    if (queued.length === 0) return;
+    const latestTask =
+      await this.backgroundTaskManager.get(args.settledTask.id) ?? args.settledTask;
+
+    if (args.settledTask.status !== 'completed') {
+      await Promise.all(queued.map(input => this.tryFailExecutionEdgeByCallId(
+        input.rootExecutionId,
+        input.edgeCallId,
+          args.settledTask.error ?? `Agent ${args.settledTask.status} before accepting the message.`,
+      )));
+      return;
+    }
+
+    const prompt = queued.map(input => input.text).join('\n\n');
+    try {
+      await this.launchBackgroundOnSession(
+        args.session,
+        args.definition.name,
+        prompt,
+        args.options,
+        args.runOptions,
+        {
+          ...args.delegation,
+          callId: createId(),
+          description: `Deliver queued follow-up to ${args.delegation.name ?? args.definition.name}`,
+        },
+        args.settledTask.id,
+        queued,
+        latestTask.seenInputIds ?? queued.map(input => input.id),
+      );
+    } catch (error) {
+      await Promise.all(queued.map(input => this.tryFailExecutionEdgeByCallId(
+        input.rootExecutionId,
+        input.edgeCallId,
+          asError(error).message,
+      )));
+    }
+  }
+
+  private async settleTerminalPromptTooLong(
+    args: {
+      runId: string;
+      options: InternalAgentRunOptions;
+      session: AgentSession;
+    },
+    snapshot: StoredSession,
+    error: unknown,
+  ): Promise<void> {
+    const workDir = this.resolveRunWorkDir(args.options);
+    const identity = resolveAgentExecutionIdentity({
+      runId: args.runId,
+      session: args.session.snapshot(),
+      metadata: withoutExecutionIdentityMetadata(args.options.metadata),
+      model: this.resolveModel(args.options.model ?? snapshot.model),
+      cwd: workDir,
+      runtime: 'hadamard',
+    });
+    await this.executions.settleTurn(identity, args.runId, {
+      outcome: 'errored',
+      error: asError(error).message,
+    }).catch((executionError) => {
+      console.warn(
+        `[AgentExecution] Failed to settle terminal prompt error ${args.runId}: ${asError(executionError).message}`,
+      );
     });
   }
 
@@ -3132,6 +3788,28 @@ export class ActoviqAgentClient {
     worktreePath?: string;
     worktreeBranch?: string;
   }> {
+    const sessionSnapshot = args.session.snapshot();
+    const identity = resolveAgentExecutionIdentity({
+      runId: args.session.id,
+      session: sessionSnapshot,
+      metadata: withoutExecutionIdentityMetadata(args.runOptions.metadata),
+      model: args.runOptions.model,
+      cwd: args.runOptions.workDir ?? this.config.workDir,
+    });
+    let progressWrite: Promise<unknown> = Promise.resolve();
+    const unsubscribeExecution = this.executions.subscribe(
+      identity.rootExecutionId,
+      ({ snapshot }) => {
+        const node = snapshot.nodes.find(candidate => candidate.id === identity.executionId);
+        if (!node?.currentActivity) return;
+        progressWrite = progressWrite
+          .then(() => args.updateProgress({
+            currentToolName: node.currentActivity?.toolName,
+            progressSummary: node.currentActivity?.summary,
+          }))
+          .catch(() => undefined);
+      },
+    );
     try {
       await args.updateProgress({
         progressSummary: 'Agent is running.',
@@ -3171,7 +3849,42 @@ export class ActoviqAgentClient {
       await this.finalizeDelegatedWorkspace(args.workspace);
       throw error;
     } finally {
-      this.subagentInputQueues.delete(args.session.id);
+      unsubscribeExecution();
+      await progressWrite;
+    }
+  }
+
+  private async reconcileInterruptedAgentExecutions(
+    tasks: ActoviqBackgroundTaskRecord[],
+  ): Promise<void> {
+    for (const task of tasks) {
+      if (!task.sessionId || !task.executionId || !task.executionNodeId) continue;
+      try {
+        const session = await this.resumeSession(task.sessionId);
+        const snapshot = session.snapshot();
+        const workDir =
+          typeof snapshot.metadata.__actoviqAgentWorkDir === 'string'
+            ? snapshot.metadata.__actoviqAgentWorkDir
+            : task.workDir;
+        const identity = resolveAgentExecutionIdentity({
+          runId: task.runId ?? `background:${task.id}`,
+          session: snapshot,
+          model: task.model,
+          cwd: workDir,
+        });
+        await this.executions.ensureThread(identity);
+        await this.executions.settleTurn(identity, task.runId ?? `background:${task.id}`, {
+          outcome: 'interrupted',
+          error: task.error ?? 'Background execution was interrupted by a runtime restart.',
+        });
+        await this.executions.failOpenEdgesForExecution(
+          identity.rootExecutionId,
+          identity.executionId,
+          task.error ?? 'Background execution was interrupted by a runtime restart.',
+        );
+      } catch {
+        // Corrupt or removed sessions must not prevent the runtime from starting.
+      }
     }
   }
 

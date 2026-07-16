@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -1096,7 +1096,10 @@ describe('ActoviqAgentClient', () => {
     try {
       const session = await sdk.createSession();
       await session.send('Seed the session before repeated reactive compact.');
-      const result = await session.send('Keep going until the provider accepts the prompt.');
+      const saveSpy = vi.spyOn(SessionStore.prototype, 'save')
+        .mockRejectedValueOnce(new Error('Initial checkpoint unavailable.'));
+      const result = await session.send('Keep going until the provider accepts the prompt.')
+        .finally(() => saveSpy.mockRestore());
       const compactState = await session.compactState({
         includeBoundaries: true,
         includeSummaryMessage: true,
@@ -1127,6 +1130,18 @@ describe('ActoviqAgentClient', () => {
       ).toHaveLength(1);
       expect(compactState.compactCount).toBe(1);
       expect(compactState.latestBoundarySummary).toContain('continuationDepth=1');
+      const finalRequest = modelApi.createCalls.filter(
+        request =>
+          !(request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task,
+      ).at(-1);
+      expect(
+        finalRequest?.messages.filter(
+          message =>
+            message.role === 'user' &&
+            extractTextFromContent(message.content) ===
+              'Keep going until the provider accepts the prompt.',
+        ),
+      ).toHaveLength(1);
     } finally {
       await sdk.close();
     }

@@ -376,12 +376,17 @@ describe('Actoviq advanced parity features', () => {
       const inbox = await team.inbox();
       const teammateSession = await team.session('reviewer-1');
       const backgroundRecord = await sdk.tasks.get(backgroundTask.id);
+      const execution = await sdk.executions.getSnapshot(teammateSession.id);
 
       expect(spawned.result?.text).toContain('Initial review');
       expect(teammates[0]?.status).toBe('idle');
       expect(teammates[0]?.lastTaskStatus).toBe('completed');
       expect(teammates[0]?.backgroundRunCount).toBe(1);
       expect(backgroundRecord?.status).toBe('completed');
+      expect(backgroundRecord?.parentSessionId).toBeUndefined();
+      expect(execution?.edges.some(edge =>
+        edge.sourceExecutionId === edge.targetExecutionId,
+      )).toBe(false);
       expect(inbox.some(message => message.text.includes('Background follow-up'))).toBe(true);
       expect(seenPrompts.some(prompt => prompt.includes('<teammate-message teammate_id="lead">'))).toBe(true);
       expect(teammateSession.messages.length).toBeGreaterThan(0);

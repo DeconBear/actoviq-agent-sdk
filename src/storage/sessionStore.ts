@@ -15,7 +15,13 @@ import type {
   SessionSummary,
   StoredSession,
 } from '../types.js';
-import { createId, deepClone, nowIso, truncateText } from '../runtime/helpers.js';
+import {
+  createId,
+  deepClone,
+  nowIso,
+  signalAborted,
+  truncateText,
+} from '../runtime/helpers.js';
 import { extractConversationBrief, extractPreviewFromMessages } from '../runtime/messageUtils.js';
 import { writeJsonAtomic } from './atomicJsonWrite.js';
 import {
@@ -27,9 +33,63 @@ import {
 const SESSION_LOCK_TIMEOUT_MS = 5_000;
 const SESSION_LOCK_STALE_MS = 30_000;
 const SESSION_LOCK_RETRY_MS = 10;
+const SESSION_TURN_HEARTBEAT_MS = 5_000;
+const SESSION_TURN_LOCK_RETRY_MS = 25;
 
 export class SessionStore {
   constructor(private readonly rootDirectory: string) {}
+
+  /**
+   * Serialize a complete mutating turn across SDK clients/processes. The
+   * shorter save lock still protects each CAS write; this lease prevents two
+   * model/tool loops from running concurrently on stale copies of one session.
+   */
+  async runExclusiveTurn<T>(
+    sessionId: string,
+    action: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    await this.ensureReady();
+    const lockPath = `${this.sessionPath(sessionId)}.turn.lock`;
+    const token = `${process.pid}:${createId()}`;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+    while (!handle) {
+      signalAborted(signal);
+      try {
+        handle = await open(lockPath, 'wx');
+      } catch (error) {
+        const nodeError = error as NodeJS.ErrnoException;
+        if (nodeError.code !== 'EEXIST') {
+          throw error;
+        }
+        await this.removeStaleLock(lockPath);
+        await delay(SESSION_TURN_LOCK_RETRY_MS);
+      }
+    }
+
+    try {
+      await handle.writeFile(token, 'utf8');
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await rm(lockPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+
+    const heartbeat = setInterval(() => {
+      const timestamp = new Date();
+      void handle?.utimes(timestamp, timestamp).catch(() => undefined);
+    }, SESSION_TURN_HEARTBEAT_MS);
+    heartbeat.unref?.();
+
+    try {
+      return await action();
+    } finally {
+      clearInterval(heartbeat);
+      await handle.close().catch(() => undefined);
+      await this.removeOwnedTurnLock(lockPath, token);
+    }
+  }
 
   async create(options: SessionCreateOptions = {}): Promise<StoredSession> {
     await this.ensureReady();
@@ -60,6 +120,9 @@ export class SessionStore {
       status: 'active',
       messages: deepClone(options.initialMessages ?? []),
       runs: [],
+      kind: options.kind,
+      parentSessionId: options.parentSessionId,
+      originalWorkDir: options.originalWorkDir,
     };
     await this.save(session);
     return session;
@@ -88,6 +151,29 @@ export class SessionStore {
       validateStoredSession(next, session.id);
       await writeJsonAtomic(filePath, next);
       session.revision = nextRevision;
+    });
+  }
+
+  async mutate(
+    sessionId: string,
+    mutation: (session: StoredSession) => StoredSession,
+  ): Promise<StoredSession> {
+    await this.ensureReady();
+    const filePath = this.sessionPath(sessionId);
+    return this.withSessionLock(sessionId, async () => {
+      const current = await this.loadIfExists(sessionId);
+      if (!current) {
+        throw new SessionNotFoundError(sessionId);
+      }
+      const mutated = mutation(deepClone(current));
+      const next: StoredSession = {
+        ...deepClone(mutated),
+        id: sessionId,
+        revision: current.revision + 1,
+      };
+      validateStoredSession(next, sessionId);
+      await writeJsonAtomic(filePath, next);
+      return deepClone(next);
     });
   }
 
@@ -146,26 +232,39 @@ export class SessionStore {
   }
 
   async updateStatus(sessionId: string, status: import('../types.js').SessionStatus): Promise<void> {
-    await this.ensureReady();
-    const session = await this.load(sessionId);
-    session.status = status;
-    session.updatedAt = nowIso();
-    await this.save(session);
+    await this.mutate(sessionId, session => ({
+      ...session,
+      status,
+      updatedAt: nowIso(),
+    }));
   }
 
   async updateLastActiveAt(sessionId: string, status?: SessionStatus): Promise<void> {
-    await this.ensureReady();
-    const session = await this.load(sessionId);
-    session.lastActiveAt = nowIso();
-    if (status && session.status !== 'closed') {
-      session.status = status;
-    }
-    await this.save(session);
+    await this.mutate(sessionId, session => ({
+      ...session,
+      lastActiveAt: nowIso(),
+      ...(status && session.status !== 'closed' ? { status } : {}),
+    }));
   }
 
   async fork(sessionId: string, options: SessionForkOptions = {}): Promise<StoredSession> {
     const original = await this.load(sessionId);
     const createdAt = nowIso();
+    const metadata = {
+      ...original.metadata,
+      ...(options.metadata ?? {}),
+    };
+    for (const key of [
+      '__actoviqExecutionId',
+      '__actoviqRootExecutionId',
+      '__actoviqParentExecutionId',
+      '__actoviqParentSessionId',
+      '__actoviqAgentPath',
+      '__actoviqBackgroundParentRunId',
+      '__actoviqBackgroundParentSessionId',
+    ]) {
+      delete metadata[key];
+    }
     const forked: StoredSession = {
       ...deepClone(original),
       revision: 0,
@@ -173,10 +272,8 @@ export class SessionStore {
       title: options.title?.trim() || `${original.title} Copy`,
       titleSource: options.title?.trim() ? 'manual' : 'auto',
       tags: [...(options.tags ?? original.tags)],
-      metadata: {
-        ...original.metadata,
-        ...(options.metadata ?? {}),
-      },
+      metadata,
+      parentSessionId: undefined,
       createdAt,
       updatedAt: createdAt,
       lastRunAt: undefined,
@@ -344,14 +441,36 @@ export class SessionStore {
     }
   }
 
+  private async removeOwnedTurnLock(lockPath: string, token: string): Promise<void> {
+    try {
+      if ((await readFile(lockPath, 'utf8')) === token) {
+        await rm(lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
   private toSummary(session: StoredSession): SessionSummary {
     const runtimeRaw = session.metadata.__actoviqRuntime;
     const configRaw = session.metadata.__actoviqConfigName;
-    const kind = session.kind ?? (session.metadata.__actoviqKind === 'manager' ? 'manager' : undefined);
+    const kind = session.kind
+      ?? (session.metadata.__actoviqKind === 'manager'
+        ? 'manager'
+        : typeof session.metadata.__actoviqAgentDefinition === 'string'
+          ? 'agent'
+          : undefined);
     const issueIdRaw = session.metadata.__actoviqIssueId;
     const issueNumberRaw = session.metadata.__actoviqIssueNumber;
     const issueKeyRaw = session.metadata.__actoviqIssueKey;
     const agentProfileRaw = session.metadata.__actoviqAgentProfile;
+    const executionIdRaw = session.metadata.__actoviqExecutionId;
+    const rootExecutionIdRaw = session.metadata.__actoviqRootExecutionId;
+    const agentNameRaw = session.metadata.__actoviqAgentName
+      ?? session.metadata.__actoviqAgentDefinition;
+    const agentPathRaw = session.metadata.__actoviqAgentPath;
     const issueNumber = typeof issueNumberRaw === 'number'
       ? issueNumberRaw
       : typeof issueNumberRaw === 'string' && Number.isFinite(Number(issueNumberRaw))
@@ -363,6 +482,19 @@ export class SessionStore {
       ...(issueNumber !== undefined ? { issueNumber } : {}),
       ...(typeof issueKeyRaw === 'string' && issueKeyRaw.trim() ? { issueKey: issueKeyRaw.trim() } : {}),
       ...(typeof agentProfileRaw === 'string' && agentProfileRaw.trim() ? { agentProfile: agentProfileRaw.trim() } : {}),
+      ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+      ...(typeof executionIdRaw === 'string' && executionIdRaw.trim()
+        ? { executionId: executionIdRaw.trim() }
+        : {}),
+      ...(typeof rootExecutionIdRaw === 'string' && rootExecutionIdRaw.trim()
+        ? { rootExecutionId: rootExecutionIdRaw.trim() }
+        : {}),
+      ...(typeof agentNameRaw === 'string' && agentNameRaw.trim()
+        ? { agentName: agentNameRaw.trim() }
+        : {}),
+      ...(typeof agentPathRaw === 'string' && agentPathRaw.trim()
+        ? { agentPath: agentPathRaw.trim() }
+        : {}),
       id: session.id,
       title: session.title,
       titleSource: session.titleSource,

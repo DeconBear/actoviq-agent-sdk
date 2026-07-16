@@ -202,6 +202,8 @@ export type {
   WorkflowRunOptions,
 } from './workflow/types.js';
 export { createAgentSdk, ActoviqAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
+export * from './runtime/agentExecution.js';
+export * from './runtime/actoviqAgentExecutions.js';
 export {
   ActoviqAgentHandle,
   ActoviqAgentsApi,
@@ -291,6 +293,7 @@ export {
 } from './swarm/actoviqSwarm.js';
 export { tool } from './runtime/tools.js';
 export { MailboxStore } from './storage/mailboxStore.js';
+export { AgentExecutionStore } from './storage/agentExecutionStore.js';
 export { SessionStore } from './storage/sessionStore.js';
 export { TeammateStore } from './storage/teammateStore.js';
 export {

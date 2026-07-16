@@ -14,11 +14,26 @@ import type {
 } from '../types.js';
 import { ConfigurationError } from '../errors.js';
 import { tool } from './tools.js';
+import { createId } from './helpers.js';
 
 export const ACTOVIQ_RUN_STATE_KEY = '__actoviqRunState';
 
 export interface ActoviqRunToolState {
   subagentFanout: number;
+}
+
+/** Internal, serializable relationship context carried from a Task tool call. */
+export interface ActoviqAgentDelegationContext {
+  description: string;
+  name?: string;
+  isolation?: 'worktree';
+  cwd?: string;
+  callId?: string;
+  parentRunId?: string;
+  parentSessionId?: string;
+  parentExecutionId?: string;
+  rootExecutionId?: string;
+  parentAgentPath?: string;
 }
 
 export function createActoviqRunToolState(): ActoviqRunToolState {
@@ -180,12 +195,7 @@ export function createActoviqTaskTool(options: {
     agent: string,
     prompt: string,
     options?: AgentRunOptions,
-    delegation?: {
-      description: string;
-      name?: string;
-      isolation?: 'worktree';
-      cwd?: string;
-    },
+    delegation?: ActoviqAgentDelegationContext,
   ) => Promise<{
     result: AgentRunResult;
     sessionId?: string;
@@ -200,12 +210,7 @@ export function createActoviqTaskTool(options: {
       parentSessionId?: string;
     },
     runOptions?: AgentRunOptions,
-    delegation?: {
-      description: string;
-      name?: string;
-      isolation?: 'worktree';
-      cwd?: string;
-    },
+    delegation?: ActoviqAgentDelegationContext,
   ) => Promise<ActoviqBackgroundTaskRecord>;
   onDelegated?: (event: {
     subagentType: string;
@@ -236,6 +241,7 @@ export function createActoviqTaskTool(options: {
       name,
       description,
       aliases: name === 'Agent' ? ['Task'] : name === 'Task' ? ['Agent'] : undefined,
+      interruptBehavior: 'cancel',
       inputSchema: z.object({
         description: z.string().min(1).optional()
           .describe('A short (3-5 word) label summarizing what the agent will do.'),
@@ -388,6 +394,21 @@ export function createActoviqTaskTool(options: {
         name: input.name,
         isolation: input.isolation ?? definition.isolation,
         cwd: input.cwd ?? definition.cwd,
+        callId: context.toolUseId ?? createId(),
+        parentRunId: context.runId,
+        parentSessionId: context.sessionId,
+        parentExecutionId:
+          typeof context.metadata.__actoviqExecutionId === 'string'
+            ? context.metadata.__actoviqExecutionId
+            : context.sessionId ?? context.runId,
+        rootExecutionId:
+          typeof context.metadata.__actoviqRootExecutionId === 'string'
+            ? context.metadata.__actoviqRootExecutionId
+            : context.sessionId ?? context.runId,
+        parentAgentPath:
+          typeof context.metadata.__actoviqAgentPath === 'string'
+            ? context.metadata.__actoviqAgentPath
+            : '/root',
       };
 
       if (input.run_in_background ?? definition.background ?? false) {
@@ -601,6 +622,7 @@ function extractInheritedDelegationOptions(
     approver?: AgentRunOptions['approver'];
     hooks?: AgentRunOptions['hooks'];
     effort?: AgentRunOptions['effort'];
+    signal?: AbortSignal;
     metadata?: Record<string, unknown>;
   },
   delegation: {
@@ -618,6 +640,7 @@ function extractInheritedDelegationOptions(
     approver: context.approver,
     hooks: context.hooks,
     effort: context.effort,
+    signal: context.signal,
     model: delegation.model,
     metadata: {
       ...inheritedMetadata,

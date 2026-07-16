@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -250,8 +250,9 @@ describe('Hadamard SDK subagent parity', () => {
     }
   });
 
-  it('delivers SendMessage input to a running agent at the next tool boundary', async () => {
+  it('delivers and deduplicates SendMessage input across SDK clients', async () => {
     const sessionDirectory = await tempDirectory('actoviq-subagent-steer-');
+    const homeDir = await tempDirectory('actoviq-subagent-steer-home-');
     let releaseGate!: () => void;
     let markGateStarted!: () => void;
     const gate = new Promise<void>(resolve => {
@@ -272,7 +273,8 @@ describe('Hadamard SDK subagent parity', () => {
         return 'released';
       },
     );
-    const modelApi = new RecordingModelApi(request => {
+    const followUp = 'Inspect the second failure path before completing.';
+    const modelApiA = new RecordingModelApi(request => {
       if (request.system?.includes('focused debugging subagent')) {
         const text = requestText(request);
         if (text.includes('User message sent while you were working')) {
@@ -307,42 +309,273 @@ describe('Hadamard SDK subagent parity', () => {
         'tool_use',
       );
     });
+    const modelApiB = new RecordingModelApi(() => {
+      throw new Error('The sending SDK must not run the background agent.');
+    });
+    const sdkA = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir,
+      modelApi: modelApiA,
+      tools: [waitGate],
+      permissionMode: 'bypassPermissions',
+    });
+    let sdkB: Awaited<ReturnType<typeof createAgentSdk>> | undefined;
+
+    try {
+      const parent = await sdkA.createSession({ title: 'parent' });
+      await parent.send('Launch the steerable debugger.');
+      await gateStarted;
+      sdkB = await createAgentSdk({
+        model: 'test-model',
+        sessionDirectory,
+        homeDir,
+        modelApi: modelApiB,
+        permissionMode: 'bypassPermissions',
+      });
+      const sendMessage = sdkB.getTool('SendMessage')!;
+      const toolContext = {
+        runId: 'steering_parent',
+        sessionId: parent.id,
+        cwd: process.cwd(),
+        metadata: {},
+        prompt: 'Steer the running agent.',
+        iteration: 1,
+        toolUseId: 'toolu_cross_client_message',
+      };
+      const routed = await sendMessage.execute(
+        {
+          to: 'steerable-debugger',
+          message: followUp,
+        },
+        toolContext,
+      ) as { status: string; taskId: string };
+      expect(routed.status).toBe('queued');
+      await expect(sendMessage.execute(
+        { to: routed.taskId, message: followUp },
+        toolContext,
+      )).resolves.toMatchObject({
+        status: 'duplicate',
+        taskStatus: 'running',
+        taskId: routed.taskId,
+        replayed: true,
+      });
+      await expect(sdkB.tasks.get(routed.taskId)).resolves.toMatchObject({
+        queuedMessageCount: 1,
+        queuedInputs: [
+          expect.objectContaining({
+            id: 'toolu_cross_client_message',
+            text: followUp,
+            edgeCallId: 'toolu_cross_client_message',
+          }),
+        ],
+        seenInputIds: ['toolu_cross_client_message'],
+      });
+      releaseGate();
+      const completed = await sdkA.tasks.wait(routed.taskId);
+      expect(completed.text).toContain('Steering message observed');
+      const deliveryRequests = modelApiA.requests.filter(request =>
+        requestText(request).includes(followUp),
+      );
+      expect(deliveryRequests).toHaveLength(1);
+      expect(requestText(deliveryRequests[0]!).split(followUp)).toHaveLength(2);
+      expect(modelApiB.requests).toHaveLength(0);
+
+      const taskIdsBeforeReplay = (await sdkA.tasks.list()).map(task => task.id).sort();
+      await expect(sendMessage.execute(
+        { to: routed.taskId, message: followUp },
+        toolContext,
+      )).resolves.toMatchObject({
+        status: 'duplicate',
+        taskId: routed.taskId,
+        replayed: true,
+      });
+      expect((await sdkA.tasks.list()).map(task => task.id).sort()).toEqual(taskIdsBeforeReplay);
+      expect(modelApiA.requests.filter(request =>
+        requestText(request).includes(followUp),
+      )).toHaveLength(1);
+      const execution = await sdkA.executions.getSnapshot(parent.id);
+      expect(execution?.edges.filter(edge =>
+        edge.callId === 'toolu_cross_client_message',
+      )).toHaveLength(1);
+    } finally {
+      releaseGate();
+      await sdkB?.close();
+      await sdkA.close();
+    }
+  });
+
+  it('resumes a follow-up that races with background task settlement', async () => {
+    const sessionDirectory = await tempDirectory('actoviq-subagent-settlement-race-');
+    const homeDir = await tempDirectory('actoviq-subagent-settlement-home-');
+    let releaseGate!: () => void;
+    let markGateStarted!: () => void;
+    const gate = new Promise<void>(resolve => {
+      releaseGate = resolve;
+    });
+    const gateStarted = new Promise<void>(resolve => {
+      markGateStarted = resolve;
+    });
+    const waitGate = tool(
+      {
+        name: 'SettlementGate',
+        description: 'Wait until the settlement race is released.',
+        inputSchema: z.strictObject({}),
+      },
+      async () => {
+        markGateStarted();
+        await gate;
+        return 'released';
+      },
+    );
+    const followUp = 'Inspect the late settlement race.';
+    let originalAgentCalls = 0;
+    const modelApi = new RecordingModelApi(request => {
+      const text = requestText(request);
+      if (text.includes(followUp)) {
+        return makeMessage([{ type: 'text', text: 'Late follow-up resumed safely.' }]);
+      }
+      originalAgentCalls += 1;
+      if (originalAgentCalls === 1) {
+        return makeMessage(
+          [{
+            type: 'tool_use',
+            id: 'wait_for_settlement_race',
+            name: 'SettlementGate',
+            input: {},
+          }],
+          'tool_use',
+        );
+      }
+      return makeMessage([{ type: 'text', text: 'Original background turn completed.' }]);
+    });
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      homeDir,
       modelApi,
       tools: [waitGate],
+      agents: [{
+        name: 'settlement-debugger',
+        description: 'Exercise the SendMessage settlement boundary.',
+        systemPrompt: 'You are the settlement race subagent.',
+      }],
+      disableDefaultAgents: true,
+      disableDefaultSkills: true,
+      loadDefaultAgentDirectories: false,
+      loadDefaultSkillDirectories: false,
       permissionMode: 'bypassPermissions',
     });
 
     try {
-      const parent = await sdk.createSession({ title: 'parent' });
-      await parent.send('Launch the steerable debugger.');
+      const parent = await sdk.createSession({ title: 'settlement race parent' });
+      const launched = await sdk.agents.launchBackground(
+        'settlement-debugger',
+        'Wait for the settlement boundary.',
+        { parentRunId: 'settlement_parent', parentSessionId: parent.id },
+      );
       await gateStarted;
+
+      type BackgroundManagerProbe = {
+        get(taskId: string): Promise<{ status: string } | undefined>;
+        reserveInput(taskId: string, input: unknown): Promise<unknown>;
+      };
+      const manager = (sdk as unknown as { backgroundTaskManager: BackgroundManagerProbe })
+        .backgroundTaskManager;
+      const originalGet = manager.get.bind(manager);
+      const originalReserveInput = manager.reserveInput.bind(manager);
+      const reserveSpy = vi.spyOn(manager, 'reserveInput').mockImplementationOnce(
+        async (taskId, input) => {
+          releaseGate();
+          const deadline = Date.now() + 5_000;
+          while (true) {
+            const current = await originalGet(taskId);
+            if (
+              current?.status === 'completed' ||
+              current?.status === 'failed' ||
+              current?.status === 'cancelled'
+            ) {
+              break;
+            }
+            if (Date.now() >= deadline) {
+              throw new Error('Background task did not reach settlement in time.');
+            }
+            await new Promise(resolve => setTimeout(resolve, 5));
+          }
+          return originalReserveInput(taskId, input);
+        },
+      );
+
       const sendMessage = sdk.getTool('SendMessage')!;
       const routed = await sendMessage.execute(
+        { to: launched.sessionId!, message: followUp },
         {
-          to: 'steerable-debugger',
-          message: 'Inspect the second failure path before completing.',
-        },
-        {
-          runId: 'steering_parent',
+          runId: 'settlement_message_parent',
           sessionId: parent.id,
           cwd: process.cwd(),
           metadata: {},
-          prompt: 'Steer the running agent.',
+          prompt: followUp,
           iteration: 1,
+          toolUseId: 'toolu_settlement_message',
         },
-      ) as { status: string; taskId: string };
-      expect(routed.status).toBe('queued');
-      releaseGate();
-      const completed = await sdk.tasks.wait(routed.taskId);
-      expect(completed.text).toContain('Steering message observed');
-      expect(modelApi.requests.some(request =>
-        requestText(request).includes('Inspect the second failure path'),
-      )).toBe(true);
+      ) as { status: string; taskId: string; agentId: string };
+      reserveSpy.mockRestore();
+
+      expect(routed).toMatchObject({
+        status: 'resumed',
+        agentId: launched.sessionId,
+      });
+      const resumed = await sdk.tasks.wait(routed.taskId, { timeoutMs: 5_000 });
+      expect(resumed).toMatchObject({
+        status: 'completed',
+        text: expect.stringContaining('Late follow-up resumed safely.'),
+      });
+      expect(resumed.seenInputIds).toContain('toolu_settlement_message');
+      expect(
+        modelApi.requests.filter(request => requestText(request).includes(followUp)),
+      ).toHaveLength(1);
+      expect(
+        (await sdk.tasks.list()).filter(task => task.resumedFromTaskId === launched.id),
+      ).toHaveLength(1);
+      const taskIdsBeforeReplay = (await sdk.tasks.list()).map(task => task.id).sort();
+      await expect(sendMessage.execute(
+        { to: launched.sessionId!, message: followUp },
+        {
+          runId: 'settlement_message_parent',
+          sessionId: parent.id,
+          cwd: process.cwd(),
+          metadata: {},
+          prompt: followUp,
+          iteration: 1,
+          toolUseId: 'toolu_settlement_message',
+        },
+      )).resolves.toMatchObject({
+        status: 'duplicate',
+        replayed: true,
+      });
+      expect((await sdk.tasks.list()).map(task => task.id).sort()).toEqual(taskIdsBeforeReplay);
+      expect(
+        modelApi.requests.filter(request => requestText(request).includes(followUp)),
+      ).toHaveLength(1);
+      const execution = await sdk.executions.getSnapshot(parent.id);
+      expect(execution?.edges.filter(edge =>
+        edge.callId === 'toolu_settlement_message',
+      )).toHaveLength(1);
+      expect(execution?.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          callId: 'toolu_settlement_message',
+          kind: 'message',
+          status: 'completed',
+        }),
+        expect.objectContaining({
+          callId: 'toolu_settlement_message:resume',
+          kind: 'resume',
+          status: 'completed',
+        }),
+      ]));
     } finally {
       releaseGate();
+      vi.restoreAllMocks();
       await sdk.close();
     }
   });

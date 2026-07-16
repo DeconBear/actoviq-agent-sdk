@@ -2,11 +2,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
   createAgentSdk,
+  SessionStore,
   tool,
   type ModelApi,
   type ModelRequest,
@@ -208,6 +209,83 @@ describe('reactive compact on prompt-too-long provider errors', () => {
       );
       // Exactly one reactive compact attempt, then the error surfaced.
       expect(modelApi.createCalls.filter(isLoopCompactRequest)).toHaveLength(1);
+      const [execution] = await sdk.executions.listSnapshots();
+      expect(execution?.nodes).toEqual([
+        expect.objectContaining({
+          agentStatus: 'errored',
+          threadStatus: 'system_error',
+          error: expect.stringContaining('prompt is too long'),
+        }),
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('settles the execution when session-level recovery itself fails', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let regularCalls = 0;
+    const modelApi = new RecoveryModelApi((request) => {
+      const internalTask =
+        typeof request.metadata === 'object' && request.metadata !== null
+          ? (request.metadata as Record<string, unknown>).actoviq_internal_task
+          : undefined;
+      if (internalTask === 'loop_compact') {
+        return makeMessage([{ type: 'text', text: 'In-loop recovery summary.' }]);
+      }
+      if (internalTask === 'compact') {
+        return makeMessage([{ type: 'text', text: 'Session fallback compact summary.' }]);
+      }
+      regularCalls += 1;
+      if (regularCalls === 1) {
+        return makeMessage([{ type: 'text', text: 'Seed turn complete.' }]);
+      }
+      throw new ActoviqProviderApiError('prompt is too long', { status: 400 });
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      compact: {
+        loopAutoCompactThresholdTokens: 1_000_000,
+        autoCompactThresholdTokens: 1_000_000,
+        preserveRecentMessages: 1,
+        microcompactEnabled: false,
+      },
+    });
+
+    try {
+      const session = await sdk.createSession();
+      await session.send('Seed context for fallback compact.');
+      const originalSave = SessionStore.prototype.save;
+      const saveSpy = vi.spyOn(SessionStore.prototype, 'save').mockImplementation(
+        async function saveWithRecoveryFailure(this: SessionStore, snapshot) {
+          if (JSON.stringify(snapshot.messages).includes('Session fallback compact summary.')) {
+            throw new Error('Session compact persistence failed.');
+          }
+          return originalSave.call(this, snapshot);
+        },
+      );
+      let recoveryError: unknown;
+      try {
+        await session.send('Trigger session-level recovery.');
+      } catch (error) {
+        recoveryError = error;
+      } finally {
+        saveSpy.mockRestore();
+      }
+
+      expect(recoveryError).toBeInstanceOf(Error);
+      expect((recoveryError as Error).message).toContain('Session compact persistence failed.');
+      expect((recoveryError as Error).cause).toBeInstanceOf(ActoviqProviderApiError);
+      const execution = await sdk.executions.getSnapshot(session.id);
+      expect(execution?.nodes).toEqual([
+        expect.objectContaining({
+          agentStatus: 'errored',
+          threadStatus: 'system_error',
+          error: expect.stringContaining('Session compact persistence failed.'),
+        }),
+      ]);
     } finally {
       await sdk.close();
     }

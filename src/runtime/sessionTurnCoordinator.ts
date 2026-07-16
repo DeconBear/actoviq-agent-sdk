@@ -2,8 +2,8 @@
  * Serializes mutating turns for one session while allowing unrelated sessions
  * to keep running concurrently.
  *
- * This is intentionally process-local. Persistence-level conflicts between
- * clients or processes are handled separately by SessionStore revisions/CAS.
+ * This is intentionally process-local. SessionStore's durable turn lease
+ * serializes the same session across clients/processes before revisions/CAS.
  */
 export class SessionTurnCoordinator {
   private readonly tails = new Map<string, Promise<void>>();

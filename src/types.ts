@@ -25,6 +25,8 @@ export type ActoviqSettingsData = LoadedJsonConfigData;
 export interface ToolExecutionContext {
   signal?: AbortSignal;
   runId: string;
+  /** Stable provider tool-use id for lifecycle/relationship correlation. */
+  toolUseId?: string;
   sessionId?: string;
   cwd: string;
   metadata: Record<string, unknown>;
@@ -863,7 +865,7 @@ export interface AgentRunOptions {
    * queued while the agent was working. Drained texts are appended to the
    * next tool-result user message so the model sees them on its next request.
    */
-  drainQueuedInputs?: () => string[];
+  drainQueuedInputs?: () => string[] | Promise<string[]>;
   /**
    * Follow-up queue: drained only after the model reaches a natural stopping
    * point. Follow-ups continue the same run without racing a second session
@@ -888,6 +890,11 @@ export interface SessionCreateOptions {
   tags?: string[];
   metadata?: Record<string, unknown>;
   initialMessages?: MessageParam[];
+  /** Durable conversation kind. Agent sessions remain independently resumable. */
+  kind?: 'main' | 'worktree' | 'manager' | 'agent';
+  /** Direct conversation parent. This is execution topology, not transcript forking. */
+  parentSessionId?: string;
+  originalWorkDir?: string;
 }
 
 export interface SessionForkOptions {
@@ -949,6 +956,10 @@ export interface AgentToolCallRecord extends AgentToolCallEventPayload {
 export interface AgentRunResult {
   runId: string;
   sessionId?: string;
+  /** Root Agent execution tree for this run. */
+  executionId?: string;
+  /** Stable node for the Agent conversation that produced this result. */
+  executionNodeId?: string;
   model: string;
   text: string;
   message: Message;
@@ -1143,9 +1154,27 @@ export type ActoviqBackgroundTaskStatus =
   | 'failed'
   | 'cancelled';
 
+export interface ActoviqBackgroundTaskQueuedInput {
+  /** Stable collaboration tool-use id; also provides replay idempotency. */
+  id: string;
+  text: string;
+  rootExecutionId: string;
+  edgeCallId: string;
+}
+
 export interface ActoviqBackgroundTaskRecord {
   id: string;
   status: ActoviqBackgroundTaskStatus;
+  /** Process that owns the live worker; used to avoid cross-process false recovery. */
+  ownerPid?: number;
+  /** Stable manager instance that launched the worker. */
+  ownerInstanceId?: string;
+  /** Lease heartbeat used to distinguish a live owner from PID reuse. */
+  ownerHeartbeatAt?: string;
+  /** Durable cross-process follow-ups waiting for the worker's next input boundary. */
+  queuedInputs?: ActoviqBackgroundTaskQueuedInput[];
+  /** Bounded replay guard retained after queued inputs are drained. */
+  seenInputIds?: string[];
   description: string;
   subagentType: string;
   outputFile: string;
@@ -1159,6 +1188,8 @@ export interface ActoviqBackgroundTaskRecord {
   agentName?: string;
   sessionId?: string;
   runId?: string;
+  executionId?: string;
+  executionNodeId?: string;
   model?: string;
   text?: string;
   partialText?: string;
@@ -1468,6 +1499,15 @@ export type AgentEvent =
       timestamp: string;
     }
   | {
+      /** Projector event for a root/child Agent execution graph. */
+      type: 'agent.execution';
+      runId: string;
+      rootExecutionId: string;
+      event: import('./runtime/agentExecution.js').AgentExecutionEvent;
+      snapshot: import('./runtime/agentExecution.js').AgentExecutionSnapshot;
+      timestamp: string;
+    }
+  | {
       type: 'workflow.start';
       runId: string;
       workflowName: string;
@@ -1583,8 +1623,8 @@ export interface StoredSession {
   status: SessionStatus;
   messages: MessageParam[];
   runs: StoredRunSummary[];
-  // ── v0.5.0 worktree fields (+ 'manager' for project-manager sessions) ──
-  kind?: 'main' | 'worktree' | 'manager';
+  // ── Durable interactive-surface / worktree fields ──
+  kind?: 'main' | 'worktree' | 'manager' | 'agent';
   worktreePath?: string;
   worktreeBranch?: string;
   parentSessionId?: string;
@@ -1613,8 +1653,18 @@ export interface SessionSummary {
   runCount: number;
   /** True when the session file lives in the project archive/ directory. */
   archived?: boolean;
-  /** Session kind — 'manager' sessions belong to the Project Manager panel, not the chat list. */
-  kind?: 'main' | 'worktree' | 'manager';
+  /** Session kind — Agent sessions are independent child conversations. */
+  kind?: 'main' | 'worktree' | 'manager' | 'agent';
+  /** Direct parent conversation for an Agent/worktree session. */
+  parentSessionId?: string;
+  /** Stable Agent execution node linked to this conversation. */
+  executionId?: string;
+  /** Root execution tree containing this Agent. */
+  rootExecutionId?: string;
+  /** Named Agent definition or assigned nickname. */
+  agentName?: string;
+  /** Stable canonical Agent path such as `/root/reviewer`. */
+  agentPath?: string;
   /** Project issue linked to this session, when the session was created from an issue dispatch. */
   issueId?: string;
   issueNumber?: number;

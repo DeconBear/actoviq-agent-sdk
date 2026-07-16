@@ -82,7 +82,7 @@ export interface ExecuteConversationOptions {
   approver?: AgentRunOptions['approver'];
   canUseTool?: AgentRunOptions['canUseTool'];
   hooks?: ActoviqHooks;
-  drainQueuedInputs?: () => string[];
+  drainQueuedInputs?: () => string[] | Promise<string[]>;
   drainFollowUpInputs?: () => string[];
   streaming: boolean;
   emit?: (event: AgentEvent) => void;
@@ -93,6 +93,7 @@ export interface ExecuteConversationOptions {
    */
   onConversationCheckpoint?: (messages: MessageParam[]) => void | Promise<void>;
   skipRunStartedEvent?: boolean;
+  skipInitialInput?: boolean;
   modelApi: ModelApi;
   config: ResolvedRuntimeConfig;
   mcpManager: McpConnectionManager;
@@ -114,8 +115,10 @@ export async function executeConversation(
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
   const postSamplingHooks = resolveActoviqPostSamplingHooks(options.hooks);
   const conversation = deepClone(options.messages ?? []);
-  conversation.push(...deepClone(options.prefixedMessages ?? []));
-  conversation.push(buildUserMessage(options.input));
+  if (!options.skipInitialInput) {
+    conversation.push(...deepClone(options.prefixedMessages ?? []));
+    conversation.push(buildUserMessage(options.input));
+  }
 
   if (!options.skipRunStartedEvent) {
     options.emit?.({
@@ -126,6 +129,17 @@ export async function executeConversation(
       input: promptText,
       timestamp: startedAt,
     });
+  }
+
+  // Persist the user turn before the first provider request. Besides crash
+  // recovery, this makes a newly spawned child conversation immediately
+  // inspectable while its first model request is still running.
+  if (options.onConversationCheckpoint) {
+    try {
+      await options.onConversationCheckpoint(deepClone(conversation));
+    } catch {
+      // Checkpoint durability must never prevent the agent turn from running.
+    }
   }
 
   const resolvedTools = await options.mcpManager.resolveToolAdapters(
@@ -596,7 +610,7 @@ export async function executeConversation(
     }
 
     if (!preventContinuation && toolUses.length === 0) {
-      const queuedSteering = options.drainQueuedInputs?.() ?? [];
+      const queuedSteering = (await options.drainQueuedInputs?.()) ?? [];
       const queuedFollowUps = options.drainFollowUpInputs?.() ?? [];
       if (queuedSteering.length > 0 || queuedFollowUps.length > 0) {
         conversation.push({
@@ -756,7 +770,7 @@ export async function executeConversation(
                 type: 'tool.progress',
                 runId: options.runId,
                 iteration,
-                toolUseId: progress.toolUseID,
+                toolUseId: progress.toolUseID || toolUse.id,
                 data: progress.data,
                 timestamp: nowIso(),
               });
@@ -772,23 +786,24 @@ export async function executeConversation(
           options.config.toolTimeoutMs,
           adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
           ({ signal }) => adapter.execute(executionInput, {
-          signal,
-          runId: options.runId,
-          sessionId: options.sessionId,
-          cwd: workDir,
-          metadata: { ...(options.metadata ?? {}) },
-          prompt: promptText,
-          iteration,
-          permissionMode: options.permissionMode,
-          permissions: options.permissions,
-          classifier: options.classifier,
-          approver: options.approver,
-          hooks: options.hooks,
-          modelApi: options.modelApi,
-          model,
-          provider: options.config.provider,
-          effort,
-        }, onProgress),
+            signal,
+            runId: options.runId,
+            toolUseId: toolUse.id,
+            sessionId: options.sessionId,
+            cwd: workDir,
+            metadata: { ...(options.metadata ?? {}) },
+            prompt: promptText,
+            iteration,
+            permissionMode: options.permissionMode,
+            permissions: options.permissions,
+            classifier: options.classifier,
+            approver: options.approver,
+            hooks: options.hooks,
+            modelApi: options.modelApi,
+            model,
+            provider: options.config.provider,
+            effort,
+          }, onProgress),
         );
         // Per-tool declared cap first (default 50k via tool factory), clamped
         // by the global artifact ceiling. MCP tools without a declared cap use
@@ -926,7 +941,7 @@ export async function executeConversation(
     // Mid-run steering: user messages queued while tools were running ride in
     // the same user message as the tool results, so the model sees them on
     // the very next request (mirrors Claude Code's queued-command attachments).
-    const queuedInputs = options.drainQueuedInputs?.() ?? [];
+    const queuedInputs = (await options.drainQueuedInputs?.()) ?? [];
 
     // Always push tool results before any early return so the conversation
     // never ends with dangling tool_use blocks (which would make a persisted

@@ -195,6 +195,169 @@ describe('AgentSession turn serialization', () => {
     }
   });
 
+  it('serializes one session across independent SDK clients', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new ControlledModelApi();
+    const sdkA = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+    const sdkB = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const sessionA = await sdkA.createSession({ title: 'Cross-client sends' });
+      const sessionB = await sdkB.sessions.resume(sessionA.id);
+      const sendA = sessionA.send('client A turn');
+      const sendB = sessionB.send('client B turn');
+
+      await waitFor(() => modelApi.createCalls.length === 1, 'one cross-client model request');
+      expect(modelApi.maxActiveRequests).toBe(1);
+      const firstTurn = requestTranscript(modelApi.createCalls[0]!.request).at(-1)!;
+      modelApi.createCalls[0]!.response.resolve(makeMessage(`${firstTurn} answer`));
+
+      await waitFor(
+        () => modelApi.createCalls.length === 2,
+        'the cross-client turn queued behind the durable lease',
+      );
+      expect(modelApi.maxActiveRequests).toBe(1);
+      const secondTranscript = requestTranscript(modelApi.createCalls[1]!.request);
+      const secondTurn = firstTurn === 'client A turn' ? 'client B turn' : 'client A turn';
+      expect(secondTranscript).toEqual([
+        firstTurn,
+        `${firstTurn} answer`,
+        secondTurn,
+      ]);
+      modelApi.createCalls[1]!.response.resolve(makeMessage(`${secondTurn} answer`));
+
+      await Promise.all([sendA, sendB]);
+      const stored = await new SessionStore(sessionDirectory).load(sessionA.id);
+      expect(stored.messages.map(message => extractTextFromContent(message.content))).toEqual([
+        firstTurn,
+        `${firstTurn} answer`,
+        secondTurn,
+        `${secondTurn} answer`,
+      ]);
+    } finally {
+      await sdkB.close();
+      await sdkA.close();
+    }
+  });
+
+  it('allows a second client to inspect an active turn without invalidating its revision', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new ControlledModelApi();
+    const sdkA = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+    const sdkB = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const sessionA = await sdkA.createSession({ title: 'Inspectable active turn' });
+      const send = sessionA.send('active turn input');
+      await waitFor(() => modelApi.createCalls.length === 1, 'the active model request');
+
+      const store = new SessionStore(sessionDirectory);
+      const beforeResume = await store.load(sessionA.id);
+      const inspected = await sdkB.sessions.resume(sessionA.id);
+      const afterResume = await store.load(sessionA.id);
+      expect(inspected.snapshot().revision).toBe(beforeResume.revision);
+      expect(afterResume.revision).toBe(beforeResume.revision);
+
+      modelApi.createCalls[0]!.response.resolve(makeMessage('active turn answer'));
+      await expect(send).resolves.toMatchObject({ text: 'active turn answer' });
+      const stored = await store.load(sessionA.id);
+      expect(stored.messages.map(message => extractTextFromContent(message.content))).toEqual([
+        'active turn input',
+        'active turn answer',
+      ]);
+    } finally {
+      await sdkB.close();
+      await sdkA.close();
+    }
+  });
+
+  it('reactivates a non-active session through the durable turn lease', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi: new ControlledModelApi(),
+    });
+
+    try {
+      const session = await sdk.createSession({ title: 'Idle session' });
+      const store = new SessionStore(sessionDirectory);
+      await store.updateStatus(session.id, 'idle');
+
+      const resumed = await sdk.sessions.resume(session.id);
+      expect(resumed.id).toBe(session.id);
+      expect((await store.load(session.id)).status).toBe('active');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('serializes persisted resume overrides behind an active turn', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new ControlledModelApi();
+    const sdkA = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+    const sdkB = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      homeDir: sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const sessionA = await sdkA.createSession({ title: 'Original title' });
+      const send = sessionA.send('turn before rename');
+      await waitFor(() => modelApi.createCalls.length === 1, 'the model request before rename');
+
+      let overrideSettled = false;
+      const override = sdkB.sessions.resume(sessionA.id, { title: 'Renamed safely' })
+        .finally(() => {
+          overrideSettled = true;
+        });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(overrideSettled).toBe(false);
+
+      modelApi.createCalls[0]!.response.resolve(makeMessage('turn completed before rename'));
+      await send;
+      const resumed = await override;
+      expect(resumed.title).toBe('Renamed safely');
+      const stored = await new SessionStore(sessionDirectory).load(sessionA.id);
+      expect(stored.title).toBe('Renamed safely');
+      expect(stored.messages.map(message => extractTextFromContent(message.content))).toEqual([
+        'turn before rename',
+        'turn completed before rename',
+      ]);
+    } finally {
+      await sdkB.close();
+      await sdkA.close();
+    }
+  });
+
   it.each([1, 10, 100])(
     'persists every message from %i concurrent sends to one session',
     async (turnCount) => {
