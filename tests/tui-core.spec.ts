@@ -9,7 +9,7 @@ import {
   formatToolResult,
   summarizeToolInput,
 } from '../src/tui/transcript.js';
-import { filterSlashCommands, activeAtToken } from '../src/tui/actoviqTui.js';
+import { filterSlashCommands, activeAtToken, isTuiChatSession } from '../src/tui/actoviqTui.js';
 import {
   filterTuiSelectionItems,
   moveTuiSelection,
@@ -39,6 +39,15 @@ describe('ansi helpers', () => {
     expect(wrapped).toHaveLength(2);
     expect(stripAnsi(wrapped[0]!)).toBe('abc');
     expect(wrapped[1]!.startsWith(A.dim)).toBe(true);
+  });
+});
+
+describe('TUI stored-session visibility', () => {
+  it('keeps independently resumable Agent conversations out of regular session pickers', () => {
+    expect(isTuiChatSession({ kind: 'main' })).toBe(true);
+    expect(isTuiChatSession({ kind: 'worktree' })).toBe(true);
+    expect(isTuiChatSession({ kind: 'manager' })).toBe(false);
+    expect(isTuiChatSession({ kind: 'agent' })).toBe(false);
   });
 });
 

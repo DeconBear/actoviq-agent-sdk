@@ -213,6 +213,13 @@ describe('GUI agent execution API', () => {
     });
 
     try {
+      const activeSession = await api<{ session: { id: string } | null }>(
+        server,
+        '/api/session/active',
+      );
+      expect(activeSession.status).toBe(200);
+      expect(activeSession.body.session?.id).toBeTruthy();
+
       const listA = await api<AgentExecutionProjectView>(
         server,
         `/api/agent-executions?path=${encodeURIComponent(workA)}`,

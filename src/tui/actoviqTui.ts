@@ -66,6 +66,7 @@ import type {
   AgentEvent,
   AgentRunResult,
   AgentToolDefinition,
+  SessionSummary,
   TeamDefinition,
   RouterProfile,
 } from '../types.js';
@@ -98,7 +99,15 @@ import {
   ACTOVIQ_INTERACTIVE_COMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  selectInteractiveCommand,
 } from '../ui/commandSurface.js';
+import {
+  createAgentExecutionProjectView,
+  createAgentExecutionRootView,
+  formatAgentExecutionTreeLines,
+  type AgentExecutionNodeView,
+  type AgentExecutionRootView,
+} from '../ui/agentExecutionView.js';
 import { A, stringWidth, truncateToWidth, wrapToWidth } from './ansi.js';
 import { InputEditor } from './editor.js';
 import { discoverActoviqPlugins } from './pluginCatalog.js';
@@ -151,6 +160,11 @@ function maskKey(key: string): string {
 
 export function filterSlashCommands(input: string): string[] {
   return filterInteractiveCommands(input);
+}
+
+/** Agent conversations are independently resumable, but stay out of the normal chat list. */
+export function isTuiChatSession(session: Pick<SessionSummary, 'kind'>): boolean {
+  return session.kind !== 'manager' && session.kind !== 'agent';
 }
 
 /**
@@ -1566,7 +1580,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       resume: '/resume [session-id]',
       tools: '/tools',
       skills: '/skills',
-      agents: '/agents',
+      agents: '/agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]',
       mcp: '/mcp',
       hooks: '/hooks',
       plugins: '/plugins',
@@ -1580,22 +1594,44 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     return usage[name] ?? `/${name}`;
   }
 
-  async function resumeSession(sessionId: string): Promise<void> {
+  async function resumeSession(
+    sessionId: string,
+    options: { allowAgent?: boolean } = {},
+  ): Promise<boolean> {
     const listed = await sdk.sessions.list();
     const target = listed.find(item => item.id === sessionId);
+    if (!target) {
+      appendStatic([
+        ...formatErrorLine(
+          `No persisted conversation exists for '${sessionId}'. The execution record may outlive its session.`,
+        ),
+        '',
+      ]);
+      return false;
+    }
     if (target?.kind === 'manager') {
       appendStatic([...formatErrorLine('Manager sessions live in the Project Manager panel only.'), '']);
-      return;
+      return false;
+    }
+    if (target.kind === 'agent' && !options.allowAgent) {
+      appendStatic([
+        ...formatErrorLine('Agent conversations open from /agents runs, /agents show, or /agents open.'),
+        '',
+      ]);
+      return false;
     }
     session = await sdk.resumeSession(sessionId);
     appendStatic([
       ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
       '',
     ]);
+    return true;
   }
 
   async function chooseSessionToResume(): Promise<void> {
-    const sessions = (await sdk.sessions.list()).filter(item => item.id !== session.id && item.kind !== 'manager');
+    const sessions = (await sdk.sessions.list()).filter(
+      item => item.id !== session.id && isTuiChatSession(item),
+    );
     if (sessions.length === 0) {
       appendStatic([...formatInfoLine('no other project sessions to resume'), '']);
       return;
@@ -2395,6 +2431,139 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
+  function flattenAgentExecutionNodes(view: AgentExecutionRootView): AgentExecutionNodeView[] {
+    const nodes: AgentExecutionNodeView[] = [];
+    const visit = (node: AgentExecutionNodeView): void => {
+      nodes.push(node);
+      node.children.forEach(visit);
+    };
+    if (view.root) visit(view.root);
+    view.detached.forEach(visit);
+    return nodes;
+  }
+
+  function formatAgentExecutionElapsed(elapsedMs: number): string {
+    if (elapsedMs < 1_000) return `${elapsedMs}ms`;
+    if (elapsedMs < 60_000) return `${Math.round(elapsedMs / 100) / 10}s`;
+    return `${Math.floor(elapsedMs / 60_000)}m ${Math.round((elapsedMs % 60_000) / 1_000)}s`;
+  }
+
+  async function openAgentExecutionConversation(reference: string): Promise<void> {
+    let snapshots;
+    try {
+      snapshots = await sdk.executions.listSnapshots();
+    } catch (error) {
+      appendStatic([...formatErrorLine(`could not load Agent executions: ${(error as Error).message}`), '']);
+      return;
+    }
+    const views = snapshots.map(snapshot => createAgentExecutionRootView(snapshot));
+    const node = views.flatMap(flattenAgentExecutionNodes).find(
+      item => item.id === reference || item.sessionId === reference,
+    );
+    if (!node) {
+      appendStatic([
+        ...formatErrorLine(`No Agent execution or conversation matches '${reference}'. Use /agents runs to browse.`),
+        '',
+      ]);
+      return;
+    }
+    await resumeSession(node.sessionId, { allowAgent: true });
+  }
+
+  async function showAgentExecution(rootExecutionId: string): Promise<void> {
+    let snapshot;
+    try {
+      snapshot = await sdk.executions.getSnapshot(rootExecutionId);
+    } catch (error) {
+      appendStatic([...formatErrorLine(`could not load Agent execution: ${(error as Error).message}`), '']);
+      return;
+    }
+    if (!snapshot) {
+      appendStatic([
+        ...formatErrorLine(`No Agent execution tree found for '${rootExecutionId}'. Use /agents runs to browse.`),
+        '',
+      ]);
+      return;
+    }
+    const view = createAgentExecutionRootView(snapshot);
+    const nodes = flattenAgentExecutionNodes(view);
+    appendStatic([
+      `${A.bold}Agent execution${A.reset} ${A.dim}${view.rootExecutionId}${A.reset}`,
+      `${A.dim}${view.status} · ${view.nodeCount} agents · ${view.edgeCount} links · ${formatAgentExecutionElapsed(view.timing.elapsedMs)}${A.reset}`,
+      ...formatAgentExecutionTreeLines(view, {
+        prefix: '  ',
+        includeActivity: true,
+        includePlan: true,
+        includeTiming: true,
+        maxMetaWidth: Math.max(36, screen.width - 12),
+      }),
+      '',
+    ]);
+    if (nodes.length === 0) return;
+    const selected = await selectItem({
+      title: 'Agent execution conversations',
+      subtitle: 'Choose an Agent or subagent to open its independent conversation',
+      items: nodes.map(node => ({
+        id: node.id,
+        label: `${'  '.repeat(node.depth)}${node.displayName}`,
+        description: `${node.status} · ${node.runtime}${node.model ? ` · ${node.model}` : ''}`,
+        detail: [
+          `session: ${node.sessionId}`,
+          node.currentActivity?.summary,
+          node.currentStep ? `current: ${node.currentStep.title}` : undefined,
+          node.nextSteps.length ? `next: ${node.nextSteps.slice(0, 3).map(step => step.title).join(', ')}` : undefined,
+        ].filter((value): value is string => Boolean(value)).join('\n'),
+      })),
+    });
+    if (selected) await openAgentExecutionConversation(selected);
+  }
+
+  async function showAgentRuns(): Promise<void> {
+    let snapshots;
+    try {
+      snapshots = await sdk.executions.listSnapshots();
+    } catch (error) {
+      appendStatic([...formatErrorLine(`could not load Agent executions: ${(error as Error).message}`), '']);
+      return;
+    }
+    const project = createAgentExecutionProjectView(snapshots);
+    if (project.totalExecutionCount === 0) {
+      appendStatic([...formatInfoLine('no Agent executions are recorded for this project'), '']);
+      return;
+    }
+    const summary = (label: string, executions: AgentExecutionRootView[]): string[] => [
+      `${A.bold}${label}${A.reset} ${A.dim}(${executions.length})${A.reset}`,
+      ...executions.map(execution =>
+        `  ${execution.status === 'errored' ? A.red : execution.isActive ? A.green : A.dim}${execution.rootExecutionId}${A.reset} ${execution.displayName} · ${execution.nodeCount} agents · ${formatAgentExecutionElapsed(execution.timing.elapsedMs)}`,
+      ),
+    ];
+    appendStatic([
+      `${A.bold}Agent executions${A.reset} ${A.dim}${project.totalAgentCount} agent conversations${A.reset}`,
+      ...summary('Active', project.active),
+      ...summary('Completed', project.completed),
+      '',
+    ]);
+    const selected = await selectItem({
+      title: 'Agent execution runs',
+      subtitle: `${project.activeExecutionCount} active · ${project.completedExecutionCount} completed`,
+      items: [
+        ...project.active.map(execution => ({
+          id: execution.rootExecutionId,
+          label: `Active · ${execution.displayName}`,
+          description: `${execution.status} · ${execution.nodeCount} agents · ${execution.currentActivity?.summary ?? 'waiting'}`,
+          detail: execution.rootExecutionId,
+        })),
+        ...project.completed.map(execution => ({
+          id: execution.rootExecutionId,
+          label: `Completed · ${execution.displayName}`,
+          description: `${execution.status} · ${execution.nodeCount} agents · ${formatAgentExecutionElapsed(execution.timing.elapsedMs)}`,
+          detail: execution.rootExecutionId,
+        })),
+      ],
+    });
+    if (selected) await showAgentExecution(selected);
+  }
+
   async function showMcp(): Promise<void> {
     const byServer = new Map<string, typeof toolMetadata>();
     for (const tool of toolMetadata.filter(item => item.provider === 'mcp')) {
@@ -2734,7 +2903,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         case 'sessions': {
-          const sessions = (await sdk.sessions.list()).filter(item => item.kind !== 'manager');
+          const sessions = (await sdk.sessions.list()).filter(isTuiChatSession);
           appendStatic([
             ...(sessions.length > 0
               ? sessions.map(item =>
@@ -2997,9 +3166,44 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'skills':
           await showSkills();
           return;
-        case 'agents':
-          await showAgents();
+        case 'agents': {
+          const trimmedArgs = args.trim();
+          const subcommandEnd = trimmedArgs.search(/\s/);
+          const subcommand = (subcommandEnd < 0 ? trimmedArgs : trimmedArgs.slice(0, subcommandEnd))
+            .toLowerCase() || 'list';
+          const target = subcommandEnd < 0 ? '' : trimmedArgs.slice(subcommandEnd + 1).trim();
+          if (subcommand === 'list') {
+            if (target) {
+              appendStatic([...formatErrorLine('usage: /agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]'), '']);
+            } else {
+              await showAgents();
+            }
+            return;
+          }
+          if (subcommand === 'runs') {
+            if (target) await showAgentExecution(target);
+            else await showAgentRuns();
+            return;
+          }
+          if (subcommand === 'show') {
+            if (!target) {
+              appendStatic([...formatErrorLine('usage: /agents show <root-execution-id>'), '']);
+            } else {
+              await showAgentExecution(target);
+            }
+            return;
+          }
+          if (subcommand === 'open') {
+            if (!target) {
+              appendStatic([...formatErrorLine('usage: /agents open <session-or-execution-id>'), '']);
+            } else {
+              await openAgentExecutionConversation(target);
+            }
+            return;
+          }
+          appendStatic([...formatErrorLine('usage: /agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]'), '']);
           return;
+        }
         case 'mcp':
           await showMcp();
           return;
@@ -3635,13 +3839,16 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       renderDynamic();
       return;
     }
-    const matches = filterSlashCommands(editor.text);
-    if (matches.length > 0 && !running) {
-      const selected = matches[Math.min(menuSelected, matches.length - 1)]!;
-      const args = editor.text.includes(' ') ? editor.text.slice(editor.text.indexOf(' ')) : '';
+    const selectedCommand = !running
+      ? selectInteractiveCommand(editor.text, menuSelected)
+      : undefined;
+    if (selectedCommand) {
       editor.clear();
       menuSelected = 0;
-      await runSlashCommand(`/${selected}${args}`);
+      // A selected completion already contains its subcommand. Keeping the
+      // partially typed second word would turn `/agents runs` into
+      // `/agents runs runs` on Enter.
+      await runSlashCommand(selectedCommand);
       return;
     }
     const value = editor.submit();

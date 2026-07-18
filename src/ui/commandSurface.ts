@@ -23,7 +23,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   resume: 'Resume a stored session',
   tools: 'List available tools',
   skills: 'Browse available skills',
-  agents: 'Browse available subagents',
+  agents: 'Browse subagent definitions and execution runs',
   mcp: 'Inspect MCP servers and tools',
   hooks: 'List configured PreToolUse hooks',
   plugins: 'Browse discovered Clean plugins',
@@ -52,6 +52,7 @@ export const SUBCOMMANDS: Record<string, string[]> = {
   manager: ['chat', 'update', 'status', 'config', 'schedule'],
   worktree: ['enter', 'exit', 'list'],
   workflows: ['list', 'run'],
+  agents: ['list', 'runs', 'show', 'open'],
   dream: ['run', 'status'],
   permissions: ['read-only', 'workspace', 'full'],
 };
@@ -90,6 +91,10 @@ export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
   'worktree list': 'List worktrees',
   'workflows list': 'List saved workflows',
   'workflows run': 'Run a saved workflow',
+  'agents list': 'Browse registered subagent definitions',
+  'agents runs': 'Browse active and completed Agent execution trees',
+  'agents show': 'Show one Agent execution tree and choose a conversation',
+  'agents open': 'Open an Agent or subagent conversation by session or execution id',
   'dream run': 'Run memory consolidation',
   'dream status': 'Show dream state',
   'permissions read-only': 'Read-only preset',
@@ -117,5 +122,14 @@ export function filterInteractiveCommands(input: string): string[] {
   const afterHead = rest.slice(head.length + 1);
   if (afterHead.includes(' ')) return [];
   const partialSub = afterHead.toLowerCase();
+  if (subs.includes(partialSub)) return [`${head.toLowerCase()} ${partialSub}`];
   return subs.filter((sub) => sub.startsWith(partialSub)).map((sub) => `${head.toLowerCase()} ${sub}`);
+}
+
+/** Resolve the command submitted by Enter from the current completion menu. */
+export function selectInteractiveCommand(input: string, selectedIndex = 0): string | undefined {
+  const matches = filterInteractiveCommands(input);
+  if (matches.length === 0) return undefined;
+  const index = Math.max(0, Math.min(selectedIndex, matches.length - 1));
+  return `/${matches[index]!}`;
 }

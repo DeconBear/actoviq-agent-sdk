@@ -20,6 +20,8 @@ describe('TUI and GUI parity', () => {
   it('keeps the TUI slash command surface on the shared command registry', () => {
     expect(TUI_SLASH_COMMANDS).toBe(ACTOVIQ_INTERACTIVE_COMMANDS);
     expect(filterSlashCommands('/wo')).toEqual(filterInteractiveCommands('/wo'));
+    expect(filterSlashCommands('/agents r')).toEqual(['agents runs']);
+    expect(SUBCOMMANDS.agents).toEqual(['list', 'runs', 'show', 'open']);
     expect(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS)).toEqual([
       'help',
       'clear',
@@ -299,7 +301,11 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('addMemberMessage');
     expect(js).toContain('TRANSCRIPT_CACHE_TTL_MS');
     expect(js).toContain('transcriptCacheFresh');
-    expect(js).toContain('refreshSessionInBackground');
+    expect(js).toContain('let sessionResumeQueue = Promise.resolve()');
+    expect(js).toContain('function setSessionResumePending');
+    expect(js).toContain('async function performResumeSession');
+    expect(js).toContain("api('/api/session/active')");
+    expect(js).not.toContain('refreshSessionInBackground');
     expect(js).toContain('renderMarkdownInto');
     expect(js).toContain('updateStreamingToolInput');
     expect(js).toContain("event.type === 'tool.input.delta'");
@@ -310,6 +316,10 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('project-doc-view');
     expect(js).toContain('/api/issues');
     expect(js).toContain('/api/issues/start');
+
+    const managerUpdateStart = tui.indexOf('const conversationSummaries = stored');
+    const managerUpdateEnd = tui.indexOf('const plan =', managerUpdateStart);
+    expect(tui.slice(managerUpdateStart, managerUpdateEnd)).toContain(".filter((s) => s.kind !== 'manager')");
     expect(js).toContain('renderProjectIssuesPanel');
     expect(js).toContain('ISSUE_CREATE_TITLE_REQUIRED');
     expect(js).toContain('aria-required="true" aria-label="New issue title"');

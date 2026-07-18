@@ -1870,6 +1870,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let sdk: ActoviqAgentClient | null;
   let toolMetadata: Awaited<ReturnType<ActoviqAgentClient['listToolMetadata']>> = [];
   let session: AgentSession;
+  let serverSessionResumeQueue: Promise<void> = Promise.resolve();
+  function enqueueServerSessionResume<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = serverSessionResumeQueue.then(operation);
+    serverSessionResumeQueue = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
   const durableIssueResources = new Map<string, {
     coordinator: DurableIssueCoordinator;
     storage: SqliteStorageV2;
@@ -4731,6 +4737,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return json(res, 200, await state());
       }
+      if (req.method === 'GET' && url.pathname === '/api/session/active') {
+        // Keep this reconciliation endpoint deliberately lightweight. The
+        // resume request may already have switched the server session even if
+        // its full state response was interrupted or failed to assemble.
+        await serverSessionResumeQueue;
+        return json(res, 200, { session: sessionView(session) });
+      }
       if (req.method === 'GET' && url.pathname === '/api/agent-executions') {
         const targetPath = await agentExecutionTargetPath(url.searchParams.get('path'));
         if (!targetPath) {
@@ -5859,20 +5872,29 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/session/resume') {
-        const body = await readJson(req);
-        const id = typeof body.id === 'string' ? body.id : '';
-        if (!id) return json(res, 400, { error: 'Missing session id' });
-        const listed = await sdk!.sessions.list();
-        const target = listed.find(item => item.id === id);
-        if (target?.kind === 'manager') {
-          return json(res, 400, { error: 'Manager sessions live in the Project Manager panel only.' });
-        }
-        try {
-          session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
-        } catch {
-          const restored = await unarchiveSession(id);
-          if (!restored) return json(res, 404, { error: 'Session not found' });
-          session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+        // Register the full mutation before the first await. If the POST
+        // connection drops, /api/session/active waits for this operation and
+        // can never report the previous session while a late switch is pending.
+        const resumeResult = await enqueueServerSessionResume(async () => {
+          const body = await readJson(req);
+          const id = typeof body.id === 'string' ? body.id : '';
+          if (!id) return { status: 400, error: 'Missing session id' };
+          const listed = await sdk!.sessions.list();
+          const target = listed.find(item => item.id === id);
+          if (target?.kind === 'manager') {
+            return { status: 400, error: 'Manager sessions live in the Project Manager panel only.' };
+          }
+          try {
+            session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+          } catch {
+            const restored = await unarchiveSession(id);
+            if (!restored) return { status: 404, error: 'Session not found' };
+            session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
+          }
+          return { status: 200 };
+        });
+        if (resumeResult.status !== 200) {
+          return json(res, resumeResult.status, { error: resumeResult.error });
         }
         return json(res, 200, await state());
       }
@@ -7477,6 +7499,77 @@ body[data-theme="dark"] {
 .project-workbench-panel.hidden { display: none !important; }
 .project-wb-toolbar { flex: 0 0 auto; min-height: 44px; padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .project-wb-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-1); }
+.agent-execution-panel { min-height: 0; overflow: auto; padding: 14px; background: var(--bg-app); }
+.agent-execution-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 2px 14px; }
+.agent-execution-toolbar h2 { margin: 0; font-size: 15px; color: var(--text-1); }
+.agent-execution-toolbar p { margin: 3px 0 0; font-size: 12px; color: var(--text-2); }
+.agent-execution-refresh { flex: 0 0 auto; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-2); padding: 0 10px; font-size: 12px; cursor: pointer; }
+.agent-execution-refresh:hover { color: var(--text-1); border-color: var(--border-hover); background: var(--surface-hover); }
+.agent-execution-state { display: grid; place-items: center; min-height: 180px; border: 1px dashed var(--border); border-radius: 12px; color: var(--text-2); font-size: 13px; background: var(--bg-surface); text-align: center; padding: 20px; }
+.agent-execution-state.error { border-color: rgba(220, 38, 38, .34); color: var(--err); }
+.agent-execution-group { display: grid; gap: 9px; margin-top: 10px; }
+.agent-execution-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-2); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.agent-execution-group-toggle { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 3px 0; text-align: left; }
+.agent-execution-group-toggle:hover { color: var(--text-1); }
+.agent-execution-root { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--bg-surface); box-shadow: 0 1px 2px rgba(24,24,27,.025); }
+.agent-execution-root.active { border-color: var(--border-active-soft); box-shadow: 0 0 0 2px var(--brand-soft); }
+.agent-execution-root-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
+.agent-execution-identity { min-width: 0; display: flex; align-items: center; gap: 9px; }
+.agent-execution-avatar { width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center; border-radius: 9px; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 750; }
+.agent-execution-root:nth-child(3n+2) .agent-execution-avatar { background: #F3E8FF; color: #7E22CE; }
+.agent-execution-root:nth-child(3n) .agent-execution-avatar { background: #DCFCE7; color: #15803D; }
+.agent-execution-title { min-width: 0; display: grid; gap: 2px; }
+.agent-execution-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-size: 13px; }
+.agent-execution-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 11.5px; }
+.agent-execution-root-meta { display: grid; justify-items: end; align-content: start; gap: 4px; text-align: right; color: var(--text-2); font-size: 11px; white-space: nowrap; }
+.agent-execution-status { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 7px; background: var(--surface-muted); color: var(--text-2); font-weight: 650; text-transform: capitalize; }
+.agent-execution-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.agent-execution-status.running, .agent-execution-status.pending_init { background: var(--brand-soft); color: var(--brand); }
+.agent-execution-status.running::before, .agent-execution-status.pending_init::before { background: var(--brand); }
+.agent-execution-status.completed { background: var(--ok-soft); color: var(--ok); }
+.agent-execution-status.completed::before { background: var(--ok); }
+.agent-execution-status.errored { background: var(--err-soft); color: var(--err); }
+.agent-execution-status.errored::before { background: var(--err); }
+.agent-execution-status.interrupted, .agent-execution-status.shutdown { background: #FEF3C7; color: #92400E; }
+.agent-execution-status.interrupted::before, .agent-execution-status.shutdown::before { background: #D97706; }
+.agent-execution-status.not_found { background: var(--surface-muted); color: var(--text-muted); }
+.agent-execution-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; border-radius: 9px; padding: 8px 9px; background: var(--surface-muted); color: var(--text-2); font-size: 12px; }
+.agent-execution-summary strong { color: var(--text-1); font-weight: 600; }
+.agent-execution-plan { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.agent-execution-plan-step { border-radius: 999px; padding: 3px 7px; background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-2); font-size: 11px; }
+.agent-execution-plan-step.current { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+.agent-execution-tree { display: grid; gap: 6px; }
+.agent-execution-node { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 36px; border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px; background: var(--bg-surface); color: var(--text-1); cursor: pointer; text-align: left; font: inherit; }
+.agent-execution-node:hover { border-color: var(--border-active); background: var(--surface-hover); }
+.agent-execution-node-depth { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 6px; background: var(--surface-muted); color: var(--text-2); font-size: 10px; font-weight: 700; }
+.agent-execution-node-depth.toggle { border: 1px solid var(--border); cursor: pointer; }
+.agent-execution-node-detail { margin: 4px 0 0 26px; color: var(--text-2); font-size: 10.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.agent-execution-node-detail.error { color: var(--err); }
+.agent-execution-node-copy { min-width: 0; display: grid; gap: 1px; }
+.agent-execution-node-copy strong, .agent-execution-node-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-execution-node-copy strong { font-size: 12px; }
+.agent-execution-node-copy small { color: var(--text-2); font-size: 10.5px; }
+.agent-execution-node-time { color: var(--text-2); font-size: 10.5px; white-space: nowrap; }
+.agent-node-open-session { min-height: 25px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-surface); color: var(--brand); padding: 0 7px; font-size: 10.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.agent-node-open-session:hover { background: var(--brand-soft); border-color: var(--border-active); }
+.agent-execution-children { display: grid; gap: 6px; margin-left: 18px; padding-left: 10px; border-left: 1px solid var(--border); }
+.agent-execution-relations { display: grid; gap: 4px; padding-top: 2px; }
+.agent-execution-edge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-left: 2px solid var(--border); padding-left: 7px; color: var(--text-2); font-size: 10.5px; }
+.agent-execution-edge.failed { border-color: var(--err); color: var(--err); }
+.agent-execution-load-more { justify-self: start; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--brand); padding: 0 10px; cursor: pointer; font-size: 12px; }
+.agent-execution-load-more:hover { background: var(--brand-soft); border-color: var(--border-active); }
+@media (max-width: 860px) {
+  .project-detail-tabs { overflow-x: auto; padding-left: 10px; padding-right: 10px; }
+  .project-detail-tab { flex: 0 0 auto; padding: 0 10px; }
+  .agent-execution-panel { padding: 10px; }
+  .agent-execution-root { padding: 10px; }
+  .agent-execution-root-head, .agent-execution-summary { grid-template-columns: minmax(0, 1fr); }
+  .agent-execution-root-meta { justify-items: start; text-align: left; grid-auto-flow: column; justify-content: start; }
+  .agent-execution-node { grid-template-columns: auto minmax(0, 1fr); }
+  .agent-execution-node-time { grid-column: 2; }
+  .agent-node-open-session { grid-column: 2; justify-self: start; }
+  .agent-execution-children { margin-left: 7px; padding-left: 7px; }
+}
 .project-wb-meta { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-wb-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .project-panel-empty { padding: 24px 16px; text-align: center; font-size: 13px; }
@@ -10191,6 +10284,16 @@ const state = {
   detailArchivedExpanded: false,
   detailConvQuery: '',
   projectDetailTab: 'document',
+  agentExecutions: null,
+  agentExecutionsLoading: false,
+  agentExecutionsError: null,
+  agentExecutionsProjectPath: null,
+  agentCompletedExpanded: false,
+  agentCompletedLimit: 10,
+  agentExecutionsPollTimer: null,
+  agentExecutionsRequestSeq: 0,
+  agentExecutionExpanded: {},
+  agentNodeExpanded: {},
   terminalHostMode: 'dock',
   projectDocLoadedFor: null,
   projectDocRaw: '',
@@ -10207,6 +10310,7 @@ const state = {
   issuesLoading: false,
   issuesError: null,
   activeSessionId: null,
+  sessionResumePending: false,
   lastHydratedMessages: null,
   transcriptCache: {},
   /** Agent name whose temporary effort editor is open in the composer picker. */
@@ -10240,6 +10344,8 @@ const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
 const input = el('promptInput');
 const statusbar = el('statusbar');
+let sessionResumeQueue = Promise.resolve();
+let sessionResumeSequence = 0;
 
 function tx() { return window.__ActoviqTranscript; }
 function initTranscriptUi() {
@@ -10902,6 +11008,15 @@ const STOP_SVG = '<svg class="ui-icon" viewBox="0 0 24 24" fill="currentColor" s
 function updateSendButton() {
   const btn = el('sendBtn');
   if (!btn) return;
+  if (state.sessionResumePending) {
+    btn.innerHTML = SEND_SVG;
+    btn.title = 'Switching conversation…';
+    btn.setAttribute('aria-label', 'Switching conversation');
+    btn.classList.remove('stopping');
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
   if (state.running) {
     btn.innerHTML = STOP_SVG;
     btn.title = 'Stop';
@@ -12077,28 +12192,6 @@ function renderTranscriptFromMessages(messages) {
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   scrollTranscript();
 }
-async function refreshSessionInBackground(id) {
-  try {
-    const res = await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-    if (!res.ok) return;
-    const snapshot = await res.json();
-    if (state.activeSessionId !== id) return;
-    state.snapshot = snapshot;
-    applyLoadedState();
-    const msgRes = await api('/api/session/messages');
-    if (!msgRes.ok) return;
-    const data = await msgRes.json();
-    if (state.activeSessionId !== id) return;
-    state.lastHydratedMessages = data.messages || [];
-    saveTranscriptCache(id, state.lastHydratedMessages, snapshot);
-    const cachedLen = state.transcriptCache[id]?.messages?.length ?? 0;
-    if (state.lastHydratedMessages.length !== cachedLen) {
-      renderTranscriptFromMessages(state.lastHydratedMessages);
-    }
-  } catch {
-    // Background sync only — ignore failures.
-  }
-}
 async function hydrateTranscript() {
   let data;
   try {
@@ -12523,41 +12616,108 @@ function toggleModelPicker() {
     closeModelPicker();
   }
 }
-async function resumeSession(id) {
+function setSessionResumePending(pending) {
+  state.sessionResumePending = pending;
+  if (input) input.disabled = pending;
+  updateSendButton();
+}
+async function activateResumedSession(snapshot, requestSequence) {
+  if (requestSequence !== sessionResumeSequence) return;
+  const nextSessionId = snapshot?.session?.id;
+  if (!nextSessionId) throw new Error('The server did not report an active conversation.');
+  const cached = state.transcriptCache[nextSessionId];
   closeSurface();
   switchProjectView('conversation');
-  if (state.activeSessionId === id && transcript.childElementCount > 0) return;
-  const cached = state.transcriptCache[id];
+  stashCurrentSessionCache();
+  state.snapshot = snapshot;
+  state.activeSessionId = nextSessionId;
   if (transcriptCacheFresh(cached)) {
-    stashCurrentSessionCache();
-    state.activeSessionId = id;
-    state.snapshot = cached.snapshot;
     state.lastHydratedMessages = cached.messages;
     applyLoadedState();
     renderTranscriptFromMessages(cached.messages);
-    void refreshSessionInBackground(id);
-    return;
+  } else {
+    transcript.textContent = '';
+    state.toolNodes.clear();
+    state.currentAssistant = null;
+    setRunStatus('Loading conversation…', 'running');
+    applyLoadedState();
   }
-  stashCurrentSessionCache();
-  transcript.textContent = '';
-  state.toolNodes.clear();
-  state.currentAssistant = null;
-  setRunStatus('Loading conversation…', 'running');
+  await hydrateTranscript();
+}
+async function reconcileResumedSession(id, requestSequence) {
+  let attempt = 0;
+  while (requestSequence === sessionResumeSequence) {
+    try {
+      const res = await api('/api/session/active');
+      if (!res.ok) throw new Error('Could not read the active conversation.');
+      const payload = await res.json();
+      const activeSession = payload?.session;
+      if (!activeSession?.id) throw new Error('The server did not report an active conversation.');
+      if (activeSession.id === state.activeSessionId) {
+        state.snapshot = Object.assign({}, state.snapshot || {}, { session: activeSession });
+        applyLoadedState();
+      } else {
+        const snapshot = Object.assign({}, state.snapshot || {}, { session: activeSession });
+        await activateResumedSession(snapshot, requestSequence);
+      }
+      flashStatus(activeSession.id === id
+        ? 'Conversation switch restored.'
+        : 'Conversation switch was not applied; the previous conversation is still active.');
+      void loadState();
+      return;
+    } catch {
+      attempt++;
+      flashStatus('Connection interrupted while switching conversations; reconciling safely…');
+      await new Promise(resolve => setTimeout(resolve, Math.min(2000, 250 * (2 ** Math.min(attempt, 3)))));
+    }
+  }
+}
+async function performResumeSession(id, requestSequence) {
   try {
-    const res = await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-    if (!res.ok) {
-      addMessage('error', await res.text());
-      setRunStatus(readyLabel(), '');
+    if (requestSequence !== sessionResumeSequence) return;
+    if (state.activeSessionId === id && transcript.childElementCount > 0) {
+      closeSurface();
+      switchProjectView('conversation');
       return;
     }
-    state.snapshot = await res.json();
-    state.activeSessionId = id;
-    applyLoadedState();
-    await hydrateTranscript();
+    const res = await api('/api/session/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+    if (requestSequence !== sessionResumeSequence) return;
+    if (!res.ok) {
+      const message = (await res.text()) || 'Could not resume this conversation.';
+      if (res.status < 500) {
+        flashStatus(message);
+        return;
+      }
+      throw new Error(message);
+    }
+    const snapshot = await res.json();
+    if (requestSequence !== sessionResumeSequence) return;
+    // The server has now serialized this switch. Until this point the old
+    // conversation remains visible and sending is disabled, so a cached child
+    // can never diverge from the server's active session.
+    await activateResumedSession(snapshot, requestSequence);
   } catch {
-    addMessage('error', 'Could not resume this conversation.');
-    setRunStatus(readyLabel(), '');
+    await reconcileResumedSession(id, requestSequence);
+  } finally {
+    if (requestSequence === sessionResumeSequence) setSessionResumePending(false);
   }
+}
+function resumeSession(id) {
+  if (state.running) {
+    flashStatus('Stop the current foreground run before switching conversations.');
+    return Promise.resolve();
+  }
+  if (state.sessionResumePending) {
+    flashStatus('A conversation switch is already in progress.');
+    return sessionResumeQueue;
+  }
+  const requestSequence = ++sessionResumeSequence;
+  setSessionResumePending(true);
+  const pending = sessionResumeQueue
+    .catch(() => undefined)
+    .then(() => performResumeSession(id, requestSequence));
+  sessionResumeQueue = pending.catch(() => undefined);
+  return pending;
 }
 function refreshProjectDetailSidebar() {
   if (state.projectView !== 'detail') return;
@@ -12572,6 +12732,10 @@ function refreshProjectDetailSidebar() {
 }
 async function switchProject(projectPath, view = 'conversation') {
   if (!projectPath) return false;
+  if (state.sessionResumePending) {
+    flashStatus('Wait for the conversation switch to finish.');
+    return false;
+  }
   if (state.projectDocDirty) await saveProjectDocNow();
   if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
   state.projectDocLoadedFor = null;
@@ -12582,6 +12746,16 @@ async function switchProject(projectPath, view = 'conversation') {
   state.issuesLoadedFor = null;
   state.issuesSelectedId = null;
   state.issuesError = null;
+  stopAgentExecutionPolling();
+  state.agentExecutionsRequestSeq++;
+  state.agentExecutions = null;
+  state.agentExecutionsLoading = false;
+  state.agentExecutionsError = null;
+  state.agentExecutionsProjectPath = null;
+  state.agentCompletedExpanded = false;
+  state.agentCompletedLimit = 10;
+  state.agentExecutionExpanded = {};
+  state.agentNodeExpanded = {};
   stashCurrentSessionCache();
   state.transcriptCache = {};
   state.activeSessionId = null;
@@ -12652,6 +12826,10 @@ async function submitWorkspace(event) {
   if (ok) closeWorkspaceDialog();
 }
 async function createNewSession() {
+  if (state.sessionResumePending) {
+    flashStatus('Wait for the conversation switch to finish.');
+    return;
+  }
   stashCurrentSessionCache();
   await api('/api/session/new', { method: 'POST' });
   transcript.textContent = '';
@@ -13052,6 +13230,7 @@ function switchProjectView(view) {
     if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
     state.projectDocEditing = false;
     if (state.projectDetailTab === 'terminal' || state.terminalHostMode === 'project') parkTerminalDock();
+    stopAgentExecutionPolling();
   }
   const ov = el('projectOverview');
   const dt = el('projectDetail');
@@ -13405,20 +13584,390 @@ async function mountProjectDoc(force) {
   if (btn) btn.textContent = 'Edit';
   setProjectDocStatus('', '');
 }
+const AGENT_EXECUTION_POLL_MS = 2000;
+const AGENT_EXECUTION_IDLE_POLL_MS = 5000;
+function agentExecutionViewIsVisible() {
+  const panel = el('agentExecutionsPanel');
+  return state.activeRegion === 'project'
+    && state.projectView === 'detail'
+    && state.projectDetailTab === 'agents'
+    && Boolean(panel && !panel.classList.contains('hidden'));
+}
+function stopAgentExecutionPolling() {
+  if (state.agentExecutionsPollTimer !== null) {
+    clearTimeout(state.agentExecutionsPollTimer);
+    state.agentExecutionsPollTimer = null;
+  }
+}
+function scheduleAgentExecutionPolling() {
+  stopAgentExecutionPolling();
+  if (!agentExecutionViewIsVisible()) return;
+  const delay = state.agentExecutions?.activeExecutionCount
+    ? AGENT_EXECUTION_POLL_MS
+    : AGENT_EXECUTION_IDLE_POLL_MS;
+  state.agentExecutionsPollTimer = setTimeout(() => {
+    state.agentExecutionsPollTimer = null;
+    void refreshAgentExecutions(true);
+  }, delay);
+}
+function agentStatusLabel(status) {
+  return ({ pending_init: 'Preparing', running: 'Running', completed: 'Completed', errored: 'Failed', interrupted: 'Interrupted', shutdown: 'Stopped', not_found: 'Unavailable' })[status] || 'Unknown';
+}
+function agentEdgeStatusLabel(status) {
+  return ({ started: 'Delegated', completed: 'Returned', failed: 'Failed' })[status] || 'Unknown';
+}
+function agentResultText(value) {
+  const text = String(value || '').replace(/\\s+/g, ' ').trim();
+  return text.length > 220 ? text.slice(0, 217) + '…' : text;
+}
+function agentTimingLabel(timing) {
+  if (!timing) return '';
+  const elapsed = typeof timing.elapsedMs === 'number' ? formatDuration(timing.elapsedMs) : '';
+  if (!elapsed) return timing.updatedAt ? formatRelativeTimeShort(timing.updatedAt) : '';
+  return timing.completedAt ? elapsed : ('Elapsed ' + elapsed);
+}
+function agentActivityText(activity) {
+  if (!activity) return '';
+  return activity.summary || activity.toolName || agentStatusLabel(activity.kind);
+}
+function agentNodeIndex(root) {
+  const index = new Map();
+  const visit = (node) => {
+    if (!node) return;
+    index.set(node.id, node);
+    for (const child of node.children || []) visit(child);
+  };
+  visit(root.root);
+  for (const node of root.detached || []) visit(node);
+  return index;
+}
+function appendAgentNode(host, node) {
+  const branch = document.createElement('div');
+  branch.className = 'agent-execution-node-branch';
+  const row = document.createElement('div');
+  row.className = 'agent-execution-node';
+  row.setAttribute('data-testid', 'agent-execution-node-' + node.id);
+  row.dataset.executionId = node.id;
+  const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+  const expanded = state.agentNodeExpanded[node.id] !== false;
+  const depth = hasChildren ? document.createElement('button') : document.createElement('span');
+  depth.className = 'agent-execution-node-depth' + (hasChildren ? ' toggle' : '');
+  depth.textContent = hasChildren ? (expanded ? '−' : '+') : String((node.depth || 0) + 1);
+  depth.title = hasChildren ? (expanded ? 'Collapse delegated agents' : 'Expand delegated agents') : (node.parentExecutionId ? 'Delegated subagent' : 'Root agent');
+  if (hasChildren) {
+    depth.type = 'button';
+    depth.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    depth.setAttribute('aria-label', (expanded ? 'Collapse ' : 'Expand ') + (node.displayName || node.agentName || 'agent') + ' subagents');
+    depth.setAttribute('data-testid', 'agent-node-toggle-' + node.id);
+    depth.addEventListener('click', () => {
+      state.agentNodeExpanded[node.id] = !expanded;
+      renderAgentExecutionsPanel();
+    });
+  }
+  const copy = document.createElement('span');
+  copy.className = 'agent-execution-node-copy';
+  const title = document.createElement('strong');
+  title.textContent = node.displayName || node.agentName || 'Agent';
+  const subtitle = document.createElement('small');
+  const activity = agentActivityText(node.currentActivity);
+  subtitle.textContent = [agentStatusLabel(node.status), activity, node.currentActivity?.toolName, node.role, node.runtime, node.model].filter(Boolean).join(' · ');
+  copy.append(title, subtitle);
+  const timing = document.createElement('span');
+  timing.className = 'agent-execution-node-time';
+  timing.textContent = agentTimingLabel(node.timing);
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'agent-node-open-session';
+  open.setAttribute('data-testid', 'agent-node-open-session-' + node.sessionId);
+  open.textContent = 'Open conversation';
+  open.title = "Open this agent's independent conversation";
+  open.addEventListener('click', () => { void resumeSession(node.sessionId); });
+  row.append(depth, copy, timing, open);
+  branch.appendChild(row);
+  const nodeFacts = [];
+  if (node.currentStep) nodeFacts.push('Now: ' + node.currentStep.title);
+  if (Array.isArray(node.nextSteps) && node.nextSteps.length) nodeFacts.push('Next: ' + node.nextSteps.slice(0, 2).map((step) => step.title).join(', '));
+  if (node.error) nodeFacts.push('Error: ' + agentResultText(node.error));
+  else if (node.result) nodeFacts.push('Result: ' + agentResultText(node.result));
+  if (nodeFacts.length) {
+    const details = document.createElement('div');
+    details.className = 'agent-execution-node-detail' + (node.error ? ' error' : '');
+    details.textContent = nodeFacts.join(' · ');
+    branch.appendChild(details);
+  }
+  if (hasChildren && expanded) {
+    const children = document.createElement('div');
+    children.className = 'agent-execution-children';
+    for (const child of node.children) appendAgentNode(children, child);
+    branch.appendChild(children);
+  }
+  host.appendChild(branch);
+}
+function appendAgentExecutionRoot(host, root) {
+  const card = document.createElement('section');
+  card.className = 'agent-execution-root' + (root.isActive ? ' active' : '');
+  card.setAttribute('data-testid', 'agent-execution-root-' + root.rootExecutionId);
+  card.dataset.rootExecutionId = root.rootExecutionId;
+  const head = document.createElement('header');
+  head.className = 'agent-execution-root-head';
+  const identity = document.createElement('div');
+  identity.className = 'agent-execution-identity';
+  const avatar = document.createElement('span');
+  avatar.className = 'agent-execution-avatar';
+  avatar.textContent = String(root.displayName || 'A').slice(0, 1).toUpperCase();
+  const title = document.createElement('div');
+  title.className = 'agent-execution-title';
+  const strong = document.createElement('strong');
+  strong.textContent = root.displayName || 'Agent execution';
+  const small = document.createElement('small');
+  small.textContent = root.subagentCount + ' subagent' + (root.subagentCount === 1 ? '' : 's') + ' · ' + root.nodeCount + ' total agents';
+  title.append(strong, small);
+  identity.append(avatar, title);
+  const meta = document.createElement('div');
+  meta.className = 'agent-execution-root-meta';
+  const status = document.createElement('span');
+  status.className = 'agent-execution-status ' + String(root.status || '');
+  status.textContent = agentStatusLabel(root.status);
+  status.setAttribute('aria-label', 'Execution status: ' + agentStatusLabel(root.status));
+  const elapsed = document.createElement('span');
+  elapsed.textContent = agentTimingLabel(root.timing);
+  meta.append(status, elapsed);
+  head.append(identity, meta);
+  card.appendChild(head);
+  const summaryText = agentActivityText(root.currentActivity);
+  if (summaryText || root.currentStep) {
+    const summary = document.createElement('div');
+    summary.className = 'agent-execution-summary';
+    const activity = document.createElement('span');
+    activity.textContent = summaryText || 'Awaiting the next step';
+    const step = document.createElement('strong');
+    step.setAttribute('data-testid', 'agent-current-step-' + root.rootExecutionId);
+    step.textContent = root.currentStep ? ('Now: ' + root.currentStep.title) : '';
+    summary.append(activity, step);
+    card.appendChild(summary);
+  }
+  if (root.root?.error || root.root?.result) {
+    const outcome = document.createElement('div');
+    outcome.className = 'agent-execution-node-detail' + (root.root.error ? ' error' : '');
+    outcome.textContent = (root.root.error ? 'Error: ' : 'Result: ') + agentResultText(root.root.error || root.root.result);
+    card.appendChild(outcome);
+  }
+  if (Array.isArray(root.nextSteps) && root.nextSteps.length) {
+    const plan = document.createElement('div');
+    plan.className = 'agent-execution-plan';
+    plan.setAttribute('data-testid', 'agent-next-steps-' + root.rootExecutionId);
+    for (const next of root.nextSteps.slice(0, 4)) {
+      const step = document.createElement('span');
+      step.className = 'agent-execution-plan-step';
+      step.textContent = 'Next: ' + next.title;
+      plan.appendChild(step);
+    }
+    card.appendChild(plan);
+  }
+  const expanded = state.agentExecutionExpanded[root.rootExecutionId] !== false;
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'agent-execution-group-toggle';
+  toggle.setAttribute('data-testid', 'agent-execution-toggle-' + root.rootExecutionId);
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  toggle.textContent = expanded ? 'Hide execution tree' : 'Show execution tree';
+  toggle.addEventListener('click', () => {
+    state.agentExecutionExpanded[root.rootExecutionId] = !expanded;
+    renderAgentExecutionsPanel();
+  });
+  card.appendChild(toggle);
+  if (expanded) {
+    const tree = document.createElement('div');
+    tree.className = 'agent-execution-tree';
+    if (root.root) appendAgentNode(tree, root.root);
+    if (Array.isArray(root.detached) && root.detached.length) {
+      const detached = document.createElement('small');
+      detached.className = 'muted';
+      detached.textContent = 'Detached agents';
+      tree.appendChild(detached);
+      for (const node of root.detached) appendAgentNode(tree, node);
+    }
+    card.appendChild(tree);
+    const nodeIndex = agentNodeIndex(root);
+    const edges = Array.isArray(root.edges) ? root.edges : [];
+    if (edges.length) {
+      const relations = document.createElement('div');
+      relations.className = 'agent-execution-relations';
+      for (const edge of edges) {
+        const edgeRow = document.createElement('div');
+        edgeRow.className = 'agent-execution-edge ' + String(edge.status || '');
+        edgeRow.setAttribute('data-testid', 'agent-edge-' + edge.callId);
+        const from = nodeIndex.get(edge.sourceExecutionId)?.displayName || 'Agent';
+        const to = nodeIndex.get(edge.targetExecutionId)?.displayName || 'Agent';
+        edgeRow.textContent = from + ' → ' + to + ' · ' + agentEdgeStatusLabel(edge.status) + (edge.summary ? (' · ' + agentResultText(edge.summary)) : '') + (edge.error ? (' · ' + agentResultText(edge.error)) : '') + (edge.result ? (' · ' + agentResultText(edge.result)) : '');
+        relations.appendChild(edgeRow);
+      }
+      card.appendChild(relations);
+    }
+  }
+  host.appendChild(card);
+}
+function renderAgentExecutionsPanel() {
+  const panel = el('agentExecutionsPanel');
+  if (!panel) return;
+  panel.textContent = '';
+  panel.setAttribute('aria-busy', state.agentExecutionsLoading ? 'true' : 'false');
+  panel.setAttribute('aria-live', 'polite');
+  if (state.agentExecutionsLoading && !state.agentExecutions) {
+    const loading = document.createElement('div');
+    loading.className = 'agent-execution-state';
+    loading.setAttribute('data-testid', 'agent-executions-loading');
+    loading.textContent = 'Loading agent executions…';
+    panel.appendChild(loading);
+    return;
+  }
+  if (state.agentExecutionsError) {
+    const error = document.createElement('div');
+    error.className = 'agent-execution-state error';
+    error.setAttribute('data-testid', 'agent-executions-error');
+    const message = document.createElement('span');
+    message.textContent = state.agentExecutionsError;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'agent-execution-load-more';
+    retry.setAttribute('data-testid', 'agent-executions-retry');
+    retry.textContent = 'Try again';
+    retry.addEventListener('click', () => { void refreshAgentExecutions(true); });
+    error.append(message, retry);
+    panel.appendChild(error);
+    return;
+  }
+  const view = state.agentExecutions;
+  if (!view || !(view.totalExecutionCount || 0)) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-execution-state';
+    empty.setAttribute('data-testid', 'agent-executions-empty');
+    const message = document.createElement('span');
+    message.textContent = 'No agent executions for this project yet. Delegated agents will appear here with their own conversations.';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'agent-execution-refresh';
+    refresh.setAttribute('data-testid', 'agent-executions-empty-refresh');
+    refresh.textContent = 'Refresh';
+    refresh.addEventListener('click', () => { void refreshAgentExecutions(true); });
+    empty.append(message, refresh);
+    panel.appendChild(empty);
+    if (!state.agentExecutionsLoading) scheduleAgentExecutionPolling();
+    return;
+  }
+  const toolbar = document.createElement('header');
+  toolbar.className = 'agent-execution-toolbar';
+  const copy = document.createElement('div');
+  const heading = document.createElement('h2');
+  heading.textContent = 'Agent executions';
+  const detail = document.createElement('p');
+  detail.textContent = view.activeExecutionCount + ' active · ' + view.totalAgentCount + ' agents · ' + view.erroredExecutionCount + ' errors';
+  copy.append(heading, detail);
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.className = 'agent-execution-refresh';
+  refresh.textContent = state.agentExecutionsLoading ? 'Refreshing…' : 'Refresh';
+  refresh.disabled = state.agentExecutionsLoading;
+  refresh.addEventListener('click', () => { void refreshAgentExecutions(true); });
+  toolbar.append(copy, refresh);
+  panel.appendChild(toolbar);
+  if (Array.isArray(view.active) && view.active.length) {
+    const active = document.createElement('section');
+    active.className = 'agent-execution-group';
+    const head = document.createElement('div');
+    head.className = 'agent-execution-group-head';
+    head.textContent = 'Active (' + view.active.length + ')';
+    active.appendChild(head);
+    for (const root of view.active) appendAgentExecutionRoot(active, root);
+    panel.appendChild(active);
+  }
+  if (Array.isArray(view.completed) && view.completed.length) {
+    const completed = document.createElement('section');
+    completed.className = 'agent-execution-group';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'agent-execution-group-toggle';
+    toggle.setAttribute('data-testid', 'completed-toggle');
+    toggle.setAttribute('aria-expanded', state.agentCompletedExpanded ? 'true' : 'false');
+    toggle.textContent = (state.agentCompletedExpanded ? 'Hide' : 'Show') + ' completed (' + view.completed.length + ')';
+    toggle.addEventListener('click', () => {
+      state.agentCompletedExpanded = !state.agentCompletedExpanded;
+      renderAgentExecutionsPanel();
+    });
+    completed.appendChild(toggle);
+    if (state.agentCompletedExpanded) {
+      const visible = view.completed.slice(0, state.agentCompletedLimit);
+      for (const root of visible) appendAgentExecutionRoot(completed, root);
+      if (visible.length < view.completed.length) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'agent-execution-load-more';
+        more.setAttribute('data-testid', 'agent-executions-load-more');
+        more.textContent = 'Load 10 more';
+        more.addEventListener('click', () => {
+          state.agentCompletedLimit += 10;
+          renderAgentExecutionsPanel();
+        });
+        completed.appendChild(more);
+      }
+    }
+    panel.appendChild(completed);
+  }
+}
+async function refreshAgentExecutions(force) {
+  if (!agentExecutionViewIsVisible()) return;
+  const projectPath = String(state.snapshot?.workDir || '');
+  if (!projectPath) return;
+  if (state.agentExecutionsLoading) return;
+  stopAgentExecutionPolling();
+  if (!force && state.agentExecutionsProjectPath === projectPath && state.agentExecutions) {
+    renderAgentExecutionsPanel();
+    scheduleAgentExecutionPolling();
+    return;
+  }
+  const requestSeq = ++state.agentExecutionsRequestSeq;
+  state.agentExecutionsLoading = true;
+  state.agentExecutionsError = null;
+  renderAgentExecutionsPanel();
+  try {
+    const res = await api('/api/agent-executions?path=' + encodeURIComponent(projectPath));
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Could not load agent executions.');
+    if (requestSeq !== state.agentExecutionsRequestSeq || !agentExecutionViewIsVisible() || state.snapshot?.workDir !== projectPath) return;
+    state.agentExecutions = body;
+    state.agentExecutionsProjectPath = projectPath;
+  } catch (error) {
+    if (requestSeq !== state.agentExecutionsRequestSeq || !agentExecutionViewIsVisible() || state.snapshot?.workDir !== projectPath) return;
+    state.agentExecutions = null;
+    state.agentExecutionsError = error && error.message ? error.message : 'Could not load agent executions.';
+  } finally {
+    // The request owns this loading flag even if the user left Agents while it
+    // was in flight. Rendering/scheduling remains visibility-bound below.
+    if (requestSeq !== state.agentExecutionsRequestSeq) return;
+    state.agentExecutionsLoading = false;
+    if (!agentExecutionViewIsVisible() || state.snapshot?.workDir !== projectPath) return;
+    renderAgentExecutionsPanel();
+    scheduleAgentExecutionPolling();
+  }
+}
 function setProjectDetailTab(tab) {
-  const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1 };
+  const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1, agents: 1 };
   const next = allowed[tab] ? tab : 'document';
   if (state.projectDetailTab === next) {
     if (next === 'terminal') mountProjectTerminal();
+    else if (next === 'agents') void refreshAgentExecutions(true);
     return;
   }
   if (state.projectDetailTab === 'document' && state.projectDocDirty) void saveProjectDocNow();
   if (state.projectDetailTab === 'terminal' && next !== 'terminal') {
     parkTerminalDock();
   }
+  if (next !== 'agents') stopAgentExecutionPolling();
   state.projectDetailTab = next;
   document.querySelectorAll('.project-detail-tab').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.detailTab === next);
+    btn.setAttribute('aria-selected', btn.dataset.detailTab === next ? 'true' : 'false');
+    btn.tabIndex = btn.dataset.detailTab === next ? 0 : -1;
   });
   const panels = {
     document: el('projectDocumentPanel'),
@@ -13426,6 +13975,7 @@ function setProjectDetailTab(tab) {
     git: el('projectGitPanel'),
     terminal: el('projectTerminalPanel'),
     files: el('projectFilesPanel'),
+    agents: el('agentExecutionsPanel'),
   };
   for (const key of Object.keys(panels)) {
     if (panels[key]) panels[key].classList.toggle('hidden', key !== next);
@@ -13435,6 +13985,7 @@ function setProjectDetailTab(tab) {
   else if (next === 'git') void renderProjectGitPanel(false);
   else if (next === 'files') void renderProjectFilesPanel(false);
   else if (next === 'terminal') mountProjectTerminal();
+  else if (next === 'agents') void refreshAgentExecutions(true);
 }
 function workbenchHome() {
   return document.querySelector('#projectConversation .workbench') || el('projectConversation');
@@ -15054,22 +15605,56 @@ function renderProjectDetail() {
   main.className = 'detail-main';
   const tabs = document.createElement('div');
   tabs.className = 'project-detail-tabs';
-  for (const tab of [
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', 'Project workbench');
+  const detailTabs = [
     ['document', 'Document'],
     ['issues', 'Issues'],
     ['git', 'Git'],
     ['terminal', 'Terminal'],
     ['files', 'Files'],
-  ]) {
+    ['agents', 'Agents'],
+  ];
+  const detailPanelIds = {
+    document: 'projectDocumentPanel',
+    issues: 'projectIssuesPanel',
+    git: 'projectGitPanel',
+    terminal: 'projectTerminalPanel',
+    files: 'projectFilesPanel',
+    agents: 'agentExecutionsPanel',
+  };
+  for (const tab of detailTabs) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'project-detail-tab' + (state.projectDetailTab === tab[0] ? ' active' : '');
     btn.dataset.detailTab = tab[0];
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', state.projectDetailTab === tab[0] ? 'true' : 'false');
+    btn.tabIndex = state.projectDetailTab === tab[0] ? 0 : -1;
+    btn.id = 'projectTab' + tab[0].slice(0, 1).toUpperCase() + tab[0].slice(1);
+    btn.setAttribute('aria-controls', detailPanelIds[tab[0]]);
+    if (tab[0] === 'agents') {
+      btn.setAttribute('data-testid', 'project-tab-agents');
+    }
     const issueCount = tab[0] === 'issues' ? (state.snapshot?.issueSummary?.open || 0) : 0;
     btn.textContent = tab[1] + (issueCount > 0 ? ' (' + issueCount + ')' : '');
     btn.addEventListener('click', () => setProjectDetailTab(tab[0]));
     tabs.appendChild(btn);
   }
+  tabs.addEventListener('keydown', (event) => {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    const buttons = Array.from(tabs.querySelectorAll('.project-detail-tab'));
+    const currentIndex = Math.max(0, buttons.indexOf(document.activeElement));
+    const nextIndex = event.key === 'Home' ? 0
+      : event.key === 'End' ? buttons.length - 1
+      : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+    const nextButton = buttons[nextIndex];
+    if (!nextButton) return;
+    event.preventDefault();
+    setProjectDetailTab(nextButton.dataset.detailTab);
+    nextButton.focus();
+  });
   const docPanel = document.createElement('section');
   docPanel.id = 'projectDocumentPanel';
   docPanel.className = 'project-doc-panel' + (state.projectDetailTab === 'document' ? '' : ' hidden');
@@ -15155,7 +15740,24 @@ function renderProjectDetail() {
   const filesPanel = document.createElement('section');
   filesPanel.id = 'projectFilesPanel';
   filesPanel.className = 'project-workbench-panel' + (state.projectDetailTab === 'files' ? '' : ' hidden');
-  main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel);
+  const agentsPanel = document.createElement('section');
+  agentsPanel.id = 'agentExecutionsPanel';
+  agentsPanel.className = 'project-workbench-panel agent-execution-panel' + (state.projectDetailTab === 'agents' ? '' : ' hidden');
+  agentsPanel.setAttribute('role', 'tabpanel');
+  agentsPanel.setAttribute('aria-labelledby', 'projectTabAgents');
+  agentsPanel.setAttribute('data-testid', 'agent-executions-panel');
+  for (const [tabKey, panel] of Object.entries({
+    document: docPanel,
+    issues: issuesPanel,
+    git: gitPanel,
+    terminal: terminalPanel,
+    files: filesPanel,
+    agents: agentsPanel,
+  })) {
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', 'projectTab' + tabKey.slice(0, 1).toUpperCase() + tabKey.slice(1));
+  }
+  main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel, agentsPanel);
   const sidebar = document.createElement('aside');
   sidebar.className = 'detail-sidebar';
   const top = document.createElement('div');
@@ -15193,6 +15795,7 @@ function renderProjectDetail() {
   else if (state.projectDetailTab === 'git') void renderProjectGitPanel(false);
   else if (state.projectDetailTab === 'files') void renderProjectFilesPanel(false);
   else if (state.projectDetailTab === 'terminal') mountProjectTerminal();
+  else if (state.projectDetailTab === 'agents') void refreshAgentExecutions(true);
   else void mountProjectDoc(false);
 }
 function selectDetailConversation(id) {
@@ -16163,6 +16766,10 @@ async function enqueueText(text) {
 }
 async function submitText(text) {
   if (!text) return;
+  if (state.sessionResumePending) {
+    flashStatus('Wait for the conversation switch to finish.');
+    return;
+  }
   // /automation — open the create-task dialog from any conversation. The task
   // is scoped 'global' so it shows in the Automation panel regardless of project.
   const trimmed = text.trim();
@@ -16178,7 +16785,7 @@ async function submitText(text) {
   await sendText(text);
 }
 async function processQueue() {
-  if (state.running || state.queue.length === 0) return;
+  if (state.running || state.sessionResumePending || state.queue.length === 0) return;
   const next = state.queue.shift();
   renderQueue();
   if (next) await sendText(next);
@@ -16318,6 +16925,7 @@ async function openSurface(kind) {
 // their content inline here. The surface DRAWER remains for browse-style
 // surfaces (sessions, git, tools, skills, agents, mcp, routers, projects).
 async function switchRegion(name) {
+  if (name !== 'project') stopAgentExecutionPolling();
   state.activeRegion = name;
   document.querySelectorAll('[data-region]:not(.region-nav)').forEach((node) => {
     node.classList.toggle('hidden', node.getAttribute('data-region') !== name);
@@ -16333,6 +16941,9 @@ async function switchRegion(name) {
   renderContextRail();
   stopRailReminderPoll();
   if (name === 'project' && state.projectView === 'overview') startRailReminderPoll();
+  if (name === 'project' && state.projectView === 'detail' && state.projectDetailTab === 'agents') {
+    void refreshAgentExecutions(true);
+  }
   if (name === 'automation') await renderAutomationRegion();
   else if (name === 'plugins') await renderPluginsRegion(state.pluginsView || 'plugins');
   else if (name === 'team') await renderTeamRegion();
@@ -20709,6 +21320,10 @@ async function forgetWorkspace(projectPath) {
   flashStatus('Workspace forgotten' + (payload.deleted ? ' (' + payload.deleted + ' chats removed)' : ''));
 }
 async function sendText(text) {
+  if (state.sessionResumePending) {
+    flashStatus('Wait for the conversation switch to finish.');
+    return;
+  }
   state.running = true;
   state.activeRunId = null;
   setRunStatus('Running', 'running');

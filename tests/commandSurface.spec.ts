@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTOVIQ_INTERACTIVE_COMMANDS,
   SUBCOMMANDS,
+  SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  selectInteractiveCommand,
 } from '../src/ui/commandSurface.js';
 
 describe('filterInteractiveCommands', () => {
@@ -70,5 +72,20 @@ describe('filterInteractiveCommands', () => {
     for (const head of Object.keys(SUBCOMMANDS)) {
       expect(ACTOVIQ_INTERACTIVE_COMMANDS[head]).toBeDefined();
     }
+  });
+
+  it('offers Agent execution browsing after the definition list command', () => {
+    const agentCommands = SUBCOMMANDS.agents;
+    expect(agentCommands).toEqual(['list', 'runs', 'show', 'open']);
+    expect(filterInteractiveCommands('/agents r')).toEqual(['agents runs']);
+    expect(filterInteractiveCommands('/agents show')).toEqual(['agents show']);
+    for (const command of agentCommands ?? []) {
+      expect(SUBCOMMAND_DESCRIPTIONS[`agents ${command}`]).toBeTruthy();
+    }
+  });
+
+  it('submits a selected Agent sub-command exactly once', () => {
+    expect(selectInteractiveCommand('/agents r')).toBe('/agents runs');
+    expect(selectInteractiveCommand('/agents runs')).toBe('/agents runs');
   });
 });
