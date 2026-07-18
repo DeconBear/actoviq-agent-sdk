@@ -248,7 +248,11 @@ import {
   toSettingsHooksBlock,
 } from '../hooks/userHooks.js';
 import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
-import { encodeActoviqProjectPath, getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import {
+  encodeActoviqProjectPath,
+  getActoviqProjectSessionDirectory,
+  migrateLegacyActoviqProjectData,
+} from '../config/projectSessionDirectory.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -256,6 +260,10 @@ import {
 import { readPackageVersion } from '../cli/version.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
+import {
+  createAgentExecutionProjectView,
+  createAgentExecutionRootView,
+} from '../ui/agentExecutionView.js';
 import { renderMarkdown } from './guiMarkdown.js';
 import { detectEditorLanguage, highlightCode } from './guiSyntaxHighlight.js';
 import {
@@ -309,6 +317,9 @@ import type {
   WorkflowNode,
 } from '../types.js';
 import type { AgentSession } from '../runtime/agentSession.js';
+import { AgentExecutionStore } from '../storage/agentExecutionStore.js';
+import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
+import { assertSafeStorageSegment } from '../storage/pathSafety.js';
 import { extractConversationBrief, extractPreviewFromMessages } from '../runtime/messageUtils.js';
 import { truncateText } from '../runtime/helpers.js';
 import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
@@ -790,9 +801,62 @@ interface StoredSessionFile {
   updatedAt?: string;
 }
 
-/** Manager sessions belong to the corner panel only — never the chat list. */
+/** Manager and delegated-agent sessions have dedicated surfaces, never the chat list. */
 function isVisibleChatSession(item: Pick<SessionSummary, 'kind'>): boolean {
-  return item.kind !== 'manager';
+  return item.kind !== 'manager' && item.kind !== 'agent';
+}
+
+function inferStoredSessionKind(
+  explicitKind: unknown,
+  metadata: Record<string, unknown>,
+): SessionSummary['kind'] | undefined {
+  const kindRaw = typeof explicitKind === 'string' ? explicitKind : metadata.__actoviqKind;
+  if (
+    kindRaw === 'manager'
+    || kindRaw === 'worktree'
+    || kindRaw === 'main'
+    || kindRaw === 'agent'
+  ) {
+    return kindRaw;
+  }
+  return typeof metadata.__actoviqAgentDefinition === 'string' ? 'agent' : undefined;
+}
+
+function jsonStorageId(fileName: string): string | undefined {
+  if (!fileName.endsWith('.json')) return undefined;
+  try {
+    return assertSafeStorageSegment(
+      'session JSON storage id',
+      fileName.slice(0, -'.json'.length),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+async function hasUnreadableAgentExecutionFiles(
+  projectRoot: string,
+  store: AgentExecutionStore,
+): Promise<boolean> {
+  const directory = path.join(projectRoot, 'agent-executions');
+  let files: string[];
+  try {
+    files = await readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    const rootExecutionId = jsonStorageId(file);
+    if (!rootExecutionId) return true;
+    try {
+      if (!await store.getSnapshot(rootExecutionId)) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 function issueSessionFieldsFromMetadata(metadata: Record<string, unknown> | undefined): Partial<SessionSummary> {
@@ -845,15 +909,14 @@ async function listStoredSessionFiles(projectRoot: string): Promise<StoredSessio
   }
   const sessions: StoredSessionFile[] = [];
   for (const file of files) {
-    if (!file.endsWith('.json')) continue;
+    const storageId = jsonStorageId(file);
+    if (!storageId) continue;
     const filePath = path.join(sessionsDir, file);
     try {
       const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown;
       const metadata = isPlainRecord(raw) && isPlainRecord(raw.metadata) ? raw.metadata : {};
       const messages = isPlainRecord(raw) && Array.isArray(raw.messages) ? raw.messages : [];
-      const kindRaw = isPlainRecord(raw) && typeof raw.kind === 'string' ? raw.kind : metadata.__actoviqKind;
-      const kind = kindRaw === 'manager' || kindRaw === 'worktree' || kindRaw === 'main' ? kindRaw : undefined;
-      const storageId = file.slice(0, -'.json'.length);
+      const kind = inferStoredSessionKind(isPlainRecord(raw) ? raw.kind : undefined, metadata);
       const updatedAt = isPlainRecord(raw) && typeof raw.updatedAt === 'string'
         ? raw.updatedAt
         : (typeof metadata.__actoviqUpdatedAt === 'string' ? metadata.__actoviqUpdatedAt : '');
@@ -902,8 +965,7 @@ function storedJsonToSessionSummary(raw: unknown, archived = false): SessionSumm
   const runs = Array.isArray(session.runs) ? session.runs : [];
   const runtimeRaw = session.metadata?.__actoviqRuntime;
   const configRaw = session.metadata?.__actoviqConfigName;
-  const kindRaw = session.kind ?? session.metadata?.__actoviqKind;
-  const kind = kindRaw === 'manager' || kindRaw === 'worktree' || kindRaw === 'main' ? kindRaw : undefined;
+  const kind = inferStoredSessionKind(session.kind, session.metadata ?? {});
   const id = typeof session.id === 'string' ? session.id : '';
   if (!id) return null;
   return {
@@ -959,8 +1021,53 @@ async function listArchivedSessionsForWorkDir(
 async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
   let deleted = 0;
   for (const projectRoot of projectRoots) {
+    const runtimeProtectedSessionIds = new Set([activeSessionId]);
+    let executionSnapshots: Awaited<ReturnType<AgentExecutionStore['listSnapshots']>>;
+    let backgroundTasks: Awaited<ReturnType<BackgroundTaskStore['list']>>;
+    try {
+      const executionStore = new AgentExecutionStore(projectRoot);
+      if (await hasUnreadableAgentExecutionFiles(projectRoot, executionStore)) {
+        console.warn(
+          `Skipping empty-session cleanup for ${projectRoot}: unreadable Agent execution state`,
+        );
+        continue;
+      }
+      [executionSnapshots, backgroundTasks] = await Promise.all([
+        executionStore.listSnapshots(),
+        new BackgroundTaskStore(projectRoot).list(),
+      ]);
+    } catch (error) {
+      console.warn(
+        `Skipping empty-session cleanup for ${projectRoot}: ${(error as Error).message}`,
+      );
+      continue;
+    }
+    for (const snapshot of executionSnapshots) {
+      const active = snapshot.nodes.some(node =>
+        node.agentStatus === 'pending_init'
+        || node.agentStatus === 'running'
+        || node.threadStatus === 'active');
+      if (!active) continue;
+      for (const node of snapshot.nodes) {
+        runtimeProtectedSessionIds.add(node.sessionId);
+      }
+      for (const edge of snapshot.edges) {
+        if (edge.sourceSessionId) runtimeProtectedSessionIds.add(edge.sourceSessionId);
+        if (edge.targetSessionId) runtimeProtectedSessionIds.add(edge.targetSessionId);
+      }
+    }
+    for (const task of backgroundTasks) {
+      if (task.status !== 'queued' && task.status !== 'running') continue;
+      if (task.parentSessionId) runtimeProtectedSessionIds.add(task.parentSessionId);
+      if (task.sessionId) runtimeProtectedSessionIds.add(task.sessionId);
+    }
     for (const item of await listStoredSessionFiles(projectRoot)) {
-      if (item.id === activeSessionId || item.storageId === activeSessionId || item.messageCount > 0) continue;
+      if (
+        runtimeProtectedSessionIds.has(item.id)
+        || runtimeProtectedSessionIds.has(item.storageId)
+        || item.kind === 'agent'
+        || item.messageCount > 0
+      ) continue;
       await rm(item.filePath, { force: true });
       await rm(path.join(projectRoot, 'sessions', '.checkpoints', item.storageId), {
         recursive: true,
@@ -999,7 +1106,7 @@ async function projectSessionOverview(
   const candidates: SidebarRecentSession[] = [];
   // Single directory pass — previously stats + recents each readdir+parsed every JSON.
   for (const item of await listStoredSessionFiles(projectRoot)) {
-    if (item.messageCount === 0 || item.kind === 'manager') continue;
+    if (item.messageCount === 0 || !isVisibleChatSession(item)) continue;
     if (item.workDir && normalizeFsPath(item.workDir) !== workKey) continue;
     count += 1;
     lastUsedAt = maxIso(lastUsedAt, item.updatedAt || '');
@@ -1071,6 +1178,15 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
 
   const rows = [...projects.values()];
   await Promise.all(rows.map(async (project) => {
+    await migrateLegacyActoviqProjectData({
+      homeDir,
+      workDir: project.path,
+      targetDirectory: getActoviqProjectSessionDirectory(project.path, homeDir),
+    }).catch(error => {
+      console.warn(
+        `Could not migrate legacy project data for ${project.path}: ${(error as Error).message}`,
+      );
+    });
     const [note, overview, meta] = await Promise.all([
       readWorkspaceNote(project.path, homeDir),
       projectSessionOverview(project.path, homeDir, 3),
@@ -1642,6 +1758,35 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     guiHomeOverride
       ? resolveActoviqHome(guiHomeOverride, { inputKind: 'dataRoot' })
       : resolveActoviqHome(options.homeDir);
+  const migratedProjectData = new Set<string>();
+  const ensureProjectDataMigrated = async (
+    projectPath: string,
+    homeDir = resolveGuiHomeDir(),
+  ): Promise<string> => {
+    const targetDirectory = getActoviqProjectSessionDirectory(projectPath, homeDir);
+    const key = normalizeFsPath(targetDirectory);
+    if (!migratedProjectData.has(key)) {
+      try {
+        const summary = await migrateLegacyActoviqProjectData({
+          homeDir,
+          workDir: projectPath,
+          targetDirectory,
+        });
+        migratedProjectData.add(key);
+        if (summary.retainedUnassignedArtifacts.length > 0) {
+          console.warn(
+            `Legacy project data retained without automatic ownership for ${projectPath}: ` +
+            summary.retainedUnassignedArtifacts.join(', '),
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `Could not migrate legacy project data for ${projectPath}: ${(error as Error).message}`,
+        );
+      }
+    }
+    return targetDirectory;
+  };
 
   try {
     if (options.configPath) await loadJsonConfigFile(options.configPath);
@@ -2556,7 +2701,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     try {
       const stored = await sdk!.sessions.list();
       sessionSummaries = stored
-        .filter(s => s.kind !== 'manager')
+        .filter(isVisibleChatSession)
         .map(s => ({
           id: s.id,
           title: s.title,
@@ -4248,8 +4393,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const archiveDir = path.join(projectRoot, 'archive');
       try {
         for (const file of await readdir(archiveDir)) {
-          if (!file.endsWith('.json')) continue;
-          const storageId = file.slice(0, -'.json'.length);
+          const storageId = jsonStorageId(file);
+          if (!storageId) continue;
           let sessionId: string | undefined;
           try {
             const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
@@ -4310,8 +4455,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       try {
         const files = await readdir(archiveDir);
         for (const file of files) {
-          if (!file.endsWith('.json')) continue;
-          const storageId = file.slice(0, -'.json'.length);
+          const storageId = jsonStorageId(file);
+          if (!storageId) continue;
           // Read the archived file to get the session id.
           let sessionId: string | undefined;
           try {
@@ -4340,8 +4485,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const addDir = async (archiveDir: string) => {
       try {
         for (const file of await readdir(archiveDir)) {
-          if (!file.endsWith('.json')) continue;
-          const storageId = file.slice(0, -'.json'.length);
+          const storageId = jsonStorageId(file);
+          if (!storageId) continue;
           try {
             const raw = JSON.parse(await readFile(path.join(archiveDir, file), 'utf8')) as unknown;
             if (typeof raw !== 'object' || raw === null) continue;
@@ -4422,6 +4567,17 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     typeof rawPath === 'string' && rawPath.trim()
       ? path.resolve(rawPath.trim())
       : workDir;
+
+  const agentExecutionTargetPath = async (rawPath: string | null): Promise<string | undefined> => {
+    const input = rawPath?.trim();
+    if (!input) return undefined;
+    try {
+      const resolved = path.resolve(input);
+      return (await stat(resolved)).isDirectory() ? resolved : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   const issueStorageFor = async (targetPath: string, homeDir: string): Promise<IssueStorageMode> => {
     const meta = await readProjectMeta(targetPath, homeDir);
@@ -4574,6 +4730,40 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           await dedupeManagerSessions().catch(() => undefined);
         }
         return json(res, 200, await state());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/agent-executions') {
+        const targetPath = await agentExecutionTargetPath(url.searchParams.get('path'));
+        if (!targetPath) {
+          return json(res, 400, { error: 'path must identify an existing project directory' });
+        }
+        const executionStore = new AgentExecutionStore(
+          await ensureProjectDataMigrated(targetPath),
+        );
+        return json(
+          res,
+          200,
+          createAgentExecutionProjectView(await executionStore.listSnapshots()),
+        );
+      }
+      if (req.method === 'GET' && url.pathname === '/api/agent-execution') {
+        const targetPath = await agentExecutionTargetPath(url.searchParams.get('path'));
+        const rootExecutionId = url.searchParams.get('rootExecutionId')?.trim() ?? '';
+        if (!targetPath) {
+          return json(res, 400, { error: 'path must identify an existing project directory' });
+        }
+        try {
+          assertSafeStorageSegment('rootExecutionId', rootExecutionId);
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+        const executionStore = new AgentExecutionStore(
+          await ensureProjectDataMigrated(targetPath),
+        );
+        const snapshot = await executionStore.getSnapshot(rootExecutionId);
+        if (!snapshot) {
+          return json(res, 404, { error: `Agent execution not found: ${rootExecutionId}` });
+        }
+        return json(res, 200, createAgentExecutionRootView(snapshot));
       }
   if (req.method === 'GET' && url.pathname === '/api/team/definition') {
     const name = url.searchParams.get('name') || '';

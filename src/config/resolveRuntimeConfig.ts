@@ -14,7 +14,7 @@ import {
 } from './modelTiers.js';
 import {
   getActoviqProjectSessionDirectory,
-  migrateLegacyActoviqProjectSessions,
+  migrateLegacyActoviqProjectData,
 } from './projectSessionDirectory.js';
 
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
@@ -131,11 +131,17 @@ export async function resolveRuntimeConfig(
   const sessionDirectory =
     options.sessionDirectory ?? getActoviqProjectSessionDirectory(workDir, homeDir);
   if (!options.sessionDirectory) {
-    await migrateLegacyActoviqProjectSessions({
-      homeDir,
-      workDir,
-      targetDirectory: sessionDirectory,
-    });
+    try {
+      await migrateLegacyActoviqProjectData({
+        homeDir,
+        workDir,
+        targetDirectory: sessionDirectory,
+      });
+    } catch (error) {
+      console.warn(
+        `Could not migrate legacy Actoviq project data: ${(error as Error).message}`,
+      );
+    }
   }
 
   return {
