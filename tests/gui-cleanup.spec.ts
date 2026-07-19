@@ -1,4 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createConnection } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -28,6 +30,44 @@ async function createWorkspace(root: string, name: string): Promise<string> {
 }
 
 describe('GUI session cleanup', () => {
+  it('closes promptly when a renderer connection is still open', async () => {
+    const root = await tempDir('actoviq-gui-close-');
+    const homeDir = path.join(root, 'home');
+    const workDir = await createWorkspace(root, 'work');
+    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, JSON.stringify({
+      ACTOVIQ_PROVIDER: 'openai',
+      ACTOVIQ_API_KEY: 'test-key',
+      ACTOVIQ_MODEL: 'gpt-4o-mini',
+    }), 'utf8');
+
+    const server = await startActoviqGuiServer({
+      workDir,
+      homeDir,
+      host: '127.0.0.1',
+      port: 45000 + Math.floor(Math.random() * 10000),
+      configPath,
+    });
+    const url = new URL(server.url);
+    const socket = createConnection({ host: url.hostname, port: Number(url.port) });
+    await once(socket, 'connect');
+    const closePromise = server.close();
+    try {
+      const outcome = await Promise.race([
+        closePromise.then(() => 'closed' as const),
+        new Promise<'timeout'>((resolve) => {
+          const timer = setTimeout(() => resolve('timeout'), 5_000);
+          timer.unref();
+        }),
+      ]);
+      expect(outcome).toBe('closed');
+    } finally {
+      socket.destroy();
+      await closePromise;
+    }
+  });
+
   it('auto-cleans empty sessions when state is recomputed, keeping non-empty ones', async () => {
     const root = await tempDir('actoviq-gui-acln-');
     const homeDir = path.join(root, 'home');

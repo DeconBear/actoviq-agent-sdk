@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createActoviqGuiClientScript,
+  createActoviqGuiHtml,
   createActoviqGuiStyles,
 } from '../src/gui/actoviqGui.js';
 
@@ -17,6 +18,7 @@ describe('GUI Project Agent execution view', () => {
   it('ships a dedicated project tab with a persistent execution-tree contract', () => {
     const js = createActoviqGuiClientScript();
     const css = createActoviqGuiStyles();
+    const html = createActoviqGuiHtml();
 
     expect(js).toContain("['agents', 'Agents']");
     expect(js).toContain("'/api/agent-executions?path='");
@@ -27,7 +29,15 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain("panel.setAttribute('role', 'tabpanel')");
     expect(js).toContain("const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']");
     expect(js).toContain("btn.tabIndex = state.projectDetailTab === tab[0] ? 0 : -1");
-    expect(js).toContain("btn.tabIndex = btn.dataset.detailTab === next ? 0 : -1");
+    expect(js).toContain('btn.tabIndex = active ? 0 : -1');
+    expect(js).toContain('function revealActiveProjectDetailTab()');
+    expect(js).toContain('tabs.scrollLeft += Math.ceil(activeRect.right - tabsRect.right)');
+    expect(js).toContain('requestAnimationFrame(revealActiveProjectDetailTab)');
+    expect(js).toContain('if (window.innerWidth > 1120) setDetailConversationDrawer(false)');
+    expect(js).toContain('function toggleDetailConversationDrawer()');
+    expect(js).toContain("sidebar?.classList.toggle('mobile-open', expanded)");
+    expect(js).toContain("if (expanded) requestAnimationFrame(() => el('detailConvSearch')?.focus())");
+    expect(js).toContain("sidebar.id = 'projectDetailSidebar'");
     expect(js).toContain("'agent-execution-root-' + root.rootExecutionId");
     expect(js).toContain("'agent-execution-node-' + node.id");
     expect(js).toContain("'agent-node-open-session-' + node.sessionId");
@@ -44,7 +54,40 @@ describe('GUI Project Agent execution view', () => {
     expect(css).toContain('.agent-execution-panel');
     expect(css).toContain('.agent-execution-node');
     expect(css).toContain('.agent-execution-edge');
+    expect(css).toContain('.detail-conversations-toggle:focus-visible');
     expect(css).toContain('@media (max-width: 860px)');
+    for (const [id, label] of [
+      ['newSession', 'New chat'],
+      ['navProject', 'Project'],
+      ['navTeam', 'Agent'],
+      ['navAutomation', 'Automation'],
+      ['navPlugins', 'Plugins'],
+      ['settingsBtn', 'Settings'],
+      ['detailConversationsBtn', 'Conversations'],
+    ]) {
+      expect(html).toMatch(new RegExp(`id="${id}"[^>]*aria-label="${label}"`));
+    }
+  });
+
+  it('keeps the project Agent workspace usable at tablet and narrow widths', () => {
+    const css = createActoviqGuiStyles();
+    const tabletStart = css.indexOf('@media (max-width: 1120px)');
+    const tablet = css.slice(tabletStart, css.indexOf('.context-menu', tabletStart));
+    const compactStart = css.lastIndexOf('@media (max-width: 860px)');
+    const compact = css.slice(compactStart, css.indexOf('@media (max-width: 640px)', compactStart));
+    const narrowStart = css.indexOf('@media (max-width: 640px)', compactStart);
+    const narrow = css.slice(narrowStart, css.indexOf('.context-bar', narrowStart));
+
+    expect(tablet).toContain('.detail-conversations-toggle { display: inline-flex; }');
+    expect(tablet).toContain('.detail-sidebar.mobile-open');
+    expect(tablet).toContain('visibility: visible;');
+    expect(compact).toContain('.sidebar { width: 56px; flex-basis: 56px; padding: 12px 8px; }');
+    expect(compact).toContain('.sidebar-recents');
+    expect(compact).toContain('.nav-btn > span:not(.nav-icon) { display: none !important; }');
+    expect(narrow).toContain('.project-detail > .region-header');
+    expect(narrow).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(narrow).toContain('.detail-conversations-toggle { grid-column: 1 / -1; }');
+    expect(narrow).toContain('.project-detail-tabs::-webkit-scrollbar { display: none; }');
   });
 
   it('guards polling and response commits to the visible project Agent tab', () => {

@@ -6024,7 +6024,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     await automationScheduler.dispose();
     terminalManager.closeAll();
     if (sdk) await sdk.close().catch(() => undefined);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+    });
     await Promise.allSettled([...durableIssueResources.values()].flatMap(resource => [
       resource.coordinator.services.close(),
       resource.storage.close(),
@@ -6299,12 +6303,12 @@ export function createActoviqGuiHtml(): string {
         <span class="brand-mark">${guiIcon('logo')}</span>
         <span class="brand-name">Actoviq</span>
       </div>
-      <button id="newSession" class="nav-btn new-chat-btn"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
+      <button id="newSession" class="nav-btn new-chat-btn" aria-label="New chat" title="New chat"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
       <nav class="primary-nav" aria-label="Primary">
-        <button id="navProject" class="nav-btn region-nav active" data-region="project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
-        <button id="navTeam" class="nav-btn region-nav" data-region="team"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
-        <button id="navAutomation" class="nav-btn region-nav" data-region="automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
-        <button id="navPlugins" class="nav-btn region-nav" data-region="plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
+        <button id="navProject" class="nav-btn region-nav active" data-region="project" aria-label="Project" title="Project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
+        <button id="navTeam" class="nav-btn region-nav" data-region="team" aria-label="Agent" title="Agent"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
+        <button id="navAutomation" class="nav-btn region-nav" data-region="automation" aria-label="Automation" title="Automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
+        <button id="navPlugins" class="nav-btn region-nav" data-region="plugins" aria-label="Plugins" title="Plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
       </nav>
       <section class="sidebar-recents" id="sidebarRecents" aria-label="Pinned and recent">
         <div class="sidebar-recents-block" id="sidebarPinnedBlock">
@@ -6317,7 +6321,7 @@ export function createActoviqGuiHtml(): string {
         </div>
       </section>
       <div class="sidebar-footer">
-        <button id="settingsBtn" class="nav-btn"><span class="nav-icon">${guiIcon('gear')}</span><span>Settings</span></button>
+        <button id="settingsBtn" class="nav-btn" aria-label="Settings" title="Settings"><span class="nav-icon">${guiIcon('gear')}</span><span>Settings</span></button>
       </div>
     </aside>
     <main class="chat" data-region="project" id="regionProject">
@@ -6362,6 +6366,7 @@ export function createActoviqGuiHtml(): string {
           <div class="region-actions">
             <button type="button" id="detailOpenLocationBtn" class="pill-btn">Open location</button>
             <button type="button" id="detailNewConversationBtn" class="pill-btn">+ New conversation</button>
+            <button type="button" id="detailConversationsBtn" class="pill-btn detail-conversations-toggle" aria-label="Conversations" title="Show conversations" aria-expanded="false" aria-controls="projectDetailSidebar">Conversations</button>
           </div>
         </header>
         <div class="detail-body" id="detailBody"></div>
@@ -7752,6 +7757,8 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .issue-comment-form input { min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font-size: 12.5px; }
 .issue-comment-form button { width: 38px; min-width: 38px; padding: 0; }
 .detail-sidebar { min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
+.detail-conversations-toggle { display: none; }
+.detail-conversations-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .conv-sidebar-top { flex: 1; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .conv-sidebar-head { flex: 0 0 auto; padding: 12px 12px 8px; display: grid; gap: 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
 .conv-sidebar-head h3 { margin: 0; font-size: 13px; font-weight: 650; color: var(--text-1); }
@@ -9434,7 +9441,25 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 @media (max-width: 1120px) {
   .proj-card { grid-template-columns: 1fr; }
   .plan-preview { grid-column: 1; grid-row: auto; }
-  .detail-layout { grid-template-columns: 1fr; }
+  .detail-layout { grid-template-columns: 1fr; position: relative; }
+  .detail-conversations-toggle { display: inline-flex; }
+  .detail-sidebar {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 15;
+    width: min(320px, calc(100% - 40px));
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateX(calc(100% + 12px));
+    transition: transform .18s ease, visibility 0s linear .18s;
+    box-shadow: -12px 0 28px rgba(24,24,27,.16);
+  }
+  .detail-sidebar.mobile-open {
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateX(0);
+    transition-delay: 0s;
+  }
   .team-layout { grid-template-columns: minmax(0, 1fr); }
   .team-inspector { display: none; }
   .context-rail { display: none; }
@@ -9836,8 +9861,11 @@ body[data-density="compact"] .composer-stack { margin-bottom: 10px; }
 body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 /* Dark-theme reserves for the new workbench regions (plan/UI_PLAN §2 — U9). */
 @media (max-width: 860px) {
-  .sidebar, .settings-sidebar { width: 72px; flex-basis: 72px; }
-  .sidebar .search, .command-section, .project-section h2, .project-session-list, .sidebar-link, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
+  .sidebar { width: 56px; flex-basis: 56px; padding: 12px 8px; }
+  .settings-sidebar { width: 72px; flex-basis: 72px; }
+  .sidebar .search, .sidebar-recents, .command-section, .project-section h2, .project-session-list, .sidebar-link, .brand-name, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
+  .sidebar .brand, .sidebar .nav-btn { justify-content: center; padding-left: 0; padding-right: 0; }
+  .sidebar .nav-btn > span:not(.nav-icon) { display: none !important; }
   .transcript { padding: 18px 16px; }
   .composer-stack { width: calc(100% - 24px); margin: 0 auto 12px; }
   .composer { margin: 0; }
@@ -9846,6 +9874,36 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   .settings-command-row { grid-template-columns: 1fr; }
   .automation-schedule-grid { grid-template-columns: 1fr; }
   .settings-main { padding: 22px 16px 64px; }
+}
+@media (max-width: 640px) {
+  .project-detail > .region-header {
+    min-height: 0;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .project-detail > .region-header .pc-path {
+    margin: 2px 0 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .project-detail > .region-header .region-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .project-detail > .region-header .pill-btn {
+    width: 100%;
+    min-width: 0;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .project-detail > .region-header .detail-conversations-toggle { grid-column: 1 / -1; }
+  .project-detail-tabs { scrollbar-width: none; }
+  .project-detail-tabs::-webkit-scrollbar { display: none; }
 }
 .context-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 7px 18px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
 .context-bar.hidden { display: none; }
@@ -12719,6 +12777,18 @@ function resumeSession(id) {
   sessionResumeQueue = pending.catch(() => undefined);
   return pending;
 }
+function setDetailConversationDrawer(open) {
+  const sidebar = el('projectDetailSidebar');
+  const toggle = el('detailConversationsBtn');
+  const expanded = Boolean(open && sidebar);
+  sidebar?.classList.toggle('mobile-open', expanded);
+  toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  if (expanded) requestAnimationFrame(() => el('detailConvSearch')?.focus());
+}
+function toggleDetailConversationDrawer() {
+  const sidebar = el('projectDetailSidebar');
+  setDetailConversationDrawer(!sidebar?.classList.contains('mobile-open'));
+}
 function refreshProjectDetailSidebar() {
   if (state.projectView !== 'detail') return;
   const detailPanel = el('projectDetail');
@@ -13225,6 +13295,7 @@ function avatarStack(labels) {
 }
 function switchProjectView(view) {
   const prev = state.projectView;
+  if (view !== 'detail') setDetailConversationDrawer(false);
   if (prev === 'detail' && view !== 'detail') {
     if (state.projectDocDirty) void saveProjectDocNow();
     if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
@@ -13950,6 +14021,22 @@ async function refreshAgentExecutions(force) {
     scheduleAgentExecutionPolling();
   }
 }
+function revealActiveProjectDetailTab() {
+  const tabs = document.querySelector('.project-detail-tabs');
+  const activeTab = tabs?.querySelector('.project-detail-tab.active');
+  if (!tabs || !activeTab) return;
+  const tabsRect = tabs.getBoundingClientRect();
+  const activeRect = activeTab.getBoundingClientRect();
+  if (activeRect.left < tabsRect.left) {
+    tabs.scrollLeft -= Math.ceil(tabsRect.left - activeRect.left);
+  } else if (activeRect.right > tabsRect.right) {
+    tabs.scrollLeft += Math.ceil(activeRect.right - tabsRect.right);
+  }
+}
+window.addEventListener('resize', () => {
+  requestAnimationFrame(revealActiveProjectDetailTab);
+  if (window.innerWidth > 1120) setDetailConversationDrawer(false);
+});
 function setProjectDetailTab(tab) {
   const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1, agents: 1 };
   const next = allowed[tab] ? tab : 'document';
@@ -13964,11 +14051,15 @@ function setProjectDetailTab(tab) {
   }
   if (next !== 'agents') stopAgentExecutionPolling();
   state.projectDetailTab = next;
+  let activeTab = null;
   document.querySelectorAll('.project-detail-tab').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.detailTab === next);
-    btn.setAttribute('aria-selected', btn.dataset.detailTab === next ? 'true' : 'false');
-    btn.tabIndex = btn.dataset.detailTab === next ? 0 : -1;
+    const active = btn.dataset.detailTab === next;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    btn.tabIndex = active ? 0 : -1;
+    if (active) activeTab = btn;
   });
+  if (activeTab) requestAnimationFrame(revealActiveProjectDetailTab);
   const panels = {
     document: el('projectDocumentPanel'),
     issues: el('projectIssuesPanel'),
@@ -15655,6 +15746,7 @@ function renderProjectDetail() {
     setProjectDetailTab(nextButton.dataset.detailTab);
     nextButton.focus();
   });
+  requestAnimationFrame(revealActiveProjectDetailTab);
   const docPanel = document.createElement('section');
   docPanel.id = 'projectDocumentPanel';
   docPanel.className = 'project-doc-panel' + (state.projectDetailTab === 'document' ? '' : ' hidden');
@@ -15760,6 +15852,8 @@ function renderProjectDetail() {
   main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel, agentsPanel);
   const sidebar = document.createElement('aside');
   sidebar.className = 'detail-sidebar';
+  sidebar.id = 'projectDetailSidebar';
+  sidebar.setAttribute('aria-label', 'Project conversations');
   const top = document.createElement('div');
   top.className = 'conv-sidebar-top';
   const head = document.createElement('div');
@@ -15781,6 +15875,7 @@ function renderProjectDetail() {
   sidebar.append(top, detail);
   layout.append(main, sidebar);
   body.appendChild(layout);
+  setDetailConversationDrawer(false);
   const searchInput = el('detailConvSearch');
   if (searchInput) {
     searchInput.value = state.detailConvQuery || '';
@@ -23462,6 +23557,13 @@ bindOverviewToolbar();
 el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
 el('detailNewConversationBtn').addEventListener('click', () => createNewSession().catch(console.error));
 el('detailOpenLocationBtn').addEventListener('click', openLocation);
+el('detailConversationsBtn').addEventListener('click', toggleDetailConversationDrawer);
+document.addEventListener('keydown', (event) => {
+  const sidebar = el('projectDetailSidebar');
+  if (event.key !== 'Escape' || !sidebar?.classList.contains('mobile-open')) return;
+  setDetailConversationDrawer(false);
+  el('detailConversationsBtn')?.focus();
+});
 el('workspaceForm').addEventListener('submit', submitWorkspace);
 el('cancelWorkspace').addEventListener('click', closeWorkspaceDialog);
 el('workspaceBrowseBtn').addEventListener('click', () => { browseWorkspaceFolder().catch(console.error); });
