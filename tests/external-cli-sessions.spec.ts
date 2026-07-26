@@ -170,12 +170,22 @@ describe('Crush command-backed external history aggregation', () => {
       mkdir(dataA, { recursive: true }),
       mkdir(dataB, { recursive: true }),
     ]);
+    const canonicalDataA = realpathSync.native(dataA);
+    const canonicalDataB = realpathSync.native(dataB);
     const explicitNativeData = path.join(homeDir, 'native-data');
+    const sameDataDir = (left: string | undefined, right: string): boolean => {
+      if (!left) return false;
+      try {
+        return realpathSync.native(left) === realpathSync.native(right);
+      } catch {
+        return path.resolve(left) === path.resolve(right);
+      }
+    };
     const commandRunner = vi.fn<CrushHistoryCommandRunner>(async request => {
       const dataDir = request.env.CRUSH_GLOBAL_DATA;
-      const source = dataDir === dataA
+      const source = sameDataDir(dataDir, dataA)
         ? { title: 'Managed A', text: 'managed A detail', modified: '2026-07-13T10:00:03Z' }
-        : dataDir === dataB
+        : sameDataDir(dataDir, dataB)
           ? { title: 'Managed B', text: 'managed B detail', modified: '2026-07-13T10:00:02Z' }
           : { title: 'Native', text: 'native detail', modified: '2026-07-13T10:00:01Z' };
       return request.args[1] === 'list'
@@ -228,13 +238,17 @@ describe('Crush command-backed external history aggregation', () => {
         { nativeSessionId: crushSessionId },
       ]);
     expect(commandRunner.mock.calls.map(call => call[0].env.CRUSH_GLOBAL_DATA))
-      .toEqual(expect.arrayContaining([explicitNativeData, dataA, dataB]));
+      .toEqual(expect.arrayContaining([
+        explicitNativeData,
+        canonicalDataA,
+        canonicalDataB,
+      ]));
 
     const managedAReference = summaries[0]?.path ?? '';
     commandRunner.mockClear();
     const managedA = await readExternalCliSession(managedAReference, options);
     expect(commandRunner).toHaveBeenCalledTimes(1);
-    expect(commandRunner.mock.calls[0]?.[0].env.CRUSH_GLOBAL_DATA).toBe(dataA);
+    expect(commandRunner.mock.calls[0]?.[0].env.CRUSH_GLOBAL_DATA).toBe(canonicalDataA);
     expect(managedA?.messages.map(message => message.text)).toEqual(['managed A detail']);
 
     commandRunner.mockClear();
@@ -316,6 +330,7 @@ describe('Crush command-backed external history aggregation', () => {
     await Promise.all(profileIds.map(profileId =>
       mkdir(path.join(profilesRoot, profileId, 'data'), { recursive: true }),
     ));
+    const canonicalProfilesRoot = realpathSync.native(profilesRoot);
     const commandRunner = vi.fn<CrushHistoryCommandRunner>(async () => ({
       stdout: '[]',
       stderr: '',
@@ -331,7 +346,14 @@ describe('Crush command-backed external history aggregation', () => {
     expect(commandRunner).toHaveBeenCalledTimes(257);
     const managedDataDirs = commandRunner.mock.calls
       .map(call => call[0].env.CRUSH_GLOBAL_DATA)
-      .filter((value): value is string => Boolean(value?.startsWith(profilesRoot)));
+      .filter((value): value is string => {
+        if (!value) return false;
+        try {
+          return realpathSync.native(value).startsWith(canonicalProfilesRoot);
+        } catch {
+          return value.startsWith(profilesRoot) || value.startsWith(canonicalProfilesRoot);
+        }
+      });
     expect(new Set(managedDataDirs).size).toBe(256);
   });
 });

@@ -15,6 +15,31 @@ function hasFlag(flag) {
   return process.argv.includes(flag);
 }
 
+/** Write large payloads to a pipe in chunks, retrying EAGAIN until the parent drains. */
+function writeFullySync(fd, data) {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+  let offset = 0;
+  while (offset < buffer.length) {
+    try {
+      offset += writeSync(
+        fd,
+        buffer,
+        offset,
+        Math.min(64 * 1024, buffer.length - offset),
+      );
+    } catch (error) {
+      if (error && (error.code === 'EAGAIN' || error.code === 'EWOULDBLOCK')) {
+        const end = Date.now() + 1;
+        while (Date.now() < end) {
+          // Parent is still draining the pipe; brief yield then retry.
+        }
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 const command = process.argv[2];
 const positionalBoundary = process.argv.lastIndexOf('--');
 const legacyPrompt = getFlagValue('-p');
@@ -43,12 +68,12 @@ const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 if (command === 'agents') {
   const largeStdoutBytes = Number(process.env.ACTOVIQ_TEST_LARGE_STDOUT_BYTES ?? 0);
   if (Number.isFinite(largeStdoutBytes) && largeStdoutBytes > 0) {
-    // writeSync avoids truncated pipe writes when the fixture exits immediately
-    // after a multi-megabyte stdout.write() (seen on Linux CI runners).
-    writeSync(1, Buffer.alloc(largeStdoutBytes, 0x78));
-    writeSync(1, '\n');
+    // Chunked writes avoid truncated/EAGAIN pipe failures when the fixture
+    // emits multi-megabyte stdout (seen on Linux CI runners).
+    writeFullySync(1, Buffer.alloc(largeStdoutBytes, 0x78));
+    writeFullySync(1, '\n');
   }
-  writeSync(
+  writeFullySync(
     1,
     [
       '3 active agents',
@@ -113,8 +138,8 @@ if (prompt === 'retention-bounds') {
 }
 
 if (prompt === 'large-stderr') {
-  writeSync(2, Buffer.alloc(1024 * 1024 + 64 * 1024, 0x73));
-  writeSync(2, 'stderr-tail');
+  writeFullySync(2, Buffer.alloc(1024 * 1024 + 64 * 1024, 0x73));
+  writeFullySync(2, 'stderr-tail');
 }
 
 const text =
