@@ -197,54 +197,64 @@ export class ActoviqBrowserSession {
 
   async ensureReady(): Promise<void> {
     if (this.launched && this.context) return;
-    this.playwright = await loadPlaywright();
-    const timeout = this.options.defaultTimeoutMs;
-
-    if (this.options.cdpUrl?.trim()) {
-      this.browser = await this.playwright.chromium.connectOverCDP(this.options.cdpUrl.trim());
-      this.ownership = 'cdp';
-      const contexts = this.browser.contexts();
-      this.context = contexts[0] ?? (await this.browser.newContext({
-        viewport: this.options.viewport ?? { width: 1280, height: 800 },
-      }));
-    } else if (this.options.userDataDir?.trim()) {
-      const userDataDir = path.resolve(this.options.userDataDir.trim());
-      mkdirSync(userDataDir, { recursive: true });
-      const launcher = channelLauncher(this.playwright, this.options.channel);
-      this.context = await launcher.launchPersistentContext(userDataDir, {
-        headless: this.options.headless,
-        viewport: this.options.viewport ?? { width: 1280, height: 800 },
-        channel: this.options.channel === 'chromium' ? undefined : this.options.channel,
-      });
-      this.browser = this.context.browser();
-      this.ownership = 'persistent';
-    } else {
-      const launcher = channelLauncher(this.playwright, this.options.channel);
-      this.browser = await launcher.launch({
-        headless: this.options.headless,
-        channel: this.options.channel === 'chromium' ? undefined : this.options.channel,
-      });
-      this.context = await this.browser.newContext({
-        viewport: this.options.viewport ?? { width: 1280, height: 800 },
-      });
-      this.ownership = 'isolated';
+    // A previous attempt may have left half-initialized browser handles.
+    if (this.browser || this.context || this.ownership) {
+      await this.closeOwnedResources().catch(() => undefined);
     }
 
-    this.context.setDefaultTimeout(timeout);
-    this.context.on('page', (page) => {
-      this.trackPage(page);
-    });
-    for (const page of this.context.pages()) {
-      this.trackPage(page);
+    try {
+      this.playwright = await loadPlaywright();
+      const timeout = this.options.defaultTimeoutMs;
+
+      if (this.options.cdpUrl?.trim()) {
+        this.browser = await this.playwright.chromium.connectOverCDP(this.options.cdpUrl.trim());
+        this.ownership = 'cdp';
+        const contexts = this.browser.contexts();
+        this.context = contexts[0] ?? (await this.browser.newContext({
+          viewport: this.options.viewport ?? { width: 1280, height: 800 },
+        }));
+      } else if (this.options.userDataDir?.trim()) {
+        const userDataDir = path.resolve(this.options.userDataDir.trim());
+        mkdirSync(userDataDir, { recursive: true });
+        const launcher = channelLauncher(this.playwright, this.options.channel);
+        this.context = await launcher.launchPersistentContext(userDataDir, {
+          headless: this.options.headless,
+          viewport: this.options.viewport ?? { width: 1280, height: 800 },
+          channel: this.options.channel === 'chromium' ? undefined : this.options.channel,
+        });
+        this.browser = this.context.browser();
+        this.ownership = 'persistent';
+      } else {
+        const launcher = channelLauncher(this.playwright, this.options.channel);
+        this.browser = await launcher.launch({
+          headless: this.options.headless,
+          channel: this.options.channel === 'chromium' ? undefined : this.options.channel,
+        });
+        this.context = await this.browser.newContext({
+          viewport: this.options.viewport ?? { width: 1280, height: 800 },
+        });
+        this.ownership = 'isolated';
+      }
+
+      this.context.setDefaultTimeout(timeout);
+      this.context.on('page', (page) => {
+        this.trackPage(page);
+      });
+      for (const page of this.context.pages()) {
+        this.trackPage(page);
+      }
+      if (this.tabs.length === 0) {
+        const page = await this.context.newPage();
+        this.trackPage(page);
+      }
+      if (!this.activeTabId) {
+        this.activeTabId = this.tabs[0]?.id ?? null;
+      }
+      this.launched = true;
+    } catch (error) {
+      await this.closeOwnedResources().catch(() => undefined);
+      throw error;
     }
-    if (this.tabs.length === 0) {
-      const page = await this.context.newPage();
-      this.trackPage(page);
-    }
-    if (!this.activeTabId) {
-      this.activeTabId = this.tabs[0]?.id ?? null;
-    }
-    this.launched = true;
   }
 
   async navigate(url: string, opts: { newTab?: boolean } = {}): Promise<{ tabId: string; url: string; title: string }> {

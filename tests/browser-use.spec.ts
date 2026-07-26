@@ -376,6 +376,29 @@ describe('browser-use toolkit', () => {
     expect(context.close).not.toHaveBeenCalled();
   });
 
+  it('cleans half-initialized browser handles before retrying ensureReady', async () => {
+    const context = { close: vi.fn(async () => undefined) };
+    const browser = {
+      isConnected: vi.fn(() => true),
+      close: vi.fn(async () => undefined),
+    };
+    // Unreachable CDP endpoint: after clearing stale handles, launch should fail.
+    const session = new ActoviqBrowserSession({ cdpUrl: 'http://127.0.0.1:1' });
+    Object.assign(session as unknown as Record<string, unknown>, {
+      context,
+      browser,
+      ownership: 'isolated',
+      launched: false,
+    });
+
+    await expect(session.ensureReady()).rejects.toThrow();
+    expect(browser.close).toHaveBeenCalledTimes(1);
+    expect(context.close).toHaveBeenCalledTimes(1);
+    expect((session as unknown as Record<string, unknown>).browser).toBeNull();
+    expect((session as unknown as Record<string, unknown>).context).toBeNull();
+    expect((session as unknown as Record<string, unknown>).launched).toBe(false);
+  });
+
   it('keeps screenshot output paths inside the configured workspace', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-browser-output-'));
     try {
