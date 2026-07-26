@@ -781,8 +781,9 @@ describe('GUI External CLI runtime', () => {
         signal: disconnect.signal,
       });
       expect(response.status).toBe(200);
-      for (let attempt = 0; attempt < 100 && !childSignal; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+      const signalDeadline = Date.now() + 5_000;
+      while (!childSignal && Date.now() < signalDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
       }
       expect(childSignal).toBeDefined();
       disconnect.abort();

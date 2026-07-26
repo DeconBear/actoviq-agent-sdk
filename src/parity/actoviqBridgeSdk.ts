@@ -1840,6 +1840,11 @@ export class ActoviqBridgeSdkClient {
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
   private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
+  /** Graceful reclaim hooks (protocol cancel + terminate) for active child runs. */
+  private readonly activeChildReclaims = new Map<
+    ReturnType<typeof spawn>,
+    () => Promise<void>
+  >();
   private readonly reasonixManagedEntries = new Map<string, ManagedReasonixEntry>();
   private readonly reasonixManagedEntryPromises = new Map<
     string,
@@ -2035,6 +2040,7 @@ export class ActoviqBridgeSdkClient {
     if (
       this.closed
       && this.activeChildren.size === 0
+      && this.activeChildReclaims.size === 0
       && this.reasonixManagedEntries.size === 0
       && this.reasonixManagedEntryPromises.size === 0
     ) return;
@@ -2047,9 +2053,16 @@ export class ActoviqBridgeSdkClient {
       if (pending.status === 'fulfilled') reasonixEntries.add(pending.value);
     }
     await Promise.all([...reasonixEntries].map(entry => this.releaseReasonixEntry(entry)));
+    // Prefer protocol cancel (e.g. Reasonix session/cancel) before hard kill so
+    // interactive ACP turns shut down the same way AbortSignal does.
+    const reclaimers = [...this.activeChildReclaims.values()];
+    await Promise.all(reclaimers.map(reclaim => reclaim().catch(() => undefined)));
     const children = [...this.activeChildren];
     await Promise.all(children.map(child => terminateActoviqProcessTree(child)));
-    for (const child of children) this.activeChildren.delete(child);
+    for (const child of children) {
+      this.activeChildren.delete(child);
+      this.activeChildReclaims.delete(child);
+    }
   }
 
   async getRuntimeInfo(
@@ -2234,7 +2247,10 @@ export class ActoviqBridgeSdkClient {
       detached: !IS_WINDOWS,
     });
     this.activeChildren.add(child);
-    child.once('close', () => this.activeChildren.delete(child));
+    child.once('close', () => {
+      this.activeChildren.delete(child);
+      this.activeChildReclaims.delete(child);
+    });
 
     let aborted = false;
     let terminationPromise: Promise<void> | undefined;
@@ -2242,6 +2258,10 @@ export class ActoviqBridgeSdkClient {
       aborted = true;
       terminationPromise ??= terminateActoviqProcessTree(child);
     };
+    this.activeChildReclaims.set(child, async () => {
+      abort();
+      if (terminationPromise) await terminationPromise;
+    });
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
 
@@ -2286,6 +2306,7 @@ export class ActoviqBridgeSdkClient {
       options.signal?.removeEventListener('abort', abort);
       if (terminationPromise) await terminationPromise;
       this.activeChildren.delete(child);
+      this.activeChildReclaims.delete(child);
       await childEnvironment.cleanup?.();
     }
   }
@@ -2352,7 +2373,10 @@ export class ActoviqBridgeSdkClient {
       detached: !IS_WINDOWS,
     });
     this.activeChildren.add(child);
-    child.once('close', () => this.activeChildren.delete(child));
+    child.once('close', () => {
+      this.activeChildren.delete(child);
+      this.activeChildReclaims.delete(child);
+    });
 
     let inputEnded = false;
     child.stdin?.on('error', () => {
@@ -2393,6 +2417,20 @@ export class ActoviqBridgeSdkClient {
         terminationPromise ??= terminateActoviqProcessTree(child);
       }
     };
+    // Close should request protocol cancel like AbortSignal, but leave the run
+    // to surface a closed/exited error rather than RunAbortedError.
+    this.activeChildReclaims.set(child, async () => {
+      if (normalizer.abort) {
+        normalizer.abort(processControl);
+        terminationPromise ??= (async () => {
+          await new Promise(resolve => setTimeout(resolve, normalizer.abortGraceMs ?? 250));
+          await terminateActoviqProcessTree(child);
+        })();
+      } else {
+        terminationPromise ??= terminateActoviqProcessTree(child);
+      }
+      if (terminationPromise) await terminationPromise;
+    });
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
 
@@ -2461,6 +2499,7 @@ export class ActoviqBridgeSdkClient {
       options.signal?.removeEventListener('abort', abort);
       if (terminationPromise) await terminationPromise;
       this.activeChildren.delete(child);
+      this.activeChildReclaims.delete(child);
       await childEnvironment.cleanup?.();
     }
 
