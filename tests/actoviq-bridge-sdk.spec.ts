@@ -89,7 +89,15 @@ async function waitForJsonLine(
     }
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  throw new Error(`Timed out waiting for fixture log record: ${filePath}`);
+  let contents = '';
+  try {
+    contents = await readFile(filePath, 'utf8');
+  } catch {
+    contents = '(missing)';
+  }
+  throw new Error(
+    `Timed out waiting for fixture log record: ${filePath}\n--- log ---\n${contents}\n--- end ---`,
+  );
 }
 
 describe('Actoviq Runtime SDK bridge', () => {
@@ -1523,19 +1531,30 @@ describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
       homeDir: tempDir,
       env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
     });
-    const result = sdk.run('hang');
-    const promptRecord = await waitForJsonLine(
-      invocationLog,
-      record => record.event === 'prompt' && record.prompt === 'hang',
-    );
-    const pid = Number(promptRecord.pid);
-    await sdk.close();
-    await expect(result).rejects.toThrow(/closed|exited/iu);
-    await waitForProcessExit(pid);
-    await waitForJsonLine(
-      invocationLog,
-      record => record.event === 'cancel' && record.pid === pid,
-    );
+    try {
+      const result = sdk.run('hang');
+      await waitForJsonLine(
+        invocationLog,
+        record => record.event === 'start',
+        15_000,
+      );
+      const promptRecord = await waitForJsonLine(
+        invocationLog,
+        record => record.event === 'prompt' && record.prompt === 'hang',
+        15_000,
+      );
+      const pid = Number(promptRecord.pid);
+      await sdk.close();
+      await expect(result).rejects.toThrow(/closed|exited/iu);
+      await waitForProcessExit(pid);
+      await waitForJsonLine(
+        invocationLog,
+        record => record.event === 'cancel' && record.pid === pid,
+        15_000,
+      );
+    } finally {
+      await sdk.close().catch(() => undefined);
+    }
   });
 });
 

@@ -1828,29 +1828,57 @@ async function listenWithFallback(
   server: ReturnType<typeof createServer>,
   host: string,
   startPort: number,
-  attempts = 20,
+  attempts = 50,
 ): Promise<number> {
-  for (let candidate = startPort; candidate < startPort + attempts; candidate += 1) {
+  const tryListen = async (candidate: number): Promise<number> => {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: NodeJS.ErrnoException): void => {
+        server.removeListener('listening', onListening);
+        reject(error);
+      };
+      const onListening = (): void => {
+        server.removeListener('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(candidate, host);
+    });
+    if (candidate === 0) {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Failed to resolve an ephemeral GUI listen port.');
+      }
+      return address.port;
+    }
+    return candidate;
+  };
+
+  if (startPort <= 0) {
+    return tryListen(0);
+  }
+
+  for (let offset = 0; offset < attempts; offset += 1) {
+    const candidate = startPort + offset;
     try {
-      await new Promise<void>((resolve, reject) => {
-        const onError = (error: NodeJS.ErrnoException): void => {
-          server.removeListener('listening', onListening);
-          reject(error);
-        };
-        const onListening = (): void => {
-          server.removeListener('error', onError);
-          resolve();
-        };
-        server.once('error', onError);
-        server.once('listening', onListening);
-        server.listen(candidate, host);
-      });
-      return candidate;
+      return await tryListen(candidate);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+      // EACCES happens on Windows when a candidate falls in an excluded port range.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EADDRINUSE' && code !== 'EACCES') throw error;
+      if (code === 'EACCES') {
+        // Excluded ranges are contiguous; skip ahead instead of probing each port.
+        offset += 24;
+      }
     }
   }
-  throw new Error(`No free port found in range ${startPort}-${startPort + attempts - 1}`);
+
+  // Last resort: ask the OS for an ephemeral port.
+  try {
+    return await tryListen(0);
+  } catch {
+    throw new Error(`No free port found near ${startPort} (tried ${attempts} candidates).`);
+  }
 }
 
 export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Promise<ActoviqGuiServer> {
