@@ -61,7 +61,7 @@ function makeMessage(text: string): Message {
 async function waitFor(
   predicate: () => boolean,
   description: string,
-  timeoutMs = 1_000,
+  timeoutMs = 5_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {

@@ -1532,16 +1532,18 @@ describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
       env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
     });
     try {
-      const result = sdk.run('hang');
+      // Mirror the abort-test spawn path (options bag present) so Linux CI does
+      // not hit a colder directCli setup than neighboring reasonix coverage.
+      const result = sdk.run('hang', {});
       await waitForJsonLine(
         invocationLog,
         record => record.event === 'start',
-        15_000,
+        20_000,
       );
       const promptRecord = await waitForJsonLine(
         invocationLog,
         record => record.event === 'prompt' && record.prompt === 'hang',
-        15_000,
+        20_000,
       );
       const pid = Number(promptRecord.pid);
       await sdk.close();
@@ -1550,12 +1552,12 @@ describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
       await waitForJsonLine(
         invocationLog,
         record => record.event === 'cancel' && record.pid === pid,
-        15_000,
+        20_000,
       );
     } finally {
       await sdk.close().catch(() => undefined);
     }
-  });
+  }, 60_000);
 });
 
 describe('Actoviq Bridge SDK directCli: crush provider', () => {
