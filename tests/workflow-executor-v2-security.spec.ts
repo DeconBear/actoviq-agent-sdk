@@ -1,6 +1,8 @@
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,12 +23,13 @@ import type {
   WorkflowExecutionResult,
 } from '../src/workflow-v2/index.js';
 
+/** Match production resolveWorkspace: expand 8.3 /var symlink forms. */
+const realpathNative = promisify(realpathCallback.native);
+
 let workspaceDir: string;
 
 beforeEach(async () => {
-  // Resolve 8.3 short paths (e.g. RUNNER~1) so Windows CI matches the
-  // realpath the isolated worker may surface in capability context.
-  workspaceDir = await realpath(await mkdtemp(path.join(tmpdir(), 'actoviq-workflow-v2-')));
+  workspaceDir = await realpathNative(await mkdtemp(path.join(tmpdir(), 'actoviq-workflow-v2-')));
 });
 
 afterEach(async () => {

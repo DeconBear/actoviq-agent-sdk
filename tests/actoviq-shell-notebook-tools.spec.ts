@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,8 +16,10 @@ afterEach(async () => {
 
 async function createTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+  // Expand Windows 8.3 / macOS /var symlink forms so cwd comparisons match process.cwd().
+  const canonical = realpathSync.native(dir);
+  tempDirs.push(canonical);
+  return canonical;
 }
 
 function createContext(cwd: string): ToolExecutionContext {
@@ -60,7 +63,7 @@ describe('Bash tool', () => {
     ) as { stdout: string; stderr: string; exitCode: number };
 
     expect(result.exitCode).toBe(0);
-    expect(path.normalize(result.stdout.trim())).toBe(path.normalize(cwd));
+    expect(realpathSync.native(result.stdout.trim())).toBe(cwd);
   });
 
   it('provides POSIX shell commands on Windows', async () => {

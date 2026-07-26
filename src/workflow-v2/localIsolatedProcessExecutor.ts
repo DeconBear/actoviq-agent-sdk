@@ -1,8 +1,13 @@
 import { Buffer } from 'node:buffer';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { realpath, stat } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+/** Expands Windows 8.3 short names and macOS /var → /private/var symlinks. */
+const realpathNative = promisify(realpathCallback.native);
 
 import {
   normalizeCapabilityMap,
@@ -442,7 +447,7 @@ async function resolveWorkspace(workspaceDir: string): Promise<string> {
   }
   let resolved: string;
   try {
-    resolved = await realpath(workspaceDir);
+    resolved = await realpathNative(workspaceDir);
     const metadata = await stat(resolved);
     if (!metadata.isDirectory()) {
       throw new WorkflowConfigurationError('workspaceDir must identify a directory.');
