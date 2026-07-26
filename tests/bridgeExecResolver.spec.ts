@@ -1,33 +1,59 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
-import { quoteForWindowsShell } from '../src/parity/bridgeExecResolver.js';
+import { afterEach, describe, expect, it } from 'vitest';
 
-describe('quoteForWindowsShell', () => {
-  it('leaves safe single-token args untouched (no quoting)', () => {
-    expect(quoteForWindowsShell('-p')).toBe('-p');
-    expect(quoteForWindowsShell('--output-format')).toBe('--output-format');
-    expect(quoteForWindowsShell('stream-json')).toBe('stream-json');
-    expect(quoteForWindowsShell('a/b/c.js')).toBe('a/b/c.js');
-    expect(quoteForWindowsShell('550e8400-e29b-41d4-a716-446655440000')).toBe(
-      '550e8400-e29b-41d4-a716-446655440000',
-    );
+import { resolveExecutableInvocation } from '../src/parity/bridgeExecResolver.js';
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
+
+describe('resolveExecutableInvocation', () => {
+  it('passes ordinary executables and argv through unchanged', async () => {
+    await expect(resolveExecutableInvocation(process.execPath, ['-e', 'console.log("ok")']))
+      .resolves.toEqual({
+        file: process.execPath,
+        args: ['-e', 'console.log("ok")'],
+      });
   });
 
-  it('wraps args containing spaces in double quotes', () => {
-    // The core regression: a multi-word prompt must arrive as ONE token at
-    // cmd.exe, not be split on spaces.
-    expect(quoteForWindowsShell('My favorite number is 4242.')).toBe(
-      '"My favorite number is 4242."',
-    );
-  });
+  it.runIf(process.platform === 'win32')(
+    'unwraps npm cmd shims without sending user input through cmd.exe',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-shim-'));
+      tempRoots.push(root);
+      const packageBin = path.join(root, 'node_modules', 'fake-cli', 'cli.js');
+      await mkdir(path.dirname(packageBin), { recursive: true });
+      await writeFile(packageBin, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))', 'utf8');
+      const shim = path.join(root, 'fake.cmd');
+      await writeFile(
+        shim,
+        '@ECHO off\r\n"%dp0%\\node_modules\\fake-cli\\cli.js" %*\r\n',
+        'utf8',
+      );
+      const prompt = 'literal %GITHUB_TOKEN% & whoami "quoted"';
 
-  it('quotes an empty arg as ""', () => {
-    expect(quoteForWindowsShell('')).toBe('""');
-  });
+      await expect(resolveExecutableInvocation(shim, ['--json', prompt])).resolves.toEqual({
+        file: process.execPath,
+        args: [packageBin, '--json', prompt],
+      });
+    },
+  );
 
-  it('escapes internal double quotes and backslashes', () => {
-    expect(quoteForWindowsShell('say "hi"')).toBe('"say \\"hi\\""');
-    // A trailing backslash must be doubled so it cannot escape the closing quote.
-    expect(quoteForWindowsShell('path\\')).toBe('"path\\\\"');
-  });
+  it.runIf(process.platform === 'win32')(
+    'rejects an unparseable batch wrapper instead of shelling user input',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-shim-'));
+      tempRoots.push(root);
+      const shim = path.join(root, 'unsafe.cmd');
+      await writeFile(shim, '@ECHO off\r\necho %*\r\n', 'utf8');
+
+      await expect(resolveExecutableInvocation(shim, ['%TOKEN% & calc']))
+        .rejects.toThrow(/Unsupported Windows CLI wrapper/);
+    },
+  );
 });

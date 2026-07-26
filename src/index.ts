@@ -108,6 +108,7 @@ export type {
   DiscoverAgentRuntimesOptions,
   DiscoveredAgentRuntime,
   RuntimeLocalConfig,
+  RuntimeLocalConfigPaths,
   RuntimeLocalConfigUpdate,
   RuntimeLocalConfigUpdateResult,
 } from './runtime/agentRuntimeDiscovery.js';
@@ -123,6 +124,15 @@ export {
   createActoviqComputerUseTools,
   createDefaultActoviqComputerUseExecutor,
 } from './computer/actoviqComputerUse.js';
+export {
+  createE2bComputerUseToolkit,
+} from './computer/e2bComputerUse.js';
+export type {
+  CreateE2bComputerUseOptions,
+  E2bComputerUseToolkit,
+  E2bDesktopCreateOptions,
+  E2bDesktopSandboxLike,
+} from './computer/e2bComputerUse.js';
 export {
   ActoviqBrowserSession,
 } from './browser/actoviqBrowserSession.js';
@@ -147,6 +157,39 @@ export {
   writeActoviqBrowserSettings,
 } from './browser/browserSettings.js';
 export type { ActoviqBrowserSettings } from './browser/browserSettings.js';
+export {
+  MANAGED_PLUGIN_DEFINITIONS,
+  MANAGED_PLUGIN_IDS,
+  patchManagedPluginSettings,
+  readManagedPluginCatalog,
+  readStoredManagedPluginConfig,
+} from './plugins/managedPluginCatalog.js';
+export type {
+  ManagedPluginCatalog,
+  ManagedPluginCatalogEntry,
+  ManagedPluginHealth,
+  ManagedPluginId,
+  ManagedPluginState,
+} from './plugins/managedPluginCatalog.js';
+export {
+  createManagedPluginRuntime,
+} from './plugins/managedPluginRuntime.js';
+export type {
+  ManagedPluginRuntime,
+  ManagedPluginRuntimeOptions,
+} from './plugins/managedPluginRuntime.js';
+export { probeManagedPlugin } from './plugins/managedPluginHealth.js';
+export {
+  createManagedOcrTool,
+  runManagedOcr,
+} from './plugins/ocrPlugin.js';
+export type {
+  ManagedOcrConfig,
+  ManagedOcrInput,
+  ManagedOcrResult,
+} from './plugins/ocrPlugin.js';
+export { createGitHubPlugin } from './plugins/githubPlugin.js';
+export { createKimiWebBridgePlugin } from './plugins/kimiWebBridgePlugin.js';
 export {
   ActoviqSdkError,
   ActoviqProviderApiError,
@@ -174,7 +217,8 @@ export { createActoviqWebTools } from './tools/actoviqWebTools.js';
 export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
 export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
 export { createBashTool, BASH_TOOL_NAME } from './tools/bash/BashTool.js';
-export { createTavilySearchTool, TAVILY_SEARCH_TOOL_NAME } from './tools/tavilySearch.js';
+export { createTavilySearchTool, TAVILY_SEARCH_TOOL_NAME, resolveTavilyApiKey, runTavilySearch } from './tools/tavilySearch.js';
+export { createExaSearchTool, EXA_SEARCH_TOOL_NAME, resolveExaApiKey, runExaSearch } from './tools/exaSearch.js';
 export type { BashInput } from './tools/bash/BashTool.js';
 export { createTodoWriteTool, TODO_WRITE_TOOL_NAME } from './tools/todo/TodoWriteTool.js';
 export { createAskUserQuestionTool, ASK_USER_QUESTION_TOOL_NAME } from './tools/askUserQuestion/AskUserQuestionTool.js';
@@ -228,11 +272,46 @@ export {
   ActoviqSkillHandle,
   ActoviqSkillsApi,
   getDefaultActoviqBundledSkills,
+  loadActoviqSkillDefinitionFile,
   loadActoviqSkillDefinitions,
   resolveActoviqSkillPrompt,
   skill,
   summarizeActoviqSkillDefinition,
 } from './runtime/actoviqSkills.js';
+export { discoverActoviqSkillCatalog } from './runtime/externalSkillCatalog.js';
+export type {
+  ActoviqSkillCatalog,
+  ActoviqSkillCatalogCapability,
+  ActoviqSkillCatalogConflict,
+  ActoviqSkillCatalogDiagnostic,
+  ActoviqSkillCatalogEntry,
+  ActoviqSkillCatalogEntryStatus,
+  ActoviqSkillCatalogOrigin,
+  ActoviqSkillCatalogProvider,
+  ActoviqSkillCatalogScope,
+  ActoviqSkillCatalogSource,
+  ActoviqSkillCatalogSourceStatus,
+  DiscoverActoviqSkillCatalogOptions,
+} from './runtime/externalSkillCatalog.js';
+export { loadActoviqExternalSkillDefinitions } from './runtime/externalSkillRuntime.js';
+export type {
+  ActoviqExternalSkillConflictSkip,
+  ActoviqExternalSkillLoadError,
+  ActoviqExternalSkillRuntimeResult,
+} from './runtime/externalSkillRuntime.js';
+export {
+  actoviqExternalSkillPreferencesPath,
+  clearActoviqPreferredExternalSkill,
+  externalSkillPreferencesToRuntimeOptions,
+  readActoviqExternalSkillPreferences,
+  setActoviqExternalSkillDisabled,
+  setActoviqPreferredExternalSkill,
+  writeActoviqExternalSkillPreferences,
+} from './runtime/externalSkillPreferences.js';
+export type {
+  ActoviqExternalSkillPreferenceLocation,
+  ActoviqExternalSkillPreferences,
+} from './runtime/externalSkillPreferences.js';
 export {
   decideActoviqToolPermission,
 } from './runtime/actoviqPermissions.js';
@@ -545,6 +624,44 @@ export {
 export {
   detectBridgeProviders,
 } from './parity/bridgeProviders.js';
+export {
+  ExternalCliRuntimeManager,
+  createExternalCliRuntimeManager,
+} from './parity/externalCliRuntimeManager.js';
+export type {
+  ExternalCliClientFactory,
+  ExternalCliClientLike,
+  ExternalCliRunEvent,
+  ExternalCliRunLog,
+  ExternalCliRunReplay,
+  ExternalCliRunSnapshot,
+  ExternalCliRunStartOptions,
+  ExternalCliRunStatus,
+  ExternalCliRunUpdate,
+  ExternalCliRuntimeManagerOptions,
+  ExternalCliSessionLike,
+} from './parity/externalCliRuntimeManager.js';
+export {
+  listExternalCliSessions,
+  readExternalCliSession,
+} from './parity/externalCliSessions.js';
+export type {
+  ExternalCliRuntime,
+  ExternalCliSession,
+  ExternalCliSessionMessage,
+  ExternalCliSessionOptions,
+  ExternalCliSessionSummary,
+  ExternalCliSessionRole,
+  ExternalCliToolMetadata,
+} from './parity/externalCliSessions.js';
+export { probeExternalCliAuth } from './parity/externalCliAuth.js';
+export type {
+  ExternalCliAuthProbeOptions,
+  ExternalCliAuthProbeResult,
+  ExternalCliAuthRuntime,
+  ExternalCliAuthState,
+  ExternalCliAuthStatus,
+} from './parity/externalCliAuth.js';
 
 export type * from './types.js';
 

@@ -504,6 +504,10 @@ describe('Actoviq advanced parity features', () => {
       model: 'test-model',
       sessionDirectory,
       modelApi,
+      approver: async () => ({
+        behavior: 'allow',
+        reason: 'Approved for the computer-use integration test.',
+      }),
       computerUse: {
         executor: {
           openUrl: async (url) => {
@@ -568,6 +572,10 @@ describe('Actoviq advanced parity features', () => {
       model: 'test-model',
       sessionDirectory,
       modelApi,
+      approver: async () => ({
+        behavior: 'allow',
+        reason: 'Approved for the computer-use workflow test.',
+      }),
       computerUse: {
         executor: {
           openUrl: async (url) => {
@@ -603,7 +611,7 @@ describe('Actoviq advanced parity features', () => {
         'open:https://example.com',
         'type:release-ready',
         'keys:ENTER',
-        'screenshot:artifacts/release.png',
+        `screenshot:${path.join(process.cwd(), 'artifacts', 'release.png')}`,
       ]);
     } finally {
       await sdk.close();
@@ -669,6 +677,10 @@ describe('Actoviq advanced parity features', () => {
       model: 'test-model',
       sessionDirectory,
       modelApi,
+      approver: async () => ({
+        behavior: 'allow',
+        reason: 'Approved for the computer-use toolkit test.',
+      }),
       tools: toolkit.tools,
       mcpServers: [toolkit.mcpServer],
     });
@@ -686,7 +698,7 @@ describe('Actoviq advanced parity features', () => {
         'open:https://example.com/releases',
         'focus:Example Domain',
         'clipboard:release checklist',
-        'screenshot:artifacts/focus.png',
+        `screenshot:${path.join(process.cwd(), 'artifacts', 'focus.png')}`,
       ]);
     } finally {
       await sdk.close();

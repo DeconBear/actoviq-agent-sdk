@@ -1,14 +1,16 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  analyzeActoviqBridgeEvents,
   clearLoadedJsonConfig,
   createActoviqBridgeSdk,
   loadJsonConfigFile,
 } from '../src/index.js';
+import { listExternalCliSessions } from '../src/parity/externalCliSessions.js';
 
 const tempDirs: string[] = [];
 const fixtureCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs');
@@ -17,6 +19,7 @@ const fakeCodexCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-
 const fakeCodewhaleCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-codewhale-cli.mjs');
 const fakeReasonixCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-reasonix-cli.mjs');
 const fakeCrushCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-crush-cli.mjs');
+const fakeHangingCliPath = path.resolve(process.cwd(), 'tests', 'fixtures', 'fake-hanging-runtime-cli.mjs');
 const originalConfigDir = process.env.ACTOVIQ_CONFIG_DIR;
 
 afterEach(async () => {
@@ -33,6 +36,60 @@ async function createTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+async function waitForPid(filePath: string, timeoutMs = 2_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number((await readFile(filePath, 'utf8')).trim());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch {
+      // Child has not written the pid file yet.
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for child pid file: ${filePath}`);
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`Child process ${pid} was not terminated`);
+}
+
+async function waitForJsonLine(
+  filePath: string,
+  predicate: (record: Record<string, unknown>) => boolean,
+  timeoutMs = 2_000,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const records = (await readFile(filePath, 'utf8'))
+        .split(/\r?\n/u)
+        .filter(Boolean)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      const match = records.find(predicate);
+      if (match) return match;
+    } catch {
+      // The fixture may not have created or finished appending the log yet.
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for fixture log record: ${filePath}`);
 }
 
 describe('Actoviq Runtime SDK bridge', () => {
@@ -506,16 +563,18 @@ describe('Actoviq Runtime SDK bridge', () => {
 });
 
 // directCli mode spawns a locally installed agent CLI (e.g. `claude`) directly,
-// bypassing the vendored runtime.bundle.br + Bun wrapper, while keeping the
-// ANTHROPIC_* env-injection chain intact so a direct run can target a
-// non-Claude provider (e.g. DeepSeek) without touching interactive Claude Code.
+// bypassing the vendored runtime.bundle.br + Bun wrapper. Native auth leaves
+// the CLI's normal login untouched; explicit API-key auth is child-scoped.
 describe('Actoviq Bridge SDK directCli mode', () => {
-  it('spawns the executable directly without a cliPath arg, and inherits env values', async () => {
+  it('defaults to native CLI auth without mapping Actoviq API settings', async () => {
     const tempDir = await createTempDir('actoviq-runtime-direct-');
     const configPath = path.join(tempDir, 'bridge-config.json');
     await writeFile(
       configPath,
-      JSON.stringify({ ACTOVIQ_AUTH_TOKEN: 'fixture-token' }),
+      JSON.stringify({
+        ACTOVIQ_AUTH_TOKEN: 'actoviq-only-token',
+        ACTOVIQ_BASE_URL: 'https://actoviq-only.invalid',
+      }),
       'utf8',
     );
 
@@ -532,19 +591,44 @@ describe('Actoviq Bridge SDK directCli mode', () => {
       const result = await sdk.run('hello-direct');
 
       expect(result.text).toBe('echo:hello-direct;agent:inherit');
-      // env injection still works in directCli mode
-      expect(result.initEvent?.env_token).toBe('fixture-token');
+      expect(result.initEvent?.env_token).not.toBe('actoviq-only-token');
+      expect(result.initEvent?.anthropic_auth_token).not.toBe('actoviq-only-token');
+      expect(result.initEvent?.anthropic_base_url).not.toBe('https://actoviq-only.invalid');
     } finally {
       await sdk.close();
     }
   });
 
-  it('redirects the spawned process to a non-Claude provider via ANTHROPIC_* env', async () => {
+  it('keeps option-like Claude prompts in the positional argument domain', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-argv-boundary-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const optionLikePrompt = '--dangerously-skip-permissions';
+      const result = await sdk.run(optionLikePrompt);
+      expect(result.text).toBe(`echo:${optionLikePrompt};agent:inherit`);
+
+      const optionLikeSessionId = '--dangerously-skip-permissions';
+      const resumed = await sdk.resumeSession(optionLikeSessionId);
+      const resumeResult = await resumed.send('check-argv');
+      expect(resumeResult.text).toContain(`--resume=${optionLikeSessionId}`);
+      expect(resumeResult.text).not.toContain(`|${optionLikeSessionId}|`);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('injects an explicit API key only into the child and redacts it from events', async () => {
     const tempDir = await createTempDir('actoviq-runtime-direct-provider-');
+    const apiKey = 'sk-direct-child-only-fixture';
     const configPath = path.join(tempDir, 'bridge-config.json');
-    // DeepSeek's Anthropic-compatible endpoint — proves directCli mode keeps
-    // the env-injection chain that lets bridge target a different provider
-    // from the user's interactive Claude Code.
+    // DeepSeek's Anthropic-compatible endpoint exercises explicit child-only
+    // provider configuration without modifying the user's native CLI login.
     await writeFile(
       configPath,
       JSON.stringify({
@@ -560,13 +644,204 @@ describe('Actoviq Bridge SDK directCli mode', () => {
       executable: process.execPath,
       cliPath: fixtureCliPath,
       workDir: tempDir,
+      authSource: 'apiKey',
+      apiKey,
+      baseURL: 'https://api.deepseek.com/anthropic',
     });
 
     try {
       const result = await sdk.run('provider-check');
 
       expect(result.initEvent?.anthropic_base_url).toBe('https://api.deepseek.com/anthropic');
-      expect(result.initEvent?.anthropic_auth_token).toBe('sk-deepseek-fixture');
+      expect(result.initEvent?.anthropic_auth_configured).toBe(true);
+      expect(result.initEvent?.anthropic_auth_token).toBe('[REDACTED]');
+      expect(JSON.stringify(result.events)).not.toContain(apiKey);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('terminates an active direct CLI run when its signal is aborted', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-abort-');
+    const pidFile = path.join(tempDir, 'child.pid');
+    const controller = new AbortController();
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fakeHangingCliPath,
+      workDir: tempDir,
+      env: { ACTOVIQ_TEST_CHILD_PID_FILE: pidFile },
+    });
+    const stream = sdk.stream('hang', { signal: controller.signal });
+    const outcome = stream.result.catch(error => error as Error);
+    const pid = await waitForPid(pidFile);
+
+    try {
+      controller.abort();
+      const error = await outcome;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).name).toBe('RunAbortedError');
+      await waitForProcessExit(pid);
+    } finally {
+      controller.abort();
+      if (processExists(pid)) process.kill(pid, 'SIGKILL');
+      await sdk.close();
+    }
+  });
+
+  it('terminates a direct CLI process when stream parsing fails before exit', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-parse-failure-');
+    const pidFile = path.join(tempDir, 'child.pid');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fakeHangingCliPath,
+      workDir: tempDir,
+      env: {
+        ACTOVIQ_TEST_CHILD_PID_FILE: pidFile,
+        ACTOVIQ_TEST_MALFORMED_OUTPUT: '1',
+      },
+    });
+    const outcome = sdk.run('hang').catch(error => error as Error);
+    const pid = await waitForPid(pidFile);
+
+    try {
+      await expect(outcome).resolves.toMatchObject({ name: 'ActoviqBridgeProcessError' });
+      await waitForProcessExit(pid);
+    } finally {
+      if (processExists(pid)) process.kill(pid, 'SIGKILL');
+      await sdk.close();
+    }
+  });
+
+  it('close waits for active direct CLI children to exit', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-close-');
+    const pidFile = path.join(tempDir, 'child.pid');
+    const controller = new AbortController();
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fakeHangingCliPath,
+      workDir: tempDir,
+      env: { ACTOVIQ_TEST_CHILD_PID_FILE: pidFile },
+    });
+    const stream = sdk.stream('hang', { signal: controller.signal });
+    const outcome = stream.result.catch(error => error as Error);
+    const pid = await waitForPid(pidFile, 10_000);
+
+    try {
+      await sdk.close();
+      await waitForProcessExit(pid, 10_000);
+      expect(await outcome).toBeInstanceOf(Error);
+    } finally {
+      controller.abort();
+      if (processExists(pid)) process.kill(pid, 'SIGKILL');
+      await outcome;
+    }
+  }, 30_000);
+
+  it('observes stream and raw-command aborts during asynchronous setup without spawning', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-abort-race-');
+    const pidFile = path.join(tempDir, 'child.pid');
+    const controller = new AbortController();
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fakeHangingCliPath,
+      workDir: tempDir,
+      env: { ACTOVIQ_TEST_CHILD_PID_FILE: pidFile },
+    });
+
+    try {
+      const stream = sdk.stream('hang', { signal: controller.signal });
+      controller.abort();
+      await expect(stream.result).rejects.toMatchObject({ name: 'RunAbortedError' });
+      await expect(readFile(pidFile, 'utf8')).rejects.toBeInstanceOf(Error);
+
+      const rawController = new AbortController();
+      const rawCommand = (sdk as unknown as {
+        runRawCliCommand(
+          args: string[],
+          options: { signal: AbortSignal },
+        ): Promise<unknown>;
+      }).runRawCliCommand(['hang'], { signal: rawController.signal });
+      rawController.abort();
+      await expect(rawCommand).rejects.toMatchObject({ name: 'RunAbortedError' });
+      await expect(readFile(pidFile, 'utf8')).rejects.toBeInstanceOf(Error);
+    } finally {
+      controller.abort();
+      await sdk.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'terminates the entire POSIX process group with TERM followed by KILL',
+    async () => {
+      const tempDir = await createTempDir('actoviq-runtime-direct-process-group-');
+      const pidFile = path.join(tempDir, 'child.pid');
+      const grandchildPidFile = path.join(tempDir, 'grandchild.pid');
+      const terminationLogFile = path.join(tempDir, 'termination.log');
+      const controller = new AbortController();
+      const sdk = await createActoviqBridgeSdk({
+        directCli: true,
+        executable: process.execPath,
+        cliPath: fakeHangingCliPath,
+        workDir: tempDir,
+        env: {
+          ACTOVIQ_TEST_CHILD_PID_FILE: pidFile,
+          ACTOVIQ_TEST_GRANDCHILD_PID_FILE: grandchildPidFile,
+          ACTOVIQ_TEST_TERMINATION_LOG_FILE: terminationLogFile,
+        },
+      });
+      const stream = sdk.stream('hang', { signal: controller.signal });
+      const outcome = stream.result.catch(error => error as Error);
+      const pid = await waitForPid(pidFile);
+      const grandchildPid = await waitForPid(grandchildPidFile);
+
+      try {
+        controller.abort();
+        expect(await outcome).toMatchObject({ name: 'RunAbortedError' });
+        await Promise.all([waitForProcessExit(pid), waitForProcessExit(grandchildPid)]);
+        const terminationLog = await readFile(terminationLogFile, 'utf8');
+        expect(terminationLog).toContain('parent');
+        expect(terminationLog).toContain('grandchild');
+      } finally {
+        controller.abort();
+        if (processExists(pid)) process.kill(pid, 'SIGKILL');
+        if (processExists(grandchildPid)) process.kill(grandchildPid, 'SIGKILL');
+        await sdk.close();
+      }
+    },
+  );
+
+  it('bounds retained stdout, stderr, run events, and assistant messages', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-direct-bounds-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      executable: process.execPath,
+      cliPath: fixtureCliPath,
+      workDir: tempDir,
+      env: { ACTOVIQ_TEST_LARGE_STDOUT_BYTES: String(4 * 1024 * 1024 + 64 * 1024) },
+    });
+
+    try {
+      const raw = await (sdk as unknown as {
+        runRawCliCommand(args: string[]): Promise<{ stdout: string }>;
+      }).runRawCliCommand(['agents']);
+      expect(Buffer.byteLength(raw.stdout)).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(raw.stdout).toContain('[Actoviq output truncated]');
+      expect(raw.stdout).toContain('reviewer · max · project memory');
+
+      const largeStderr = await sdk.run('large-stderr');
+      expect(Buffer.byteLength(largeStderr.stderr)).toBeLessThanOrEqual(1024 * 1024);
+      expect(largeStderr.stderr).toContain('[Actoviq output truncated]');
+      expect(largeStderr.stderr).toMatch(/stderr-tail$/u);
+
+      const retained = await sdk.run('retention-bounds');
+      expect(retained.events).toHaveLength(1_000);
+      expect(retained.assistantMessages).toHaveLength(128);
+      expect(retained.events.at(-1)?.type).toBe('result');
+      expect(retained.assistantMessages.at(-1)?.type).toBe('assistant');
     } finally {
       await sdk.close();
     }
@@ -640,6 +915,7 @@ describe('Actoviq Bridge SDK directCli: pi provider', () => {
 
   it('injects OPENAI_API_KEY (provider-specific credential, not ANTHROPIC_*)', async () => {
     const tempDir = await createTempDir('actoviq-runtime-pi-env-');
+    const apiKey = 'sk-pi-explicit-fixture';
     const configPath = path.join(tempDir, 'bridge-config.json');
     // pi reads OPENAI_API_KEY directly; the Actoviq settings env passes through
     // unchanged (no ANTHROPIC_* remapping for non-claude providers).
@@ -656,22 +932,119 @@ describe('Actoviq Bridge SDK directCli: pi provider', () => {
       executable: process.execPath,
       cliPath: fakePiCliPath,
       workDir: tempDir,
+      homeDir: tempDir,
+      authSource: 'apiKey',
+      apiKey,
     });
 
     try {
       const result = await sdk.run('check-env');
       // fake-pi echoes the injected key into the assistant text — proving the
-      // OPENAI_API_KEY from settings reached the pi child process. (pi does
-      // not remap ANTHROPIC_* the way the claude provider does; inherited
-      // ANTHROPIC_* vars pass through harmlessly since pi does not read them.)
-      expect(result.text).toMatch(/^pi:env:sk-pi-fixture:/);
+      // Explicit OPENAI_API_KEY reached the pi child and was redacted from its
+      // normalized output before the event became visible to the caller.
+      expect(result.text).toMatch(/^pi:env:\[REDACTED\]:/);
+      expect(JSON.stringify(result.events)).not.toContain(apiKey);
     } finally {
       await sdk.close();
     }
   });
+
+  it('isolates unrelated credentials and keeps API-key sessions in a stable named profile', async () => {
+    const homeDir = await createTempDir('actoviq-runtime-pi-profile-');
+    const common = {
+      directCli: true as const,
+      directCliProvider: 'pi' as const,
+      executable: process.execPath,
+      cliPath: fakePiCliPath,
+      workDir: homeDir,
+      homeDir,
+      authSource: 'apiKey' as const,
+      apiKey: 'sk-pi-profile-fixture',
+      profileName: 'pi-profile-a',
+      env: {
+        GITHUB_TOKEN: 'github-must-not-reach-pi',
+        AWS_SECRET_ACCESS_KEY: 'aws-must-not-reach-pi',
+        DATABASE_PASSWORD: 'database-must-not-reach-pi',
+      },
+    };
+    const firstClient = await createActoviqBridgeSdk(common);
+    const first = await firstClient.run('check-isolation');
+    await firstClient.close();
+    expect(first.text).toBe(
+      'pi:isolation:selected=true:github=false:aws=false:db=false',
+    );
+
+    const resumedClient = await createActoviqBridgeSdk(common);
+    try {
+      const resumed = await (await resumedClient.resumeSession(first.sessionId)).send('resumed-turn');
+      expect(resumed.text).toBe('pi:resumed-turn');
+    } finally {
+      await resumedClient.close();
+    }
+
+    const otherProfile = await createActoviqBridgeSdk({ ...common, profileName: 'pi-profile-b' });
+    try {
+      await expect((await otherProfile.resumeSession(first.sessionId)).send('must-not-cross'))
+        .rejects.toThrow(/missing Pi session|terminal result|exited/u);
+    } finally {
+      await otherProfile.close();
+    }
+
+    expect((await listExternalCliSessions({ homeDir, runtimes: ['pi'] }))
+      .map(session => session.nativeSessionId)).toContain(first.sessionId);
+  });
 });
 
 describe('Actoviq Bridge SDK directCli: codex provider', () => {
+  it('keeps option-like prompts positional and rejects option-like resume ids', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-argv-boundary-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const optionLikePrompt = '--dangerously-bypass-approvals-and-sandbox';
+      const result = await sdk.run(optionLikePrompt);
+      expect(result.text).toBe(`codex:${optionLikePrompt}`);
+
+      const unsafeResume = await sdk.resumeSession('--last');
+      await expect(unsafeResume.send('do not resume latest'))
+        .rejects.toThrow(/Codex session id must be a non-option UUID or thread name/);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it.each([
+    ['default', 'sandbox_mode="read-only"', false],
+    ['plan', 'sandbox_mode="read-only"', false],
+    ['acceptEdits', 'sandbox_mode="workspace-write"', false],
+    ['bypassPermissions', '--dangerously-bypass-approvals-and-sandbox', true],
+  ] as const)(
+    'maps %s permission mode without silently widening access',
+    async (permissionMode, expectedArg, bypass) => {
+      const tempDir = await createTempDir('actoviq-runtime-codex-permissions-');
+      const sdk = await createActoviqBridgeSdk({
+        directCli: true,
+        directCliProvider: 'codex',
+        executable: process.execPath,
+        cliPath: fakeCodexCliPath,
+        workDir: tempDir,
+      });
+      try {
+        const result = await sdk.run('check-permissions', { permissionMode });
+        expect(result.text).toContain(expectedArg);
+        expect(result.text.includes('--dangerously-bypass-approvals-and-sandbox')).toBe(bypass);
+      } finally {
+        await sdk.close();
+      }
+    },
+  );
+
   it('normalizes the codex exec JSONL stream into a bridge result', async () => {
     const tempDir = await createTempDir('actoviq-runtime-codex-');
     const sdk = await createActoviqBridgeSdk({
@@ -696,6 +1069,42 @@ describe('Actoviq Bridge SDK directCli: codex provider', () => {
     }
   });
 
+  it('normalizes Codex tool lifecycle items into canonical tool events', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-tools-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const result = await sdk.run('exercise-tools');
+      const analysis = analyzeActoviqBridgeEvents(result.events);
+
+      expect(analysis.toolRequests.map(request => ({
+        id: request.id,
+        name: request.name,
+        input: request.input,
+      }))).toEqual([
+        { id: 'cmd-1', name: 'command_execution', input: { command: 'printf codex-tool' } },
+        { id: 'file-1', name: 'file_change', input: { changes: [{ path: 'README.md', kind: 'update' }] } },
+        { id: 'mcp-1', name: 'mcp__filesystem__read_file', input: { path: 'README.md' } },
+      ]);
+      expect(analysis.toolResults.map(toolResult => ({
+        id: toolResult.toolUseId,
+        isError: toolResult.isError,
+      }))).toEqual([
+        { id: 'cmd-1', isError: false },
+        { id: 'file-1', isError: false },
+        { id: 'mcp-1', isError: false },
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('passes -m model through to the codex child', async () => {
     const tempDir = await createTempDir('actoviq-runtime-codex-model-');
     const sdk = await createActoviqBridgeSdk({
@@ -710,6 +1119,29 @@ describe('Actoviq Bridge SDK directCli: codex provider', () => {
     try {
       const result = await sdk.run('who-am-i');
       expect(result.text).toBe('codex:agent:gpt-5');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('adopts the native Codex thread id and resumes it on the next turn', async () => {
+    const tempDir = await createTempDir('actoviq-runtime-codex-resume-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codex',
+      executable: process.execPath,
+      cliPath: fakeCodexCliPath,
+      workDir: tempDir,
+    });
+
+    try {
+      const session = await sdk.createSession({ title: 'Codex fixture' });
+      await session.send('first-turn');
+      expect(session.id).toBe('codex-fixture-thread');
+
+      const resumed = await session.send('check-resume');
+      expect(resumed.sessionId).toBe('codex-fixture-thread');
+      expect(resumed.text).toBe('codex:resume:codex-fixture-thread');
     } finally {
       await sdk.close();
     }
@@ -739,25 +1171,101 @@ describe('Actoviq Bridge SDK directCli: codex provider', () => {
 describe('Actoviq Bridge SDK directCli: codewhale provider', () => {
   it('spawns codewhale and normalizes the stream-json output', async () => {
     const tempDir = await createTempDir('actoviq-codewhale-');
+    const codewhaleHome = path.join(tempDir, 'codewhale-home');
     const sdk = await createActoviqBridgeSdk({
       directCli: true,
       directCliProvider: 'codewhale',
       executable: process.execPath,
       cliPath: fakeCodewhaleCliPath,
       workDir: tempDir,
+      env: { CODEWHALE_HOME: codewhaleHome },
     });
     try {
       const result = await sdk.run('hello-codewhale');
       expect(result.text).toBe('codewhale:hello-codewhale');
       expect(result.isError).toBe(false);
+      expect(result.sessionId).toBe('codewhale-fixture-session');
     } finally {
       await sdk.close();
     }
   });
+
+  it('adopts the correlated native session id for an exact next-turn resume', async () => {
+    const tempDir = await createTempDir('actoviq-codewhale-resume-');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'codewhale',
+      executable: process.execPath,
+      cliPath: fakeCodewhaleCliPath,
+      workDir: tempDir,
+      env: { CODEWHALE_HOME: path.join(tempDir, 'codewhale-home') },
+    });
+    try {
+      const session = await sdk.createSession({ sessionId: 'actoviq-bootstrap-session' });
+      const first = await session.send('first-turn');
+      expect(first.sessionId).toBe('codewhale-fixture-session');
+      expect(session.id).toBe('codewhale-fixture-session');
+
+      const resumed = await session.send('check-resume');
+      expect(resumed.text).toBe('codewhale:resume:codewhale-fixture-session');
+      expect(resumed.sessionId).toBe('codewhale-fixture-session');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('isolates unrelated credentials and resumes from a stable CodeWhale profile after restart', async () => {
+    const homeDir = await createTempDir('actoviq-codewhale-profile-');
+    const common = {
+      directCli: true as const,
+      directCliProvider: 'codewhale' as const,
+      executable: process.execPath,
+      cliPath: fakeCodewhaleCliPath,
+      workDir: homeDir,
+      homeDir,
+      authSource: 'apiKey' as const,
+      apiKey: 'sk-codewhale-profile-fixture',
+      credentialProvider: 'anthropic',
+      profileName: 'codewhale-profile-a',
+      env: {
+        GITHUB_TOKEN: 'github-must-not-reach-codewhale',
+        AWS_SECRET_ACCESS_KEY: 'aws-must-not-reach-codewhale',
+        DATABASE_PASSWORD: 'database-must-not-reach-codewhale',
+      },
+    };
+    const firstClient = await createActoviqBridgeSdk(common);
+    const first = await firstClient.run('check-isolation');
+    await firstClient.close();
+    expect(first.text).toBe(
+      'codewhale:isolation:selected=true:github=false:aws=false:db=false',
+    );
+
+    const resumedClient = await createActoviqBridgeSdk(common);
+    try {
+      const resumed = await (await resumedClient.resumeSession(first.sessionId)).send('check-resume');
+      expect(resumed.text).toBe('codewhale:resume:codewhale-fixture-session');
+    } finally {
+      await resumedClient.close();
+    }
+
+    const otherProfile = await createActoviqBridgeSdk({
+      ...common,
+      profileName: 'codewhale-profile-b',
+    });
+    try {
+      await expect((await otherProfile.resumeSession(first.sessionId)).send('must-not-cross'))
+        .rejects.toThrow(/missing CodeWhale session|terminal result|exited/u);
+    } finally {
+      await otherProfile.close();
+    }
+
+    expect((await listExternalCliSessions({ homeDir, runtimes: ['codewhale'] }))
+      .map(session => session.nativeSessionId)).toContain(first.sessionId);
+  });
 });
 
 describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
-  it('captures plain-text stdout and wraps it in a result', async () => {
+  it('drives Reasonix ACP and wraps its structured result', async () => {
     const tempDir = await createTempDir('actoviq-reasonix-');
     const sdk = await createActoviqBridgeSdk({
       directCli: true,
@@ -765,6 +1273,7 @@ describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
       executable: process.execPath,
       cliPath: fakeReasonixCliPath,
       workDir: tempDir,
+      homeDir: tempDir,
     });
     try {
       const result = await sdk.run('hello-reasonix');
@@ -774,10 +1283,264 @@ describe('Actoviq Bridge SDK directCli: reasonix provider', () => {
       await sdk.close();
     }
   });
+
+  it('redacts an explicit child-only credential from managed ACP events and results', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-secret-');
+    const apiKey = 'sk-reasonix-child-only-fixture';
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      authSource: 'apiKey',
+      apiKey,
+      profileName: 'reasonix-profile-a',
+      env: {
+        GITHUB_TOKEN: 'github-must-not-reach-reasonix',
+        AWS_SECRET_ACCESS_KEY: 'aws-must-not-reach-reasonix',
+        DATABASE_PASSWORD: 'database-must-not-reach-reasonix',
+      },
+    });
+    try {
+      const result = await sdk.run('leak-secret');
+      expect(result.text).toBe('reasonix:[REDACTED]');
+      expect(JSON.stringify(result.events)).not.toContain(apiKey);
+      expect(result.stderr).not.toContain(apiKey);
+
+      const isolated = await sdk.run('check-isolation');
+      expect(isolated.text).toBe(
+        'reasonix:isolation:selected=true:github=false:aws=false:db=false',
+      );
+
+      const history = await listExternalCliSessions({ homeDir: tempDir, runtimes: ['reasonix'] });
+      expect(history).toEqual([expect.objectContaining({
+        runtime: 'reasonix',
+        nativeSessionId: result.sessionId,
+        messageCount: 4,
+      })]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('negotiates advertised model, effort, and budget options before prompting', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-config-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      model: 'fixture/managed',
+      effort: 'high',
+      maxBudgetUsd: 3.5,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    });
+    try {
+      const result = await sdk.run('configured-turn');
+      expect(result.text).toBe('reasonix:configured-turn');
+      expect(result.initEvent).toMatchObject({ model: 'fixture/managed' });
+      const config = (await readFile(invocationLog, 'utf8'))
+        .trim()
+        .split(/\r?\n/u)
+        .map(line => JSON.parse(line) as Record<string, unknown>)
+        .filter(record => record.event === 'config');
+      expect(config).toMatchObject([
+        { configId: 'model', value: 'fixture/managed' },
+        { configId: 'effort', value: 'high' },
+        { configId: 'budget_usd', value: '3.5' },
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('keeps one legacy ACP process and native session for consecutive turns', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-persistent-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    });
+    let pid = 0;
+    try {
+      const session = await sdk.createSession({ sessionId: 'actoviq-reasonix-chat' });
+      const first = await session.send('runtime-identity');
+      const second = await session.send('runtime-identity');
+      const firstIdentity = /pid=(\d+):session=([^:]+):turn=(\d+)/u.exec(first.text);
+      const secondIdentity = /pid=(\d+):session=([^:]+):turn=(\d+)/u.exec(second.text);
+      expect(firstIdentity).not.toBeNull();
+      expect(secondIdentity).not.toBeNull();
+      pid = Number(firstIdentity?.[1]);
+      expect(secondIdentity?.[1]).toBe(firstIdentity?.[1]);
+      expect(firstIdentity?.[2]).toBe('reasonix-fixture-session');
+      expect(secondIdentity?.[2]).toBe('reasonix-fixture-session');
+      expect(firstIdentity?.[3]).toBe('1');
+      expect(secondIdentity?.[3]).toBe('2');
+      expect(first.sessionId).toBe('reasonix-fixture-session');
+      expect(second.sessionId).toBe('reasonix-fixture-session');
+      expect(session.id).toBe('reasonix-fixture-session');
+
+      const records = (await readFile(invocationLog, 'utf8'))
+        .trim()
+        .split(/\r?\n/u)
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(records.filter(record => record.event === 'start')).toHaveLength(1);
+      expect(records.filter(record => record.event === 'session/new')).toHaveLength(1);
+      expect(records.filter(record => record.event === 'session/load')).toHaveLength(0);
+    } finally {
+      await sdk.close();
+      if (pid > 0) await waitForProcessExit(pid);
+    }
+  });
+
+  it('serializes concurrent turns that target the same managed ACP session', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-serialized-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    });
+    try {
+      const [first, second] = await Promise.all([
+        sdk.run('concurrent-first'),
+        sdk.run('concurrent-second'),
+      ]);
+      expect(first.text).toBe('reasonix:concurrent-first');
+      expect(second.text).toBe('reasonix:concurrent-second');
+      expect(second.sessionId).toBe(first.sessionId);
+      const prompts = (await readFile(invocationLog, 'utf8'))
+        .trim()
+        .split(/\r?\n/u)
+        .map(line => JSON.parse(line) as Record<string, unknown>)
+        .filter(record => record.event === 'prompt');
+      expect(prompts).toMatchObject([
+        { prompt: 'concurrent-first', turn: 1 },
+        { prompt: 'concurrent-second', turn: 2 },
+      ]);
+      expect(new Set(prompts.map(record => record.pid)).size).toBe(1);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('does not replace an unsupported exact resume with a new session', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-resume-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const common = {
+      directCli: true as const,
+      directCliProvider: 'reasonix' as const,
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    };
+    const firstSdk = await createActoviqBridgeSdk(common);
+    let nativeSessionId = '';
+    try {
+      nativeSessionId = (await firstSdk.run('first-turn')).sessionId;
+    } finally {
+      await firstSdk.close();
+    }
+
+    const resumedSdk = await createActoviqBridgeSdk(common);
+    try {
+      const session = await resumedSdk.resumeSession(nativeSessionId);
+      const resumed = await session.send('must-not-start-over');
+      expect(resumed.isError).toBe(true);
+      expect(resumed.text).toContain('cannot load persisted sessions');
+      expect(resumed.sessionId).toBe(nativeSessionId);
+    } finally {
+      await resumedSdk.close();
+    }
+
+    const records = (await readFile(invocationLog, 'utf8'))
+      .trim()
+      .split(/\r?\n/u)
+      .map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(records.filter(record => record.event === 'start')).toHaveLength(2);
+    expect(records.filter(record => record.event === 'session/new')).toHaveLength(1);
+    expect(records.filter(record => record.event === 'session/load')).toHaveLength(0);
+    expect(records.some(record => record.prompt === 'must-not-start-over')).toBe(false);
+  });
+
+  it('sends session/cancel before reclaiming an aborted ACP process', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-abort-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    });
+    const abortController = new AbortController();
+    try {
+      const result = sdk.run('hang', { signal: abortController.signal });
+      const promptRecord = await waitForJsonLine(
+        invocationLog,
+        record => record.event === 'prompt' && record.prompt === 'hang',
+      );
+      const pid = Number(promptRecord.pid);
+      abortController.abort();
+      await expect(result).rejects.toMatchObject({ name: 'RunAbortedError' });
+      await waitForProcessExit(pid);
+      await waitForJsonLine(
+        invocationLog,
+        record => record.event === 'cancel' && record.pid === pid,
+      );
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('cancels and terminates an active ACP turn when the SDK closes', async () => {
+    const tempDir = await createTempDir('actoviq-reasonix-close-');
+    const invocationLog = path.join(tempDir, 'reasonix.jsonl');
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'reasonix',
+      executable: process.execPath,
+      cliPath: fakeReasonixCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      env: { ACTOVIQ_E2E_INVOCATIONS: invocationLog },
+    });
+    const result = sdk.run('hang');
+    const promptRecord = await waitForJsonLine(
+      invocationLog,
+      record => record.event === 'prompt' && record.prompt === 'hang',
+    );
+    const pid = Number(promptRecord.pid);
+    await sdk.close();
+    await expect(result).rejects.toThrow(/closed|exited/iu);
+    await waitForProcessExit(pid);
+    await waitForJsonLine(
+      invocationLog,
+      record => record.event === 'cancel' && record.pid === pid,
+    );
+  });
 });
 
 describe('Actoviq Bridge SDK directCli: crush provider', () => {
-  it('captures plain-text stdout and wraps it in a result', async () => {
+  it('uses the private server protocol and returns the native session id', async () => {
     const tempDir = await createTempDir('actoviq-crush-');
     const sdk = await createActoviqBridgeSdk({
       directCli: true,
@@ -787,11 +1550,134 @@ describe('Actoviq Bridge SDK directCli: crush provider', () => {
       workDir: tempDir,
     });
     try {
-      const result = await sdk.run('hello-crush');
-      expect(result.text).toBe('crush:hello-crush');
-      expect(result.isError).toBe(false);
+      const session = await sdk.createSession({ sessionId: 'actoviq-bootstrap' });
+      const first = await session.send('hello-crush');
+      expect(first.text).toBe('crush:hello-crush');
+      expect(first.sessionId).toBe('crush-session-1');
+      expect(first.isError).toBe(false);
+      expect(session.id).toBe('crush-session-1');
+
+      const resumed = await session.send('second-turn');
+      expect(resumed.text).toBe('crush:second-turn');
+      expect(resumed.sessionId).toBe('crush-session-1');
     } finally {
       await sdk.close();
+    }
+  });
+
+  it('isolates an explicit API key and refuses untrusted project config', async () => {
+    const tempDir = await createTempDir('actoviq-crush-auth-');
+    const apiKey = 'sk-crush-child-only-fixture';
+    const sdk = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'crush',
+      executable: process.execPath,
+      cliPath: fakeCrushCliPath,
+      workDir: tempDir,
+      homeDir: tempDir,
+      authSource: 'apiKey',
+      apiKey,
+      credentialProvider: 'openai',
+      profileName: 'crush-isolation-profile',
+      baseURL: 'https://provider.example/v1/',
+      model: 'openai/gpt-5',
+      env: {
+        GITHUB_TOKEN: 'github-must-not-reach-crush',
+        AWS_SECRET_ACCESS_KEY: 'aws-must-not-reach-crush',
+        DATABASE_PASSWORD: 'database-must-not-reach-crush',
+      },
+    });
+    try {
+      const result = await sdk.run('check-env');
+      expect(result.text).toBe('crush:env:[REDACTED]:isolated=true');
+      expect(JSON.stringify(result.events)).not.toContain(apiKey);
+
+      const isolated = await sdk.run('check-isolation');
+      expect(isolated.text).toBe(
+        'crush:isolation:selected=true:github=false:aws=false:db=false',
+      );
+
+      const configured = await sdk.run('check-config');
+      expect(configured.text).toBe(
+        'crush:config:openai:gpt-5:https://provider.example/v1:key=true',
+      );
+
+      await writeFile(path.join(tempDir, '.crush.json'), '{}', 'utf8');
+      await expect(sdk.run('blocked')).rejects.toThrow(/trustProjectResources/u);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('keeps Crush API-key session data stable and isolated by named profile', async () => {
+    const homeDir = await createTempDir('actoviq-crush-profile-');
+    const common = {
+      directCli: true as const,
+      directCliProvider: 'crush' as const,
+      executable: process.execPath,
+      cliPath: fakeCrushCliPath,
+      workDir: homeDir,
+      homeDir,
+      authSource: 'apiKey' as const,
+      apiKey: 'sk-crush-profile-fixture',
+      credentialProvider: 'openai',
+      profileName: 'crush-profile-a',
+    };
+    const firstClient = await createActoviqBridgeSdk(common);
+    const first = await firstClient.run('first-turn');
+    await firstClient.close();
+
+    const resumedClient = await createActoviqBridgeSdk(common);
+    try {
+      const resumed = await (await resumedClient.resumeSession(first.sessionId)).send('resumed-turn');
+      expect(resumed.text).toBe('crush:resumed-turn');
+      expect(resumed.sessionId).toBe(first.sessionId);
+    } finally {
+      await resumedClient.close();
+    }
+
+    const otherProfile = await createActoviqBridgeSdk({
+      ...common,
+      profileName: 'crush-profile-b',
+    });
+    try {
+      await expect((await otherProfile.resumeSession(first.sessionId)).send('must-not-cross'))
+        .rejects.toThrow(/404|status/u);
+    } finally {
+      await otherProfile.close();
+    }
+  });
+
+  it('requires explicit project-config trust in native-login mode too', async () => {
+    const tempDir = await createTempDir('actoviq-crush-native-trust-');
+    await writeFile(path.join(tempDir, 'crush.json'), '{}', 'utf8');
+    const untrusted = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'crush',
+      executable: process.execPath,
+      cliPath: fakeCrushCliPath,
+      workDir: tempDir,
+      authSource: 'native',
+    });
+    try {
+      await expect(untrusted.run('blocked')).rejects.toThrow(/trustProjectResources/u);
+    } finally {
+      await untrusted.close();
+    }
+
+    const trusted = await createActoviqBridgeSdk({
+      directCli: true,
+      directCliProvider: 'crush',
+      executable: process.execPath,
+      cliPath: fakeCrushCliPath,
+      workDir: tempDir,
+      authSource: 'native',
+      trustProjectResources: true,
+    });
+    try {
+      expect((await trusted.run('allowed')).text).toBe('crush:allowed');
+    } finally {
+      await trusted.close();
     }
   });
 });

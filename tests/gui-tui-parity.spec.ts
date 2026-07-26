@@ -138,6 +138,10 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('data-settings-tab="browser"');
     expect(html).toContain('data-settings-tab="computer"');
     expect(html).toContain('data-settings-tab="worktree"');
+    expect(gui).toContain('createManagedPluginRuntime');
+    expect(tui).toContain('createManagedPluginRuntime');
+    expect(gui).toContain('readManagedPluginCatalog');
+    expect(tui).toContain('readManagedPluginCatalog');
     expect(html).not.toContain('wip-hidden');
     expect(html).not.toContain('settings-wip-note');
     expect(js).toContain('Graph (team)');
@@ -182,12 +186,14 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('id="cancelSettings"');
     expect(html).toContain('id="backToAppBtn"');
     expect(html).toContain('id="openLocationBtn"');
-    // The command-palette / tools / abort (×) top-bar buttons were removed; the
-    // top bar now hosts a Git-tree button, and abort moved onto the send button.
+    // The command-palette / tools / abort (×) / top-bar Terminal & Git buttons were
+    // removed; Git lives in the aux side panel, abort moved onto the send button.
     expect(html).not.toContain('id="abortBtn"');
     expect(html).not.toContain('id="commandPaletteBtn"');
     expect(html).not.toContain('id="toolsBtn"');
-    expect(html).toContain('id="gitBtn"');
+    expect(html).not.toContain('id="gitBtn"');
+    expect(html).not.toContain('id="terminalToggleBtn"');
+    expect(html).toContain('data-aux="git"');
     expect(html).toContain('id="contextMenu"');
     expect(html).toContain('id="settingsGitTreeBtn"');
     expect(html).toContain('class="brand"');
@@ -210,6 +216,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('renderSidebarRecents');
     expect(js).toContain('/api/project/pin');
     expect(js).toContain('setProjectPinned');
+    expect(js).toMatch(/async function openSidebarProject[\s\S]*?await switchRegion\('project'\);[\s\S]*?switchProjectView\('detail'\);/);
+    expect(js).toMatch(/async function openSidebarSession[\s\S]*?await switchRegion\('project'\);[\s\S]*?switchProjectView\('conversation'\);/);
     expect(html).not.toContain('id="addProjectBtn"');
     expect(html).not.toContain('id="workspaceMeta"');
     expect(css).toContain('.pc-badge.status-planning');
@@ -422,6 +430,156 @@ describe('TUI and GUI parity', () => {
     expect(repl).toContain("sub === 'chat' || sub.startsWith('chat ')");
     expect(tui).toContain("args === 'chat' || args.startsWith('chat ')");
     expect(gui).toContain("input.startsWith('/manager chat ')");
+  });
+
+  it('controls External CLI background work and native history from the TUI', () => {
+    const root = join(import.meta.dirname, '..');
+    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const html = createActoviqGuiHtml();
+    const js = createActoviqGuiClientScript();
+    const managedRuntimes = [
+      'claude',
+      'codex',
+      'pi',
+      'codewhale',
+      'reasonix',
+      'crush',
+    ];
+    expect(SUBCOMMANDS.bridge).toEqual([
+      'run',
+      'background',
+      'runs',
+      'stop',
+      'status',
+      'history',
+      'resume',
+      'switch',
+      'model',
+      'config',
+      'setup',
+      'off',
+      'help',
+    ]);
+    expect(tui).toContain('new ExternalCliRuntimeManager()');
+    expect(tui).toContain('listExternalCliSessions({');
+    expect(tui).toContain('readExternalCliSession(summary.path');
+    expect(tui).toContain("const RUNTIME_METADATA_KEY = '__actoviqRuntime'");
+    expect(tui).toContain("const EXTERNAL_SESSIONS_METADATA_KEY = '__actoviqExternalSessions'");
+    expect(tui).toContain("targetSession.id + '\\u0000' + externalSessionBindingKey");
+    expect(tui).toContain('await client.resumeSession(boundNativeSessionId');
+    expect(tui).toContain('await rememberExternalNativeSession(externalConfig, externalBridge.session.id)');
+    expect(tui).toContain('await persistSessionRuntimeMetadata(session, externalConfig, bridgeModelLabel)');
+    expect(tui).toContain("args === 'background' || args.startsWith('background ')");
+    expect(tui).toContain("args === 'runs'");
+    expect(tui).toContain("args === 'stop' || args.startsWith('stop ')");
+    expect(tui).toContain("args === 'status'");
+    expect(tui).toContain("args === 'history' || args.startsWith('history ')");
+    expect(tui).toContain("args === 'resume' || args.startsWith('resume ')");
+    expect(tui).toContain('externalCliRuntimeManager.close()');
+
+    const selectSource = (id: string): string => {
+      const start = html.indexOf(`<select id="${id}"`);
+      expect(start, id).toBeGreaterThanOrEqual(0);
+      const end = html.indexOf('</select>', start);
+      expect(end, id).toBeGreaterThan(start);
+      return html.slice(start, end);
+    };
+    const configRuntimeSelect = selectSource('bridgeCfgRuntime');
+    const historyRuntimeSelect = selectSource('externalCliHistoryRuntime');
+    for (const runtime of managedRuntimes) {
+      expect(configRuntimeSelect, `${runtime} config option`)
+        .toContain(`<option value="${runtime}">`);
+      expect(historyRuntimeSelect, `${runtime} history option`)
+        .toContain(`<option value="${runtime}">`);
+    }
+    expect(historyRuntimeSelect).not.toContain('Claude Code + Codex');
+
+    const runtimeProviderStart = js.indexOf('const RUNTIME_PROVIDER =');
+    const runtimeProviderEnd = js.indexOf('function toggleCredentialFields', runtimeProviderStart);
+    const runtimeProviderSource = js.slice(runtimeProviderStart, runtimeProviderEnd);
+    const authStart = js.indexOf('async function refreshExternalCliAuth');
+    const authEnd = js.indexOf('function populateExternalCliRunConfigs', authStart);
+    const authSource = js.slice(authStart, authEnd);
+    for (const runtime of managedRuntimes) {
+      expect(runtimeProviderSource, `${runtime} GUI config gate`).toContain(runtime);
+      expect(authSource, `${runtime} GUI auth gate`).toContain(runtime);
+    }
+
+    const tuiRuntimeMapStart = tui.indexOf('const RUNTIME_MAP:');
+    const tuiRuntimeMapEnd = tui.indexOf('const curProvider', tuiRuntimeMapStart);
+    const tuiRuntimeMap = tui.slice(tuiRuntimeMapStart, tuiRuntimeMapEnd);
+    for (const runtime of managedRuntimes) {
+      expect(tuiRuntimeMap, `${runtime} TUI config gate`).toContain(`${runtime}:`);
+    }
+
+    const identityBeforeApiKeyBranch = /authSource:[^\n]+\r?\n\s+credentialProvider: config\.credentialProvider,\r?\n\s+profileName: config\.name,\r?\n\s+\.\.\.\(config\.authSource === 'apiKey'/gu;
+    expect(tui.match(identityBeforeApiKeyBranch)).toHaveLength(2);
+    expect(gui.match(identityBeforeApiKeyBranch)).toHaveLength(2);
+
+    const editStart = tui.indexOf("if (choice === 'edit')");
+    const editEnd = tui.indexOf("if (choice === 'remove')", editStart);
+    expect(tui.slice(editStart, editEnd)).toContain('await activateBridgeConfig(updated)');
+    const removeEnd = tui.indexOf('// Single-page config editor', editEnd);
+    expect(tui.slice(editEnd, removeEnd)).toContain('await disableBridge()');
+
+    const runsStart = tui.indexOf('function printExternalCliRuns');
+    const runsEnd = tui.indexOf('function stopExternalCliRun', runsStart);
+    const stopEnd = tui.indexOf('async function runBridgePrompt', runsEnd);
+    expect(tui.slice(runsStart, runsEnd)).not.toContain('requireActiveExternalCliConfig');
+    expect(tui.slice(runsEnd, stopEnd)).not.toContain('requireActiveExternalCliConfig');
+
+    const conflictStart = tui.indexOf('function findConflictingExternalCliRun');
+    const conflictEnd = tui.indexOf('function externalCliDisplayText', conflictStart);
+    const conflictSource = tui.slice(conflictStart, conflictEnd);
+    expect(conflictSource).toContain('run.actoviqSessionId !== targetSession.id');
+    expect(conflictSource).toContain('!sameWorkspace(run.cwd, targetWorkDir)');
+    expect(conflictSource).toContain("run.status !== 'queued' && run.status !== 'running'");
+    expect(conflictSource).toContain('label?.configName === config.name');
+
+    const foregroundStart = tui.indexOf('async function startRun(text: string)');
+    const foregroundMarkedRunning = tui.indexOf('running = true', foregroundStart);
+    expect(tui.slice(foregroundStart, foregroundMarkedRunning)).toContain('findConflictingExternalCliRun');
+    expect(tui.slice(foregroundStart, foregroundMarkedRunning)).toContain('/bridge runs and /bridge stop');
+
+    const startupStart = tui.indexOf('screen.start()');
+    const startupEnd = tui.indexOf('renderDynamic()', startupStart);
+    expect(tui.slice(startupStart, startupEnd)).toContain('await restoreSessionRuntimeSelection()');
+
+    const statusStart = tui.indexOf('function printBridgeStatus');
+    const statusEnd = tui.indexOf('async function printExternalCliHistory', statusStart);
+    const statusSource = tui.slice(statusStart, statusEnd);
+    expect(statusSource).not.toContain('config.apiKey');
+    expect(statusSource).not.toContain('config.baseURL');
+    expect(statusSource).not.toContain('config.env');
+
+    const historyStart = statusEnd;
+    const historyEnd = tui.indexOf('async function startExternalCliBackgroundRun', historyStart);
+    const historySource = tui.slice(historyStart, historyEnd);
+    expect(historySource).not.toContain('item.path');
+    expect(tui).toContain('parseCrushSessionReferenceDetails(summary.path)');
+    expect(historySource).toContain('externalCliHistorySourceLabel(item)');
+    expect(historySource).toContain('sourceLabel ?');
+    expect(historySource).not.toContain(
+      "config.runtime === 'claude' ? 'Claude Code' : 'Codex'",
+    );
+
+    const splitHistoryRoots = /homeDir: pointerHomeDir\(\),\r?\n\s+actoviqHomeDir: resolveGuiHomeDir\(\),/gu;
+    expect(gui.match(splitHistoryRoots)).toHaveLength(5);
+
+    const guiHistoryStart = js.indexOf('async function loadExternalCliHistory');
+    const guiHistoryEnd = js.indexOf('async function openExternalCliHistorySession', guiHistoryStart);
+    expect(js.slice(guiHistoryStart, guiHistoryEnd)).toContain("item.sourceLabel || ''");
+    expect(js).toContain("nativeSession.summary.sourceLabel || ''");
+    expect(gui).toContain('isExternalCliHistoryConfigCompatible(externalSession.summary, config)');
+    expect(tui).toContain('externalCliSessionMatchesConfig(item, {');
+    const guiHistoryDetailStart = js.indexOf('async function openExternalCliHistorySession');
+    const guiHistoryDetailEnd = js.indexOf('function renderBridgeConfigs', guiHistoryDetailStart);
+    const guiHistoryDetail = js.slice(guiHistoryDetailStart, guiHistoryDetailEnd);
+    expect(guiHistoryDetail).toContain('payload.compatibleConfigNames');
+    expect(guiHistoryDetail).toMatch(
+      /state\.snapshot = payload;\s+applyLoadedState\(\);\s+renderBridgeConfigs\(\);/u,
+    );
   });
 
   it('keeps /team clone available on all three surfaces (plan Phase 1)', () => {

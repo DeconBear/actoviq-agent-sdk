@@ -41,4 +41,58 @@ describe('product RunEvent wiring boundary', () => {
     expect(source).toContain('await coordinator.run({');
     expect(source).toContain("prefix: 'gui-issue:'");
   });
+
+  it.each([
+    'src/cli/actoviq-react.ts',
+    'src/tui/actoviqTui.ts',
+    'src/gui/actoviqGui.ts',
+  ])('%s mounts and closes the managed plugin runtime', async (file) => {
+    const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    expect(source).toContain('createManagedPluginRuntime');
+    expect(source).toMatch(/managedPluginRuntime(?:Close)?/);
+    expect(source).toMatch(/managedPluginRuntime(?:Close)?(?:\(\)|\.close(?:\(\))?)/);
+  });
+
+  it.each([
+    'src/cli/actoviq-react.ts',
+    'src/tui/actoviqTui.ts',
+  ])('%s retries managed plugin cleanup and exits nonzero on failure', async (file) => {
+    const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+    expect(source).toContain('closeManagedPluginsForExit');
+    expect(source).toContain('MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS = 2');
+    expect(source).toContain('billing may continue');
+    expect(source).toContain('exitCode = 1');
+    expect(source).not.toMatch(/managedPluginRuntime\?*\.close\(\)\.catch\(\(\) => undefined\)/);
+  });
+
+  it('keeps React CLI interactive approvals out of the steering queue', async () => {
+    const source = await readFile(
+      new URL('../src/cli/actoviq-react.ts', import.meta.url),
+      'utf8',
+    );
+    const approvalBranch = source.indexOf('if (pendingToolApproval) {', source.indexOf("rl.on('line'"));
+    const steeringBranch = source.indexOf('if (abortCtrl) {', source.indexOf("rl.on('line'"));
+    expect(approvalBranch).toBeGreaterThan(0);
+    expect(approvalBranch).toBeLessThan(steeringBranch);
+    expect(source).toContain("behavior: allowed ? 'allow' : 'deny'");
+  });
+
+  it('reports GUI and Electron cleanup failures instead of always exiting successfully', async () => {
+    const gui = await readFile(
+      new URL('../src/gui/actoviqGui.ts', import.meta.url),
+      'utf8',
+    );
+    const electron = await readFile(
+      new URL('../src/gui/electronMain.ts', import.meta.url),
+      'utf8',
+    );
+
+    expect(gui).toContain('managed plugin cleanup attempt ${attempt}/2 failed');
+    expect(gui).toContain("process.exit(1)");
+    expect(gui).not.toContain('close().finally(() => process.exit(0))');
+    expect(electron).toContain('quittingAfterCleanup');
+    expect(electron).toContain("app.exit(1)");
+    expect(electron).toContain('dialog.showErrorBox');
+    expect(electron).not.toContain('server.close().finally(() => app.quit())');
+  });
 });

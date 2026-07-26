@@ -28,6 +28,13 @@ function makeCompletionResponse(): Response {
   });
 }
 
+function makeSseResponse(body: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
 describe('OpenaiProviderClient retry behavior', () => {
   it('normalizes exhausted socket termination retries as provider transport errors', async () => {
     let calls = 0;
@@ -106,6 +113,158 @@ describe('OpenaiProviderClient retry behavior', () => {
 
     expect(result.choices[0]?.message.content).toBe('ok');
     expect(calls).toBe(2);
+  });
+
+  it('stops retry backoff immediately when the caller aborts', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    let markFirstCall!: () => void;
+    const firstCall = new Promise<void>((resolve) => { markFirstCall = resolve; });
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      markFirstCall();
+      return new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+        status: 503,
+        headers: {
+          'content-type': 'application/json',
+          'retry-after': '30',
+        },
+      });
+    };
+    const client = new OpenaiProviderClient({
+      apiKey: 'test-key',
+      baseURL: 'https://example.test/v1',
+      maxRetries: 3,
+      fetch: fetchImpl,
+    });
+
+    const request = client.chat.completions.create({
+      model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }, controller.signal);
+    await firstCall;
+    controller.abort(new Error('cancel retry backoff'));
+
+    await expect(request).rejects.toThrow('cancel retry backoff');
+    expect(calls).toBe(1);
+  });
+});
+
+describe('provider stream completion validation', () => {
+  it('rejects an OpenAI stream that closes before a terminal marker', async () => {
+    const chunk = {
+      id: 'chatcmpl_partial',
+      object: 'chat.completion.chunk',
+      created: 0,
+      model: 'test-model',
+      choices: [{ index: 0, delta: { role: 'assistant', content: 'partial' }, finish_reason: null }],
+    };
+    const client = new OpenaiProviderClient({
+      apiKey: 'test-key',
+      fetch: async () => makeSseResponse(`data: ${JSON.stringify(chunk)}\n\n`),
+    });
+    const stream = client.chat.completions.stream({
+      model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    const consume = async () => {
+      for await (const _chunk of stream) {
+        // drain
+      }
+    };
+    await expect(consume()).rejects.toThrow('ended prematurely');
+    await expect(stream.finalMessage()).rejects.toThrow('ended prematurely');
+  });
+
+  it('accepts a conclusive OpenAI finish_reason without a trailing DONE marker', async () => {
+    const chunk = {
+      id: 'chatcmpl_complete',
+      object: 'chat.completion.chunk',
+      created: 0,
+      model: 'test-model',
+      choices: [{ index: 0, delta: { role: 'assistant', content: 'complete' }, finish_reason: 'stop' }],
+    };
+    const client = new OpenaiProviderClient({
+      apiKey: 'test-key',
+      fetch: async () => makeSseResponse(`data: ${JSON.stringify(chunk)}\n\n`),
+    });
+
+    const completion = await client.chat.completions.stream({
+      model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
+    }).finalMessage();
+
+    expect(completion.choices[0]?.message.content).toBe('complete');
+    expect(completion.choices[0]?.finish_reason).toBe('stop');
+  });
+
+  it('rejects an Anthropic stream that closes before a terminal state', async () => {
+    const start = {
+      type: 'message_start',
+      message: {
+        id: 'msg_partial',
+        type: 'message',
+        role: 'assistant',
+        model: 'test-model',
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    };
+    const client = new ActoviqProviderClient({
+      apiKey: 'test-key',
+      fetch: async () => makeSseResponse(`event: message_start\ndata: ${JSON.stringify(start)}\n\n`),
+    });
+    const stream = client.messages.stream({
+      model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 100,
+    });
+
+    const consume = async () => {
+      for await (const _event of stream) {
+        // drain
+      }
+    };
+    await expect(consume()).rejects.toThrow('ended prematurely');
+    await expect(stream.finalMessage()).rejects.toThrow('ended prematurely');
+  });
+});
+
+describe('ActoviqProviderClient retry behavior', () => {
+  it('stops retry backoff immediately when the caller aborts', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    let markFirstCall!: () => void;
+    const firstCall = new Promise<void>((resolve) => { markFirstCall = resolve; });
+    const client = new ActoviqProviderClient({
+      apiKey: 'test-key',
+      maxRetries: 3,
+      fetch: async () => {
+        calls += 1;
+        markFirstCall();
+        return new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+          status: 503,
+          headers: {
+            'content-type': 'application/json',
+            'retry-after': '30',
+          },
+        });
+      },
+    });
+
+    const request = client.messages.create({
+      model: 'test-model',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 100,
+    }, { signal: controller.signal });
+    await firstCall;
+    controller.abort(new Error('cancel retry backoff'));
+
+    await expect(request).rejects.toThrow('cancel retry backoff');
+    expect(calls).toBe(1);
   });
 });
 

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { app, BrowserWindow, Menu, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, nativeImage, shell } from 'electron';
 
 import {
   parseActoviqGuiArgs,
@@ -19,6 +19,8 @@ import {
 import { resolveActoviqHome } from '../config/actoviqHome.js';
 
 let guiServer: ActoviqGuiServer | null = null;
+let cleanupInProgress = false;
+let quittingAfterCleanup = false;
 
 if (process.platform === 'win32') {
   // Set before 'ready'. Use a stable id distinct from electron.exe's default grouping.
@@ -195,11 +197,26 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', (event) => {
-  if (!guiServer) return;
+  if (!guiServer || quittingAfterCleanup) return;
   event.preventDefault();
+  if (cleanupInProgress) return;
+  cleanupInProgress = true;
   const server = guiServer;
-  guiServer = null;
-  void server.close().finally(() => app.quit());
+  void server.close().then(() => {
+    guiServer = null;
+    cleanupInProgress = false;
+    quittingAfterCleanup = true;
+    app.quit();
+  }).catch((error) => {
+    cleanupInProgress = false;
+    const message =
+      `Managed runtime cleanup failed: ${error instanceof Error ? error.message : String(error)}. ` +
+      'An E2B sandbox or Playwright session may still be active; check it manually before ' +
+      'assuming billing has stopped.';
+    process.stderr.write(`[actoviq-gui] ERROR: ${message}\n`);
+    dialog.showErrorBox('Actoviq cleanup failed', message);
+    app.exit(1);
+  });
 });
 
 app.on('window-all-closed', () => {

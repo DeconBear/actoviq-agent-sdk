@@ -178,6 +178,8 @@
     "dist:gui": "npm run prepare:xterm && npm run build && electron-builder --publish never",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:gui:e2e": "npm run build && node scripts/verify-gui-runtime-model-chat.mjs",
+    "test:gui:external-cli-e2e": "npm run build && node scripts/verify-gui-external-cli-runtime.mjs",
     "test:sdk-v2:coverage": "vitest run --config vitest.sdk-v2.config.ts && node scripts/verify-sdk-v2-coverage.mjs",
     "verify:package": "node scripts/verify-package-exports.mjs && node scripts/public-api.mjs",
     "verify:packed": "node scripts/verify-packed-package.mjs",
@@ -233,6 +235,7 @@
     "zod": "^4.1.12"
   },
   "optionalDependencies": {
+    "@e2b/desktop": "^2.3.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",

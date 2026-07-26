@@ -33,7 +33,7 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
   team: 'List, attach, or run Model Team definitions (Graph = collab DAG; Workflow = light tree; blocks ≠ second engine)',
   issues: 'List or update project issues',
   manager: 'Project Manager: progress docs + project chat',
-  bridge: 'Configure / run bridge runtimes (6 providers)',
+  bridge: 'Configure API bridges and external CLI runtimes',
   exit: 'Quit',
 };
 
@@ -45,7 +45,21 @@ export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
  * menu and lets the user type freely.
  */
 export const SUBCOMMANDS: Record<string, string[]> = {
-  bridge: ['run', 'switch', 'model', 'config', 'setup', 'off', 'help'],
+  bridge: [
+    'run',
+    'background',
+    'runs',
+    'stop',
+    'status',
+    'history',
+    'resume',
+    'switch',
+    'model',
+    'config',
+    'setup',
+    'off',
+    'help',
+  ],
   model: ['router', 'config'],
   team: ['ask', 'list', 'attach', 'off', 'status', 'clone'],
   issues: ['list', 'show', 'create', 'start', 'review', 'done', 'block'],
@@ -60,6 +74,12 @@ export const SUBCOMMANDS: Record<string, string[]> = {
 /** Description-column text for sub-commands, keyed by `${head} ${sub}`. */
 export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
   'bridge run': 'Run a prompt through the bridge CLI',
+  'bridge background': 'Start work in the active external CLI runtime',
+  'bridge runs': 'List external CLI background runs',
+  'bridge stop': 'Stop an external CLI background run by id',
+  'bridge status': 'Show the active bridge/runtime state',
+  'bridge history': 'List or inspect native conversations for the active external CLI',
+  'bridge resume': 'Resume a native conversation in the active external CLI',
   'bridge switch': 'Activate a saved config by name (or a raw provider id)',
   'bridge model': 'Set the model for the current provider',
   'bridge config': 'Add / edit / remove named connection configs',

@@ -361,6 +361,35 @@ export function getDefaultActoviqBundledSkills(): ActoviqSkillDefinition[] {
   return DEFAULT_BUNDLED_SKILLS.map(normalizeActoviqSkillDefinition);
 }
 
+/**
+ * Load one catalog-approved SKILL.md without scanning or modifying its parent
+ * runtime directory. External runtimes may declare allowed tools, but those
+ * declarations are metadata rather than Actoviq permission grants by default.
+ */
+export async function loadActoviqSkillDefinitionFile(options: {
+  skillFile: string;
+  name: string;
+  source: Extract<ActoviqSkillSource, 'user' | 'project'>;
+  skillRoot?: string;
+  loadedFrom?: Extract<ActoviqSkillLoadedFrom, 'skills' | 'commands'>;
+  includeDeclaredAllowedTools?: boolean;
+}): Promise<ActoviqSkillDefinition> {
+  const raw = await readFile(options.skillFile, 'utf8');
+  const parsed = parseMarkdownFrontmatter(raw);
+  const definition = createDiskSkillDefinition({
+    name: options.name,
+    content: parsed.body,
+    frontmatter: parsed.frontmatter,
+    source: options.source,
+    loadedFrom: options.loadedFrom ?? 'skills',
+    skillRoot: options.skillRoot ?? path.dirname(options.skillFile),
+  });
+  if (options.includeDeclaredAllowedTools !== true) {
+    definition.allowedTools = undefined;
+  }
+  return definition;
+}
+
 export async function loadActoviqSkillDefinitions(options: {
   homeDir: string;
   workDir: string;
@@ -820,9 +849,13 @@ function parseDelimitedField(value: string | undefined): string[] {
   if (!value) {
     return [];
   }
-  return value
+  const trimmed = value.trim();
+  const body = trimmed.startsWith('[') && trimmed.endsWith(']')
+    ? trimmed.slice(1, -1)
+    : trimmed;
+  return body
     .split(/[\n,]/u)
-    .map(entry => entry.trim())
+    .map(entry => entry.trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, '$1$2'))
     .filter(Boolean);
 }
 

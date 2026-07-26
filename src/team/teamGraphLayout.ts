@@ -196,6 +196,45 @@ export function pickShortestSides(
   };
 }
 
+/**
+ * True when the straight chord between ports cuts through a node card interior.
+ * Used to heal locked/stale sides that leave a ghost curve over the node body.
+ */
+export function edgeChordCrossesNodeInterior(
+  p1: GraphPoint,
+  p2: GraphPoint,
+  fromRect: GraphRect,
+  toRect: GraphRect,
+  inset = 10,
+): boolean {
+  const shrink = (r: GraphRect): GraphRect => {
+    if (r.w <= inset * 2 || r.h <= inset * 2) return r;
+    return { x: r.x + inset, y: r.y + inset, w: r.w - inset * 2, h: r.h - inset * 2 };
+  };
+  const crosses = (r: GraphRect): boolean => {
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    let enter = 0;
+    let exit = 1;
+    for (const [origin, delta, min, max] of [
+      [p1.x, dx, r.x, r.x + r.w],
+      [p1.y, dy, r.y, r.y + r.h],
+    ] as const) {
+      if (delta === 0) {
+        if (origin < min || origin > max) return false;
+        continue;
+      }
+      const a = (min - origin) / delta;
+      const b = (max - origin) / delta;
+      enter = Math.max(enter, Math.min(a, b));
+      exit = Math.min(exit, Math.max(a, b));
+      if (enter > exit) return false;
+    }
+    return exit > 0 && enter < 1;
+  };
+  return crosses(shrink(fromRect)) || crosses(shrink(toRect));
+}
+
 /** Migrate legacy top-in/bottom-out ports to sides (does not set sideLocked). */
 export function migrateLegacyEdgeSides(edge: TeamGraphEdge): void {
   if (edge.ui?.fromSide && edge.ui?.toSide) return;
@@ -245,6 +284,7 @@ export function getTeamGraphBezierClientScript(): string {
     clearEdgeBezierUiForNodeRef.toString(),
     sideAnchor.toString(),
     pickShortestSides.toString(),
+    edgeChordCrossesNodeInterior.toString(),
     migrateLegacyEdgeSides.toString(),
     computeGroupBounds.toString(),
   ].join('\n');

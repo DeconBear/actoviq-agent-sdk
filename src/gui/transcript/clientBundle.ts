@@ -128,6 +128,39 @@ export function getTranscriptClientScript(): string {
     TR.currentThinkingId = null;
   }
 
+  function discardInterruptedAttempt() {
+    const ids = [];
+    let barrier = -1;
+    for (let index = TR.parts.length - 1; index >= 0; index -= 1) {
+      const part = TR.parts[index];
+      if (part.kind === 'user' || (part.kind === 'tool' && (part.state === 'success' || part.state === 'error'))) {
+        barrier = index;
+        break;
+      }
+    }
+    for (let index = barrier + 1; index < TR.parts.length; index += 1) {
+      const part = TR.parts[index];
+      if (part.kind === 'assistant' || part.kind === 'thinking'
+        || (part.kind === 'tool' && (part.state === 'input-streaming' || part.state === 'running'))) {
+        ids.push(part.id);
+      }
+    }
+    if (!ids.length) return;
+    const discarded = new Set(ids);
+    TR.parts = TR.parts.filter((part) => !discarded.has(part.id));
+    for (const id of ids) {
+      const node = TR.nodes.get(id);
+      if (node) node.remove();
+      TR.nodes.delete(id);
+    }
+    TR.toolIndex.clear();
+    TR.parts.forEach((part, index) => {
+      if (part.kind === 'tool') TR.toolIndex.set(part.toolUseId, index);
+    });
+    TR.currentAssistantId = null;
+    TR.currentThinkingId = null;
+  }
+
   function applyEvent(event) {
     const changed = [];
     const type = String(event.type || '');
@@ -297,6 +330,8 @@ export function getTranscriptClientScript(): string {
         target.collapsed = false;
         changed.push(target.id);
       }
+    } else if (type === 'response.retry') {
+      discardInterruptedAttempt();
     } else if (type === 'notice' || type === 'system') {
       const id = nextId(type);
       TR.parts.push({ id, kind: type === 'system' ? 'system' : 'notice', text: String(event.message || event.text || '') });
@@ -460,6 +495,7 @@ export function getTranscriptClientScript(): string {
     if (part.state !== 'awaiting-approval' || !part.permissionId) return;
     const footer = document.createElement('div');
     footer.className = 'tool-approval-footer';
+    footer.__actoviqPermissionId = part.permissionId;
     const mk = (label, decision, primary) => {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -489,6 +525,8 @@ export function getTranscriptClientScript(): string {
     const questions = Array.isArray(input.questions) ? input.questions : [];
     const wrap = document.createElement('div');
     wrap.className = 'tool-question';
+    wrap.__actoviqPermissionId = part.permissionId;
+    wrap.__actoviqQuestionInput = part.input;
     const answers = {};
     const otherInputs = {};
 
@@ -738,8 +776,116 @@ export function getTranscriptClientScript(): string {
     body.appendChild(pre);
   }
 
-  function buildToolCard(part) {
+  function toolCardPresentation(part) {
     const family = classifyToolFamily(part.toolName);
+    const input = inputRecord(part.input);
+    const title = family === 'bash' && input.command ? 'Bash' : (part.toolName || 'Tool');
+    const hintBits = [];
+    if (part.state === 'error') hintBits.push('Failed');
+    if (part.hint) hintBits.push(part.hint);
+    if (part.durationMs) hintBits.push(formatDuration(part.durationMs));
+    if (family === 'edit') {
+      const stats = parseDiffStats(String(part.outputText || ''));
+      if (stats.added || stats.removed) hintBits.push('+' + stats.added + '/-' + stats.removed);
+    }
+    return {
+      family,
+      title,
+      status: hintBits.filter(Boolean).join(' · ')
+        || (part.state === 'running' || part.state === 'input-streaming' ? 'Running…' : 'Done'),
+    };
+  }
+
+  function updateToolBody(body, part, family) {
+    const previous = body.__actoviqToolBodyRender;
+    const collapsed = !!part.collapsed;
+    const questionState = family === 'question' ? part.state : '';
+    const input = inputRecord(part.input);
+    const bodyHint = family === 'bash' && !input.command
+      ? part.hint
+      : (family === 'task' && !part.outputText && !summarizeToolInput(part.input) ? part.hint : '');
+    if (previous
+      && previous.family === family
+      && previous.collapsed === collapsed
+      && previous.input === part.input
+      && previous.outputText === part.outputText
+      && previous.bodyHint === bodyHint
+      && previous.questionState === questionState) return;
+    body.textContent = '';
+    if (!collapsed) fillToolBody(body, part);
+    body.__actoviqToolBodyRender = {
+      family,
+      collapsed,
+      input: part.input,
+      outputText: part.outputText,
+      bodyHint,
+      questionState,
+    };
+  }
+
+  function syncToolFooters(card, part) {
+    let approval = card.querySelector('.tool-approval-footer');
+    let question = card.querySelector('.tool-question');
+    let questionFooter = card.querySelector('.tool-question-footer');
+
+    if (part.state === 'awaiting-approval' && part.permissionId) {
+      if (question) question.remove();
+      if (questionFooter) questionFooter.remove();
+      if (!approval || approval.__actoviqPermissionId !== part.permissionId) {
+        if (approval) approval.remove();
+        appendApprovalFooter(card, part);
+      }
+      return;
+    }
+    if (approval) approval.remove();
+
+    if (part.state === 'awaiting-answer' && part.permissionId) {
+      const canKeepQuestion = question
+        && questionFooter
+        && question.__actoviqPermissionId === part.permissionId
+        && question.__actoviqQuestionInput === part.input;
+      if (!canKeepQuestion) {
+        if (question) question.remove();
+        if (questionFooter) questionFooter.remove();
+        appendQuestionFooter(card, part);
+      }
+      return;
+    }
+    if (question) question.remove();
+    if (questionFooter) questionFooter.remove();
+  }
+
+  function patchToolCard(card, part) {
+    const presentation = toolCardPresentation(part);
+    const family = presentation.family;
+    card.className = 'tool-card ' + part.state + (part.collapsed ? ' collapsed' : '');
+    card.dataset.partId = part.id;
+    card.dataset.family = family;
+    card.dataset.toolId = part.toolUseId;
+
+    const header = card.querySelector('header');
+    const icon = header && header.querySelector('.tool-icon');
+    const title = header && header.querySelector('.tool-labels > strong');
+    const status = header && header.querySelector('.tool-labels > small');
+    const toggle = header && header.querySelector('.tool-toggle');
+    const iconName = toolIconName(family);
+    if (icon && icon.dataset.iconName !== iconName) {
+      icon.dataset.iconName = iconName;
+      icon.innerHTML = iconSvg(iconName);
+    }
+    if (title) title.textContent = presentation.title;
+    if (status) status.textContent = presentation.status;
+    if (toggle) toggle.setAttribute('aria-expanded', part.collapsed ? 'false' : 'true');
+
+    const body = card.querySelector('.tool-body');
+    if (body) updateToolBody(body, part, family);
+    syncToolFooters(card, part);
+    return card;
+  }
+
+  function buildToolCard(part) {
+    const presentation = toolCardPresentation(part);
+    const family = presentation.family;
     const card = document.createElement('article');
     card.className = 'tool-card ' + part.state + (part.collapsed ? ' collapsed' : '');
     card.dataset.partId = part.id;
@@ -752,25 +898,14 @@ export function getTranscriptClientScript(): string {
     spinner.setAttribute('aria-hidden', 'true');
     const icon = document.createElement('span');
     icon.className = 'tool-icon';
-    icon.innerHTML = iconSvg(toolIconName(family));
+    icon.dataset.iconName = toolIconName(family);
+    icon.innerHTML = iconSvg(icon.dataset.iconName);
     const labels = document.createElement('div');
     labels.className = 'tool-labels';
     const title = document.createElement('strong');
-    if (family === 'bash' && inputRecord(part.input).command) {
-      title.textContent = 'Bash';
-    } else {
-      title.textContent = part.toolName || 'Tool';
-    }
+    title.textContent = presentation.title;
     const status = document.createElement('small');
-    const hintBits = [];
-    if (part.state === 'error') hintBits.push('Failed');
-    if (part.hint) hintBits.push(part.hint);
-    if (part.durationMs) hintBits.push(formatDuration(part.durationMs));
-    if (family === 'edit') {
-      const stats = parseDiffStats(String(part.outputText || ''));
-      if (stats.added || stats.removed) hintBits.push('+' + stats.added + '/-' + stats.removed);
-    }
-    status.textContent = hintBits.filter(Boolean).join(' · ') || (part.state === 'running' || part.state === 'input-streaming' ? 'Running…' : 'Done');
+    status.textContent = presentation.status;
     labels.append(title, status);
     const copy = document.createElement('button');
     copy.type = 'button';
@@ -800,7 +935,7 @@ export function getTranscriptClientScript(): string {
 
     const body = document.createElement('div');
     body.className = 'tool-body';
-    if (!part.collapsed) fillToolBody(body, part);
+    updateToolBody(body, part, family);
     card.append(header, body);
     appendApprovalFooter(card, part);
     appendQuestionFooter(card, part);
@@ -811,6 +946,11 @@ export function getTranscriptClientScript(): string {
     if (!TR.root) return;
     ensureShell();
     let node = TR.nodes.get(part.id);
+    if (node && node.parentElement && part.kind === 'tool') {
+      patchToolCard(node, part);
+      TR.nodes.set(part.id, node);
+      return;
+    }
     const fresh =
       part.kind === 'thinking' ? buildThinkingCard(part)
       : part.kind === 'tool' ? buildToolCard(part)

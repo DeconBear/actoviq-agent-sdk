@@ -1,14 +1,28 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import type { ModelApi, ActoviqPermissionMode, ActoviqRunEffort } from '../types.js';
+import type {
+  ActoviqModelTierConfig,
+  ModelApi,
+  ActoviqPermissionMode,
+  ActoviqRunEffort,
+} from '../types.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
 import {
   findBridgeConfig,
   readBridgeConfigs,
+  type BridgeExecutionMode,
+  type BridgeRuntime,
+  type InProcessProvider,
+  type ModelModality,
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
 import { resolveActoviqHome } from './actoviqHome.js';
+import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
+import {
+  isActoviqModelTier,
+  resolveActoviqModelReference,
+} from './modelTiers.js';
 
 export interface AgentProfile {
   name: string;
@@ -215,7 +229,7 @@ async function resolveValidatedProfileRun(
   const hadamardUsesDefaults = config.runtime === 'hadamard'
     && !(typeof config.apiKey === 'string' && config.apiKey.trim())
     && !(typeof config.baseURL === 'string' && config.baseURL.trim());
-  if (hadamardUsesDefaults) {
+  if (config.execution === 'cli' || hadamardUsesDefaults) {
     return { ...validation, model: validation.profile.model };
   }
   const routed = await buildRouteModelApi({
@@ -271,6 +285,13 @@ export interface SelectableAgent {
   name: string;
   bridgeConfig: string;
   model: string;
+  /** Runtime metadata inherited from the matching bridge config, when available. */
+  runtime?: BridgeRuntime;
+  execution?: BridgeExecutionMode;
+  provider?: InProcessProvider;
+  /** Model capabilities inherited from the matching registered model entry. */
+  context1M?: boolean;
+  modality?: ModelModality;
   /** `profile` = saved Agent Profile; `config` = auto preset from a provider config model. */
   source: 'profile' | 'config';
   description?: string;
@@ -320,6 +341,21 @@ function ensureUniqueAgentName(base: string, used: Set<string>): string {
   return `${candidate.slice(0, 58)}-${Date.now().toString(36)}`;
 }
 
+function selectableAgentMetadata(
+  config: PersistedBridgeConfig | undefined,
+  modelName: string,
+): Partial<Pick<SelectableAgent, 'runtime' | 'execution' | 'provider' | 'context1M' | 'modality'>> {
+  if (!config) return {};
+  const modelEntry = config.models?.find(model => model.name === modelName);
+  return {
+    runtime: config.runtime,
+    execution: config.execution ?? 'api',
+    provider: config.provider,
+    context1M: modelEntry?.context1M === true,
+    modality: modelEntry?.modality === 'multimodal' ? 'multimodal' : 'text',
+  };
+}
+
 /**
  * Agents the UI can pick: saved profiles first, then one auto preset per
  * (provider config, model) that is not already covered by a saved profile.
@@ -327,17 +363,30 @@ function ensureUniqueAgentName(base: string, used: Set<string>): string {
 export function listSelectableAgents(homeDir?: string): SelectableAgent[] {
   const profiles = listAgentProfiles(homeDir);
   const configs = readBridgeConfigs(homeDir).configs;
+  const configsByName = new Map(configs.map(config => [config.name, config]));
   const usedNames = new Set<string>();
   const covered = new Set<string>();
   const out: SelectableAgent[] = [];
+  const tiers = readModelTiersForMatch(homeDir);
 
   for (const profile of profiles) {
     usedNames.add(profile.name);
     covered.add(`${profile.bridgeConfig}\0${profile.model}`);
+    // Tier aliases also cover their resolved id so we don't emit a duplicate
+    // auto preset for the expanded model (which would steal exact matches).
+    if (isActoviqModelTier(profile.model)) {
+      try {
+        const resolved = resolveActoviqModelReference(profile.model, tiers).model;
+        covered.add(`${profile.bridgeConfig}\0${resolved}`);
+      } catch {
+        // Unconfigured tier — leave coverage as the alias only.
+      }
+    }
     out.push({
       name: profile.name,
       bridgeConfig: profile.bridgeConfig,
       model: profile.model,
+      ...selectableAgentMetadata(configsByName.get(profile.bridgeConfig), profile.model),
       source: 'profile',
       ...(profile.description ? { description: profile.description } : {}),
       ...(profile.permissionMode ? { permissionMode: profile.permissionMode } : {}),
@@ -362,6 +411,7 @@ export function listSelectableAgents(homeDir?: string): SelectableAgent[] {
         name,
         bridgeConfig: config.name,
         model,
+        ...selectableAgentMetadata(config, model),
         source: 'config',
         ephemeral: true,
         description: `${config.name} · ${model}`,
@@ -381,17 +431,78 @@ export function findSelectableAgent(
   return listSelectableAgents(homeDir).find(agent => agent.name === needle);
 }
 
+function readModelTiersForMatch(homeDir?: string): ActoviqModelTierConfig {
+  const fromLoaded = getLoadedJsonConfig()?.env ?? {};
+  let fromHome: Record<string, string> = {};
+  try {
+    const settingsPath = path.join(resolveActoviqHome(homeDir), 'settings.json');
+    if (existsSync(settingsPath)) {
+      const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const env = (parsed as Record<string, unknown>).env;
+        if (env && typeof env === 'object' && !Array.isArray(env)) {
+          fromHome = Object.fromEntries(
+            Object.entries(env as Record<string, unknown>).filter(
+              (entry): entry is [string, string] =>
+                typeof entry[1] === 'string' && entry[1].trim().length > 0,
+            ),
+          );
+        }
+      }
+    }
+  } catch {
+    // Ignore unreadable settings; fall back to loaded config / process.env.
+  }
+  const pick = (key: string): string | undefined => {
+    for (const source of [fromLoaded, fromHome, process.env]) {
+      const value = source[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
+  };
+  return {
+    min: pick('ACTOVIQ_DEFAULT_MIN_MODEL'),
+    medium: pick('ACTOVIQ_DEFAULT_MEDIUM_MODEL'),
+    max: pick('ACTOVIQ_DEFAULT_MAX_MODEL'),
+  };
+}
+
+/** Exact match, or min/medium/max alias ↔ resolved id via configured model tiers. */
+function selectableModelsEquivalent(
+  left: string,
+  right: string,
+  tiers: ActoviqModelTierConfig,
+): boolean {
+  if (left === right) return true;
+  if (!isActoviqModelTier(left) && !isActoviqModelTier(right)) return false;
+  try {
+    return resolveActoviqModelReference(left, tiers).model
+      === resolveActoviqModelReference(right, tiers).model;
+  } catch {
+    return false;
+  }
+}
+
 export function matchSelectableAgent(
   bridgeConfig: string | null | undefined,
   model: string | null | undefined,
   homeDir?: string,
 ): SelectableAgent | undefined {
   if (!bridgeConfig) return undefined;
-  const agents = listSelectableAgents(homeDir);
-  const exact = agents.find(
-    agent => agent.bridgeConfig === bridgeConfig && (!model || agent.model === model),
+  const agents = listSelectableAgents(homeDir).filter(
+    agent => agent.bridgeConfig === bridgeConfig,
   );
+  const requestedModel = model?.trim();
+  if (!requestedModel) {
+    return agents[0];
+  }
+  const exact = agents.find(agent => agent.model === requestedModel);
   if (exact) return exact;
-  return agents.find(agent => agent.bridgeConfig === bridgeConfig);
+  // After buildRouteModelApi expands a tier alias, callers may pass the resolved
+  // id while selectable agents still store min/medium/max (or the reverse).
+  const tiers = readModelTiersForMatch(homeDir);
+  return agents.find(agent =>
+    selectableModelsEquivalent(agent.model, requestedModel, tiers),
+  );
 }
 

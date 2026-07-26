@@ -107,11 +107,13 @@ import { getDefaultActoviqAgents } from './defaultActoviqAgents.js';
 import { loadActoviqAgentDefinitions } from './actoviqAgentDefinitions.js';
 import {
   ActoviqSkillsApi,
+  getDefaultActoviqBundledSkills,
   loadActoviqSkillDefinitions,
   resolveActoviqSkillPrompt,
   skillPathsMatch,
   summarizeActoviqSkillDefinition,
 } from './actoviqSkills.js';
+import { loadActoviqExternalSkillDefinitions } from './externalSkillRuntime.js';
 import {
   ActoviqBackgroundTaskManager,
   ActoviqBackgroundTasksApi,
@@ -860,13 +862,36 @@ export class ActoviqAgentClient {
     }, {
       requestTimeoutMs: config.mcpTimeoutMs,
     });
+    const externalSkills = options.externalSkills
+      ? (await loadActoviqExternalSkillDefinitions({
+          actoviqHomeDir: config.homeDir,
+          workDir: config.workDir,
+          externalSkills: options.externalSkills,
+        })).definitions
+      : [];
+    const externalSkillCatalogEnabled = Boolean(options.externalSkills);
     const loadedSkills = await loadActoviqSkillDefinitions({
       homeDir: config.homeDir,
       workDir: config.workDir,
       skillDirectories: options.skillDirectories,
-      disableDefaultSkills: options.disableDefaultSkills,
-      loadDefaultSkillDirectories: options.loadDefaultSkillDirectories,
+      disableDefaultSkills: externalSkillCatalogEnabled ? true : options.disableDefaultSkills,
+      loadDefaultSkillDirectories: externalSkillCatalogEnabled
+        ? false
+        : options.loadDefaultSkillDirectories,
     });
+    const actoviqCatalogSkills = externalSkills.filter(definition =>
+      definition.metadata?.__actoviqExternalSkillProvider === 'actoviq');
+    const reusedRuntimeSkills = externalSkills.filter(definition =>
+      definition.metadata?.__actoviqExternalSkillProvider !== 'actoviq');
+    const skillDefinitions = externalSkillCatalogEnabled
+      ? [
+          ...reusedRuntimeSkills,
+          ...(options.disableDefaultSkills ? [] : getDefaultActoviqBundledSkills()),
+          ...actoviqCatalogSkills,
+          ...loadedSkills,
+          ...(options.skills ?? []),
+        ]
+      : [...loadedSkills, ...(options.skills ?? [])];
     const loadedAgents = await loadActoviqAgentDefinitions({
       homeDir: config.homeDir,
       workDir: config.workDir,
@@ -911,7 +936,7 @@ export class ActoviqAgentClient {
       defaultMcpServers,
       options.hooks,
       agentDefinitions,
-      [...loadedSkills, ...(options.skills ?? [])],
+      skillDefinitions,
       options.permissionMode,
       options.permissions,
       options.classifier,

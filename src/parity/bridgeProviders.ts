@@ -37,6 +37,11 @@ import {
   IS_WINDOWS,
   pathExists,
 } from './bridgeExecResolver.js';
+import {
+  buildCodewhaleArgs,
+  createCodewhaleNormalizer,
+} from './codewhaleRuntimeAdapter.js';
+import { createReasonixAcpSession } from './reasonixAcpSession.js';
 
 const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000;
 const VERSION_PROBE_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -83,7 +88,7 @@ function waitForChildExit(child: ChildProcess): Promise<void> {
   });
 }
 
-async function terminateProcessTree(child: ChildProcess): Promise<void> {
+export async function terminateBridgeProcessTree(child: ChildProcess): Promise<void> {
   const pid = child.pid;
   if (!pid || hasExited(child)) return;
 
@@ -180,7 +185,7 @@ function probeExecutableVersion(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      void terminateProcessTree(child).finally(() => {
+      void terminateBridgeProcessTree(child).finally(() => {
         reject(new Error('Bridge provider version probe timed out.'));
       });
     }, timeoutMs);
@@ -198,7 +203,18 @@ export interface BridgeEventNormalizer {
    * Translate one parsed JSON line (stream-json/JSONL providers) into
    * normalized events. Return `[]` to drop the line.
    */
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[];
+  translate(
+    raw: Record<string, unknown>,
+    control?: BridgeProcessControl,
+  ): ActoviqBridgeJsonEvent[];
+  /** The provider speaks a bidirectional JSON-lines protocol over stdio. */
+  interactive?: true;
+  /** Called once after the child process and its stdio pipes are ready. */
+  start?(control: BridgeProcessControl): void;
+  /** Give an interactive protocol a chance to request graceful cancellation. */
+  abort?(control: BridgeProcessControl): void;
+  /** Grace period between protocol cancellation and process-tree termination. */
+  abortGraceMs?: number;
   /**
    * When true, the provider emits plain text (not JSONL). `translate()` is
    * called with each raw text line as `{_raw: line}`, and `flush()` is
@@ -207,6 +223,11 @@ export interface BridgeEventNormalizer {
   rawText?: true;
   /** Flush accumulated state at end-of-stream (raw-text providers only). */
   flush?(): ActoviqBridgeJsonEvent[];
+}
+
+export interface BridgeProcessControl {
+  write(record: Record<string, unknown>): void;
+  endInput(): void;
 }
 
 export interface RuntimeProvider {
@@ -237,7 +258,10 @@ export interface RuntimeProvider {
     overrides?: Record<string, string>,
   ): Record<string, string>;
   /** A fresh normalizer for one run. */
-  createNormalizer(): BridgeEventNormalizer;
+  createNormalizer(
+    prompt?: string,
+    options?: ActoviqBridgeRunOptions,
+  ): BridgeEventNormalizer;
   /** Recommended model IDs for this provider (used by TUI `/bridge model`). */
   suggestedModels(): string[];
 }
@@ -496,35 +520,34 @@ class PiProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'pi';
   readonly displayName = 'pi CLI (@earendil-works/pi-coding-agent)';
 
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
-    const args = ['-p', '--mode', 'json'];
-    // Non-interactive, no trust prompt — matches a headless bridge run.
-    // (Previously --no-session made every turn ephemeral; we now persist so
-    // multi-turn works: first turn --session-id <uuid> creates, later turns
-    // --session <uuid> resumes. The PiNormalizer surfaces the same id back.)
-    args.push('--no-approve');
-    if (options.model) {
-      // pi accepts "provider/id"; pass through unchanged.
-      args.push('--model', options.model);
-    }
+  buildArgs(_prompt: string, options: ActoviqBridgeRunOptions): string[] {
+    // Pi has no argv option terminator. Managed mode uses the official RPC
+    // protocol so arbitrary user text is sent as JSON over stdin, never argv.
+    const args = ['--mode', 'rpc'];
+    args.push(options.trustProjectResources ? '--approve' : '--no-approve');
+    const model = splitPiModel(options.model);
+    const provider = model.provider ?? normalizePiProvider(options.credentialProvider);
+    if (provider) args.push('--provider', provider);
+    if (model.model) args.push('--model', model.model);
     if (options.appendSystemPrompt) {
       args.push('--append-system-prompt', options.appendSystemPrompt);
     } else if (options.systemPrompt) {
       args.push('--system-prompt', options.systemPrompt);
     }
-    // Multi-turn session threading. ActoviqBridgeSession sets sessionId on
-    // the first turn and resume: this.id afterwards.
+    if (options.effort) args.push('--thinking', options.effort);
+    args.push(...piToolArguments(options));
+
     if (typeof options.resume === 'string') {
-      args.push('--session', options.resume);
+      args.push('--session', validatePiSessionId(options.resume));
     } else if (options.resume === true) {
-      args.push('--resume');
+      throw new ActoviqBridgeProcessError(
+        'Pi managed mode requires an exact session id; the interactive --resume picker is unavailable.',
+      );
     } else if (options.sessionId) {
-      args.push('--session-id', options.sessionId);
+      args.push('--session-id', validatePiSessionId(options.sessionId));
     } else if (options.continueMostRecent) {
       args.push('--continue');
     }
-    // pi takes the prompt as the final positional argument.
-    args.push(prompt);
     return args;
   }
 
@@ -539,119 +562,393 @@ class PiProvider extends BaseRuntimeProvider {
     return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
   }
 
-  createNormalizer(): BridgeEventNormalizer {
-    return new PiNormalizer();
+  createNormalizer(prompt = '', options: ActoviqBridgeRunOptions = {}): BridgeEventNormalizer {
+    return new PiNormalizer(prompt, options);
   }
   suggestedModels(): string[] {
     return ['gpt-5', 'gpt-5-mini', 'claude-sonnet-4-6', 'deepseek-v4-pro', 'gemini-2.5-pro'];
   }
 }
 
+const PI_READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
+const PI_EDIT_TOOLS = [...PI_READ_ONLY_TOOLS, 'edit', 'write'] as const;
+
+function validatePiSessionId(value: string): string {
+  const sessionId = value.trim();
+  if (
+    !sessionId
+    || sessionId.length > 256
+    || sessionId.startsWith('-')
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(sessionId)
+  ) {
+    throw new ActoviqBridgeProcessError(
+      'Pi session id must contain only letters, numbers, dots, underscores, or hyphens.',
+    );
+  }
+  return sessionId;
+}
+
+function splitPiModel(value: string | undefined): { provider?: string; model?: string } {
+  const normalized = value?.trim();
+  if (!normalized) return {};
+  const separator = normalized.indexOf('/');
+  if (separator <= 0 || separator === normalized.length - 1) return { model: normalized };
+  return {
+    provider: normalized.slice(0, separator),
+    model: normalized.slice(separator + 1),
+  };
+}
+
+function normalizePiProvider(value: string | undefined): string | undefined {
+  const provider = value?.trim();
+  if (!provider) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
+    throw new ActoviqBridgeProcessError(
+      'Pi credential provider must contain only letters, numbers, dots, underscores, or hyphens.',
+    );
+  }
+  return provider;
+}
+
+function piToolArguments(options: ActoviqBridgeRunOptions): string[] {
+  if (options.tools === 'none') return ['--no-tools'];
+
+  const bypass = options.dangerouslySkipPermissions
+    || options.permissionMode === 'bypassPermissions';
+  const permissionUpperBound = bypass
+    ? undefined
+    : new Set<string>(options.permissionMode === 'acceptEdits'
+      ? PI_EDIT_TOOLS
+      : PI_READ_ONLY_TOOLS);
+  let permitted: string[] | undefined;
+  if (Array.isArray(options.tools)) {
+    permitted = [...options.tools];
+  } else if (!bypass) {
+    permitted = options.permissionMode === 'acceptEdits'
+      ? [...PI_EDIT_TOOLS]
+      : [...PI_READ_ONLY_TOOLS];
+  }
+
+  if (options.allowedTools?.length) {
+    permitted = permitted
+      ? permitted.filter(tool => options.allowedTools!.includes(tool))
+      : [...options.allowedTools];
+  }
+  if (options.disallowedTools?.length && permitted) {
+    permitted = permitted.filter(tool => !options.disallowedTools!.includes(tool));
+  }
+  if (permissionUpperBound && permitted) {
+    permitted = permitted.filter(tool => permissionUpperBound.has(tool));
+  }
+
+  const args: string[] = [];
+  if (permitted) {
+    if (permitted.length === 0) return ['--no-tools'];
+    args.push('--tools', [...new Set(permitted)].join(','));
+  }
+  if (options.disallowedTools?.length) {
+    args.push('--exclude-tools', [...new Set(options.disallowedTools)].join(','));
+  }
+  return args;
+}
+
 class PiNormalizer implements BridgeEventNormalizer {
+  readonly interactive = true as const;
+  readonly abortGraceMs = 250;
   private sessionId: string | undefined;
   private cwd: string | undefined;
   private model: string | undefined;
   private initEmitted = false;
-  private pendingAssistantText = '';
+  private finalAssistantText = '';
+  private streamedAssistantText = '';
+  private lastError: string | undefined;
+  private stopReason: string | undefined;
+  private turns = 0;
+  private finished = false;
+  private totalCostUsd: number | undefined;
 
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  constructor(
+    private readonly prompt: string,
+    private readonly options: ActoviqBridgeRunOptions,
+  ) {}
+
+  start(control: BridgeProcessControl): void {
+    control.write({ id: 'actoviq-state', type: 'get_state' });
+    control.write({ id: 'actoviq-prompt', type: 'prompt', message: this.prompt });
+  }
+
+  abort(control: BridgeProcessControl): void {
+    control.write({ id: 'actoviq-abort', type: 'abort' });
+  }
+
+  translate(
+    raw: Record<string, unknown>,
+    control?: BridgeProcessControl,
+  ): ActoviqBridgeJsonEvent[] {
     const type = typeof raw.type === 'string' ? raw.type : '';
+
+    if (type === 'response' && raw.id === 'actoviq-state') {
+      const state = piRpcPayload(raw);
+      this.sessionId = stringField(state, 'sessionId', 'session_id', 'id') ?? this.sessionId;
+      this.cwd = stringField(state, 'cwd') ?? this.cwd;
+      this.model = stringField(state, 'model') ?? this.model;
+      return this.emitInit();
+    }
+
+    if (type === 'response' && raw.id === 'actoviq-prompt' && raw.success === false) {
+      this.lastError = rpcErrorMessage(raw) ?? 'Pi rejected the prompt request.';
+      return this.finish(control, true);
+    }
 
     if (type === 'session') {
       this.sessionId = typeof raw.id === 'string' ? raw.id : this.sessionId;
       this.cwd = typeof raw.cwd === 'string' ? raw.cwd : this.cwd;
-      // No init emission yet — wait for agent_start so we mirror claude's
-      // "runtime ready" semantics. The session header carries no model.
       return [];
     }
 
-    if (type === 'agent_start' && !this.initEmitted) {
-      this.initEmitted = true;
-      const init = bridgeEvent('system', {
-        subtype: 'init',
-        session_id: this.sessionId ?? '',
-        cwd: this.cwd,
-        // pi exposes no tool/skill/agent catalog in its stream; introspection
-        // methods will return empty/limited data for this provider.
-        tools: [],
-        mcp_servers: [],
-        slash_commands: [],
-        agents: [],
-        skills: [],
-        plugins: [],
-        model: this.model,
-      });
-      return [init];
-    }
+    if (type === 'agent_start') return this.emitInit();
 
     if (type === 'message_update') {
-      // Assistant streaming deltas. Accumulate text; emit assistant text deltas
-      // in the claude stream_event shape so existing delta consumers work.
-      const ame = raw.assistantMessageEvent;
-      if (isRecord(ame) && ame.type === 'text_delta' && typeof ame.delta === 'string') {
-        this.pendingAssistantText += ame.delta;
+      const event = raw.assistantMessageEvent;
+      if (isRecord(event) && event.type === 'text_delta' && typeof event.delta === 'string') {
+        this.streamedAssistantText += event.delta;
         return [bridgeEvent('stream_event', {
           session_id: this.sessionId ?? '',
           event: {
             type: 'content_block_delta',
-            index: 0,
-            delta: { type: 'text_delta', text: ame.delta },
+            index: typeof event.contentIndex === 'number' ? event.contentIndex : 0,
+            delta: { type: 'text_delta', text: event.delta },
           },
         })];
       }
+      if (isRecord(event) && event.type === 'thinking_delta' && typeof event.delta === 'string') {
+        return [bridgeEvent('stream_event', {
+          session_id: this.sessionId ?? '',
+          event: {
+            type: 'content_block_delta',
+            index: typeof event.contentIndex === 'number' ? event.contentIndex : 0,
+            delta: { type: 'thinking_delta', thinking: event.delta },
+          },
+        })];
+      }
+      if (isRecord(event) && event.type === 'error') {
+        this.lastError = stringField(event, 'error', 'message') ?? 'Pi assistant stream failed.';
+      }
       return [];
+    }
+
+    if (type === 'tool_execution_start') {
+      return [bridgeEvent('assistant', {
+        session_id: this.sessionId ?? '',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: stringField(raw, 'toolCallId', 'tool_call_id') ?? 'pi-tool-unknown',
+            name: stringField(raw, 'toolName', 'tool_name') ?? 'tool',
+            input: isRecord(raw.args) ? raw.args : {},
+          }],
+        },
+      })];
+    }
+
+    if (type === 'tool_execution_update') {
+      return [bridgeEvent('stream_event', {
+        session_id: this.sessionId ?? '',
+        event: {
+          type: 'tool_progress',
+          tool_call_id: stringField(raw, 'toolCallId', 'tool_call_id'),
+          tool_name: stringField(raw, 'toolName', 'tool_name'),
+          content: piResultText(raw.partialResult),
+          cumulative: true,
+        },
+      })];
+    }
+
+    if (type === 'tool_execution_end') {
+      return [bridgeEvent('user', {
+        session_id: this.sessionId ?? '',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: stringField(raw, 'toolCallId', 'tool_call_id') ?? 'pi-tool-unknown',
+            content: piResultText(raw.result),
+            is_error: raw.isError === true,
+          }],
+        },
+      })];
     }
 
     if (type === 'message_end') {
       const message = raw.message;
       if (isRecord(message) && message.role === 'assistant') {
-        // Capture model from the finalized assistant message (only place it appears).
-        if (typeof message.model === 'string') {
-          this.model = message.model;
-        }
+        this.model = stringField(message, 'model') ?? this.model;
         const text = extractPiAssistantText(message);
+        if (text) this.finalAssistantText = text;
+        this.stopReason = stringField(message, 'stopReason', 'stop_reason') ?? this.stopReason;
+        this.lastError = stringField(message, 'errorMessage', 'error_message') ?? this.lastError;
+        const usage = isRecord(message.usage) ? message.usage : undefined;
+        const cost = usage && typeof usage.cost === 'number'
+          ? usage.cost
+          : usage && isRecord(usage.cost) && typeof usage.cost.total === 'number'
+            ? usage.cost.total
+            : undefined;
+        if (cost != null) this.totalCostUsd = (this.totalCostUsd ?? 0) + cost;
         return [bridgeEvent('assistant', {
           session_id: this.sessionId ?? '',
           message: {
             role: 'assistant',
-            content: text ? [{ type: 'text', text }] : [],
+            content: extractPiAssistantContent(message),
+            model: this.model,
+            usage,
           },
         })];
       }
       return [];
     }
 
-    if (type === 'agent_end') {
-      return [bridgeEvent('result', {
-        subtype: 'success',
+    if (type === 'turn_end') {
+      this.turns += 1;
+      return [];
+    }
+
+    if (type === 'auto_retry_start' || type === 'auto_retry_end'
+      || type === 'compaction_start' || type === 'compaction_end'
+      || type === 'queue_update' || type === 'extension_error') {
+      return [bridgeEvent('system', {
+        ...raw,
+        subtype: type,
         session_id: this.sessionId ?? '',
-        is_error: false,
-        result: this.pendingAssistantText,
-        stop_reason: 'end_turn',
-        num_turns: 1,
       })];
+    }
+
+    if (type === 'agent_end' || type === 'agent_settled') {
+      return this.finish(control, false);
     }
 
     return [];
   }
+
+  private emitInit(): ActoviqBridgeJsonEvent[] {
+    if (this.initEmitted) return [];
+    this.initEmitted = true;
+    return [bridgeEvent('system', {
+      subtype: 'init',
+      session_id: this.sessionId ?? (this.options.sessionId ?? ''),
+      cwd: this.cwd,
+      tools: [],
+      mcp_servers: [],
+      slash_commands: [],
+      agents: [],
+      skills: [],
+      plugins: [],
+      model: this.model ?? this.options.model,
+      permission_mode: this.options.permissionMode ?? 'default',
+    })];
+  }
+
+  private finish(
+    control: BridgeProcessControl | undefined,
+    forcedError: boolean,
+  ): ActoviqBridgeJsonEvent[] {
+    if (this.finished) return [];
+    this.finished = true;
+    control?.endInput();
+    const isError = forcedError || Boolean(this.lastError) || this.stopReason === 'error';
+    return [
+      ...this.emitInit(),
+      bridgeEvent('result', {
+        subtype: isError ? 'error' : 'success',
+        session_id: this.sessionId ?? (this.options.sessionId ?? ''),
+        is_error: isError,
+        result: this.lastError || this.finalAssistantText || this.streamedAssistantText,
+        stop_reason: isError ? 'error' : (this.stopReason ?? 'end_turn'),
+        num_turns: Math.max(1, this.turns),
+        total_cost_usd: this.totalCostUsd,
+      }),
+    ];
+  }
+}
+
+function piRpcPayload(raw: Record<string, unknown>): Record<string, unknown> {
+  if (isRecord(raw.data)) return raw.data;
+  if (isRecord(raw.result)) return raw.result;
+  return raw;
+}
+
+function rpcErrorMessage(raw: Record<string, unknown>): string | undefined {
+  if (typeof raw.error === 'string') return raw.error;
+  if (isRecord(raw.error)) return stringField(raw.error, 'message', 'error');
+  return stringField(raw, 'message');
+}
+
+function stringField(value: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    if (typeof value[key] === 'string' && value[key]) return value[key] as string;
+  }
+  return undefined;
+}
+
+function piResultText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!isRecord(value)) return value == null ? '' : (JSON.stringify(value) ?? '');
+  if (Array.isArray(value.content)) {
+    return value.content.map(block => {
+      if (typeof block === 'string') return block;
+      if (isRecord(block) && typeof block.text === 'string') return block.text;
+      return isRecord(block) ? (JSON.stringify(block) ?? '') : '';
+    }).join('\n');
+  }
+  return JSON.stringify(value, null, 2) ?? '';
 }
 
 function extractPiAssistantText(message: Record<string, unknown>): string {
   const content = message.content;
-  if (!Array.isArray(content)) {
-    return typeof content === 'string' ? content : '';
+  if (!Array.isArray(content)) return typeof content === 'string' ? content : '';
+  return content.map(block =>
+    isRecord(block) && block.type === 'text' && typeof block.text === 'string'
+      ? block.text
+      : '',
+  ).join('');
+}
+
+function extractPiAssistantContent(message: Record<string, unknown>): Array<Record<string, unknown>> {
+  if (!Array.isArray(message.content)) {
+    const text = typeof message.content === 'string' ? message.content : '';
+    return text ? [{ type: 'text', text }] : [];
   }
-  return content
-    .map(block => {
-      if (!isRecord(block)) return '';
-      return block.type === 'text' && typeof block.text === 'string' ? block.text : '';
-    })
-    .join('');
+  const content: Array<Record<string, unknown>> = [];
+  for (const block of message.content) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'text' && typeof block.text === 'string') {
+      content.push({ type: 'text', text: block.text });
+    }
+    if (block.type === 'thinking' && typeof block.thinking === 'string') {
+      content.push({ type: 'thinking', thinking: block.thinking });
+    }
+  }
+  return content;
 }
 
 // ---------------------------------------------------------------------------
 // codex provider (codex exec --json)
 // ---------------------------------------------------------------------------
+
+function validateCodexSessionId(value: string): string {
+  const sessionId = value.trim();
+  if (
+    !sessionId
+    || sessionId.length > 256
+    || sessionId.startsWith('-')
+    || /[\u0000-\u001f\u007f]/u.test(sessionId)
+  ) {
+    throw new ActoviqBridgeProcessError(
+      'Codex session id must be a non-option UUID or thread name without control characters.',
+    );
+  }
+  return sessionId;
+}
 
 class CodexProvider extends BaseRuntimeProvider {
   readonly id = 'codex' as const;
@@ -659,9 +956,27 @@ class CodexProvider extends BaseRuntimeProvider {
   readonly displayName = 'Codex CLI (@openai/codex)';
 
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
-    const args = ['exec', '--json', '--skip-git-repo-check', '--color', 'never', '--ephemeral'];
-    // Autonomous: no approval prompt can block a non-TTY run.
-    args.push('--dangerously-bypass-approvals-and-sandbox');
+    const shouldResume = typeof options.resume === 'string'
+      || options.resume === true
+      || options.continueMostRecent === true;
+    const args = shouldResume
+      ? ['exec', 'resume', '--json', '--skip-git-repo-check']
+      : ['exec', '--json', '--skip-git-repo-check', '--color', 'never'];
+    // `codex exec` cannot relay an interactive approval back through this
+    // JSONL adapter. Preserve the caller's permission boundary explicitly:
+    // default/plan are read-only, acceptEdits is workspace-write, and only an
+    // explicit bypassPermissions selection disables the sandbox.
+    if (options.permissionMode === 'bypassPermissions') {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+    } else {
+      const sandbox = options.permissionMode === 'acceptEdits'
+        ? 'workspace-write'
+        : 'read-only';
+      args.push(
+        '-c', `sandbox_mode="${sandbox}"`,
+        '-c', 'approval_policy="never"',
+      );
+    }
     if (options.model) {
       args.push('-m', options.model);
     }
@@ -670,6 +985,17 @@ class CodexProvider extends BaseRuntimeProvider {
     }
     if (typeof options.maxTurns === 'number') {
       args.push('-c', `max_turns=${options.maxTurns}`);
+    }
+    if (shouldResume && typeof options.resume !== 'string') {
+      args.push('--last');
+    }
+    // Codex parses options anywhere before `--`. Keep both the externally
+    // supplied prompt and resume identifier in the positional-argument domain
+    // so values such as `--dangerously-bypass-approvals-and-sandbox` cannot
+    // widen the permission mode selected above.
+    args.push('--');
+    if (typeof options.resume === 'string') {
+      args.push(validateCodexSessionId(options.resume));
     }
     args.push(prompt);
     return args;
@@ -692,12 +1018,54 @@ class CodexProvider extends BaseRuntimeProvider {
   }
 }
 
+const CODEX_TOOL_ITEM_TYPES = ['command_execution', 'file_change', 'mcp_tool_call'] as const;
+
+function isCodexToolItem(item: Record<string, unknown>): boolean {
+  return CODEX_TOOL_ITEM_TYPES.includes(item.type as typeof CODEX_TOOL_ITEM_TYPES[number]);
+}
+
+function codexToolName(item: Record<string, unknown>): string {
+  if (item.type !== 'mcp_tool_call') return String(item.type);
+  const parts = ['mcp'];
+  if (typeof item.server === 'string' && item.server) parts.push(item.server);
+  if (typeof item.tool === 'string' && item.tool) parts.push(item.tool);
+  return parts.length > 1 ? parts.join('__') : 'mcp_tool_call';
+}
+
+function codexToolInput(item: Record<string, unknown>): Record<string, unknown> {
+  if (item.type === 'command_execution') {
+    return typeof item.command === 'string' ? { command: item.command } : {};
+  }
+  if (item.type === 'file_change') {
+    return { changes: Array.isArray(item.changes) ? item.changes : [] };
+  }
+  if (isRecord(item.arguments)) return item.arguments;
+  return item.arguments === undefined ? {} : { arguments: item.arguments };
+}
+
+function codexToolResultContent(item: Record<string, unknown>): string {
+  const value = item.type === 'command_execution'
+    ? item.aggregated_output ?? item.output ?? item.error
+    : item.type === 'file_change'
+      ? item.changes ?? item.result ?? item.error
+      : item.error ?? item.result;
+  if (typeof value === 'string') return value;
+  return value == null ? '' : (JSON.stringify(value, null, 2) ?? '');
+}
+
+function codexToolResultIsError(item: Record<string, unknown>): boolean {
+  return item.status === 'failed'
+    || (typeof item.exit_code === 'number' && item.exit_code !== 0)
+    || (item.error !== undefined && item.error !== null);
+}
+
 class CodexNormalizer implements BridgeEventNormalizer {
   private threadId: string | undefined;
   private initEmitted = false;
 
   translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
     const type = typeof raw.type === 'string' ? raw.type : '';
+    const item = isRecord(raw.item) ? raw.item : undefined;
 
     if (type === 'thread.started') {
       this.threadId = typeof raw.thread_id === 'string' ? raw.thread_id : this.threadId;
@@ -719,9 +1087,38 @@ class CodexNormalizer implements BridgeEventNormalizer {
       return [];
     }
 
+    if ((type === 'item.started' || type === 'item.completed') && item && isCodexToolItem(item)) {
+      const id = typeof item.id === 'string' ? item.id : `${String(item.type)}-unknown`;
+      if (type === 'item.started') {
+        return [bridgeEvent('assistant', {
+          session_id: this.threadId ?? '',
+          message: {
+            role: 'assistant',
+            content: [{
+              type: 'tool_use',
+              id,
+              name: codexToolName(item),
+              input: codexToolInput(item),
+            }],
+          },
+        })];
+      }
+      return [bridgeEvent('user', {
+        session_id: this.threadId ?? '',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: id,
+            content: codexToolResultContent(item),
+            is_error: codexToolResultIsError(item),
+          }],
+        },
+      })];
+    }
+
     if (type === 'item.completed') {
-      const item = raw.item;
-      if (isRecord(item) && item.type === 'agent_message' && typeof item.text === 'string') {
+      if (item?.type === 'agent_message' && typeof item.text === 'string') {
         return [bridgeEvent('assistant', {
           session_id: this.threadId ?? '',
           message: {
@@ -822,17 +1219,7 @@ class CodewhaleProvider extends BaseRuntimeProvider {
   readonly displayName = 'CodeWhale CLI (codewhale)';
 
   buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
-    const args = ['exec', '--auto', '--output-format', 'stream-json'];
-    // codewhale persists sessions per workspace. Its --session-id RESUMES by
-    // id rather than creating, and we can't reliably feed its native id back
-    // through ActoviqBridgeSession's uuid, so use --continue (most-recent) for
-    // resumed turns — correct for sequential same-provider turns and survives
-    // switching away and back.
-    if (options.resume || options.continueMostRecent) {
-      args.push('--continue');
-    }
-    args.push(prompt);
-    return args;
+    return buildCodewhaleArgs(prompt, options);
   }
 
   buildChildEnv(
@@ -844,7 +1231,7 @@ class CodewhaleProvider extends BaseRuntimeProvider {
   }
 
   createNormalizer(): BridgeEventNormalizer {
-    return { translate: raw => [raw as ActoviqBridgeJsonEvent] };
+    return createCodewhaleNormalizer();
   }
   suggestedModels(): string[] { return []; }
 }
@@ -858,12 +1245,16 @@ class ReasonixProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'reasonix';
   readonly displayName = 'Reasonix CLI (reasonix)';
 
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
-    const args = ['run'];
-    if (options.model) { args.push('-m', options.model); }
-    if (options.systemPrompt) { args.push('-s', options.systemPrompt); }
-    if (options.effort) { args.push('--effort', options.effort); }
-    args.push(prompt);
+  buildArgs(_prompt: string, options: ActoviqBridgeRunOptions): string[] {
+    if (options.resume === true || options.continueMostRecent) {
+      throw new ActoviqBridgeProcessError(
+        'Reasonix managed mode requires an exact persisted session id.',
+      );
+    }
+    const args = ['acp'];
+    // --model exists in both the legacy and current ACP CLIs. Effort/budget are
+    // negotiated through advertised ACP config options by the session state.
+    if (options.model) args.push('--model', validateReasonixValue(options.model, 'model'));
     return args;
   }
 
@@ -875,11 +1266,63 @@ class ReasonixProvider extends BaseRuntimeProvider {
     return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
   }
 
-  createNormalizer(): BridgeEventNormalizer {
-    return new PlainTextNormalizer();
+  createNormalizer(prompt = '', options: ActoviqBridgeRunOptions = {}): BridgeEventNormalizer {
+    return new ReasonixAcpNormalizer(prompt, options);
   }
   suggestedModels(): string[] {
     return ['deepseek-v4-pro', 'deepseek-v4-flash'];
+  }
+}
+
+function validateReasonixValue(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 512 || normalized.startsWith('-')
+    || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new ActoviqBridgeProcessError(
+      `Reasonix ${label} must be a non-option value without control characters.`,
+    );
+  }
+  return normalized;
+}
+
+class ReasonixAcpNormalizer implements BridgeEventNormalizer {
+  readonly interactive = true as const;
+  readonly abortGraceMs = 300;
+  private readonly session;
+
+  constructor(prompt: string, options: ActoviqBridgeRunOptions) {
+    const nativeSessionId = typeof options.resume === 'string'
+      ? validateReasonixValue(options.resume, 'session id')
+      : undefined;
+    this.session = createReasonixAcpSession({
+      prompt,
+      cwd: options.workDir ?? process.cwd(),
+      model: options.model,
+      effort: options.effort,
+      maxBudgetUsd: options.maxBudgetUsd,
+      permissionMode: options.permissionMode ?? 'default',
+      nativeSessionId,
+    });
+  }
+
+  start(control: BridgeProcessControl): void {
+    for (const record of this.session.start()) control.write(record);
+  }
+
+  abort(control: BridgeProcessControl): void {
+    for (const record of this.session.cancel()) control.write(record);
+  }
+
+  translate(
+    raw: Record<string, unknown>,
+    control?: BridgeProcessControl,
+  ): ActoviqBridgeJsonEvent[] {
+    const handled = this.session.handle(raw);
+    if (control) {
+      for (const record of handled.outbound) control.write(record);
+      if (handled.done) control.endInput();
+    }
+    return handled.events;
   }
 }
 

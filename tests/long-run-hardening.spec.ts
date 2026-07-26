@@ -684,6 +684,266 @@ describe('stream interruption recovery', () => {
       await sdk.close();
     }
   });
+
+  it('keeps retrying when a mid-stream failure is followed by pre-header transport errors', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let streamCallCount = 0;
+    const interruptedStream: ModelStreamHandle = {
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        yield {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'discard this interrupted prefix' },
+        } as MessageStreamEvent;
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    };
+    const offlineStream = (): ModelStreamHandle => ({
+      async finalMessage(): Promise<Message> {
+        throw new ActoviqProviderApiError('Provider transport error after retries: fetch failed', {
+          status: 0,
+          errorType: 'transport_error',
+          cause: new TypeError('fetch failed'),
+        });
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        throw new ActoviqProviderApiError('Provider transport error after retries: fetch failed', {
+          status: 0,
+          errorType: 'transport_error',
+          cause: new TypeError('fetch failed'),
+        });
+      },
+    });
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        streamCallCount += 1;
+        if (streamCallCount === 1) return interruptedStream;
+        if (streamCallCount <= 3) return offlineStream();
+        return new MockStream([], makeMessage([{ type: 'text', text: 'Recovered after the network returned.' }]));
+      },
+    };
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const stream = sdk.stream('Wait for the network to return.');
+      const retries: number[] = [];
+      for await (const event of stream) {
+        if (event.type === 'request.interrupted') retries.push(event.retry);
+      }
+      const result = await stream.result;
+
+      expect(streamCallCount).toBe(4);
+      expect(retries).toEqual([1, 2, 3]);
+      expect(result.text).toBe('Recovered after the network returned.');
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('recovers after more than three interruptions without replaying tool side effects', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    let streamCallCount = 0;
+    let toolExecutionCount = 0;
+    const makeInterruptedToolStream = (): ModelStreamHandle => ({
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        yield {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'toolu_partial',
+            name: 'side_effect_tool',
+            input: {},
+          },
+        } as MessageStreamEvent;
+        yield {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"value":' },
+        } as MessageStreamEvent;
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    });
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        streamCallCount += 1;
+        if (streamCallCount <= 4) {
+          return makeInterruptedToolStream();
+        }
+        if (streamCallCount === 5) {
+          return new MockStream(
+            [],
+            makeMessage(
+              [{
+                type: 'tool_use',
+                id: 'toolu_complete',
+                name: 'side_effect_tool',
+                input: { value: 1 },
+              }],
+              'tool_use',
+            ),
+          );
+        }
+        return new MockStream([], makeMessage([{ type: 'text', text: 'Recovered safely.' }]));
+      },
+    };
+    const sideEffectTool = tool(
+      {
+        name: 'side_effect_tool',
+        description: 'Records one externally visible side effect.',
+        inputSchema: z.strictObject({ value: z.number() }),
+      },
+      async () => {
+        toolExecutionCount += 1;
+        return 'side effect recorded';
+      },
+    );
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      const stream = sdk.stream('Recover the tool request safely.', { tools: [sideEffectTool] });
+      const interruptions: Array<{ retry: number; maxRetries: number }> = [];
+      for await (const event of stream) {
+        if (event.type === 'request.interrupted') {
+          interruptions.push({ retry: event.retry, maxRetries: event.maxRetries });
+        }
+      }
+      const result = await stream.result;
+
+      expect(streamCallCount).toBe(6);
+      expect(result.text).toBe('Recovered safely.');
+      expect(toolExecutionCount).toBe(1);
+      expect(interruptions.map(({ retry }) => retry)).toEqual([1, 2, 3, 4]);
+      expect(interruptions.every(({ maxRetries }) => maxRetries > 4)).toBe(true);
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('aborts promptly while waiting to retry an interrupted stream', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const controller = new AbortController();
+    const failingStream: ModelStreamHandle = {
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    };
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        return failingStream;
+      },
+    };
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      let markInterrupted!: () => void;
+      const interrupted = new Promise<void>((resolve) => { markInterrupted = resolve; });
+      const stream = sdk.stream('Wait for recovery.', { signal: controller.signal });
+      const drain = (async () => {
+        try {
+          for await (const event of stream) {
+            if (event.type === 'request.interrupted') markInterrupted();
+          }
+        } catch {
+          // The stream is expected to reject after cancellation.
+        }
+      })();
+
+      await interrupted;
+      const abortStartedAt = Date.now();
+      controller.abort(new Error('cancel recovery wait'));
+      await expect(stream.result).rejects.toThrow();
+      expect(Date.now() - abortStartedAt).toBeLessThan(800);
+      await drain;
+    } finally {
+      await sdk.close();
+    }
+  });
+
+  it('stops retrying when the enclosing run deadline expires', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const failingStream: ModelStreamHandle = {
+      async finalMessage(): Promise<Message> {
+        throw new TypeError('terminated');
+      },
+      async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
+        throw new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        });
+      },
+    };
+    const modelApi: ModelApi = {
+      async createMessage(): Promise<Message> {
+        throw new Error('Unexpected createMessage call.');
+      },
+      streamMessage(): ModelStreamHandle {
+        return failingStream;
+      },
+    };
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      runTimeoutMs: 40,
+    });
+
+    try {
+      const stream = sdk.stream('Keep retrying only within the run deadline.');
+      const drain = (async () => {
+        try {
+          for await (const _event of stream) {
+            // Drain events so the stream queue observes the terminal error.
+          }
+        } catch {
+          // The run deadline is expected to reject the stream.
+        }
+      })();
+
+      await expect(stream.result).rejects.toMatchObject({
+        code: 'DEADLINE_EXCEEDED',
+        timeoutMs: 40,
+      });
+      await drain;
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 
 describe('max_tokens truncation recovery', () => {

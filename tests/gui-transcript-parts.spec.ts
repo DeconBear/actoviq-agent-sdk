@@ -142,6 +142,41 @@ describe('transcript helpers', () => {
     expect(styles).toContain('.thinking-card');
     expect(styles).toContain('.transcript-jump');
   });
+
+  it('discards partial text and tool input when a response stream retries', () => {
+    const store = createTranscriptStore();
+    applyGuiEvent(store, { type: 'user', text: 'go' });
+    applyGuiEvent(store, { type: 'delta', text: 'incorrect prefix' });
+    applyGuiEvent(store, { type: 'tool.input.delta', id: 'partial-tool', name: 'Bash', delta: '{"command":' });
+
+    applyGuiEvent(store, { type: 'response.retry' });
+
+    expect(store.parts).toHaveLength(1);
+    expect(store.parts[0]).toMatchObject({ kind: 'user', text: 'go' });
+    expect(store.toolIndex.size).toBe(0);
+    applyGuiEvent(store, { type: 'delta', text: 'correct result' });
+    expect(store.parts[1]).toMatchObject({ kind: 'assistant', text: 'correct result' });
+  });
+
+  it('patches mounted tool cards without replacing their DOM node', () => {
+    const script = getTranscriptClientScript();
+    const renderPart = script.slice(
+      script.indexOf('function renderPart(part)'),
+      script.indexOf('function hydrate(entries)'),
+    );
+    const patchToolCard = script.slice(
+      script.indexOf('function patchToolCard(card, part)'),
+      script.indexOf('function buildToolCard(part)'),
+    );
+
+    expect(renderPart).toContain("part.kind === 'tool'");
+    expect(renderPart).toContain('patchToolCard(node, part);');
+    expect(renderPart).toMatch(/patchToolCard\(node, part\);\s+TR\.nodes\.set\(part\.id, node\);\s+return;/);
+    expect(renderPart.indexOf('patchToolCard(node, part);')).toBeLessThan(renderPart.indexOf('node.replaceWith(fresh);'));
+    expect(patchToolCard).toContain("header.querySelector('.tool-toggle')");
+    expect(patchToolCard).toContain('updateToolBody(body, part, family);');
+    expect(patchToolCard).toContain('syncToolFooters(card, part);');
+  });
 });
 
 describe('transcript scroll helpers', () => {

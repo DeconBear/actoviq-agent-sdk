@@ -119,6 +119,30 @@ describe('agentProfiles', () => {
     expect(resolved.modelApi).toBeUndefined();
   });
 
+  it('resolves External CLI profiles without requiring Direct API credentials', async () => {
+    const home = await tempRoot('actoviq-agent-profiles-cli-');
+    addBridgeConfig({
+      name: 'pi-native',
+      runtime: 'pi',
+      execution: 'cli',
+      authSource: 'native',
+      provider: 'openai',
+      model: 'gpt-5',
+      models: [{ name: 'gpt-5' }],
+    }, home);
+    upsertAgentProfile({
+      name: 'pi-worker',
+      bridgeConfig: 'pi-native',
+      model: 'gpt-5',
+    }, home);
+
+    const resolved = await resolveSelectableAgentRun('pi-worker', home);
+
+    expect(resolved.bridgeConfig.execution).toBe('cli');
+    expect(resolved.model).toBe('gpt-5');
+    expect(resolved.modelApi).toBeUndefined();
+  });
+
   it('deletes profiles', async () => {
     const home = await tempRoot('actoviq-agent-profiles-delete-');
     addBridgeConfig({
@@ -143,7 +167,10 @@ describe('agentProfiles', () => {
       provider: 'anthropic',
       apiKey: 'sk-x',
       model: 'deepseek-v4-pro',
-      models: [{ name: 'deepseek-v4-pro' }, { name: 'deepseek-v4-flash' }],
+      models: [
+        { name: 'deepseek-v4-pro', context1M: true, modality: 'text' },
+        { name: 'deepseek-v4-flash', modality: 'multimodal' },
+      ],
     }, home);
     upsertAgentProfile({
       name: 'reviewer',
@@ -158,6 +185,11 @@ describe('agentProfiles', () => {
     expect(agents.find(a => a.name === 'reviewer')).toMatchObject({
       source: 'profile',
       model: 'deepseek-v4-pro',
+      runtime: 'claude',
+      execution: 'api',
+      provider: 'anthropic',
+      context1M: true,
+      modality: 'text',
       effort: 'high',
       maxTokens: 8000,
       temperature: 0.3,
@@ -169,12 +201,67 @@ describe('agentProfiles', () => {
       source: 'config',
       ephemeral: true,
       bridgeConfig: 'deepseek',
+      runtime: 'claude',
+      execution: 'api',
+      provider: 'anthropic',
+      context1M: false,
+      modality: 'multimodal',
     });
     expect(findSelectableAgent(flash!.name, home)?.model).toBe('deepseek-v4-flash');
     expect(matchSelectableAgent('deepseek', 'deepseek-v4-pro', home)?.name).toBe('reviewer');
+    expect(matchSelectableAgent('deepseek', 'missing-model', home)).toBeUndefined();
+    expect(matchSelectableAgent('deepseek', undefined, home)?.name).toBe('reviewer');
 
     const resolved = await resolveSelectableAgentRun(flash!.name, home);
     expect(resolved.model).toBe('deepseek-v4-flash');
     expect(resolved.selectable.source).toBe('config');
+  });
+
+  it('matches tier aliases against resolved model ids from buildRouteModelApi', async () => {
+    const home = await tempRoot('actoviq-selectable-tier-match-');
+    const prevMin = process.env.ACTOVIQ_DEFAULT_MIN_MODEL;
+    process.env.ACTOVIQ_DEFAULT_MIN_MODEL = 'deepseek-v4-flash';
+    try {
+      addBridgeConfig({
+        name: 'deepseek',
+        runtime: 'claude',
+        provider: 'anthropic',
+        apiKey: 'sk-x',
+        model: 'deepseek-v4-pro',
+        models: [
+          { name: 'deepseek-v4-pro' },
+          { name: 'deepseek-v4-flash' },
+        ],
+      }, home);
+      upsertAgentProfile({
+        name: 'flash-tier',
+        bridgeConfig: 'deepseek',
+        model: 'min',
+        effort: 'high',
+        maxTokens: 4000,
+        temperature: 0.2,
+      }, home);
+
+      expect(matchSelectableAgent('deepseek', 'deepseek-v4-flash', home)).toMatchObject({
+        name: 'flash-tier',
+        model: 'min',
+        effort: 'high',
+        maxTokens: 4000,
+        temperature: 0.2,
+      });
+      expect(matchSelectableAgent('deepseek', 'min', home)?.name).toBe('flash-tier');
+      // Resolved id covered by the tier profile — no duplicate auto preset.
+      expect(
+        listSelectableAgents(home).filter(
+          a => a.bridgeConfig === 'deepseek' && a.model === 'deepseek-v4-flash',
+        ),
+      ).toHaveLength(0);
+      // Unrelated concrete ids must not fall back to the tier profile.
+      expect(matchSelectableAgent('deepseek', 'deepseek-v4-pro', home)?.name).not.toBe('flash-tier');
+      expect(matchSelectableAgent('deepseek', 'missing-model', home)).toBeUndefined();
+    } finally {
+      if (prevMin === undefined) delete process.env.ACTOVIQ_DEFAULT_MIN_MODEL;
+      else process.env.ACTOVIQ_DEFAULT_MIN_MODEL = prevMin;
+    }
   });
 });

@@ -613,6 +613,28 @@ export interface ActoviqSkillDefinitionSummary {
   paths?: string[];
 }
 
+/**
+ * Native CLI skill sources that the Hadamard runtime may reuse. User-level
+ * sources are eligible by default; project-level sources remain disabled until
+ * their source id is explicitly trusted.
+ */
+export interface ActoviqExternalSkillsOptions {
+  /** Limit discovery to these catalog source ids. Omit to use every external source. */
+  enabledSourceIds?: string[];
+  /** Exclude catalog sources without modifying their native runtime directories. */
+  disabledSourceIds?: string[];
+  /** Exclude individual catalog variants by their stable catalog id. */
+  disabledSkillIds?: string[];
+  /** Project source ids approved for this workspace, for example `codex:project`. */
+  trustedProjectSourceIds?: string[];
+  /** Resolve an invocation-name conflict to one catalog skill id. */
+  preferredSkillIds?: Record<string, string>;
+  /** Test/embedding seam for resolving native runtime home directories. */
+  osHomeDir?: string;
+  /** Environment seam for CLAUDE_CONFIG_DIR and CODEX_HOME overrides. */
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+}
+
 export type ActoviqCleanToolCategory =
   | 'file'
   | 'task'
@@ -755,6 +777,8 @@ export interface CreateAgentSdkOptions {
   maxSubagentFanout?: number;
   skills?: ActoviqSkillDefinition[];
   skillDirectories?: string[];
+  /** Reuse user-configured Claude Code, Codex, Cursor, cc-switch, and shared-agent skills. */
+  externalSkills?: boolean | ActoviqExternalSkillsOptions;
   disableDefaultSkills?: boolean;
   loadDefaultSkillDirectories?: boolean;
   hooks?: ActoviqHooks;
@@ -1285,13 +1309,13 @@ export interface ActoviqTeammateTranscript {
 }
 
 export interface ActoviqComputerUseExecutor {
-  openUrl(url: string): Promise<void> | void;
-  focusWindow?(title: string): Promise<void> | void;
-  typeText(text: string): Promise<void> | void;
-  keyPress(keys: string[]): Promise<void> | void;
-  readClipboard(): Promise<string> | string;
-  writeClipboard(text: string): Promise<void> | void;
-  takeScreenshot(outputPath: string): Promise<string> | string;
+  openUrl(url: string, signal?: AbortSignal): Promise<void> | void;
+  focusWindow?(title: string, signal?: AbortSignal): Promise<void> | void;
+  typeText(text: string, signal?: AbortSignal): Promise<void> | void;
+  keyPress(keys: string[], signal?: AbortSignal): Promise<void> | void;
+  readClipboard(signal?: AbortSignal): Promise<string> | string;
+  writeClipboard(text: string, signal?: AbortSignal): Promise<void> | void;
+  takeScreenshot(outputPath: string, signal?: AbortSignal): Promise<string> | string;
 }
 
 export interface CreateActoviqComputerUseOptions {
@@ -1309,6 +1333,8 @@ export interface CreateActoviqBrowserUseOptions {
   channel?: 'chromium' | 'chrome' | 'msedge';
   cdpUrl?: string;
   userDataDir?: string;
+  /** Root directory for screenshot output paths. Defaults to process.cwd(). */
+  workspaceDir?: string;
   allowedDomains?: string[];
   defaultTimeoutMs?: number;
   viewport?: { width: number; height: number };
@@ -2216,6 +2242,9 @@ export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
  */
 export type RuntimeProviderId = 'claude' | 'pi' | 'codex' | 'codewhale' | 'reasonix' | 'crush';
 
+/** Authentication source for an externally launched agent CLI. */
+export type ActoviqBridgeAuthSource = 'native' | 'apiKey';
+
 /** Result of `detectBridgeProviders()` — one entry per known provider. */
 export interface BridgeProviderDetection {
   id: RuntimeProviderId;
@@ -2242,7 +2271,8 @@ export interface CreateActoviqBridgeSdkOptions {
    * Spawn a locally installed agent CLI directly, bypassing the vendored
    * `runtime.bundle.br` + Bun wrapper. When true, `executable` is the CLI to
    * spawn (defaults to the provider's binary on PATH). Provider isolation
-   * (env injection) applies to all providers.
+   * follows `authSource`: native CLI state by default, or explicit child-only
+   * environment injection for `apiKey`.
    */
   directCli?: boolean;
   /**
@@ -2252,6 +2282,25 @@ export interface CreateActoviqBridgeSdkOptions {
    * Only consulted when `directCli` is true; ignored by the bundle path.
    */
   directCliProvider?: RuntimeProviderId;
+  /**
+   * `native` reuses the CLI's own login/configuration without mapping Actoviq
+   * API settings into provider credential variables. `apiKey` injects the
+   * explicit key below into this child process only. Direct CLI mode defaults
+   * to `native`; the vendored bridge keeps its legacy settings mapping.
+   */
+  authSource?: ActoviqBridgeAuthSource;
+  /** Explicit per-child credential used only when authSource is `apiKey`. */
+  apiKey?: string;
+  /** Optional per-child provider endpoint used only when authSource is `apiKey`. */
+  baseURL?: string;
+  /** Native provider id used by multi-provider CLIs for child-only API-key mapping. */
+  credentialProvider?: string;
+  /**
+   * Stable, non-secret identity for a managed external CLI configuration.
+   * Actoviq-owned session profiles use it across process restarts without
+   * including the credential itself in a filesystem path or hash.
+   */
+  profileName?: string;
   homeDir?: string;
   workDir?: string;
   model?: string;
@@ -2260,6 +2309,8 @@ export interface CreateActoviqBridgeSdkOptions {
   systemPrompt?: string;
   appendSystemPrompt?: string;
   permissionMode?: ActoviqBridgePermissionMode;
+  /** Trust and load project-local runtime resources when the selected CLI supports it (Pi). */
+  trustProjectResources?: boolean;
   dangerouslySkipPermissions?: boolean;
   maxTurns?: number;
   maxBudgetUsd?: number;

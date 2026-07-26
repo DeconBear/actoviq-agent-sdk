@@ -3,10 +3,11 @@ import process from 'node:process';
 
 function getFlagValue(flag) {
   const index = process.argv.indexOf(flag);
-  if (index === -1) {
-    return undefined;
+  if (index !== -1) {
+    return process.argv[index + 1];
   }
-  return process.argv[index + 1];
+  const assigned = process.argv.find(argument => argument.startsWith(`${flag}=`));
+  return assigned?.slice(flag.length + 1);
 }
 
 function hasFlag(flag) {
@@ -14,7 +15,11 @@ function hasFlag(flag) {
 }
 
 const command = process.argv[2];
-const prompt = getFlagValue('-p') ?? '';
+const positionalBoundary = process.argv.lastIndexOf('--');
+const legacyPrompt = getFlagValue('-p');
+const prompt = positionalBoundary >= 0
+  ? process.argv[positionalBoundary + 1] ?? ''
+  : legacyPrompt?.startsWith('-') ? '' : legacyPrompt ?? '';
 const sessionId =
   getFlagValue('--session-id') ??
   getFlagValue('--resume') ??
@@ -35,6 +40,10 @@ const envToken = process.env.ACTOVIQ_AUTH_TOKEN ?? 'missing';
 const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 
 if (command === 'agents') {
+  const largeStdoutBytes = Number(process.env.ACTOVIQ_TEST_LARGE_STDOUT_BYTES ?? 0);
+  if (Number.isFinite(largeStdoutBytes) && largeStdoutBytes > 0) {
+    process.stdout.write(`${'x'.repeat(largeStdoutBytes)}\n`);
+  }
   process.stdout.write(
     [
       '3 active agents',
@@ -67,12 +76,46 @@ emit({
   plugins: [{ name: 'fixture-plugin', source: 'builtin', path: '/plugins/fixture' }],
   env_token: envToken,
   anthropic_base_url: process.env.ANTHROPIC_BASE_URL ?? undefined,
-  anthropic_auth_token: process.env.ANTHROPIC_AUTH_TOKEN ?? undefined,
+  anthropic_auth_token:
+    process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? undefined,
+  anthropic_auth_configured: Boolean(
+    process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
+  ),
 });
+
+if (prompt === 'retention-bounds') {
+  for (let index = 0; index < 1_100; index += 1) {
+    emit({
+      type: 'stream_event',
+      session_id: sessionId,
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: String(index) },
+      },
+    });
+  }
+  for (let index = 0; index < 200; index += 1) {
+    emit({
+      type: 'assistant',
+      session_id: sessionId,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `retained-assistant-${index}` }],
+      },
+    });
+  }
+}
+
+if (prompt === 'large-stderr') {
+  process.stderr.write(`${'s'.repeat(1024 * 1024 + 64 * 1024)}stderr-tail`);
+}
 
 const text =
   prompt === 'who-am-i'
     ? `mode:${mode};agent:${agent}`
+    : prompt === 'check-argv'
+      ? `argv:${process.argv.slice(2).join('|')}`
     : prompt === '/cost'
       ? 'Total cost:            $0.0000\nUsage:                 0 input, 0 output, 0 cache read, 0 cache write'
       : prompt === '/context'

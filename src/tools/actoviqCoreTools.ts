@@ -56,7 +56,9 @@ export function createActoviqCoreTools(
   }
   if (options.webTools !== false) {
     tools.push(...createActoviqWebTools());
-    // Tavily: enabled when TAVILY_API_KEY is set (no Python dependency)
+    // Tavily: enabled when TAVILY_API_KEY is set (no Python dependency).
+    // Managed plugin "tavily" may also mount the same tool; callers should
+    // prefer/dedupe by tool name when combining catalogs.
     if (process.env.TAVILY_API_KEY) tools.push(createTavilySearchTool());
   }
   if (options.taskTools === true) tools.push(...createActoviqTaskTools());

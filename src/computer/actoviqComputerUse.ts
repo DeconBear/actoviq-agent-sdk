@@ -1,5 +1,9 @@
+import { realpath } from 'node:fs/promises';
+import path from 'node:path';
+
 import { z } from 'zod';
 
+import { signalAborted } from '../runtime/helpers.js';
 import { tool } from '../runtime/tools.js';
 import type {
   ActoviqComputerUseExecutor,
@@ -30,45 +34,106 @@ function ensureWindows(): void {
   }
 }
 
-async function runPowerShell(command: string): Promise<string> {
+function killChildProcessTree(child: { pid?: number; kill: (signal?: NodeJS.Signals | number) => boolean }): void {
+  if (process.platform === 'win32' && typeof child.pid === 'number') {
+    // Best-effort: kill PowerShell and any child it spawned (e.g. Start-Process helpers).
+    void import('node:child_process').then(({ execFile }) => {
+      execFile(
+        'taskkill.exe',
+        ['/PID', String(child.pid), '/T', '/F'],
+        { windowsHide: true },
+        () => undefined,
+      );
+    });
+    return;
+  }
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // Process may already have exited.
+  }
+}
+
+async function runPowerShell(command: string, signal?: AbortSignal): Promise<string> {
   ensureWindows();
+  signalAborted(signal);
   const { execFile } = await import('node:child_process');
   return new Promise((resolve, reject) => {
-    execFile(
+    let settled = false;
+    let onAbort: (() => void) | undefined;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const child = execFile(
       'powershell.exe',
       ['-NoProfile', '-Command', command],
-      { windowsHide: true },
+      {
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 10 * 1024 * 1024,
+      },
       (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(stderr?.trim() || error.message, { cause: error }));
+        if (signal?.aborted) {
+          finish(() => {
+            reject(
+              signal.reason instanceof Error
+                ? signal.reason
+                : new Error(typeof signal.reason === 'string' ? signal.reason : 'The run was aborted.'),
+            );
+          });
           return;
         }
-        resolve(stdout.trim());
+        if (error) {
+          finish(() => {
+            reject(new Error(stderr?.trim() || error.message, { cause: error }));
+          });
+          return;
+        }
+        finish(() => resolve(stdout.trim()));
       },
     );
+
+    onAbort = () => {
+      killChildProcessTree(child);
+    };
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }
   });
 }
 
 export function createDefaultActoviqComputerUseExecutor(): ActoviqComputerUseExecutor {
   return {
-    openUrl: (url) =>
-      runPowerShell(`Start-Process '${url.replace(/'/g, "''")}'`).then(() => undefined),
-    focusWindow: (title) =>
+    openUrl: (url, signal) =>
+      runPowerShell(`Start-Process '${url.replace(/'/g, "''")}'`, signal).then(() => undefined),
+    focusWindow: (title, signal) =>
       runPowerShell(
         `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::AppActivate('${title.replace(/'/g, "''")}')`,
+        signal,
       ).then(() => undefined),
-    typeText: (text) =>
+    typeText: (text, signal) =>
       runPowerShell(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${text.replace(/[{}+^%~()]/g, '{$&}').replace(/'/g, "''")}')`,
+        signal,
       ).then(() => undefined),
-    keyPress: (keys) =>
+    keyPress: (keys, signal) =>
       runPowerShell(
         `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys.join('+').replace(/'/g, "''")}')`,
+        signal,
       ).then(() => undefined),
-    readClipboard: () => runPowerShell('Get-Clipboard -Raw'),
-    writeClipboard: (text) =>
-      runPowerShell(`Set-Clipboard -Value @'\n${text}\n'@`).then(() => undefined),
-    takeScreenshot: async (outputPath) => {
+    readClipboard: (signal) => runPowerShell('Get-Clipboard -Raw', signal),
+    writeClipboard: (text, signal) => {
+      const encoded = Buffer.from(text, 'utf8').toString('base64');
+      return runPowerShell(
+        `$bytes=[Convert]::FromBase64String('${encoded}'); Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString($bytes))`,
+        signal,
+      ).then(() => undefined);
+    },
+    takeScreenshot: async (outputPath, signal) => {
       await runPowerShell(
         [
           'Add-Type -AssemblyName System.Windows.Forms;',
@@ -81,6 +146,7 @@ export function createDefaultActoviqComputerUseExecutor(): ActoviqComputerUseExe
           '$g.Dispose();',
           '$bmp.Dispose();',
         ].join(' '),
+        signal,
       );
       return outputPath;
     },
@@ -127,39 +193,182 @@ const workflowStepSchema = z.discriminatedUnion('action', [
 
 type ActoviqComputerWorkflowStep = z.infer<typeof workflowStepSchema>;
 
+async function runAbortable<T>(
+  operation: (signal?: AbortSignal) => T | Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signalAborted(signal);
+  if (!signal) return operation(undefined);
+
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error(typeof signal.reason === 'string' ? signal.reason : 'The run was aborted.'),
+      );
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+
+  try {
+    signalAborted(signal);
+    return await Promise.race([Promise.resolve().then(() => operation(signal)), aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function abortableDelay(durationMs: number, signal?: AbortSignal): Promise<void> {
+  signalAborted(signal);
+  if (!signal) {
+    return new Promise(resolve => setTimeout(resolve, durationMs));
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error(typeof signal.reason === 'string' ? signal.reason : 'The run was aborted.'),
+      );
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, durationMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+const hostMutationMetadata = {
+  isReadOnly: () => false,
+  isDestructive: () => true,
+  requiresUserInteraction: () => true,
+};
+
+const hostReadMetadata = {
+  isReadOnly: () => true,
+  isDestructive: () => false,
+  requiresUserInteraction: () => true,
+};
+
+const passiveMetadata = {
+  isReadOnly: () => true,
+  isDestructive: () => false,
+  requiresUserInteraction: () => false,
+};
+
+function isReadOnlyWorkflow(input: unknown): boolean {
+  if (typeof input !== 'object' || input === null || !('steps' in input)) return false;
+  const steps = (input as { steps?: unknown }).steps;
+  return Array.isArray(steps)
+    && steps.length > 0
+    && steps.every(step => {
+      if (typeof step !== 'object' || step === null || !('action' in step)) return false;
+      const action = (step as { action?: unknown }).action;
+      return action === 'read_clipboard' || action === 'wait';
+    });
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+async function nearestExistingPath(candidate: string): Promise<{
+  lexicalPath: string;
+  canonicalPath: string;
+}> {
+  let current = candidate;
+  while (true) {
+    try {
+      return {
+        lexicalPath: current,
+        canonicalPath: await realpath(current),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      current = parent;
+    }
+  }
+}
+
+async function resolveScreenshotOutputPath(
+  workspaceDir: string,
+  outputPath: string,
+): Promise<string> {
+  const workspacePath = path.resolve(workspaceDir);
+  const candidate = path.resolve(workspacePath, outputPath);
+  if (candidate === workspacePath || !isPathInside(workspacePath, candidate)) {
+    throw new Error(`Computer screenshot output must stay inside the workspace: ${workspacePath}`);
+  }
+
+  const canonicalWorkspace = await realpath(workspacePath);
+  const ancestor = await nearestExistingPath(candidate);
+  if (!isPathInside(canonicalWorkspace, ancestor.canonicalPath)) {
+    throw new Error(`Computer screenshot output must stay inside the workspace: ${canonicalWorkspace}`);
+  }
+  const resolved = path.resolve(
+    ancestor.canonicalPath,
+    path.relative(ancestor.lexicalPath, candidate),
+  );
+  if (!isPathInside(canonicalWorkspace, resolved)) {
+    throw new Error(`Computer screenshot output must stay inside the workspace: ${canonicalWorkspace}`);
+  }
+  return resolved;
+}
+
 async function executeWorkflowStep(
   executor: ActoviqComputerUseExecutor,
   step: ActoviqComputerWorkflowStep,
+  workspaceDir: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  signalAborted(signal);
   switch (step.action) {
     case 'open_url':
-      await executor.openUrl(step.url);
+      await runAbortable((signal) => executor.openUrl(step.url, signal), signal);
       return { action: step.action, url: step.url, ok: true };
     case 'type_text':
-      await executor.typeText(step.text);
+      await runAbortable((signal) => executor.typeText(step.text, signal), signal);
       return { action: step.action, text: step.text, ok: true };
     case 'focus_window':
       if (!executor.focusWindow) {
         throw new Error('The current computer-use executor does not support focus_window.');
       }
-      await executor.focusWindow(step.title);
+      await runAbortable((signal) => executor.focusWindow!(step.title, signal), signal);
       return { action: step.action, title: step.title, ok: true };
     case 'keypress':
-      await executor.keyPress(step.keys);
+      await runAbortable((signal) => executor.keyPress(step.keys, signal), signal);
       return { action: step.action, keys: step.keys, ok: true };
     case 'read_clipboard': {
-      const text = await executor.readClipboard();
+      const text = await runAbortable((signal) => executor.readClipboard(signal), signal);
       return { action: step.action, text };
     }
     case 'write_clipboard':
-      await executor.writeClipboard(step.text);
+      await runAbortable((signal) => executor.writeClipboard(step.text, signal), signal);
       return { action: step.action, ok: true };
     case 'take_screenshot': {
-      const savedTo = await executor.takeScreenshot(step.outputPath);
+      const outputPath = await resolveScreenshotOutputPath(workspaceDir, step.outputPath);
+      const savedTo = await runAbortable(
+        (signal) => executor.takeScreenshot(outputPath, signal),
+        signal,
+      );
       return { action: step.action, savedTo };
     }
     case 'wait':
-      await new Promise(resolve => setTimeout(resolve, step.durationMs));
+      await abortableDelay(step.durationMs, signal);
       return { action: step.action, durationMs: step.durationMs, ok: true };
   }
 }
@@ -174,9 +383,10 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'open_url'),
         description: 'Open a URL in the system browser.',
         inputSchema: z.object({ url: z.string().url() }),
+        ...hostMutationMetadata,
       },
-      async ({ url }) => {
-        await executor.openUrl(url);
+      async ({ url }, context) => {
+        await runAbortable((signal) => executor.openUrl(url, signal), context.signal);
         return { ok: true, url };
       },
     ),
@@ -189,9 +399,10 @@ export function createActoviqComputerUseTools(
           name: withPrefix(options.prefix, 'focus_window'),
           description: 'Focus a window by title before continuing the workflow.',
           inputSchema: z.object({ title: z.string().min(1) }),
+          ...hostMutationMetadata,
         },
-        async ({ title }) => {
-          await executor.focusWindow?.(title);
+        async ({ title }, context) => {
+          await runAbortable((signal) => executor.focusWindow!(title, signal), context.signal);
           return { ok: true, title };
         },
       ),
@@ -204,9 +415,10 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'type_text'),
         description: 'Type text into the active application.',
         inputSchema: z.object({ text: z.string().min(1) }),
+        ...hostMutationMetadata,
       },
-      async ({ text }) => {
-        await executor.typeText(text);
+      async ({ text }, context) => {
+        await runAbortable((signal) => executor.typeText(text, signal), context.signal);
         return { ok: true, text };
       },
     ),
@@ -215,9 +427,10 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'keypress'),
         description: 'Send keypresses to the active application.',
         inputSchema: z.object({ keys: z.array(z.string().min(1)).min(1) }),
+        ...hostMutationMetadata,
       },
-      async ({ keys }) => {
-        await executor.keyPress(keys);
+      async ({ keys }, context) => {
+        await runAbortable((signal) => executor.keyPress(keys, signal), context.signal);
         return { ok: true, keys };
       },
     ),
@@ -226,9 +439,10 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'read_clipboard'),
         description: 'Read the current clipboard text.',
         inputSchema: z.object({}),
+        ...hostReadMetadata,
       },
-      async () => {
-        const text = await executor.readClipboard();
+      async (_input, context) => {
+        const text = await runAbortable((signal) => executor.readClipboard(signal), context.signal);
         return { text };
       },
     ),
@@ -237,9 +451,10 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'write_clipboard'),
         description: 'Write text to the clipboard.',
         inputSchema: z.object({ text: z.string() }),
+        ...hostMutationMetadata,
       },
-      async ({ text }) => {
-        await executor.writeClipboard(text);
+      async ({ text }, context) => {
+        await runAbortable((signal) => executor.writeClipboard(text, signal), context.signal);
         return { ok: true };
       },
     ),
@@ -248,9 +463,15 @@ export function createActoviqComputerUseTools(
         name: withPrefix(options.prefix, 'take_screenshot'),
         description: 'Capture a screenshot and save it to a path.',
         inputSchema: z.object({ outputPath: z.string().min(1) }),
+        ...hostMutationMetadata,
       },
-      async ({ outputPath }) => {
-        const savedTo = await executor.takeScreenshot(outputPath);
+      async ({ outputPath }, context) => {
+        signalAborted(context.signal);
+        const resolved = await resolveScreenshotOutputPath(context.cwd, outputPath);
+        const savedTo = await runAbortable(
+          (signal) => executor.takeScreenshot(resolved, signal),
+          context.signal,
+        );
         return { savedTo };
       },
     ),
@@ -261,9 +482,10 @@ export function createActoviqComputerUseTools(
         inputSchema: z.object({
           durationMs: z.number().int().min(1).max(60_000),
         }),
+        ...passiveMetadata,
       },
-      async ({ durationMs }) => {
-        await new Promise(resolve => setTimeout(resolve, durationMs));
+      async ({ durationMs }, context) => {
+        await abortableDelay(durationMs, context.signal);
         return { ok: true, durationMs };
       },
     ),
@@ -273,13 +495,19 @@ export function createActoviqComputerUseTools(
         description:
           'Run a small multi-step computer-use workflow sequentially, combining browser, keyboard, clipboard, screenshot, and wait actions.',
         inputSchema: z.object({
-          steps: z.array(workflowStepSchema).min(1),
+          steps: z.array(workflowStepSchema).min(1).max(50),
         }),
+        isReadOnly: input => isReadOnlyWorkflow(input),
+        isDestructive: input => !isReadOnlyWorkflow(input),
+        requiresUserInteraction: () => true,
       },
-      async ({ steps }) => {
+      async ({ steps }, context) => {
         const results: Array<Record<string, unknown>> = [];
         for (const step of steps) {
-          results.push(await executeWorkflowStep(executor, step));
+          signalAborted(context.signal);
+          results.push(
+            await executeWorkflowStep(executor, step, context.cwd, context.signal),
+          );
         }
         return {
           ok: true,

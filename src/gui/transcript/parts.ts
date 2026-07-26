@@ -99,6 +99,32 @@ function finalizeStreamingText(store: TranscriptStore): void {
   store.currentThinkingId = null;
 }
 
+function discardInterruptedAttempt(store: TranscriptStore): void {
+  let barrier = -1;
+  for (let index = store.parts.length - 1; index >= 0; index -= 1) {
+    const part = store.parts[index]!;
+    if (part.kind === 'user' || (part.kind === 'tool' && (part.state === 'success' || part.state === 'error'))) {
+      barrier = index;
+      break;
+    }
+  }
+  const discarded = new Set(store.parts
+    .slice(barrier + 1)
+    .filter(part =>
+      part.kind === 'assistant'
+      || part.kind === 'thinking'
+      || (part.kind === 'tool' && (part.state === 'input-streaming' || part.state === 'running')),
+    )
+    .map(part => part.id));
+  store.parts = store.parts.filter(part => !discarded.has(part.id));
+  store.toolIndex.clear();
+  store.parts.forEach((part, index) => {
+    if (part.kind === 'tool') store.toolIndex.set(part.toolUseId, index);
+  });
+  store.currentAssistantId = null;
+  store.currentThinkingId = null;
+}
+
 export function toolInputHint(inputValue: unknown): string {
   if (inputValue == null) return '';
   try {
@@ -197,6 +223,11 @@ export function isReadonlyExploreTool(toolName: string): boolean {
 export function applyGuiEvent(store: TranscriptStore, event: GuiRunEventLike): string[] {
   const changed: string[] = [];
   const type = String(event.type || '');
+
+  if (type === 'response.retry') {
+    discardInterruptedAttempt(store);
+    return changed;
+  }
 
   if (type === 'user') {
     finalizeStreamingText(store);

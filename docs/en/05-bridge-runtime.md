@@ -60,39 +60,60 @@ PATH, spawns it with `-p --output-format stream-json --verbose …`, and parses
 the same `system/assistant/result` event stream as the bundle path — only the
 child process is your installed official claude instead of the vendored bundle.
 
-**Provider isolation (key capability):** directCli mode **fully preserves**
-actoviq's env-injection chain (`~/.actoviq/settings.json` → `ANTHROPIC_BASE_URL`
-/ `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`, see `anthropicEnvMapping.ts`). So
-you can keep your **interactive `claude` on Claude official while the bridge's
-`claude` child redirects to DeepSeek or another provider** — the child's
-`ANTHROPIC_*` env overrides `~/.claude/settings.json`, and the two never
-interfere. Example:
+**Authentication modes:** `authSource: 'native'` is the default. Actoviq starts
+the CLI with its normal home/config environment intact, so the child reuses the
+CLI's existing OAuth/login or native configuration. Actoviq does not read or
+copy credential-store values, and it does not map Actoviq API credentials into
+the child in this mode. Provider credentials already present in the parent shell
+environment remain available, just as when the CLI is launched manually;
+therefore `native` means "use the CLI's normal authentication environment", not
+"force OAuth instead of an environment API key".
 
-```json
-// ~/.actoviq/settings.json (affects only the bridge child, not interactive claude)
-{
-  "env": {
-    "ACTOVIQ_AUTH_TOKEN": "sk-...",
-    "ACTOVIQ_BASE_URL": "https://api.deepseek.com/anthropic",
-    "ACTOVIQ_DEFAULT_MAX_MODEL": "deepseek-v4-pro"
-  }
-}
+Use `authSource: 'apiKey'` for an isolated override:
+
+```ts
+const sdk = await createActoviqBridgeSdk({
+  directCli: true,
+  directCliProvider: 'claude',
+  authSource: 'apiKey',
+  apiKey: process.env.CHILD_ONLY_ANTHROPIC_KEY,
+  baseURL: 'https://provider.example/anthropic',
+});
 ```
 
-> Tip: if your current shell has `ANTHROPIC_API_KEY` set to Claude official and
-> settings.json provides no credential, the child falls back to that value —
-> configure the provider fully.
+The override is passed only to that child process, redacted from retained
+events/errors, and never written into the selected CLI's credential store. If
+you save the profile, the value is still stored in Actoviq's
+`bridge-configs.json` (mode `0600` on POSIX); "child-only" describes runtime
+injection, not an in-memory-only secret.
+
+For Pi, CodeWhale, Reasonix, and Crush, API-key mode separates transient
+credential/config files from durable session state. Transient homes are removed
+when the managed client closes; resumable state is kept under
+`~/.actoviq/external-cli-profiles/<runtime>/<profile-hash>/`. A saved config's
+`profileName` provides the stable identity, and neither the raw key nor a hash of
+the key is used in the path. This prevents the user's native credential store
+from overriding the selected key while preserving same-profile history across
+restarts. `credentialProvider` (or a provider prefix in `model`) selects the
+provider-specific variable. Multi-provider Crush model/key overrides require an
+explicit provider and fail closed when it cannot be inferred.
 
 ## 1.2. Six providers (claude / pi / codex / codewhale / reasonix / crush)
+
+The SDK adapter registry, GUI, TUI, and external-runtime manager support all six
+providers below. Every runtime can run in the foreground or background, stream
+normalized events, be interrupted, and have its supervised process tree
+reclaimed. History and exact resume use each CLI's native session surface rather
+than replaying an Actoviq transcript into a new API conversation.
 
 | Provider | `directCliProvider` | Binary | Entry | Protocol |
 |---|---|---|---|---|
 | Claude Code (default) | `'claude'` | `claude` | `claude -p --output-format stream-json …` | stream-json |
-| pi | `'pi'` | `pi` | `pi -p --mode json …` | JSONL |
+| Pi | `'pi'` | `pi` | `pi --mode rpc …` (prompt over stdin) | JSON-RPC/JSONL |
 | codex | `'codex'` | `codex` | `codex exec --json …` | JSONL |
-| CodeWhale | `'codewhale'` | `codewhale` | `codewhale exec --auto --output-format stream-json …` | stream-json (same as claude) |
-| Reasonix | `'reasonix'` | `reasonix` | `reasonix run [--model] [--effort] <task>` | plain text |
-| Crush | `'crush'` | `crush` | `crush run [--model] [--session] <prompt>` | plain text |
+| CodeWhale | `'codewhale'` | `codewhale` | `codewhale exec --output-format stream-json … -- <prompt>` | CodeWhale stream-json |
+| Reasonix | `'reasonix'` | `reasonix` | `reasonix acp [--model …]` (prompt over stdin) | ACP JSON-RPC |
+| Crush | `'crush'` | `crush` | `crush server --host <private-socket>` | HTTP + SSE over a local socket |
 
 ```ts
 const sdk = await createActoviqBridgeSdk({
@@ -102,12 +123,46 @@ const sdk = await createActoviqBridgeSdk({
 });
 ```
 
-**Credentials:** claude → `ANTHROPIC_*`; codewhale → ANTHROPIC_*/DEEPSEEK_*;
-reasonix → DEEPSEEK_*; crush → OPENAI_*/ANTHROPIC_*.
-Put keys in `~/.actoviq/settings.json`'s `env` block.
+### Managed capability details
 
-**Introspection degrades** for pi/codex/reasonix/crush (no tools/skills catalog in
-startup events). run / stream / session lifecycle is aligned across all six.
+| Runtime | Model and permission control | Native session/history behavior |
+|---|---|---|
+| Pi | `provider/model`, thinking effort, and explicit tool allow/exclude lists are sent to RPC mode. Default/plan are read-only, `acceptEdits` adds edit/write, and only `bypassPermissions` exposes the full native tool set. `trustProjectResources` defaults to false and controls Pi's separate project-trust prompt; it does not grant tool permissions. | Exact IDs use Pi's native session flags. The history reader understands v3 tree JSONL and renders only the active parent-linked branch. |
+| CodeWhale | Model and tool lists use native `exec` flags. Default/plan/dontAsk are restricted to a known read-only allowlist. The 0.8.65 CLI cannot represent `acceptEdits` safely, so Actoviq rejects that mode; `--auto` is emitted only for explicit `bypassPermissions`. | Stream metadata contains only a redacted fingerprint. Actoviq correlates it by fingerprint, cwd, and run time only when one native SavedSession matches; it never guesses between ambiguous sessions. Exact `--resume=<id>` and bounded SavedSession history/tool records then use that ID. |
+| Reasonix | The ACP adapter normalizes message, thought, tool, result, permission, and completion records. Model is passed at startup; effort/budget are changed only when the agent advertises matching ACP config options. Permission requests fail closed unless the selected mode explicitly allows them. | Actoviq keeps one ACP child and native session alive for consecutive turns, serializes concurrent prompts, and cancels through `session/cancel`. Exact cross-process resume is used only when the agent advertises `session/load`; Reasonix 0.53 advertises `loadSession: false`, so its persisted transcript remains inspectable but a restart-time resume returns an explicit unsupported-capability error instead of starting a new conversation. Unqualified "continue latest" is rejected. |
+| Crush | Actoviq configures provider/key/base URL/model through the server's workspace endpoints and maps permission requests deterministically (`acceptEdits` allows edit/write/multiedit for the session; default denies; bypass allows). Native model selection is workspace-scoped; isolated API-key settings are profile-global and never mutate the user's native config. | Runs use a fresh private Unix-domain socket or Windows named pipe, never a TCP listener. Exact resume verifies that the server returned the requested session ID. History uses bounded `crush session list/show --json` commands for native and managed-profile stores; the GUI/TUI labels their source separately. Native fork and unqualified "continue latest" are not exposed. |
+
+Reasonix and Crush reject bridge options that their managed protocols cannot
+enforce (for example system-prompt/tool filters or turn limits, and Crush
+effort/budget). They never accept those options and silently run with broader or
+different behavior.
+
+**Authentication status is intentionally conservative.** CodeWhale exposes an
+auth status command. Pi only exposes an offline model-catalog probe, so Actoviq
+reports its credential state as `unknown`; catalog availability is not treated
+as proof of a login or API key. Crush's model probe can report configured model
+state but is not proof of a particular OAuth identity. Reasonix currently has no
+non-interactive auth status command, so the UI reports `unknown` and lets the ACP
+run be the source of truth.
+
+**Crush project config is trusted input.** In both native and isolated API-key
+mode, Actoviq refuses to start when `crush.json` or `.crush.json` exists in the
+cwd or an ancestor unless `trustProjectResources: true` is set explicitly. This
+is separate from the tool permission mode.
+
+**Version behavior is capability-based, not silently downgraded.** Provider
+detection records a best-effort CLI version but does not pretend an older binary
+has newer protocol features. Pi requires RPC mode and v3 history for full
+history reconstruction; CodeWhale is mapped to the 0.8.65 stream/session
+behavior above; Reasonix exact resume requires advertised ACP load support; and
+Crush requires the `server` plus v1 workspace/session/config routes. Missing
+required protocol operations fail closed rather than falling back to an
+auto-approved one-shot command.
+
+**Introspection still varies:** these adapters normalize live tool events and
+history, but a CLI that does not publish a startup tools/skills catalog will
+report an empty catalog. Managed execution does not imply that every runtime
+publishes Claude Code's complete introspection surface.
 
 ## 1.3. Env overrides & auto-detection
 
@@ -157,38 +212,39 @@ Used by the CLI `/bridge` wizard, the TUI `/bridge` control board, and GUI Setti
 ### TUI runtime switching
 
 In the TUI, `/bridge` opens a control board of saved connection configs. Selecting
-one activates it as the active runtime: every prompt you then type normally runs
-through that config's provider/apiKey/baseURL/model **in-process** — no child
-process is spawned. The pre-built model client is injected per-turn via
-`session.stream({model, modelApi})` (same mechanism the `/model` router uses),
-reusing the full TUI — live status
-spinner, streamed transcript, tool cards, Esc-to-interrupt, and input history.
-`/bridge off` switches back to the SDK's default provider. `/bridge run <prompt>`
-forces a single bridge turn without changing the toggle. Since the same Hadamard
-session is used for both normal and bridge turns, context survives switching
-bridge↔hadamard and `/resume` sees the full conversation — the bridge is truly
-"like using claude code until you exit."
+one activates it as the active runtime. A `Direct API` config injects its model
+client into the Hadamard session in-process. An `External CLI` config launches
+the selected Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush executable,
+streams its native events, and persists the native session binding per Actoviq
+chat/config/workspace when the selected authentication mode preserves the CLI's
+session store. `/resume` therefore does not cross-wire native-mode CLI
+conversations. `/bridge background`,
+`/bridge runs`, and `/bridge stop` control background work; `/bridge history
+[native-id]` inspects native transcripts and `/bridge resume <native-id>` selects
+a validated same-runtime, same-workspace conversation for the next turn.
+`/bridge off` returns to the SDK default without making active background runs
+unmanageable.
 
 ### Named bridge configs
 
 `/bridge config` opens a management screen: **Add config** (or **Edit**/**Remove**
 an existing one) drops you into a single-page **config editor** that shows every
-field at once — **name**, **provider** (runtime), **apiKey**, **baseURL**, optional
-**model** — with each field's current value. You can edit any field in any order
+field at once — **name**, **execution mode**, **runtime/provider**, **authentication
+source**, optional **credential provider**, **apiKey/baseURL**, **model**, and
+**project-resource trust** — with each field's current value. You can edit any field in any order
 (e.g. set the key, then go back and change the name), then **Save** to commit or
 **Cancel** to discard. Saved configs persist in `~/.actoviq/bridge-configs.json`.
-Each config is a complete preset — e.g. `deepseek-claude` (provider `claude`,
+Each Direct API config is a complete preset — e.g. `deepseek-claude` (provider `claude`,
 `ANTHROPIC_BASE_URL=https://api.deepseek.com`, `ANTHROPIC_API_KEY=…`,
 `model=deepseek-chat`) — so you can keep several backend
 profiles and switch by name.
 
 After that, `/bridge` lists your **saved configs**; selecting one (or
-`/bridge switch <name>`) activates that runtime. The config's credentials are
-**injected each turn** as per-run env overrides (they override
-`~/.actoviq/settings.json`), then the run proceeds as a normal multi-turn
-conversation with all agent features. `/bridge off` returns to the in-process
-SDK. Edit/remove configs via `/bridge config`; editing the active config applies
-on the next turn.
+`/bridge switch <name>`) activates that runtime. Direct API credentials stay in
+the in-process provider path. External CLI key overrides are child-only, while
+native mode leaves the CLI's own authentication/configuration in control.
+`/bridge off` returns to the in-process SDK. Editing an active config immediately
+reactivates it; removing an active config disables bridge mode.
 
 Provider is `'anthropic'` (Anthropic-compatible: Claude, DeepSeek, vLLM, …) or
 `'openai'` (OpenAI-compatible: Qwen, GPT, vLLM, …). The config's provider/apiKey/
@@ -210,8 +266,9 @@ Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalize
 `BRIDGE_PROVIDER_CREDENTIALS` readiness hints), `src/cli/bridge-interactive-agent.ts`
 (/bridge wizard), `src/tui/actoviqTui.ts` (TUI `/bridge` control board — one-tap
 provider activation, per-provider model, credential hints, and live run status; the
-`run`/`switch`/`model`/`setup`/`off`/`help` sub-commands autocomplete), `src/gui/actoviqGui.ts`
-(bridge panel + run).
+`run`/`background`/`runs`/`stop`/`history`/`resume`/`switch`/`model`/`setup`/`off`/`help`
+sub-commands autocomplete), `src/gui/actoviqGui.ts` (loopback-only bridge panel,
+background controls, and native history browser).
 
 ## 2. What bridge means
 

@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -7,15 +7,29 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   addBridgeConfig,
+  buildConfigEnv,
   findBridgeConfig,
   getBridgeConfigsPath,
+  isManagedExternalCliRuntime,
+  MANAGED_EXTERNAL_CLI_RUNTIMES,
   maskApiKey,
   readBridgeConfigs,
   removeBridgeConfig,
+  runtimeToProvider,
+  VALID_RUNTIMES,
   writeBridgeConfigs,
 } from '../src/parity/bridgeConfigs.js';
 
 const tempHomes: string[] = [];
+
+const managedRuntimeProviderCases = [
+  ['claude', 'anthropic'],
+  ['codex', 'openai'],
+  ['pi', 'openai'],
+  ['codewhale', 'anthropic'],
+  ['reasonix', 'openai'],
+  ['crush', 'openai'],
+] as const;
 
 afterEach(async () => {
   await Promise.all(tempHomes.splice(0).map(h => rm(h, { recursive: true, force: true })));
@@ -43,7 +57,63 @@ describe('bridgeConfigs persistence', () => {
     expect(read.configs).toHaveLength(2);
     expect(read.configs[0]).toMatchObject({ name: 'deepseek', provider: 'anthropic', apiKey: 'sk-x', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' });
     expect(read.configs[1]?.baseURL).toBeUndefined();
+    expect(read.configs[0]).toMatchObject({ execution: 'api', authSource: 'apiKey' });
   });
+
+  it.runIf(process.platform !== 'win32')('creates config storage with private POSIX permissions', async () => {
+    const home = await makeHome();
+    const file = getBridgeConfigsPath(home);
+
+    writeBridgeConfigs({ configs: [
+      { name: 'private', runtime: 'claude', provider: 'anthropic', apiKey: 'sk-secret' },
+    ] }, home);
+
+    expect(statSync(path.dirname(file)).mode & 0o777).toBe(0o700);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it.runIf(process.platform !== 'win32')('hardens permissions on existing config storage when reading', async () => {
+    const home = await makeHome();
+    const file = getBridgeConfigsPath(home);
+    const directory = path.dirname(file);
+    const contents = `${JSON.stringify({ configs: [{
+      name: 'existing',
+      provider: 'anthropic',
+      runtime: 'claude',
+      execution: 'api',
+      authSource: 'apiKey',
+    }] }, null, 2)}\n`;
+    mkdirSync(directory, { recursive: true, mode: 0o777 });
+    writeFileSync(file, contents, { encoding: 'utf-8', mode: 0o666 });
+    chmodSync(directory, 0o777);
+    chmodSync(file, 0o666);
+
+    expect(readBridgeConfigs(home).configs).toHaveLength(1);
+    expect(readFileSync(file, 'utf-8')).toBe(contents);
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it.each(managedRuntimeProviderCases)(
+    'persists %s CLI execution and native authentication separately',
+    async (runtime, provider) => {
+    const home = await makeHome();
+    addBridgeConfig({
+      name: `local-${runtime}`,
+      runtime,
+      provider,
+      execution: 'cli',
+      authSource: 'native',
+    }, home);
+
+    expect(findBridgeConfig(`local-${runtime}`, home)).toMatchObject({
+      runtime,
+      provider,
+      execution: 'cli',
+      authSource: 'native',
+    });
+    },
+  );
 
   it('addBridgeConfig dedupes by name (replaces)', async () => {
     const home = await makeHome();
@@ -87,6 +157,34 @@ describe('bridgeConfigs persistence', () => {
 
   it('getBridgeConfigsPath points under ~/.actoviq/bridge-configs.json', () => {
     expect(getBridgeConfigsPath('/home/user')).toBe(path.join('/home/user', '.actoviq', 'bridge-configs.json'));
+  });
+});
+
+describe('managed External CLI runtime gates', () => {
+  it('exports the complete six-runtime registry and wire-protocol mapping', () => {
+    expect(MANAGED_EXTERNAL_CLI_RUNTIMES).toEqual([
+      'claude',
+      'codewhale',
+      'pi',
+      'codex',
+      'reasonix',
+      'crush',
+    ]);
+    expect(VALID_RUNTIMES).toEqual([
+      'hadamard',
+      'claude',
+      'codewhale',
+      'pi',
+      'codex',
+      'reasonix',
+      'crush',
+    ]);
+    for (const [runtime, provider] of managedRuntimeProviderCases) {
+      expect(isManagedExternalCliRuntime(runtime)).toBe(true);
+      expect(runtimeToProvider(runtime)).toBe(provider);
+    }
+    expect(isManagedExternalCliRuntime('hadamard')).toBe(false);
+    expect(runtimeToProvider('hadamard')).toBeNull();
   });
 });
 
@@ -141,4 +239,72 @@ describe('maskApiKey', () => {
   it('reports none when absent', () => {
     expect(maskApiKey(undefined)).toBe('(none)');
   });
+});
+
+describe('buildConfigEnv', () => {
+  it.each(managedRuntimeProviderCases)(
+    'does not override a native %s CLI login',
+    (runtime, provider) => {
+    expect(buildConfigEnv({
+      name: 'native',
+      runtime,
+      provider,
+      execution: 'cli',
+      authSource: 'native',
+      apiKey: 'must-not-leak',
+    })).toEqual({});
+    },
+  );
+
+  it('maps an explicit Claude CLI API-key override to child-only environment variables', () => {
+    expect(buildConfigEnv({
+      name: 'override',
+      runtime: 'claude',
+      provider: 'anthropic',
+      execution: 'cli',
+      authSource: 'apiKey',
+      apiKey: 'sk-test',
+      baseURL: 'https://example.test',
+      model: 'claude-test',
+    })).toEqual({
+      ANTHROPIC_API_KEY: 'sk-test',
+      ANTHROPIC_AUTH_TOKEN: 'sk-test',
+      ANTHROPIC_BASE_URL: 'https://example.test',
+      ANTHROPIC_MODEL: 'claude-test',
+    });
+  });
+
+  it('maps a Codex CLI API-key override without touching native config files', () => {
+    expect(buildConfigEnv({
+      name: 'override',
+      runtime: 'codex',
+      provider: 'openai',
+      execution: 'cli',
+      authSource: 'apiKey',
+      apiKey: 'sk-test',
+      baseURL: 'https://example.test/v1',
+    })).toEqual({
+      OPENAI_API_KEY: 'sk-test',
+      OPENAI_BASE_URL: 'https://example.test/v1',
+    });
+  });
+
+  it.each([
+    ['codewhale', 'anthropic', 'DEEPSEEK_API_KEY'],
+    ['pi', 'openai', 'OPENAI_API_KEY'],
+    ['reasonix', 'openai', 'DEEPSEEK_API_KEY'],
+    ['crush', 'openai', 'CRUSH_OPENAI_API_KEY'],
+  ] as const)(
+    'maps a %s CLI API-key override to its child-only credential variable',
+    (runtime, provider, credentialVariable) => {
+      expect(buildConfigEnv({
+        name: `${runtime}-override`,
+        runtime,
+        provider,
+        execution: 'cli',
+        authSource: 'apiKey',
+        apiKey: 'sk-test',
+      })).toEqual({ [credentialVariable]: 'sk-test' });
+    },
+  );
 });

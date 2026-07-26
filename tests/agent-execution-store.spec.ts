@@ -216,6 +216,19 @@ describe('AgentExecutionStore', () => {
       runId: 'run-1',
     });
     await store.upsertEvent({
+      type: 'activity',
+      eventId: 'turn-one-activity',
+      rootExecutionId: 'root-execution',
+      occurredAt: at(2),
+      executionId: 'child-stable',
+      sessionId: 'session-child',
+      activity: {
+        kind: 'message',
+        summary: 'Writing response',
+        startedAt: at(2),
+      },
+    });
+    const completed = await store.upsertEvent({
       type: 'turn.completed',
       eventId: 'turn-one-end',
       rootExecutionId: 'root-execution',
@@ -223,6 +236,11 @@ describe('AgentExecutionStore', () => {
       executionId: 'child-stable',
       sessionId: 'session-child',
       runId: 'run-1',
+      result: 'First answer',
+    });
+    expect(completed.nodes.find(node => node.sessionId === 'session-child')).toMatchObject({
+      agentStatus: 'completed',
+      currentActivity: null,
       result: 'First answer',
     });
     await store.upsertEvent({

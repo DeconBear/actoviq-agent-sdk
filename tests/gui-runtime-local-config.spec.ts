@@ -70,16 +70,17 @@ describe('GUI runtime local config reuse', () => {
       const before = await api<{
         model?: string;
         baseURL?: string;
-        apiKey?: string;
+        hasApiKey?: boolean;
         source?: string;
       }>(server, '/api/bridge/detect-local?runtime=claude');
       expect(before.status).toBe(200);
       expect(before.body).toMatchObject({
         model: 'claude-local-model',
         baseURL: 'https://claude.local',
-        apiKey: 'local-secret',
+        hasApiKey: true,
         source: '~/.claude/settings.json',
       });
+      expect(before.body).not.toHaveProperty('apiKey');
 
       const stateBefore = await api<{
         bridgeState: {
@@ -102,7 +103,7 @@ describe('GUI runtime local config reuse', () => {
       expect(migrated.status).toBe(200);
       expect(migrated.body.dataRoot.root).toBe(path.resolve(migratedDataRoot));
 
-      const afterMigration = await api<{ model?: string; baseURL?: string; apiKey?: string }>(
+      const afterMigration = await api<{ model?: string; baseURL?: string; hasApiKey?: boolean; apiKey?: string }>(
         server,
         '/api/bridge/detect-local?runtime=claude',
       );
@@ -110,8 +111,9 @@ describe('GUI runtime local config reuse', () => {
       expect(afterMigration.body).toMatchObject({
         model: 'claude-local-model',
         baseURL: 'https://claude.local',
-        apiKey: 'local-secret',
+        hasApiKey: true,
       });
+      expect(afterMigration.body.apiKey).toBeUndefined();
 
       const updated = await api<{ ok: boolean; source: string }>(server, '/api/bridge/update-local', {
         method: 'POST',
@@ -133,6 +135,31 @@ describe('GUI runtime local config reuse', () => {
         ANTHROPIC_AUTH_TOKEN: 'updated-secret',
       });
       await expect(access(path.join(migratedDataRoot, '.claude', 'settings.json'))).rejects.toThrow();
+
+      const configured = await api<Record<string, unknown>>(server, '/api/bridge/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'isolated-claude',
+          runtime: 'claude',
+          execution: 'cli',
+          authSource: 'apiKey',
+          provider: 'anthropic',
+          apiKey: 'child-only-secret',
+        }),
+      });
+      expect(configured.status).toBe(200);
+      const configuredJson = JSON.stringify(configured.body);
+      expect(configuredJson).not.toContain('child-only-secret');
+      const bridgeState = (configured.body as {
+        bridgeState?: { configs?: Array<Record<string, unknown>> };
+      }).bridgeState;
+      expect(bridgeState?.configs?.[0]).toMatchObject({
+        execution: 'cli',
+        authSource: 'apiKey',
+        hasApiKey: true,
+      });
+      expect(bridgeState?.configs?.[0]).not.toHaveProperty('apiKey');
     } finally {
       await server.close();
     }

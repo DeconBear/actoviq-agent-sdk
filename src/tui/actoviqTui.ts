@@ -6,6 +6,7 @@
  * rendering (no React/Ink).
  */
 import { execSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as readline from 'node:readline';
@@ -13,6 +14,7 @@ import * as readline from 'node:readline';
 import {
   createActoviqCoreTools,
   createAgentSdk,
+  createActoviqBridgeSdk,
   detectBridgeProviders,
   loadDefaultActoviqSettings,
   loadJsonConfigFile,
@@ -44,12 +46,26 @@ import {
   listProjectIssues,
   listScheduledAutomationTasks,
   resolveActoviqHome,
+  externalSkillPreferencesToRuntimeOptions,
+  readActoviqExternalSkillPreferences,
+  createManagedPluginRuntime,
+  patchManagedPluginSettings,
+  readManagedPluginCatalog,
   listRouterProfiles,
   loadRouterProfile,
   resolveRoutedRun,
   transitionProjectIssue,
   WorktreeService,
 } from '../index.js';
+import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
+import { ExternalCliRuntimeManager } from '../parity/externalCliRuntimeManager.js';
+import {
+  externalCliSessionMatchesConfig,
+  listExternalCliSessions,
+  readExternalCliSession,
+  type ExternalCliSessionSummary,
+} from '../parity/externalCliSessions.js';
+import { parseCrushSessionReferenceDetails } from '../parity/crushSessionHistory.js';
 import { readProjectMeta } from '../gui/projectMeta.js';
 import {
   persistActoviqSettingsStore,
@@ -78,8 +94,10 @@ import {
   readBridgeConfigs,
   addBridgeConfig,
   removeBridgeConfig,
+  isManagedExternalCliRuntime,
   type PersistedBridgeConfig,
   type InProcessProvider,
+  type ManagedExternalCliRuntime,
 } from '../parity/bridgeConfigs.js';
 import { buildRouteModelApi, type RoutedModel } from '../router/modelRouter.js';
 import { addMcpServer, readMcpServerConfig, removeMcpServer } from '../mcp/mcpServerConfig.js';
@@ -139,6 +157,8 @@ const MENU_MAX_ROWS = 12;
 const PROMPT_GLYPH = '❯';
 const SESSION_EFFORT_KEY = '__actoviqEffort';
 const EFFORT_LEVELS: readonly ActoviqEffort[] = ['low', 'medium', 'high', 'max'];
+const MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS = 2;
+const MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS = 35_000;
 
 /** Core tools that mutate state and require approval in 'default' mode. */
 const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
@@ -151,6 +171,42 @@ const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
 ]);
 
 export const TUI_SLASH_COMMANDS = ACTOVIQ_INTERACTIVE_COMMANDS;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function closeManagedPluginsForExit(close: () => Promise<void>): Promise<void> {
+  const failures: unknown[] = [];
+  for (let attempt = 1; attempt <= MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS; attempt += 1) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        close(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(
+              `managed plugin cleanup timed out after ${MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS}ms`,
+            ));
+          }, MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS);
+        }),
+      ]);
+      return;
+    } catch (error) {
+      failures.push(error);
+      process.stderr.write(
+        `[actoviq-tui] warning: managed plugin cleanup attempt ${attempt}/` +
+        `${MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS} failed: ${errorMessage(error)}\n`,
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    'Managed plugin cleanup failed after bounded retries; an external sandbox may remain active and billing may continue.',
+  );
+}
 
 /** Mask an API key for display: show first 4 + last 4, hide the middle. */
 function maskKey(key: string): string {
@@ -374,17 +430,39 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   let applyPlanPermission: (() => Promise<void>) | null = null;
-  const tools = createActoviqCoreTools({
-    cwd: workDir,
-    onPlanModeChange: async (mode) => {
-      if (mode === 'plan') await applyPlanPermission?.();
-    },
-  });
-  const createCleanSdk = () =>
-    createAgentSdk({
+  let managedPluginRuntime: ReturnType<typeof createManagedPluginRuntime> | null = null;
+  let tools: AgentToolDefinition[] = [];
+  const rebuildInteractiveTools = async (): Promise<void> => {
+    if (managedPluginRuntime) {
+      await managedPluginRuntime.close();
+    }
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+    });
+    managedPluginRuntime = createManagedPluginRuntime(store.raw, { cwd: workDir });
+    tools = [
+      ...createActoviqCoreTools({
+        cwd: workDir,
+        onPlanModeChange: async (mode) => {
+          if (mode === 'plan') await applyPlanPermission?.();
+        },
+      }),
+      ...managedPluginRuntime.tools,
+    ];
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    tools = [...byName.values()];
+  };
+  const createCleanSdk = async () => {
+    await rebuildInteractiveTools();
+    const externalSkillPreferences = await readActoviqExternalSkillPreferences({
+      actoviqHomeDir: resolveActoviqHome(),
+      workDir,
+    });
+    return createAgentSdk({
       workDir,
       tools,
       permissionMode,
+      externalSkills: externalSkillPreferencesToRuntimeOptions(externalSkillPreferences),
       // Load user-managed stdio MCP servers from ~/.actoviq/mcp.json (gap #10).
       mcpServers: readMcpServerConfig().servers.map(s => (
         s.command
@@ -393,6 +471,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       )),
       ...(options.model ? { model: options.model } : {}),
     });
+  };
   let sdk: Awaited<ReturnType<typeof createAgentSdk>>;
   let toolMetadata: Awaited<ReturnType<typeof sdk.listToolMetadata>>;
   while (true) {
@@ -484,19 +563,235 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // /model router: when set, each user turn is classified and routed to a model.
   let activeRouter: RouterProfile | null = null;
   let routedModelLabel: string | null = null;
-  // Bridge mode: when true, prompts run in-process through the selected config's
-  // provider/apiKey/baseURL/model (no child process). The active config's
-  // credentials are pre-built into a RoutedModel via buildRouteModelApi, then
-  // injected per-run into session.stream({model, modelApi}) — same session,
-  // context naturally survives switching bridge↔hadamard.
+  // A named config can use either the in-process API bridge or a real external
+  // CLI. External clients/sessions are isolated by Actoviq session, config, and
+  // cwd so switching chats cannot leak native runtime context.
   let bridgeMode = false;
   let activeBridgeConfig: PersistedBridgeConfig | null = null;
   // Pre-built {model, modelApi} for the active config. Built once at activation;
   // stale after disable (cleared). Per-run injection reuses the /model router's
   // proven mechanism (session.stream({model, modelApi})).
   let activeBridgeModelApi: RoutedModel | null = null;
-  // Display labels (model is set from the config on activation).
+  type ExternalBridgeClient = Awaited<ReturnType<typeof createActoviqBridgeSdk>>;
+  type ExternalBridgeSession = Awaited<ReturnType<ExternalBridgeClient['createSession']>>;
+  interface ExternalBridgeRuntime {
+    client: ExternalBridgeClient;
+    session: ExternalBridgeSession;
+    fingerprint: string;
+  }
+  type SupportedExternalCliConfig = PersistedBridgeConfig & {
+    execution: 'cli';
+    runtime: ManagedExternalCliRuntime;
+  };
+  type TuiAgentSession = typeof session;
+  interface ExternalSessionBinding {
+    runtime: ManagedExternalCliRuntime;
+    configName: string;
+    cwd: string;
+    nativeSessionId: string;
+    updatedAt: string;
+  }
+  const RUNTIME_METADATA_KEY = '__actoviqRuntime';
+  const CONFIG_NAME_METADATA_KEY = '__actoviqConfigName';
+  const RUNTIME_MODEL_METADATA_KEY = '__actoviqRuntimeModel';
+  const EXTERNAL_SESSIONS_METADATA_KEY = '__actoviqExternalSessions';
+  // Display label for the active runtime model.
   let bridgeModelLabel: string | null = null;
+  const externalBridgeRuntimes = new Map<string, ExternalBridgeRuntime>();
+  const externalCliRuntimeManager = new ExternalCliRuntimeManager();
+  const externalCliRunLabels = new Map<string, {
+    configName: string;
+    runtime: ManagedExternalCliRuntime;
+  }>();
+  function sameWorkspace(left: string, right: string): boolean {
+    const a = path.resolve(left);
+    const b = path.resolve(right);
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  }
+  function externalSessionBindingKey(
+    config: SupportedExternalCliConfig,
+    targetWorkDir = sdk.config.workDir,
+  ): string {
+    return createHash('sha256')
+      .update(config.runtime + '\u0000' + config.name + '\u0000' + path.resolve(targetWorkDir))
+      .digest('hex')
+      .slice(0, 24);
+  }
+  function externalBridgeRuntimeKey(
+    config: SupportedExternalCliConfig,
+    targetSession: TuiAgentSession = session,
+    targetWorkDir = sdk.config.workDir,
+  ): string {
+    return targetSession.id + '\u0000' + externalSessionBindingKey(config, targetWorkDir);
+  }
+  function externalSessionBindings(
+    targetSession: TuiAgentSession = session,
+  ): Record<string, ExternalSessionBinding> {
+    const raw = targetSession.metadata[EXTERNAL_SESSIONS_METADATA_KEY];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const bindings: Record<string, ExternalSessionBinding> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (
+        !isManagedExternalCliRuntime(record.runtime as import('../parity/bridgeConfigs.js').BridgeRuntime)
+        || typeof record.configName !== 'string'
+        || typeof record.cwd !== 'string'
+        || typeof record.nativeSessionId !== 'string'
+        || !record.nativeSessionId
+      ) continue;
+      bindings[key] = {
+        runtime: record.runtime as ManagedExternalCliRuntime,
+        configName: record.configName,
+        cwd: record.cwd,
+        nativeSessionId: record.nativeSessionId,
+        updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
+      };
+    }
+    return bindings;
+  }
+  function externalNativeSessionId(
+    config: SupportedExternalCliConfig,
+    targetSession: TuiAgentSession = session,
+    targetWorkDir = sdk.config.workDir,
+  ): string | undefined {
+    const binding = externalSessionBindings(targetSession)[
+      externalSessionBindingKey(config, targetWorkDir)
+    ];
+    if (
+      !binding
+      || binding.runtime !== config.runtime
+      || binding.configName !== config.name
+      || !sameWorkspace(binding.cwd, targetWorkDir)
+    ) return undefined;
+    return binding.nativeSessionId;
+  }
+  async function rememberExternalNativeSession(
+    config: SupportedExternalCliConfig,
+    nativeSessionId: string,
+    targetSession: TuiAgentSession = session,
+    targetWorkDir = sdk.config.workDir,
+  ): Promise<void> {
+    if (!nativeSessionId) return;
+    const bindings = externalSessionBindings(targetSession);
+    bindings[externalSessionBindingKey(config, targetWorkDir)] = {
+      runtime: config.runtime,
+      configName: config.name,
+      cwd: path.resolve(targetWorkDir),
+      nativeSessionId,
+      updatedAt: new Date().toISOString(),
+    };
+    await targetSession.mergeMetadata({ [EXTERNAL_SESSIONS_METADATA_KEY]: bindings });
+  }
+  async function persistSessionRuntimeMetadata(
+    targetSession: TuiAgentSession = session,
+    config: PersistedBridgeConfig | null = activeBridgeConfig,
+    modelLabel: string | null = bridgeModelLabel,
+  ): Promise<void> {
+    await targetSession.mergeMetadata({
+      [RUNTIME_METADATA_KEY]: config?.runtime ?? 'hadamard',
+      [CONFIG_NAME_METADATA_KEY]: config?.name ?? null,
+      [RUNTIME_MODEL_METADATA_KEY]: config?.model ?? modelLabel ?? null,
+    });
+  }
+  function clearBridgeSelection(): void {
+    bridgeMode = false;
+    activeBridgeConfig = null;
+    activeBridgeModelApi = null;
+    bridgeModelLabel = null;
+  }
+  async function restoreSessionRuntimeSelection(): Promise<void> {
+    const configName = session.metadata[CONFIG_NAME_METADATA_KEY];
+    if (typeof configName !== 'string' || !configName.trim()) {
+      clearBridgeSelection();
+      return;
+    }
+    const stored = findBridgeConfig(configName);
+    if (!stored) {
+      clearBridgeSelection();
+      return;
+    }
+    const model = session.metadata[RUNTIME_MODEL_METADATA_KEY];
+    const config = typeof model === 'string' && model.trim()
+      ? { ...stored, model: model.trim() }
+      : stored;
+    if (!await activateBridgeConfig(config)) clearBridgeSelection();
+  }
+  function activeExternalBridgeRuntime(): ExternalBridgeRuntime | null {
+    if (
+      !bridgeMode
+      || activeBridgeConfig?.execution !== 'cli'
+      || !isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+    ) return null;
+    return externalBridgeRuntimes.get(
+      externalBridgeRuntimeKey(activeBridgeConfig as SupportedExternalCliConfig),
+    ) ?? null;
+  }
+  function externalBridgeFingerprint(config: PersistedBridgeConfig): string {
+    return JSON.stringify([
+      config.runtime,
+      config.authSource ?? 'native',
+      config.authSource === 'apiKey' ? config.apiKey ?? '' : '',
+      config.authSource === 'apiKey' ? config.baseURL ?? '' : '',
+      config.authSource === 'apiKey' ? config.credentialProvider ?? '' : '',
+      config.trustProjectResources === true,
+    ]);
+  }
+  function externalCliConfigId(config: SupportedExternalCliConfig): string {
+    const digest = createHash('sha256')
+      .update(externalBridgeFingerprint(config))
+      .digest('hex')
+      .slice(0, 12);
+    return `${config.name}:${digest}`;
+  }
+  function findConflictingExternalCliRun(
+    config: SupportedExternalCliConfig,
+    targetSession: TuiAgentSession = session,
+    targetWorkDir = sdk.config.workDir,
+  ) {
+    const configId = externalCliConfigId(config);
+    return externalCliRuntimeManager.list().find(run => {
+      if (
+        run.actoviqSessionId !== targetSession.id
+        || !sameWorkspace(run.cwd, targetWorkDir)
+        || (run.status !== 'queued' && run.status !== 'running')
+      ) return false;
+      const label = externalCliRunLabels.get(run.runId);
+      return run.configId === configId
+        || (label?.configName === config.name && label.runtime === config.runtime);
+    });
+  }
+  function externalCliDisplayText(
+    value: string,
+    config?: PersistedBridgeConfig,
+  ): string {
+    let safe = value;
+    if (config?.apiKey) safe = safe.split(config.apiKey).join('[REDACTED]');
+    return safe
+      .replace(/Bearer\s+[^\s,;]+/giu, 'Bearer [REDACTED]')
+      .replace(/((?:api[_-]?key|token|authorization|password|secret)\s*[:=]\s*)[^\s,;]+/giu, '$1[REDACTED]')
+      .replace(/\b(?:sk|key)-[A-Za-z0-9_-]{12,}\b/gu, '[REDACTED]');
+  }
+  function externalCliPreview(
+    value: string,
+    config?: PersistedBridgeConfig,
+    maxLength = 180,
+  ): string {
+    const normalized = externalCliDisplayText(value, config).replace(/\s+/gu, ' ').trim();
+    return normalized.length > maxLength
+      ? `${normalized.slice(0, maxLength - 3)}...`
+      : normalized;
+  }
+  function externalCliHistorySourceLabel(
+    summary: Pick<ExternalCliSessionSummary, 'runtime' | 'path'>,
+  ): string | undefined {
+    if (summary.runtime !== 'crush') return undefined;
+    const reference = parseCrushSessionReferenceDetails(summary.path);
+    if (!reference) return undefined;
+    return reference.managedProfileId
+      ? `Managed profile \u00b7 ${reference.managedProfileId.slice(0, 8)}`
+      : 'Native login';
+  }
   let abortCtrl: AbortController | null = null;
   // Persistent Manager session (kind: 'manager') — reused across /manager
   // update/chat turns so the Manager keeps its own conversation context.
@@ -580,6 +875,10 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   let currentTodos: { content: string; status: string; activeForm?: string }[] = [];
   const currentPermissionMode = (): ActoviqPermissionMode =>
     session.permissionContext.mode ?? permissionMode;
+  const currentExternalCliPermissionMode = (): 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' => {
+    const mode = currentPermissionMode();
+    return mode === 'auto' ? 'default' : mode;
+  };
   const currentEffort = (): ActoviqRunEffort | undefined => {
     const stored = session.metadata[SESSION_EFFORT_KEY];
     if (stored === 'auto') return 'auto';
@@ -644,6 +943,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       sdk = nextSdk;
       session = nextSession;
       toolMetadata = nextToolMetadata;
+      await restoreSessionRuntimeSelection();
     } catch (error) {
       await nextSdk.close().catch(() => undefined);
       throw error;
@@ -1284,6 +1584,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   }
 
   async function startRun(text: string): Promise<void> {
+    if (
+      bridgeMode
+      && activeBridgeConfig?.execution === 'cli'
+          && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+    ) {
+      const conflictingRun = findConflictingExternalCliRun(
+        activeBridgeConfig as SupportedExternalCliConfig,
+      );
+      if (conflictingRun) {
+        appendStatic([
+          ...formatErrorLine(`background run ${conflictingRun.runId} is still ${conflictingRun.status}; this native CLI session cannot run concurrently.`),
+          ...formatInfoLine(`Wait for it to finish, or use /bridge runs and /bridge stop ${conflictingRun.runId}.`),
+          '',
+        ]);
+        return;
+      }
+    }
     running = true;
     runStartedAt = Date.now();
     runToolCount = 0;
@@ -1322,7 +1639,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       // normal run.
       let eventStream: AsyncIterable<AgentEvent>;
       let resultPromise: Promise<AgentRunResult>;
-      if (bridgeMode && activeBridgeModelApi) {
+      const externalBridge = activeExternalBridgeRuntime();
+      if (externalBridge && activeBridgeConfig) {
+        statusNote = 'cli:' + activeBridgeConfig.runtime;
+        const nativeStream = externalBridge.session.stream(text, {
+          model: bridgeModelLabel ?? activeBridgeConfig.model,
+          signal: abortCtrl.signal,
+          permissionMode: currentExternalCliPermissionMode(),
+        });
+        const adapted = adaptBridgeRun(
+          nativeStream,
+          nativeStream.result,
+          'tui-cli-' + runStartedAt,
+          activeBridgeConfig.runtime,
+        );
+        eventStream = adapted;
+        resultPromise = adapted.result;
+      } else if (bridgeMode && activeBridgeModelApi) {
         // Bridge mode: run in-process through the selected config's
         // provider/apiKey/baseURL/model (no child process). Inject the
         // pre-built {model, modelApi} into session.stream — the /model
@@ -1367,11 +1700,28 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       const result = await resultPromise;
       // Accumulate token + USD usage for /cost and /usage. The model is the
       // routed model (if a router is active) or the session model. Bridge runs
-      recordUsage(routed?.model ?? activeBridgeModelApi?.model ?? session.model, result.usage as { input_tokens?: number; output_tokens?: number } | undefined);
+      recordUsage(routed?.model ?? activeBridgeModelApi?.model ?? bridgeModelLabel ?? session.model, result.usage as { input_tokens?: number; output_tokens?: number } | undefined);
       const rest = flusher.drain();
       if (rest.length > 0) appendStatic(rest);
       if (!flusher.hasContent && result.text && runHadNoStreamedText()) {
         appendStatic([result.text]);
+      }
+      if (
+        externalBridge
+        && activeBridgeConfig?.execution === 'cli'
+        && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+      ) {
+        const externalConfig = activeBridgeConfig as SupportedExternalCliConfig;
+        await rememberExternalNativeSession(externalConfig, externalBridge.session.id)
+          .catch(() => undefined);
+        await persistSessionRuntimeMetadata(session, externalConfig, bridgeModelLabel)
+          .catch(() => undefined);
+        if (result.text) {
+          await session.appendMessages([
+            { role: 'user', content: text },
+            { role: 'assistant', content: result.text },
+          ]).catch(() => undefined);
+        }
       }
       if (result.incompleteReason) {
         appendStatic(formatInfoLine(`run incomplete: ${result.incompleteReason}`));
@@ -1621,6 +1971,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       return false;
     }
     session = await sdk.resumeSession(sessionId);
+    await restoreSessionRuntimeSelection();
     appendStatic([
       ...formatInfoLine(`resumed: ${session.id} · ${session.title} · ${session.model}`),
       '',
@@ -1907,10 +2258,356 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
   }
 
+  function requireActiveExternalCliConfig(action: string): SupportedExternalCliConfig | null {
+    const config = activeBridgeConfig;
+    if (!bridgeMode || !config) {
+      appendStatic([
+        ...formatErrorLine(`/bridge ${action} requires an active External CLI config.`),
+        ...formatInfoLine('Use /bridge switch <name> to activate an External CLI config.'),
+        '',
+      ]);
+      return null;
+    }
+    if (config.execution !== 'cli') {
+      appendStatic([
+        ...formatErrorLine(`/bridge ${action} is available only in External CLI mode.`),
+        ...formatInfoLine(`The active config "${config.name}" uses Direct API mode.`),
+        '',
+      ]);
+      return null;
+    }
+    if (!isManagedExternalCliRuntime(config.runtime)) {
+      appendStatic([
+        ...formatErrorLine(`External CLI control does not support runtime "${config.runtime}".`),
+        ...formatInfoLine('Supported external runtimes: Claude Code, CodeWhale, Pi, Codex, Reasonix, and Crush.'),
+        '',
+      ]);
+      return null;
+    }
+    return config as SupportedExternalCliConfig;
+  }
+
+  function printBridgeStatus(): void {
+    if (!activeBridgeConfig) {
+      appendStatic([
+        `${A.bold}Bridge status${A.reset}`,
+        `  ${A.dim}mode${A.reset}       off`,
+        `  ${A.dim}background${A.reset} ${externalCliRuntimeManager.list().filter(run => run.actoviqSessionId === session.id && (run.status === 'queued' || run.status === 'running')).length} active`,
+        '',
+      ]);
+      return;
+    }
+
+    const config = activeBridgeConfig;
+    const activeRuns = externalCliRuntimeManager.list().filter(run =>
+      run.actoviqSessionId === session.id
+      && (run.status === 'queued' || run.status === 'running'),
+    );
+    const mode = config.execution === 'cli'
+      ? 'External CLI'
+      : (config.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API');
+    const lines = [
+      `${A.bold}Bridge status${A.reset}`,
+      `  ${A.dim}config${A.reset}     ${config.name}`,
+      `  ${A.dim}mode${A.reset}       ${mode}`,
+      `  ${A.dim}runtime${A.reset}    ${config.runtime}`,
+      `  ${A.dim}model${A.reset}      ${bridgeModelLabel ?? config.model ?? 'runtime default'}`,
+    ];
+    if (config.execution === 'cli') {
+      lines.push(
+        `  ${A.dim}auth${A.reset}       ${config.authSource === 'apiKey' ? 'API key override' : 'native CLI login/config'}`,
+        `  ${A.dim}cwd${A.reset}        ${sdk.config.workDir}`,
+        `  ${A.dim}session${A.reset}    ${activeExternalBridgeRuntime()?.session.id ?? 'not started'}`,
+        `  ${A.dim}background${A.reset} ${activeRuns.length} active`,
+      );
+    } else {
+      lines.push(`  ${A.dim}external CLI controls are disabled for this config${A.reset}`);
+    }
+    lines.push('');
+    appendStatic(lines);
+  }
+
+  async function printExternalCliHistory(nativeSessionId = ''): Promise<void> {
+    const config = requireActiveExternalCliConfig('history');
+    if (!config) return;
+    try {
+      const allSessions = (await listExternalCliSessions({
+        runtimes: [config.runtime],
+        crushCwd: sdk.config.workDir,
+        actoviqHomeDir: sdk.config.homeDir,
+      }))
+        .filter(item => externalCliSessionMatchesConfig(item, {
+          runtime: config.runtime,
+          authSource: config.authSource,
+          profileName: config.name,
+        }, { actoviqHomeDir: sdk.config.homeDir }));
+      if (nativeSessionId) {
+        const summary = allSessions.find(item => item.nativeSessionId === nativeSessionId);
+        if (!summary) {
+          appendStatic([
+            ...formatErrorLine(`native ${config.runtime} session not found: ${nativeSessionId}`),
+            '',
+          ]);
+          return;
+        }
+        const nativeSession = await readExternalCliSession(summary.path, {
+          detailMaxBytes: 512 * 1024,
+          detailMaxMessages: 200,
+          crushCwd: sdk.config.workDir,
+          actoviqHomeDir: sdk.config.homeDir,
+        });
+        if (!nativeSession) {
+          appendStatic([...formatErrorLine(`native session could not be read: ${nativeSessionId}`), '']);
+          return;
+        }
+        const sourceLabel = externalCliHistorySourceLabel(summary);
+        const detailLines: string[] = [
+          `${A.bold}${externalCliPreview(nativeSession.summary.title, config) || nativeSessionId}${A.reset}`,
+          `${A.dim}${config.runtime}${sourceLabel ? ` \u00b7 ${sourceLabel}` : ''} 路 ${nativeSessionId}${nativeSession.summary.cwd ? ` 路 ${externalCliDisplayText(nativeSession.summary.cwd, config)}` : ''}${A.reset}`,
+          ...formatDivider(screen.width),
+        ];
+        if (nativeSession.truncated) {
+          detailLines.push(`${A.dim}bounded transcript preview${A.reset}`, '');
+        }
+        for (const message of nativeSession.messages) {
+          const model = message.model ? ` 路 ${externalCliDisplayText(message.model, config)}` : '';
+          detailLines.push(`${A.bold}${message.role}${A.reset}${A.dim}${model}${A.reset}`);
+          if (message.text) {
+            const safeText = externalCliDisplayText(message.text, config);
+            detailLines.push(...wrapToWidth(safeText, Math.max(20, screen.width - 4)).map(line => `  ${line}`));
+          }
+          if (message.tools?.length) {
+            const safeTools = externalCliDisplayText(JSON.stringify(message.tools, null, 2) ?? '', config);
+            detailLines.push(...wrapToWidth(safeTools, Math.max(20, screen.width - 4)).map(line => `  ${A.dim}${line}${A.reset}`));
+          }
+          detailLines.push('');
+        }
+        detailLines.push(...formatInfoLine(`Use /bridge resume ${nativeSessionId} to continue this native conversation.`), '');
+        appendStatic(detailLines);
+        return;
+      }
+
+      const sessions = allSessions.slice(0, 20);
+      const runtimeLabel: Record<typeof config.runtime, string> = {
+        claude: 'Claude Code',
+        codewhale: 'CodeWhale',
+        pi: 'Pi',
+        codex: 'Codex',
+        reasonix: 'Reasonix',
+        crush: 'Crush',
+      };
+      const lines: string[] = [
+        `${A.bold}${runtimeLabel[config.runtime]} native conversations${A.reset}`,
+        ...formatDivider(screen.width),
+      ];
+      if (sessions.length === 0) {
+        lines.push(`  ${A.dim}no native conversations found${A.reset}`);
+      } else {
+        for (const item of sessions) {
+          const sourceLabel = externalCliHistorySourceLabel(item);
+          lines.push(
+            `  ${A.bold}${item.nativeSessionId}${A.reset} ${A.dim}· ${item.updatedAt} · ${item.messageCount} messages${sourceLabel ? ` \u00b7 ${sourceLabel}` : ''}${A.reset}`,
+            `    ${externalCliPreview(item.title, config) || '(untitled)'}`,
+          );
+          if (item.cwd) lines.push(`    ${A.dim}${externalCliDisplayText(item.cwd, config)}${A.reset}`);
+        }
+      }
+      lines.push(
+        '',
+        ...formatInfoLine('Use /bridge history <native-id> to inspect or /bridge resume <native-id> to continue.'),
+        ...formatInfoLine('Credentials and history file paths stay hidden.'),
+        '',
+      );
+      appendStatic(lines);
+    } catch (error) {
+      appendStatic([
+        ...formatErrorLine(`could not read CLI history: ${externalCliDisplayText((error as Error).message, config)}`),
+        '',
+      ]);
+    }
+  }
+
+  async function resumeExternalCliHistorySession(nativeSessionId: string): Promise<void> {
+    const config = requireActiveExternalCliConfig('resume');
+    if (!config) return;
+    try {
+      const summary = (await listExternalCliSessions({
+        runtimes: [config.runtime],
+        crushCwd: sdk.config.workDir,
+        actoviqHomeDir: sdk.config.homeDir,
+      }))
+        .find(item => item.nativeSessionId === nativeSessionId && externalCliSessionMatchesConfig(
+          item,
+          {
+            runtime: config.runtime,
+            authSource: config.authSource,
+            profileName: config.name,
+          },
+          { actoviqHomeDir: sdk.config.homeDir },
+        ));
+      if (!summary) {
+        appendStatic([
+          ...formatErrorLine(`native ${config.runtime} session not found: ${nativeSessionId}`),
+          '',
+        ]);
+        return;
+      }
+      if (summary.cwd && !sameWorkspace(summary.cwd, sdk.config.workDir)) {
+        appendStatic([
+          ...formatErrorLine(`open the session workspace before resuming it: ${externalCliDisplayText(summary.cwd, config)}`),
+          '',
+        ]);
+        return;
+      }
+      const runtimeKey = externalBridgeRuntimeKey(config);
+      const existing = externalBridgeRuntimes.get(runtimeKey);
+      if (existing) {
+        await existing.client.close();
+        externalBridgeRuntimes.delete(runtimeKey);
+      }
+      await rememberExternalNativeSession(config, summary.nativeSessionId);
+      await persistSessionRuntimeMetadata(session, config, bridgeModelLabel);
+      appendStatic([
+        ...formatInfoLine(`native ${config.runtime} session selected: ${summary.nativeSessionId}`),
+        ...formatInfoLine('The next message resumes that native conversation.'),
+        '',
+      ]);
+    } catch (error) {
+      appendStatic([
+        ...formatErrorLine(`could not resume CLI history: ${externalCliDisplayText((error as Error).message, config)}`),
+        '',
+      ]);
+    }
+  }
+
+  async function startExternalCliBackgroundRun(prompt: string): Promise<void> {
+    const config = requireActiveExternalCliConfig('background');
+    if (!config) return;
+    const effort = currentEffort();
+    const originSession = session;
+    const originWorkDir = sdk.config.workDir;
+    try {
+      const run = await externalCliRuntimeManager.start({
+        actoviqSessionId: originSession.id,
+        configId: externalCliConfigId(config),
+        cwd: originWorkDir,
+        prompt,
+        background: true,
+        nativeSessionId: externalNativeSessionId(config, originSession, originWorkDir),
+        clientOptions: {
+          directCli: true,
+          directCliProvider: config.runtime,
+          workDir: sdk.config.workDir,
+          authSource: config.authSource === 'apiKey' ? 'apiKey' : 'native',
+          credentialProvider: config.credentialProvider,
+          profileName: config.name,
+          ...(config.authSource === 'apiKey'
+            ? {
+                apiKey: config.apiKey,
+                baseURL: config.baseURL,
+              }
+            : {}),
+          trustProjectResources: config.trustProjectResources,
+        },
+        sessionOptions: {
+          title: `actoviq-tui-background-${config.runtime}-${config.name}`,
+        },
+        runOptions: {
+          model: bridgeModelLabel ?? config.model,
+          includePartialMessages: true,
+          permissionMode: currentExternalCliPermissionMode(),
+          ...(effort && effort !== 'auto' ? { effort } : {}),
+        },
+      });
+      externalCliRunLabels.set(run.runId, {
+        configName: config.name,
+        runtime: config.runtime,
+      });
+      appendStatic([
+        ...formatInfoLine(`background run queued · ${run.runId} · ${config.runtime} CLI`),
+        ...formatInfoLine('Use /bridge runs to inspect it or /bridge stop <runId> to interrupt it.'),
+        '',
+      ]);
+      void externalCliRuntimeManager.wait(run.runId).then(async completed => {
+        if (!completed || shuttingDown) return;
+        if (completed.status === 'completed' && completed.result) {
+          const completedNativeSessionId = completed.nativeSessionId || completed.result.nativeSessionId;
+          if (completedNativeSessionId) {
+            await rememberExternalNativeSession(
+              config,
+              completedNativeSessionId,
+              originSession,
+              originWorkDir,
+            );
+          }
+          await originSession.appendMessages([
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: completed.result.text },
+          ]);
+        }
+        const message = completed.status === 'completed'
+          ? `background run completed · ${completed.runId}`
+          : `background run ${completed.status} · ${completed.runId}${completed.error?.message ? ` · ${externalCliPreview(completed.error.message, config)}` : ''}`;
+        appendStatic([...formatInfoLine(message), '']);
+      }).catch(() => undefined);
+    } catch (error) {
+      appendStatic([
+        ...formatErrorLine(`could not start background run: ${externalCliDisplayText((error as Error).message, config)}`),
+        '',
+      ]);
+    }
+  }
+
+  function printExternalCliRuns(): void {
+    const runs = externalCliRuntimeManager.list()
+      .filter(run => run.actoviqSessionId === session.id)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, 20);
+    const lines: string[] = [
+      `${A.bold}External CLI background runs${A.reset}`,
+      ...formatDivider(screen.width),
+    ];
+    if (runs.length === 0) {
+      lines.push(`  ${A.dim}no background runs in this TUI session${A.reset}`);
+    } else {
+      for (const run of runs) {
+        const label = externalCliRunLabels.get(run.runId);
+        const runtime = label?.runtime ?? 'external';
+        const configName = label?.configName ?? 'unknown config';
+        const runConfig = label ? findBridgeConfig(label.configName) : undefined;
+        lines.push(
+          `  ${A.bold}${run.runId}${A.reset} ${A.dim}· ${run.status} · ${runtime} · ${configName}${A.reset}`,
+        );
+        if (run.nativeSessionId) {
+          lines.push(`    ${A.dim}native session: ${run.nativeSessionId}${A.reset}`);
+        }
+        const result = run.result?.text ? externalCliPreview(run.result.text, runConfig) : '';
+        const error = run.error?.message ? externalCliPreview(run.error.message, runConfig) : '';
+        if (result) lines.push(`    ${result}`);
+        else if (error) lines.push(`    ${A.red}${error}${A.reset}`);
+      }
+    }
+    lines.push('');
+    appendStatic(lines);
+  }
+
+  function stopExternalCliRun(runId: string): void {
+    const run = externalCliRuntimeManager.get(runId);
+    if (!run || run.actoviqSessionId !== session.id) {
+      appendStatic([...formatErrorLine(`unknown external CLI run: ${runId}`), '']);
+      return;
+    }
+    if (!externalCliRuntimeManager.abort(runId)) {
+      appendStatic([...formatInfoLine(`run ${runId} is already ${run.status}`), '']);
+      return;
+    }
+    appendStatic([...formatInfoLine(`stopping background run · ${runId}`), '']);
+  }
+
   async function runBridgePrompt(prompt: string): Promise<void> {
     // /bridge run forces a bridge turn. If no config is active, open the board
     // (or error if none saved) rather than auto-picking a detected runtime.
-    if (!bridgeMode || !activeBridgeModelApi) {
+    if (!bridgeMode || !activeBridgeConfig) {
       const configs = readBridgeConfigs().configs;
       if (configs.length === 0) {
         appendStatic([...formatErrorLine('No bridge configs saved. Use /bridge config to add one.'), '']);
@@ -1925,9 +2622,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   async function disableBridge(): Promise<void> {
     // Switch back to the SDK's default model/provider. The conversation
     // context stays intact (same session). Config stays saved for re-activation.
-    bridgeMode = false;
-    activeBridgeConfig = null;
-    activeBridgeModelApi = null;
+    clearBridgeSelection();
+    await persistSessionRuntimeMetadata();
     appendStatic([
       ...formatInfoLine('bridge mode off — back to default provider (session intact)'),
       '',
@@ -1940,16 +2636,21 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       `  ${A.dim}(bare)${A.reset}       — list saved configs; pick one to activate`,
       `  ${A.dim}config${A.reset}      — add / edit / remove named connection configs`,
       `  ${A.dim}run <prompt>${A.reset}  — run one turn through the active runtime`,
+      `  ${A.dim}background <prompt>${A.reset} — start work in the active external CLI`,
+      `  ${A.dim}runs${A.reset}        — list external CLI background runs`,
+      `  ${A.dim}stop <runId>${A.reset} — interrupt a background run`,
+      `  ${A.dim}status${A.reset}      — show execution, runtime, auth source, and session`,
+      `  ${A.dim}history [native-id]${A.reset} — list or inspect native CLI conversations (paths hidden)`,
+      `  ${A.dim}resume <native-id>${A.reset} — resume a native CLI conversation in this workspace`,
       `  ${A.dim}switch <name>${A.reset} — activate a saved config by name (or a raw provider id)`,
       `  ${A.dim}model [id]${A.reset} — set model for the current runtime`,
       `  ${A.dim}setup${A.reset}      — detect + configure paths (legacy)`,
       `  ${A.dim}off${A.reset}        — disable bridge mode`,
       `  ${A.dim}help${A.reset}       — show this list`,
-      ...formatInfoLine('a saved config bundles name + provider + apiKey + baseURL + model;'),
-      ...formatInfoLine('activating it runs every prompt through that runtime with those'),
-      ...formatInfoLine('credentials injected (multi-turn via --resume). configs persist in'),
-      ...formatInfoLine('~/.actoviq/bridge-configs.json. provider multi-turn sessions are'),
-      ...formatInfoLine('retained across /bridge off; bridge turns also save to the hadamard session.'),
+        ...formatInfoLine('External CLI commands support every registered CLI runtime.'),
+      ...formatInfoLine('Native auth lets each CLI read its own login/config; key overrides are'),
+      ...formatInfoLine('injected into child processes and never printed in status or run output.'),
+      ...formatInfoLine('Direct API configs keep using the existing in-process bridge path.'),
       '',
     ]);
   }
@@ -1974,8 +2675,9 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       for (const c of configs) {
         const active = activeBridgeConfig?.name === c.name;
         const mark = active ? `${A.green}●${A.reset}` : `${A.dim}○${A.reset}`;
-        lines.push(`  ${mark} ${A.bold}${c.name}${A.reset} ${A.dim}· ${c.provider}${A.reset}${c.model ? ` ${A.dim}· ${c.model}${A.reset}` : ''}`);
-        lines.push(`      ${A.dim}key: ${maskApiKey(c.apiKey)}${c.baseURL ? ` · ${c.baseURL}` : ''}${A.reset}`);
+        const mode = c.execution === 'cli' ? 'External CLI' : (c.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API');
+        lines.push(`  ${mark} ${A.bold}${c.name}${A.reset} ${A.dim}· ${mode} · ${c.runtime}${A.reset}${c.model ? ` ${A.dim}· ${c.model}${A.reset}` : ''}`);
+        lines.push(`      ${A.dim}${c.execution === 'cli' && c.authSource === 'native' ? 'auth: CLI login' : 'key: ' + maskApiKey(c.apiKey)}${c.baseURL ? ` · ${c.baseURL}` : ''}${A.reset}`);
       }
     }
     lines.push('');
@@ -1990,7 +2692,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         ...configs.map(c => ({
           id: `c:${c.name}`,
           label: `${c.name}${activeBridgeConfig?.name === c.name ? ' *' : ''}`,
-          description: `${c.provider} · ${maskApiKey(c.apiKey)}${c.model ? ` · ${c.model}` : ''}`,
+          description: `${c.execution === 'cli' ? 'External CLI' : 'Direct API'} · ${c.runtime}${c.execution === 'cli' ? ` · ${c.authSource === 'native' ? 'CLI login' : 'key override'}` : ''}${c.model ? ` · ${c.model}` : ''}`,
         })),
         { id: 'config', label: '⚙ Manage configs…', description: 'add / edit / remove saved configs' },
         { id: 'run', label: '▶ Run a prompt…', description: 'run one turn through the active runtime' },
@@ -2030,6 +2732,84 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // session.stream (same session, context naturally survives switching).
   async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
     try {
+      if (config.execution === 'cli') {
+        if (!isManagedExternalCliRuntime(config.runtime)) {
+          throw new Error(
+            'External CLI mode requires an installed CLI runtime.',
+          );
+        }
+        const externalConfig = config as SupportedExternalCliConfig;
+        const fingerprint = externalBridgeFingerprint(externalConfig);
+        const runtimeKey = externalBridgeRuntimeKey(externalConfig);
+        let runtime = externalBridgeRuntimes.get(runtimeKey);
+        if (runtime && runtime.fingerprint !== fingerprint) {
+          await runtime.client.close();
+          externalBridgeRuntimes.delete(runtimeKey);
+          runtime = undefined;
+        }
+        const boundNativeSessionId = externalNativeSessionId(externalConfig);
+        const resumed = Boolean(runtime || boundNativeSessionId);
+        if (!runtime) {
+          const client = await createActoviqBridgeSdk({
+            directCli: true,
+            directCliProvider: config.runtime,
+            workDir: sdk.config.workDir,
+            authSource: config.authSource === 'apiKey' ? 'apiKey' : 'native',
+            credentialProvider: config.credentialProvider,
+            profileName: config.name,
+            ...(config.authSource === 'apiKey'
+              ? {
+                  apiKey: config.apiKey,
+                  baseURL: config.baseURL,
+                }
+              : {}),
+            trustProjectResources: config.trustProjectResources,
+          });
+          const sessionOptions = { title: 'actoviq-tui-' + config.runtime + '-' + config.name };
+          const nativeSession = boundNativeSessionId
+            ? await client.resumeSession(boundNativeSessionId, sessionOptions)
+            : await client.createSession(sessionOptions);
+          runtime = { client, session: nativeSession, fingerprint };
+          externalBridgeRuntimes.set(runtimeKey, runtime);
+        }
+        activeBridgeModelApi = null;
+        bridgeModelLabel = config.model ?? null;
+        activeBridgeConfig = config;
+        bridgeMode = true;
+        await persistSessionRuntimeMetadata(session, config, bridgeModelLabel);
+        appendStatic([
+          ...formatInfoLine(
+            'runtime active — '
+              + config.runtime
+              + ' CLI · '
+              + (config.authSource === 'apiKey' ? 'API key override' : 'native CLI login')
+              + ' · model: '
+              + (config.model ?? 'runtime default')
+              + (resumed ? ' · resumed' : ''),
+          ),
+          ...formatInfoLine(
+            'working directory: ' + sdk.config.workDir + ' · native session: ' + runtime.session.id,
+          ),
+          '',
+        ]);
+        return true;
+      }
+
+      const hadamardUsesDefaults = config.runtime === 'hadamard'
+        && !config.apiKey?.trim()
+        && !config.baseURL?.trim();
+      if (hadamardUsesDefaults) {
+        activeBridgeModelApi = null;
+        bridgeModelLabel = config.model ?? null;
+        activeBridgeConfig = config;
+        bridgeMode = false;
+        await persistSessionRuntimeMetadata(session, config, bridgeModelLabel);
+        appendStatic([
+          ...formatInfoLine('Hadamard SDK active · model: ' + (config.model ?? session.model)),
+          '',
+        ]);
+        return true;
+      }
       const routed = await buildRouteModelApi({
         model: config.model || session.model,
         provider: config.provider,
@@ -2041,6 +2821,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       bridgeModelLabel = routed.model;
       activeBridgeConfig = config;
       bridgeMode = true;
+      await persistSessionRuntimeMetadata(session, config, bridgeModelLabel);
       appendStatic([
         ...formatInfoLine(`bridge active — config: ${config.name} · provider: ${config.provider} · model: ${routed.model}`),
         ...formatInfoLine(`apiKey: ${maskApiKey(config.apiKey)}${config.baseURL ? ` · baseURL: ${config.baseURL}` : ''}`),
@@ -2107,11 +2888,27 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         const existing = store.configs.find(c => c.name === name)!;
         const updated = await editBridgeConfig(existing);
         if (updated) {
+          const wasActive = activeBridgeConfig?.name === existing.name
+            || activeBridgeConfig?.name === updated.name;
+          const previousRuntimeKey = wasActive
+            && activeBridgeConfig?.execution === 'cli'
+        && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+            ? externalBridgeRuntimeKey(activeBridgeConfig as SupportedExternalCliConfig)
+            : undefined;
           addBridgeConfig(updated); // dedupe-by-name replaces
-          // If the edited config is active, refresh the live activeBridgeConfig.
-          if (activeBridgeConfig?.name === existing.name || activeBridgeConfig?.name === updated.name) {
-            activeBridgeConfig = updated;
-            appendStatic([...formatInfoLine(`active config "${updated.name}" updated — applies next turn`), '']);
+          if (wasActive) {
+            if (await activateBridgeConfig(updated)) {
+              const nextRuntimeKey = updated.execution === 'cli'
+        && isManagedExternalCliRuntime(updated.runtime)
+                ? externalBridgeRuntimeKey(updated as SupportedExternalCliConfig)
+                : undefined;
+              if (previousRuntimeKey && previousRuntimeKey !== nextRuntimeKey) {
+                const previousRuntime = externalBridgeRuntimes.get(previousRuntimeKey);
+                await previousRuntime?.client.close().catch(() => undefined);
+                externalBridgeRuntimes.delete(previousRuntimeKey);
+              }
+              appendStatic([...formatInfoLine(`active config "${updated.name}" updated and reactivated`), '']);
+            }
           } else {
             appendStatic([...formatInfoLine(`config "${updated.name}" saved`), '']);
           }
@@ -2127,7 +2924,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         if (!name) continue;
         removeBridgeConfig(name);
         if (activeBridgeConfig?.name === name) {
-          appendStatic([...formatInfoLine(`removed active config "${name}" — bridge mode still on (provider: ${activeBridgeConfig?.provider ?? '?'})`), '']);
+          await disableBridge();
+          appendStatic([...formatInfoLine(`removed active config "${name}" and disabled bridge mode`), '']);
         } else {
           appendStatic([...formatInfoLine(`removed config "${name}"`), '']);
         }
@@ -2144,8 +2942,25 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   async function editBridgeConfig(existing?: PersistedBridgeConfig): Promise<PersistedBridgeConfig | undefined> {
     // Work on a local copy so Cancel discards all edits.
     const draft: PersistedBridgeConfig = existing
-      ? { name: existing.name, provider: existing.provider, runtime: existing.runtime, ...(existing.apiKey ? { apiKey: existing.apiKey } : {}), ...(existing.baseURL ? { baseURL: existing.baseURL } : {}), ...(existing.model ? { model: existing.model } : {}) }
-      : { name: '', provider: 'anthropic', runtime: 'claude' };
+      ? {
+          name: existing.name,
+          provider: existing.provider,
+          runtime: existing.runtime,
+          execution: existing.execution ?? 'api',
+          authSource: existing.authSource ?? 'apiKey',
+          ...(existing.apiKey ? { apiKey: existing.apiKey } : {}),
+          ...(existing.baseURL ? { baseURL: existing.baseURL } : {}),
+          ...(existing.model ? { model: existing.model } : {}),
+          ...(existing.credentialProvider ? { credentialProvider: existing.credentialProvider } : {}),
+          ...(existing.trustProjectResources ? { trustProjectResources: true } : {}),
+        }
+      : {
+          name: '',
+          provider: 'anthropic',
+          runtime: 'claude',
+          execution: 'cli',
+          authSource: 'native',
+        };
 
     // Lazy-detect: runtimes are probed only when the user opens the runtime
     // picker, so the form renders instantly. Cached after first probe.
@@ -2158,9 +2973,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         `${A.bold}${header}${A.reset} — edit any field, then Save`,
         ...formatDivider(screen.width),
         `  ${A.bold}name${A.reset}     ${draft.name || `${A.dim}(unset)${A.reset}`}`,
-        `  ${A.bold}runtime${A.reset}   ${A.bold}${draft.provider === 'anthropic' ? 'claude / codewhale / reasonix' : 'pi / codex / crush'}${A.reset} ${A.dim}(${draft.provider})${A.reset}`,
+        `  ${A.bold}execution${A.reset} ${draft.execution === 'cli' ? 'External CLI' : (draft.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API')}`,
+        `  ${A.bold}runtime${A.reset}   ${A.bold}${draft.runtime}${A.reset} ${A.dim}(${draft.provider})${A.reset}`,
+        `  ${A.bold}auth${A.reset}      ${draft.execution === 'cli' ? (draft.authSource === 'native' ? 'reuse CLI login' : 'API key override') : 'API adapter credentials'}`,
         `  ${A.bold}apiKey${A.reset}   ${maskApiKey(draft.apiKey)}`,
         `  ${A.bold}baseURL${A.reset} ${draft.baseURL || `${A.dim}(inherit)${A.reset}`}`,
+        `  ${A.bold}key provider${A.reset} ${draft.credentialProvider || `${A.dim}(infer from model/runtime)${A.reset}`}`,
+        `  ${A.bold}project config${A.reset} ${draft.trustProjectResources ? 'trusted' : 'not trusted'}`,
         `  ${A.bold}model${A.reset}    ${draft.model || `${A.dim}(inherit)${A.reset}`}`,
         '',
       ];
@@ -2172,9 +2991,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         searchable: false,
         items: [
           { id: 'name', label: `name: ${draft.name || '(unset)'}`, description: 'a label you pick, e.g. deepseek-claude' },
-          { id: 'provider', label: `runtime: ${draft.provider === 'anthropic' ? 'claude / codewhale / reasonix' : 'pi / codex / crush'}`, description: `${draft.provider} · pick from detected runtimes` },
+          { id: 'execution', label: `execution: ${draft.execution === 'cli' ? 'External CLI' : 'Direct API'}`, description: 'launch an installed CLI or use Actoviq API adapters' },
+          { id: 'provider', label: `runtime: ${draft.runtime}`, description: `${draft.provider} · pick from detected runtimes` },
+          { id: 'auth', label: `auth: ${draft.authSource === 'native' ? 'reuse CLI login' : 'API key override'}`, description: draft.execution === 'cli' ? 'credential source for the child CLI' : 'used by External CLI mode' },
           { id: 'apiKey', label: `apiKey: ${maskApiKey(draft.apiKey)}`, description: 'injected as the credential each turn (hidden input)' },
           { id: 'baseURL', label: `baseURL: ${draft.baseURL || '(inherit)'}`, description: 'the backend endpoint (e.g. https://api.deepseek.com)' },
+          { id: 'credentialProvider', label: `key provider: ${draft.credentialProvider || '(infer)'}`, description: 'provider env mapping for multi-backend CLIs, e.g. openai, anthropic, deepseek' },
+          { id: 'trustProjectResources', label: `project config: ${draft.trustProjectResources ? 'trusted' : 'not trusted'}`, description: 'allow runtime-specific project config; required for explicit-key Crush when config exists' },
           { id: 'model', label: `model: ${draft.model || '(inherit)'}`, description: 'optional model id' },
           { id: 'save', label: '💾 Save config', description: draft.name ? `commit "${draft.name}"` : 'a name is required to save' },
           { id: 'cancel', label: '✕ Cancel', description: 'discard changes' },
@@ -2187,15 +3010,83 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           appendStatic([...formatErrorLine('cannot save — name is required (edit the name field first)'), '']);
           continue;
         }
-        const config: PersistedBridgeConfig = { name, provider: draft.provider, runtime: draft.runtime }; if (draft.apiKey) config.apiKey = draft.apiKey; if (draft.baseURL) config.baseURL = draft.baseURL; if (draft.model) config.model = draft.model;
+        if (draft.execution === 'cli' && !isManagedExternalCliRuntime(draft.runtime)) {
+          appendStatic([
+            ...formatErrorLine('External CLI mode requires a registered CLI runtime.'),
+            '',
+          ]);
+          continue;
+        }
+        if (draft.execution === 'cli' && draft.authSource === 'apiKey' && !draft.apiKey) {
+          appendStatic([
+            ...formatErrorLine('API-key override requires an API key.'),
+            '',
+          ]);
+          continue;
+        }
+        const config: PersistedBridgeConfig = {
+          name,
+          provider: draft.provider,
+          runtime: draft.runtime,
+          execution: draft.execution,
+          authSource: draft.authSource,
+        };
         if (draft.apiKey) config.apiKey = draft.apiKey;
         if (draft.baseURL) config.baseURL = draft.baseURL;
         if (draft.model) config.model = draft.model;
+        if (draft.credentialProvider) config.credentialProvider = draft.credentialProvider;
+        if (draft.trustProjectResources) config.trustProjectResources = true;
         return config;
       }
       if (choice === 'name') {
         const v = (await promptText({ title: 'Config name', label: 'name', initial: draft.name, description: 'a label you pick, e.g. deepseek-claude' }))?.trim();
         if (v !== undefined) draft.name = v;
+        continue;
+      }
+      if (choice === 'execution') {
+        const v = await selectItem({
+          title: 'Execution mode',
+          subtitle: 'API mode stays in Actoviq; CLI mode launches the installed runtime',
+          searchable: false,
+          items: [
+            { id: 'cli', label: 'External CLI', description: 'Managed CLI child process with native session resume' },
+            { id: 'api', label: 'Direct API', description: 'Actoviq provider adapter; no external CLI process' },
+          ],
+        });
+        if (v === 'cli') {
+          if (!isManagedExternalCliRuntime(draft.runtime)) {
+            appendStatic([
+              ...formatErrorLine('External CLI mode requires a registered CLI runtime.'),
+              '',
+            ]);
+          } else {
+            draft.execution = 'cli';
+            draft.authSource = draft.authSource ?? 'native';
+          }
+        } else if (v === 'api') {
+          draft.execution = 'api';
+          draft.authSource = 'apiKey';
+        }
+        continue;
+      }
+      if (choice === 'auth') {
+        if (draft.execution !== 'cli') {
+          appendStatic([
+            ...formatInfoLine('Authentication source applies to External CLI mode.'),
+            '',
+          ]);
+          continue;
+        }
+        const v = await selectItem({
+          title: 'CLI authentication',
+          subtitle: 'Native login never copies credentials into Actoviq',
+          searchable: false,
+          items: [
+            { id: 'native', label: 'Reuse CLI login / config', description: 'inherit HOME and let the CLI read its own credentials' },
+            { id: 'apiKey', label: 'API key override', description: 'inject this config key into the child process only' },
+          ],
+        });
+        if (v === 'native' || v === 'apiKey') draft.authSource = v;
         continue;
       }
       if (choice === 'provider') {
@@ -2208,13 +3099,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         const RUNTIME_MAP: Record<string, { provider: InProcessProvider; label: string }> = {
           claude: { provider: 'anthropic', label: 'claude' },
           codewhale: { provider: 'anthropic', label: 'codewhale' },
-          reasonix: { provider: 'anthropic', label: 'reasonix' },
+          reasonix: { provider: 'openai', label: 'reasonix' },
           pi: { provider: 'openai', label: 'pi' },
           codex: { provider: 'openai', label: 'codex' },
           crush: { provider: 'openai', label: 'crush' },
         };
         const curProvider = draft.provider;
-        const curRuntime = Object.entries(RUNTIME_MAP).find(([, v]) => v.provider === curProvider)?.[0];
+        const curRuntime = draft.runtime;
         const items = detections.map(d => ({
           id: d.id,
           label: `${d.id}${d.id === curRuntime ? ' ✓' : ''}`,
@@ -2229,6 +3120,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         if (v) {
           const mapped = RUNTIME_MAP[v] ?? { provider: 'anthropic' as InProcessProvider };
           draft.provider = mapped.provider;
+          draft.runtime = v as PersistedBridgeConfig['runtime'];
         }
         continue;
       }
@@ -2247,6 +3139,29 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       if (choice === 'baseURL') {
         const v = (await promptText({ title: 'Base URL', label: 'base url', initial: draft.baseURL, description: 'the backend endpoint; leave empty to inherit' }))?.trim();
         if (v !== undefined) draft.baseURL = v || undefined;
+        continue;
+      }
+      if (choice === 'credentialProvider') {
+        const v = (await promptText({
+          title: 'Credential provider',
+          label: 'provider id',
+          initial: draft.credentialProvider,
+          description: 'openai, anthropic, deepseek, gemini, openrouter, etc.; leave empty to infer',
+        }))?.trim();
+        if (v !== undefined) draft.credentialProvider = v || undefined;
+        continue;
+      }
+      if (choice === 'trustProjectResources') {
+        const v = await selectItem({
+          title: 'Project runtime config',
+          subtitle: 'Project-local runtime files may change provider/tool behavior',
+          searchable: false,
+          items: [
+            { id: 'no', label: 'Do not trust', description: 'use runtime defaults and managed credentials where supported' },
+            { id: 'yes', label: 'Trust project config', description: 'allow project-local CLI resources and configuration' },
+          ],
+        });
+        if (v === 'yes' || v === 'no') draft.trustProjectResources = v === 'yes';
         continue;
       }
       if (choice === 'model') {
@@ -2280,6 +3195,8 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     if (modelId) {
       // Direct set: /bridge model claude-sonnet-4-6
       bridgeModelLabel = modelId;
+      if (activeBridgeConfig) activeBridgeConfig = { ...activeBridgeConfig, model: modelId };
+      await persistSessionRuntimeMetadata();
       appendStatic([...formatInfoLine(`bridge model → ${modelId}`), '']);
       return;
     }
@@ -2293,6 +3210,13 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }));
     if (v !== undefined) {
       bridgeModelLabel = v.trim() || null;
+      if (activeBridgeConfig) {
+        activeBridgeConfig = {
+          ...activeBridgeConfig,
+          ...(bridgeModelLabel ? { model: bridgeModelLabel } : { model: undefined }),
+        };
+      }
+      await persistSessionRuntimeMetadata();
       appendStatic([...formatInfoLine(`bridge model → ${bridgeModelLabel || 'session default'}`), '']);
     }
   }
@@ -2666,6 +3590,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
 
   async function showPlugins(): Promise<void> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath });
+    const managed = readManagedPluginCatalog(store.raw).plugins;
     const configuredDirs = Array.isArray(store.raw.pluginDirs)
       ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
       : [];
@@ -2674,23 +3599,69 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       homeDir: store.homeDir,
       configuredDirs,
     });
-    if (plugins.length === 0) {
-      appendStatic([
-        ...formatInfoLine('no Clean plugins discovered in user, project, or configured plugin directories'),
-        '',
-      ]);
+    const selected = await selectItem({
+      title: 'Plugins',
+      subtitle: 'Built-in managed integrations and local plugin manifests',
+      items: [
+        ...managed.map(plugin => ({
+          id: `managed:${plugin.id}`,
+          label: plugin.name,
+          description: `${plugin.state} · ${plugin.description}`,
+          detail: plugin.statusDetail ?? plugin.category,
+        })),
+        ...plugins.map(plugin => ({
+          id: `local:${plugin.path}`,
+          label: plugin.name,
+          description: [plugin.version, plugin.capabilities.join(', ')].filter(Boolean).join(' · '),
+          detail: `${plugin.description ?? ''} ${plugin.path}`,
+        })),
+      ],
+    });
+    if (selected?.startsWith('managed:')) {
+      const id = selected.slice('managed:'.length);
+      const plugin = managed.find(item => item.id === id);
+      if (!plugin) return;
+      const action = await selectItem({
+        title: plugin.name,
+        subtitle: plugin.description,
+        searchable: false,
+        items: [
+          {
+            id: 'toggle',
+            label: plugin.state === 'available' ? 'Install' : plugin.enabled ? 'Disable' : 'Enable',
+            description: `Current state: ${plugin.state}`,
+          },
+          {
+            id: 'details',
+            label: 'Show configuration status',
+            description: plugin.secretConfigured ? 'Credential configured' : 'No plugin credential stored',
+          },
+        ],
+      });
+      if (action === 'toggle') {
+        const raw = structuredClone(store.raw);
+        const enabling = plugin.state === 'available' || !plugin.enabled;
+        patchManagedPluginSettings(raw, plugin.id, { enabled: enabling });
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        await withSpinner('reloading managed plugins', reloadCleanSdk);
+        appendStatic([
+          ...formatInfoLine(`${plugin.name} ${enabling ? 'enabled' : 'disabled'}`),
+          '',
+        ]);
+      } else if (action === 'details') {
+        appendStatic([
+          `${A.cyan}${plugin.name}${A.reset}`,
+          `${A.dim}${plugin.description}${A.reset}`,
+          `${A.dim}state: ${plugin.state} · credential: ${plugin.secretConfigured ? 'configured' : 'not configured'}${A.reset}`,
+          ...formatInfoLine('Use GUI Customize for provider URLs, API keys, browser profiles, and health checks.'),
+          '',
+        ]);
+      }
       return;
     }
-    const selected = await selectItem({
-      title: 'Clean plugins',
-      items: plugins.map(plugin => ({
-        id: plugin.path,
-        label: plugin.name,
-        description: [plugin.version, plugin.capabilities.join(', ')].filter(Boolean).join(' · '),
-        detail: `${plugin.description ?? ''} ${plugin.path}`,
-      })),
-    });
-    const plugin = plugins.find(item => item.path === selected);
+    const localPath = selected?.startsWith('local:') ? selected.slice('local:'.length) : '';
+    const plugin = plugins.find(item => item.path === localPath);
     if (plugin) {
       appendStatic([
         `${A.cyan}${plugin.name}${A.reset}${plugin.version ? ` ${plugin.version}` : ''}`,
@@ -2898,6 +3869,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           // Switch the active session.
           const prevSession = session;
           session = nextSession;
+          await restoreSessionRuntimeSelection();
           await prevSession.delete().catch(() => undefined);
           appendStatic([...formatInfoLine(`rewound ${n} message${n === 1 ? '' : 's'} (session ${session.id}), files unchanged`), '']);
           return;
@@ -3385,6 +4357,46 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             const bp = args.startsWith('run ') ? args.slice(4).trim() : '';
             if (!bp) { appendStatic([...formatErrorLine('usage: /bridge run <prompt>'), '']); return; }
             await runBridgePrompt(bp);
+            return;
+          }
+          if (args === 'background' || args.startsWith('background ')) {
+            const prompt = args.startsWith('background ') ? args.slice(11).trim() : '';
+            if (!prompt) {
+              appendStatic([...formatErrorLine('usage: /bridge background <prompt>'), '']);
+              return;
+            }
+            await startExternalCliBackgroundRun(prompt);
+            return;
+          }
+          if (args === 'runs') {
+            printExternalCliRuns();
+            return;
+          }
+          if (args === 'stop' || args.startsWith('stop ')) {
+            const runId = args.startsWith('stop ') ? args.slice(5).trim() : '';
+            if (!runId) {
+              appendStatic([...formatErrorLine('usage: /bridge stop <runId>'), '']);
+              return;
+            }
+            stopExternalCliRun(runId);
+            return;
+          }
+          if (args === 'status') {
+            printBridgeStatus();
+            return;
+          }
+          if (args === 'history' || args.startsWith('history ')) {
+            const nativeSessionId = args.startsWith('history ') ? args.slice(8).trim() : '';
+            await printExternalCliHistory(nativeSessionId);
+            return;
+          }
+          if (args === 'resume' || args.startsWith('resume ')) {
+            const nativeSessionId = args.startsWith('resume ') ? args.slice(7).trim() : '';
+            if (!nativeSessionId) {
+              appendStatic([...formatErrorLine('usage: /bridge resume <native-id>'), '']);
+              return;
+            }
+            await resumeExternalCliHistorySession(nativeSessionId);
             return;
           }
           if (args === 'switch' || args.startsWith('switch ')) {
@@ -4201,6 +5213,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   async function shutdown(code: number): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    let exitCode = code;
     if (spinnerTimer) clearInterval(spinnerTimer);
     cancelScheduledDynamicRender();
     abortCtrl?.abort();
@@ -4208,13 +5221,34 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     process.stdout.write(`${A.dim}Goodbye.${A.reset}\n`);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
-    try {
-      await sdk.close();
-    } catch {
-      // best-effort close
+    if (managedPluginRuntime) {
+      try {
+        await closeManagedPluginsForExit(managedPluginRuntime.close);
+      } catch (error) {
+        exitCode = 1;
+        process.stderr.write(
+          `[actoviq-tui] ERROR: ${errorMessage(error)} ` +
+          'Check E2B/Playwright resources manually before assuming billing has stopped.\n',
+        );
+      }
     }
-    // Close any live bridge runtime clients (sessions were per-provider).
-    process.exit(code);
+    const cleanupResults = await Promise.allSettled([
+      sdk.close(),
+      externalCliRuntimeManager.close(),
+      ...[...externalBridgeRuntimes.values()].map(runtime => runtime.client.close()),
+    ]);
+    const cleanupFailures = cleanupResults
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (cleanupFailures.length > 0) {
+      exitCode = 1;
+      process.stderr.write(
+        `[actoviq-tui] ERROR: ${cleanupFailures.length} runtime cleanup operation(s) failed: ` +
+        `${cleanupFailures.map(result => errorMessage(result.reason)).join('; ')}\n`,
+      );
+    }
+    externalBridgeRuntimes.clear();
+    externalCliRunLabels.clear();
+    process.exit(exitCode);
   }
 
   screen.start();
@@ -4227,6 +5261,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
       width: screen.width,
     }),
   );
+  await restoreSessionRuntimeSelection();
   renderDynamic();
 
   readline.emitKeypressEvents(process.stdin);

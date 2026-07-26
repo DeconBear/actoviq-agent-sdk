@@ -213,6 +213,13 @@ export interface RuntimeLocalConfig {
   source?: string;
 }
 
+export interface RuntimeLocalConfigPaths {
+  /** Claude Code config root, equivalent to CLAUDE_CONFIG_DIR. */
+  claudeConfigDir?: string;
+  /** Codex config root, equivalent to CODEX_HOME. */
+  codexHome?: string;
+}
+
 /**
  * Read a runtime's local CLI config and extract the model / base URL /
  * API key the user already configured locally. Returns null when the runtime
@@ -222,13 +229,27 @@ export interface RuntimeLocalConfig {
 export function detectRuntimeLocalConfig(
   runtime: string,
   homeDir?: string,
+  configPaths: RuntimeLocalConfigPaths = {},
 ): RuntimeLocalConfig | null {
   const home = homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
   if (runtime === 'claude' || runtime === 'codewhale' || runtime === 'crush') {
-    return detectClaudeStyleLocalConfig(home, runtime);
+    const configDir = configPaths.claudeConfigDir
+      ? path.resolve(configPaths.claudeConfigDir)
+      : path.join(home, '.claude');
+    return detectClaudeStyleLocalConfig(
+      configDir,
+      runtime,
+      configPaths.claudeConfigDir ? 'CLAUDE_CONFIG_DIR/settings.json' : '~/.claude/settings.json',
+    );
   }
   if (runtime === 'codex') {
-    return detectCodexLocalConfig(home);
+    const configDir = configPaths.codexHome
+      ? path.resolve(configPaths.codexHome)
+      : path.join(home, '.codex');
+    return detectCodexLocalConfig(
+      configDir,
+      configPaths.codexHome ? 'CODEX_HOME/config.toml' : '~/.codex/config.toml',
+    );
   }
   // pi / reasonix / hadamard have no standard local config file to reuse.
   return null;
@@ -239,8 +260,12 @@ export function detectRuntimeLocalConfig(
  * store their config in `~/.claude/settings.json` with an `env` block
  * carrying ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL.
  */
-function detectClaudeStyleLocalConfig(home: string, runtime: string): RuntimeLocalConfig | null {
-  const settingsPath = path.join(home, '.claude', 'settings.json');
+function detectClaudeStyleLocalConfig(
+  configDir: string,
+  runtime: string,
+  source: string,
+): RuntimeLocalConfig | null {
+  const settingsPath = path.join(configDir, 'settings.json');
   if (!existsSync(settingsPath)) return null;
   let raw: Record<string, unknown>;
   try {
@@ -261,7 +286,7 @@ function detectClaudeStyleLocalConfig(home: string, runtime: string): RuntimeLoc
     baseURL,
     apiKey,
     provider: 'anthropic',
-    source: '~/.claude/settings.json',
+    source,
   };
 }
 
@@ -270,8 +295,8 @@ function detectClaudeStyleLocalConfig(home: string, runtime: string): RuntimeLoc
  * `model` (best-effort, single-line) — TOML parsing is intentionally minimal
  * since the file's schema varies across Codex versions.
  */
-function detectCodexLocalConfig(home: string): RuntimeLocalConfig | null {
-  const configPath = path.join(home, '.codex', 'config.toml');
+function detectCodexLocalConfig(configDir: string, source: string): RuntimeLocalConfig | null {
+  const configPath = path.join(configDir, 'config.toml');
   if (!existsSync(configPath)) return null;
   let text: string;
   try {
@@ -286,7 +311,7 @@ function detectCodexLocalConfig(home: string): RuntimeLocalConfig | null {
     runtime: 'codex',
     model,
     provider: 'openai',
-    source: '~/.codex/config.toml',
+    source,
   };
 }
 
@@ -309,22 +334,38 @@ export function updateRuntimeLocalConfig(
   runtime: string,
   update: RuntimeLocalConfigUpdate,
   homeDir?: string,
+  configPaths: RuntimeLocalConfigPaths = {},
 ): RuntimeLocalConfigUpdateResult {
   const home = homeDir ?? process.env.HOME ?? process.env.USERPROFILE ?? '.';
   if (runtime === 'claude' || runtime === 'codewhale' || runtime === 'crush') {
-    return updateClaudeStyleLocalConfig(home, update);
+    const configDir = configPaths.claudeConfigDir
+      ? path.resolve(configPaths.claudeConfigDir)
+      : path.join(home, '.claude');
+    return updateClaudeStyleLocalConfig(
+      configDir,
+      update,
+      configPaths.claudeConfigDir ? 'CLAUDE_CONFIG_DIR/settings.json' : '~/.claude/settings.json',
+    );
   }
   if (runtime === 'codex') {
-    return updateCodexLocalConfig(home, update);
+    const configDir = configPaths.codexHome
+      ? path.resolve(configPaths.codexHome)
+      : path.join(home, '.codex');
+    return updateCodexLocalConfig(
+      configDir,
+      update,
+      configPaths.codexHome ? 'CODEX_HOME/config.toml' : '~/.codex/config.toml',
+    );
   }
   return { ok: false, error: `Runtime "${runtime}" has no writable local config file.` };
 }
 
 function updateClaudeStyleLocalConfig(
-  home: string,
+  configDir: string,
   update: RuntimeLocalConfigUpdate,
+  source: string,
 ): RuntimeLocalConfigUpdateResult {
-  const settingsPath = path.join(home, '.claude', 'settings.json');
+  const settingsPath = path.join(configDir, 'settings.json');
   let raw: Record<string, unknown>;
   if (existsSync(settingsPath)) {
     try {
@@ -360,17 +401,18 @@ function updateClaudeStyleLocalConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
-  return { ok: true, source: '~/.claude/settings.json' };
+  return { ok: true, source };
 }
 
 function updateCodexLocalConfig(
-  home: string,
+  configDir: string,
   update: RuntimeLocalConfigUpdate,
+  source: string,
 ): RuntimeLocalConfigUpdateResult {
   if (!update.model?.trim()) {
     return { ok: false, error: 'Codex local config only supports updating the model field.' };
   }
-  const configPath = path.join(home, '.codex', 'config.toml');
+  const configPath = path.join(configDir, 'config.toml');
   let text = '';
   if (existsSync(configPath)) {
     try {
@@ -390,5 +432,5 @@ function updateCodexLocalConfig(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
-  return { ok: true, source: '~/.codex/config.toml' };
+  return { ok: true, source };
 }

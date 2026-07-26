@@ -342,7 +342,10 @@ export async function executeConversation(
           reason: asError(error).message,
           timestamp: nowIso(),
         });
-        await sleep(1000 * streamInterruptionRetries);
+        await sleep(
+          streamInterruptionBackoffMs(streamInterruptionRetries),
+          options.signal,
+        );
         iteration -= 1;
         continue;
       }
@@ -1241,7 +1244,20 @@ function isModelFallbackEligibleError(error: unknown): boolean {
   return false;
 }
 
-const MAX_STREAM_INTERRUPTION_RETRIES = 3;
+// The enclosing agent run owns the hard wall-clock deadline. This higher
+// per-iteration guard lets a stream survive a meaningful network outage while
+// the abortable, capped backoff and run signal keep recovery bounded.
+const MAX_STREAM_INTERRUPTION_RETRIES = 60;
+const STREAM_INTERRUPTION_BACKOFF_BASE_MS = 250;
+const MAX_STREAM_INTERRUPTION_BACKOFF_MS = 15_000;
+
+function streamInterruptionBackoffMs(retry: number): number {
+  const exponent = Math.min(Math.max(retry - 1, 0), 8);
+  return Math.min(
+    MAX_STREAM_INTERRUPTION_BACKOFF_MS,
+    STREAM_INTERRUPTION_BACKOFF_BASE_MS * (2 ** exponent),
+  );
+}
 
 const TRANSPORT_ERROR_CODES = new Set([
   'ECONNRESET',
@@ -1256,12 +1272,16 @@ const TRANSPORT_ERROR_PATTERN =
 /**
  * Transport-level failures that occur after the provider accepted the request
  * (mid-stream socket loss, abrupt connection close). HTTP-status errors are
- * excluded — the provider client already retried those before throwing — and
- * so are non-network errors, which must keep propagating.
+ * excluded — the provider client already retried those before throwing. A
+ * status-zero transport_error means those short provider retries were
+ * exhausted while the network was still unavailable, so the enclosing run
+ * keeps retrying within its own deadline/abort budget.
  */
 function isRetryableStreamInterruption(error: unknown): boolean {
+  if (error instanceof ActoviqProviderApiError) {
+    return error.status === 0 && error.errorType === 'transport_error';
+  }
   if (
-    error instanceof ActoviqProviderApiError ||
     error instanceof RunAbortedError ||
     error instanceof ActoviqSdkError ||
     error instanceof ToolExecutionError
@@ -1280,8 +1300,23 @@ function isRetryableStreamInterruption(error: unknown): boolean {
   return TRANSPORT_ERROR_PATTERN.test(`${error.message} ${causeMessage}`);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new RunAbortedError());
+  }
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? new RunAbortedError());
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**

@@ -461,6 +461,9 @@ function applyTurnCompleted(snapshot: AgentExecutionSnapshot, event: AgentTurnCo
   node.threadStatus = outcome === 'errored' ? 'system_error' : 'idle';
   node.error = event.error ?? null;
   node.result = event.result ?? null;
+  if (outcome === 'completed') {
+    node.currentActivity = null;
+  }
   node.timestamps.turnCompletedAt = event.occurredAt;
   Object.assign(node.timestamps, terminalTimestamp(outcome, event.occurredAt));
   touchNode(node, event.occurredAt);

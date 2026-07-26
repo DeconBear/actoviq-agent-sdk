@@ -16,7 +16,7 @@
 ## 愿景
 
 - **多 agent**：子代理委派（Task 工具）、panel-analysis 团队、reviewer-auditor 对、动态 workflow —— agent 之间协作，而非单一的 ReAct 循环。
-- **多运行时状态管理**：bridge config 支持预配置多个后端（anthropic / openai / 任意兼容）的 apiKey + baseURL + model，命名切换，对话上下文在切换中保留（同一个 session 对象、同一份 transcript）。
+- **多运行时状态管理**：bridge config 明确区分两种模式。`Direct API` 在进程内调用 Anthropic/OpenAI 兼容接口；`External CLI` 则把已安装的 Claude Code、Codex、Pi、CodeWhale、Reasonix 或 Crush 作为子进程托管，并在 CLI 协议提供会话 ID 时保留原生 session 身份。
 - **model team 协作**：leader 将每轮分派给最佳 specialist（`/model router`），panel 成员并行调查并收敛，reviewer 只报告可验证的问题 —— team 是 agent 可调用的一等工具。
 
 ## 亮点
@@ -24,7 +24,7 @@
 - **Model Team** — `panel-analysis`（并行调查 + 收敛）和 `reviewer`（只报告可验证问题的审计者）。runtime-owned 成员池、流式 `TeamEvent`、成员 provider 配置，以及继承的权限/重试边界。
 - **Model Router / Leader-Dispatch** — 每轮由 leader 分派到最佳 specialist（任意模型/提供商），执行者自身也可召集 team。Profile 位于 `~/.actoviq/routers/`。
 - **Dynamic Workflows** — 显式信任等级的 JS 编排：trusted 兼容执行、隔离 local-process，或由 host 提供的远程/container 强 sandbox；local process 不宣传为对抗性多租户沙箱。
-- **Bridge（命名连接配置）** — 进程内运行时切换：预配置 `anthropic`/`openai` 后端，命名 + apiKey + baseURL + model，命名切换，多轮上下文保留。`/bridge config` 单页编辑器；`/bridge` 列出已保存配置；`/cost` 中按配置展示用量。
+- **Bridge（命名运行时配置）** — 可选 `Direct API` 做 provider/API 级复用，也可选 `External CLI` 直接启动已安装的 Claude Code、Codex、Pi、CodeWhale、Reasonix 或 Crush，继承各 CLI 的原生登录和配置、流式显示规范化后的工具与回答事件、终止后台任务，并浏览/恢复受支持的原生会话。单独填写的 key 只注入子进程，不写入 CLI 的凭据库；Pi、CodeWhale、Reasonix 与 Crush 会使用按配置隔离的持久会话目录，因此 key 模式重启后仍可读取历史，同时不会读取原生登录凭据。
 - **桌面 GUI (`actoviq-gui`)** — Electron 聊天 UI：流式 transcript、对话历史、命令面板、设置、每工具权限提示。安全增强。
 - **TUI (`actoviq-tui`)** — 终端 UI，25+ 斜杠命令，Claude Code 风格 UX：`/team`、`/bridge`、`/plan`、`/hooks`、`/mcp`、`/review`、`/context`、`/cost`、`/doctor` 等。实时状态旋转器、滚动 transcript、todo 面板、项目/用户级权限对话框、子命令自动补全。
 - **计划模式 + hooks** — `EnterPlanMode`/`ExitPlanMode` 工具 + 计划文件；`settings.json` 中的 `PreToolUse`/`PostToolUse`/`SessionStart` hooks。
@@ -126,7 +126,7 @@ npx actoviq-tui [工作目录] [选项]
 #   --continue                 继续最近更新的会话
 ```
 
-特性与英文 README 一致，包括上下文管理、bridge config、计划模式、hooks、MCP、诊断等。
+特性与英文 README 一致，包括上下文管理、bridge config、计划模式、hooks、MCP、诊断等。六种 External CLI 都可使用 `/bridge status`、`/bridge background`、`/bridge runs` 和 `/bridge stop`；`/bridge history` 与 `/bridge resume` 在 TUI 和 GUI 中共享同一套校验逻辑，但原生历史/恢复能力仍取决于已安装 CLI 的协议与版本。
 
 ## 桌面 GUI (`actoviq-gui`)
 

@@ -69,8 +69,29 @@ function normalizeMessagesUrl(baseURL?: string | null): string {
   return `${normalized}/v1/messages`;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? createAbortError('Provider retry was aborted.'));
+  }
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? createAbortError('Provider retry was aborted.'));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }
 
 function makeTimeoutSignal(timeoutMs: number | undefined, signal?: AbortSignal): AbortSignal | undefined {
@@ -324,6 +345,7 @@ class ActoviqProviderMessageStream implements AsyncIterable<MessageStreamEvent> 
       let buffer = '';
       let currentEventName = 'message';
       let dataLines: string[] = [];
+      let sawTerminalEvent = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -344,6 +366,7 @@ class ActoviqProviderMessageStream implements AsyncIterable<MessageStreamEvent> 
               continue;
             }
             this.accumulator.apply(event);
+            if (event.type === 'message_stop') sawTerminalEvent = true;
             yield event;
             continue;
           }
@@ -359,13 +382,23 @@ class ActoviqProviderMessageStream implements AsyncIterable<MessageStreamEvent> 
         }
       }
 
+      buffer += decoder.decode();
+      if (buffer.startsWith('event:')) {
+        currentEventName = buffer.slice('event:'.length).trim();
+      } else if (buffer.startsWith('data:')) {
+        dataLines.push(buffer.slice('data:'.length).trimStart());
+      }
       const trailingEvent = parseSsePayload(currentEventName, dataLines);
       if (trailingEvent) {
         this.accumulator.apply(trailingEvent);
+        if (trailingEvent.type === 'message_stop') sawTerminalEvent = true;
         yield trailingEvent;
       }
 
       const finalMessage = this.accumulator.finalize();
+      if (!sawTerminalEvent && finalMessage.stop_reason === null) {
+        throw new Error('Provider stream ended prematurely without a terminal message_stop event.');
+      }
       this.finished = true;
       this.resolveFinalMessage(finalMessage);
     } catch (error) {
@@ -521,13 +554,16 @@ export default class ActoviqProviderClient {
         lastError = error;
       } catch (error) {
         lastError = error;
+        if (options?.signal?.aborted) {
+          throw options.signal.reason ?? error;
+        }
         const retryable = shouldRetryError(error);
         if (attempt === this.maxRetries || !retryable) {
           throw retryable ? normalizeTransportError(error, normalizeMessagesUrl(this.baseURL)) : error;
         }
       }
 
-      await delay(computeRetryDelayMs(attempt, retryAfterMs));
+      await delay(computeRetryDelayMs(attempt, retryAfterMs), options?.signal);
     }
 
     throw lastError instanceof Error
@@ -615,6 +651,7 @@ function isTransientTransportError(error: Error): boolean {
     text.includes('terminated') ||
     text.includes('econnreset') ||
     text.includes('etimedout') ||
+    text.includes('timed out') ||
     text.includes('und_err_socket') ||
     text.includes('socket') ||
     text.includes('fetch failed') ||

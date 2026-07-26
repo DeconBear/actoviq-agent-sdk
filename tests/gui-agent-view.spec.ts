@@ -20,7 +20,7 @@ describe('GUI Project Agent execution view', () => {
     const css = createActoviqGuiStyles();
     const html = createActoviqGuiHtml();
 
-    expect(js).toContain("['agents', 'Agents']");
+    expect(js).toContain("['agents', 'Agent monitor']");
     expect(js).toContain("'/api/agent-executions?path='");
     expect(js).toContain("'project-tab-agents'");
     expect(js).toContain("'agent-executions-panel'");
@@ -41,6 +41,14 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain("'agent-execution-root-' + root.rootExecutionId");
     expect(js).toContain("'agent-execution-node-' + node.id");
     expect(js).toContain("'agent-node-open-session-' + node.sessionId");
+    expect(js).toContain("'agent-conversation-' + conversation.id");
+    expect(js).toContain('function appendAgentConversation(host, conversation)');
+    expect(js).toContain("head.textContent = 'Conversations (' + conversations.length + ')'");
+    expect(js).toContain("conversation.kind === 'manager'");
+    expect(js).toContain("conversation.isWaiting");
+    expect(js).toContain('const activity = conversation.isRunning || conversation.isWaiting');
+    expect(js).toContain("setManagerUiMode('compact')");
+    expect(js).toContain("conversation.isCurrent && conversation.isRunning ? 'View live' : 'Open conversation'");
     expect(js).toContain("'agent-edge-' + edge.callId");
     expect(js).toContain('renderAgentExecutionsPanel');
     expect(js).toContain('appendAgentExecutionRoot');
@@ -50,10 +58,15 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain('agentEdgeStatusLabel');
     expect(js).toContain("aria-expanded");
     expect(js).toContain("aria-live', 'polite'");
+    expect(js).toContain("head.textContent = 'Running (' + view.active.length + ')'");
+    expect(js).toContain("head.textContent = 'Waiting / suspended (' + view.waiting.length + ')'");
+    expect(js).toContain("return 'Last activity: ' + summary");
 
     expect(css).toContain('.agent-execution-panel');
     expect(css).toContain('.agent-execution-node');
     expect(css).toContain('.agent-execution-edge');
+    expect(css).toContain('.agent-conversation-row.running');
+    expect(css).toContain('.agent-conversation-row.waiting');
     expect(css).toContain('.detail-conversations-toggle:focus-visible');
     expect(css).toContain('@media (max-width: 860px)');
     for (const [id, label] of [
@@ -61,7 +74,7 @@ describe('GUI Project Agent execution view', () => {
       ['navProject', 'Project'],
       ['navTeam', 'Agent'],
       ['navAutomation', 'Automation'],
-      ['navPlugins', 'Plugins'],
+      ['navPlugins', 'Customize'],
       ['settingsBtn', 'Settings'],
       ['detailConversationsBtn', 'Conversations'],
     ]) {
@@ -124,6 +137,109 @@ describe('GUI Project Agent execution view', () => {
     expect(refresh.indexOf('state.agentExecutionsLoading = false')).toBeLessThan(
       refresh.lastIndexOf('if (!agentExecutionViewIsVisible()'),
     );
+  });
+
+  it('provides a model-first picker with grouped metadata and keyboard controls', () => {
+    const html = createActoviqGuiHtml();
+    const js = createActoviqGuiClientScript();
+    const css = createActoviqGuiStyles();
+
+    expect(html).toContain('id="modelPickerBtn"');
+    expect(html).toContain('aria-haspopup="listbox"');
+    expect(html).toContain('placeholder="Search models, providers, runtimes"');
+    expect(html).toContain('Ctrl / ⌘ + / to cycle');
+    expect(js).toContain("appendPickerSection(items, 'Recent'");
+    expect(js).toContain("appendPickerSection(items, 'Agent presets'");
+    expect(js).toContain("appendPickerSection(items, 'Models'");
+    expect(js).toContain("label.textContent = 'Auto'");
+    expect(js).toContain("agent.execution === 'cli' ? 'CLI runtime' : 'Direct API'");
+    expect(js).toContain("event.key === '/'");
+    expect(js).toContain("event.key === 'ArrowDown'");
+    expect(js).toContain('current < 0 ? 0 : Math.min(current + 1');
+    expect(js).toContain('current < 0 ? rows.length - 1');
+    expect(js).toContain("event.key === 'Home' || event.key === 'End'");
+    expect(js).toContain('state.pickerSelectionSequence');
+    expect(js).toContain('function positionModelPickerFlyout()');
+    expect(js).toContain("button.closest('.workbench-chat')");
+    expect(js).toContain('Stop or wait for the active response before switching models.');
+    expect(css).toContain('.picker-item-chips');
+    expect(css).toContain('.model-picker-btn-copy');
+    expect(css).toContain('var(--model-picker-menu-width');
+  });
+
+  it('does not let stale state requests overwrite a newer mutation', () => {
+    const js = createActoviqGuiClientScript();
+
+    expect(js).toContain('let stateSnapshotLoadSequence = 0');
+    expect(js).toContain('const requestSequence = ++stateSnapshotLoadSequence');
+    expect(js).toContain('if (requestSequence !== stateSnapshotLoadSequence) return');
+    expect(js).toContain('if (requestVersion !== apiMutationVersion)');
+    expect(js).toContain('return loadState()');
+  });
+
+  it('provides a two-section Customize workspace for plugin and skill management', () => {
+    const html = createActoviqGuiHtml();
+    const js = createActoviqGuiClientScript();
+    const css = createActoviqGuiStyles();
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+
+    expect(html).toContain('<h1>Customize</h1>');
+    expect(html).toContain('id="pluginsViewPluginsBtn"');
+    expect(html).toContain('id="pluginsViewSkillsBtn"');
+    expect(html).not.toContain('id="pluginsViewToolsBtn"');
+    expect(html).not.toContain('id="pluginsViewMcpBtn"');
+    expect(js).toContain("let url = '/api/customize/plugins'");
+    expect(js).toContain('renderManagedPluginCatalog');
+    expect(js).toContain('plugin-detail-panel');
+    expect(js).toContain("if (options.type !== 'textarea')");
+    expect(js).toContain("document.createElement('form')");
+    expect(source).toContain('if (managedPluginRuntimeClose)');
+    expect(source).toContain('await managedPluginRuntimeClose()');
+    expect(source).toContain('if (managedPluginCloseError) throw managedPluginCloseError');
+    expect(js).toContain('Qwen / DashScope');
+    expect(js).toContain('E2B isolated desktop');
+    expect(js).toContain('Reuse the secure login already managed by GitHub CLI'.replace('Reuse', 'Leave the alternate token empty to reuse'));
+    expect(js).toContain('Persistent profile directory');
+    expect(js).toContain("api('/api/customize/skills'");
+    expect(js).toContain("action: 'source'");
+    expect(js).toContain("action: 'skill'");
+    expect(js).toContain("action: 'prefer'");
+    expect(js).toContain("clear: true");
+    expect(js).toContain('Trust & enable');
+    expect(js).toContain('Revoke trust');
+    expect(js).toContain('discovery or load warning');
+    expect(js).toContain('skill.origins || []');
+    expect(js).toContain('Clear choice');
+    expect(js).toContain('Collapsed by name. Expand a row for details');
+    expect(js).toContain('skillCatalogExpanded');
+    expect(js).toContain('collectSkillLocations');
+    expect(css).toContain('.skill-source-grid');
+    expect(css).toContain('.skill-catalog-row.is-active');
+    expect(css).toContain('.skill-catalog-row.is-disabled');
+    expect(css).toContain('.skill-catalog-row.is-open');
+    expect(css).toContain('.region-body { flex: 1; min-height: 0; overflow: auto');
+    expect(css).toContain('.plugin-market-grid');
+    expect(css).toContain('.plugin-detail');
+  });
+
+  it('reconnects foreground runs with sequenced replay and lightweight polling', () => {
+    const js = createActoviqGuiClientScript();
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+
+    expect(js).toContain("api('/api/runs')");
+    expect(js).toContain("api('/api/rail-live')");
+    expect(js).toContain("'/api/run/events?runId='");
+    expect(js).toContain('if (event.sequence <= state.activeRunSequence) return;');
+    expect(js).toContain('body: JSON.stringify({ text, clientRequestId })');
+    expect(js).toContain('async function initializeGui()');
+    expect(js).toContain('await recoverDisconnectedRun(sessionId, true');
+    expect(js).toContain("T.applyEvent({ type: 'response.retry' })");
+    expect(source).toContain("event.sourceType === 'model.interrupted'");
+    expect(source).toContain("type: 'reconnecting'");
+    expect(source).toContain('const runReplayTombstones = new Map<string, GuiRunRecord>()');
+    expect(source).toContain('retainRunReplay(run)');
+    expect(source).toContain('runReplayTombstones.get(runId)');
+    expect(source).toContain('if (replayEvents.length > 2_000) replayEvents.shift()');
   });
 
   it('serializes cached child-session switches before enabling sends', () => {

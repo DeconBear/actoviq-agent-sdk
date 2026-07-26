@@ -28,10 +28,12 @@ async function tempRoot(prefix: string): Promise<string> {
 async function api<T>(
   server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
   requestPath: string,
+  init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const url = new URL(requestPath.replace(/^\/+/u, ''), server.url);
   const response = await fetch(url, {
-    headers: { 'x-actoviq-token': server.token },
+    ...init,
+    headers: { 'x-actoviq-token': server.token, ...init.headers },
   });
   return {
     status: response.status,
@@ -110,6 +112,67 @@ async function seedActiveExecution(store: AgentExecutionStore, cwd: string): Pro
     sourceSessionId: 'main-session',
     targetSessionId: 'agent-child-session',
     summary: 'Review the project API',
+  });
+  await store.upsertEvent({
+    type: 'thread.status',
+    eventId: 'child-a-waiting',
+    rootExecutionId: 'root-a',
+    occurredAt: at(5),
+    executionId: 'child-a',
+    sessionId: 'agent-child-session',
+    agentStatus: 'interrupted',
+    threadStatus: 'idle',
+  });
+  await store.upsertEvent({
+    type: 'activity',
+    eventId: 'child-a-waiting-activity',
+    rootExecutionId: 'root-a',
+    occurredAt: at(6),
+    executionId: 'child-a',
+    sessionId: 'agent-child-session',
+    activity: {
+      kind: 'waiting',
+      summary: 'Waiting for the network to return',
+      startedAt: at(6),
+    },
+  });
+  await store.upsertEvent({
+    type: 'thread.started',
+    eventId: 'root-a-history-started',
+    rootExecutionId: 'root-a-history',
+    occurredAt: at(7),
+    executionId: 'root-a-history',
+    sessionId: 'main-session',
+    agentName: 'Older completed turn',
+    runtime: 'claude',
+    model: 'test-model',
+    cwd,
+    agentStatus: 'running',
+    threadStatus: 'active',
+  });
+  await store.upsertEvent({
+    type: 'activity',
+    eventId: 'root-a-history-activity',
+    rootExecutionId: 'root-a-history',
+    occurredAt: at(8),
+    executionId: 'root-a-history',
+    sessionId: 'main-session',
+    activity: {
+      kind: 'message',
+      summary: 'Stale completed activity',
+      startedAt: at(8),
+    },
+  });
+  await store.upsertEvent({
+    type: 'turn.completed',
+    eventId: 'root-a-history-completed',
+    rootExecutionId: 'root-a-history',
+    occurredAt: at(9),
+    executionId: 'root-a-history',
+    sessionId: 'main-session',
+    runId: 'run-root-a-history',
+    outcome: 'completed',
+    result: 'Historical turn complete.',
   });
 }
 
@@ -203,6 +266,30 @@ describe('GUI agent execution API', () => {
       metadata: { __actoviqWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'This belongs in the Agent view.' }],
     });
+    await sessionStore.create({
+      id: 'history-session',
+      title: 'Earlier project conversation',
+      model: 'test-model',
+      kind: 'main',
+      metadata: { __actoviqWorkDir: workA },
+      initialMessages: [{ role: 'user', content: 'Keep this conversation in the Agent monitor.' }],
+    });
+    await sessionStore.create({
+      id: 'manager-session',
+      title: 'Manager',
+      model: 'test-model',
+      kind: 'manager',
+      metadata: { __actoviqWorkDir: workA },
+      initialMessages: [{ role: 'user', content: 'Keep this manager conversation in its dedicated panel.' }],
+    });
+    await sessionStore.create({
+      id: 'archived-session',
+      title: 'Archived project conversation',
+      model: 'test-model',
+      kind: 'main',
+      metadata: { __actoviqWorkDir: workA },
+      initialMessages: [{ role: 'user', content: 'Do not show this archived conversation.' }],
+    });
 
     const server = await startActoviqGuiServer({
       workDir: workA,
@@ -213,6 +300,13 @@ describe('GUI agent execution API', () => {
     });
 
     try {
+      const archived = await api<{ ok: boolean }>(server, '/api/session/archive', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'archived-session' }),
+      });
+      expect(archived.status).toBe(200);
+
       const activeSession = await api<{ session: { id: string } | null }>(
         server,
         '/api/session/active',
@@ -220,16 +314,54 @@ describe('GUI agent execution API', () => {
       expect(activeSession.status).toBe(200);
       expect(activeSession.body.session?.id).toBeTruthy();
 
-      const listA = await api<AgentExecutionProjectView>(
+      const listA = await api<AgentExecutionProjectView & {
+        conversations: Array<{
+          id: string;
+          title: string;
+          kind?: string;
+          isRunning: boolean;
+          isWaiting: boolean;
+          isCurrent: boolean;
+          lifecycle: string;
+          displayName: string;
+          currentActivity: { summary?: string } | null;
+        }>;
+        runningConversationCount: number;
+        waitingConversationCount: number;
+      }>(
         server,
         `/api/agent-executions?path=${encodeURIComponent(workA)}`,
       );
       expect(listA.status).toBe(200);
       expect(listA.body.active.map(item => item.rootExecutionId)).toEqual(['root-a']);
-      expect(listA.body.completed).toEqual([]);
+      expect(listA.body.completed.map(item => item.rootExecutionId)).toEqual(['root-a-history']);
       expect(listA.body).toMatchObject({
-        totalExecutionCount: 1,
-        totalAgentCount: 2,
+        totalExecutionCount: 2,
+        totalAgentCount: 3,
+        runningConversationCount: 1,
+        waitingConversationCount: 1,
+      });
+      expect(listA.body.conversations.map(item => item.id)).toEqual(expect.arrayContaining([
+        'main-session',
+        'agent-child-session',
+        'history-session',
+        'manager-session',
+      ]));
+      expect(listA.body.conversations.map(item => item.id)).not.toContain('archived-session');
+      expect(listA.body.conversations.find(item => item.id === 'agent-child-session')).toMatchObject({
+        kind: 'agent',
+        isWaiting: true,
+        lifecycle: 'waiting',
+      });
+      expect(listA.body.conversations.find(item => item.id === 'main-session')).toMatchObject({
+        isRunning: true,
+        isWaiting: false,
+        lifecycle: 'running',
+        currentActivity: null,
+      });
+      expect(listA.body.conversations.find(item => item.id === 'manager-session')).toMatchObject({
+        kind: 'manager',
+        displayName: 'Project Manager',
       });
       expectNoInternalEventState(listA.body);
 
@@ -239,6 +371,7 @@ describe('GUI agent execution API', () => {
       );
       expect(listB.status).toBe(200);
       expect(listB.body.active).toEqual([]);
+      expect(listB.body.waiting).toEqual([]);
       expect(listB.body.completed.map(item => item.rootExecutionId)).toEqual(['root-b']);
       expect(listB.body.completed.map(item => item.rootExecutionId)).not.toContain('root-a');
       expectNoInternalEventState(listB.body);
@@ -315,8 +448,11 @@ describe('GUI agent execution API', () => {
       expect(state.body.sessions.map(item => item.id)).toContain('main-session');
       expect(state.body.sessions.map(item => item.id)).not.toContain('agent-child-session');
       const projectA = state.body.projects.find(item => path.resolve(item.path) === path.resolve(workA));
-      expect(projectA).toMatchObject({ sessionCount: 1 });
-      expect(projectA?.recentSessions.map(item => item.id)).toEqual(['main-session']);
+      expect(projectA).toMatchObject({ sessionCount: 2 });
+      expect(projectA?.recentSessions.map(item => item.id)).toEqual(expect.arrayContaining([
+        'main-session',
+        'history-session',
+      ]));
     } finally {
       await server.close();
     }
@@ -368,10 +504,12 @@ describe('GUI agent execution API', () => {
       expect(listB.status).toBe(200);
       expect([
         ...listA.body.active,
+        ...listA.body.waiting,
         ...listA.body.completed,
-      ].map(item => item.rootExecutionId)).toEqual(['root-a']);
+      ].map(item => item.rootExecutionId)).toEqual(['root-a', 'root-a-history']);
       expect([
         ...listB.body.active,
+        ...listB.body.waiting,
         ...listB.body.completed,
       ].map(item => item.rootExecutionId)).toEqual(['root-b']);
 

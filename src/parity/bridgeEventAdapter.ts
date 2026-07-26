@@ -11,11 +11,20 @@ import type { ActoviqBridgeJsonEvent, ActoviqBridgeRunResult, AgentEvent, AgentR
 
 // ---------- per-event adaptation ----------
 
+export interface BridgeEventAdapterState {
+  textSnapshot: string;
+}
+
+export function createBridgeEventAdapterState(): BridgeEventAdapterState {
+  return { textSnapshot: '' };
+}
+
 export function bridgeEventToAgentEvents(
   event: ActoviqBridgeJsonEvent,
   _sessionId: string,
   runId: string,
   model: string,
+  state: BridgeEventAdapterState = createBridgeEventAdapterState(),
 ): AgentEvent[] {
   const events: AgentEvent[] = [];
 
@@ -38,12 +47,16 @@ export function bridgeEventToAgentEvents(
       inner.delta !== null &&
       (inner.delta as Record<string, unknown>).type === 'text_delta'
     ) {
+      const delta = String((inner.delta as Record<string, unknown>).text ?? '');
+      state.textSnapshot += delta;
       events.push({
         type: 'response.text.delta',
-        delta: String((inner.delta as Record<string, unknown>).text ?? ''),
-        snapshot: String((inner.delta as Record<string, unknown>).text ?? ''),
+        runId,
+        iteration: 0,
+        delta,
+        snapshot: state.textSnapshot,
         timestamp: new Date().toISOString(),
-      } as unknown as AgentEvent);
+      });
     }
   }
 
@@ -54,15 +67,17 @@ export function bridgeEventToAgentEvents(
         if (typeof block === 'object' && block !== null) {
           const b = block as Record<string, unknown>;
           if (b.type === 'tool_use') {
+            const name = String(b.name ?? 'Tool');
             events.push({
               type: 'tool.call',
               call: {
                 id: String(b.id ?? ''),
-                name: String(b.name ?? ''),
+                name,
+                publicName: name,
+                provider: 'local',
                 input: (b.input ?? {}) as Record<string, unknown>,
+                startedAt: new Date().toISOString(),
               },
-              publicName: String(b.name ?? ''),
-              provider: 'bridge',
               runId,
               iteration: 0,
               timestamp: new Date().toISOString(),
@@ -74,20 +89,61 @@ export function bridgeEventToAgentEvents(
   }
 
   if (event.type === 'user') {
-    const tr = (event as Record<string, unknown>).tool_result;
-    if (tr && typeof tr === 'object') {
+    const record = event as Record<string, unknown>;
+    const message = typeof record.message === 'object' && record.message !== null
+      ? record.message as Record<string, unknown>
+      : undefined;
+    const content = Array.isArray(message?.content) ? message.content : [];
+    const toolResults = [
+      ...(record.tool_result && typeof record.tool_result === 'object'
+        ? [record.tool_result as Record<string, unknown>]
+        : []),
+      ...content.filter((block): block is Record<string, unknown> =>
+        typeof block === 'object' && block !== null
+          && (block as Record<string, unknown>).type === 'tool_result'),
+    ];
+    for (const tr of toolResults) {
+      const output = visibleBridgeToolResult(tr.content ?? tr.output);
+      const timestamp = new Date().toISOString();
       events.push({
         type: 'tool.result',
         result: {
-          id: String((tr as Record<string, unknown>).tool_use_id ?? ''),
+          id: String(tr.tool_use_id ?? tr.id ?? ''),
+          name: String(tr.name ?? 'Tool'),
+          publicName: String(tr.name ?? 'Tool'),
+          provider: 'local',
+          input: {},
+          startedAt: timestamp,
+          outputText: output,
           output: tr,
+          isError: tr.is_error === true,
+          completedAt: timestamp,
+          durationMs: 0,
         },
-        timestamp: new Date().toISOString(),
+        runId,
+        iteration: 0,
+        timestamp,
       } as unknown as AgentEvent);
     }
   }
 
   return events;
+}
+
+function visibleBridgeToolResult(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map(visibleBridgeToolResult).filter(Boolean).join('\n');
+  }
+  if (typeof value !== 'object' || value === null) return value == null ? '' : String(value);
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === 'string') return record.text;
+  if (record.content !== undefined) return visibleBridgeToolResult(record.content);
+  try {
+    return JSON.stringify(record);
+  } catch {
+    return String(record);
+  }
 }
 
 // ---------- stream wrapper ----------
@@ -108,6 +164,7 @@ export function adaptBridgeRun(
   model: string,
 ): BridgeAgentRunStream {
   let finalResult: AgentRunResult | undefined;
+  const adapterState = createBridgeEventAdapterState();
   const resultPromise = bridgeResult.then(
     (r) => {
       finalResult = {
@@ -145,6 +202,7 @@ export function adaptBridgeRun(
         '',
         runId,
         model,
+        adapterState,
       );
       for (const ae of agentEvents) yield ae;
     }

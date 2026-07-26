@@ -33,8 +33,29 @@ function normalizeChatUrl(baseURL?: string | null): string {
   return `${normalized}/v1/chat/completions`;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? createAbortError('Provider retry was aborted.'));
+  }
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? createAbortError('Provider retry was aborted.'));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }
 
 function makeTimeoutSignal(
@@ -109,6 +130,7 @@ function isTransientTransportError(error: Error): boolean {
     text.includes('terminated') ||
     text.includes('econnreset') ||
     text.includes('etimedout') ||
+    text.includes('timed out') ||
     text.includes('und_err_socket') ||
     text.includes('socket') ||
     text.includes('fetch failed') ||
@@ -205,8 +227,30 @@ export class OpenaiProviderMessageStream
       }
 
       // Stream ended without [DONE] — assemble what we have
+      buffer += decoder.decode();
+      if (buffer.startsWith('data:')) {
+        const data = buffer.slice('data:'.length).trimStart();
+        if (data === '[DONE]') {
+          this.finished = true;
+          const assembled = this.assembleCompletion();
+          this.resolveFinal(assembled);
+          return;
+        }
+        try {
+          const chunk = JSON.parse(data) as OpenaiChatCompletionChunk;
+          this.chunks.push(chunk);
+          yield chunk;
+        } catch {
+          // The terminal-state check below distinguishes a harmless trailing
+          // line from an incomplete response.
+        }
+      }
+
       this.finished = true;
       const assembled = this.assembleCompletion();
+      if (!assembled.choices.some((choice) => typeof choice.finish_reason === 'string')) {
+        throw new Error('OpenAI provider stream ended prematurely without [DONE] or a finish_reason.');
+      }
       this.resolveFinal(assembled);
     } catch (error) {
       this.finished = true;
@@ -373,13 +417,16 @@ export default class OpenaiProviderClient {
         lastError = error;
       } catch (error) {
         lastError = error;
+        if (signal?.aborted) {
+          throw signal.reason ?? error;
+        }
         const retryable = shouldRetryError(error);
         if (attempt === this.maxRetries || !retryable) {
           throw retryable ? normalizeTransportError(error, normalizeChatUrl(this.baseURL)) : error;
         }
       }
 
-      await delay(computeRetryDelayMs(attempt, retryAfterMs));
+      await delay(computeRetryDelayMs(attempt, retryAfterMs), signal);
     }
 
     throw lastError instanceof Error

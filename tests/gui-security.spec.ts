@@ -32,6 +32,11 @@ function rawRequest(port: number, requestPath: string, headers: http.OutgoingHtt
 }
 
 describe('GUI server auth gates', () => {
+  it('refuses a non-loopback bind address', async () => {
+    await expect(startActoviqGuiServer({ host: '0.0.0.0' }))
+      .rejects.toThrow(/may bind only to localhost/iu);
+  });
+
   it('requires a valid token and rejects foreign host/origin', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-sec-'));
     tempDirs.push(root);

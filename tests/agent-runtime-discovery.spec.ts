@@ -142,4 +142,42 @@ describe('runtime local config', () => {
     expect(result).toEqual({ ok: true, source: '~/.codex/config.toml' });
     expect(readFileSync(path.join(codexDir, 'config.toml'), 'utf-8')).toContain('model = "gpt-5"');
   });
+
+  it('uses explicit Claude and Codex config roots when the CLIs override their homes', async () => {
+    const homeDir = await makeHome();
+    const claudeConfigDir = path.join(homeDir, 'isolated-claude');
+    const codexHome = path.join(homeDir, 'isolated-codex');
+    mkdirSync(claudeConfigDir, { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(path.join(claudeConfigDir, 'settings.json'), JSON.stringify({
+      env: { ANTHROPIC_MODEL: 'isolated-claude-model' },
+    }), 'utf-8');
+    writeFileSync(path.join(codexHome, 'config.toml'), 'model = "isolated-codex-model"\n', 'utf-8');
+
+    expect(detectRuntimeLocalConfig('claude', homeDir, { claudeConfigDir })).toMatchObject({
+      model: 'isolated-claude-model',
+      source: 'CLAUDE_CONFIG_DIR/settings.json',
+    });
+    expect(detectRuntimeLocalConfig('codex', homeDir, { codexHome })).toMatchObject({
+      model: 'isolated-codex-model',
+      source: 'CODEX_HOME/config.toml',
+    });
+
+    expect(updateRuntimeLocalConfig(
+      'claude',
+      { model: 'updated-claude-model' },
+      homeDir,
+      { claudeConfigDir },
+    )).toEqual({ ok: true, source: 'CLAUDE_CONFIG_DIR/settings.json' });
+    expect(updateRuntimeLocalConfig(
+      'codex',
+      { model: 'updated-codex-model' },
+      homeDir,
+      { codexHome },
+    )).toEqual({ ok: true, source: 'CODEX_HOME/config.toml' });
+    expect(readFileSync(path.join(claudeConfigDir, 'settings.json'), 'utf-8'))
+      .toContain('updated-claude-model');
+    expect(readFileSync(path.join(codexHome, 'config.toml'), 'utf-8'))
+      .toContain('updated-codex-model');
+  });
 });

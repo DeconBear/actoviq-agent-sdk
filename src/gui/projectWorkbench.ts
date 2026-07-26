@@ -1,7 +1,10 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export type GitStatusEntry = { x: string; y: string; file: string };
 
@@ -366,6 +369,72 @@ export function readGitDiff(
           `+++ b/${rel}`,
           `@@ -0,0 +1,${Math.max(lines.length, 1)} @@`,
           ...lines.map((line) => `+${line}`),
+        ].join('\n');
+      } catch {
+        patch = '';
+      }
+    }
+  }
+  const truncated = patch.length > maxChars;
+  return {
+    path: rel,
+    staged,
+    patch: truncated ? patch.slice(0, maxChars) + '\n\n… truncated …' : patch,
+    truncated: truncated || undefined,
+  };
+}
+
+async function gitTextAtAsync(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return String(stdout).trimEnd();
+  } catch (error) {
+    const err = error as { stdout?: string; stderr?: string; message?: string };
+    if (typeof err.stdout === 'string' && err.stdout) return err.stdout.trimEnd();
+    throw new Error(err.stderr?.trim() || err.message || 'git failed');
+  }
+}
+
+/** Non-blocking counterpart used by the GUI HTTP route. */
+export async function readGitDiffAsync(
+  workDir: string,
+  filePath: string,
+  staged: boolean,
+  maxChars = 200_000,
+): Promise<GitDiffResult> {
+  const root = path.resolve(workDir);
+  if (await gitTextAtAsync(root, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
+    throw new Error('Not a git repository');
+  }
+  const rel = filePath.replace(/\\/g, '/');
+  if (path.isAbsolute(filePath) && !isPathInsideRoot(filePath, root)) {
+    throw new Error('Path escapes repository');
+  }
+  const args = staged
+    ? ['diff', '--cached', '--', rel]
+    : ['diff', '--', rel];
+  let patch = await gitTextAtAsync(root, args);
+  if (!patch && !staged) {
+    const status = await gitTextAtAsync(root, ['status', '--porcelain=v1', '--', rel]);
+    if (status.startsWith('??') || /^\s*A\s/.test(status) || status.includes('A\t') || status.startsWith('A ')) {
+      const abs = path.isAbsolute(filePath) ? filePath : path.join(root, filePath);
+      if (!isPathInsideRoot(abs, root)) throw new Error('Path escapes repository');
+      try {
+        const body = await readFile(abs, 'utf8');
+        const lines = body.split(/\r?\n/);
+        patch = [
+          `diff --git a/${rel} b/${rel}`,
+          'new file mode 100644',
+          '--- /dev/null',
+          `+++ b/${rel}`,
+          `@@ -0,0 +1,${Math.max(lines.length, 1)} @@`,
+          ...lines.map(line => `+${line}`),
         ].join('\n');
       } catch {
         patch = '';

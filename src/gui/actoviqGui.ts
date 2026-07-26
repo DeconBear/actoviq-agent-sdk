@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { execFile, execFileSync, execSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
@@ -14,7 +14,7 @@ import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
 import {
   parseGitCommitLog,
-  readGitDiff,
+  readGitDiffAsync,
   readWorkspaceFile,
   writeWorkspaceFile,
 } from './projectWorkbench.js';
@@ -95,7 +95,6 @@ const XTERM_TYPES = new Map<string, string>([
 import {
   createActoviqCoreTools,
   createAgentSdk,
-  createActoviqBrowserUseToolkit,
   readActoviqBrowserSettings,
   writeActoviqBrowserSettings,
   createModelTeam,
@@ -108,6 +107,7 @@ import {
   listTeamDefinitions,
   listWorkflows,
   loadDefaultActoviqSettings,
+  loadActoviqExternalSkillDefinitions,
   loadJsonConfigFile,
   loadRouterProfile,
   saveRouterProfile,
@@ -154,6 +154,12 @@ import {
   listActoviqHomeTopLevelEntries,
   migrateActoviqHomeData,
   resolveActoviqHome,
+  externalSkillPreferencesToRuntimeOptions,
+  readActoviqExternalSkillPreferences,
+  setActoviqExternalSkillDisabled,
+  setActoviqPreferredExternalSkill,
+  clearActoviqPreferredExternalSkill,
+  writeActoviqExternalSkillPreferences,
   summarizeActoviqHome,
   saveTeamDefinition,
   setScheduledAutomationEnabled,
@@ -173,6 +179,8 @@ import {
   updateProjectIssue,
   upsertAgentProfile,
   WorktreeService,
+  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
+  serializeActoviqSessionPermissionState,
   type ActoviqAgentClient,
   type AgentProfile,
   type ManagerConfig,
@@ -189,11 +197,30 @@ import {
   readBridgeConfigs,
   removeBridgeConfig,
   runtimeToProvider,
+  isManagedExternalCliRuntime,
   VALID_RUNTIMES,
   type BridgeRuntime,
   type ModelModality,
   type PersistedBridgeConfig,
+  type ManagedExternalCliRuntime,
 } from '../parity/bridgeConfigs.js';
+import {
+  externalCliSessionMatchesConfig,
+  listExternalCliSessions,
+  readExternalCliSession,
+  type ExternalCliSessionSummary,
+  type ExternalCliRuntime,
+} from '../parity/externalCliSessions.js';
+import { parseCrushSessionReferenceDetails } from '../parity/crushSessionHistory.js';
+import { probeExternalCliAuth } from '../parity/externalCliAuth.js';
+import {
+  ExternalCliRuntimeManager,
+  type ExternalCliRunSnapshot,
+} from '../parity/externalCliRuntimeManager.js';
+import {
+  bridgeEventToAgentEvents,
+  createBridgeEventAdapterState,
+} from '../parity/bridgeEventAdapter.js';
 import {
   TEAM_GRAPH_MEMBER_FRAMING,
   buildMemberAssignmentPrompt,
@@ -257,6 +284,15 @@ import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
+import {
+  MANAGED_PLUGIN_IDS,
+  patchManagedPluginSettings,
+  readManagedPluginCatalog,
+  type ManagedPluginHealth,
+  type ManagedPluginId,
+} from '../plugins/managedPluginCatalog.js';
+import { probeManagedPlugin } from '../plugins/managedPluginHealth.js';
+import { createManagedPluginRuntime } from '../plugins/managedPluginRuntime.js';
 import { readPackageVersion } from '../cli/version.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
@@ -264,6 +300,7 @@ import {
   createAgentExecutionProjectView,
   createAgentExecutionRootView,
 } from '../ui/agentExecutionView.js';
+import { createExternalCliAgentExecutionSnapshots } from './externalCliAgentMonitor.js';
 import { renderMarkdown } from './guiMarkdown.js';
 import { detectEditorLanguage, highlightCode } from './guiSyntaxHighlight.js';
 import {
@@ -312,11 +349,15 @@ import type {
   TeamDefinition,
   TeamEvent,
   SessionSummary,
+  SessionCreateOptions,
+  SessionResumeOptions,
   ModelTeamResult,
   ModelTeamMode,
   WorkflowNode,
+  StoredSession,
 } from '../types.js';
-import type { AgentSession } from '../runtime/agentSession.js';
+import { AgentSession } from '../runtime/agentSession.js';
+import { SessionStore } from '../storage/sessionStore.js';
 import { AgentExecutionStore } from '../storage/agentExecutionStore.js';
 import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
 import { assertSafeStorageSegment } from '../storage/pathSafety.js';
@@ -335,11 +376,74 @@ const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
   'auto',
 ]);
 
+function isExternalCliHistorySecretKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/giu, '').toLowerCase();
+  return normalized === 'key'
+    || /(?:apikey|accesskey|privatekey|token|authorization|auth|password|passwd|secret|cookie|credential)/u
+      .test(normalized);
+}
+
+function redactExternalCliHistoryString(value: string, secrets: readonly string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    if (secret) redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted
+    .replace(/Bearer\s+[^\s"',;}\]]+/giu, 'Bearer [REDACTED]')
+    .replace(
+      /(\b(?:api[\s_-]*key|access[\s_-]*token|auth[\s_-]*token|authorization|password|passwd|secret|token|key)\s*["']?\s*[:=]\s*["']?)([^"'\s,;}\]]+)/giu,
+      '$1[REDACTED]',
+    );
+}
+
+function redactExternalCliHistoryDto<T>(
+  value: T,
+  secrets: readonly string[],
+  seen = new WeakSet<object>(),
+): T {
+  if (typeof value === 'string') {
+    return redactExternalCliHistoryString(value, secrets) as T;
+  }
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]' as T;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map(item => redactExternalCliHistoryDto(item, secrets, seen)) as T;
+  }
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    redacted[key] = isExternalCliHistorySecretKey(key)
+      ? '[REDACTED]'
+      : redactExternalCliHistoryDto(child, secrets, seen);
+  }
+  return redacted as T;
+}
+
+function externalCliHistorySecrets(homeDir: string): string[] {
+  return readBridgeConfigs(homeDir).configs
+    .map(config => config.apiKey)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .sort((left, right) => right.length - left.length);
+}
+
+function externalCliHistorySourceLabel(
+  summary: Pick<ExternalCliSessionSummary, 'runtime' | 'path'>,
+): string | undefined {
+  if (summary.runtime !== 'crush') return undefined;
+  const reference = parseCrushSessionReferenceDetails(summary.path);
+  if (!reference) return undefined;
+  return reference.managedProfileId
+    ? `Managed profile \u00b7 ${reference.managedProfileId.slice(0, 8)}`
+    : 'Native login';
+}
+
 export interface ActoviqGuiOptions {
   workDir?: string;
   homeDir?: string;
   host?: string;
   port?: number;
+  /** Test/embedding hook for the external CLI supervisor. */
+  externalCliRuntimeManager?: ExternalCliRuntimeManager;
   configPath?: string;
   permissionMode?: ActoviqPermissionMode;
   model?: string;
@@ -374,8 +478,13 @@ interface PendingPermission {
 // runs (chat + future team/background) and the Monitor pane can show them live.
 // Replaces the single foreground runAbort/eventSink singletons (plan phase 2).
 type GuiRunKind = 'chat' | 'team' | 'background' | 'manager';
+class GuiRuntimeMutationConflictError extends Error {
+  override readonly name = 'GuiRuntimeMutationConflictError';
+}
+
 interface GuiRunDescriptor {
   runId: string;
+  clientRequestId?: string;
   kind: GuiRunKind;
   label: string;
   sessionId: string;
@@ -401,6 +510,8 @@ interface GuiRunRecord {
   desc: GuiRunDescriptor;
   abort: AbortController;
   sink: (event: GuiRunEvent) => void;
+  /** Bounded replay buffer used when the renderer reconnects after transport loss. */
+  events?: Array<GuiRunEvent & { sequence: number }>;
 }
 
 interface GuiDurableIssueContext {
@@ -520,12 +631,13 @@ function isOutputStyleId(value: unknown): value is OutputStyleId {
 }
 
 function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'coding'): string {
+  let gitProbe = path.resolve(workDir);
   let isGit = false;
-  try {
-    execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' });
-    isGit = true;
-  } catch {
-    // Non-git workspaces are valid.
+  while (true) {
+    if (existsSync(path.join(gitProbe, '.git'))) { isGit = true; break; }
+    const parent = path.dirname(gitProbe);
+    if (parent === gitProbe) break;
+    gitProbe = parent;
   }
   // Load the CLAUDE.md hierarchy (user + project, with @includes) so the agent
   // picks up project-specific instructions — the canonical Claude Code behavior.
@@ -675,6 +787,7 @@ function guiIcon(name: string): string {
     panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
     panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
     chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    chevronLeft: '<path d="m15 18-6-6 6-6"/>',
     chevronUp: '<path d="m18 15-6-6-6 6"/>',
     copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -1018,10 +1131,13 @@ async function listArchivedSessionsForWorkDir(
   return sessions;
 }
 
-async function cleanupStoredEmptySessions(projectRoots: string[], activeSessionId: string): Promise<number> {
+async function cleanupStoredEmptySessions(
+  projectRoots: string[],
+  protectedSessionIds: ReadonlySet<string>,
+): Promise<number> {
   let deleted = 0;
   for (const projectRoot of projectRoots) {
-    const runtimeProtectedSessionIds = new Set([activeSessionId]);
+    const runtimeProtectedSessionIds = new Set(protectedSessionIds);
     let executionSnapshots: Awaited<ReturnType<AgentExecutionStore['listSnapshots']>>;
     let backgroundTasks: Awaited<ReturnType<BackgroundTaskStore['list']>>;
     try {
@@ -1740,6 +1856,13 @@ async function listenWithFallback(
 export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Promise<ActoviqGuiServer> {
   let workDir = path.resolve(options.workDir ?? process.cwd());
   const host = options.host ?? '127.0.0.1';
+  const normalizedHost = host.trim().toLowerCase().replace(/^\[|\]$/gu, '');
+  if (normalizedHost !== 'localhost' && normalizedHost !== '::1' && normalizedHost !== '127.0.0.1') {
+    throw new Error(
+      'The Actoviq GUI may bind only to localhost, 127.0.0.1, or ::1 because its browser token grants local runtime control.',
+    );
+  }
+  const urlHost = normalizedHost.includes(':') ? `[${normalizedHost}]` : host;
   const port = options.port ?? DEFAULT_PORT;
   const permissionMode: ActoviqPermissionMode = options.permissionMode ?? 'bypassPermissions';
   const authToken = randomBytes(32).toString('hex');
@@ -1753,6 +1876,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return path.basename(normalized).toLowerCase() === '.actoviq'
       ? path.dirname(normalized)
       : normalized;
+  };
+  const externalCliConfigPaths = {
+    claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+    codexHome: process.env.CODEX_HOME,
   };
   const resolveGuiHomeDir = () =>
     guiHomeOverride
@@ -1812,11 +1939,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // TerminalSnapshot vision tool (plan phase 6) can close over it at build time.
   const terminalManager = new TerminalManager();
   let terminalCapable = false;
-  let browserSessionClose: (() => Promise<void>) | null = null;
+  let managedPluginRuntimeClose: (() => Promise<void>) | null = null;
   const rebuildTools = async () => {
-    if (browserSessionClose) {
-      await browserSessionClose().catch(() => undefined);
-      browserSessionClose = null;
+    if (managedPluginRuntimeClose) {
+      await managedPluginRuntimeClose();
+      managedPluginRuntimeClose = null;
     }
     const base = [
       ...createActoviqCoreTools({
@@ -1829,22 +1956,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       configPath: options.configPath,
       homeDir: currentHomeInput(),
     }).catch(() => undefined);
-    const browser = readActoviqBrowserSettings(store?.raw ?? {});
-    if (!browser.enabled) {
+    if (!store) {
       tools = base;
       return;
     }
-    const toolkit = createActoviqBrowserUseToolkit({
-      headless: browser.headless !== false,
-      channel: browser.channel,
-      cdpUrl: browser.cdpUrl,
-      userDataDir: browser.userDataDir,
-      allowedDomains: browser.allowedDomains,
-      defaultTimeoutMs: browser.defaultTimeoutMs,
-      allowEvaluate: browser.allowEvaluate === true,
+    const pluginRuntime = createManagedPluginRuntime(store.raw, {
+      cwd: workDir,
     });
-    tools = [...base, ...toolkit.tools];
-    browserSessionClose = () => toolkit.session.close();
+    tools = [...base, ...pluginRuntime.tools];
+    // Prefer managed-plugin tools when names collide (e.g. TavilySearch).
+    const byName = new Map(tools.map(tool => [tool.name, tool]));
+    tools = [...byName.values()];
+    managedPluginRuntimeClose = pluginRuntime.close;
   };
   let tools = [
     ...createActoviqCoreTools({
@@ -1854,14 +1977,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     ...createTerminalVisionTools(terminalManager),
   ];
   await rebuildTools();
-  const createCleanSdk = () =>
-    createAgentSdk({
+  const createCleanSdk = async () => {
+    const externalSkillPreferences = await readActoviqExternalSkillPreferences({
+      actoviqHomeDir: resolveGuiHomeDir(),
+      workDir,
+    });
+    return createAgentSdk({
       ...(currentHomeInput() ? { homeDir: currentHomeInput() } : {}),
       workDir,
       tools,
       permissionMode,
+      externalSkills: externalSkillPreferencesToRuntimeOptions(externalSkillPreferences),
       ...(options.model ? { model: options.model } : {}),
     });
+  };
   // Credential-tolerant start: if no API key is configured (e.g. first run
   // before the user enters one in Settings), boot the HTTP server anyway so the
   // GUI can show a "needs credentials" hint instead of Fatal-quitting. The SDK
@@ -1876,6 +2005,80 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     serverSessionResumeQueue = pending.then(() => undefined, () => undefined);
     return pending;
   }
+  const credentiallessSessionStore = new SessionStore(
+    await ensureProjectDataMigrated(workDir),
+  );
+  const unavailableWithoutHadamardCredential = (): never => {
+    throw new Error('This operation requires a configured Hadamard provider credential.');
+  };
+  let credentiallessBindings: ConstructorParameters<typeof AgentSession>[0];
+  const hydrateCredentiallessSession = (stored: StoredSession): AgentSession =>
+    new AgentSession(credentiallessBindings, credentiallessSessionStore, stored);
+  const updateCredentiallessSession = async (
+    current: AgentSession,
+    mutate: (stored: StoredSession) => void,
+  ): Promise<StoredSession> => {
+    const stored = current.snapshot();
+    mutate(stored);
+    stored.updatedAt = new Date().toISOString();
+    await credentiallessSessionStore.save(stored);
+    return stored;
+  };
+  credentiallessBindings = {
+    runSession: async () => unavailableWithoutHadamardCredential(),
+    streamSession: () => unavailableWithoutHadamardCredential(),
+    runSkillOnSession: async () => unavailableWithoutHadamardCredential(),
+    streamSkillOnSession: () => unavailableWithoutHadamardCredential(),
+    extractSessionMemory: async () => unavailableWithoutHadamardCredential(),
+    runDream: async () => unavailableWithoutHadamardCredential(),
+    maybeAutoDream: async () => unavailableWithoutHadamardCredential(),
+    getDreamState: async () => unavailableWithoutHadamardCredential(),
+    compactSession: async () => unavailableWithoutHadamardCredential(),
+    getCompactState: async () => unavailableWithoutHadamardCredential(),
+    getAgentContinuity: async () => unavailableWithoutHadamardCredential(),
+    setRuntimeHooks: () => undefined,
+    clearRuntimeHooks: () => undefined,
+    setModel: (current, model) => updateCredentiallessSession(current, stored => {
+      stored.model = model;
+    }),
+    setRuntimePermissionContext: (current, context) =>
+      updateCredentiallessSession(current, stored => {
+        stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
+          serializeActoviqSessionPermissionState({
+            mode: context.mode,
+            permissions: context.permissions ?? [],
+          });
+      }),
+    clearRuntimePermissionContext: current => updateCredentiallessSession(current, stored => {
+      delete stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY];
+    }),
+    hydrate: hydrateCredentiallessSession,
+    saveCheckpoint: (current, label) => credentiallessSessionStore.saveCheckpoint(current.id, label),
+    restoreCheckpoint: async () => unavailableWithoutHadamardCredential(),
+    listCheckpoints: current => credentiallessSessionStore.listCheckpoints(current.id),
+    deleteCheckpoint: (current, checkpointId) =>
+      credentiallessSessionStore.deleteCheckpoint(current.id, checkpointId),
+  };
+  const createCredentiallessSession = async (): Promise<AgentSession> => {
+    if (options.resumeSessionId) {
+      return hydrateCredentiallessSession(
+        await credentiallessSessionStore.load(options.resumeSessionId),
+      );
+    }
+    if (options.continueMostRecent) {
+      const [mostRecent] = await credentiallessSessionStore.list();
+      if (mostRecent) {
+        return hydrateCredentiallessSession(
+          await credentiallessSessionStore.load(mostRecent.id),
+        );
+      }
+    }
+    return hydrateCredentiallessSession(await credentiallessSessionStore.create({
+      title: 'External CLI chat',
+      model: options.model ?? 'external-cli',
+      metadata: { __actoviqWorkDir: workDir },
+    }));
+  };
   const durableIssueResources = new Map<string, {
     coordinator: DurableIssueCoordinator;
     storage: SqliteStorageV2;
@@ -1910,12 +2113,60 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     needsCredentials = true;
     sdk = null;
-    // A throw from createAgentSdk happens before a session is created — synthesize
-    // a minimal session stub so the rest of the file's `session.` references don't
-    // crash (sessionView reads .messages; /doctor reads .messages.length, etc.).
-    // A real session replaces this stub on reloadSdk once the user adds a key.
-    session = { id: '', model: options.model ?? '', title: '', messages: [], metadata: {} } as unknown as AgentSession;
+    // A throw from createAgentSdk happens before a session is created. Keep a
+    // stable, in-memory conversation shell so External CLI mode remains fully
+    // usable without a Hadamard credential. It intentionally persists no
+    // provider secrets; a real session replaces it after reloadSdk succeeds.
+    session = await createCredentiallessSession();
   }
+
+  const listGuiSessions = (): Promise<SessionSummary[]> =>
+    sdk ? sdk.sessions.list() : credentiallessSessionStore.list();
+  const createGuiSession = async (
+    createOptions: SessionCreateOptions = {},
+  ): Promise<AgentSession> => {
+    if (sdk) return sdk.createSession(createOptions);
+    const stored = await credentiallessSessionStore.create({
+      ...createOptions,
+      model: createOptions.model ?? options.model ?? 'external-cli',
+      metadata: {
+        ...(createOptions.metadata ?? {}),
+        __actoviqWorkDir: workDir,
+        ...(createOptions.permissionMode
+          ? {
+              [ACTOVIQ_SESSION_PERMISSION_STATE_KEY]:
+                serializeActoviqSessionPermissionState({
+                  mode: createOptions.permissionMode,
+                  permissions: createOptions.permissions ?? [],
+                }),
+            }
+          : {}),
+      },
+    });
+    return hydrateCredentiallessSession(stored);
+  };
+  const resumeGuiSession = async (
+    sessionId: string,
+    resumeOptions: SessionResumeOptions = {},
+  ): Promise<AgentSession> => {
+    if (sdk) return sdk.resumeSession(sessionId, resumeOptions);
+    const loaded = resumeOptions.fork
+      ? await credentiallessSessionStore.fork(sessionId, {
+          title: resumeOptions.title,
+          tags: resumeOptions.tags,
+          metadata: resumeOptions.metadata,
+        })
+      : await credentiallessSessionStore.load(sessionId);
+    if (resumeOptions.model) loaded.model = resumeOptions.model;
+    if (resumeOptions.permissionMode !== undefined || resumeOptions.permissions !== undefined) {
+      loaded.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
+        serializeActoviqSessionPermissionState({
+          mode: resumeOptions.permissionMode,
+          permissions: resumeOptions.permissions ?? [],
+        });
+    }
+    return hydrateCredentiallessSession(loaded);
+  };
 
   // Remember the startup workspace so it stays in the project list even with
   // zero chats (listKnownProjects previously only inferred from session files).
@@ -1957,8 +2208,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // RunRegistry: active runs keyed by runId. foregroundRunId is the chat run the
   // main view tracks; permissions and /api/abort fall back to it for back-compat.
   const runs = new Map<string, GuiRunRecord>();
+  const runReplayTombstones = new Map<string, GuiRunRecord>();
   let foregroundRunId: string | null = null;
   const foregroundRun = (): GuiRunRecord | undefined => (foregroundRunId ? runs.get(foregroundRunId) : undefined);
+  const liveRunState = () => ({
+    running: [...runs.values()].some(run => run.desc.status === 'running'),
+    runs: [...runs.values()].map(run => run.desc),
+    foregroundRunId,
+    recentRuns: [...runReplayTombstones.values()]
+      .map(run => run.desc)
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .slice(0, 20),
+  });
+  const retainRunReplay = (run: GuiRunRecord): void => {
+    if (!run.events?.length) return;
+    runReplayTombstones.set(run.desc.runId, run);
+    while (runReplayTombstones.size > 20) {
+      const oldest = runReplayTombstones.keys().next().value as string | undefined;
+      if (!oldest) break;
+      runReplayTombstones.delete(oldest);
+    }
+    const timer = setTimeout(() => {
+      if (runReplayTombstones.get(run.desc.runId) === run) {
+        runReplayTombstones.delete(run.desc.runId);
+      }
+    }, 5 * 60 * 1000);
+    timer.unref?.();
+  };
   const automationScheduler = new TaskScheduler({ defaultTimeoutMs: 30 * 60 * 1000 });
   const scheduledAutomationIds = new Set<string>();
   const railReminderScheduler = new ContextRailReminderScheduler();
@@ -1988,6 +2264,106 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let activeBridgeConfig: PersistedBridgeConfig | null = null;
   let activeBridgeModelApi: Awaited<ReturnType<typeof buildRouteModelApi>> | null = null;
   let bridgeModelLabel: string | null = null;
+  const externalCliRuntimeManager = options.externalCliRuntimeManager
+    ?? new ExternalCliRuntimeManager();
+  let runtimeMutationInProgress = false;
+  const runtimeRunLeases = new Map<number, string>();
+  let nextRuntimeRunLeaseId = 0;
+  const activeRuntimeBlocker = (): string | undefined => {
+    // A run remains a blocker until its record is removed in `finally`. Several
+    // paths mark the visible status done before their final SDK/state awaits.
+    const sdkRun = runs.values().next().value as GuiRunRecord | undefined;
+    if (sdkRun) return sdkRun.desc.label;
+    const leasedRun = runtimeRunLeases.values().next().value as string | undefined;
+    if (leasedRun) return leasedRun;
+    const externalRun = externalCliRuntimeManager.list().find(run =>
+      run.status === 'queued' || run.status === 'running'
+    );
+    return externalRun ? `External CLI ${externalRun.runId}` : undefined;
+  };
+  const beginRuntimeMutation = (): (() => void) => {
+    const blocker = activeRuntimeBlocker();
+    if (runtimeMutationInProgress || blocker) {
+      throw new GuiRuntimeMutationConflictError(
+        runtimeMutationInProgress
+          ? 'Runtime configuration is already being updated. Try again in a moment.'
+          : `Wait for ${blocker} to finish, or stop it before changing runtime configuration.`,
+      );
+    }
+    runtimeMutationInProgress = true;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      runtimeMutationInProgress = false;
+    };
+  };
+  const withRuntimeMutation = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const release = beginRuntimeMutation();
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const assertRunCanStart = (): void => {
+    if (runtimeMutationInProgress) {
+      throw new GuiRuntimeMutationConflictError(
+        'Runtime configuration is being updated. Try starting the run again in a moment.',
+      );
+    }
+  };
+  const beginRuntimeRun = (label: string): (() => void) => {
+    assertRunCanStart();
+    const leaseId = ++nextRuntimeRunLeaseId;
+    runtimeRunLeases.set(leaseId, label);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      runtimeRunLeases.delete(leaseId);
+    };
+  };
+  const withRuntimeRun = async <T>(label: string, operation: () => Promise<T>): Promise<T> => {
+    const release = beginRuntimeRun(label);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  const runtimeMutationErrorStatus = (error: unknown): number =>
+    error instanceof GuiRuntimeMutationConflictError ? 409 : 400;
+  const runtimeMutationErrorBody = (error: unknown): { error: string } => ({
+    error: error instanceof Error ? error.message : String(error),
+  });
+  const runtimeMutationCommand = async (
+    operation: () => Promise<GuiRunEvent[]>,
+  ): Promise<GuiRunEvent[]> => {
+    try {
+      return await withRuntimeMutation(operation);
+    } catch (error) {
+      if (error instanceof GuiRuntimeMutationConflictError) {
+        return [{ type: 'error', message: error.message }];
+      }
+      throw error;
+    }
+  };
+  const externalCliConfigIdentities = new Map<string, { signature: string; id: string }>();
+  const externalCliRunConfigNames = new Map<string, string>();
+  const externalCliProtectedSessionIds = new Set<string>();
+  const externalCliSessionIdSecret = randomBytes(32);
+  const externalCliSessionPaths = new Map<string, string>();
+  function registerExternalCliSessionPath(sessionPath: string): string {
+    const id = createHmac('sha256', externalCliSessionIdSecret)
+      .update(path.resolve(sessionPath))
+      .digest('base64url');
+    externalCliSessionPaths.set(id, sessionPath);
+    return id;
+  }
+  function resolveExternalCliSessionPath(id: string): string | undefined {
+    return externalCliSessionPaths.get(id);
+  }
   // /output-style prompt prefix swap (applied per turn; 'default' is a no-op).
   let outputStyle: OutputStyleId = 'default';
   try {
@@ -2054,11 +2430,184 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       toolMetadata = await nextSdk.listToolMetadata();
       sdk = nextSdk;
       needsCredentials = false;
+      await restoreSessionRuntimeSelection();
     } catch (error) {
       await nextSdk.close().catch(() => undefined);
       throw error;
     }
     if (previousSdk) await previousSdk.close().catch(() => undefined);
+  }
+
+  async function externalSkillCatalogSnapshot() {
+    const location = { actoviqHomeDir: resolveGuiHomeDir(), workDir };
+    const preferences = await readActoviqExternalSkillPreferences(location);
+    const runtime = await loadActoviqExternalSkillDefinitions({
+      actoviqHomeDir: location.actoviqHomeDir,
+      workDir,
+      externalSkills: externalSkillPreferencesToRuntimeOptions(preferences),
+    });
+    const activeSkillIds = new Set<string>();
+    if (sdk) {
+      for (const skill of runtime.catalog.skills) {
+        const definition = sdk.getSkillDefinition(skill.name);
+        if (definition?.metadata?.__actoviqExternalSkillId === skill.id) activeSkillIds.add(skill.id);
+      }
+    } else {
+      for (const skillId of runtime.loadedSkillIds) activeSkillIds.add(skillId);
+    }
+    return {
+      catalog: runtime.catalog,
+      preferences,
+      activeSkillIds: [...activeSkillIds].sort(),
+      skippedConflicts: runtime.skippedConflicts,
+      skippedUntrustedSourceIds: runtime.skippedUntrustedSourceIds,
+      loadErrors: runtime.loadErrors,
+    };
+  }
+
+  async function updateExternalSkillPreferences(body: Record<string, unknown>) {
+    const current = await externalSkillCatalogSnapshot();
+    const preferences = current.preferences;
+    const action = typeof body.action === 'string' ? body.action : '';
+    if (action === 'source') {
+      const sourceId = typeof body.sourceId === 'string' ? body.sourceId.trim() : '';
+      const source = current.catalog.sources.find(item => item.id === sourceId);
+      if (!source) throw new Error('Unknown skill source. Refresh Customize and try again.');
+      const disabledSourceIds = new Set(preferences.disabledSourceIds);
+      const trustedProjectSourceIds = new Set(preferences.trustedProjectSourceIds);
+      if (body.enabled === true) disabledSourceIds.delete(sourceId);
+      else disabledSourceIds.add(sourceId);
+      if (body.trust === true) {
+        if (source.scope !== 'project') throw new Error('Only project skill sources require trust.');
+        trustedProjectSourceIds.add(sourceId);
+      } else if (body.trust === false) {
+        if (source.scope !== 'project') throw new Error('Only project skill sources have revocable trust.');
+        trustedProjectSourceIds.delete(sourceId);
+        disabledSourceIds.add(sourceId);
+      }
+      await writeActoviqExternalSkillPreferences(
+        { actoviqHomeDir: resolveGuiHomeDir(), workDir },
+        {
+          ...preferences,
+          disabledSourceIds: [...disabledSourceIds],
+          trustedProjectSourceIds: [...trustedProjectSourceIds],
+        },
+      );
+    } else if (action === 'skill') {
+      const skillId = typeof body.skillId === 'string' ? body.skillId.trim() : '';
+      const selected = current.catalog.skills.find(skill => skill.id === skillId);
+      if (!selected) throw new Error('Unknown skill. Refresh Customize and try again.');
+      await setActoviqExternalSkillDisabled(
+        { actoviqHomeDir: resolveGuiHomeDir(), workDir },
+        skillId,
+        body.enabled !== true,
+      );
+    } else if (action === 'prefer') {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (body.clear === true) {
+        const conflict = current.catalog.conflicts.find(item => item.name === name);
+        if (!conflict && !preferences.preferredSkillIds[name]) {
+          throw new Error('Unknown skill conflict. Refresh Customize and try again.');
+        }
+        await clearActoviqPreferredExternalSkill(
+          { actoviqHomeDir: resolveGuiHomeDir(), workDir },
+          name,
+        );
+      } else {
+        const skillId = typeof body.skillId === 'string' ? body.skillId.trim() : '';
+        const selected = current.catalog.skills.find(skill => skill.id === skillId && skill.name === name);
+        if (!selected || !selected.conflict) {
+          throw new Error('The selected skill is not a current conflict variant. Refresh Customize and try again.');
+        }
+        await setActoviqPreferredExternalSkill(
+          { actoviqHomeDir: resolveGuiHomeDir(), workDir },
+          name,
+          skillId,
+        );
+      }
+    } else {
+      throw new Error('Unknown skill preference action.');
+    }
+    if (sdk && !needsCredentials) await reloadSdk();
+    invalidateHeavyState();
+    return externalSkillCatalogSnapshot();
+  }
+
+  const managedPluginHealthCache = new Map<ManagedPluginId, ManagedPluginHealth>();
+
+  function managedPluginId(value: unknown): ManagedPluginId {
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (!(MANAGED_PLUGIN_IDS as readonly string[]).includes(id)) {
+      throw new Error('Unknown managed plugin. Refresh Customize and try again.');
+    }
+    return id as ManagedPluginId;
+  }
+
+  async function managedPluginCatalogSnapshot() {
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: currentHomeInput(),
+    });
+    const configuredDirs = Array.isArray(store.raw.pluginDirs)
+      ? store.raw.pluginDirs.filter((value): value is string => typeof value === 'string')
+      : [];
+    const health = Object.fromEntries(managedPluginHealthCache) as Partial<
+      Record<ManagedPluginId, ManagedPluginHealth>
+    >;
+    return {
+      ...readManagedPluginCatalog(store.raw, { health }),
+      localPlugins: await discoverActoviqPlugins({
+        workDir,
+        homeDir: store.homeDir,
+        configuredDirs,
+      }),
+    };
+  }
+
+  async function updateManagedPlugin(body: Record<string, unknown>) {
+    const id = managedPluginId(body.id);
+    const action = typeof body.action === 'string' ? body.action : '';
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: currentHomeInput(),
+    });
+    const raw = structuredClone(store.raw);
+    if (action === 'install') {
+      patchManagedPluginSettings(raw, id, { enabled: true });
+    } else if (action === 'enable') {
+      if (typeof body.enabled !== 'boolean') throw new Error('enabled must be a boolean.');
+      patchManagedPluginSettings(raw, id, { enabled: body.enabled });
+    } else if (action === 'save') {
+      patchManagedPluginSettings(raw, id, {
+        ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+        ...(isPlainRecord(body.config) ? { config: body.config } : {}),
+        clearSecret: body.clearSecret === true,
+      });
+    } else {
+      throw new Error('Unknown managed plugin action.');
+    }
+
+    await persistActoviqSettingsStore(store.configPath, raw);
+    await loadJsonConfigFile(store.configPath);
+    managedPluginHealthCache.delete(id);
+    if (sdk && !needsCredentials) await reloadSdk();
+    invalidateHeavyState();
+    return managedPluginCatalogSnapshot();
+  }
+
+  async function testManagedPlugin(body: Record<string, unknown>) {
+    const id = managedPluginId(body.id);
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: currentHomeInput(),
+    });
+    const health = await probeManagedPlugin(store.raw, id, { cwd: workDir });
+    managedPluginHealthCache.set(id, health);
+    return {
+      id,
+      health,
+      catalog: await managedPluginCatalogSnapshot(),
+    };
   }
 
   async function switchProject(nextWorkDir: string): Promise<Record<string, unknown>> {
@@ -2091,6 +2640,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       // Tool metadata is not needed to paint project detail; fill after open returns.
       toolMetadata = [];
       sdk = nextSdk;
+      await restoreSessionRuntimeSelection();
     } catch (error) {
       await nextSdk.close().catch(() => undefined);
       throw error;
@@ -2233,6 +2783,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       : [];
     const homeDir = store?.homeDir ?? resolveGuiHomeDir();
     const cacheKey = `${workDir}|${session?.id ?? 'none'}`;
+    const protectedSessionIds = new Set<string>([
+      ...(session ? [session.id] : []),
+      ...externalCliProtectedSessionIds,
+    ]);
     const now = Date.now();
     let heavy = heavyStateCache && heavyStateCache.key === cacheKey && now - heavyStateCache.at < 4000
       ? heavyStateCache
@@ -2246,28 +2800,37 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         heavyStateCache = heavy;
         void Promise.all([
           discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
-          needsCredentials || !session
+          !session
             ? Promise.resolve(undefined)
-            : collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory)
-              .then((roots) => cleanupStoredEmptySessions(roots, session!.id)),
+            : collectSessionStoreRoots(
+                homeDir,
+                sdk?.config.sessionDirectory
+                  ?? getActoviqProjectSessionDirectory(workDir, homeDir),
+              )
+              .then((roots) => cleanupStoredEmptySessions(roots, protectedSessionIds)),
         ]).then(([plugins]) => {
           if (heavyStateCache?.key === cacheKey) {
             heavyStateCache = { ...heavyStateCache, plugins, at: Date.now() };
           }
         }).catch(() => undefined);
       } else {
-        const sessionStoreRoots = needsCredentials ? [] : await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
+        const sessionStoreRoots = await collectSessionStoreRoots(
+          homeDir,
+          sdk?.config.sessionDirectory ?? getActoviqProjectSessionDirectory(workDir, homeDir),
+        );
         const [plugins, projects] = await Promise.all([
           discoverActoviqPlugins({ workDir, homeDir, configuredDirs }),
           listKnownProjects(homeDir, workDir),
-          needsCredentials || !session ? Promise.resolve() : cleanupStoredEmptySessions(sessionStoreRoots, session.id),
+          !session
+            ? Promise.resolve()
+            : cleanupStoredEmptySessions(sessionStoreRoots, protectedSessionIds),
         ]);
         heavy = { key: cacheKey, at: now, plugins, projects };
         heavyStateCache = heavy;
       }
     }
     const [allSessions, workflows, teams, routers, skills, agents, runtimeDiscovery, scheduledTasks] = await Promise.all([
-      needsCredentials ? Promise.resolve([]) : (sdk! as NonNullable<typeof sdk>).sessions.list(),
+      listGuiSessions(),
       Promise.resolve(listWorkflows(workDir)),
       Promise.resolve(listTeamDefinitions(workDir)),
       Promise.resolve(listRouterProfiles(workDir)),
@@ -2286,7 +2849,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
     // list is noise. The active session is still resumable via the chat view.
     const sessions = allSessions.filter(item => item.messageCount > 0 && isVisibleChatSession(item));
-    const archivedSessions = light || needsCredentials
+    const archivedSessions = light
       ? []
       : await listArchivedSessionsForWorkDir(workDir, homeDir);
     const railStore = await readContextRailStore(workDir, homeDir);
@@ -2341,19 +2904,32 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ? {
               name: activeBridgeConfig.name,
               runtime: activeBridgeConfig.runtime,
+              execution: activeBridgeConfig.execution ?? 'api',
+              authSource: activeBridgeConfig.authSource ?? 'apiKey',
               provider: activeBridgeConfig.provider,
-              apiKeyMasked: maskApiKey(activeBridgeConfig.apiKey),
+              credentialProvider: activeBridgeConfig.credentialProvider ?? '',
+              trustProjectResources: activeBridgeConfig.trustProjectResources === true,
+              apiKeyMasked: activeBridgeConfig.apiKey ? maskApiKey(activeBridgeConfig.apiKey) : '',
               baseURL: activeBridgeConfig.baseURL ?? '',
               model: activeBridgeConfig.model ?? '',
+              nativeSessionId:
+                activeBridgeConfig.execution === 'cli'
+      && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+                  ? externalNativeSessionId(activeBridgeConfig as SupportedExternalCliConfig) ?? ''
+                  : '',
             }
           : null,
         activeModelLabel: bridgeModelLabel,
         configs: bridgeConfigs.map(c => ({
           name: c.name,
           runtime: c.runtime,
+          execution: c.execution ?? 'api',
+          authSource: c.authSource ?? 'apiKey',
           provider: c.provider,
-          apiKey: c.apiKey ?? '',
-          apiKeyMasked: maskApiKey(c.apiKey),
+          credentialProvider: c.credentialProvider ?? '',
+          trustProjectResources: c.trustProjectResources === true,
+          hasApiKey: Boolean(c.apiKey),
+          apiKeyMasked: c.apiKey ? maskApiKey(c.apiKey) : '',
           baseURL: c.baseURL ?? '',
           model: c.model ?? '',
           models: Array.isArray(c.models)
@@ -2364,9 +2940,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
               }))
             : [],
         })),
+        externalRuns: externalCliRuntimeManager.list().map(run => ({
+          runId: run.runId,
+          configName: externalCliRunConfigNames.get(run.runId) ?? 'External CLI',
+          status: run.status,
+          background: run.background,
+          cwd: run.cwd,
+          nativeSessionId: run.nativeSessionId ?? '',
+          createdAt: run.createdAt,
+          startedAt: run.startedAt ?? '',
+          finishedAt: run.finishedAt ?? '',
+          lastText: run.result?.text ? run.result.text.slice(0, 240) : '',
+          error: run.error?.message ?? '',
+        })),
         runtimeDiscovery: runtimeDiscovery.map(runtime => {
           const local = runtime.runtime !== 'hadamard'
-            ? detectRuntimeLocalConfig(runtime.runtime, pointerHomeDir())
+            ? detectRuntimeLocalConfig(runtime.runtime, pointerHomeDir(), externalCliConfigPaths)
             : null;
           return {
             id: runtime.id,
@@ -2412,13 +3001,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           costUsd: configCost(cfgName, rec),
         })),
       },
-      running: runs.size > 0,
-      runs: [...runs.values()].map(r => r.desc),
-      foregroundRunId,
+      ...liveRunState(),
       terminalCapable,
       railItems: sortContextRailItems(railStore.items),
       railNotifications: railReminderScheduler.drainNotifications(),
-      git: gitBranchSummary(),
+      git: await gitBranchSummary(),
     };
   }
 
@@ -2601,6 +3188,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function runWorkflow(name: string, input?: string): Promise<GuiRunEvent[]> {
+    return withRuntimeRun(`workflow:${name}`, () => runWorkflowLeased(name, input));
+  }
+
+  async function runWorkflowLeased(name: string, input?: string): Promise<GuiRunEvent[]> {
     const workflow = loadWorkflow(name, workDir);
     if (!workflow) return [{ type: 'error', message: `workflow not found: ${name}` }];
     const events: GuiRunEvent[] = [{ type: 'notice', message: `running workflow: ${name}` }];
@@ -2690,9 +3281,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }> {
     let gitSummary = '';
     try {
-      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: workDir, encoding: 'utf8' }).trim();
-      const dirty = execSync('git status --porcelain', { cwd: workDir, encoding: 'utf8' }).trim();
-      const log = execSync('git log --oneline -10', { cwd: workDir, encoding: 'utf8' }).trim();
+      const [branch, dirty, log] = await Promise.all([
+        gitText(['rev-parse', '--abbrev-ref', 'HEAD']),
+        gitText(['status', '--porcelain']),
+        gitText(['log', '--oneline', '-10']),
+      ]);
       gitSummary = `branch: ${branch}\ndirty files: ${dirty ? dirty.split('\n').length : 0}\nrecent commits:\n${log}`;
     } catch { /* not a git repo */ }
     let conversationSummaries = '';
@@ -2735,6 +3328,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     instruction?: string;
     text?: string;
     send: (event: GuiRunEvent) => void;
+    clientRequestId?: string;
+    replayEvents?: Array<GuiRunEvent & { sequence: number }>;
+  }): Promise<string> {
+    const label = opts.mode === 'update' ? 'manager:update' : 'manager:chat';
+    return withRuntimeRun(label, () => runManagerTurnLeased(opts));
+  }
+
+  async function runManagerTurnLeased(opts: {
+    mode: 'update' | 'chat';
+    instruction?: string;
+    text?: string;
+    send: (event: GuiRunEvent) => void;
+    clientRequestId?: string;
+    replayEvents?: Array<GuiRunEvent & { sequence: number }>;
   }): Promise<string> {
     if (needsCredentials || !sdk) throw new Error('No API key configured — open Settings → General to add one.');
     for (const run of runs.values()) {
@@ -2803,11 +3410,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const runId = 'r-mgr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const abort = new AbortController();
     const desc: GuiRunDescriptor = {
-      runId, kind: 'manager', label: opts.mode === 'update' ? 'manager:update' : 'manager:chat',
+      runId, clientRequestId: opts.clientRequestId,
+      kind: 'manager', label: opts.mode === 'update' ? 'manager:update' : 'manager:chat',
       sessionId: managerSession.id, model: managerModel, startedAt: Date.now(),
       status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
     };
-    runs.set(runId, { desc, abort, sink: opts.send });
+    const record: GuiRunRecord = { desc, abort, sink: opts.send, events: opts.replayEvents };
+    assertRunCanStart();
+    runs.set(runId, record);
     try {
       opts.send({ type: 'run.started', runId, model: desc.model });
       try {
@@ -2847,6 +3457,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       desc.status = abort.signal.aborted ? 'aborted' : 'error';
       throw error;
     } finally {
+      retainRunReplay(record);
       runs.delete(runId);
       invalidateHeavyState();
     }
@@ -2883,6 +3494,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function executeScheduledAutomationTask(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
+    return withRuntimeRun(`automation:${task.name}`, () => executeScheduledAutomationTaskLeased(task));
+  }
+
+  async function executeScheduledAutomationTaskLeased(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
     const events: GuiRunEvent[] = [{ type: 'notice', message: `automation: ${task.name}` }];
     try {
       if (task.kind === 'workflow') {
@@ -2938,6 +3553,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     };
     const send = (event: GuiRunEvent) => { events.push(event); };
     const backgroundApprover: ActoviqToolApprover = async () => ({ behavior: 'deny', reason: 'Scheduled background tasks cannot request interactive approval.' });
+    assertRunCanStart();
     runs.set(runId, { desc, abort: runAbort, sink: send });
     let streamedText = '';
     try {
@@ -3027,6 +3643,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // it; streamRun injects {model, modelApi} per-run on the SAME session, so
   // context survives switching bridge↔hadamard. No child process anywhere.
   async function activateBridgeConfig(config: PersistedBridgeConfig): Promise<boolean> {
+    if (config.execution === 'cli') {
+      if (!isManagedExternalCliRuntime(config.runtime)) {
+        throw new Error(
+          'External CLI mode requires an installed CLI runtime.',
+        );
+      }
+      activeBridgeConfig = config;
+      activeBridgeModelApi = null;
+      bridgeMode = true;
+      bridgeModelLabel = config.model || null;
+      return true;
+    }
     // Hadamard without credentials: model-only override on the SDK default provider.
     // Hadamard WITH apiKey/baseURL (or any non-hadamard runtime): build a ModelApi
     // so the named config's provider credentials are used for every turn.
@@ -3065,16 +3693,449 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const GOAL_METADATA_KEY = '__actoviqGoal';
   const RUNTIME_METADATA_KEY = '__actoviqRuntime';
   const CONFIG_NAME_METADATA_KEY = '__actoviqConfigName';
-  async function persistSessionRuntimeMetadata(): Promise<void> {
+  const RUNTIME_MODEL_METADATA_KEY = '__actoviqRuntimeModel';
+  const EXTERNAL_SESSION_METADATA_KEY = '__actoviqExternalSessionId';
+  const EXTERNAL_SESSIONS_METADATA_KEY = '__actoviqExternalSessions';
+  interface ExternalSessionBinding {
+    runtime: ManagedExternalCliRuntime;
+    configName: string;
+    cwd: string;
+    nativeSessionId: string;
+    updatedAt: string;
+  }
+  function sameWorkspace(left: string, right: string): boolean {
+    const a = path.resolve(left);
+    const b = path.resolve(right);
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  }
+  function externalSessionBindingKey(
+    config: SupportedExternalCliConfig,
+    targetWorkDir = workDir,
+  ): string {
+    return createHash('sha256')
+      .update(config.runtime + '\u0000' + config.name + '\u0000' + path.resolve(targetWorkDir))
+      .digest('hex')
+      .slice(0, 24);
+  }
+  function externalSessionBindings(
+    targetSession: AgentSession = session,
+  ): Record<string, ExternalSessionBinding> {
+    const raw = targetSession.metadata[EXTERNAL_SESSIONS_METADATA_KEY];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const bindings: Record<string, ExternalSessionBinding> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (
+        !isManagedExternalCliRuntime(record.runtime as BridgeRuntime)
+        || typeof record.configName !== 'string'
+        || typeof record.cwd !== 'string'
+        || typeof record.nativeSessionId !== 'string'
+        || !record.nativeSessionId
+      ) continue;
+      bindings[key] = {
+      runtime: record.runtime as ManagedExternalCliRuntime,
+        configName: record.configName,
+        cwd: record.cwd,
+        nativeSessionId: record.nativeSessionId,
+        updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : '',
+      };
+    }
+    return bindings;
+  }
+  function externalNativeSessionId(
+    config: SupportedExternalCliConfig,
+    targetSession: AgentSession = session,
+    targetWorkDir = workDir,
+  ): string | undefined {
+    const binding = externalSessionBindings(targetSession)[
+      externalSessionBindingKey(config, targetWorkDir)
+    ];
+    if (
+      !binding
+      || binding.runtime !== config.runtime
+      || binding.configName !== config.name
+      || !sameWorkspace(binding.cwd, targetWorkDir)
+    ) return undefined;
+    return binding.nativeSessionId;
+  }
+  async function rememberExternalNativeSession(
+    config: SupportedExternalCliConfig,
+    nativeSessionId: string,
+    targetSession: AgentSession = session,
+    targetWorkDir = workDir,
+  ): Promise<void> {
+    if (!nativeSessionId) return;
+    const bindings = externalSessionBindings(targetSession);
+    bindings[externalSessionBindingKey(config, targetWorkDir)] = {
+      runtime: config.runtime,
+      configName: config.name,
+      cwd: path.resolve(targetWorkDir),
+      nativeSessionId,
+      updatedAt: new Date().toISOString(),
+    };
+    await targetSession.mergeMetadata({
+      [EXTERNAL_SESSIONS_METADATA_KEY]: bindings,
+      [EXTERNAL_SESSION_METADATA_KEY]: undefined,
+    });
+  }
+  async function migrateLegacyExternalSessionBinding(): Promise<void> {
+    const legacySessionId = session.metadata[EXTERNAL_SESSION_METADATA_KEY];
+    const configName = session.metadata[CONFIG_NAME_METADATA_KEY];
+    const runtime = session.metadata[RUNTIME_METADATA_KEY];
+    if (
+      typeof legacySessionId !== 'string'
+      || !legacySessionId
+      || typeof configName !== 'string'
+      || !isManagedExternalCliRuntime(runtime as BridgeRuntime)
+    ) return;
+    const config = findBridgeConfig(configName, resolveGuiHomeDir());
+    if (!config || config.execution !== 'cli' || config.runtime !== runtime) return;
+    await rememberExternalNativeSession(config as SupportedExternalCliConfig, legacySessionId);
+  }
+  async function persistSessionRuntimeMetadata(
+    targetSession: AgentSession = session,
+    config: PersistedBridgeConfig | null = activeBridgeConfig,
+    modelLabel: string | null = bridgeModelLabel,
+  ): Promise<void> {
     try {
-      await session.mergeMetadata({
-        [RUNTIME_METADATA_KEY]: activeBridgeConfig?.runtime ?? 'hadamard',
-        [CONFIG_NAME_METADATA_KEY]: activeBridgeConfig?.name ?? null,
+      await targetSession.mergeMetadata({
+        [RUNTIME_METADATA_KEY]: config?.runtime ?? 'hadamard',
+        [CONFIG_NAME_METADATA_KEY]: config?.name ?? null,
+        [RUNTIME_MODEL_METADATA_KEY]: config?.model ?? modelLabel ?? null,
       });
     } catch {
       // never fail a turn over metadata write
     }
   }
+  async function restoreSessionRuntimeSelection(): Promise<void> {
+    const configName = session.metadata[CONFIG_NAME_METADATA_KEY];
+    if (typeof configName !== 'string' || !configName.trim()) {
+      disableBridge();
+      return;
+    }
+    const stored = findBridgeConfig(configName, resolveGuiHomeDir());
+    if (!stored) {
+      disableBridge();
+      return;
+    }
+    const model = session.metadata[RUNTIME_MODEL_METADATA_KEY];
+    const config = typeof model === 'string' && model.trim()
+      ? { ...stored, model: model.trim() }
+      : stored;
+    try {
+      await activateBridgeConfig(config);
+    } catch {
+      disableBridge();
+    }
+  }
+  await migrateLegacyExternalSessionBinding();
+  await restoreSessionRuntimeSelection();
+
+  function externalCliConfigId(config: PersistedBridgeConfig): string {
+    const signature = JSON.stringify([
+      config.runtime,
+      config.authSource ?? 'native',
+      config.authSource === 'apiKey' ? config.apiKey ?? '' : '',
+      config.authSource === 'apiKey' ? config.baseURL ?? '' : '',
+      config.credentialProvider ?? '',
+      config.trustProjectResources === true,
+    ]);
+    const cached = externalCliConfigIdentities.get(config.name);
+    if (cached?.signature === signature) return cached.id;
+    const identity = {
+      signature,
+      id: config.name + ':' + randomBytes(12).toString('hex'),
+    };
+    externalCliConfigIdentities.set(config.name, identity);
+    return identity.id;
+  }
+
+  function safeExternalCliRun(run: ExternalCliRunSnapshot): Omit<
+    ExternalCliRunSnapshot,
+    'actoviqSessionId' | 'configId' | 'events' | 'logs'
+  > & { configName: string } {
+    const {
+      actoviqSessionId: _actoviqSessionId,
+      configId: _configId,
+      events: _events,
+      logs: _logs,
+      ...safe
+    } = run;
+    return {
+      ...safe,
+      configName: externalCliRunConfigNames.get(run.runId) ?? 'External CLI',
+    };
+  }
+
+  function safeExternalCliRunSummary(run: ExternalCliRunSnapshot) {
+    return {
+      runId: run.runId,
+      configName: externalCliRunConfigNames.get(run.runId) ?? 'External CLI',
+      status: run.status,
+      background: run.background,
+      cwd: run.cwd,
+      nativeSessionId: run.nativeSessionId ?? '',
+      createdAt: run.createdAt,
+      startedAt: run.startedAt ?? '',
+      finishedAt: run.finishedAt ?? '',
+      lastText: run.result?.text ? run.result.text.slice(0, 240) : '',
+      error: run.error?.message ?? '',
+    };
+  }
+
+  function externalCliPermissionMode(): 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' {
+    const mode = currentPermissionMode();
+    return mode === 'auto' ? 'default' : mode;
+  }
+
+  type SupportedExternalCliConfig = PersistedBridgeConfig & {
+    runtime: ManagedExternalCliRuntime;
+  };
+
+  function isExternalCliHistoryConfigCompatible(
+    summary: ExternalCliSessionSummary,
+    config: PersistedBridgeConfig,
+  ): config is SupportedExternalCliConfig {
+    return config.execution === 'cli'
+      && isManagedExternalCliRuntime(config.runtime)
+      && externalCliSessionMatchesConfig(summary, {
+        runtime: config.runtime,
+        authSource: config.authSource,
+        profileName: config.name,
+      }, {
+        homeDir: pointerHomeDir(),
+        actoviqHomeDir: resolveGuiHomeDir(),
+      });
+  }
+
+  async function startManagedExternalCliRun(
+    config: SupportedExternalCliConfig,
+    prompt: string,
+    background: boolean,
+    nativeSessionId?: string,
+  ): Promise<NonNullable<ReturnType<ExternalCliRuntimeManager['get']>>> {
+    const originSession = session;
+    const originWorkDir = workDir;
+    const storedNativeSessionId = externalNativeSessionId(config, originSession, originWorkDir);
+    const externalEffort = currentEffort();
+    const permissionMode = externalCliPermissionMode();
+    const configId = externalCliConfigId(config);
+    if (background) externalCliProtectedSessionIds.add(originSession.id);
+    let run: ExternalCliRunSnapshot;
+    try {
+      assertRunCanStart();
+      run = await externalCliRuntimeManager.start({
+      actoviqSessionId: originSession.id,
+      configId,
+      cwd: originWorkDir,
+      prompt,
+      background,
+      nativeSessionId: nativeSessionId
+        || (typeof storedNativeSessionId === 'string' && storedNativeSessionId
+          ? storedNativeSessionId
+          : undefined),
+      clientOptions: {
+        directCliProvider: config.runtime,
+        authSource: config.authSource === 'apiKey' ? 'apiKey' : 'native',
+        credentialProvider: config.credentialProvider,
+        profileName: config.name,
+        ...(config.authSource === 'apiKey'
+          ? {
+              apiKey: config.apiKey,
+              baseURL: config.baseURL,
+            }
+          : {}),
+        trustProjectResources: config.trustProjectResources,
+      },
+      sessionOptions: {
+        title: 'actoviq-gui-' + config.runtime + '-' + config.name,
+      },
+      runOptions: {
+        model: config.model,
+        effort: externalEffort === 'auto' ? undefined : externalEffort,
+        permissionMode,
+        includePartialMessages: true,
+      },
+      });
+    } catch (error) {
+      if (background) externalCliProtectedSessionIds.delete(originSession.id);
+      throw error;
+    }
+    externalCliRunConfigNames.set(run.runId, config.name);
+    const persistCompletedRun = async (
+      completed: ExternalCliRunSnapshot | undefined,
+    ): Promise<void> => {
+      if (completed?.status !== 'completed' || !completed.result) return;
+      const nativeSessionId = completed.nativeSessionId || completed.result.nativeSessionId;
+      if (nativeSessionId) {
+        await rememberExternalNativeSession(
+          config,
+          nativeSessionId,
+          originSession,
+          originWorkDir,
+        );
+      }
+      await originSession.appendMessages([
+        { role: 'user', content: prompt },
+        { role: 'assistant', content: completed.result.text },
+      ]);
+    };
+    if (run.background) {
+      void externalCliRuntimeManager.wait(run.runId)
+        .then(persistCompletedRun)
+        .catch(error => {
+          console.error(
+            'Failed to persist External CLI background result:',
+            error instanceof Error ? error.message : String(error),
+          );
+        })
+        .finally(() => externalCliProtectedSessionIds.delete(originSession.id));
+    } else await persistCompletedRun(run);
+    return run;
+  }
+
+  function createExternalCliAgentStream(
+    input: string,
+    config: SupportedExternalCliConfig,
+    guiRunId: string,
+    signal: AbortSignal,
+  ): AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> } {
+    const originSession = session;
+    const originWorkDir = workDir;
+    const storedNativeSessionId = externalNativeSessionId(config, originSession, originWorkDir);
+    const externalEffort = currentEffort();
+    const permissionMode = externalCliPermissionMode();
+    const configId = externalCliConfigId(config);
+    const adapterState = createBridgeEventAdapterState();
+    let resolveResult!: (result: AgentRunResult) => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<AgentRunResult>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    void result.catch(() => undefined);
+
+    const iterable = (async function* (): AsyncGenerator<AgentEvent> {
+      let managerRunId: string | undefined;
+      let terminalRun: ReturnType<ExternalCliRuntimeManager['get']>;
+      const abort = () => {
+        if (managerRunId) externalCliRuntimeManager.abort(managerRunId);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+
+      try {
+        for await (const update of externalCliRuntimeManager.stream({
+          actoviqSessionId: originSession.id,
+          configId,
+          cwd: originWorkDir,
+          prompt: input,
+          nativeSessionId: typeof storedNativeSessionId === 'string' && storedNativeSessionId
+            ? storedNativeSessionId
+            : undefined,
+          clientOptions: {
+            directCliProvider: config.runtime,
+            authSource: config.authSource === 'apiKey' ? 'apiKey' : 'native',
+            credentialProvider: config.credentialProvider,
+            profileName: config.name,
+            ...(config.authSource === 'apiKey'
+              ? {
+                  apiKey: config.apiKey,
+                  baseURL: config.baseURL,
+                }
+              : {}),
+            trustProjectResources: config.trustProjectResources,
+          },
+          sessionOptions: {
+            title: 'actoviq-gui-' + config.runtime + '-' + config.name,
+          },
+          runOptions: {
+            model: config.model,
+            effort: externalEffort === 'auto' ? undefined : externalEffort,
+            permissionMode,
+            includePartialMessages: true,
+          },
+        })) {
+          if (update.kind === 'snapshot' || update.kind === 'status') {
+            managerRunId = update.run.runId;
+            externalCliRunConfigNames.set(managerRunId, config.name);
+            if (signal.aborted) externalCliRuntimeManager.abort(managerRunId);
+            if (
+              update.run.status === 'completed'
+              || update.run.status === 'failed'
+              || update.run.status === 'aborted'
+            ) {
+              terminalRun = update.run;
+            }
+            continue;
+          }
+          if (update.kind !== 'event') continue;
+          for (const event of bridgeEventToAgentEvents(
+            update.event,
+            update.event.session_id ?? '',
+            guiRunId,
+            config.model ?? config.runtime,
+            adapterState,
+          )) {
+            yield event;
+          }
+        }
+
+        if (!terminalRun || terminalRun.status !== 'completed' || !terminalRun.result) {
+          const message = signal.aborted || terminalRun?.status === 'aborted'
+            ? 'External CLI run was interrupted.'
+            : terminalRun?.error?.message ?? 'External CLI run failed.';
+          throw new Error(message);
+        }
+
+        const nativeSessionId = terminalRun.nativeSessionId
+          ?? terminalRun.result.nativeSessionId;
+        await rememberExternalNativeSession(
+          config,
+          nativeSessionId,
+          originSession,
+          originWorkDir,
+        ).catch(() => undefined);
+        await originSession.appendMessages([
+          { role: 'user', content: input },
+          { role: 'assistant', content: terminalRun.result.text },
+        ]).catch(() => undefined);
+        await persistSessionRuntimeMetadata(originSession, config, config.model ?? null);
+        const completed: AgentRunResult = {
+          runId: guiRunId,
+          sessionId: nativeSessionId,
+          model: config.model ?? config.runtime,
+          text: terminalRun.result.text,
+          message: {
+            id: 'external-' + guiRunId,
+            role: 'assistant',
+            type: 'message',
+            model: config.model ?? config.runtime,
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: terminalRun.result.text }],
+          },
+          messages: [],
+          stopReason: 'end_turn',
+          requests: [],
+          toolCalls: [],
+          startedAt: terminalRun.startedAt ?? terminalRun.createdAt,
+          completedAt: terminalRun.finishedAt ?? new Date().toISOString(),
+        };
+        resolveResult(completed);
+      } catch (error) {
+        rejectResult(error);
+        throw error;
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    })();
+
+    return {
+      [Symbol.asyncIterator]: () => iterable,
+      result,
+    };
+  }
+
   type GoalStatus = 'active' | 'paused' | 'complete';
   interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
   function getGoal(): SessionGoal | null {
@@ -3150,9 +4211,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (args === 'router' || args.startsWith('router ')) {
           const routerArg = args.slice('router'.length).trim();
           if (routerArg === 'off' || routerArg === 'none') {
-            activeRouter = null;
-            routedModelLabel = null;
-            return [{ type: 'notice', message: 'router off; using the fixed model' }];
+            return runtimeMutationCommand(async () => {
+              activeRouter = null;
+              routedModelLabel = null;
+              return [{ type: 'notice', message: 'router off; using the fixed model' }];
+            });
           }
           if (!routerArg) {
             return [{
@@ -3167,26 +4230,34 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           }
           const loaded = loadRouterProfile(routerArg, workDir);
           if (!loaded) return [{ type: 'error', message: `router profile not found: ${routerArg}` }];
-          activeRouter = loaded.profile;
-          routedModelLabel = null;
-          return [{ type: 'notice', message: `router active: ${loaded.profile.name}` }];
+          return runtimeMutationCommand(async () => {
+            activeRouter = loaded.profile;
+            routedModelLabel = null;
+            return [{ type: 'notice', message: `router active: ${loaded.profile.name}` }];
+          });
         }
-        await session.setModel(args === 'default' ? sdk!.config.model : args);
-        return [{ type: 'notice', message: `model set to: ${session.model}` }];
+        return runtimeMutationCommand(async () => {
+          await session.setModel(args === 'default'
+            ? sdk?.config.model ?? activeBridgeConfig?.model ?? 'external-cli'
+            : args);
+          return [{ type: 'notice', message: `model set to: ${session.model}` }];
+        });
       }
       case 'effort': {
         if (!args) return [{ type: 'command.result', title: 'Effort', text: `current: ${currentEffort() ?? 'auto'}` }];
         const value = args.toLowerCase();
         if (value !== 'auto' && !isEffort(value)) return [{ type: 'error', message: 'usage: /effort [auto|low|medium|high|max]' }];
-        await session.mergeMetadata({ __actoviqEffort: value });
-        return [{ type: 'notice', message: `effort set to: ${value}` }];
+        return runtimeMutationCommand(async () => {
+          await session.mergeMetadata({ __actoviqEffort: value });
+          return [{ type: 'notice', message: `effort set to: ${value}` }];
+        });
       }
       case 'permissions':
         return args
-          ? setPermissionPreset(args.toLowerCase().replace(/[ _]/g, '-'))
+          ? runtimeMutationCommand(() => setPermissionPreset(args.toLowerCase().replace(/[ _]/g, '-')))
           : [{ type: 'command.result', title: 'Permissions', text: `current: ${currentPermissionMode()}` }];
       case 'sessions': {
-        const sessions = await sdk!.sessions.list();
+        const sessions = await listGuiSessions();
         return [{
           type: 'command.result',
           title: 'Sessions',
@@ -3198,13 +4269,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       case 'resume': {
         if (!args) return runSlashCommand('/sessions');
-        const listed = await sdk!.sessions.list();
+        const listed = await listGuiSessions();
         const target = listed.find(item => item.id === args);
         if (target?.kind === 'manager') {
           return [{ type: 'error', message: 'Manager sessions live in the Project Manager panel only.' }];
         }
-        session = await sdk!.resumeSession(args, { model: options.model, permissionMode: options.permissionMode });
-        return [{ type: 'notice', message: `resumed session: ${session.id}` }, { type: 'state' }];
+        return runtimeMutationCommand(async () => {
+          session = await resumeGuiSession(args, { model: options.model, permissionMode: options.permissionMode });
+          await restoreSessionRuntimeSelection();
+          return [{ type: 'notice', message: `resumed session: ${session.id}` }, { type: 'state' }];
+        });
       }
       case 'tools':
         return [{
@@ -3217,14 +4291,17 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           })),
         }];
       case 'memory':
+        if (!sdk) return [{ type: 'error', message: 'Memory compaction requires a configured Hadamard provider credential.' }];
         return [{ type: 'command.result', title: 'Memory', text: JSON.stringify(await session.compactState(), null, 2) }];
       case 'compact': {
+        if (!sdk) return [{ type: 'error', message: 'Compaction requires a configured Hadamard provider credential.' }];
         const result = await session.compact({ force: true, summaryInstructions: args || undefined });
         return result.compacted
           ? [{ type: 'notice', message: `compacted: ${result.messagesRemoved ?? '?'} messages summarized` }]
           : [{ type: 'error', message: result.error ?? `compact skipped: ${result.reason}` }];
       }
       case 'dream': {
+        if (!sdk) return [{ type: 'error', message: 'Dream requires a configured Hadamard provider credential.' }];
         if (!args || args === 'status') {
           return [{ type: 'command.result', title: 'Dream', text: JSON.stringify(await session.dreamState(), null, 2) }];
         }
@@ -3344,18 +4421,22 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           return [{ type: 'command.result', title: 'Team status', text: lines.join('\n') }];
         }
         if (args === 'off') {
-          activeTeamTool = null;
-          activeTeamName = null;
-          return [{ type: 'notice', message: 'team: none' }, { type: 'state' }];
+          return runtimeMutationCommand(async () => {
+            activeTeamTool = null;
+            activeTeamName = null;
+            return [{ type: 'notice', message: 'team: none' }, { type: 'state' }];
+          });
         }
         if (args.startsWith('attach ')) {
           const teamName = args.slice(7).trim();
-          const definition = attachTeamByName(teamName);
-          if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
-          return [{
-            type: 'notice',
-            message: `agent attached: ${definition.name} · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — use Run agent or /team ask'}`,
-          }, { type: 'state' }];
+          return runtimeMutationCommand(async () => {
+            const definition = attachTeamByName(teamName);
+            if (!definition) return [{ type: 'error', message: `team not found: ${teamName}` }];
+            return [{
+              type: 'notice',
+              message: `agent attached: ${definition.name} · autoInvoke ${teamPrefs.autoInvoke ? 'on' : 'off — use /team ask'}`,
+            }, { type: 'state' }];
+          });
         }
         if (args.startsWith('clone ')) {
           const parts = args.slice(6).trim().split(/\s+/);
@@ -3528,8 +4609,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       case 'doctor': {
         const env = readEnvFromSettings(getLoadedJsonConfig()?.raw ?? {});
         const project = loadProjectContext(workDir);
-        let isGit = false;
-        try { execSync('git rev-parse --is-inside-work-tree', { cwd: workDir, stdio: 'ignore' }); isGit = true; } catch { /* not a git repo */ }
+        const isGit = await gitText(['rev-parse', '--is-inside-work-tree']) === 'true';
         const key = env.ACTOVIQ_API_KEY ? maskApiKey(env.ACTOVIQ_API_KEY) : env.ACTOVIQ_AUTH_TOKEN ? '(auth token)' : '(none)';
         const lines = [
           `Model: ${session.model}`,
@@ -3565,7 +4645,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return [{ type: 'notice', message: `goal set: ${args.slice(0, 60)}` }, { type: 'state' }];
       }
       case 'review': {
-        const diff = gitText(['--no-pager', 'diff']);
+        const diff = await gitText(['--no-pager', 'diff']);
         if (!diff) return [{ type: 'error', message: 'no git diff to review (stage/commit changes first)' }];
         const capped = diff.length > 80000 ? diff.slice(0, 80000) + '\n…[diff truncated]' : diff;
         const prompt = `Review the following git diff for correctness, security, and style issues. For each finding cite file:line and explain the problem and the fix. Be concise.\n\n\`\`\`diff\n${capped}\n\`\`\``;
@@ -3606,18 +4686,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       case 'rewind': {
         const n = parseInt(args || '1', 10);
         if (!Number.isFinite(n) || n < 1) return [{ type: 'error', message: 'usage: /rewind <N>' }];
-        const kept = session.messages.slice(0, Math.max(0, session.messages.length - n));
-        const newSession = await sdk!.createSession({ title: session.title, model: options.model, permissionMode });
-        if (kept.length > 0) await newSession.appendMessages(kept).catch(() => undefined);
-        session = newSession;
-        return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
+        return runtimeMutationCommand(async () => {
+          const kept = session.messages.slice(0, Math.max(0, session.messages.length - n));
+          const newSession = await createGuiSession({ title: session.title, model: options.model, permissionMode });
+          if (kept.length > 0) await newSession.appendMessages(kept).catch(() => undefined);
+          session = newSession;
+          await persistSessionRuntimeMetadata();
+          return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
+        });
       }
       case 'output-style': {
         const valid = OUTPUT_STYLES.map(s => s.id);
         if (!args) return [{ type: 'command.result', title: 'Output style', text: `current: ${outputStyle}\navailable: ${valid.join(', ')}` }];
         if (!valid.includes(args as OutputStyleId)) return [{ type: 'error', message: `usage: /output-style [${valid.join('|')}]` }];
-        outputStyle = args as OutputStyleId;
-        return [{ type: 'notice', message: `output style: ${outputStyle}` }, { type: 'state' }];
+        return runtimeMutationCommand(async () => {
+          outputStyle = args as OutputStyleId;
+          return [{ type: 'notice', message: `output style: ${outputStyle}` }, { type: 'state' }];
+        });
       }
       case 'hooks': {
         const raw = getLoadedJsonConfig()?.raw;
@@ -3637,28 +4722,43 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       case 'plan': {
         if (args === 'off') {
-          const mode = permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default';
-          await session.setPermissionContext({ mode, permissions: [], approver });
-          return [{ type: 'notice', message: 'plan mode off' }, { type: 'state' }];
+          return runtimeMutationCommand(async () => {
+            const mode = permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default';
+            await session.setPermissionContext({ mode, permissions: [], approver });
+            return [{ type: 'notice', message: 'plan mode off' }, { type: 'state' }];
+          });
         }
         if (args === 'open') {
           openPathInSystem(planFilePath(workDir));
           return [{ type: 'notice', message: 'opened plan file' }];
         }
-        if (currentPermissionMode() !== 'plan') {
-          await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
-        }
-        const plan = readPlanFile(workDir);
-        return plan
-          ? [{ type: 'command.result', title: 'Plan', text: plan }, { type: 'state' }]
-          : [{ type: 'notice', message: 'plan mode on — research, then ExitPlanMode. No plan yet.' }, { type: 'state' }];
+        return runtimeMutationCommand(async () => {
+          if (currentPermissionMode() !== 'plan') {
+            await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+          }
+          const plan = readPlanFile(workDir);
+          return plan
+            ? [{ type: 'command.result', title: 'Plan', text: plan }, { type: 'state' }]
+            : [{ type: 'notice', message: 'plan mode on — research, then ExitPlanMode. No plan yet.' }, { type: 'state' }];
+        });
       }
       case 'bridge': {
-        if (args === 'off') { disableBridge(); return [{ type: 'notice', message: 'bridge off — using default provider' }, { type: 'state' }]; }
+        if (args === 'off') {
+          return runtimeMutationCommand(async () => {
+            disableBridge();
+            await persistSessionRuntimeMetadata();
+            return [{ type: 'notice', message: 'bridge off — using default provider' }, { type: 'state' }];
+          });
+        }
         if (args === 'help') {
           return [{ type: 'command.result', title: 'Bridge help', text: [
-            '/bridge — open the provider-config editor (Settings → Models & routing)',
-            '/bridge switch <name> — activate a named config',
+            '/bridge — open runtime configuration (Settings → Models & routing)',
+            '/bridge switch <name> — activate a named API or External CLI config',
+            '/bridge status — show the active execution/runtime/auth/session',
+        '/bridge history — browse native External CLI conversations',
+            '/bridge background <prompt> — start work in the active External CLI',
+            '/bridge runs — list foreground/background External CLI work',
+            '/bridge stop <run-id> — interrupt External CLI work',
             '/bridge model [id] — set the active config model',
             '/bridge config — manage named configs',
             '/bridge off — return to the default provider',
@@ -3667,20 +4767,105 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ].join('\n') }];
         }
         if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
+        if (args === 'status') {
+          if (!activeBridgeConfig) {
+            return [{ type: 'command.result', title: 'Runtime status', text: 'Hadamard SDK default is active.' }];
+          }
+          const nativeSessionId = activeBridgeConfig.execution === 'cli'
+      && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+            ? externalNativeSessionId(activeBridgeConfig as SupportedExternalCliConfig)
+            : undefined;
+          return [{ type: 'command.result', title: 'Runtime status', text: [
+            `config: ${activeBridgeConfig.name}`,
+            `execution: ${activeBridgeConfig.execution === 'cli' ? 'External CLI' : 'Direct API'}`,
+            `runtime: ${activeBridgeConfig.runtime}`,
+            `model: ${activeBridgeConfig.model || '(runtime default)'}`,
+            activeBridgeConfig.execution === 'cli'
+              ? `authentication: ${activeBridgeConfig.authSource === 'apiKey' ? 'child-only API key override' : 'native CLI login/config'}`
+              : '',
+            activeBridgeConfig.execution === 'cli' && typeof nativeSessionId === 'string' && nativeSessionId
+              ? `native session: ${nativeSessionId}`
+              : '',
+            `working directory: ${workDir}`,
+          ].filter(Boolean).join('\n') }];
+        }
+        if (args === 'history') {
+          const history = (await listExternalCliSessions({
+            homeDir: pointerHomeDir(),
+            actoviqHomeDir: resolveGuiHomeDir(),
+            crushCwd: workDir,
+          })).slice(0, 80);
+          return [{
+            type: 'command.result',
+            title: 'External CLI history',
+            items: history.map(item => ({
+              label: item.title || item.nativeSessionId,
+              description: `${item.runtime} · ${item.messageCount} messages · ${item.updatedAt}`,
+              detail: item.cwd || item.nativeSessionId,
+            })),
+          text: history.length ? undefined : 'No native External CLI sessions were found.',
+          }];
+        }
+        if (args === 'runs') {
+          const externalRuns = externalCliRuntimeManager.list();
+          return [{
+            type: 'command.result',
+            title: 'External CLI runs',
+            items: externalRuns.map(run => ({
+              label: `${run.runId} · ${run.status}`,
+              description: `${run.background ? 'background' : 'foreground'} · ${externalCliRunConfigNames.get(run.runId) ?? 'External CLI'}`,
+              detail: run.result?.text || run.error?.message || run.nativeSessionId || run.cwd,
+            })),
+            text: externalRuns.length ? undefined : 'No External CLI runs in this app session.',
+          }];
+        }
+        if (args.startsWith('stop ')) {
+          const runId = args.slice('stop '.length).trim();
+          return externalCliRuntimeManager.abort(runId)
+            ? [{ type: 'notice', message: `external CLI run stopped: ${runId}` }, { type: 'state' }]
+            : [{ type: 'error', message: `active external CLI run not found: ${runId}` }];
+        }
+        if (args.startsWith('background ')) {
+          const prompt = args.slice('background '.length).trim();
+          if (!prompt) return [{ type: 'error', message: 'usage: /bridge background <prompt>' }];
+          if (
+            !activeBridgeConfig
+            || activeBridgeConfig.execution !== 'cli'
+      || !isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+          ) {
+      return [{ type: 'error', message: 'activate an External CLI config first' }];
+          }
+          const run = await startManagedExternalCliRun(
+            activeBridgeConfig as SupportedExternalCliConfig,
+            prompt,
+            true,
+          );
+          return [
+            { type: 'notice', message: `external CLI background run started: ${run.runId}` },
+            { type: 'command.result', title: 'Background External CLI', text: `Run ${run.runId} is ${run.status}. Use /bridge runs or /bridge stop ${run.runId}.` },
+            { type: 'state' },
+          ];
+        }
         if (args.startsWith('switch ')) {
           const cfgName = args.slice(7).trim();
           const cfg = findBridgeConfig(cfgName, resolveGuiHomeDir());
           if (!cfg) return [{ type: 'error', message: `bridge config not found: ${cfgName}` }];
-          await activateBridgeConfig(cfg);
-          return [{ type: 'notice', message: `bridge active: ${cfg.name} → ${bridgeModelLabel} (provider ${cfg.provider})` }, { type: 'state' }];
+          return runtimeMutationCommand(async () => {
+            await activateBridgeConfig(cfg);
+            await persistSessionRuntimeMetadata();
+            return [{ type: 'notice', message: `bridge active: ${cfg.name} → ${bridgeModelLabel} (provider ${cfg.provider})` }, { type: 'state' }];
+          });
         }
         if (args.startsWith('model')) {
           const modelArg = args.slice(5).trim();
           if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
           if (!modelArg) return [{ type: 'command.result', title: 'Bridge model', text: `current: ${bridgeModelLabel ?? activeBridgeConfig.model ?? '(default)'}` }];
-          activeBridgeConfig = { ...activeBridgeConfig, model: modelArg };
-          await activateBridgeConfig(activeBridgeConfig);
-          return [{ type: 'notice', message: `bridge model set: ${modelArg}` }, { type: 'state' }];
+          return runtimeMutationCommand(async () => {
+            activeBridgeConfig = { ...activeBridgeConfig!, model: modelArg };
+            await activateBridgeConfig(activeBridgeConfig);
+            await persistSessionRuntimeMetadata();
+            return [{ type: 'notice', message: `bridge model set: ${modelArg}` }, { type: 'state' }];
+          });
         }
         if (args.startsWith('run ')) {
           if (!activeBridgeConfig) return [{ type: 'error', message: 'no active bridge config — /bridge switch <name> first' }];
@@ -3829,6 +5014,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   async function streamIssueDispatch(body: Record<string, unknown>, res: ServerResponse): Promise<void> {
+    let releaseRuntimeRun: () => void;
+    try {
+      releaseRuntimeRun = beginRuntimeRun(`issue:${String(body.id ?? body.number ?? body.idOrNumber ?? 'dispatch')}`);
+    } catch (error) {
+      json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+      return;
+    }
+    try {
+      await streamIssueDispatchLeased(body, res);
+    } finally {
+      releaseRuntimeRun();
+    }
+  }
+
+  async function streamIssueDispatchLeased(body: Record<string, unknown>, res: ServerResponse): Promise<void> {
     const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
@@ -3935,6 +5135,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         toolCalls: 0,
         tokenUsage: { input: 0, output: 0 },
       };
+      assertRunCanStart();
       runs.set(runId, { desc, abort, sink: send });
       const issueSystemPrompt = [
         applyOutputStyle(systemPrompt, outputStyle),
@@ -4062,8 +5263,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
 
-  async function streamRun(input: string, res: ServerResponse): Promise<void> {
-    const send = (event: GuiRunEvent) => res.write(`${JSON.stringify(event)}\n`);
+  async function streamRun(input: string, res: ServerResponse, clientRequestId?: string): Promise<void> {
+    let nextEventSequence = 0;
+    const replayEvents: Array<GuiRunEvent & { sequence: number }> = [];
+    const send = (event: GuiRunEvent) => {
+      const payload = { ...event, sequence: ++nextEventSequence };
+      replayEvents.push(payload);
+      if (replayEvents.length > 2_000) replayEvents.shift();
+      if (res.destroyed || res.writableEnded) return;
+      try { res.write(`${JSON.stringify(payload)}\n`); } catch { /* renderer may reconnect */ }
+    };
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'cache-control': 'no-store',
@@ -4071,7 +5280,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     });
     send({ type: 'user', text: input });
 
-    if (needsCredentials) {
+    const externalCliSelected = activeBridgeConfig?.execution === 'cli';
+    if (needsCredentials && !externalCliSelected) {
       send({ type: 'error', message: 'No API key configured — open Settings → General to add one.' });
       send({ type: 'state', state: await state() });
       send({ type: 'done' });
@@ -4104,12 +5314,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const teamRunId = 'r-team-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const teamAbort = new AbortController();
       const teamDesc: GuiRunDescriptor = {
-        runId: teamRunId, kind: 'team', label: `team:${definition.name}`,
+        runId: teamRunId, clientRequestId, kind: 'team', label: `team:${definition.name}`,
         sessionId: session.id, model: session.model || null, startedAt: Date.now(),
         status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
         team: { mode: definition.mode, round: 0, members: [] },
       };
-      const teamRun: GuiRunRecord = { desc: teamDesc, abort: teamAbort, sink: send };
+      const teamRun: GuiRunRecord = { desc: teamDesc, abort: teamAbort, sink: send, events: replayEvents };
+      assertRunCanStart();
       runs.set(teamRunId, teamRun);
       try {
         send({ type: 'run.started', runId: teamRunId, model: session.model || null });
@@ -4132,6 +5343,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         teamDesc.status = teamAbort.signal.aborted ? 'aborted' : 'error';
         send({ type: 'error', message: teamAbort.signal.aborted ? 'interrupted' : err.message });
       } finally {
+        retainRunReplay(teamRun);
         runs.delete(teamRunId);
         invalidateHeavyState();
         res.end();
@@ -4148,10 +5360,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         let result: string;
         if (isUpdate) {
           const instruction = input.slice('/manager update'.length).trim() || undefined;
-          result = await runManagerTurn({ mode: 'update', instruction, send });
+          result = await runManagerTurn({ mode: 'update', instruction, send, clientRequestId, replayEvents });
         } else {
           const text = input.slice('/manager chat'.length).trim();
-          result = await runManagerTurn({ mode: 'chat', text, send });
+          result = await runManagerTurn({ mode: 'chat', text, send, clientRequestId, replayEvents });
         }
         send({
           type: 'command.result',
@@ -4186,6 +5398,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const runAbort = new AbortController();
     const desc: GuiRunDescriptor = {
       runId,
+      clientRequestId,
       kind: 'chat',
       label: input.slice(0, 80) || 'chat',
       sessionId: session.id,
@@ -4195,11 +5408,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       toolCalls: 0,
       tokenUsage: { input: 0, output: 0 },
     };
-    const run: GuiRunRecord = { desc, abort: runAbort, sink: send };
+    const run: GuiRunRecord = { desc, abort: runAbort, sink: send, events: replayEvents };
+    assertRunCanStart();
     runs.set(runId, run);
     foregroundRunId = runId;
     let streamedTextSeen = false;
-    void persistSessionRuntimeMetadata();
+    let errorEventSeen = false;
+    await persistSessionRuntimeMetadata();
     try {
       // Router dispatch is skipped when a named config is active — the config's
       // model and/or provider replaces per-turn routing.
@@ -4224,7 +5439,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         ? (activeBridgeConfig.model || undefined)
         : undefined;
       let stream: AsyncIterable<AgentEvent> & { result: Promise<AgentRunResult> };
-      if (bridgeMode && activeBridgeModelApi) {
+      const externalCliConfig = activeBridgeConfig?.execution === 'cli'
+      && isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+        ? activeBridgeConfig as PersistedBridgeConfig & { runtime: 'claude' | 'codex' }
+        : undefined;
+      if (externalCliConfig) {
+        send({
+          type: 'notice',
+          message: 'external CLI -> '
+            + externalCliConfig.runtime
+            + ' ('
+            + (externalCliConfig.authSource === 'apiKey' ? 'API key override' : 'native login')
+            + ')',
+        });
+        stream = createExternalCliAgentStream(input, externalCliConfig, runId, runAbort.signal);
+      } else if (bridgeMode && activeBridgeModelApi) {
         const bridgeName = activeBridgeConfig?.name ?? 'bridge';
         send({ type: 'notice', message: `bridge -> ${bridgeName} (${activeBridgeModelApi.model})` });
         stream = session.stream(expandImageRefs(input, workDir), {
@@ -4263,6 +5492,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const toolCallInputs = new Map<string, { name: string; input: unknown }>();
       for await (const event of stream) {
         forwardAgentEvent(event, send, runId);
+        if (event.type === 'error') errorEventSeen = true;
         if (event.type === 'tool.call') {
           desc.toolCalls += 1;
           desc.currentTool = event.call.publicName;
@@ -4297,7 +5527,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       const result = await stream.result;
       if (!streamedTextSeen && result.text) send({ type: 'delta', text: result.text });
       if (result.incompleteReason) send({ type: 'notice', message: `run incomplete: ${result.incompleteReason}` });
-      const effectiveModel = hadamardModel ?? routed?.model ?? activeBridgeModelApi?.model ?? session.model;
+      const effectiveModel = externalCliConfig?.model
+        ?? (externalCliConfig ? externalCliConfig.runtime : undefined)
+        ?? hadamardModel
+        ?? routed?.model
+        ?? activeBridgeModelApi?.model
+        ?? session.model;
       recordUsage(effectiveModel, (result as any).usage);
       desc.status = 'done';
       const runUsage = (result as any).usage;
@@ -4311,15 +5546,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           model: effectiveModel,
         }, resolveGuiHomeDir());
       } catch { /* never fail a turn over a history write */ }
-      toolMetadata = await sdk!.listToolMetadata();
+      if (sdk) toolMetadata = await sdk.listToolMetadata();
       invalidateHeavyState();
       send({ type: 'state', state: await state() });
       send({ type: 'done', usage: (result as any).usage });
     } catch (error) {
       const err = error as Error;
       desc.status = runAbort.signal.aborted ? 'aborted' : 'error';
-      send({ type: 'error', message: runAbort.signal.aborted ? 'interrupted' : err.message });
+      if (!errorEventSeen) {
+        send({ type: 'error', message: runAbort.signal.aborted ? 'interrupted' : err.message });
+      }
     } finally {
+      retainRunReplay(run);
       runs.delete(runId);
       if (foregroundRunId === runId) foregroundRunId = null;
       invalidateHeavyState();
@@ -4327,39 +5565,64 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
   }
 
-  // Read-only git view (Electron-safe: execFileSync, no shell, so `%`/`@{u}` aren't mangled on Windows).
-  function gitText(args: string[]): string {
+  // Read-only git view. Keep child processes off the Node event loop so a slow
+  // repository cannot freeze streaming, status polling, or Electron input.
+  async function gitText(args: string[], cwd = workDir): Promise<string> {
     try {
-      return execFileSync('git', args, { cwd: workDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const { stdout } = await execFileAsync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 5_000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      return String(stdout).trim();
     } catch {
       return '';
     }
   }
-  function gitBranchSummary(): { isRepo: boolean; branch: string | null } {
-    if (gitText(['rev-parse', '--is-inside-work-tree']) !== 'true') return { isRepo: false, branch: null };
-    const branch = gitText(['rev-parse', '--abbrev-ref', 'HEAD']);
-    return { isRepo: true, branch: branch || null };
+  let gitBranchCache: { cwd: string; expiresAt: number; value: { isRepo: boolean; branch: string | null } } | null = null;
+  let gitBranchPending: { cwd: string; promise: Promise<{ isRepo: boolean; branch: string | null }> } | null = null;
+  async function gitBranchSummary(): Promise<{ isRepo: boolean; branch: string | null }> {
+    const cwd = workDir;
+    if (gitBranchCache?.cwd === cwd && gitBranchCache.expiresAt > Date.now()) return gitBranchCache.value;
+    if (gitBranchPending?.cwd === cwd) return gitBranchPending.promise;
+    const promise = (async () => {
+      const isRepo = await gitText(['rev-parse', '--is-inside-work-tree'], cwd) === 'true';
+      const branch = isRepo ? await gitText(['rev-parse', '--abbrev-ref', 'HEAD'], cwd) : '';
+      const value = { isRepo, branch: branch || null };
+      gitBranchCache = { cwd, expiresAt: Date.now() + 2_000, value };
+      return value;
+    })();
+    gitBranchPending = { cwd, promise };
+    try { return await promise; }
+    finally { if (gitBranchPending?.promise === promise) gitBranchPending = null; }
   }
-  function gitInfo(): Record<string, unknown> {
-    if (gitText(['rev-parse', '--is-inside-work-tree']) !== 'true') return { isRepo: false };
-    const statusRaw = gitText(['status', '--porcelain=v1']);
+  async function gitInfo(): Promise<Record<string, unknown>> {
+    const cwd = workDir;
+    if (await gitText(['rev-parse', '--is-inside-work-tree'], cwd) !== 'true') return { isRepo: false };
+    const [statusRaw, branchesRaw, logRaw, upstream, branch, userName, userEmail] = await Promise.all([
+      gitText(['status', '--porcelain=v1'], cwd),
+      gitText(['branch', '--format=%(HEAD)\t%(refname:short)'], cwd),
+      gitText(['log', '--decorate=short', '--pretty=format:%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%aI%x1f%p%x1f%D%x1e', '-n', '30'], cwd),
+      gitText(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], cwd),
+      gitText(['rev-parse', '--abbrev-ref', 'HEAD'], cwd),
+      gitText(['config', 'user.name'], cwd),
+      gitText(['config', 'user.email'], cwd),
+    ]);
     const status = statusRaw
       ? statusRaw.split('\n').filter(Boolean).map((line) => ({ x: (line[0] ?? ' ').trim(), y: (line[1] ?? ' ').trim(), file: line.slice(3) }))
       : [];
-    const branchesRaw = gitText(['branch', '--format=%(HEAD)\t%(refname:short)']);
     const branches = branchesRaw
       ? branchesRaw.split('\n').filter(Boolean).map((line) => {
           const [head, ...rest] = line.split('\t');
           return { name: rest.join('\t') || line.trim(), current: head === '*' };
         })
       : [];
-    const commits = parseGitCommitLog(
-      gitText(['log', '--decorate=short', '--pretty=format:%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%aI%x1f%p%x1f%D%x1e', '-n', '30']),
-    );
-    const upstream = gitText(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    const commits = parseGitCommitLog(logRaw);
     let ahead = 0;
     let behind = 0;
-    const counts = upstream ? gitText(['rev-list', '--left-right', '--count', '@{u}...HEAD']) : '';
+    const counts = upstream ? await gitText(['rev-list', '--left-right', '--count', '@{u}...HEAD'], cwd) : '';
     if (counts) {
       const [b, a] = counts.split(/\s+/);
       behind = Number(b) || 0;
@@ -4367,16 +5630,16 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     return {
       isRepo: true,
-      cwd: workDir,
-      branch: gitText(['rev-parse', '--abbrev-ref', 'HEAD']),
+      cwd,
+      branch,
       upstream,
       ahead,
       behind,
       status,
       branches,
       commits,
-      userName: gitText(['config', 'user.name']) || null,
-      userEmail: gitText(['config', 'user.email']) || null,
+      userName: userName || null,
+      userEmail: userEmail || null,
     };
   }
 
@@ -4417,7 +5680,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     // If the active chat was deleted, open a fresh one so the UI stays consistent.
     if (session.id === id) {
-      session = await sdk!.createSession({ model: options.model, permissionMode });
+      session = await createGuiSession({ model: options.model, permissionMode });
+      await restoreSessionRuntimeSelection();
     }
     invalidateHeavyState();
     return { deleted, state: await state() };
@@ -4429,8 +5693,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function archiveSession(id: string): Promise<boolean> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
     const homeDir = store?.homeDir ?? resolveGuiHomeDir();
-    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
-    roots.push(path.dirname(sdk!.config.sessionDirectory)); // SDK session dir's parent
+    const sessionDirectory = sdk?.config.sessionDirectory
+      ?? getActoviqProjectSessionDirectory(workDir, homeDir);
+    const roots = await collectSessionStoreRoots(homeDir, sessionDirectory);
+    roots.push(path.dirname(sessionDirectory)); // SDK session dir's parent
     for (const projectRoot of roots) {
       for (const item of await listStoredSessionFiles(projectRoot)) {
         if (item.id !== id && item.storageId !== id) continue;
@@ -4442,7 +5708,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         try { await mkdir(path.dirname(ckptDst), { recursive: true }); await rename(ckptSrc, ckptDst); } catch { /* no checkpoints */ }
         // If the active chat was archived, open a fresh one.
         if (session.id === id) {
-          session = await sdk!.createSession({ model: options.model, permissionMode });
+          session = await createGuiSession({ model: options.model, permissionMode });
+          await restoreSessionRuntimeSelection();
         }
         invalidateHeavyState();
         return true;
@@ -4454,8 +5721,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function unarchiveSession(id: string): Promise<boolean> {
     const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() }).catch(() => undefined);
     const homeDir = store?.homeDir ?? resolveGuiHomeDir();
-    const roots = await collectSessionStoreRoots(homeDir, sdk!.config.sessionDirectory);
-    roots.push(path.dirname(sdk!.config.sessionDirectory));
+    const sessionDirectory = sdk?.config.sessionDirectory
+      ?? getActoviqProjectSessionDirectory(workDir, homeDir);
+    const roots = await collectSessionStoreRoots(homeDir, sessionDirectory);
+    roots.push(path.dirname(sessionDirectory));
     for (const projectRoot of roots) {
       const archiveDir = path.join(projectRoot, 'archive');
       try {
@@ -4651,9 +5920,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     );
   }
 
-  // Only loopback hosts may reach the server. The Host check defeats DNS-rebinding
-  // (the browser still sends the attacker's hostname); the Origin check defeats
-  // cross-site requests; the per-process token defeats other local processes.
+  // The server binds only to loopback. The Host check defeats DNS rebinding,
+  // the Origin check rejects cross-site browser requests, and the per-process
+  // token prevents blind API calls. It is not an OS-level boundary against
+  // another process running as the same local user.
   const loopbackHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1', host.toLowerCase()]);
   const hostHeaderAllowed = (req: IncomingMessage): boolean => {
     const header = req.headers.host;
@@ -4676,7 +5946,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url ?? '/', `http://${host}:${port}`);
+      const url = new URL(req.url ?? '/', `http://${urlHost}:${port}`);
       if (!hostHeaderAllowed(req) || !originAllowed(req)) {
         return text(res, 403, 'Forbidden: invalid host or origin');
       }
@@ -4737,6 +6007,46 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return json(res, 200, await state());
       }
+      if (req.method === 'GET' && url.pathname === '/api/runs') {
+        return json(res, 200, liveRunState());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/rail-live') {
+        const railStore = await readContextRailStore(workDir, resolveGuiHomeDir());
+        return json(res, 200, {
+          railItems: sortContextRailItems(railStore.items),
+          railNotifications: railReminderScheduler.drainNotifications(),
+        });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/customize/plugins') {
+        return json(res, 200, await managedPluginCatalogSnapshot());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/customize/plugins/test') {
+        try {
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => testManagedPlugin(body)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/customize/plugins') {
+        try {
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => updateManagedPlugin(body)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+      }
+      if (req.method === 'GET' && url.pathname === '/api/customize/skills') {
+        return json(res, 200, await externalSkillCatalogSnapshot());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/customize/skills') {
+        try {
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => updateExternalSkillPreferences(body)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+      }
       if (req.method === 'GET' && url.pathname === '/api/session/active') {
         // Keep this reconciliation endpoint deliberately lightweight. The
         // resume request may already have switched the server session even if
@@ -4749,13 +6059,120 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!targetPath) {
           return json(res, 400, { error: 'path must identify an existing project directory' });
         }
-        const executionStore = new AgentExecutionStore(
-          await ensureProjectDataMigrated(targetPath),
+        const projectDirectory = await ensureProjectDataMigrated(targetPath);
+        const executionStore = new AgentExecutionStore(projectDirectory);
+        const sessionStore = new SessionStore(projectDirectory);
+        const bridgeConfigs = readBridgeConfigs(resolveGuiHomeDir()).configs;
+        const externalSnapshots = createExternalCliAgentExecutionSnapshots(
+          externalCliRuntimeManager.list().map(run => {
+            const configName = externalCliRunConfigNames.get(run.runId) ?? 'External CLI';
+            const config = bridgeConfigs.find(item => item.name === configName);
+            return {
+              run,
+              configName,
+              runtime: config?.runtime ?? 'external-cli',
+              model: config?.model ?? null,
+            };
+          }),
+          targetPath,
         );
+        const [storedSnapshots, storedSessions] = await Promise.all([
+          executionStore.listSnapshots(),
+          sessionStore.list(),
+        ]);
+        const executionView = createAgentExecutionProjectView([
+          ...storedSnapshots,
+          ...externalSnapshots,
+        ]);
+        const executionNodesBySession = new Map<string, {
+          lifecycle: string;
+          currentActivity: { kind?: string; summary?: string; toolName?: string } | null;
+          displayName: string;
+          updatedAt: string;
+        }>();
+        const executionLifecyclePriority = (lifecycle: string): number =>
+          lifecycle === 'running' ? 2 : lifecycle === 'waiting' ? 1 : 0;
+        const visitExecutionNode = (
+          node: (typeof executionView.active)[number]['root'],
+          rootUpdatedAt: string,
+        ): void => {
+          if (!node) return;
+          const candidate = {
+            lifecycle: node.lifecycle,
+            currentActivity: node.currentActivity,
+            displayName: node.displayName,
+            updatedAt: node.timing.updatedAt || rootUpdatedAt,
+          };
+          const existing = executionNodesBySession.get(node.sessionId);
+          const candidatePriority = executionLifecyclePriority(candidate.lifecycle);
+          const existingPriority = existing ? executionLifecyclePriority(existing.lifecycle) : -1;
+          if (
+            !existing
+              || candidatePriority > existingPriority
+              || (candidatePriority === existingPriority && candidate.updatedAt > existing.updatedAt)
+          ) {
+            executionNodesBySession.set(node.sessionId, candidate);
+          }
+          for (const child of node.children) visitExecutionNode(child, rootUpdatedAt);
+        };
+        for (const root of [
+          ...executionView.active,
+          ...executionView.waiting,
+          ...executionView.completed,
+        ]) {
+          visitExecutionNode(root.root, root.updatedAt);
+          for (const node of root.detached) visitExecutionNode(node, root.updatedAt);
+        }
+        const activeRunsBySession = new Map(
+          [...runs.values()]
+            .filter(run => run.desc.status === 'running')
+            .map(run => [run.desc.sessionId, run.desc] as const),
+        );
+        const targetIsOpen = normalizeFsPath(targetPath) === normalizeFsPath(workDir);
+        const conversations = storedSessions
+          .map(item => {
+            const execution = executionNodesBySession.get(item.id);
+            const activeRun = targetIsOpen ? activeRunsBySession.get(item.id) : undefined;
+            const isWaiting = Boolean(
+              execution?.lifecycle !== 'completed'
+                && (
+                  execution?.currentActivity?.kind === 'waiting'
+                    || (!activeRun && execution?.lifecycle === 'waiting')
+                ),
+            );
+            const isRunning = !isWaiting && Boolean(activeRun || execution?.lifecycle === 'running');
+            const isLive = isRunning || isWaiting;
+            return {
+              ...item,
+              isRunning,
+              isWaiting,
+              isLive,
+              isCurrent: targetIsOpen && item.id === session.id,
+              lifecycle: isWaiting ? 'waiting' : isRunning ? 'running' : (execution?.lifecycle ?? 'idle'),
+              currentActivity: activeRun?.currentTool
+                ? { kind: 'tool', summary: activeRun.currentTool, toolName: activeRun.currentTool }
+                : execution?.currentActivity ?? null,
+              displayName: item.kind === 'manager'
+                ? 'Project Manager'
+                : item.agentName || execution?.displayName || item.title,
+            };
+          })
+          .sort((left, right) => {
+            if (left.isLive !== right.isLive) return left.isLive ? -1 : 1;
+            if (left.isRunning !== right.isRunning) return left.isRunning ? -1 : 1;
+            const leftAt = left.lastActiveAt || left.lastRunAt || left.updatedAt;
+            const rightAt = right.lastActiveAt || right.lastRunAt || right.updatedAt;
+            return rightAt.localeCompare(leftAt);
+          });
         return json(
           res,
           200,
-          createAgentExecutionProjectView(await executionStore.listSnapshots()),
+          {
+            ...executionView,
+            conversations,
+            runningConversationCount: conversations.filter(item => item.isRunning).length,
+            waitingConversationCount: conversations.filter(item => item.isWaiting).length,
+          },
         );
       }
       if (req.method === 'GET' && url.pathname === '/api/agent-execution') {
@@ -4928,11 +6345,11 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         : null;
       const system = buildTeamProposeSystemPrompt(squadType);
       const userPrompt = buildTeamProposeUserPrompt(instruction, currentDefinition, mode);
-      const result = await sdk.run(`${system}\n\n---\n\n${userPrompt}`, {
+      const result = await withRuntimeRun('team:proposal', () => sdk!.run(`${system}\n\n---\n\n${userPrompt}`, {
         permissionMode: 'bypassPermissions',
         systemPrompt: system,
         tools: [],
-      });
+      }));
       const text = typeof result.text === 'string' ? result.text : '';
       const draft = finalizeTeamProposeDraft(text, {
         squadType,
@@ -4944,7 +6361,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         explanation: draft.explanation,
       });
     } catch (error) {
-      return json(res, 400, { error: (error as Error).message });
+      return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
     }
   }
   if (req.method === 'POST' && url.pathname === '/api/team/validate') {
@@ -4977,22 +6394,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // into settings.json — the same block the TUI/REPL read.
     try {
       const body = await readJson(req);
-      const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
-      const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
-      const next = {
-        autoInvoke: typeof body.autoInvoke === 'boolean' ? body.autoInvoke : teamPrefs.autoInvoke,
-        defaultAttached: typeof body.defaultAttached === 'string'
-          ? (body.defaultAttached.trim() || null)
-          : teamPrefs.defaultAttached,
-        confirmBeforeRun: typeof body.confirmBeforeRun === 'boolean' ? body.confirmBeforeRun : teamPrefs.confirmBeforeRun,
-      };
-      writeTeamPreferences(raw, next);
-      await persistActoviqSettingsStore(store.configPath, raw);
-      await loadJsonConfigFile(store.configPath);
-      teamPrefs = next;
-      return json(res, 200, { ok: true, teamPreferences: teamPrefs });
+      const next = await withRuntimeMutation(async () => {
+        const store = await resolveActoviqSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
+        const raw = isPlainRecord(store.raw) ? structuredClone(store.raw) : {};
+        const preferences = {
+          autoInvoke: typeof body.autoInvoke === 'boolean' ? body.autoInvoke : teamPrefs.autoInvoke,
+          defaultAttached: typeof body.defaultAttached === 'string'
+            ? (body.defaultAttached.trim() || null)
+            : teamPrefs.defaultAttached,
+          confirmBeforeRun: typeof body.confirmBeforeRun === 'boolean' ? body.confirmBeforeRun : teamPrefs.confirmBeforeRun,
+        };
+        writeTeamPreferences(raw, preferences);
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        teamPrefs = preferences;
+        return preferences;
+      });
+      return json(res, 200, { ok: true, teamPreferences: next });
     } catch (error) {
-      return json(res, 400, { error: (error as Error).message });
+      return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/manager/state') {
@@ -5028,29 +6448,35 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     // and the PROGRESS.md workspace mirror toggle.
     try {
       const body = await readJson(req);
-      const homeDir = managerHomeDir();
-      const current = await readManagerConfig(workDir, homeDir);
-      const next: ManagerConfig = {
-        ...current,
-        model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
-        bridgeConfig: typeof body.bridgeConfig === 'string'
-          ? (body.bridgeConfig.trim() || undefined)
-          : current.bridgeConfig,
-        readScope: isManagerReadScope(body.readScope) ? body.readScope : current.readScope,
-        allowedReadPaths: Array.isArray(body.allowedReadPaths)
-          ? body.allowedReadPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
-          : current.allowedReadPaths,
-        mirrorProgressToWorkspace: typeof body.mirrorProgressToWorkspace === 'boolean'
-          ? body.mirrorProgressToWorkspace
-          : current.mirrorProgressToWorkspace,
-      };
-      await writeManagerConfig(workDir, homeDir, next);
+      const next = await withRuntimeMutation(async () => {
+        const homeDir = managerHomeDir();
+        const current = await readManagerConfig(workDir, homeDir);
+        const config: ManagerConfig = {
+          ...current,
+          model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
+          bridgeConfig: typeof body.bridgeConfig === 'string'
+            ? (body.bridgeConfig.trim() || undefined)
+            : current.bridgeConfig,
+          readScope: isManagerReadScope(body.readScope) ? body.readScope : current.readScope,
+          allowedReadPaths: Array.isArray(body.allowedReadPaths)
+            ? body.allowedReadPaths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0)
+            : current.allowedReadPaths,
+          mirrorProgressToWorkspace: typeof body.mirrorProgressToWorkspace === 'boolean'
+            ? body.mirrorProgressToWorkspace
+            : current.mirrorProgressToWorkspace,
+        };
+        await writeManagerConfig(workDir, homeDir, config);
+        return config;
+      });
       return json(res, 200, { ok: true, config: next });
     } catch (error) {
-      return json(res, 400, { error: (error as Error).message });
+      return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
     }
   }
   if (req.method === 'POST' && (url.pathname === '/api/manager/chat' || url.pathname === '/api/manager/update')) {
+    if (runtimeMutationInProgress) {
+      return json(res, 409, { error: 'Runtime configuration is being updated. Try again in a moment.' });
+    }
     // NDJSON stream for the Project-view Manager panel (plan M0/M1).
     const body = await readJson(req);
     res.writeHead(200, {
@@ -5320,9 +6746,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
       if (req.method === 'POST' && url.pathname === '/api/settings/data-root') {
         try {
-          return json(res, 200, await changeDataRoot(await readJson(req)));
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => changeDataRoot(body)));
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
       }
       if (req.method === 'POST' && url.pathname === '/api/settings/data-root/open') {
@@ -5340,7 +6767,12 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, 200, { ok: true, path: store.configPath });
       }
       if (req.method === 'POST' && url.pathname === '/api/settings') {
-        return json(res, 200, await saveSettings(await readJson(req)));
+        try {
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => saveSettings(body)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/hooks') {
         const store = await resolveActoviqSettingsStore({
@@ -5355,27 +6787,245 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'PUT' && url.pathname === '/api/hooks') {
         try {
           const body = await readJson(req);
-          const store = await resolveActoviqSettingsStore({
-            configPath: options.configPath,
-            homeDir: currentHomeInput(),
+          const result = await withRuntimeMutation(async () => {
+            const store = await resolveActoviqSettingsStore({
+              configPath: options.configPath,
+              homeDir: currentHomeInput(),
+            });
+            const raw = structuredClone(store.raw);
+            const hooks = normalizeUserHooksConfig(body);
+            raw.hooks = toSettingsHooksBlock(hooks);
+            await persistActoviqSettingsStore(store.configPath, raw);
+            await loadJsonConfigFile(store.configPath);
+            return { ok: true, configPath: store.configPath, hooks };
           });
-          const raw = structuredClone(store.raw);
-          const hooks = normalizeUserHooksConfig(body);
-          raw.hooks = toSettingsHooksBlock(hooks);
-          await persistActoviqSettingsStore(store.configPath, raw);
-          await loadJsonConfigFile(store.configPath);
-          return json(res, 200, { ok: true, configPath: store.configPath, hooks });
+          return json(res, 200, result);
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
       }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect') {
         return json(res, 200, { providers: await detectBridgeProviders() });
       }
+      if (req.method === 'GET' && url.pathname === '/api/external-cli/sessions') {
+        const requestedRuntime = url.searchParams.get('runtime');
+        const query = (url.searchParams.get('query') ?? '').trim().toLowerCase();
+        const requestedLimit = Number(url.searchParams.get('limit') ?? 50);
+        const limit = Number.isFinite(requestedLimit)
+          ? Math.max(1, Math.min(200, Math.trunc(requestedLimit)))
+          : 50;
+        const requestedOffset = Number(url.searchParams.get('offset') ?? 0);
+        const offset = Number.isFinite(requestedOffset)
+          ? Math.max(0, Math.trunc(requestedOffset))
+          : 0;
+        const runtimes: ExternalCliRuntime[] | undefined =
+          requestedRuntime && isManagedExternalCliRuntime(requestedRuntime as BridgeRuntime)
+          ? [requestedRuntime as ExternalCliRuntime]
+          : undefined;
+        const scanned = await listExternalCliSessions({
+          homeDir: pointerHomeDir(),
+          actoviqHomeDir: resolveGuiHomeDir(),
+          crushCwd: workDir,
+          runtimes,
+          ...(query ? {} : { offset, limit: limit + 1 }),
+        });
+        const filtered = scanned.filter(summary => !query
+          || summary.title.toLowerCase().includes(query)
+          || (summary.cwd ?? '').toLowerCase().includes(query)
+          || summary.nativeSessionId.toLowerCase().includes(query));
+        const page = query ? filtered.slice(offset, offset + limit + 1) : filtered;
+        const hasMore = page.length > limit;
+        const historySecrets = externalCliHistorySecrets(resolveGuiHomeDir());
+        const summaries = page.slice(0, limit)
+          .map(summary => {
+            const { path: sessionPath, ...safeSummary } = summary;
+            return redactExternalCliHistoryDto({
+              ...safeSummary,
+              sourceLabel: externalCliHistorySourceLabel(summary),
+              id: registerExternalCliSessionPath(sessionPath),
+            }, historySecrets);
+          });
+        return json(res, 200, {
+          sessions: summaries,
+          total: query ? filtered.length : null,
+          offset,
+          nextOffset: hasMore ? offset + summaries.length : null,
+        });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/external-cli/auth') {
+        const runtimes = await Promise.all([
+          probeExternalCliAuth('claude'),
+          probeExternalCliAuth('codewhale'),
+          probeExternalCliAuth('pi'),
+          probeExternalCliAuth('codex'),
+          probeExternalCliAuth('reasonix'),
+          probeExternalCliAuth('crush'),
+        ]);
+        return json(res, 200, { runtimes });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/external-cli/runs') {
+        return json(res, 200, {
+          runs: externalCliRuntimeManager.list().map(safeExternalCliRunSummary),
+        });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/external-cli/run') {
+        const runId = url.searchParams.get('runId') ?? '';
+        const afterSequence = Number(url.searchParams.get('after') ?? 0);
+        const replay = externalCliRuntimeManager.replay(
+          runId,
+          Number.isFinite(afterSequence) ? Math.max(0, Math.trunc(afterSequence)) : 0,
+        );
+        return replay
+          ? json(res, 200, { ...replay, run: safeExternalCliRun(replay.run) })
+          : json(res, 404, { error: 'External CLI run not found.' });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/external-cli/run') {
+        if (runtimeMutationInProgress) {
+          return json(res, 409, { error: 'Runtime configuration is being updated. Try again in a moment.' });
+        }
+        const body = await readJson(req);
+        const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+        const configName = typeof body.configName === 'string'
+          ? body.configName.trim()
+          : activeBridgeConfig?.name ?? '';
+        const config = configName
+          ? findBridgeConfig(configName, resolveGuiHomeDir())
+          : undefined;
+        if (!prompt) return json(res, 400, { error: 'Missing external CLI prompt.' });
+        if (body.nativeSessionId !== undefined) {
+          return json(res, 400, {
+            error: 'Resume native conversations through the validated external session history endpoint.',
+          });
+        }
+        if (
+          !config
+          || config.execution !== 'cli'
+          || !isManagedExternalCliRuntime(config.runtime)
+        ) {
+          return json(res, 400, { error: 'Select an External CLI config.' });
+        }
+        const run = await startManagedExternalCliRun(
+          config as SupportedExternalCliConfig,
+          prompt,
+          body.background !== false,
+        );
+        return json(res, run.background ? 202 : 200, { run: safeExternalCliRun(run) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/external-cli/run/abort') {
+        const body = await readJson(req);
+        const runId = typeof body.runId === 'string' ? body.runId : '';
+        return externalCliRuntimeManager.abort(runId)
+          ? json(res, 200, { ok: true })
+          : json(res, 404, { error: 'Active external CLI run not found.' });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/external-cli/session') {
+        const id = url.searchParams.get('id') ?? '';
+        if (!id) return json(res, 400, { error: 'Missing external session id.' });
+        const sessionPath = resolveExternalCliSessionPath(id);
+        if (!sessionPath) {
+          return json(res, 400, { error: 'Invalid external session id.' });
+        }
+        let externalSession;
+        try {
+          externalSession = await readExternalCliSession(sessionPath, {
+            homeDir: pointerHomeDir(),
+            actoviqHomeDir: resolveGuiHomeDir(),
+            crushCwd: workDir,
+          });
+        } catch (error) {
+          if ((error as { code?: string }).code === 'EXTERNAL_CLI_SESSION_PATH_UNSAFE') {
+            return json(res, 400, { error: 'External session id is outside the allowed runtime history roots.' });
+          }
+          throw error;
+        }
+        if (!externalSession) return json(res, 404, { error: 'External session not found.' });
+        const { path: _path, ...safeSummary } = externalSession.summary;
+        const compatibleConfigNames = readBridgeConfigs(resolveGuiHomeDir()).configs
+          .filter(config => isExternalCliHistoryConfigCompatible(externalSession.summary, config))
+          .map(config => config.name);
+        return json(res, 200, {
+          compatibleConfigNames,
+          session: redactExternalCliHistoryDto({
+            summary: {
+              ...safeSummary,
+              sourceLabel: externalCliHistorySourceLabel(externalSession.summary),
+              id,
+            },
+            messages: externalSession.messages,
+            truncated: externalSession.truncated === true,
+          }, externalCliHistorySecrets(resolveGuiHomeDir())),
+        });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/external-cli/session/resume') {
+        const body = await readJson(req);
+        const id = typeof body.id === 'string' ? body.id : '';
+        const configName = typeof body.configName === 'string' ? body.configName.trim() : '';
+        if (!id || !configName) {
+          return json(res, 400, { error: 'External session id and config name are required.' });
+        }
+        const sessionPath = resolveExternalCliSessionPath(id);
+        if (!sessionPath) {
+          return json(res, 400, { error: 'Invalid external session id.' });
+        }
+        let externalSession;
+        try {
+          externalSession = await readExternalCliSession(sessionPath, {
+            homeDir: pointerHomeDir(),
+            actoviqHomeDir: resolveGuiHomeDir(),
+            crushCwd: workDir,
+          });
+        } catch (error) {
+          if ((error as { code?: string }).code === 'EXTERNAL_CLI_SESSION_PATH_UNSAFE') {
+            return json(res, 400, { error: 'External session id is outside the allowed runtime history roots.' });
+          }
+          throw error;
+        }
+        if (!externalSession) return json(res, 404, { error: 'External session not found.' });
+        const config = findBridgeConfig(configName, resolveGuiHomeDir());
+        if (
+          !config
+          || !isExternalCliHistoryConfigCompatible(externalSession.summary, config)
+        ) {
+          return json(res, 400, {
+            error: 'Choose an External CLI config for the same runtime and authentication profile as this session.',
+          });
+        }
+        if (
+          externalSession.summary.cwd
+          && !sameWorkspace(externalSession.summary.cwd, workDir)
+        ) {
+          return json(res, 409, {
+            error: 'Open the session workspace before resuming it: ' + externalSession.summary.cwd,
+          });
+        }
+        try {
+          await withRuntimeMutation(async () => {
+            await activateBridgeConfig(config);
+            await rememberExternalNativeSession(
+              config as SupportedExternalCliConfig,
+              externalSession.summary.nativeSessionId,
+            );
+            await persistSessionRuntimeMetadata();
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+        return json(res, 200, await state());
+      }
       if (req.method === 'GET' && url.pathname === '/api/bridge/detect-local') {
         const runtime = url.searchParams.get('runtime') || '';
         const hd = pointerHomeDir();
-        return json(res, 200, detectRuntimeLocalConfig(runtime, hd) || {});
+        const local = detectRuntimeLocalConfig(runtime, hd, externalCliConfigPaths);
+        return json(res, 200, local
+          ? {
+              runtime: local.runtime,
+              provider: local.provider,
+              model: local.model,
+              baseURL: local.baseURL,
+              hasApiKey: Boolean(local.apiKey),
+              source: local.source,
+            }
+          : {});
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/update-local') {
         try {
@@ -5383,24 +7033,36 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const runtime = typeof body.runtime === 'string' ? body.runtime.trim() : '';
           if (!runtime) return json(res, 400, { error: 'Missing runtime' });
           const hd = pointerHomeDir();
-          const result = updateRuntimeLocalConfig(runtime, {
-            model: typeof body.model === 'string' ? body.model : undefined,
-            baseURL: typeof body.baseURL === 'string' ? body.baseURL : undefined,
-            apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
-          }, hd);
+          const result = await withRuntimeMutation(async () => updateRuntimeLocalConfig(runtime, {
+              model: typeof body.model === 'string' ? body.model : undefined,
+              baseURL: typeof body.baseURL === 'string' ? body.baseURL : undefined,
+              apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
+            }, hd, externalCliConfigPaths));
           if (!result.ok) return json(res, 400, { error: result.error });
           return json(res, 200, result);
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/config') {
+        let releaseRuntimeMutation: () => void;
+        try {
+          releaseRuntimeMutation = beginRuntimeMutation();
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+        try {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         const provider = body.provider === 'openai' ? 'openai' : 'anthropic';
         const runtime: BridgeRuntime = (typeof body.runtime === 'string' && (VALID_RUNTIMES as string[]).includes(body.runtime))
           ? (body.runtime as BridgeRuntime) : 'claude';
+        const execution = body.execution === 'cli' ? 'cli' : 'api';
+        const authSource = body.authSource === 'native' ? 'native' : 'apiKey';
         if (!name) return json(res, 400, { error: 'Missing config name' });
+        if (execution === 'cli' && !isManagedExternalCliRuntime(runtime)) {
+          return json(res, 400, { error: 'External CLI mode requires a CLI runtime.' });
+        }
         // Merge with the existing config of the same name when editing. The form
         // intentionally leaves the API-key field blank on edit (it's a secret),
         // so a blank key must PRESERVE the saved one — not replace it with empty.
@@ -5408,13 +7070,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         // Hadamard configs may omit credentials (SDK defaults) or carry apiKey/baseURL
         // for a named provider override — same persistence path either way.
         const existing = findBridgeConfig(name, resolveGuiHomeDir());
-        const config: PersistedBridgeConfig = { name, provider, runtime };
+        const config: PersistedBridgeConfig = { name, provider, runtime, execution, authSource };
+        if (typeof body.credentialProvider === 'string' && body.credentialProvider.trim()) {
+          config.credentialProvider = body.credentialProvider.trim();
+        }
+        if (body.trustProjectResources === true) config.trustProjectResources = true;
         if (body.clearApiKey === true) {
           // explicitly remove the saved key
         } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
           config.apiKey = body.apiKey.trim();
         } else if (existing?.apiKey) {
           config.apiKey = existing.apiKey; // preserve on edit
+        }
+        if (execution === 'cli' && authSource === 'apiKey' && !config.apiKey) {
+          return json(res, 400, { error: 'API-key override requires an API key.' });
         }
         // baseURL/model: the form loads existing values, so an empty field means
         // the user cleared it intentionally (send as-is; empty → omitted).
@@ -5431,19 +7100,37 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             }));
         }
         addBridgeConfig(config, resolveGuiHomeDir());
-        // If the saved config is the active one, refresh it so the next turn uses it.
-        if (activeBridgeConfig?.name === config.name) activeBridgeConfig = config;
+        // Rebuild the active execution path as well as its display state. This
+        // matters for Direct API configs because their ModelApi captures the
+        // prior model/base URL/key, and for CLI configs because the manager
+        // cache key must reflect an auth override change.
+        if (activeBridgeConfig?.name === config.name) {
+          await activateBridgeConfig(config);
+          await persistSessionRuntimeMetadata();
+        }
         invalidateHeavyState();
         return json(res, 200, await state());
+        } finally {
+          releaseRuntimeMutation();
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/config/delete') {
-        const body = await readJson(req);
-        const name = typeof body.name === 'string' ? body.name.trim() : '';
-        if (!name) return json(res, 400, { error: 'Missing config name' });
-        removeBridgeConfig(name, resolveGuiHomeDir());
-        if (activeBridgeConfig?.name === name) disableBridge();
-        invalidateHeavyState();
-        return json(res, 200, await state());
+        try {
+          return await withRuntimeMutation(async () => {
+            const body = await readJson(req);
+            const name = typeof body.name === 'string' ? body.name.trim() : '';
+            if (!name) return json(res, 400, { error: 'Missing config name' });
+            removeBridgeConfig(name, resolveGuiHomeDir());
+            if (activeBridgeConfig?.name === name) {
+              disableBridge();
+              await persistSessionRuntimeMetadata();
+            }
+            invalidateHeavyState();
+            return json(res, 200, await state());
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/agent-profiles') {
         return json(res, 200, { profiles: listAgentProfiles(resolveGuiHomeDir()) });
@@ -5478,10 +7165,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
               profile.temperature = temperature;
             }
           }
-          const saved = upsertAgentProfile(profile, resolveGuiHomeDir());
-          return json(res, 200, { ok: true, profile: saved.profile, warnings: saved.warnings, state: await state() });
+          const result = await withRuntimeMutation(async () => {
+            const saved = upsertAgentProfile(profile, resolveGuiHomeDir());
+            return { ok: true, profile: saved.profile, warnings: saved.warnings, state: await state() };
+          });
+          return json(res, 200, result);
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
       }
       if (req.method === 'POST' && url.pathname === '/api/agent-profiles/delete') {
@@ -5489,10 +7179,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const body = await readJson(req);
           const name = typeof body.name === 'string' ? body.name.trim() : '';
           if (!name) return json(res, 400, { error: 'Missing profile name' });
-          deleteAgentProfile(name, resolveGuiHomeDir());
-          return json(res, 200, await state());
+          const next = await withRuntimeMutation(async () => {
+            deleteAgentProfile(name, resolveGuiHomeDir());
+            return state();
+          });
+          return json(res, 200, next);
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
       }
       if (req.method === 'POST' && url.pathname === '/api/agent/activate') {
@@ -5500,23 +7193,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name) return json(res, 400, { error: 'Missing agent name' });
         try {
-          const resolved = await resolveSelectableAgentRun(name, resolveGuiHomeDir());
-          const cfg = {
-            ...resolved.bridgeConfig,
-            model: resolved.model,
-          };
-          // Persist the selected model on the underlying provider config so the
-          // next activate/read stays aligned with the chosen agent.
-          if (resolved.bridgeConfig.model !== resolved.model) {
-            addBridgeConfig(cfg, resolveGuiHomeDir());
-          }
-          await activateBridgeConfig(cfg);
-          const effort = resolved.profile.effort ?? resolved.selectable.effort;
-          if (effort === 'auto' || isEffort(effort)) {
-            await session.mergeMetadata({ __actoviqEffort: effort });
-          }
+          await withRuntimeMutation(async () => {
+            const resolved = await resolveSelectableAgentRun(name, resolveGuiHomeDir());
+            // Keep the selectable/profile model string (may be a min/medium/max
+            // tier alias). activateBridgeConfig expands tiers for the ModelApi
+            // and bridgeModelLabel; matching activeAgent must still see the alias.
+            const cfg = {
+              ...resolved.bridgeConfig,
+              model: resolved.selectable.model,
+            };
+            await activateBridgeConfig(cfg);
+            await persistSessionRuntimeMetadata();
+            const requestedEffort = typeof body.effort === 'string' ? body.effort.trim() : '';
+            const effort = requestedEffort || resolved.profile.effort || resolved.selectable.effort;
+            if (effort === 'auto' || isEffort(effort)) {
+              await session.mergeMetadata({ __actoviqEffort: effort });
+            }
+          });
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
         invalidateHeavyState();
         return json(res, 200, await state());
@@ -5527,15 +7222,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const cfg = findBridgeConfig(name, resolveGuiHomeDir());
         if (!cfg) return json(res, 404, { error: `bridge config not found: ${name}` });
         try {
-          await activateBridgeConfig(cfg);
+          await withRuntimeMutation(async () => {
+            await activateBridgeConfig(cfg);
+            await persistSessionRuntimeMetadata();
+          });
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
         invalidateHeavyState();
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/bridge/off') {
-        disableBridge();
+        try {
+          await withRuntimeMutation(async () => {
+            disableBridge();
+            await persistSessionRuntimeMetadata();
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
         invalidateHeavyState();
         return json(res, 200, await state());
       }
@@ -5591,46 +7296,66 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const fallback = parseRef(body.fallback);
         if (fallback) profile.fallback = fallback;
         const target = body.target === 'personal' ? 'personal' : 'project';
-        const store = await resolveActoviqSettingsStore({
-          configPath: options.configPath,
-          homeDir: currentHomeInput(),
-        }).catch(() => undefined);
-        const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
+        let releaseRuntimeMutation: () => void;
         try {
-          await saveRouterProfile(profile, {
-            projectDir: target === 'project' ? workDir : undefined,
-            homeDir: actoviqHome,
-            overwrite: true,
-          });
+          releaseRuntimeMutation = beginRuntimeMutation();
         } catch (error) {
-          return json(res, 400, { error: (error as Error).message });
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
-        if (activeRouter?.name === name) {
-          const reloaded = loadRouterProfile(name, workDir, actoviqHome);
-          activeRouter = reloaded?.profile ?? profile;
+        try {
+          const store = await resolveActoviqSettingsStore({
+            configPath: options.configPath,
+            homeDir: currentHomeInput(),
+          }).catch(() => undefined);
+          const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
+          try {
+            await saveRouterProfile(profile, {
+              projectDir: target === 'project' ? workDir : undefined,
+              homeDir: actoviqHome,
+              overwrite: true,
+            });
+          } catch (error) {
+            return json(res, 400, { error: (error as Error).message });
+          }
+          if (activeRouter?.name === name) {
+            const reloaded = loadRouterProfile(name, workDir, actoviqHome);
+            activeRouter = reloaded?.profile ?? profile;
+          }
+          invalidateHeavyState();
+          return json(res, 200, await state());
+        } finally {
+          releaseRuntimeMutation();
         }
-        invalidateHeavyState();
-        return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/router/profile/delete') {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name) return json(res, 400, { error: 'Missing router profile name' });
-        const store = await resolveActoviqSettingsStore({
-          configPath: options.configPath,
-          homeDir: currentHomeInput(),
-        }).catch(() => undefined);
-        const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
-        const loaded = loadRouterProfile(name, workDir, actoviqHome);
-        if (!loaded) return json(res, 404, { error: `router profile not found: ${name}` });
-        if (loaded.source === 'built-in') {
-          return json(res, 400, { error: 'Cannot delete a built-in router profile' });
+        let releaseRuntimeMutation: () => void;
+        try {
+          releaseRuntimeMutation = beginRuntimeMutation();
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
-        const deleted = await deleteRouterProfile(name, workDir, actoviqHome);
-        if (!deleted) return json(res, 404, { error: `router profile not found: ${name}` });
-        if (activeRouter?.name === name) activeRouter = null;
-        invalidateHeavyState();
-        return json(res, 200, await state());
+        try {
+          const store = await resolveActoviqSettingsStore({
+            configPath: options.configPath,
+            homeDir: currentHomeInput(),
+          }).catch(() => undefined);
+          const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
+          const loaded = loadRouterProfile(name, workDir, actoviqHome);
+          if (!loaded) return json(res, 404, { error: `router profile not found: ${name}` });
+          if (loaded.source === 'built-in') {
+            return json(res, 400, { error: 'Cannot delete a built-in router profile' });
+          }
+          const deleted = await deleteRouterProfile(name, workDir, actoviqHome);
+          if (!deleted) return json(res, 404, { error: `router profile not found: ${name}` });
+          if (activeRouter?.name === name) activeRouter = null;
+          invalidateHeavyState();
+          return json(res, 200, await state());
+        } finally {
+          releaseRuntimeMutation();
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/mcp/list') {
         return json(res, 200, readMcpServerConfig(resolveGuiHomeDir()));
@@ -5643,8 +7368,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (typeof body.command === 'string' && body.command) server.command = body.command;
         if (typeof body.url === 'string' && body.url) server.url = body.url;
         if (Array.isArray(body.args)) server.args = body.args.filter((a: unknown) => typeof a === 'string') as string[];
-        addMcpServer(server, resolveGuiHomeDir());
-        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        try {
+          await withRuntimeMutation(async () => {
+            addMcpServer(server, resolveGuiHomeDir());
+            await reloadSdk();
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
         invalidateHeavyState();
         return json(res, 200, await state());
       }
@@ -5652,8 +7383,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
         if (!name) return json(res, 400, { error: 'Missing server name' });
-        removeMcpServer(name, resolveGuiHomeDir());
-        try { await reloadSdk(); } catch (error) { return json(res, 400, { error: (error as Error).message }); }
+        try {
+          await withRuntimeMutation(async () => {
+            removeMcpServer(name, resolveGuiHomeDir());
+            await reloadSdk();
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
         invalidateHeavyState();
         return json(res, 200, await state());
       }
@@ -5706,17 +7443,21 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const nextWorkDir = typeof body.path === 'string' ? body.path.trim() : '';
         if (!nextWorkDir) return json(res, 400, { error: 'Missing project path' });
-        return json(res, 200, await switchProject(nextWorkDir));
+        try {
+          return json(res, 200, await withRuntimeMutation(() => switchProject(nextWorkDir)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/git') {
-        return json(res, 200, gitInfo());
+        return json(res, 200, await gitInfo());
       }
       if (req.method === 'GET' && url.pathname === '/api/git/diff') {
         try {
           const filePath = url.searchParams.get('path') || '';
           if (!filePath) return json(res, 400, { error: 'Missing path' });
           const staged = url.searchParams.get('staged') === '1' || url.searchParams.get('staged') === 'true';
-          return json(res, 200, readGitDiff(workDir, filePath, staged));
+          return json(res, 200, await readGitDiffAsync(workDir, filePath, staged));
         } catch (error) {
           return json(res, 400, { error: (error as Error).message });
         }
@@ -5725,23 +7466,39 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
-        return json(res, 200, await deleteSession(id));
+        try {
+          return json(res, 200, await withRuntimeMutation(() => deleteSession(id)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/session/archive') {
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
-        const ok = await archiveSession(id);
-        if (!ok) return json(res, 404, { error: 'Session not found' });
-        return json(res, 200, await state());
+        try {
+          return await withRuntimeMutation(async () => {
+            const ok = await archiveSession(id);
+            if (!ok) return json(res, 404, { error: 'Session not found' });
+            return json(res, 200, await state());
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/session/unarchive') {
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
         if (!id) return json(res, 400, { error: 'Missing session id' });
-        const ok = await unarchiveSession(id);
-        if (!ok) return json(res, 404, { error: 'Archived session not found' });
-        return json(res, 200, await state());
+        try {
+          return await withRuntimeMutation(async () => {
+            const ok = await unarchiveSession(id);
+            if (!ok) return json(res, 404, { error: 'Archived session not found' });
+            return json(res, 200, await state());
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/sessions/archived') {
         return json(res, 200, { sessions: await listArchivedSessions() });
@@ -5808,13 +7565,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return json(res, deleted ? 200 : 404, deleted ? { ok: true, state: await state() } : { error: `scheduled task not found: ${id}` });
       }
       if (req.method === 'POST' && url.pathname === '/api/scheduled-tasks/run') {
+        if (runtimeMutationInProgress) {
+          return json(res, 409, { error: 'Runtime configuration is being updated. Try again in a moment.' });
+        }
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id.trim() : '';
         if (!id) return json(res, 400, { error: 'Missing task id' });
         const task = await getScheduledAutomationTask(workDir, id);
         if (!task) return json(res, 404, { error: `scheduled task not found: ${id}` });
-        const events = await executeScheduledAutomationTask(task);
-        return json(res, 200, { events, state: await state() });
+        try {
+          const events = await executeScheduledAutomationTask(task);
+          return json(res, 200, { events, state: await state() });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       // Webhook trigger: POST /api/automation/webhook/<webhookId>
       // External services hit this URL to fire a webhook-triggered automation task.
@@ -5834,12 +7598,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             return json(res, 202, { ok: true, skipped: 'filter', reason: `body missing "${task.webhookFilter}"` });
           }
         }
-        const events = await executeScheduledAutomationTask(task);
-        return json(res, 200, { ok: true, task: { id: task.id, name: task.name }, events });
+        try {
+          const events = await executeScheduledAutomationTask(task);
+          return json(res, 200, { ok: true, task: { id: task.id, name: task.name }, events });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
       }
       if (req.method === 'POST' && url.pathname === '/api/send') {
+        if (runtimeMutationInProgress) {
+          return json(res, 409, { error: 'Runtime configuration is being updated. Try again in a moment.' });
+        }
         const body = await readJson(req);
         const input = typeof body.text === 'string' ? body.text.trim() : '';
+        const clientRequestId = typeof body.clientRequestId === 'string'
+          && /^[A-Za-z0-9._:-]{1,128}$/.test(body.clientRequestId)
+          ? body.clientRequestId
+          : undefined;
         if (!input) return json(res, 400, { error: 'Missing text' });
         const issueStart = input.match(/^\/issues\s+start\s+(\S+)(?:\s+(\S+))?\s*$/i);
         if (issueStart) {
@@ -5848,7 +7623,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             ...(issueStart[2] ? { agentConfig: issueStart[2] } : {}),
           }, res);
         }
-        return streamRun(input, res);
+        return streamRun(input, res, clientRequestId);
       }
       if (req.method === 'POST' && url.pathname === '/api/session/input') {
         const body = await readJson(req);
@@ -5868,31 +7643,44 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         });
       }
       if (req.method === 'POST' && url.pathname === '/api/session/new') {
-        session = await sdk!.createSession({ model: options.model, permissionMode });
+        try {
+          await withRuntimeMutation(async () => {
+            session = await createGuiSession({ model: options.model, permissionMode });
+            await restoreSessionRuntimeSelection();
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
         return json(res, 200, await state());
       }
       if (req.method === 'POST' && url.pathname === '/api/session/resume') {
         // Register the full mutation before the first await. If the POST
         // connection drops, /api/session/active waits for this operation and
         // can never report the previous session while a late switch is pending.
-        const resumeResult = await enqueueServerSessionResume(async () => {
-          const body = await readJson(req);
-          const id = typeof body.id === 'string' ? body.id : '';
-          if (!id) return { status: 400, error: 'Missing session id' };
-          const listed = await sdk!.sessions.list();
-          const target = listed.find(item => item.id === id);
-          if (target?.kind === 'manager') {
-            return { status: 400, error: 'Manager sessions live in the Project Manager panel only.' };
-          }
-          try {
-            session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
-          } catch {
-            const restored = await unarchiveSession(id);
-            if (!restored) return { status: 404, error: 'Session not found' };
-            session = await sdk!.resumeSession(id, { model: options.model, permissionMode: options.permissionMode });
-          }
-          return { status: 200 };
-        });
+        let resumeResult: { status: number; error?: string };
+        try {
+          resumeResult = await withRuntimeMutation(() => enqueueServerSessionResume(async () => {
+            const body = await readJson(req);
+            const id = typeof body.id === 'string' ? body.id : '';
+            if (!id) return { status: 400, error: 'Missing session id' };
+            const listed = await listGuiSessions();
+            const target = listed.find(item => item.id === id);
+            if (target?.kind === 'manager') {
+              return { status: 400, error: 'Manager sessions live in the Project Manager panel only.' };
+            }
+            try {
+              session = await resumeGuiSession(id, { model: options.model, permissionMode: options.permissionMode });
+            } catch {
+              const restored = await unarchiveSession(id);
+              if (!restored) return { status: 404, error: 'Session not found' };
+              session = await resumeGuiSession(id, { model: options.model, permissionMode: options.permissionMode });
+            }
+            await restoreSessionRuntimeSelection();
+            return { status: 200 };
+          }));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
         if (resumeResult.status !== 200) {
           return json(res, resumeResult.status, { error: resumeResult.error });
         }
@@ -5920,6 +7708,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           answers,
         });
         return json(res, 200, { ok: true });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/run/events') {
+        const runId = url.searchParams.get('runId')?.trim() ?? '';
+        const afterRaw = Number(url.searchParams.get('after') ?? 0);
+        const after = Number.isSafeInteger(afterRaw) && afterRaw >= 0 ? afterRaw : 0;
+        const target = runId ? (runs.get(runId) ?? runReplayTombstones.get(runId)) : undefined;
+        if (!target) return json(res, 404, { active: false, events: [] });
+        const events = (target.events ?? []).filter(event => event.sequence > after);
+        return json(res, 200, {
+          active: target.desc.status === 'running',
+          run: target.desc,
+          earliestSequence: target.events?.[0]?.sequence ?? null,
+          events,
+        });
       }
       if (req.method === 'POST' && url.pathname === '/api/abort') {
         const body = await readJson(req);
@@ -6013,16 +7815,35 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   });
 
   const actualPort = await listenWithFallback(server, host, port);
-  const url = `http://${host}:${actualPort}/`;
+  const url = `http://${urlHost}:${actualPort}/`;
   await resyncAutomationScheduler();
   process.stdout.write(`actoviq-gui listening on ${url}\n`);
 
   const close = async () => {
+    let managedPluginCloseError: unknown;
     for (const rec of runs.values()) rec.abort.abort();
     runs.clear();
     foregroundRunId = null;
     await automationScheduler.dispose();
     terminalManager.closeAll();
+    await externalCliRuntimeManager.close().catch(() => undefined);
+    if (managedPluginRuntimeClose) {
+      const closeRuntime = managedPluginRuntimeClose;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await closeRuntime();
+          managedPluginRuntimeClose = null;
+          managedPluginCloseError = undefined;
+          break;
+        } catch (error) {
+          managedPluginCloseError = error;
+          process.stderr.write(
+            `[actoviq-gui] warning: managed plugin cleanup attempt ${attempt}/2 failed: ` +
+            `${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        }
+      }
+    }
     if (sdk) await sdk.close().catch(() => undefined);
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
@@ -6035,6 +7856,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     ]));
     durableIssueResources.clear();
     durableIssueResourcePending.clear();
+    if (managedPluginCloseError) throw managedPluginCloseError;
   };
   return { url, token: authToken, close };
 }
@@ -6080,8 +7902,24 @@ export async function runActoviqGui(options: ActoviqGuiOptions = {}): Promise<vo
       throw error;
     }
   }
-  process.once('SIGINT', () => { void close().finally(() => process.exit(0)); });
-  process.once('SIGTERM', () => { void close().finally(() => process.exit(0)); });
+  let shuttingDown = false;
+  const closeFromSignal = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await close();
+      process.exit(0);
+    } catch (error) {
+      process.stderr.write(
+        `[actoviq-gui] ERROR: cleanup after ${signal} failed: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        'Check E2B/Playwright resources manually before assuming billing has stopped.\n',
+      );
+      process.exit(1);
+    }
+  };
+  process.once('SIGINT', () => { void closeFromSignal('SIGINT'); });
+  process.once('SIGTERM', () => { void closeFromSignal('SIGTERM'); });
   async function close(): Promise<void> {
     await handle.close();
   }
@@ -6203,7 +8041,19 @@ function forwardSurfaceEvent(
       send({ type: 'notice', message: `model fallback: ${data.fromModel} -> ${data.toModel}` });
       return;
     case 'interruption.requested':
-      send({ type: 'notice', message: 'request interrupted' });
+      if (
+        data.scope === 'request'
+        && (event.sourceType === 'request.interrupted' || event.sourceType === 'model.interrupted')
+      ) {
+        send({
+          type: 'reconnecting',
+          message: 'Model connection interrupted · retrying automatically',
+          retry: data.retry,
+          maxRetries: data.maxRetries,
+        });
+      } else {
+        send({ type: 'notice', message: 'request interrupted' });
+      }
       return;
     case 'error':
       send({ type: 'error', message: typeof data.message === 'string' ? data.message : 'run failed' });
@@ -6308,7 +8158,7 @@ export function createActoviqGuiHtml(): string {
         <button id="navProject" class="nav-btn region-nav active" data-region="project" aria-label="Project" title="Project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
         <button id="navTeam" class="nav-btn region-nav" data-region="team" aria-label="Agent" title="Agent"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
         <button id="navAutomation" class="nav-btn region-nav" data-region="automation" aria-label="Automation" title="Automation"><span class="nav-icon">${guiIcon('automation')}</span><span>Automation</span></button>
-        <button id="navPlugins" class="nav-btn region-nav" data-region="plugins" aria-label="Plugins" title="Plugins"><span class="nav-icon">${guiIcon('plug')}</span><span>Plugins</span></button>
+        <button id="navPlugins" class="nav-btn region-nav" data-region="plugins" aria-label="Customize" title="Customize"><span class="nav-icon">${guiIcon('plug')}</span><span>Customize</span></button>
       </nav>
       <section class="sidebar-recents" id="sidebarRecents" aria-label="Pinned and recent">
         <div class="sidebar-recents-block" id="sidebarPinnedBlock">
@@ -6384,12 +8234,9 @@ export function createActoviqGuiHtml(): string {
           <p id="workspace"></p>
         </div>
         <div class="top-actions">
-          <button id="backToOverviewBtn" class="pill-btn" title="Back to conversation list">&lt; Back</button>
-          <button id="openLocationBtn" class="pill-btn" title="Open workspace folder">Open location</button>
-          <button id="conversationRunSquadBtn" class="pill-btn" title="Run selected agent">Run agent</button>
-          <button id="terminalToggleBtn" class="icon-btn" title="Terminal" aria-label="Toggle terminal" aria-pressed="false">${guiIcon('terminal')}</button>
+          <button id="backToOverviewBtn" class="icon-btn" title="Back to conversation list" aria-label="Back to conversation list">${guiIcon('chevronLeft')}</button>
+          <button id="openLocationBtn" class="icon-btn" title="Open workspace folder" aria-label="Open workspace folder">${guiIcon('folder')}</button>
           <button id="auxPanelToggleBtn" class="icon-btn" title="Toggle side panel" aria-label="Toggle side panel" aria-pressed="true">${guiIcon('panelRight')}</button>
-          <button id="gitBtn" class="icon-btn" title="Git tree" aria-label="Show the Git tree">${guiIcon('git')}</button>
         </div>
       </header>
       <div class="workbench">
@@ -6440,13 +8287,14 @@ export function createActoviqGuiHtml(): string {
                   </div>
                   <div class="composer-right">
                     <div class="model-picker-wrapper">
-                      <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Choose agent">Choose agent ▾</button>
+                      <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Choose model" aria-haspopup="listbox" aria-expanded="false">Choose model ▾</button>
                       <div id="modelPickerFlyout" class="model-picker-flyout hidden">
                         <div id="modelPickerMenu" class="model-picker-menu">
+                          <div class="picker-heading"><strong>Select model</strong><span>Ctrl / ⌘ + / to cycle</span></div>
                           <div class="picker-search-wrap">
-                            <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search agents" autocomplete="off" spellcheck="false">
+                            <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search models, providers, runtimes" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="modelPickerItems" aria-expanded="true">
                           </div>
-                          <div id="modelPickerItems" class="picker-list"></div>
+                          <div id="modelPickerItems" class="picker-list" role="listbox" aria-label="Models"></div>
                         </div>
                         <div id="modelPickerEditPopover" class="picker-edit-popover hidden" role="dialog" aria-label="Temporary agent options"></div>
                       </div>
@@ -6471,6 +8319,10 @@ export function createActoviqGuiHtml(): string {
                   <span class="aux-action-icon">${guiIcon('review')}</span>
                   <span class="aux-action-label">Review</span>
                   <kbd class="aux-action-kbd">Ctrl+Shift+G</kbd>
+                </button>
+                <button type="button" class="aux-action" data-aux="git">
+                  <span class="aux-action-icon">${guiIcon('git')}</span>
+                  <span class="aux-action-label">Git</span>
                 </button>
                 <button type="button" class="aux-action" data-aux="terminal">
                   <span class="aux-action-icon">${guiIcon('terminal')}</span>
@@ -6535,17 +8387,15 @@ export function createActoviqGuiHtml(): string {
       </header>
       <div class="region-body" id="regionAutomationBody"></div>
     </section>
-    <section class="region hidden" data-region="plugins" id="regionPlugins" aria-label="Plugins">
+    <section class="region hidden" data-region="plugins" id="regionPlugins" aria-label="Customize">
       <header class="region-header">
         <div class="region-titles">
-          <h1>Plugins</h1>
-          <p>Discovered plugins, tools, and skills</p>
+          <h1>Customize</h1>
+          <p>Manage plugins and reusable skills across your coding runtimes</p>
         </div>
-        <div class="region-actions">
-          <button type="button" id="pluginsViewPluginsBtn" class="pill-btn">Plugins</button>
-          <button type="button" id="pluginsViewToolsBtn" class="pill-btn">Tools</button>
-          <button type="button" id="pluginsViewSkillsBtn" class="pill-btn">Skills</button>
-          <button type="button" id="pluginsViewMcpBtn" class="pill-btn">MCP</button>
+        <div class="region-actions" role="tablist" aria-label="Customize sections">
+          <button type="button" id="pluginsViewPluginsBtn" class="pill-btn" role="tab">Plugins</button>
+          <button type="button" id="pluginsViewSkillsBtn" class="pill-btn" role="tab">Skills</button>
           <button type="button" id="pluginsRefreshBtn" class="pill-btn">Refresh</button>
         </div>
       </header>
@@ -6661,8 +8511,17 @@ export function createActoviqGuiHtml(): string {
       <h2 id="bridgeEditorTitle">New config</h2>
       <label class="dialog-field">Config name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
       <div class="two-col">
-        <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard (SDK default)</option><option value="claude">Claude</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
-        <label class="dialog-field">Provider<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+        <label class="dialog-field">Execution mode<select id="bridgeCfgExecution"><option value="api">Direct API</option><option value="cli">External CLI</option></select></label>
+        <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard SDK</option><option value="claude">Claude Code</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex CLI</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
+      </div>
+      <div class="two-col">
+        <label class="dialog-field">Authentication<select id="bridgeCfgAuthSource"><option value="native">Reuse CLI login / config</option><option value="apiKey">API key override</option></select></label>
+        <label id="bridgeProviderField" class="dialog-field">API protocol<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+      </div>
+      <p id="bridgeExecutionHint" class="muted"></p>
+      <div id="bridgeCliOptions" class="two-col hidden">
+        <label class="dialog-field">CLI provider<input id="bridgeCfgCredentialProvider" autocomplete="off" placeholder="openai / anthropic / deepseek"></label>
+        <label id="bridgeProjectTrustField" class="check-row"><input id="bridgeCfgTrustProject" type="checkbox">Trust project-local CLI resources</label>
       </div>
       <div id="bridgeReuseRow" class="dialog-field hidden">
         <span>Reuse an existing config <small class="muted" id="bridgeReuseHint"></small></span>
@@ -6695,7 +8554,7 @@ export function createActoviqGuiHtml(): string {
       <p id="bridgeCfgStatus" class="muted"></p>
       <div class="dialog-actions">
         <button type="button" id="bridgeCfgReset" class="secondary-btn">Cancel</button>
-        <button type="button" id="bridgeCfgUpdateLocal" class="secondary-btn hidden">Update local CLI config</button>
+        <button type="button" id="bridgeCfgUpdateLocal" class="secondary-btn hidden">Update local API config</button>
         <button type="button" id="bridgeCfgSave" class="primary">Save config</button>
       </div>
     </form>
@@ -6902,7 +8761,7 @@ export function createActoviqGuiHtml(): string {
             <h2>Provider configs</h2>
             <button type="button" id="bridgeNewConfig" class="primary">+ New config</button>
           </div>
-          <p class="muted">Save named provider/model configs (provider + API key + base URL + models). The chat composer picks <strong>agents</strong> built from these configs (and from Agent profiles below). Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
+<p class="muted">Choose <strong>External CLI</strong> to launch the selected runtime with its native login/config, or <strong>Direct API</strong> to call a provider through Actoviq. The chat composer also exposes agents built from these configs. Configs live in <code>~/.actoviq/bridge-configs.json</code>.</p>
           <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
@@ -6929,10 +8788,43 @@ export function createActoviqGuiHtml(): string {
         </div>
         <div class="settings-group">
           <div class="runtime-discovery-head">
-            <strong>Local runtimes</strong>
-            <small>PATH detection and readable local CLI config</small>
+            <span><strong>Local runtimes</strong><small>Installation and native login status</small></span>
+            <button type="button" id="externalCliAuthRefresh" class="secondary-btn">Check login</button>
           </div>
+          <p id="externalCliAuthStatus" class="muted">Login reuse is checked by asking each CLI; credentials are never read by Actoviq.</p>
           <div id="runtimeDiscoveryList" class="settings-card-list compact runtime-list"></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <div>
+              <h2>Background CLI work</h2>
+<p class="muted">Start any managed external runtime in the workspace, then inspect or interrupt it without blocking chat.</p>
+            </div>
+            <button type="button" id="externalCliRunsRefresh" class="secondary-btn">Refresh</button>
+          </div>
+          <div class="external-cli-run-form">
+            <label>Runtime config<select id="externalCliRunConfig" aria-label="External CLI runtime config"></select></label>
+            <label>Task<input id="externalCliRunPrompt" autocomplete="off" placeholder="Describe work for the CLI runtime"></label>
+            <button type="button" id="externalCliRunStart" class="primary">Run in background</button>
+          </div>
+          <p id="externalCliRunsStatus" class="muted">Background runs stay attached to the chat where they were started.</p>
+          <div id="externalCliRunsList" class="settings-card-list compact"></div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-group-head">
+            <div>
+              <h2>CLI conversation history</h2>
+<p class="muted">Read-only sessions from each runtime's native local store.</p>
+            </div>
+            <button type="button" id="externalCliHistoryRefresh" class="secondary-btn">Load history</button>
+          </div>
+          <div class="external-cli-history-filters">
+            <label>Runtime<select id="externalCliHistoryRuntime"><option value="">All managed CLIs</option><option value="claude">Claude Code</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
+            <label>Search<input id="externalCliHistoryQuery" autocomplete="off" placeholder="Title, workspace, or session id"></label>
+          </div>
+          <p id="externalCliHistoryStatus" class="muted">History stays on this machine and never reads authentication files.</p>
+          <div id="externalCliHistoryList" class="settings-card-list compact"></div>
+          <div class="settings-action-row"><button type="button" id="externalCliHistoryMore" class="secondary-btn hidden">Load more</button></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="profile">
@@ -7344,7 +9236,7 @@ body[data-theme="dark"] {
 }
 .region-nav.active .nav-icon { color: var(--brand); }
 .region-nav:not(.active):hover { background: var(--bg-surface-2); }
-.region { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
+.region { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
 .region-header { min-height: 64px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 12px 22px; gap: 14px; flex: 0 0 auto; background: var(--bg-surface); }
 .region-header .region-titles { min-width: 0; }
 .region-header h1 { font-size: 15px; margin: 0; font-weight: 600; color: var(--text-1); }
@@ -7352,9 +9244,36 @@ body[data-theme="dark"] {
 .region-header .region-actions { display: flex; gap: 8px; align-items: center; }
 .region-actions .primary { background: var(--bg-surface); color: var(--text-1); border-color: var(--border); font-weight: 600; }
 .region-actions .primary:hover { background: var(--surface-hover); border-color: var(--border-hover); color: var(--text-1); }
-.region-body { flex: 1; overflow: auto; padding: 18px; display: grid; gap: 10px; align-content: start; }
+.region-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 18px; display: grid; gap: 10px; align-content: start; }
+#regionPluginsBody { min-height: 0; }
 /* Region list cards (Automation / Plugins). */
 .region-list-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.skill-catalog-grid { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); min-width: 0; }
+.skill-catalog-row { border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.skill-catalog-row:last-child { border-bottom: 0; }
+.skill-catalog-row.is-active { box-shadow: inset 3px 0 0 #53a577; }
+.skill-catalog-row.is-disabled { background: color-mix(in srgb, var(--bg-surface) 78%, var(--bg-app)); }
+.skill-catalog-row.is-open { background: color-mix(in srgb, var(--bg-surface) 92%, var(--bg-app)); }
+.skill-catalog-summary-row { width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.skill-catalog-summary-row:hover { background: var(--surface-hover); }
+.skill-catalog-chevron { display: inline-grid; place-items: center; color: var(--text-2); transition: transform .15s ease; }
+.skill-catalog-chevron .ui-icon, .skill-catalog-chevron svg { width: 14px; height: 14px; }
+.skill-catalog-row:not(.is-open) .skill-catalog-chevron { transform: rotate(-90deg); }
+.skill-catalog-summary-main { min-width: 0; display: grid; gap: 3px; }
+.skill-catalog-name-line { min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.skill-catalog-name-line .rl-title { font-size: 13px; font-weight: 650; color: var(--text-1); }
+.skill-catalog-meta-line { min-width: 0; color: var(--text-2); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-catalog-summary-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.skill-catalog-detail { display: none; padding: 0 12px 12px 40px; }
+.skill-catalog-row.is-open .skill-catalog-detail { display: grid; gap: 10px; }
+.skill-catalog-detail .rl-desc { margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.skill-catalog-locations, .skill-catalog-variants { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.skill-catalog-locations li, .skill-catalog-variants li { min-width: 0; display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-app); }
+.skill-catalog-locations strong, .skill-catalog-variants strong { font-size: 12px; color: var(--text-1); font-weight: 600; }
+.skill-catalog-locations code, .skill-catalog-variants code { font-size: 11px; color: var(--text-2); word-break: break-all; }
+.skill-catalog-variant-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.skill-catalog-variant-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.skill-catalog-detail-footer { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
 .rl-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-surface); box-shadow: var(--shadow-card); padding: 13px 14px; display: grid; gap: 7px; }
 .rl-card .rl-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .rl-card .rl-icon { width: 32px; height: 32px; border-radius: 8px; display: inline-grid; place-items: center; background: var(--accent); color: var(--text-2); flex: 0 0 32px; }
@@ -7368,6 +9287,108 @@ body[data-theme="dark"] {
 .rl-card .rl-btn:hover { background: var(--bg-app); }
 .rl-card .rl-btn.primary:hover { background: var(--btn-primary-bg-hover); }
 .rl-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; color: var(--text-2); }
+.rl-chip.success { color: #26734d; border-color: #a8d7bd; background: #edf8f1; }
+.rl-chip.warning { color: #8a5b12; border-color: #e5c98f; background: #fff8e8; }
+.skill-catalog-toolbar { position: sticky; top: -18px; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: -18px -18px 4px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg-surface) 94%, transparent); backdrop-filter: blur(10px); }
+.skill-catalog-summary { color: var(--text-2); font-size: 12.5px; }
+.skill-catalog-search { width: min(340px, 46vw); height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 11px; outline: none; }
+.skill-catalog-search:focus { border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.skill-section-heading { display: flex; align-items: baseline; gap: 10px; margin-top: 5px; }
+.skill-section-heading h2 { margin: 0; color: var(--text-1); font-size: 14px; }
+.skill-section-heading p { margin: 0; color: var(--text-2); font-size: 12px; }
+.skill-source-section { display: grid; gap: 10px; }
+.skill-source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 8px; }
+.skill-source-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); }
+.skill-source-card > div { min-width: 0; display: grid; gap: 2px; }
+.skill-source-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text-1); }
+.skill-source-card small { color: var(--text-2); font-size: 11px; }
+.skill-source-card .rl-btn { flex: 0 0 auto; }
+.skill-source-card .rl-btn.active { color: var(--text-2); }
+.skill-source-card > .skill-source-actions { min-width: auto; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.skill-conflict-banner, .customize-error { margin: 0; padding: 9px 11px; border: 1px solid #e5c98f; border-radius: 8px; background: #fff8e8; color: #805511; font-size: 12px; }
+.skill-problem-panel { padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text-2); font-size: 12px; }
+.skill-problem-panel summary { cursor: pointer; color: var(--text-1); font-weight: 600; }
+.skill-problem-panel ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.customize-error { border-color: #e2aaaa; background: #fff1f1; color: #9b2d2d; }
+.skill-card-titles { min-width: 0; display: grid; gap: 1px; }
+.plugin-catalog { width: min(980px, 100%); margin: 0 auto; display: grid; gap: 26px; }
+.plugin-catalog-toolbar { position: sticky; top: -18px; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: -18px -18px 0; padding: 13px max(18px, calc((100% - 980px) / 2 + 18px)); border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg-surface) 94%, transparent); backdrop-filter: blur(10px); }
+.plugin-catalog-toolbar .skill-catalog-search { width: min(360px, 54vw); }
+.plugin-catalog-summary { color: var(--text-2); font-size: 12px; white-space: nowrap; }
+.plugin-section { display: grid; gap: 8px; }
+.plugin-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 10px; }
+.plugin-section-heading h2 { margin: 0; font-size: 15px; font-weight: 650; color: var(--text-1); }
+.plugin-section-heading span { color: var(--text-2); font-size: 11.5px; }
+.plugin-market-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border); }
+.plugin-market-row { min-width: 0; min-height: 94px; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 15px 12px; border-bottom: 1px solid var(--border); background: transparent; transition: background .12s ease; }
+.plugin-market-row:nth-child(odd) { border-right: 1px solid var(--border); }
+.plugin-market-row:hover { background: var(--surface-hover); }
+.plugin-market-icon { width: 46px; height: 46px; border: 1px solid color-mix(in srgb, var(--border) 75%, transparent); border-radius: 12px; display: grid; place-items: center; color: #fff; box-shadow: 0 4px 16px rgba(20,25,38,.09); font-weight: 700; letter-spacing: -.02em; }
+.plugin-market-icon .ui-icon { width: 23px; height: 23px; }
+.plugin-market-icon[data-plugin="ocr"] { background: linear-gradient(145deg,#8b5cf6,#3b82f6); }
+.plugin-market-icon[data-plugin="computer-use"] { background: linear-gradient(145deg,#38bdf8,#a855f7 72%,#fb7185); }
+.plugin-market-icon[data-plugin="github"] { background: linear-gradient(145deg,#343a40,#0b0d10); }
+.plugin-market-icon[data-plugin="kimi-webbridge"] { background: linear-gradient(145deg,#111827,#7c3aed); }
+.plugin-market-icon[data-plugin="playwright"] { background: linear-gradient(145deg,#2eac67,#d65348); }
+.plugin-market-copy { min-width: 0; display: grid; gap: 4px; }
+.plugin-market-titleline { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.plugin-market-titleline strong { color: var(--text-1); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-market-copy p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.plugin-state { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); font-size: 10.5px; white-space: nowrap; }
+.plugin-state::before { content: ''; width: 6px; height: 6px; border-radius: 999px; background: #9ca3af; }
+.plugin-state.ready::before { background: #34a36f; }
+.plugin-state.needs-setup::before { background: #d49a2a; }
+.plugin-state.degraded::before { background: #d05252; }
+.plugin-market-action { min-width: 72px; min-height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface); color: var(--text-1); font-size: 12px; cursor: pointer; }
+.plugin-market-action:hover { border-color: var(--border-hover); background: var(--bg-surface-2); }
+.plugin-detail { width: min(820px, 100%); margin: 0 auto; display: grid; gap: 16px; }
+.plugin-detail-back { justify-self: start; min-height: 30px; padding: 0 9px; border: 0; background: transparent; color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.plugin-detail-back:hover { color: var(--text-1); }
+.plugin-detail-hero { display: grid; grid-template-columns: 58px minmax(0,1fr) auto; align-items: center; gap: 15px; padding: 4px 2px 16px; border-bottom: 1px solid var(--border); }
+.plugin-detail-hero .plugin-market-icon { width: 56px; height: 56px; border-radius: 14px; }
+.plugin-detail-title { min-width: 0; display: grid; gap: 4px; }
+.plugin-detail-title h2 { margin: 0; font-size: 20px; color: var(--text-1); }
+.plugin-detail-title p { margin: 0; color: var(--text-2); font-size: 12.5px; }
+.plugin-detail-panel { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface); box-shadow: var(--shadow-card); overflow: hidden; }
+.plugin-detail-panel > header { padding: 13px 15px; border-bottom: 1px solid var(--border); }
+.plugin-detail-panel > header h3 { margin: 0; font-size: 13.5px; color: var(--text-1); }
+.plugin-detail-panel > header p { margin: 3px 0 0; color: var(--text-2); font-size: 11.5px; }
+.plugin-config-grid { padding: 15px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 14px; }
+.plugin-config-grid label { min-width: 0; display: grid; gap: 6px; color: var(--text-2); font-size: 11.5px; }
+.plugin-config-grid label.full { grid-column: 1 / -1; }
+.plugin-config-grid input, .plugin-config-grid select, .plugin-config-grid textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 8px 10px; outline: none; font: inherit; font-size: 12.5px; }
+.plugin-config-grid textarea { min-height: 78px; resize: vertical; }
+.plugin-config-grid input:focus, .plugin-config-grid select:focus, .plugin-config-grid textarea:focus { border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.plugin-checkbox { display: flex !important; grid-template-columns: auto 1fr !important; align-items: center; justify-content: start; gap: 8px !important; }
+.plugin-checkbox input { width: auto; }
+.plugin-secret-note { grid-column: 1 / -1; margin: -4px 0 0; color: var(--text-2); font-size: 11px; }
+.plugin-detail-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 15px; border-top: 1px solid var(--border); }
+.plugin-detail-actions > div { display: flex; gap: 8px; }
+.plugin-health { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-2); font-size: 12px; background: var(--surface-muted); }
+.plugin-health.ready { border-color: #a8d7bd; color: #26734d; background: #edf8f1; }
+.plugin-health.degraded { border-color: #e2aaaa; color: #9b2d2d; background: #fff1f1; }
+.plugin-health.needs-setup { border-color: #e5c98f; color: #805511; background: #fff8e8; }
+.plugin-local-list { display: grid; gap: 8px; }
+.plugin-local-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; }
+.plugin-local-row strong { font-size: 12.5px; color: var(--text-1); }
+.plugin-local-row small { display: block; color: var(--text-2); margin-top: 2px; }
+#regionPluginsBody.is-updating { pointer-events: none; opacity: .72; }
+@media (prefers-color-scheme: dark) {
+  .rl-chip.success { color: #8fd2aa; border-color: #315c44; background: #193326; }
+  .rl-chip.warning, .skill-conflict-banner { color: #e4c17b; border-color: #6b5731; background: #332a19; }
+  .customize-error { color: #efaaaa; border-color: #6e3a3a; background: #351f1f; }
+  .plugin-health.ready { color: #8fd2aa; border-color: #315c44; background: #193326; }
+  .plugin-health.needs-setup { color: #e4c17b; border-color: #6b5731; background: #332a19; }
+  .plugin-health.degraded { color: #efaaaa; border-color: #6e3a3a; background: #351f1f; }
+}
+@media (max-width: 760px) {
+  .plugin-market-grid { grid-template-columns: 1fr; }
+  .plugin-market-row:nth-child(odd) { border-right: 0; }
+  .plugin-config-grid { grid-template-columns: 1fr; }
+  .plugin-config-grid label.full { grid-column: auto; }
+  .plugin-detail-hero { grid-template-columns: 52px minmax(0, 1fr); }
+  .plugin-detail-hero > .plugin-market-action { grid-column: 1 / -1; justify-self: stretch; }
+}
 .region-empty { margin: 24px auto; color: var(--text-2); font-size: 14px; }
 /* --- Project overview (plan/UI_PLAN §4.1): workspace card wall. --- */
 .project-overview { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-surface); }
@@ -7512,12 +9533,25 @@ body[data-theme="dark"] {
 .agent-execution-refresh:hover { color: var(--text-1); border-color: var(--border-hover); background: var(--surface-hover); }
 .agent-execution-state { display: grid; place-items: center; min-height: 180px; border: 1px dashed var(--border); border-radius: 12px; color: var(--text-2); font-size: 13px; background: var(--bg-surface); text-align: center; padding: 20px; }
 .agent-execution-state.error { border-color: rgba(220, 38, 38, .34); color: var(--err); }
+.agent-conversation-group { display: grid; gap: 8px; margin: 2px 0 16px; }
+.agent-conversation-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 54px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-surface); }
+.agent-conversation-row.running { border-color: var(--border-active-soft); background: color-mix(in srgb, var(--brand-soft) 34%, var(--bg-surface)); }
+.agent-conversation-row.waiting { border-color: #E9C46A; background: color-mix(in srgb, #FEF3C7 36%, var(--bg-surface)); }
+.agent-conversation-row.current { box-shadow: inset 3px 0 0 var(--brand); }
+.agent-conversation-status { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3, #a1a1aa); }
+.agent-conversation-status.running { background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, .14); }
+.agent-conversation-status.waiting { background: #D97706; box-shadow: 0 0 0 3px rgba(217, 119, 6, .14); }
+.agent-conversation-copy { min-width: 0; display: grid; gap: 3px; }
+.agent-conversation-copy strong, .agent-conversation-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-conversation-copy strong { color: var(--text-1); font-size: 13px; font-weight: 650; }
+.agent-conversation-copy small { color: var(--text-2); font-size: 11.5px; }
 .agent-execution-group { display: grid; gap: 9px; margin-top: 10px; }
 .agent-execution-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-2); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
 .agent-execution-group-toggle { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 3px 0; text-align: left; }
 .agent-execution-group-toggle:hover { color: var(--text-1); }
 .agent-execution-root { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--bg-surface); box-shadow: 0 1px 2px rgba(24,24,27,.025); }
-.agent-execution-root.active { border-color: var(--border-active-soft); box-shadow: 0 0 0 2px var(--brand-soft); }
+.agent-execution-root.running { border-color: var(--border-active-soft); box-shadow: 0 0 0 2px var(--brand-soft); }
+.agent-execution-root.waiting { border-color: #E9C46A; box-shadow: 0 0 0 2px rgba(233, 196, 106, .18); }
 .agent-execution-root-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
 .agent-execution-identity { min-width: 0; display: flex; align-items: center; gap: 9px; }
 .agent-execution-avatar { width: 28px; height: 28px; flex: 0 0 28px; display: grid; place-items: center; border-radius: 9px; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 750; }
@@ -7533,6 +9567,8 @@ body[data-theme="dark"] {
 .agent-execution-status.running::before, .agent-execution-status.pending_init::before { background: var(--brand); }
 .agent-execution-status.completed { background: var(--ok-soft); color: var(--ok); }
 .agent-execution-status.completed::before { background: var(--ok); }
+.agent-execution-status.waiting { background: #FEF3C7; color: #92400E; }
+.agent-execution-status.waiting::before { background: #D97706; }
 .agent-execution-status.errored { background: var(--err-soft); color: var(--err); }
 .agent-execution-status.errored::before { background: var(--err); }
 .agent-execution-status.interrupted, .agent-execution-status.shutdown { background: #FEF3C7; color: #92400E; }
@@ -8502,8 +10538,7 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .history-picker .hp-row { text-align: left; width: 100%; padding: 7px 9px; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.5px; color: var(--text-1); }
 .history-picker .hp-row:hover { background: var(--surface-hover); }
 /* Terminal needs node-pty; hide Terminal entry points when unavailable. */
-body:not([data-terminal-capable="true"]) .aux-action[data-aux="terminal"],
-body:not([data-terminal-capable="true"]) #terminalToggleBtn { display: none !important; }
+body:not([data-terminal-capable="true"]) .aux-action[data-aux="terminal"] { display: none !important; }
 .topbar { min-height: 58px; border-bottom: 1px solid #e7e7e7; display: flex; align-items: center; justify-content: space-between; padding: 10px 18px; gap: 14px; }
 .title-block { min-width: 0; }
 .title-row { display: flex; align-items: center; gap: 8px; }
@@ -9230,13 +11265,13 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .graph-board-svg { position: absolute; top: 0; left: 0; z-index: 2; overflow: visible; pointer-events: none; }
 .graph-board-svg path.graph-edge-hit { pointer-events: stroke; cursor: pointer; fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; }
 .graph-board-svg path.graph-edge-visible { pointer-events: none; fill: none; stroke: #94A3B8; stroke-width: 2px; vector-effect: non-scaling-stroke; }
-.graph-board-svg path.graph-edge-visible.dashed { stroke-dasharray: 6 4; }
+.graph-board-svg path.graph-edge-visible.dashed { stroke-dasharray: none; }
 .graph-board-svg path.graph-edge-visible.undirected { stroke-linecap: round; }
-.graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
-.graph-board-svg path.graph-edge-visible.selected { stroke: var(--brand); stroke-width: 2.5px; }
+.graph-board-svg path.graph-edge-preview { pointer-events: none; fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; opacity: 0.85; }
+.graph-board-svg path.graph-edge-visible.selected { stroke: var(--brand); stroke-width: 2.5px; stroke-dasharray: none; }
 .graph-board-svg marker#graph-edge-arrow path { fill: #94A3B8; }
 .graph-board-svg marker#graph-edge-arrow-selected path { fill: var(--brand); }
-.graph-board-svg path.graph-edge-guide { pointer-events: none; fill: none; stroke: var(--brand); stroke-width: 1px; stroke-dasharray: 4 3; opacity: 0.45; vector-effect: non-scaling-stroke; }
+.graph-board-svg path.graph-edge-guide { display: none; }
 .graph-board-svg circle.graph-edge-handle { pointer-events: all; cursor: grab; fill: #fff; stroke: var(--brand); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .graph-board-svg circle.graph-edge-handle:active { cursor: grabbing; fill: var(--accent-soft); }
 .graph-board-svg circle.graph-edge-handle.graph-edge-endpoint { fill: var(--brand); stroke: #fff; r: 7; }
@@ -9489,6 +11524,12 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .surface-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
 .surface-actions button, .surface-card button { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 10px; }
 .surface-list { overflow: auto; padding: 12px 18px 24px; display: grid; gap: 10px; }
+.surface-item { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; background: var(--bg-surface); }
+.surface-item > p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.surface-item > small { overflow-wrap: anywhere; }
+.surface-item pre { max-width: 100%; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; line-height: 1.5; color: var(--text-2); }
+.runtime-trace > summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; font-weight: 600; user-select: none; }
+.runtime-trace[open] > summary { margin-bottom: 6px; color: var(--text-1); }
 .surface-card { border: 1px solid #e1e1e1; border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
 .surface-card strong { overflow-wrap: anywhere; }
 .surface-card p { color: #666b70; margin: 0; overflow-wrap: anywhere; }
@@ -9540,10 +11581,11 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
   background: transparent;
   text-align: left;
   color: var(--text-2);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0 10px;
   margin-bottom: 8px;
   font-size: 12.5px;
+  transition: background-color .12s ease, color .12s ease;
 }
 .settings-search { display: grid; gap: 4px; margin-bottom: 12px; color: var(--text-2); font-size: 11.5px; }
 .settings-search input {
@@ -9566,22 +11608,36 @@ body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 }
 .settings-tab {
   width: 100%;
-  min-height: 30px;
+  min-height: 32px;
   display: flex;
   align-items: center;
   gap: 8px;
   border: 0;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0 10px;
   text-align: left;
   color: var(--text-1);
   font-size: 12.5px;
+  transition: background-color .12s ease, color .12s ease;
 }
 .settings-tab .settings-icon,
 .settings-tab .ui-icon { width: 15px; height: 15px; color: var(--text-2); }
-.settings-tab:hover, .back-btn:hover { background: var(--surface-hover); }
-.settings-tab.active { background: var(--surface-selected); font-weight: 600; }
+/* Sidebar bg equals --surface-hover in light theme — use ink mix so hover is visible. */
+.settings-tab:hover,
+.back-btn:hover {
+  background: color-mix(in srgb, var(--text-1) 7%, transparent);
+  color: var(--text-1);
+}
+.settings-tab:hover .settings-icon,
+.settings-tab:hover .ui-icon { color: var(--text-1); }
+.settings-tab.active {
+  background: color-mix(in srgb, var(--text-1) 10%, transparent);
+  font-weight: 600;
+}
+.settings-tab.active:hover {
+  background: color-mix(in srgb, var(--text-1) 12%, transparent);
+}
 .settings-tab.active .settings-icon,
 .settings-tab.active .ui-icon { color: var(--text-1); }
 .settings-main {
@@ -9720,6 +11776,25 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 }
 .settings-command-row { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: end; gap: 8px; margin: 10px 0; }
 .settings-action-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.external-cli-run-form { display: grid; grid-template-columns: minmax(150px, .55fr) minmax(240px, 1.45fr) auto; align-items: end; gap: 8px; margin: 10px 0 8px; }
+.external-cli-run-form label, .external-cli-history-filters label { display: grid; gap: 4px; color: var(--text-2); font-size: 12px; }
+.external-cli-run-form input, .external-cli-run-form select, .external-cli-history-filters input, .external-cli-history-filters select {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.external-cli-run-form > label,
+.external-cli-history-filters > label,
+.external-cli-run-form input,
+.external-cli-run-form select,
+.external-cli-history-filters input,
+.external-cli-history-filters select { min-width: 0; width: 100%; }
+.external-cli-run-form > button { min-height: 32px; white-space: nowrap; }
+.external-cli-history-filters { display: grid; grid-template-columns: minmax(150px, .45fr) minmax(240px, 1.55fr); gap: 8px; margin: 10px 0 8px; }
 .automation-schedule-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); align-items: end; gap: 8px; margin: 10px 0 8px; }
 .automation-schedule-grid label, .automation-schedule-payload { display: grid; gap: 4px; color: var(--text-2); font-size: 12px; }
 .automation-schedule-grid input, .automation-schedule-grid select, .automation-schedule-payload textarea {
@@ -9806,6 +11881,9 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .switch-field input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 .settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; margin-top: 2px; }
 .settings-card-list.compact { max-height: 260px; }
+#runtimeDiscoveryList,
+#externalCliRunsList,
+#externalCliHistoryList { max-height: none; overflow: visible; padding-right: 0; }
 .settings-card {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -9823,7 +11901,10 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .settings-group-head h2 { margin: 0; font-size: 13.5px; }
 .settings-group-head + p,
 .settings-group-head + .muted { margin-top: 0; }
-.runtime-discovery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 16px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.runtime-discovery-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 16px 0 10px; padding-top: 14px; border-top: 1px solid var(--border); }
+.runtime-discovery-head > span { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.runtime-discovery-head > button,
+.settings-group-head > button { flex: 0 0 auto; white-space: nowrap; }
 .runtime-discovery-head small { color: var(--text-2); font-size: 11.5px; }
 .runtime-list { margin-bottom: 10px; }
 .runtime-card { border-left-width: 3px; }
@@ -9838,6 +11919,10 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .runtime-status.configured { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
 .runtime-status.missing { background: var(--bg-surface-2); color: var(--text-2); }
 .runtime-hint { font-size: 11.5px; }
+@media (max-width: 760px) {
+  .external-cli-run-form, .external-cli-history-filters { grid-template-columns: 1fr; }
+  .external-cli-run-form > button { width: 100%; }
+}
 .settings-autosave-status {
   position: sticky;
   align-self: center;
@@ -9862,8 +11947,7 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 /* Dark-theme reserves for the new workbench regions (plan/UI_PLAN §2 — U9). */
 @media (max-width: 860px) {
   .sidebar { width: 56px; flex-basis: 56px; padding: 12px 8px; }
-  .settings-sidebar { width: 72px; flex-basis: 72px; }
-  .sidebar .search, .sidebar-recents, .command-section, .project-section h2, .project-session-list, .sidebar-link, .brand-name, .settings-search, .settings-sidebar section h2, .settings-tab span + text { display: none; }
+  .sidebar .search, .sidebar-recents, .command-section, .project-section h2, .project-session-list, .sidebar-link, .brand-name { display: none; }
   .sidebar .brand, .sidebar .nav-btn { justify-content: center; padding-left: 0; padding-right: 0; }
   .sidebar .nav-btn > span:not(.nav-icon) { display: none !important; }
   .transcript { padding: 18px 16px; }
@@ -9873,7 +11957,26 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   .mode-grid, .two-col { grid-template-columns: 1fr; }
   .settings-command-row { grid-template-columns: 1fr; }
   .automation-schedule-grid { grid-template-columns: 1fr; }
-  .settings-main { padding: 22px 16px 64px; }
+  .settings-view { flex-direction: column; overflow: hidden; }
+  .settings-sidebar {
+    width: 100%;
+    max-width: 100vw;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    scrollbar-width: none;
+  }
+  .settings-sidebar::-webkit-scrollbar { display: none; }
+  .settings-sidebar section { display: contents; }
+  .settings-search, .settings-sidebar section h2 { display: none; }
+  .back-btn, .settings-tab { width: auto; flex: 0 0 auto; margin: 0; white-space: nowrap; }
+  .settings-main { width: 100%; min-width: 0; min-height: 0; padding: 22px 16px 64px; }
 }
 @media (max-width: 640px) {
   .project-detail > .region-header {
@@ -9929,22 +12032,28 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 .model-picker-wrapper { position: relative; display: inline-flex; }
 .model-picker-btn { min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .model-picker-btn:hover { background: var(--bg-surface-2); }
-.composer .model-picker-btn { border: 0; background: transparent; min-height: 30px; padding: 0 6px; font-size: 12.5px; }
+.composer .model-picker-btn { border: 0; background: transparent; min-width: 144px; max-width: 250px; min-height: 38px; padding: 3px 7px; font-size: 12.5px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; text-align: right; }
 .composer .model-picker-btn:hover { background: var(--surface-hover); }
+.model-picker-btn-copy { min-width: 0; display: grid; justify-items: end; gap: 1px; }
+.model-picker-btn-copy strong, .model-picker-btn-copy small { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-picker-btn-copy strong { color: var(--text-1); font-size: 12.5px; font-weight: 650; }
+.model-picker-btn-copy small { color: var(--text-2); font-size: 10.5px; font-weight: 400; }
+.model-picker-caret { flex: 0 0 auto; color: var(--text-2); }
+.model-picker-btn.pending { cursor: progress; opacity: .78; }
 .model-picker-flyout {
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
   display: flex;
-  flex-direction: row;
+  flex-direction: row-reverse;
   align-items: flex-start;
   gap: 8px;
   z-index: 20;
 }
 .model-picker-flyout.hidden { display: none; }
 .model-picker-menu {
-  width: 320px;
-  max-height: 380px;
+  width: var(--model-picker-menu-width, min(420px, calc(100vw - 32px)));
+  max-height: 460px;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
@@ -9953,6 +12062,9 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
   overflow: hidden;
 }
+.picker-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 14px 3px; }
+.picker-heading strong { color: var(--text-1); font-size: 13.5px; }
+.picker-heading span { color: var(--text-2); font-size: 10.5px; white-space: nowrap; }
 .picker-search-wrap { padding: 10px 10px 4px; flex: 0 0 auto; }
 .picker-search {
   width: 100%;
@@ -9967,7 +12079,7 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   outline: none;
 }
 .picker-search:focus { box-shadow: inset 0 0 0 1px var(--border-active); }
-.picker-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 8px; max-height: 320px; }
+.picker-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 8px; max-height: 374px; }
 .picker-edit-popover {
   width: 168px;
   align-self: flex-start;
@@ -9984,7 +12096,7 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   align-items: center;
   gap: 6px;
   width: 100%;
-  min-height: 36px;
+  min-height: 48px;
   padding: 8px 10px;
   border: 0;
   border-radius: 10px;
@@ -9998,13 +12110,15 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 }
 .picker-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .picker-item:hover { background: var(--surface-hover); }
-.picker-item.selected { background: transparent; }
+.picker-item.selected { background: var(--brand-soft); }
 .picker-item.editing { background: var(--surface-hover); }
+.picker-item.disabled { cursor: not-allowed; opacity: .58; }
+.picker-item-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
 .picker-item-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .picker-item-meta {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 38%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -10012,6 +12126,8 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   font-weight: 400;
   color: var(--text-2);
 }
+.picker-item-chips { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.picker-item-chips > span { border: 1px solid var(--border); border-radius: 999px; padding: 1px 5px; color: var(--text-2); background: var(--bg-app); font-size: 9.5px; font-weight: 650; }
 .picker-item-actions {
   display: none;
   align-items: center;
@@ -10077,6 +12193,7 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 .picker-effort-item .picker-item-label { font-weight: 400; }
 .picker-effort-item .picker-check { margin-left: auto; }
 .picker-placeholder { padding: 14px 12px; font-size: 12px; color: var(--text-2); text-align: center; }
+.picker-error { margin: 5px 8px 8px; padding: 8px 10px; border-radius: 8px; color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); font-size: 11.5px; line-height: 1.4; }
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
 .router-editor { width: min(720px, 100%); }
 .router-editor textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); font: inherit; }
@@ -10231,9 +12348,13 @@ function guiIcon(name) {
   const body = _ICONS[name] || '';
   return \`<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">\${body}</svg>\`;
 }
-function api(path, options = {}) {
+let apiMutationVersion = 0;
+async function api(path, options = {}) {
   const headers = Object.assign({}, options.headers || {}, { 'x-actoviq-token': ACTOVIQ_TOKEN });
-  return fetch(path, Object.assign({}, options, { headers }));
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  const method = String(options.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD' && response.ok) apiMutationVersion += 1;
+  return response;
 }
 const __name = (target) => target;
 const PROJECT_STATUSES = ${JSON.stringify(PROJECT_STATUSES)};
@@ -10304,6 +12425,10 @@ const state = {
   // only this run is stopped; falls back to the server's foreground run when
   // null (e.g. slash commands, which emit no run.started).
   activeRunId: null,
+  activeClientRequestId: null,
+  activeRunSequence: 0,
+  runRecoverySequence: 0,
+  recoveringRun: false,
   // Workbench: chat stays left; aux panel hosts Review/Browser/Files;
   // Terminal opens in the bottom dock. Monitor was removed.
   tabs: [],
@@ -10324,7 +12449,7 @@ const state = {
   gitSidebarWidth: 320,
   gitSelected: null,
   gitTreeExpanded: {},
-  // App shell: which of the 4 primary regions (Project/Team/Automation/Plugins)
+  // App shell: which of the 4 primary regions (Project/Team/Automation/Customize)
   // is visible. Project = the existing chat workbench (default).
   activeRegion: 'project',
   // Within the Project region: 'overview' (workspace card wall) or
@@ -10374,6 +12499,11 @@ const state = {
   /** Agent name whose temporary effort editor is open in the composer picker. */
   pickerEditingAgent: null,
   pickerQuery: '',
+  pickerActiveIndex: 0,
+  pickerSelectionPending: false,
+  pickerSelectionSequence: 0,
+  pickerError: '',
+  pickerRecentNames: [],
   // Team region: selected squad + its expanded definition + selected graph node.
   teamSelected: null,
   teamDefinition: null,
@@ -10394,8 +12524,14 @@ const state = {
   teamDirty: false,
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
-  // Plugins region: which sub-list (plugins/tools/skills/mcp) is active.
+  // Customize region: plugins and cross-runtime skills.
   pluginsView: 'plugins',
+  pluginCatalogData: null,
+  pluginCatalogQuery: '',
+  pluginSelectedId: null,
+  skillCatalogData: null,
+  skillCatalogQuery: '',
+  skillCatalogExpanded: {},
   preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true }
 };
 const el = (id) => document.getElementById(id);
@@ -10562,6 +12698,7 @@ function openAuxView(kind) {
   if (view) view.classList.remove('hidden');
   if (closeBtn) closeBtn.classList.remove('hidden');
   if (kind === 'review') renderAuxReview().catch(console.error);
+  else if (kind === 'git') renderAuxGit().catch(console.error);
   else if (kind === 'browser') renderAuxBrowser();
   else if (kind === 'files') renderAuxFiles().catch(console.error);
 }
@@ -10631,6 +12768,96 @@ async function renderAuxReview() {
   const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
   meta.textContent = 'On ' + data.branch + (data.upstream ? ' → ' + data.upstream : '') + tracking;
   body.appendChild(meta);
+}
+async function renderAuxGit() {
+  const view = el('auxView');
+  if (!view) return;
+  view.textContent = '';
+  const head = document.createElement('div');
+  head.className = 'aux-view-header';
+  head.innerHTML = '<span class="aux-view-title">Git</span>';
+  const body = document.createElement('div');
+  body.className = 'aux-view-body';
+  body.innerHTML = '<p class="aux-empty muted">Loading git…</p>';
+  view.append(head, body);
+  const data = await gitData();
+  body.textContent = '';
+  if (!data || !data.isRepo) {
+    const note = document.createElement('p');
+    note.className = 'aux-empty muted';
+    note.textContent = data ? 'This workspace is not a git repository.' : 'Git unavailable.';
+    body.appendChild(note);
+    return;
+  }
+  const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
+  const summary = document.createElement('p');
+  summary.className = 'muted';
+  summary.style.margin = '0 0 12px';
+  summary.style.fontSize = '12px';
+  summary.textContent = 'On ' + data.branch + (data.upstream ? ' → ' + data.upstream : '') + tracking;
+  body.appendChild(summary);
+
+  const status = data.status || [];
+  const changes = gitSection('Changes (' + status.length + ')');
+  if (status.length === 0) {
+    const clean = document.createElement('p');
+    clean.className = 'muted';
+    clean.textContent = 'Working tree clean.';
+    changes.appendChild(clean);
+  } else {
+    for (const entry of status) {
+      const row = document.createElement('div');
+      row.className = 'git-row';
+      const code = (entry.x || '') + (entry.y || '');
+      const stat = document.createElement('span');
+      stat.className = 'git-stat' + (code.indexOf('D') !== -1 ? ' del' : '');
+      stat.textContent = code || '•';
+      const file = document.createElement('span');
+      file.className = 'git-mono';
+      file.textContent = entry.file;
+      row.append(stat, file);
+      changes.appendChild(row);
+    }
+  }
+  body.appendChild(changes);
+
+  const branchList = data.branches || [];
+  const branches = gitSection('Branches (' + branchList.length + ')');
+  for (const branch of branchList) {
+    const row = document.createElement('div');
+    row.className = 'git-row';
+    const name = document.createElement('span');
+    if (branch.current) name.className = 'git-current';
+    name.textContent = (branch.current ? '● ' : '') + branch.name;
+    row.appendChild(name);
+    branches.appendChild(row);
+  }
+  body.appendChild(branches);
+
+  const commitList = data.commits || [];
+  const commits = gitSection('Recent commits');
+  for (const commit of commitList) {
+    const row = document.createElement('div');
+    row.className = 'git-row';
+    const hash = document.createElement('span');
+    hash.className = 'git-hash';
+    hash.textContent = commit.hash;
+    const subject = document.createElement('span');
+    subject.textContent = commit.subject;
+    const meta = document.createElement('span');
+    meta.className = 'git-meta';
+    meta.textContent = (commit.relativeDate || commit.date || '') + (commit.author ? ' · ' + commit.author : '');
+    if (commit.absoluteDate) meta.title = new Date(commit.absoluteDate).toLocaleString();
+    row.append(hash, subject, meta);
+    commits.appendChild(row);
+  }
+  if (commitList.length === 0) {
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = 'No commits.';
+    commits.appendChild(note);
+  }
+  body.appendChild(commits);
 }
 function renderAuxBrowser() {
   const view = el('auxView');
@@ -10818,7 +13045,7 @@ function closeTerminalTab(id) {
 }
 function handleAuxAction(kind) {
   if (kind === 'terminal') openTerminalDock();
-  else if (kind === 'review' || kind === 'browser' || kind === 'files') openAuxView(kind);
+  else if (kind === 'review' || kind === 'git' || kind === 'browser' || kind === 'files') openAuxView(kind);
 }
 let paneCounter = 0;
 // Lazily load the vendored xterm UMD assets (same-origin, allowed by script-src
@@ -12039,20 +14266,21 @@ function sameWorkspacePath(a, b) {
 }
 async function openSidebarProject(projectPath) {
   if (!projectPath) return;
-  if (sameWorkspacePath(state.snapshot?.workDir || '', projectPath)) {
-    switchProjectView('detail');
-    return;
+  if (!sameWorkspacePath(state.snapshot?.workDir || '', projectPath)) {
+    const ok = await switchProject(projectPath, 'detail');
+    if (!ok) return;
   }
-  await switchProject(projectPath, 'detail');
+  await switchRegion('project');
+  switchProjectView('detail');
 }
 async function openSidebarSession(projectPath, sessionId) {
   if (!sessionId) return;
   if (!sameWorkspacePath(state.snapshot?.workDir || '', projectPath || '') && projectPath) {
     const ok = await switchProject(projectPath, 'conversation');
     if (!ok) return;
-  } else {
-    switchProjectView('conversation');
   }
+  await switchRegion('project');
+  switchProjectView('conversation');
   await resumeSession(sessionId);
 }
 function renderWorkspaceChoices() {
@@ -12267,14 +14495,37 @@ async function hydrateTranscript() {
   }
   renderTranscriptFromMessages(state.lastHydratedMessages);
 }
+let stateSnapshotRequest = null;
+let stateSnapshotLoadSequence = 0;
+async function fetchStateSnapshot() {
+  const version = apiMutationVersion;
+  if (!stateSnapshotRequest || stateSnapshotRequest.version !== version) {
+    const entry = { version: version, promise: null };
+    entry.promise = (async () => {
+      const res = await api('/api/state');
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || ('Failed to load state (' + res.status + ')'));
+      return payload;
+    })().finally(() => {
+      if (stateSnapshotRequest === entry) stateSnapshotRequest = null;
+    });
+    stateSnapshotRequest = entry;
+  }
+  return stateSnapshotRequest.promise;
+}
 async function loadState() {
+  const requestSequence = ++stateSnapshotLoadSequence;
+  const requestVersion = apiMutationVersion;
   try {
-    const res = await api('/api/state');
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.error || ('Failed to load state (' + res.status + ')'));
-    state.snapshot = payload;
+    const snapshot = await fetchStateSnapshot();
+    if (requestSequence !== stateSnapshotLoadSequence) return;
+    if (requestVersion !== apiMutationVersion) {
+      return loadState();
+    }
+    state.snapshot = snapshot;
     state.loadError = null;
   } catch (error) {
+    if (requestSequence !== stateSnapshotLoadSequence || requestVersion !== apiMutationVersion) return;
     state.loadError = error instanceof Error ? error.message : String(error);
     state.snapshot = state.snapshot || { projects: [], sessions: [], runs: [] };
   }
@@ -12289,11 +14540,14 @@ function applyLoadedState() {
   if (!document.body.dataset.sidebarMode) {
     document.body.dataset.sidebarMode = 'nav';
   }
-  const workDir = state.snapshot.workDir || '';
   el('sessionTitle').textContent = state.snapshot.session?.title || 'Actoviq GUI';
   updateConversationIssuePill();
-  el('workspace').textContent = workDir + ' - ' + (state.snapshot.session?.model || 'default') + ' - ' + state.snapshot.permissionMode + ' - effort:' + state.snapshot.effort + ' - team:' + (state.snapshot.activeTeamName || 'none');
-  state.running = Boolean(state.snapshot.running);
+  updateConversationSummary();
+  const foreground = (state.snapshot.runs || []).find(run => run.runId === state.snapshot.foregroundRunId);
+  const foregroundIsCurrent = Boolean(
+    foreground && (!state.snapshot.session?.id || foreground.sessionId === state.snapshot.session.id),
+  );
+  state.running = Boolean(state.activeClientRequestId || state.recoveringRun || foregroundIsCurrent);
   setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
   renderComposerMeta();
   renderPermissionPicker();
@@ -12306,11 +14560,20 @@ function applyLoadedState() {
   renderStatusExtras();
   const hint = el('credentialHint');
   const needsCreds = state.snapshot.needsCredentials;
-  hint.classList.toggle('hidden', !needsCreds);
+  const externalCliSelected = state.snapshot?.bridgeState?.activeConfig?.execution === 'cli';
+  hint.classList.toggle('hidden', !needsCreds || externalCliSelected);
   if (state.activeSurface) renderSurface(state.activeSurface);
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
   refreshProjectDetailSidebar();
+}
+function updateConversationSummary() {
+  const snap = state.snapshot || {};
+  const model = snap.activeAgent?.model
+    || snap.bridgeState?.activeModelLabel
+    || snap.session?.model
+    || 'default';
+  el('workspace').textContent = (snap.workDir || '') + ' - ' + model + ' - ' + snap.permissionMode + ' - effort:' + snap.effort + ' - team:' + (snap.activeTeamName || 'none');
 }
 function renderComposerMeta() {
   const snap = state.snapshot || {};
@@ -12391,35 +14654,63 @@ function formatEffortLabel(effort) {
   return String(effort).charAt(0).toUpperCase() + String(effort).slice(1);
 }
 
-function agentRowMeta(agent, snap, isActive) {
-  if (isActive) {
-    return formatEffortLabel(snap?.effort) || '';
+const MODEL_PICKER_RECENT_KEY = 'actoviq.modelPicker.recents';
+
+function pickerRuntimeLabel(agent) {
+  const runtime = String(agent?.runtime || '').trim();
+  if (!runtime || runtime === 'hadamard') return 'Hadamard';
+  if (runtime === 'claude') return 'Claude Code';
+  if (runtime === 'codex') return 'Codex';
+  return runtime.charAt(0).toUpperCase() + runtime.slice(1);
+}
+
+function loadPickerRecents() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODEL_PICKER_RECENT_KEY) || '[]');
+    state.pickerRecentNames = Array.isArray(parsed)
+      ? parsed.filter(value => typeof value === 'string').slice(0, 5)
+      : [];
+  } catch {
+    state.pickerRecentNames = [];
   }
-  if (agent.effort && agent.effort !== 'auto') return formatEffortLabel(agent.effort);
-  if (agent.source === 'profile') return 'profile';
-  return agent.model || '';
+}
+
+function rememberPickerAgent(agentName) {
+  if (!agentName) return;
+  state.pickerRecentNames = [agentName, ...(state.pickerRecentNames || []).filter(name => name !== agentName)].slice(0, 5);
+  try { localStorage.setItem(MODEL_PICKER_RECENT_KEY, JSON.stringify(state.pickerRecentNames)); } catch { /* storage is optional */ }
 }
 
 function updatePickerBtn() {
   const btn = el('modelPickerBtn');
   const snap = state.snapshot || {};
   const activeAgent = snap.activeAgent;
+  const activeConfig = snap.bridgeState?.activeConfig;
   const effortLabel = formatEffortLabel(snap.effort);
-  if (activeAgent) {
-    btn.textContent = activeAgent.name + (effortLabel ? (' ' + effortLabel) : '') + ' ▾';
-    btn.title = (activeAgent.description || (activeAgent.bridgeConfig + ' · ' + activeAgent.model))
-      + (activeAgent.source === 'profile' ? ' (profile)' : ' (from config)')
-      + (effortLabel ? (' · effort ' + effortLabel) : '');
-  } else {
-    const agents = snap.selectableAgents || [];
-    if (agents.length) {
-      btn.textContent = 'Choose agent ▾';
-      btn.title = 'Pick an agent for this chat';
-    } else {
-      btn.textContent = '';
-      btn.title = 'Add a provider config in Settings → Models';
-    }
-  }
+  const model = activeAgent?.model || activeConfig?.model || snap.session?.model || 'Auto';
+  const runtime = activeAgent ? pickerRuntimeLabel(activeAgent) : activeConfig?.runtime || 'Session default';
+  const execution = activeAgent?.execution || activeConfig?.execution;
+  btn.textContent = '';
+  const copy = document.createElement('span');
+  copy.className = 'model-picker-btn-copy';
+  const primary = document.createElement('strong');
+  primary.textContent = model;
+  const secondary = document.createElement('small');
+  secondary.textContent = [
+    runtime,
+    execution === 'cli' ? 'CLI' : execution === 'api' ? 'API' : '',
+    effortLabel,
+  ].filter(Boolean).join(' · ');
+  copy.append(primary, secondary);
+  const caret = document.createElement('span');
+  caret.className = 'model-picker-caret';
+  caret.textContent = state.pickerSelectionPending ? '…' : '▾';
+  btn.append(copy, caret);
+  btn.classList.toggle('pending', state.pickerSelectionPending);
+  btn.disabled = state.pickerSelectionPending;
+  btn.title = activeAgent
+    ? [activeAgent.name, activeAgent.bridgeConfig, activeAgent.model, runtime, effortLabel && ('effort ' + effortLabel)].filter(Boolean).join(' · ')
+    : 'Use the session default model';
 }
 
 function makePickerCheck(visible) {
@@ -12510,10 +14801,150 @@ function filteredPickerAgents() {
   const query = String(state.pickerQuery || '').trim().toLowerCase();
   if (!query) return agents;
   return agents.filter((agent) => {
-    const hay = [agent.name, agent.model, agent.bridgeConfig, agent.description, agent.effort]
+    const hay = [agent.name, agent.model, agent.bridgeConfig, agent.description, agent.effort, agent.runtime, agent.provider, agent.execution]
       .filter(Boolean).join(' ').toLowerCase();
     return hay.includes(query);
   });
+}
+
+function pickerRows() {
+  return Array.from(el('modelPickerItems')?.querySelectorAll('.picker-item[data-picker-value]') || []);
+}
+
+function focusPickerRow(index) {
+  const rows = pickerRows();
+  if (!rows.length) return;
+  const next = Math.max(0, Math.min(index, rows.length - 1));
+  state.pickerActiveIndex = next;
+  rows.forEach((row, rowIndex) => { row.tabIndex = rowIndex === next ? 0 : -1; });
+  rows[next].focus();
+  el('modelPickerSearch')?.setAttribute('aria-activedescendant', rows[next].id);
+}
+
+function handlePickerNavigation(event) {
+  const rows = pickerRows();
+  if (!rows.length) return false;
+  const current = rows.indexOf(document.activeElement);
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    focusPickerRow(current < 0 ? 0 : Math.min(current + 1, rows.length - 1));
+    return true;
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    focusPickerRow(current < 0 ? rows.length - 1 : Math.max(current - 1, 0));
+    return true;
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    focusPickerRow(event.key === 'Home' ? 0 : rows.length - 1);
+    return true;
+  }
+  if (event.key === 'Enter' && document.activeElement === el('modelPickerSearch')) {
+    event.preventDefault();
+    rows[Math.min(state.pickerActiveIndex || 0, rows.length - 1)].click();
+    return true;
+  }
+  return false;
+}
+
+function appendPickerSection(items, label, agents, activeAgent, activeConfigName, editing, selectionBlocked) {
+  if (!agents.length) return;
+  const heading = document.createElement('div');
+  heading.className = 'picker-section-label';
+  heading.textContent = label;
+  items.appendChild(heading);
+  for (const agent of agents) {
+    const item = document.createElement('div');
+    item.id = 'model-picker-option-' + String(agent.name).replace(/[^A-Za-z0-9_-]/g, '-');
+    item.className = 'picker-item';
+    item.setAttribute('role', 'option');
+    item.tabIndex = -1;
+    item.dataset.agentName = agent.name;
+    item.dataset.pickerValue = agent.name;
+    const isActive = activeAgent?.name === agent.name
+      || (!activeAgent && activeConfigName && agent.bridgeConfig === activeConfigName && agent.model === state.snapshot?.bridgeState?.activeConfig?.model);
+    item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    item.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
+    if (isActive) item.classList.add('selected');
+    if (editing && editing === agent.name) item.classList.add('editing');
+    if (selectionBlocked) item.classList.add('disabled');
+
+    const copy = document.createElement('span');
+    copy.className = 'picker-item-copy';
+    const model = document.createElement('span');
+    model.className = 'picker-item-label';
+    model.textContent = agent.model || agent.name;
+    const meta = document.createElement('span');
+    meta.className = 'picker-item-meta';
+    meta.textContent = [
+      agent.source === 'profile' ? (agent.name + ' preset') : agent.bridgeConfig,
+      pickerRuntimeLabel(agent),
+      agent.execution === 'cli' ? 'CLI runtime' : 'Direct API',
+    ].filter(Boolean).join(' · ');
+    copy.append(model, meta);
+    item.appendChild(copy);
+
+    const chips = document.createElement('span');
+    chips.className = 'picker-item-chips';
+    if (agent.context1M) {
+      const chip = document.createElement('span'); chip.textContent = '1M'; chips.appendChild(chip);
+    }
+    if (agent.modality === 'multimodal') {
+      const chip = document.createElement('span'); chip.textContent = 'Vision'; chips.appendChild(chip);
+    }
+    const effort = isActive ? state.snapshot?.effort : agent.effort;
+    if (effort && effort !== 'auto') {
+      const chip = document.createElement('span'); chip.textContent = formatEffortLabel(effort); chips.appendChild(chip);
+    }
+    if (chips.children.length) item.appendChild(chips);
+
+    if (isActive) {
+      const actions = document.createElement('span');
+      actions.className = 'picker-item-actions';
+      const profileEffort = agent.effort || 'auto';
+      const curEffort = state.snapshot?.effort || 'auto';
+      if (curEffort !== profileEffort) {
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'picker-reset-btn';
+        resetBtn.title = 'Reset effort to model default';
+        resetBtn.textContent = '↺';
+        resetBtn.disabled = selectionBlocked;
+        resetBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          void selectPickerAgent(agent.name, profileEffort, { close: false });
+        });
+        actions.appendChild(resetBtn);
+      }
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'picker-edit-btn' + (editing === agent.name ? ' open' : '');
+      editBtn.dataset.agentName = agent.name;
+      editBtn.title = 'Change effort for this conversation';
+      editBtn.textContent = 'Effort';
+      editBtn.disabled = selectionBlocked;
+      editBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (state.pickerEditingAgent === agent.name) closePickerEffortEditor();
+        else openPickerEffortEditor(agent.name);
+      });
+      actions.appendChild(editBtn);
+      item.appendChild(actions);
+    }
+    item.appendChild(makePickerCheck(isActive));
+    const activateAgent = () => {
+      if (selectionBlocked || isActive) return;
+      closePickerEffortEditor();
+      void selectPickerAgent(agent.name, null, { close: true });
+    };
+    item.addEventListener('click', activateAgent);
+    item.addEventListener('keydown', (ev) => {
+      if (handlePickerNavigation(ev)) return;
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); activateAgent(); }
+    });
+    items.appendChild(item);
+  }
 }
 
 function renderModelPicker() {
@@ -12528,85 +14959,54 @@ function renderModelPicker() {
   }
   const agents = filteredPickerAgents();
   const activeAgent = snap.activeAgent;
+  const activeConfigName = snap.bridgeState?.activeConfig?.name;
   const editing = state.pickerEditingAgent;
+  const selectionBlocked = Boolean(state.pickerSelectionPending || state.running || snap.running);
 
   if ((snap.selectableAgents || []).length === 0) {
     const ph = document.createElement('div');
     ph.className = 'picker-placeholder';
-    ph.textContent = 'No agents — add a provider config in Settings';
+    ph.textContent = 'No models configured — add a provider in Settings → Models';
     items.appendChild(ph);
   }
-
-  for (const agent of agents) {
-    const item = document.createElement('div');
-    item.className = 'picker-item';
-    item.setAttribute('role', 'button');
-    item.tabIndex = 0;
-    item.dataset.agentName = agent.name;
-    const isActive = activeAgent?.name === agent.name;
-    if (isActive) item.classList.add('selected');
-    if (editing && editing === agent.name) item.classList.add('editing');
-
-    const label = document.createElement('span');
-    label.className = 'picker-item-label';
-    label.textContent = agent.name;
-    item.appendChild(label);
-
-    const metaText = agentRowMeta(agent, snap, isActive);
-    if (metaText) {
-      const meta = document.createElement('span');
-      meta.className = 'picker-item-meta';
-      meta.textContent = metaText;
-      item.appendChild(meta);
-    }
-
-    if (isActive) {
-      const actions = document.createElement('span');
-      actions.className = 'picker-item-actions';
-
-      const profileEffort = agent.effort || 'auto';
-      const curEffort = snap.effort || 'auto';
-      if (curEffort !== profileEffort) {
-        const resetBtn = document.createElement('button');
-        resetBtn.type = 'button';
-        resetBtn.className = 'picker-reset-btn';
-        resetBtn.title = 'Reset effort to agent default';
-        resetBtn.textContent = '↺';
-        resetBtn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          const restore = profileEffort === 'auto' ? 'auto' : profileEffort;
-          void selectPickerAgent(agent.name, restore, { close: false });
-        });
-        actions.appendChild(resetBtn);
-      }
-
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'picker-edit-btn' + (editing === agent.name ? ' open' : '');
-      editBtn.dataset.agentName = agent.name;
-      editBtn.title = 'Temporarily change effort for this chat';
-      editBtn.textContent = 'Edit';
-      editBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (state.pickerEditingAgent === agent.name) closePickerEffortEditor();
-        else openPickerEffortEditor(agent.name);
-      });
-      actions.appendChild(editBtn);
-      item.appendChild(actions);
-    }
-
-    item.appendChild(makePickerCheck(isActive));
-
-    const activateAgent = () => {
-      if (isActive) return;
-      closePickerEffortEditor();
-      void selectPickerAgent(agent.name, null, { close: false });
-    };
-    item.addEventListener('click', activateAgent);
-    item.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); activateAgent(); }
+  const query = String(state.pickerQuery || '').trim().toLowerCase();
+  if (!query || 'auto session default'.includes(query)) {
+    const auto = document.createElement('div');
+    auto.id = 'model-picker-option-auto';
+    auto.className = 'picker-item picker-item-auto' + (!activeAgent && !activeConfigName ? ' selected' : '') + (selectionBlocked ? ' disabled' : '');
+    auto.setAttribute('role', 'option');
+    auto.setAttribute('aria-selected', !activeAgent && !activeConfigName ? 'true' : 'false');
+    auto.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
+    auto.tabIndex = -1;
+    auto.dataset.pickerValue = '';
+    const copy = document.createElement('span');
+    copy.className = 'picker-item-copy';
+    const label = document.createElement('span'); label.className = 'picker-item-label'; label.textContent = 'Auto';
+    const meta = document.createElement('span'); meta.className = 'picker-item-meta'; meta.textContent = 'Use this conversation’s default model';
+    copy.append(label, meta);
+    auto.append(copy, makePickerCheck(!activeAgent && !activeConfigName));
+    auto.addEventListener('click', () => { if (!selectionBlocked && (activeAgent || activeConfigName)) void selectPickerAgent('', null, { close: true }); });
+    auto.addEventListener('keydown', (ev) => {
+      if (handlePickerNavigation(ev)) return;
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); auto.click(); }
     });
-    items.appendChild(item);
+    items.appendChild(auto);
+  }
+
+  const byName = new Map(agents.map(agent => [agent.name, agent]));
+  const recent = (state.pickerRecentNames || []).map(name => byName.get(name)).filter(Boolean);
+  const recentNames = new Set(recent.map(agent => agent.name));
+  const remaining = agents.filter(agent => !recentNames.has(agent.name));
+  appendPickerSection(items, 'Recent', recent, activeAgent, activeConfigName, editing, selectionBlocked);
+  appendPickerSection(items, 'Agent presets', remaining.filter(agent => agent.source === 'profile'), activeAgent, activeConfigName, editing, selectionBlocked);
+  appendPickerSection(items, 'Models', remaining.filter(agent => agent.source !== 'profile'), activeAgent, activeConfigName, editing, selectionBlocked);
+
+  if (state.pickerError) {
+    const error = document.createElement('div');
+    error.className = 'picker-error';
+    error.setAttribute('role', 'alert');
+    error.textContent = state.pickerError;
+    items.appendChild(error);
   }
 
   if (editing && (snap.selectableAgents || []).some((a) => a.name === editing)) {
@@ -12615,56 +15015,85 @@ function renderModelPicker() {
     closePickerEffortEditor();
   }
 
+  const rows = pickerRows();
+  const selectedIndex = rows.findIndex(row => row.getAttribute('aria-selected') === 'true');
+  state.pickerActiveIndex = Math.max(0, selectedIndex >= 0 ? selectedIndex : Math.min(state.pickerActiveIndex || 0, Math.max(rows.length - 1, 0)));
+  rows.forEach((row, index) => { row.tabIndex = index === state.pickerActiveIndex ? 0 : -1; });
   updatePickerBtn();
 }
 
 async function selectPickerAgent(agentName, effort, opts) {
   const close = !opts || opts.close !== false;
-  if (!agentName) {
-    const res = await api('/api/bridge/off', { method: 'POST' });
-    if (res.ok) { state.snapshot = await res.json(); }
-  } else {
-    const res = await api('/api/agent/activate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: agentName }),
-    });
-    if (res.ok) {
-      state.snapshot = await res.json();
-    } else {
-      const payload = await res.json().catch(() => ({}));
-      console.error(payload.error || 'Failed to activate agent');
-    }
-  }
-  if (effort) {
-    if (state.snapshot) state.snapshot = Object.assign({}, state.snapshot, { effort });
-    submitText('/effort ' + effort);
-  }
-  state.pickerEditingAgent = null;
-  if (close) {
-    el('modelPickerFlyout').classList.add('hidden');
-    closePickerEffortEditor();
-    updatePickerBtn();
-  } else {
+  if (state.pickerSelectionPending || state.running || state.snapshot?.running) {
+    state.pickerError = 'Stop or wait for the active response before switching models.';
     renderModelPicker();
+    return;
+  }
+  const requestSequence = ++state.pickerSelectionSequence;
+  state.pickerSelectionPending = true;
+  state.pickerError = '';
+  renderModelPicker();
+  try {
+    const res = !agentName
+      ? await api('/api/bridge/off', { method: 'POST' })
+      : await api('/api/agent/activate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: agentName, ...(effort ? { effort } : {}) }),
+        });
+    const payload = await res.json().catch(() => ({}));
+    if (requestSequence !== state.pickerSelectionSequence) return;
+    if (!res.ok) throw new Error(payload.error || 'Could not switch models.');
+    state.snapshot = payload;
+    if (agentName) rememberPickerAgent(agentName);
+    applyLoadedState();
+    state.pickerEditingAgent = null;
+    if (close) closeModelPicker();
+  } catch (error) {
+    if (requestSequence !== state.pickerSelectionSequence) return;
+    state.pickerError = error && error.message ? error.message : 'Could not switch models.';
+  } finally {
+    if (requestSequence === state.pickerSelectionSequence) {
+      state.pickerSelectionPending = false;
+      updatePickerBtn();
+      if (!close || state.pickerError) renderModelPicker();
+    }
   }
 }
 
 function closeModelPicker() {
   const flyout = el('modelPickerFlyout');
   if (flyout) flyout.classList.add('hidden');
+  el('modelPickerBtn')?.setAttribute('aria-expanded', 'false');
   state.pickerEditingAgent = null;
   closePickerEffortEditor();
+}
+
+function positionModelPickerFlyout() {
+  const flyout = el('modelPickerFlyout');
+  const button = el('modelPickerBtn');
+  if (!flyout || !button || flyout.classList.contains('hidden')) return;
+  const boundary = button.closest('.workbench-chat') || button.closest('.region') || document.documentElement;
+  const boundaryRect = boundary.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
+  const leftEdge = Math.max(12, boundaryRect.left + 12);
+  const rightEdge = Math.min(window.innerWidth - 12, boundaryRect.right - 12, buttonRect.right);
+  const availableWidth = Math.max(180, Math.floor(rightEdge - leftEdge));
+  flyout.style.setProperty('--model-picker-menu-width', Math.min(420, availableWidth) + 'px');
 }
 
 function toggleModelPicker() {
   const flyout = el('modelPickerFlyout');
   if (flyout.classList.contains('hidden')) {
     closePermissionPicker();
+    loadPickerRecents();
     state.pickerEditingAgent = null;
     state.pickerQuery = '';
+    state.pickerError = '';
     renderModelPicker();
     flyout.classList.remove('hidden');
+    positionModelPickerFlyout();
+    el('modelPickerBtn')?.setAttribute('aria-expanded', 'true');
     const search = el('modelPickerSearch');
     if (search) {
       search.value = '';
@@ -12673,6 +15102,15 @@ function toggleModelPicker() {
   } else {
     closeModelPicker();
   }
+}
+function cyclePickerModel() {
+  if (state.pickerSelectionPending || state.running || state.snapshot?.running) return;
+  const agents = state.snapshot?.selectableAgents || [];
+  if (!agents.length) return;
+  const activeName = state.snapshot?.activeAgent?.name || '';
+  const current = agents.findIndex(agent => agent.name === activeName);
+  const next = agents[(current + 1 + agents.length) % agents.length];
+  if (next) void selectPickerAgent(next.name, null, { close: true });
 }
 function setSessionResumePending(pending) {
   state.sessionResumePending = pending;
@@ -13673,7 +16111,7 @@ function stopAgentExecutionPolling() {
 function scheduleAgentExecutionPolling() {
   stopAgentExecutionPolling();
   if (!agentExecutionViewIsVisible()) return;
-  const delay = state.agentExecutions?.activeExecutionCount
+  const delay = state.agentExecutions?.activeExecutionCount || state.agentExecutions?.runningConversationCount
     ? AGENT_EXECUTION_POLL_MS
     : AGENT_EXECUTION_IDLE_POLL_MS;
   state.agentExecutionsPollTimer = setTimeout(() => {
@@ -13683,6 +16121,12 @@ function scheduleAgentExecutionPolling() {
 }
 function agentStatusLabel(status) {
   return ({ pending_init: 'Preparing', running: 'Running', completed: 'Completed', errored: 'Failed', interrupted: 'Interrupted', shutdown: 'Stopped', not_found: 'Unavailable' })[status] || 'Unknown';
+}
+function agentLifecycleLabel(status, lifecycle) {
+  if (lifecycle === 'waiting') {
+    return status === 'interrupted' ? 'Interrupted · waiting' : 'Waiting';
+  }
+  return agentStatusLabel(status);
 }
 function agentEdgeStatusLabel(status) {
   return ({ started: 'Delegated', completed: 'Returned', failed: 'Failed' })[status] || 'Unknown';
@@ -13697,9 +16141,11 @@ function agentTimingLabel(timing) {
   if (!elapsed) return timing.updatedAt ? formatRelativeTimeShort(timing.updatedAt) : '';
   return timing.completedAt ? elapsed : ('Elapsed ' + elapsed);
 }
-function agentActivityText(activity) {
-  if (!activity) return '';
-  return activity.summary || activity.toolName || agentStatusLabel(activity.kind);
+function agentActivityText(activity, lifecycle) {
+  if (!activity) return lifecycle === 'waiting' ? 'Ready to resume' : '';
+  const summary = activity.summary || activity.toolName || agentStatusLabel(activity.kind);
+  if (lifecycle !== 'waiting' || activity.kind === 'idle') return summary;
+  return 'Last activity: ' + summary;
 }
 function agentNodeIndex(root) {
   const index = new Map();
@@ -13716,7 +16162,7 @@ function appendAgentNode(host, node) {
   const branch = document.createElement('div');
   branch.className = 'agent-execution-node-branch';
   const row = document.createElement('div');
-  row.className = 'agent-execution-node';
+  row.className = 'agent-execution-node ' + String(node.lifecycle || (node.isActive ? 'running' : 'completed'));
   row.setAttribute('data-testid', 'agent-execution-node-' + node.id);
   row.dataset.executionId = node.id;
   const hasChildren = Array.isArray(node.children) && node.children.length > 0;
@@ -13740,8 +16186,8 @@ function appendAgentNode(host, node) {
   const title = document.createElement('strong');
   title.textContent = node.displayName || node.agentName || 'Agent';
   const subtitle = document.createElement('small');
-  const activity = agentActivityText(node.currentActivity);
-  subtitle.textContent = [agentStatusLabel(node.status), activity, node.currentActivity?.toolName, node.role, node.runtime, node.model].filter(Boolean).join(' · ');
+  const activity = agentActivityText(node.currentActivity, node.lifecycle);
+  subtitle.textContent = [agentLifecycleLabel(node.status, node.lifecycle), activity, node.currentActivity?.toolName, node.role, node.runtime, node.model].filter(Boolean).join(' · ');
   copy.append(title, subtitle);
   const timing = document.createElement('span');
   timing.className = 'agent-execution-node-time';
@@ -13776,9 +16222,11 @@ function appendAgentNode(host, node) {
 }
 function appendAgentExecutionRoot(host, root) {
   const card = document.createElement('section');
-  card.className = 'agent-execution-root' + (root.isActive ? ' active' : '');
+  const lifecycle = root.lifecycle || (root.isActive ? 'running' : 'completed');
+  card.className = 'agent-execution-root ' + lifecycle;
   card.setAttribute('data-testid', 'agent-execution-root-' + root.rootExecutionId);
   card.dataset.rootExecutionId = root.rootExecutionId;
+  card.dataset.lifecycle = lifecycle;
   const head = document.createElement('header');
   head.className = 'agent-execution-root-head';
   const identity = document.createElement('div');
@@ -13797,15 +16245,15 @@ function appendAgentExecutionRoot(host, root) {
   const meta = document.createElement('div');
   meta.className = 'agent-execution-root-meta';
   const status = document.createElement('span');
-  status.className = 'agent-execution-status ' + String(root.status || '');
-  status.textContent = agentStatusLabel(root.status);
-  status.setAttribute('aria-label', 'Execution status: ' + agentStatusLabel(root.status));
+  status.className = 'agent-execution-status ' + String(root.status || '') + ' ' + lifecycle;
+  status.textContent = agentLifecycleLabel(root.status, lifecycle);
+  status.setAttribute('aria-label', 'Execution status: ' + agentLifecycleLabel(root.status, lifecycle));
   const elapsed = document.createElement('span');
   elapsed.textContent = agentTimingLabel(root.timing);
   meta.append(status, elapsed);
   head.append(identity, meta);
   card.appendChild(head);
-  const summaryText = agentActivityText(root.currentActivity);
+  const summaryText = agentActivityText(root.currentActivity, lifecycle);
   if (summaryText || root.currentStep) {
     const summary = document.createElement('div');
     summary.className = 'agent-execution-summary';
@@ -13878,9 +16326,64 @@ function appendAgentExecutionRoot(host, root) {
   }
   host.appendChild(card);
 }
+function appendAgentConversation(host, conversation) {
+  const lifecycleLabel = conversation.isWaiting
+    ? 'Waiting'
+    : conversation.isRunning
+      ? 'Running'
+      : conversation.lifecycle === 'completed'
+        ? 'Completed'
+        : 'Idle';
+  const row = document.createElement('article');
+  row.className = 'agent-conversation-row' + (conversation.isRunning ? ' running' : '') + (conversation.isWaiting ? ' waiting' : '') + (conversation.isCurrent ? ' current' : '');
+  row.dataset.sessionId = conversation.id;
+  row.setAttribute('data-testid', 'agent-conversation-' + conversation.id);
+  const status = document.createElement('span');
+  status.className = 'agent-conversation-status' + (conversation.isRunning ? ' running' : '') + (conversation.isWaiting ? ' waiting' : '');
+  status.setAttribute('aria-label', lifecycleLabel);
+  const copy = document.createElement('span');
+  copy.className = 'agent-conversation-copy';
+  const title = document.createElement('strong');
+  title.textContent = conversation.displayName || conversation.title || 'Untitled conversation';
+  const meta = document.createElement('small');
+  const activity = conversation.isRunning || conversation.isWaiting
+    ? conversation.currentActivity?.summary || conversation.currentActivity?.toolName || ''
+    : '';
+  meta.textContent = [
+    conversation.isRunning || conversation.isWaiting || conversation.lifecycle === 'completed'
+      ? lifecycleLabel
+      : (conversation.kind === 'manager' ? 'Project Manager' : conversation.kind === 'agent' ? 'Agent conversation' : 'Conversation'),
+    activity,
+    conversation.runtime,
+    conversation.model,
+    formatRelativeTimeShort(conversation.lastActiveAt || conversation.lastRunAt || conversation.updatedAt),
+  ].filter(Boolean).join(' · ');
+  copy.append(title, meta);
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'agent-node-open-session';
+  open.textContent = conversation.kind === 'manager'
+    ? 'Open Manager'
+    : conversation.isCurrent && conversation.isRunning ? 'View live' : 'Open conversation';
+  open.addEventListener('click', () => {
+    if (conversation.kind === 'manager') {
+      setManagerUiMode('compact');
+      void refreshManagerState(true);
+    } else if (conversation.isCurrent) switchProjectView('conversation');
+    else void resumeSession(conversation.id);
+  });
+  row.append(status, copy, open);
+  host.appendChild(row);
+}
 function renderAgentExecutionsPanel() {
   const panel = el('agentExecutionsPanel');
   if (!panel) return;
+  const monitorTab = document.querySelector('[data-detail-tab="agents"]');
+  const monitoredCount = Math.max(
+    (state.agentExecutions?.activeExecutionCount || 0) + (state.agentExecutions?.waitingExecutionCount || 0),
+    (state.agentExecutions?.runningConversationCount || 0) + (state.agentExecutions?.waitingConversationCount || 0),
+  );
+  if (monitorTab) monitorTab.textContent = 'Agent monitor' + (monitoredCount ? ' (' + monitoredCount + ')' : '');
   panel.textContent = '';
   panel.setAttribute('aria-busy', state.agentExecutionsLoading ? 'true' : 'false');
   panel.setAttribute('aria-live', 'polite');
@@ -13909,12 +16412,13 @@ function renderAgentExecutionsPanel() {
     return;
   }
   const view = state.agentExecutions;
-  if (!view || !(view.totalExecutionCount || 0)) {
+  const conversations = Array.isArray(view?.conversations) ? view.conversations : [];
+  if (!view || (!(view.totalExecutionCount || 0) && conversations.length === 0)) {
     const empty = document.createElement('div');
     empty.className = 'agent-execution-state';
     empty.setAttribute('data-testid', 'agent-executions-empty');
     const message = document.createElement('span');
-    message.textContent = 'No agent executions for this project yet. Delegated agents will appear here with their own conversations.';
+    message.textContent = 'No unarchived conversations or agent executions exist in this project yet.';
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.className = 'agent-execution-refresh';
@@ -13930,9 +16434,9 @@ function renderAgentExecutionsPanel() {
   toolbar.className = 'agent-execution-toolbar';
   const copy = document.createElement('div');
   const heading = document.createElement('h2');
-  heading.textContent = 'Agent executions';
+  heading.textContent = 'Agent monitor';
   const detail = document.createElement('p');
-  detail.textContent = view.activeExecutionCount + ' active · ' + view.totalAgentCount + ' agents · ' + view.erroredExecutionCount + ' errors';
+  detail.textContent = (view.runningConversationCount || 0) + ' running · ' + (view.waitingConversationCount || 0) + ' waiting · ' + conversations.length + ' conversations · ' + view.totalAgentCount + ' execution agents · ' + view.erroredExecutionCount + ' errors';
   copy.append(heading, detail);
   const refresh = document.createElement('button');
   refresh.type = 'button';
@@ -13942,15 +16446,35 @@ function renderAgentExecutionsPanel() {
   refresh.addEventListener('click', () => { void refreshAgentExecutions(true); });
   toolbar.append(copy, refresh);
   panel.appendChild(toolbar);
+  if (conversations.length) {
+    const conversationsSection = document.createElement('section');
+    conversationsSection.className = 'agent-conversation-group';
+    const head = document.createElement('div');
+    head.className = 'agent-execution-group-head';
+    head.textContent = 'Conversations (' + conversations.length + ')';
+    conversationsSection.appendChild(head);
+    for (const conversation of conversations) appendAgentConversation(conversationsSection, conversation);
+    panel.appendChild(conversationsSection);
+  }
   if (Array.isArray(view.active) && view.active.length) {
     const active = document.createElement('section');
     active.className = 'agent-execution-group';
     const head = document.createElement('div');
     head.className = 'agent-execution-group-head';
-    head.textContent = 'Active (' + view.active.length + ')';
+    head.textContent = 'Running (' + view.active.length + ')';
     active.appendChild(head);
     for (const root of view.active) appendAgentExecutionRoot(active, root);
     panel.appendChild(active);
+  }
+  if (Array.isArray(view.waiting) && view.waiting.length) {
+    const waiting = document.createElement('section');
+    waiting.className = 'agent-execution-group';
+    const head = document.createElement('div');
+    head.className = 'agent-execution-group-head';
+    head.textContent = 'Waiting / suspended (' + view.waiting.length + ')';
+    waiting.appendChild(head);
+    for (const root of view.waiting) appendAgentExecutionRoot(waiting, root);
+    panel.appendChild(waiting);
   }
   if (Array.isArray(view.completed) && view.completed.length) {
     const completed = document.createElement('section');
@@ -14035,6 +16559,7 @@ function revealActiveProjectDetailTab() {
 }
 window.addEventListener('resize', () => {
   requestAnimationFrame(revealActiveProjectDetailTab);
+  requestAnimationFrame(positionModelPickerFlyout);
   if (window.innerWidth > 1120) setDetailConversationDrawer(false);
 });
 function setProjectDetailTab(tab) {
@@ -15704,7 +18229,7 @@ function renderProjectDetail() {
     ['git', 'Git'],
     ['terminal', 'Terminal'],
     ['files', 'Files'],
-    ['agents', 'Agents'],
+    ['agents', 'Agent monitor'],
   ];
   const detailPanelIds = {
     document: 'projectDocumentPanel',
@@ -16652,28 +19177,41 @@ function renderTeamRunTree(teamRun) {
 // (member status, current tool) without depending on the developer-tools
 // Monitor pane. Started on run.started, stopped on done.
 let railTimer = null;
+let railPollGeneration = 0;
+let railPolling = false;
 function startRailPolling() {
-  if (railTimer) return;
-  void refreshRail();
-  railTimer = setInterval(() => { void refreshRail(); }, 1000);
+  if (railPolling) return;
+  railPolling = true;
+  const generation = ++railPollGeneration;
+  const poll = async () => {
+    railTimer = null;
+    await refreshRail();
+    if (generation !== railPollGeneration) return;
+    if (!state.running) { railPolling = false; return; }
+    railTimer = setTimeout(poll, 1000);
+  };
+  railTimer = setTimeout(poll, 0);
 }
 function stopRailPolling() {
-  if (railTimer) { clearInterval(railTimer); railTimer = null; }
+  railPolling = false;
+  railPollGeneration += 1;
+  if (railTimer) { clearTimeout(railTimer); railTimer = null; }
 }
 async function refreshRail() {
   try {
-    const res = await api('/api/state');
-    if (res.ok) {
-      const st = await res.json();
-      if (state.snapshot) state.snapshot.runs = Array.isArray(st.runs) ? st.runs : (state.snapshot.runs || []);
-      renderContextRail();
-    }
+    const res = await api('/api/runs');
+    if (!res.ok) return;
+    const st = await res.json();
+    if (state.snapshot) state.snapshot.runs = Array.isArray(st.runs) ? st.runs : (state.snapshot.runs || []);
+    renderContextRail();
   } catch { /* transient — keep last render */ }
 }
 let railReminderTimer = null;
+let railReminderGeneration = 0;
+let railReminderPolling = false;
 async function refreshRailReminders() {
   try {
-    const res = await api('/api/state');
+    const res = await api('/api/rail-live');
     if (!res.ok) return;
     const st = await res.json();
     if (state.snapshot) {
@@ -16685,12 +19223,21 @@ async function refreshRailReminders() {
   } catch { /* transient */ }
 }
 function startRailReminderPoll() {
-  if (railReminderTimer) return;
-  void refreshRailReminders();
-  railReminderTimer = setInterval(() => { void refreshRailReminders(); }, 10000);
+  if (railReminderPolling) return;
+  railReminderPolling = true;
+  const generation = ++railReminderGeneration;
+  const poll = async () => {
+    railReminderTimer = null;
+    await refreshRailReminders();
+    if (generation !== railReminderGeneration) return;
+    railReminderTimer = setTimeout(poll, 10000);
+  };
+  railReminderTimer = setTimeout(poll, 0);
 }
 function stopRailReminderPoll() {
-  if (railReminderTimer) { clearInterval(railReminderTimer); railReminderTimer = null; }
+  railReminderPolling = false;
+  railReminderGeneration += 1;
+  if (railReminderTimer) { clearTimeout(railReminderTimer); railReminderTimer = null; }
 }
 async function openLocation() {
   const res = await api('/api/open-location', { method: 'POST' });
@@ -17028,7 +19575,7 @@ async function switchRegion(name) {
   document.querySelectorAll('.region-nav').forEach((btn) => {
     btn.classList.toggle('active', btn.getAttribute('data-region') === name);
   });
-  // Adaptive sidebar: Team / Automation / Plugins use the slim 4-nav
+  // Adaptive sidebar: Team / Automation / Customize use the slim 4-nav
   // sidebar (matches the reference designs). Project reuses switchProjectView
   // to drive its own sidebar mode (overview/detail → slim, chat → full).
   if (name !== 'project') document.body.dataset.sidebarMode = 'nav';
@@ -17329,16 +19876,954 @@ function openAutomationDialog(task) {
   overlay.addEventListener('click', function (e) { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
 }
+async function loadSkillCatalog(action) {
+  const options = action
+    ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(action) }
+    : {};
+  const res = await api('/api/customize/skills', options);
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || ('Unable to load skills (' + res.status + ')'));
+  state.skillCatalogData = payload;
+  return payload;
+}
+function addSkillChip(root, text, tone) {
+  const chip = document.createElement('span');
+  chip.className = 'rl-chip' + (tone ? ' ' + tone : '');
+  chip.textContent = text;
+  root.appendChild(chip);
+}
+async function updateSkillCatalog(action, bodyId) {
+  const body = el(bodyId);
+  if (body) body.classList.add('is-updating');
+  try {
+    await loadSkillCatalog(action);
+    await renderSkillCatalog(bodyId, true);
+  } catch (error) {
+    if (body) {
+      const banner = document.createElement('p');
+      banner.className = 'customize-error';
+      banner.textContent = error.message || String(error);
+      body.prepend(banner);
+    }
+  } finally {
+    if (body) body.classList.remove('is-updating');
+  }
+}
+async function renderSkillCatalog(bodyId, useCached) {
+  const body = el(bodyId);
+  if (!body) return;
+  body.textContent = '';
+  const loading = document.createElement('p');
+  loading.className = 'region-empty';
+  loading.textContent = 'Discovering skills from Actoviq, Claude Code, Codex, Cursor, and cc-switch...';
+  body.appendChild(loading);
+  let data;
+  try {
+    data = useCached && state.skillCatalogData ? state.skillCatalogData : await loadSkillCatalog();
+  } catch (error) {
+    loading.className = 'customize-error';
+    loading.textContent = error.message || String(error);
+    return;
+  }
+  body.textContent = '';
+  const catalog = data.catalog || { sources: [], skills: [], conflicts: [], summary: {} };
+  const preferences = data.preferences || {};
+  const disabledSources = new Set(preferences.disabledSourceIds || []);
+  const disabledSkills = new Set(preferences.disabledSkillIds || []);
+  const trustedSources = new Set(preferences.trustedProjectSourceIds || []);
+  const preferredSkills = preferences.preferredSkillIds || {};
+  const activeSkills = new Set(data.activeSkillIds || []);
+  const unresolvedConflicts = data.skippedConflicts || [];
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'skill-catalog-toolbar';
+  const summary = document.createElement('div');
+  summary.className = 'skill-catalog-summary';
+  summary.textContent = (activeSkills.size || 0) + ' active · ' + (catalog.summary?.skillVariantCount || 0) + ' discovered · ' + unresolvedConflicts.length + ' unresolved';
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'skill-catalog-search';
+  search.placeholder = 'Search skills or runtimes';
+  search.setAttribute('aria-label', 'Search skills');
+  search.value = state.skillCatalogQuery || '';
+  toolbar.append(summary, search);
+  body.appendChild(toolbar);
+
+  const problems = [...(catalog.diagnostics || []), ...(data.loadErrors || [])];
+  if (problems.length) {
+    const details = document.createElement('details');
+    details.className = 'skill-problem-panel';
+    const problemsSummary = document.createElement('summary');
+    problemsSummary.textContent = problems.length + ' discovery or load warning' + (problems.length === 1 ? '' : 's');
+    const list = document.createElement('ul');
+    for (const problem of problems.slice(0, 30)) {
+      const item = document.createElement('li');
+      item.textContent = (problem.sourceId ? problem.sourceId + ': ' : '') + (problem.message || problem.code || 'Unknown skill problem');
+      list.appendChild(item);
+    }
+    details.append(problemsSummary, list);
+    body.appendChild(details);
+  }
+
+  const sourceSection = document.createElement('section');
+  sourceSection.className = 'skill-source-section';
+  const sourceHeading = document.createElement('div');
+  sourceHeading.className = 'skill-section-heading';
+  const sourceTitle = document.createElement('h2');
+  sourceTitle.textContent = 'Runtime sources';
+  const sourceHelp = document.createElement('p');
+  sourceHelp.textContent = 'User-level skills can be reused directly. Project-level skills require trust before loading.';
+  sourceHeading.append(sourceTitle, sourceHelp);
+  sourceSection.appendChild(sourceHeading);
+  const sourceGrid = document.createElement('div');
+  sourceGrid.className = 'skill-source-grid';
+  for (const source of catalog.sources || []) {
+    if (source.status === 'missing') continue;
+    const row = document.createElement('article');
+    row.className = 'skill-source-card';
+    const text = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = source.label;
+    const meta = document.createElement('small');
+    const disabled = disabledSources.has(source.id);
+    const isProjectSource = source.scope === 'project';
+    const trusted = !isProjectSource || trustedSources.has(source.id);
+    const needsTrust = isProjectSource && !trusted;
+    meta.textContent = source.skillCount + ' skills · ' + source.scope + (trusted && isProjectSource ? ' · trusted' : '') + (source.readOnly ? ' · read-only' : '');
+    text.append(title, meta);
+    const actions = document.createElement('div');
+    actions.className = 'skill-source-actions';
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'rl-btn' + (!disabled && trusted ? ' active' : '');
+    action.textContent = needsTrust ? 'Trust & enable' : disabled ? 'Enable' : 'Disable';
+    action.addEventListener('click', () => updateSkillCatalog({
+      action: 'source',
+      sourceId: source.id,
+      enabled: disabled || needsTrust,
+      trust: needsTrust ? true : undefined,
+    }, bodyId));
+    actions.appendChild(action);
+    if (isProjectSource && trusted) {
+      const revoke = document.createElement('button');
+      revoke.type = 'button';
+      revoke.className = 'rl-btn';
+      revoke.textContent = 'Revoke trust';
+      revoke.title = 'Disable this source and require an explicit trust decision before it can run again';
+      revoke.addEventListener('click', () => updateSkillCatalog({
+        action: 'source',
+        sourceId: source.id,
+        enabled: false,
+        trust: false,
+      }, bodyId));
+      actions.appendChild(revoke);
+    }
+    row.append(text, actions);
+    sourceGrid.appendChild(row);
+  }
+  if (!sourceGrid.children.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No external skill directories were found.';
+    sourceGrid.appendChild(empty);
+  }
+  sourceSection.appendChild(sourceGrid);
+  body.appendChild(sourceSection);
+
+  if (unresolvedConflicts.length) {
+    const warning = document.createElement('div');
+    warning.className = 'skill-conflict-banner';
+    warning.textContent = unresolvedConflicts.length + ' name conflict' + (unresolvedConflicts.length === 1 ? '' : 's') + ' need a preferred version before those skills are loaded.';
+    body.appendChild(warning);
+  }
+
+  const skillsHeading = document.createElement('div');
+  skillsHeading.className = 'skill-section-heading';
+  const skillsTitle = document.createElement('h2');
+  skillsTitle.textContent = 'Skills';
+  const skillsHelp = document.createElement('p');
+  skillsHelp.textContent = 'Collapsed by name. Expand a row for details. Same-named skills from different paths appear once with every location listed.';
+  skillsHeading.append(skillsTitle, skillsHelp);
+  body.appendChild(skillsHeading);
+  const skillsGrid = document.createElement('div');
+  skillsGrid.className = 'skill-catalog-grid';
+  body.appendChild(skillsGrid);
+
+  const skillMatchesQuery = (skill, query) => {
+    if (!query) return true;
+    return [skill.name, skill.description, skill.provider, skill.sourceId, ...(skill.origins || []).flatMap(origin => [
+      origin.provider,
+      origin.sourceId,
+      origin.sourceLabel,
+      origin.skillRoot,
+      origin.canonicalSkillRoot,
+      origin.skillFile,
+      origin.canonicalSkillFile,
+    ])].some(value => String(value || '').toLowerCase().includes(query));
+  };
+
+  const collectSkillLocations = (variants) => {
+    const locations = [];
+    const seen = new Set();
+    for (const skill of variants) {
+      for (const origin of skill.origins || []) {
+        const pathLabel = origin.canonicalSkillRoot || origin.skillRoot || origin.canonicalSkillFile || origin.skillFile || origin.sourceLabel || origin.sourceId;
+        const key = [origin.provider, origin.scope, origin.sourceId, pathLabel].join('\0').toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        locations.push({
+          provider: origin.provider,
+          scope: origin.scope,
+          sourceLabel: origin.sourceLabel || origin.sourceId,
+          path: pathLabel,
+          readOnly: origin.readOnly,
+          needsTrust: origin.needsTrust,
+        });
+      }
+    }
+    return locations;
+  };
+
+  const originAvailability = (origins) => {
+    const list = origins || [];
+    const sourceBlocked = !list.some(origin =>
+      !disabledSources.has(origin.sourceId)
+      && (origin.scope !== 'project' || trustedSources.has(origin.sourceId)));
+    const allOriginsNeedTrust = list.length > 0 && list.every(origin =>
+      origin.scope === 'project' && !trustedSources.has(origin.sourceId));
+    const allOriginsDisabled = list.length > 0 && list.every(origin => disabledSources.has(origin.sourceId));
+    return { sourceBlocked, allOriginsNeedTrust, allOriginsDisabled };
+  };
+
+  const renderSkills = () => {
+    state.skillCatalogQuery = search.value;
+    const query = search.value.trim().toLowerCase();
+    skillsGrid.textContent = '';
+    const groups = new Map();
+    for (const skill of catalog.skills || []) {
+      if (!skillMatchesQuery(skill, query)) continue;
+      const list = groups.get(skill.name) || [];
+      list.push(skill);
+      groups.set(skill.name, list);
+    }
+    const ordered = [...groups.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+    for (const [name, variants] of ordered) {
+      const locations = collectSkillLocations(variants);
+      const preferredId = preferredSkills[name];
+      const primary = variants.find(skill => activeSkills.has(skill.id))
+        || variants.find(skill => skill.id === preferredId)
+        || variants[0];
+      const anyActive = variants.some(skill => activeSkills.has(skill.id));
+      const allDisabled = variants.every(skill => disabledSkills.has(skill.id));
+      const hasConflict = variants.length > 1 || variants.some(skill => skill.conflict);
+      const combinedOrigins = variants.flatMap(skill => skill.origins || []);
+      const { sourceBlocked, allOriginsNeedTrust, allOriginsDisabled } = originAvailability(combinedOrigins);
+      const expanded = Boolean(state.skillCatalogExpanded?.[name]);
+      const row = document.createElement('article');
+      row.className = 'skill-catalog-row'
+        + (anyActive ? ' is-active' : '')
+        + (allDisabled ? ' is-disabled' : '')
+        + (expanded ? ' is-open' : '');
+
+      const summary = document.createElement('button');
+      summary.type = 'button';
+      summary.className = 'skill-catalog-summary-row';
+      summary.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      const chevron = document.createElement('span');
+      chevron.className = 'skill-catalog-chevron';
+      chevron.innerHTML = guiIcon('chevronDown');
+      const main = document.createElement('div');
+      main.className = 'skill-catalog-summary-main';
+      const nameLine = document.createElement('div');
+      nameLine.className = 'skill-catalog-name-line';
+      const title = document.createElement('span');
+      title.className = 'rl-title';
+      title.textContent = name;
+      nameLine.appendChild(title);
+      const meta = document.createElement('div');
+      meta.className = 'skill-catalog-meta-line';
+      const providerLabels = [...new Set(locations.map(location => location.provider + ' · ' + location.scope))];
+      meta.textContent = locations.length
+        ? locations.length + ' location' + (locations.length === 1 ? '' : 's') + ' · ' + providerLabels.join(' / ')
+        : ((primary?.provider || 'unknown') + ' · ' + (primary?.scope || 'user'));
+      main.append(nameLine, meta);
+      const chips = document.createElement('div');
+      chips.className = 'skill-catalog-summary-chips';
+      if (allDisabled) addSkillChip(chips, 'Disabled');
+      else if (anyActive) addSkillChip(chips, 'Active', 'success');
+      else if (allOriginsNeedTrust) addSkillChip(chips, 'Needs trust', 'warning');
+      else if (allOriginsDisabled) addSkillChip(chips, 'Source disabled');
+      else if (sourceBlocked) addSkillChip(chips, 'Source unavailable');
+      else if (hasConflict) addSkillChip(chips, 'Conflict', 'warning');
+      else addSkillChip(chips, primary?.status || 'inactive');
+      if (locations.length > 1) addSkillChip(chips, locations.length + ' paths');
+      summary.append(chevron, main, chips);
+      summary.addEventListener('click', () => {
+        state.skillCatalogExpanded = state.skillCatalogExpanded || {};
+        state.skillCatalogExpanded[name] = !state.skillCatalogExpanded[name];
+        renderSkills();
+      });
+
+      const detail = document.createElement('div');
+      detail.className = 'skill-catalog-detail';
+      const desc = document.createElement('p');
+      desc.className = 'rl-desc';
+      desc.textContent = primary?.description || 'No description provided.';
+      detail.appendChild(desc);
+
+      if (locations.length) {
+        const locationList = document.createElement('ul');
+        locationList.className = 'skill-catalog-locations';
+        for (const location of locations) {
+          const item = document.createElement('li');
+          const label = document.createElement('strong');
+          label.textContent = location.sourceLabel + ' · ' + location.provider + ' · ' + location.scope;
+          const path = document.createElement('code');
+          path.textContent = location.path;
+          item.append(label, path);
+          locationList.appendChild(item);
+        }
+        detail.appendChild(locationList);
+      }
+
+      if (variants.length > 1) {
+        const variantList = document.createElement('ul');
+        variantList.className = 'skill-catalog-variants';
+        for (const skill of variants) {
+          const skillDisabled = disabledSkills.has(skill.id);
+          const origins = skill.origins || [];
+          const availability = originAvailability(origins);
+          const isPreferred = preferredId === skill.id;
+          const item = document.createElement('li');
+          const head = document.createElement('div');
+          head.className = 'skill-catalog-variant-head';
+          const label = document.createElement('strong');
+          label.textContent = (skill.provider || 'unknown') + ' · ' + (skill.scope || 'user')
+            + (skill.version ? ' · v' + skill.version : '')
+            + ' · ' + skill.contentHash.slice(0, 8);
+          head.appendChild(label);
+          const actions = document.createElement('div');
+          actions.className = 'skill-catalog-variant-actions';
+          if (activeSkills.has(skill.id)) addSkillChip(actions, 'Active', 'success');
+          if (isPreferred) addSkillChip(actions, 'Preferred', 'success');
+          if (skillDisabled) addSkillChip(actions, 'Disabled');
+          if (skill.status !== 'invalid') {
+            const manage = document.createElement('button');
+            manage.type = 'button';
+            manage.className = 'rl-btn';
+            manage.textContent = skillDisabled ? 'Enable' : 'Disable';
+            manage.disabled = availability.sourceBlocked;
+            if (availability.sourceBlocked) {
+              manage.title = availability.allOriginsNeedTrust ? 'Trust the project source first' : 'Enable a runtime source first';
+            }
+            manage.addEventListener('click', (event) => {
+              event.stopPropagation();
+              updateSkillCatalog({ action: 'skill', skillId: skill.id, enabled: skillDisabled }, bodyId);
+            });
+            actions.appendChild(manage);
+          }
+          if (isPreferred) {
+            const clear = document.createElement('button');
+            clear.type = 'button';
+            clear.className = 'rl-btn';
+            clear.textContent = 'Clear choice';
+            clear.addEventListener('click', (event) => {
+              event.stopPropagation();
+              updateSkillCatalog({ action: 'prefer', name, clear: true }, bodyId);
+            });
+            actions.appendChild(clear);
+          } else if (skill.conflict && !skillDisabled && !activeSkills.has(skill.id) && skill.status !== 'invalid' && !availability.sourceBlocked) {
+            const choose = document.createElement('button');
+            choose.type = 'button';
+            choose.className = 'rl-btn';
+            choose.textContent = 'Use this version';
+            choose.addEventListener('click', (event) => {
+              event.stopPropagation();
+              updateSkillCatalog({ action: 'prefer', name, skillId: skill.id }, bodyId);
+            });
+            actions.appendChild(choose);
+          }
+          head.appendChild(actions);
+          const variantDesc = document.createElement('p');
+          variantDesc.className = 'rl-desc';
+          variantDesc.textContent = skill.description || 'No description provided.';
+          item.append(head, variantDesc);
+          variantList.appendChild(item);
+        }
+        detail.appendChild(variantList);
+      } else if (primary) {
+        const footer = document.createElement('div');
+        footer.className = 'skill-catalog-detail-footer';
+        if (primary.readOnly) addSkillChip(footer, 'Read-only');
+        for (const capability of primary.capabilities || []) addSkillChip(footer, capability);
+        const skillDisabled = disabledSkills.has(primary.id);
+        const availability = originAvailability(primary.origins || []);
+        if (primary.status !== 'invalid') {
+          const manage = document.createElement('button');
+          manage.type = 'button';
+          manage.className = 'rl-btn';
+          manage.textContent = skillDisabled ? 'Enable' : 'Disable';
+          manage.disabled = availability.sourceBlocked;
+          if (availability.sourceBlocked) {
+            manage.title = availability.allOriginsNeedTrust ? 'Trust the project source first' : 'Enable a runtime source first';
+          }
+          manage.addEventListener('click', (event) => {
+            event.stopPropagation();
+            updateSkillCatalog({ action: 'skill', skillId: primary.id, enabled: skillDisabled }, bodyId);
+          });
+          footer.appendChild(manage);
+        }
+        if (preferredId === primary.id) {
+          const clear = document.createElement('button');
+          clear.type = 'button';
+          clear.className = 'rl-btn';
+          clear.textContent = 'Clear choice';
+          clear.addEventListener('click', (event) => {
+            event.stopPropagation();
+            updateSkillCatalog({ action: 'prefer', name, clear: true }, bodyId);
+          });
+          footer.appendChild(clear);
+        }
+        detail.appendChild(footer);
+      }
+
+      row.append(summary, detail);
+      skillsGrid.appendChild(row);
+    }
+    if (!ordered.length) {
+      const empty = document.createElement('p');
+      empty.className = 'region-empty';
+      empty.textContent = query ? 'No skills match your search.' : 'No skills were discovered.';
+      skillsGrid.appendChild(empty);
+    }
+  };
+  search.addEventListener('input', renderSkills);
+  renderSkills();
+}
+async function loadManagedPluginCatalog(action, testOnly) {
+  let url = '/api/customize/plugins';
+  let options = {};
+  if (action) {
+    if (testOnly) url += '/test';
+    options = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(action),
+    };
+  }
+  const res = await api(url, options);
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || ('Unable to load plugins (' + res.status + ')'));
+  state.pluginCatalogData = testOnly ? payload.catalog : payload;
+  return testOnly ? payload.catalog : payload;
+}
+function managedPluginIcon(id) {
+  if (id === 'ocr') return 'eye';
+  if (id === 'computer-use') return 'computer';
+  if (id === 'github') return 'git';
+  if (id === 'kimi-webbridge') return 'globe';
+  if (id === 'tavily' || id === 'exa') return 'search';
+  return 'browser';
+}
+function managedPluginStateLabel(value) {
+  if (value === 'needs-setup') return 'Needs setup';
+  if (value === 'ready') return 'Ready';
+  if (value === 'disabled') return 'Disabled';
+  if (value === 'degraded') return 'Needs attention';
+  return 'Available';
+}
+function managedPluginPrimaryAction(plugin) {
+  if (plugin.state === 'available') return 'Install';
+  if (plugin.state === 'needs-setup') return 'Set up';
+  return 'Manage';
+}
+function managedPluginIconElement(plugin) {
+  const icon = document.createElement('span');
+  icon.className = 'plugin-market-icon';
+  icon.dataset.plugin = plugin.id;
+  icon.innerHTML = guiIcon(managedPluginIcon(plugin.id));
+  icon.setAttribute('aria-hidden', 'true');
+  return icon;
+}
+async function mutateManagedPlugin(action, preserveDetail) {
+  const body = el('regionPluginsBody');
+  if (body) body.classList.add('is-updating');
+  try {
+    await loadManagedPluginCatalog(action, false);
+    if (preserveDetail && action.id) state.pluginSelectedId = action.id;
+    await renderManagedPluginCatalog('regionPluginsBody', true);
+  } catch (error) {
+    if (body) {
+      const banner = document.createElement('p');
+      banner.className = 'customize-error';
+      banner.textContent = error.message || String(error);
+      body.prepend(banner);
+    }
+  } finally {
+    if (body) body.classList.remove('is-updating');
+  }
+}
+function pluginField(root, options) {
+  const label = document.createElement('label');
+  if (options.full) label.classList.add('full');
+  if (options.type === 'checkbox') label.classList.add('plugin-checkbox');
+  const title = document.createElement('span');
+  title.textContent = options.label;
+  const input = options.type === 'select'
+    ? document.createElement('select')
+    : options.type === 'textarea'
+      ? document.createElement('textarea')
+      : document.createElement('input');
+  input.dataset.pluginField = options.name;
+  if (options.secret) input.dataset.secret = 'true';
+  if (options.type === 'select') {
+    for (const option of options.options || []) {
+      const node = document.createElement('option');
+      node.value = option.value;
+      node.textContent = option.label;
+      input.appendChild(node);
+    }
+    input.value = String(options.value || '');
+  } else if (options.type === 'checkbox') {
+    input.type = 'checkbox';
+    input.checked = options.value === true;
+  } else {
+    if (options.type !== 'textarea') {
+      input.type = options.secret ? 'password' : options.type === 'number' ? 'number' : 'text';
+    }
+    input.value = options.secret ? '' : String(options.value ?? '');
+    if (options.secret) {
+      input.autocomplete = 'new-password';
+      input.placeholder = options.secretConfigured ? 'Saved — leave blank to keep' : 'Enter key or token';
+    } else if (options.placeholder) {
+      input.placeholder = options.placeholder;
+    }
+  }
+  if (options.type === 'checkbox') label.append(input, title);
+  else label.append(title, input);
+  root.appendChild(label);
+  return input;
+}
+function pluginFieldDefinitions(plugin) {
+  const c = plugin.config || {};
+  if (plugin.id === 'ocr') return [
+    { name: 'provider', label: 'Provider', type: 'select', value: c.provider || 'qwen', options: [
+      { value: 'qwen', label: 'Qwen / DashScope' },
+      { value: 'mistral', label: 'Mistral OCR' },
+      { value: 'openai-compatible', label: 'OpenAI-compatible vision' },
+    ] },
+    { name: 'api', label: 'API protocol', type: 'select', value: c.api || 'chat-completions', options: [
+      { value: 'chat-completions', label: 'Chat Completions' },
+      { value: 'responses', label: 'Responses' },
+    ] },
+    { name: 'baseURL', label: 'Base URL', value: c.baseURL || 'https://dashscope.aliyuncs.com/compatible-mode/v1', full: true },
+    { name: 'model', label: 'Model', value: c.model || 'qwen3.5-ocr' },
+    { name: 'apiKey', label: 'API key', secret: true, secretConfigured: plugin.secretConfigured },
+    { name: 'timeoutMs', label: 'Timeout (ms)', type: 'number', value: c.timeoutMs || 60000 },
+    { name: 'prompt', label: 'Default extraction prompt', type: 'textarea', value: c.prompt || '', full: true, placeholder: 'Preserve headings, tables, formulas, and reading order.' },
+  ];
+  if (plugin.id === 'computer-use') return [
+    { name: 'backend', label: 'Backend', type: 'select', value: c.backend || 'local', options: [
+      { value: 'local', label: 'Local Windows desktop' },
+      { value: 'e2b', label: 'E2B isolated desktop' },
+    ] },
+    { name: 'e2bApiKey', label: 'E2B API key', secret: true, secretConfigured: plugin.secretConfigured },
+    { name: 'e2bTemplate', label: 'E2B template (optional)', value: c.e2bTemplate || '' },
+    { name: 'timeoutMs', label: 'Sandbox timeout (ms)', type: 'number', value: c.timeoutMs || 120000 },
+    { name: 'resolutionWidth', label: 'Screen width', type: 'number', value: c.resolutionWidth || 1440 },
+    { name: 'resolutionHeight', label: 'Screen height', type: 'number', value: c.resolutionHeight || 900 },
+    { name: 'dpi', label: 'DPI', type: 'number', value: c.dpi || 96 },
+  ];
+  if (plugin.id === 'github') return [
+    { name: 'hostname', label: 'GitHub host', value: c.hostname || 'github.com' },
+    { name: 'token', label: 'Alternate token (optional)', secret: true, secretConfigured: plugin.secretConfigured },
+    { name: 'defaultOwner', label: 'Default owner (optional)', value: c.defaultOwner || '' },
+    { name: 'timeoutMs', label: 'Command timeout (ms)', type: 'number', value: c.timeoutMs || 30000 },
+  ];
+  if (plugin.id === 'kimi-webbridge') return [
+    { name: 'daemonUrl', label: 'Local daemon URL', value: c.daemonUrl || 'http://127.0.0.1:10086', full: true },
+    { name: 'sessionName', label: 'Session name', value: c.sessionName || 'actoviq' },
+    { name: 'timeoutMs', label: 'Request timeout (ms)', type: 'number', value: c.timeoutMs || 30000 },
+    { name: 'autoStart', label: 'Start daemon automatically when unavailable', type: 'checkbox', value: c.autoStart !== false, full: true },
+  ];
+  if (plugin.id === 'tavily') return [
+    { name: 'apiKey', label: 'Tavily API key', secret: true, secretConfigured: plugin.secretConfigured, full: true },
+    { name: 'timeoutMs', label: 'Request timeout (ms)', type: 'number', value: c.timeoutMs || 30000 },
+  ];
+  if (plugin.id === 'exa') return [
+    { name: 'apiKey', label: 'Exa API key', secret: true, secretConfigured: plugin.secretConfigured, full: true },
+    { name: 'timeoutMs', label: 'Request timeout (ms)', type: 'number', value: c.timeoutMs || 30000 },
+  ];
+  return [
+    { name: 'channel', label: 'Browser channel', type: 'select', value: c.channel || 'chromium', options: [
+      { value: 'chromium', label: 'Bundled Chromium' },
+      { value: 'chrome', label: 'Google Chrome' },
+      { value: 'msedge', label: 'Microsoft Edge' },
+    ] },
+    { name: 'headless', label: 'Run headless', type: 'checkbox', value: c.headless !== false },
+    { name: 'userDataDir', label: 'Persistent profile directory', value: c.userDataDir || '', full: true, placeholder: 'Leave empty for an isolated profile' },
+    { name: 'cdpUrl', label: 'Attach over CDP', value: c.cdpUrl || '', full: true, placeholder: 'http://127.0.0.1:9222' },
+    { name: 'allowedDomains', label: 'Allowed domains', value: Array.isArray(c.allowedDomains) ? c.allowedDomains.join(', ') : '', full: true, placeholder: 'example.com, docs.example.com' },
+    { name: 'defaultTimeoutMs', label: 'Action timeout (ms)', type: 'number', value: c.defaultTimeoutMs || 30000 },
+    { name: 'allowEvaluate', label: 'Allow JavaScript evaluation', type: 'checkbox', value: c.allowEvaluate === true },
+  ];
+}
+function pluginFormConfig(form) {
+  const config = {};
+  for (const input of form.querySelectorAll('[data-plugin-field]')) {
+    const name = input.dataset.pluginField;
+    if (input.type === 'checkbox') config[name] = input.checked;
+    else if (input.type === 'number') config[name] = input.value.trim() ? Number(input.value) : undefined;
+    else if (name === 'allowedDomains') config[name] = input.value.split(',').map(v => v.trim()).filter(Boolean);
+    else config[name] = input.value;
+  }
+  return config;
+}
+async function saveManagedPluginDetail(plugin, testAfter) {
+  const form = el('managedPluginForm');
+  if (!form) return;
+  const clear = el('managedPluginClearSecret');
+  const body = el('regionPluginsBody');
+  if (body) body.classList.add('is-updating');
+  try {
+    await loadManagedPluginCatalog({
+      action: 'save',
+      id: plugin.id,
+      enabled: plugin.state === 'available' ? true : plugin.enabled,
+      config: pluginFormConfig(form),
+      clearSecret: Boolean(clear && clear.checked),
+    }, false);
+    if (testAfter) {
+      await loadManagedPluginCatalog({ id: plugin.id }, true);
+    }
+    state.pluginSelectedId = plugin.id;
+    await renderManagedPluginCatalog('regionPluginsBody', true);
+  } catch (error) {
+    if (body) {
+      const banner = document.createElement('p');
+      banner.className = 'customize-error';
+      banner.textContent = error.message || String(error);
+      body.prepend(banner);
+    }
+  } finally {
+    if (body) body.classList.remove('is-updating');
+  }
+}
+function renderManagedPluginDetail(body, plugin) {
+  body.textContent = '';
+  const detail = document.createElement('div');
+  detail.className = 'plugin-detail';
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'plugin-detail-back';
+  back.textContent = '← All plugins';
+  back.addEventListener('click', () => {
+    state.pluginSelectedId = null;
+    renderManagedPluginCatalog('regionPluginsBody', true).catch(console.error);
+  });
+  detail.appendChild(back);
+
+  const hero = document.createElement('div');
+  hero.className = 'plugin-detail-hero';
+  const title = document.createElement('div');
+  title.className = 'plugin-detail-title';
+  const heading = document.createElement('h2');
+  heading.textContent = plugin.name;
+  const description = document.createElement('p');
+  description.textContent = plugin.description;
+  const status = document.createElement('span');
+  status.className = 'plugin-state ' + plugin.state;
+  status.textContent = managedPluginStateLabel(plugin.state);
+  title.append(heading, description, status);
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'plugin-market-action';
+  toggle.textContent = plugin.state === 'available' ? 'Install' : plugin.enabled ? 'Disable' : 'Enable';
+  toggle.addEventListener('click', () => mutateManagedPlugin(
+    plugin.state === 'available'
+      ? { action: 'install', id: plugin.id }
+      : { action: 'enable', id: plugin.id, enabled: !plugin.enabled },
+    true,
+  ));
+  hero.append(managedPluginIconElement(plugin), title, toggle);
+  detail.appendChild(hero);
+
+  const health = document.createElement('div');
+  health.className = 'plugin-health ' + plugin.state;
+  health.textContent = plugin.statusDetail || (
+    plugin.id === 'github'
+      ? 'Uses the account stored by gh auth login unless an alternate token is configured.'
+      : plugin.id === 'kimi-webbridge'
+        ? 'Reuses the browser extension and the login sessions already open in Chrome or Edge.'
+        : plugin.id === 'computer-use' && plugin.config?.backend === 'e2b'
+          ? 'Health checks never create a billable E2B sandbox.'
+          : plugin.id === 'tavily'
+            ? 'Connection checks issue one lightweight Tavily search request.'
+            : plugin.id === 'exa'
+              ? 'Connection checks issue one lightweight Exa search request.'
+              : 'Save the configuration, then run a connection check.'
+  );
+  detail.appendChild(health);
+
+  const panel = document.createElement('section');
+  panel.className = 'plugin-detail-panel';
+  const panelHead = document.createElement('header');
+  const panelTitle = document.createElement('h3');
+  panelTitle.textContent = 'Configuration';
+  const panelHelp = document.createElement('p');
+  panelHelp.textContent = 'Credentials remain in the local Actoviq settings store and are never returned to this page.';
+  panelHead.append(panelTitle, panelHelp);
+  const form = document.createElement('form');
+  form.id = 'managedPluginForm';
+  form.className = 'plugin-config-grid';
+  form.addEventListener('submit', (event) => event.preventDefault());
+  for (const field of pluginFieldDefinitions(plugin)) pluginField(form, field);
+  if (plugin.id === 'ocr') {
+    const provider = form.querySelector('[data-plugin-field="provider"]');
+    const baseURL = form.querySelector('[data-plugin-field="baseURL"]');
+    const model = form.querySelector('[data-plugin-field="model"]');
+    const protocol = form.querySelector('[data-plugin-field="api"]');
+    provider?.addEventListener('change', () => {
+      if (provider.value === 'mistral') {
+        baseURL.value = 'https://api.mistral.ai/v1';
+        model.value = 'mistral-ocr-latest';
+        protocol.value = 'chat-completions';
+        protocol.disabled = true;
+      } else if (provider.value === 'qwen') {
+        baseURL.value = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+        model.value = 'qwen3.5-ocr';
+        protocol.disabled = false;
+      } else {
+        baseURL.value = 'https://api.openai.com/v1';
+        model.value = 'gpt-4.1-mini';
+        protocol.disabled = false;
+      }
+    });
+    if (provider?.value === 'mistral' && protocol) protocol.disabled = true;
+  }
+  if (plugin.id === 'computer-use') {
+    const backend = form.querySelector('[data-plugin-field="backend"]');
+    const e2bFields = ['e2bApiKey', 'e2bTemplate', 'resolutionWidth', 'resolutionHeight', 'dpi'];
+    const syncComputerFields = () => {
+      for (const name of e2bFields) {
+        const input = form.querySelector('[data-plugin-field="' + name + '"]');
+        if (input?.parentElement) input.parentElement.hidden = backend?.value !== 'e2b';
+      }
+    };
+    backend?.addEventListener('change', syncComputerFields);
+    syncComputerFields();
+  }
+  if (plugin.secretConfigured) {
+    const clearLabel = document.createElement('label');
+    clearLabel.className = 'plugin-checkbox full';
+    const clear = document.createElement('input');
+    clear.id = 'managedPluginClearSecret';
+    clear.type = 'checkbox';
+    const clearText = document.createElement('span');
+    clearText.textContent = 'Clear the saved credential when saving';
+    clearLabel.append(clear, clearText);
+    form.appendChild(clearLabel);
+  }
+  const note = document.createElement('p');
+  note.className = 'plugin-secret-note';
+  note.textContent = plugin.id === 'playwright'
+    ? 'A persistent profile or CDP attachment can reuse browser login state. Storage-state contents are never displayed.'
+    : plugin.id === 'github'
+      ? 'Leave the alternate token empty to reuse the secure login already managed by GitHub CLI.'
+      : plugin.id === 'ocr'
+        ? 'Images and documents are sent only to the provider configured above.'
+        : plugin.id === 'computer-use'
+          ? 'Local desktop control is high impact. E2B runs in an isolated, separately billed sandbox.'
+          : plugin.id === 'tavily'
+            ? 'You can leave the key blank when TAVILY_API_KEY or ~/.tavily/config.json is already configured.'
+            : plugin.id === 'exa'
+              ? 'You can leave the key blank when EXA_API_KEY or ~/.exa/config.json is already configured. Keys: https://dashboard.exa.ai/api-keys'
+              : 'Only localhost daemon URLs are accepted; WebBridge keeps browsing data and login state on this device.';
+  form.appendChild(note);
+  const actions = document.createElement('div');
+  actions.className = 'plugin-detail-actions';
+  const left = document.createElement('div');
+  const test = document.createElement('button');
+  test.type = 'button';
+  test.className = 'plugin-market-action';
+  test.textContent = plugin.id === 'computer-use' ? 'Check backend' : 'Test connection';
+  test.disabled = plugin.state === 'available';
+  test.addEventListener('click', () => saveManagedPluginDetail(plugin, true));
+  left.appendChild(test);
+  const right = document.createElement('div');
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'plugin-market-action';
+  save.textContent = 'Save';
+  save.addEventListener('click', () => saveManagedPluginDetail(plugin, false));
+  right.appendChild(save);
+  actions.append(left, right);
+  panel.append(panelHead, form, actions);
+  detail.appendChild(panel);
+  body.appendChild(detail);
+}
+async function renderManagedPluginCatalog(bodyId, useCached) {
+  const body = el(bodyId);
+  if (!body) return;
+  body.textContent = '';
+  const loading = document.createElement('p');
+  loading.className = 'region-empty';
+  loading.textContent = 'Loading plugin catalog...';
+  body.appendChild(loading);
+  let data;
+  try {
+    data = useCached && state.pluginCatalogData
+      ? state.pluginCatalogData
+      : await loadManagedPluginCatalog();
+  } catch (error) {
+    loading.className = 'customize-error';
+    loading.textContent = error.message || String(error);
+    return;
+  }
+  const selected = (data.plugins || []).find(plugin => plugin.id === state.pluginSelectedId);
+  if (selected) {
+    renderManagedPluginDetail(body, selected);
+    return;
+  }
+  state.pluginSelectedId = null;
+  body.textContent = '';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'plugin-catalog-toolbar';
+  const summary = document.createElement('span');
+  summary.className = 'plugin-catalog-summary';
+  const ready = data.summary?.ready || 0;
+  summary.textContent = ready + ' ready · ' + (data.plugins || []).length + ' built in';
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'skill-catalog-search';
+  search.placeholder = 'Search plugins';
+  search.setAttribute('aria-label', 'Search plugins');
+  search.value = state.pluginCatalogQuery || '';
+  toolbar.append(summary, search);
+  body.appendChild(toolbar);
+  const catalog = document.createElement('div');
+  catalog.className = 'plugin-catalog';
+  body.appendChild(catalog);
+
+  const renderRows = () => {
+    state.pluginCatalogQuery = search.value;
+    catalog.textContent = '';
+    const query = search.value.trim().toLowerCase();
+    const visible = (data.plugins || []).filter(plugin =>
+      !query || [plugin.name, plugin.description, plugin.category, plugin.state]
+        .some(value => String(value || '').toLowerCase().includes(query)));
+    const sections = [
+      { name: 'Featured', help: 'Built-in agent capabilities', plugins: visible.filter(plugin => plugin.featured) },
+      { name: 'Browser & automation', help: 'Use existing browser sessions and automation runtimes', plugins: visible.filter(plugin => !plugin.featured) },
+    ];
+    for (const section of sections) {
+      if (!section.plugins.length) continue;
+      const host = document.createElement('section');
+      host.className = 'plugin-section';
+      const head = document.createElement('div');
+      head.className = 'plugin-section-heading';
+      const heading = document.createElement('h2');
+      heading.textContent = section.name;
+      const help = document.createElement('span');
+      help.textContent = section.help;
+      head.append(heading, help);
+      const grid = document.createElement('div');
+      grid.className = 'plugin-market-grid';
+      for (const plugin of section.plugins) {
+        const row = document.createElement('article');
+        row.className = 'plugin-market-row';
+        const copy = document.createElement('div');
+        copy.className = 'plugin-market-copy';
+        const titleline = document.createElement('div');
+        titleline.className = 'plugin-market-titleline';
+        const title = document.createElement('strong');
+        title.textContent = plugin.name;
+        const status = document.createElement('span');
+        status.className = 'plugin-state ' + plugin.state;
+        status.textContent = managedPluginStateLabel(plugin.state);
+        titleline.append(title, status);
+        const description = document.createElement('p');
+        description.textContent = plugin.description;
+        copy.append(titleline, description);
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'plugin-market-action';
+        action.textContent = managedPluginPrimaryAction(plugin);
+        action.addEventListener('click', () => {
+          if (plugin.state === 'available') {
+            mutateManagedPlugin({ action: 'install', id: plugin.id }, true);
+          } else {
+            state.pluginSelectedId = plugin.id;
+            renderManagedPluginCatalog(bodyId, true).catch(console.error);
+          }
+        });
+        row.addEventListener('dblclick', () => {
+          state.pluginSelectedId = plugin.id;
+          renderManagedPluginCatalog(bodyId, true).catch(console.error);
+        });
+        row.append(managedPluginIconElement(plugin), copy, action);
+        grid.appendChild(row);
+      }
+      host.append(head, grid);
+      catalog.appendChild(host);
+    }
+    if (!visible.length) {
+      const empty = document.createElement('p');
+      empty.className = 'region-empty';
+      empty.textContent = 'No plugins match your search.';
+      catalog.appendChild(empty);
+    }
+    const locals = (data.localPlugins || []).filter(plugin =>
+      !query || [plugin.name, plugin.description, plugin.path]
+        .some(value => String(value || '').toLowerCase().includes(query)));
+    if (locals.length) {
+      const localSection = document.createElement('section');
+      localSection.className = 'plugin-section';
+      const localHead = document.createElement('div');
+      localHead.className = 'plugin-section-heading';
+      const localTitle = document.createElement('h2');
+      localTitle.textContent = 'Local plugins';
+      const localHelp = document.createElement('span');
+      localHelp.textContent = 'Discovered from user and project plugin directories';
+      localHead.append(localTitle, localHelp);
+      const list = document.createElement('div');
+      list.className = 'plugin-local-list';
+      for (const plugin of locals) {
+        const row = document.createElement('div');
+        row.className = 'plugin-local-row';
+        const text = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = plugin.name;
+        const path = document.createElement('small');
+        path.textContent = plugin.path;
+        text.append(name, path);
+        const caps = document.createElement('span');
+        caps.className = 'rl-chip';
+        caps.textContent = (plugin.capabilities || []).join(', ') || 'manifest';
+        row.append(text, caps);
+        list.appendChild(row);
+      }
+      localSection.append(localHead, list);
+      catalog.appendChild(localSection);
+    }
+  };
+  search.addEventListener('input', renderRows);
+  renderRows();
+}
 async function renderPluginsRegion(view) {
+  if (view !== 'skills') view = 'plugins';
   state.pluginsView = view;
-  const kind = view === 'tools' ? 'tools' : view === 'skills' ? 'skills' : view === 'mcp' ? 'mcp' : 'plugins';
   const bodyId = 'regionPluginsBody';
-  await renderRegionList(kind, bodyId);
+  if (view === 'skills') await renderSkillCatalog(bodyId);
+  else await renderManagedPluginCatalog(bodyId);
   // Highlight the active sub-view button.
-  const map = { plugins: 'pluginsViewPluginsBtn', tools: 'pluginsViewToolsBtn', skills: 'pluginsViewSkillsBtn', mcp: 'pluginsViewMcpBtn' };
+  const map = { plugins: 'pluginsViewPluginsBtn', skills: 'pluginsViewSkillsBtn' };
   for (const [v, id] of Object.entries(map)) {
     const btn = el(id);
-    if (btn) btn.style.background = v === view ? 'var(--accent-soft)' : '';
+    if (btn) {
+      btn.style.background = v === view ? 'var(--accent-soft)' : '';
+      btn.setAttribute('aria-selected', v === view ? 'true' : 'false');
+    }
   }
 }
 // --- Team region (plan/UI_PLAN §5): read-only collaboration graph + inspector. ---
@@ -20066,7 +23551,6 @@ function applySmartSidesToEdges(def, board) {
   if (!def) return;
   const origin = board ? graphBoardOrigin(board) : { x: 0, y: 0 };
   for (const edge of def.edges || []) {
-    if (edge.ui?.sideLocked) continue;
     migrateLegacyEdgeSides(edge);
     const fromNode = (def.nodes || []).find((n) => graphRefOf(n) === String(edge.from).trim());
     const toNode = (def.nodes || []).find((n) => graphRefOf(n) === String(edge.to).trim());
@@ -20083,6 +23567,15 @@ function applySmartSidesToEdges(def, board) {
       : { x: (toNode.ui?.x ?? 0) - origin.x, y: (toNode.ui?.y ?? 0) - origin.y, w: toSize.w, h: toSize.h };
     const fromPortCount = graphSnapCountFor(fromNode);
     const toPortCount = graphSnapCountFor(toNode);
+    if (edge.ui?.sideLocked && edge.ui?.fromSide && edge.ui?.toSide) {
+      const p1 = sideAnchor(fromRect, edge.ui.fromSide, edge.ui.fromPort ?? Math.floor(fromPortCount / 2), fromPortCount);
+      const p2 = sideAnchor(toRect, edge.ui.toSide, edge.ui.toPort ?? Math.floor(toPortCount / 2), toPortCount);
+      // Locked sides that cut through a node look like a leftover "old" curve — unlock and re-pick.
+      if (!edgeChordCrossesNodeInterior(p1, p2, fromRect, toRect)) continue;
+      delete edge.ui.sideLocked;
+    } else if (edge.ui?.sideLocked) {
+      continue;
+    }
     const picked = pickShortestSides(fromRect, toRect, {
       fromPortCount,
       toPortCount,
@@ -20096,6 +23589,63 @@ function applySmartSidesToEdges(def, board) {
       toPort: picked.toPort,
     };
   }
+  nudgeOpposingGraphEdgePorts(def);
+}
+/** Stable undirected pair key for A⇄B edge grouping. */
+function graphEdgePairKey(edge) {
+  const a = String(edge.from).trim();
+  const b = String(edge.to).trim();
+  return a < b ? a + '\\0' + b : b + '\\0' + a;
+}
+/**
+ * Offset ports on reverse/parallel edges between the same nodes so A→B and B→A
+ * don't share one corridor (which reads as an "old curve" beside the new one).
+ */
+function nudgeOpposingGraphEdgePorts(def) {
+  const edges = def.edges || [];
+  const groups = new Map();
+  for (const edge of edges) {
+    const key = graphEdgePairKey(edge);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(edge);
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    group.forEach((edge, n) => {
+      if (n === 0) return;
+      if (edge.ui?.sideLocked) return;
+      edge.ui = edge.ui || {};
+      const fromNode = (def.nodes || []).find((node) => graphRefOf(node) === String(edge.from).trim());
+      const toNode = (def.nodes || []).find((node) => graphRefOf(node) === String(edge.to).trim());
+      const fc = graphSnapCountFor(fromNode);
+      const tc = graphSnapCountFor(toNode);
+      const fp = edge.ui.fromPort != null ? edge.ui.fromPort : graphSnapDefault(fromNode);
+      const tp = edge.ui.toPort != null ? edge.ui.toPort : graphSnapDefault(toNode);
+      const delta = n % 2 === 1 ? 1 : -1;
+      edge.ui.fromPort = Math.max(0, Math.min(fc - 1, fp + delta));
+      edge.ui.toPort = Math.max(0, Math.min(tc - 1, tp + delta));
+      clearEdgeBezierUi(edge);
+    });
+  }
+}
+/** Hide other edges on the same A⇄B pair while dragging one endpoint (prevents ghost twin). */
+function hideSiblingEdgesForDrag(svg, def, idx) {
+  const edges = def.edges || [];
+  const edge = edges[idx];
+  if (!edge) return;
+  const key = graphEdgePairKey(edge);
+  edges.forEach((ed, i) => {
+    if (i === idx) return;
+    if (graphEdgePairKey(ed) !== key) return;
+    for (const sel of [
+      'path.graph-edge-hit[data-edge-idx="' + i + '"]',
+      'path.graph-edge-visible[data-edge-idx="' + i + '"]',
+      'g.graph-edge-label-group[data-edge-idx="' + i + '"]',
+    ]) {
+      const node = svg.querySelector(sel);
+      if (node) node.setAttribute('visibility', 'hidden');
+    }
+  });
 }
 function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
   const d = bez.path;
@@ -20131,61 +23681,15 @@ function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
     }
   }
   if (!selected) return;
-  const g1 = svg.querySelector('path.graph-edge-guide[data-edge-idx="' + idx + '"][data-guide="c1"]');
-  const g2 = svg.querySelector('path.graph-edge-guide[data-edge-idx="' + idx + '"][data-guide="c2"]');
-  const h1 = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c1"]');
-  const h2 = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c2"]');
-  if (g1) g1.setAttribute('d', 'M ' + p1.x + ' ' + p1.y + ' L ' + bez.c1.x + ' ' + bez.c1.y);
-  if (g2) g2.setAttribute('d', 'M ' + p2.x + ' ' + p2.y + ' L ' + bez.c2.x + ' ' + bez.c2.y);
-  if (h1) { h1.setAttribute('cx', String(bez.c1.x)); h1.setAttribute('cy', String(bez.c1.y)); }
-  if (h2) { h2.setAttribute('cx', String(bez.c2.x)); h2.setAttribute('cy', String(bez.c2.y)); }
+  const hFrom = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="from"]');
+  const hTo = svg.querySelector('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="to"]');
+  if (hFrom) { hFrom.setAttribute('cx', String(p1.x)); hFrom.setAttribute('cy', String(p1.y)); }
+  if (hTo) { hTo.setAttribute('cx', String(p2.x)); hTo.setAttribute('cy', String(p2.y)); }
 }
 function wireEdgeControlHandle(svg, board, def, edge, idx, which) {
-  const endpoints = graphEdgeEndpoints(board, edge);
-  if (!endpoints) return;
-  const bez = resolveEdgeBezierPoints(endpoints.p1, endpoints.p2, edge.ui);
-  const start = which === 'c1' ? bez.c1 : bez.c2;
-  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  circle.setAttribute('cx', String(start.x));
-  circle.setAttribute('cy', String(start.y));
-  circle.setAttribute('r', '6');
-  circle.classList.add('graph-edge-handle');
-  circle.dataset.edgeIdx = String(idx);
-  circle.dataset.handle = which;
-  let dragging = false;
-  const onMove = (e) => {
-    if (!dragging) return;
-    const ep = graphEdgeEndpoints(board, edge);
-    if (!ep) return;
-    const viewport = graphBoardViewport(board);
-    const pt = graphBoardPointFromClient(viewport, e.clientX, e.clientY);
-    const current = resolveEdgeBezierPoints(ep.p1, ep.p2, edge.ui);
-    const nextC1 = which === 'c1' ? pt : current.c1;
-    const nextC2 = which === 'c2' ? pt : current.c2;
-    writeEdgeBezierUi(edge, ep.p1, ep.p2, nextC1, nextC2);
-    setTeamSavedStatus(false);
-    const next = resolveEdgeBezierPoints(ep.p1, ep.p2, edge.ui);
-    applyGraphEdgeGeometry(svg, idx, ep.p1, ep.p2, next, true);
-  };
-  const onUp = () => {
-    if (!dragging) return;
-    dragging = false;
-    state.teamGraphBoardDragging = false;
-    window.removeEventListener('mousemove', onMove);
-    window.removeEventListener('mouseup', onUp);
-  };
-  circle.addEventListener('mousedown', (e) => {
-    if (!teamGraphEditable(def)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    selectGraphEdges([idx], { skipEdges: true });
-    pushGraphHistory(def);
-    state.teamGraphBoardDragging = true;
-    dragging = true;
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  });
-  svg.appendChild(circle);
+  // Bezier control handles removed from selection UI — dragging guides looked like a second edge.
+  // Curve shape resets via clearEdgeBezierUi when endpoints move; Reset sides clears locks.
+  return;
 }
 function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
   const isFrom = which === 'from';
@@ -20209,11 +23713,6 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
   const clearHighlight = () => {
     if (highlighted) { highlighted.classList.remove('snap-target'); highlighted = null; }
   };
-  const setGuidesVisible = (visible) => {
-    const disp = visible ? '' : 'none';
-    svg.querySelectorAll('path.graph-edge-guide[data-edge-idx="' + idx + '"]').forEach((el) => { el.style.display = disp; });
-    svg.querySelectorAll('circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c1"], circle.graph-edge-handle[data-edge-idx="' + idx + '"][data-handle="c2"]').forEach((el) => { el.style.display = disp; });
-  };
   const nearestSnap = (clientX, clientY) => {
     let best = -1, bestD = Infinity;
     ports().forEach((p, i) => {
@@ -20223,70 +23722,65 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
     });
     return best >= 0 ? best : null;
   };
-  const onMove = (e) => {
-    if (!dragging) return;
-    const snapIdx = nearestSnap(e.clientX, e.clientY);
+  const paintLive = (clientX, clientY) => {
+    const snapIdx = nearestSnap(clientX, clientY);
     clearHighlight();
     const ps = ports();
-    if (snapIdx == null || !ps[snapIdx]) return;
+    if (snapIdx == null || !ps[snapIdx]) return null;
     highlighted = ps[snapIdx];
     highlighted.classList.add('snap-target');
-    const ep = graphEdgeEndpoints(board, edge);
-    if (!ep) return;
     const portEl = ps[snapIdx];
     const portIdx = portEl.dataset.port != null ? parseInt(portEl.dataset.port, 10) : snapIdx;
     const side = portEl.dataset.side;
-    // Live-preview without stale bezier offsets (those make a second ghost curve).
     clearEdgeBezierUi(edge);
+    edge.ui = edge.ui || {};
     if (side) {
-      edge.ui = edge.ui || {};
       if (isFrom) { edge.ui.fromSide = side; edge.ui.fromPort = portIdx; }
       else { edge.ui.toSide = side; edge.ui.toPort = portIdx; }
     }
-    const newP = graphBoardPortPoint(card, kind, portIdx, side);
-    const p1 = isFrom ? newP : ep.p1;
-    const p2 = isFrom ? ep.p2 : newP;
-    // Re-read other endpoint with updated ui so both ends stay consistent.
-    const live = graphEdgeEndpoints(board, edge) || { p1, p2 };
+    const live = graphEdgeEndpoints(board, edge);
+    if (!live) return null;
     const bez = resolveEdgeBezierPoints(live.p1, live.p2, edge.ui);
     applyGraphEdgeGeometry(svg, idx, live.p1, live.p2, bez, true);
-    circle.setAttribute('cx', String(newP.x));
-    circle.setAttribute('cy', String(newP.y));
+    const tip = isFrom ? live.p1 : live.p2;
+    circle.setAttribute('cx', String(tip.x));
+    circle.setAttribute('cy', String(tip.y));
+    return { portIdx, side };
+  };
+  const onMove = (e) => {
+    if (!dragging) return;
+    paintLive(e.clientX, e.clientY);
   };
   const onUp = (e) => {
     if (!dragging) return;
     dragging = false;
     state.teamGraphBoardDragging = false;
     clearHighlight();
-    setGuidesVisible(true);
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
-    const snapIdx = nearestSnap(e.clientX, e.clientY);
-    if (snapIdx == null) {
-      scheduleGraphBoardEdgeRedraw(board, svg, state.teamDefinition);
-      return;
-    }
+    const painted = paintLive(e.clientX, e.clientY);
     const def2 = state.teamDefinition;
     const edge2 = (def2?.edges || [])[idx];
-    if (!edge2) return;
-    const ps = ports();
-    const portEl = ps[snapIdx];
-    if (!portEl) return;
-    const portIdx = portEl.dataset.port != null ? parseInt(portEl.dataset.port, 10) : snapIdx;
-    const side = portEl.dataset.side;
+    if (!edge2 || !painted) {
+      scheduleGraphBoardEdgeRedraw(board, svg, def2);
+      return;
+    }
     edge2.ui = edge2.ui || {};
     const portKey = isFrom ? 'fromPort' : 'toPort';
     const sideKey = isFrom ? 'fromSide' : 'toSide';
     const prevSide = edge2.ui[sideKey];
-    edge2.ui[portKey] = portIdx;
-    if (side) edge2.ui[sideKey] = side;
-    if (side && prevSide && side !== prevSide) edge2.ui.sideLocked = true;
-    else if (side && !prevSide) edge2.ui.sideLocked = true;
+    edge2.ui[portKey] = painted.portIdx;
+    if (painted.side) edge2.ui[sideKey] = painted.side;
+    if (painted.side && prevSide && painted.side !== prevSide) edge2.ui.sideLocked = true;
+    else if (painted.side && !prevSide) edge2.ui.sideLocked = true;
     clearEdgeBezierUi(edge2);
+    // Re-pick unlocked siblings / heal through-node locks so an A⇄B twin doesn't
+    // keep looking like the pre-drag curve.
+    applySmartSidesToEdges(def2, board);
     setTeamSavedStatus(false);
     scheduleGraphBoardEdgeRedraw(board, svg, def2);
   };
-  circle.addEventListener('mousedown', (e) => {
+  const beginDrag = (e) => {
     if (!teamGraphEditable(def)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -20294,12 +23788,16 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
     pushGraphHistory(def);
     state.teamGraphBoardDragging = true;
     dragging = true;
-    setGuidesVisible(false);
+    svg.querySelectorAll('path.graph-edge-preview').forEach((p) => p.remove());
+    hideSiblingEdgesForDrag(svg, def, idx);
     clearEdgeBezierUi(edge);
+    paintLive(e.clientX, e.clientY);
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  });
+  };
+  circle.addEventListener('mousedown', beginDrag);
   svg.appendChild(circle);
+  return beginDrag;
 }
 function ensureGraphEdgeMarkers(svg) {
   if (svg.querySelector('#graph-edge-arrow')) return;
@@ -20360,7 +23858,8 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
     const undirected = isUndirectedTeamGraphEdge(edge);
     if (undirected) vis.classList.add('undirected');
     else vis.setAttribute('marker-end', 'url(#' + ((state.teamSelectedEdgeIdxs || []).includes(idx) || state.teamSelectedEdgeIdx === idx ? 'graph-edge-arrow-selected' : 'graph-edge-arrow') + ')');
-    if ((edge.trigger && edge.trigger !== 'on_complete') || edge.condition) vis.classList.add('dashed');
+    // Condition/loop edges stay solid — the label chip carries the gate text.
+    // Dashed strokes looked like a second ghost edge while dragging.
     if ((state.teamSelectedEdgeIdxs || []).includes(idx) || state.teamSelectedEdgeIdx === idx) vis.classList.add('selected');
     hit.addEventListener('click', (e) => {
       e.preventDefault();
@@ -20443,21 +23942,20 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
       }
     }
     if (teamGraphEditable(def) && state.teamSelectedEdgeIdx === idx) {
-      const g1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      g1.classList.add('graph-edge-guide');
-      g1.dataset.edgeIdx = String(idx);
-      g1.dataset.guide = 'c1';
-      g1.setAttribute('d', 'M ' + p1.x + ' ' + p1.y + ' L ' + bez.c1.x + ' ' + bez.c1.y);
-      const g2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      g2.classList.add('graph-edge-guide');
-      g2.dataset.edgeIdx = String(idx);
-      g2.dataset.guide = 'c2';
-      g2.setAttribute('d', 'M ' + p2.x + ' ' + p2.y + ' L ' + bez.c2.x + ' ' + bez.c2.y);
-      svg.append(g1, g2);
-      wireEdgeControlHandle(svg, board, def, edge, idx, 'c1');
-      wireEdgeControlHandle(svg, board, def, edge, idx, 'c2');
-      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'from');
-      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'to');
+      // Endpoint handles only — no bezier guide dashes (those looked like a second edge).
+      const beginFrom = wireEdgeEndpointHandle(svg, board, def, edge, idx, 'from');
+      const beginTo = wireEdgeEndpointHandle(svg, board, def, edge, idx, 'to');
+      hit.addEventListener('mousedown', (e) => {
+        if (e.button !== 0 || !teamGraphEditable(def)) return;
+        const ep = graphEdgeEndpoints(board, edge);
+        if (!ep) return;
+        const viewport = graphBoardViewport(board);
+        const pt = graphBoardPointFromClient(viewport, e.clientX, e.clientY);
+        const d1 = Math.hypot(pt.x - ep.p1.x, pt.y - ep.p1.y);
+        const d2 = Math.hypot(pt.x - ep.p2.x, pt.y - ep.p2.y);
+        const begin = d1 <= d2 ? beginFrom : beginTo;
+        if (typeof begin === 'function') begin(e);
+      });
     }
   });
   syncGraphBoardSvgSize(board, svg);
@@ -21214,6 +24712,12 @@ function gitSection(title) {
 }
 async function openGitSurface() {
   hideContextMenu();
+  // Prefer the workbench side panel when the conversation view is active.
+  const conversation = el('projectConversation');
+  if (conversation && !conversation.classList.contains('hidden') && el('auxPanel')) {
+    openAuxView('git');
+    return;
+  }
   const data = await gitData();
   state.activeSurface = null;
   el('surfaceTitle').textContent = 'Git';
@@ -21414,6 +24918,115 @@ async function forgetWorkspace(projectPath) {
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   flashStatus('Workspace forgotten' + (payload.deleted ? ' (' + payload.deleted + ' chats removed)' : ''));
 }
+function waitForRunRecovery(delayMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      window.removeEventListener('online', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    window.addEventListener('online', finish, { once: true });
+  });
+}
+async function finishRecoveredRun(sessionId, recoverySequence, terminalError) {
+  if (recoverySequence !== state.runRecoverySequence) return;
+  await loadState();
+  if (recoverySequence !== state.runRecoverySequence) return;
+  if (state.snapshot?.session?.id === sessionId) await hydrateTranscript();
+  if (recoverySequence !== state.runRecoverySequence) return;
+  state.running = false;
+  state.recoveringRun = false;
+  state.activeClientRequestId = null;
+  state.activeRunId = null;
+  state.activeRunSequence = 0;
+  if (terminalError) {
+    const T = tx();
+    if (T) T.applyEvent({ type: 'error', message: terminalError });
+    else addMessage('error', terminalError);
+    setRunStatus(terminalError, 'error');
+  } else {
+    setRunStatus(readyLabel());
+  }
+  setConversationStatus(null);
+}
+async function recoverDisconnectedRun(sessionId, serverAccepted, clientRequestId) {
+  const recoverySequence = ++state.runRecoverySequence;
+  state.recoveringRun = true;
+  state.running = true;
+  let attempt = 0;
+  let confirmed = Boolean(serverAccepted || state.activeRunId);
+  while (recoverySequence === state.runRecoverySequence) {
+    attempt += 1;
+    if (navigator.onLine === false) {
+      setRunStatus('Offline · the agent continues in the background', 'running');
+      setConversationStatus('Waiting for network');
+      await waitForRunRecovery(Math.min(10_000, 1_000 * attempt));
+      continue;
+    }
+    try {
+      if (!state.activeRunId) {
+        const runsRes = await api('/api/runs');
+        if (!runsRes.ok) throw new Error('Run status unavailable');
+        const snapshot = await runsRes.json();
+        const candidates = [...(snapshot.runs || []), ...(snapshot.recentRuns || [])];
+        const matching = clientRequestId
+          ? candidates.find(run => run.clientRequestId === clientRequestId)
+          : candidates.find(run => run.runId === snapshot.foregroundRunId)
+            || candidates.find(run => run.sessionId === sessionId && run.kind === 'chat' && run.status === 'running');
+        if (matching) {
+          state.snapshot = Object.assign({}, state.snapshot || {}, snapshot);
+          state.activeRunId = matching.runId;
+          confirmed = true;
+        } else if (confirmed || attempt >= 3) {
+          if (!confirmed) {
+            state.running = false;
+            state.recoveringRun = false;
+            state.activeClientRequestId = null;
+            setRunStatus('Message delivery could not be confirmed', 'error');
+            addMessage('error', 'The connection was lost before the run could be confirmed. Retry the message.');
+            return;
+          }
+          await finishRecoveredRun(sessionId, recoverySequence);
+          return;
+        }
+      }
+      if (state.activeRunId) {
+        const eventsRes = await api('/api/run/events?runId=' + encodeURIComponent(state.activeRunId) + '&after=' + state.activeRunSequence);
+        if (eventsRes.ok) {
+          const payload = await eventsRes.json();
+          const events = Array.isArray(payload.events) ? payload.events : [];
+          let terminal = false;
+          let terminalError = '';
+          for (const event of events) {
+            handleEvent(event);
+            if (event.type === 'done' || event.type === 'error') terminal = true;
+            if (event.type === 'error') terminalError = String(event.message || 'Run failed');
+          }
+          confirmed = true;
+          if (terminal || payload.active === false) {
+            await finishRecoveredRun(sessionId, recoverySequence, terminalError);
+            return;
+          }
+          setRunStatus('Reconnected · receiving background progress', 'running');
+          setConversationStatus('Run continues');
+        } else if (eventsRes.status === 404) {
+          await finishRecoveredRun(sessionId, recoverySequence);
+          return;
+        } else {
+          throw new Error('Replay unavailable');
+        }
+      }
+    } catch {
+      setRunStatus('Connection lost · reconnecting automatically', 'running');
+      setConversationStatus('Reconnecting');
+    }
+    await waitForRunRecovery(Math.min(5_000, 500 * Math.max(1, attempt)));
+  }
+}
 async function sendText(text) {
   if (state.sessionResumePending) {
     flashStatus('Wait for the conversation switch to finish.');
@@ -21421,19 +25034,33 @@ async function sendText(text) {
   }
   state.running = true;
   state.activeRunId = null;
+  const clientRequestId = typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : 'gui-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  state.activeClientRequestId = clientRequestId;
+  state.activeRunSequence = 0;
+  state.recoveringRun = false;
+  state.runRecoverySequence += 1;
   setRunStatus('Running', 'running');
-  const res = await api('/api/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
-  if (!res.ok || !res.body) {
-    addMessage('error', await res.text());
-    state.running = false;
-    setRunStatus(readyLabel());
-    await processQueue();
-    return;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+  const sessionId = state.snapshot?.session?.id || state.activeSessionId || '';
+  let serverAccepted = false;
+  let terminalEventSeen = false;
   try {
+    const res = await api('/api/send', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text, clientRequestId }),
+    });
+    if (!res.ok || !res.body) {
+      addMessage('error', await res.text());
+      state.running = false;
+      setRunStatus(readyLabel());
+      return;
+    }
+    serverAccepted = true;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
     while (true) {
       const { done, value } = await reader.read();
       if (value) buffer += decoder.decode(value, { stream: true });
@@ -21441,17 +25068,34 @@ async function sendText(text) {
       while ((idx = buffer.indexOf('\\n')) !== -1) {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
-        if (line) handleEvent(JSON.parse(line));
+        if (line) {
+          const event = JSON.parse(line);
+          handleEvent(event);
+          if (event.type === 'done' || event.type === 'error') terminalEventSeen = true;
+        }
       }
       if (done) break;
     }
+    if (!terminalEventSeen) {
+      await recoverDisconnectedRun(sessionId, serverAccepted, clientRequestId);
+      return;
+    }
+  } catch {
+    await recoverDisconnectedRun(sessionId, serverAccepted, clientRequestId);
+    return;
   } finally {
+    state.recoveringRun = false;
     state.running = false;
+    if (state.activeClientRequestId === clientRequestId) state.activeClientRequestId = null;
     setRunStatus(readyLabel());
     await processQueue();
   }
 }
 function handleEvent(event) {
+  if (Number.isSafeInteger(event.sequence)) {
+    if (event.sequence <= state.activeRunSequence) return;
+    state.activeRunSequence = event.sequence;
+  }
   const T = tx();
   if (event.type === 'user') {
     finalizeAssistant();
@@ -21471,6 +25115,16 @@ function handleEvent(event) {
       scheduleMarkdownRender(state.currentAssistant);
     }
   } else if (event.type === 'status') setRunStatus(event.message || 'Running', 'running');
+  else if (event.type === 'reconnecting') {
+    if (T) T.applyEvent({ type: 'response.retry' });
+    else if (state.currentAssistant) (state.currentAssistant.closest('.message-row') || state.currentAssistant).remove();
+    state.currentAssistant = null;
+    const retry = Number.isFinite(Number(event.retry)) ? Number(event.retry) : null;
+    const maxRetries = Number.isFinite(Number(event.maxRetries)) ? Number(event.maxRetries) : null;
+    const suffix = retry && maxRetries ? ' (' + retry + '/' + maxRetries + ')' : '';
+    setRunStatus('Connection interrupted · retrying automatically' + suffix, 'running');
+    setConversationStatus('Reconnecting');
+  }
   else if (event.type === 'notice') {
     if (T) T.applyEvent({ type: 'notice', message: event.message || '' });
     else addMessage('notice', event.message || '');
@@ -21534,10 +25188,10 @@ function handleEvent(event) {
   else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
   else if (event.type === 'done') {
-    finalizeAssistant(); state.currentAssistant = null; state.running = false; stopRailPolling(); void refreshRail();
+    finalizeAssistant(); state.currentAssistant = null; stopRailPolling(); void refreshRail();
     if (T) T.applyEvent({ type: 'done' });
     if (event.usage) state.lastUsageText = formatUsage(event.usage);
-    setRunStatus(readyLabel()); setConversationStatus(null); void processQueue();
+    setRunStatus(readyLabel()); setConversationStatus(null);
     void (async () => {
       try {
         const msgRes = await api('/api/session/messages');
@@ -21552,6 +25206,8 @@ function handleEvent(event) {
   else if (event.type === 'error') {
     finalizeAssistant();
     state.currentAssistant = null;
+    stopRailPolling();
+    void refreshRail();
     setRunStatus(event.message || 'Error', 'error');
     if (T) T.applyEvent({ type: 'error', message: event.message || 'Error' });
     else addMessage('error', event.message || 'Error');
@@ -21641,6 +25297,7 @@ function showNextPermission() {
 }
 function setField(id, value) { el(id).value = value == null ? '' : String(value); }
 function setChecked(id, value) { el(id).checked = Boolean(value); }
+let externalCliAuthByRuntime = {};
 function renderRuntimeDiscovery() {
   const root = document.getElementById('runtimeDiscoveryList');
   if (!root) return;
@@ -21700,8 +25357,421 @@ function renderRuntimeDiscovery() {
       localLine.textContent = 'Local CLI: built in';
     }
     card.appendChild(localLine);
+    const auth = externalCliAuthByRuntime[runtime.runtime];
+    if (auth) {
+      const authLine = document.createElement('p');
+      authLine.className = 'runtime-local muted';
+      const label = auth.state === 'authenticated'
+        ? 'Authenticated'
+        : auth.state === 'configured'
+          ? 'Configured'
+        : auth.state === 'not_authenticated'
+          ? 'Not logged in'
+          : auth.state === 'missing'
+            ? 'CLI missing'
+            : 'Unknown';
+      authLine.textContent = 'Native login: ' + label
+        + (auth.method ? ' · ' + auth.method : '')
+        + (auth.provider ? ' · ' + auth.provider : '');
+      authLine.title = auth.message || '';
+      card.appendChild(authLine);
+    }
     root.appendChild(card);
   }
+}
+async function refreshExternalCliAuth() {
+  const status = el('externalCliAuthStatus');
+  status.textContent = 'Checking each installed CLI for reusable native login/configuration...';
+  try {
+    const response = await api('/api/external-cli/auth');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Authentication probe failed.');
+    externalCliAuthByRuntime = Object.fromEntries(
+      (payload.runtimes || []).map(item => [item.runtime, item]),
+    );
+    const labels = { claude:'Claude Code', codewhale:'CodeWhale', pi:'Pi', codex:'Codex', reasonix:'Reasonix', crush:'Crush' };
+    const authenticated = (payload.runtimes || [])
+      .filter(item => item.state === 'authenticated' || item.state === 'configured')
+      .map(item => labels[item.runtime] || item.runtime);
+    status.textContent = authenticated.length
+      ? 'Reusable native login: ' + authenticated.join(', ') + '.'
+      : 'No reusable native CLI login was confirmed.';
+    renderRuntimeDiscovery();
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+function populateExternalCliRunConfigs() {
+  const select = document.getElementById('externalCliRunConfig');
+  const start = document.getElementById('externalCliRunStart');
+  if (!select || !start) return;
+  const configs = (state.snapshot?.bridgeState?.configs || []).filter(config =>
+    config.execution === 'cli' && CLI_SUPPORTED_RUNTIMES.has(config.runtime));
+  const previous = select.value;
+  select.textContent = '';
+  for (const config of configs) {
+    const option = document.createElement('option');
+    option.value = config.name;
+    option.textContent = config.name + ' · ' + config.runtime;
+    select.appendChild(option);
+  }
+  const activeName = state.snapshot?.bridgeState?.activeConfig?.execution === 'cli'
+    ? state.snapshot.bridgeState.activeConfig.name
+    : '';
+  if (configs.some(config => config.name === previous)) select.value = previous;
+  else if (configs.some(config => config.name === activeName)) select.value = activeName;
+  start.disabled = configs.length === 0;
+  if (configs.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Create an External CLI config first';
+    select.appendChild(option);
+  }
+}
+let externalCliRunsPollTimer = null;
+function scheduleExternalCliRunsPoll(activeCount) {
+  if (externalCliRunsPollTimer) {
+    clearTimeout(externalCliRunsPollTimer);
+    externalCliRunsPollTimer = null;
+  }
+  if (!activeCount) return;
+  externalCliRunsPollTimer = setTimeout(() => {
+    externalCliRunsPollTimer = null;
+    if (el('settingsModal').classList.contains('hidden')) return;
+    loadExternalCliRuns().catch(error => {
+      el('externalCliRunsStatus').textContent = error instanceof Error ? error.message : String(error);
+    });
+  }, 750);
+}
+function renderExternalCliRuns(runs) {
+  const root = document.getElementById('externalCliRunsList');
+  const status = document.getElementById('externalCliRunsStatus');
+  if (!root || !status) return;
+  root.textContent = '';
+  const items = Array.isArray(runs) ? [...runs].sort((a, b) =>
+    String(b.createdAt || '').localeCompare(String(a.createdAt || ''))) : [];
+  const activeCount = items.filter(run => run.status === 'queued' || run.status === 'running').length;
+  scheduleExternalCliRunsPoll(activeCount);
+  status.textContent = items.length
+    ? items.length + ' run' + (items.length === 1 ? '' : 's') + (activeCount ? ' · ' + activeCount + ' active' : '')
+    : 'No External CLI runs in this app session.';
+  for (const run of items) {
+    const card = document.createElement('article');
+    card.className = 'settings-card' + (run.status === 'running' ? ' active' : '');
+    const title = document.createElement('strong');
+    const configName = run.configName || (String(run.configId || '').includes(':')
+      ? String(run.configId).slice(0, String(run.configId).lastIndexOf(':'))
+      : run.configId || 'external CLI');
+    title.textContent = configName + ' · ' + run.status;
+    card.appendChild(title);
+    const detail = document.createElement('p');
+    detail.textContent = describeParts([
+      run.background ? 'background' : 'foreground',
+      run.nativeSessionId || '',
+      run.startedAt ? new Date(run.startedAt).toLocaleString() : new Date(run.createdAt).toLocaleString(),
+      run.error?.message || run.error || '',
+    ]);
+    card.appendChild(detail);
+    const preview = run.result?.text || run.lastText || '';
+    if (preview) {
+      const text = document.createElement('p');
+      text.textContent = String(preview).slice(0, 320);
+      card.appendChild(text);
+    }
+    const footer = document.createElement('footer');
+    const inspect = document.createElement('button');
+    inspect.type = 'button';
+    inspect.textContent = 'View output';
+    inspect.addEventListener('click', () => {
+      openExternalCliRun(run.runId).catch(error => {
+        status.textContent = error instanceof Error ? error.message : String(error);
+      });
+    });
+    footer.appendChild(inspect);
+    if (run.status === 'queued' || run.status === 'running') {
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.textContent = 'Stop';
+      stop.addEventListener('click', () => {
+        abortExternalCliRun(run.runId).catch(error => {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        });
+      });
+      footer.appendChild(stop);
+    }
+    card.appendChild(footer);
+    root.appendChild(card);
+  }
+}
+async function loadExternalCliRuns() {
+  const response = await api('/api/external-cli/runs');
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Unable to load External CLI runs.');
+  renderExternalCliRuns(payload.runs || []);
+}
+async function startExternalCliRunFromSettings() {
+  const status = el('externalCliRunsStatus');
+  const prompt = el('externalCliRunPrompt').value.trim();
+  const configName = el('externalCliRunConfig').value;
+  if (!configName) { status.textContent = 'Create an External CLI config first.'; return; }
+  if (!prompt) { status.textContent = 'Enter a task for the runtime.'; return; }
+  status.textContent = 'Starting the external runtime...';
+  const response = await api('/api/external-cli/run', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ configName, prompt, background: true }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Unable to start External CLI run.');
+  el('externalCliRunPrompt').value = '';
+  status.textContent = 'Background run started: ' + payload.run.runId;
+  await loadExternalCliRuns();
+}
+async function abortExternalCliRun(runId) {
+  const response = await api('/api/external-cli/run/abort', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ runId }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Unable to stop External CLI run.');
+  await loadExternalCliRuns();
+}
+async function openExternalCliRun(runId) {
+  const response = await api('/api/external-cli/run?runId=' + encodeURIComponent(runId));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Unable to open External CLI run.');
+  const run = payload.run;
+  closeSettings();
+  el('surfaceTitle').textContent = (run.configName || 'External CLI') + ' · ' + run.status;
+  el('surfaceSubtitle').textContent = describeParts([
+    'External CLI run',
+    run.nativeSessionId ? 'session ' + run.nativeSessionId : '',
+    run.cwd || '',
+  ]);
+  const actions = el('surfaceActions');
+  actions.textContent = '';
+  if (run.status === 'queued' || run.status === 'running') {
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.textContent = 'Stop run';
+    stop.addEventListener('click', async () => {
+      await abortExternalCliRun(run.runId);
+      el('surfaceDrawer').classList.add('hidden');
+    });
+    actions.appendChild(stop);
+  }
+  const list = el('surfaceList');
+  list.textContent = '';
+  if (run.result?.text || run.error?.message) {
+    const result = document.createElement('article');
+    result.className = 'surface-item external-cli-run-result';
+    const heading = document.createElement('strong');
+    heading.textContent = run.error?.message ? 'Error' : 'Result';
+    const text = document.createElement('p');
+    text.style.whiteSpace = 'pre-wrap';
+    text.textContent = run.error?.message || run.result.text;
+    result.append(heading, text);
+    const resultMeta = describeParts([
+      typeof run.result?.numTurns === 'number'
+        ? run.result.numTurns + ' turn' + (run.result.numTurns === 1 ? '' : 's')
+        : '',
+      typeof run.result?.durationMs === 'number' ? formatDuration(run.result.durationMs) : '',
+      typeof run.result?.totalCostUsd === 'number' ? '$' + run.result.totalCostUsd.toFixed(4) : '',
+      typeof run.result?.exitCode === 'number' ? 'exit ' + run.result.exitCode : '',
+    ]);
+    if (resultMeta) {
+      const meta = document.createElement('small');
+      meta.className = 'muted';
+      meta.textContent = resultMeta;
+      result.appendChild(meta);
+    }
+    list.appendChild(result);
+  }
+  const updates = payload.updates || [];
+  if (updates.length) {
+    const eventCount = updates.filter(update => update.kind === 'event').length;
+    const logCount = updates.filter(update => update.kind === 'log').length;
+    const trace = document.createElement('details');
+    trace.className = 'surface-item runtime-trace';
+    const summary = document.createElement('summary');
+    summary.textContent = describeParts([
+      'Raw runtime trace',
+      eventCount + ' event' + (eventCount === 1 ? '' : 's'),
+      logCount ? logCount + ' log' + (logCount === 1 ? '' : 's') : '',
+    ]);
+    const body = document.createElement('pre');
+    body.textContent = updates.map(update => JSON.stringify(update, null, 2)).join('\\n\\n');
+    trace.append(summary, body);
+    list.appendChild(trace);
+  }
+  if (!list.children.length) {
+    const waiting = document.createElement('p');
+    waiting.className = 'muted';
+    waiting.textContent = 'No output has been emitted yet.';
+    list.appendChild(waiting);
+  }
+  el('surfaceDrawer').classList.remove('hidden');
+}
+let externalCliHistoryNextOffset = null;
+async function loadExternalCliHistory(append = false) {
+  const status = el('externalCliHistoryStatus');
+  const root = el('externalCliHistoryList');
+  status.textContent = 'Reading native External CLI session indexes...';
+  if (!append) root.textContent = '';
+  try {
+    const runtime = el('externalCliHistoryRuntime').value;
+    const query = el('externalCliHistoryQuery').value.trim();
+    const offset = append && externalCliHistoryNextOffset != null ? externalCliHistoryNextOffset : 0;
+    const params = new URLSearchParams({ limit: '40', offset: String(offset) });
+    if (runtime) params.set('runtime', runtime);
+    if (query) params.set('query', query);
+    const response = await api('/api/external-cli/sessions?' + params.toString());
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Unable to read CLI history.');
+    const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+    externalCliHistoryNextOffset = payload.nextOffset;
+    const shown = root.children.length + sessions.length;
+    status.textContent = shown
+      ? (typeof payload.total === 'number'
+        ? shown + ' of ' + payload.total + ' native sessions.'
+        : shown + ' native session' + (shown === 1 ? '' : 's') + (payload.nextOffset != null ? ' loaded.' : '.'))
+      : 'No native External CLI sessions were found.';
+    el('externalCliHistoryMore').classList.toggle('hidden', externalCliHistoryNextOffset == null);
+    for (const item of sessions) {
+      const card = document.createElement('article');
+      card.className = 'settings-card';
+      const title = document.createElement('strong');
+      title.textContent = item.title || item.nativeSessionId;
+      card.appendChild(title);
+      const detail = document.createElement('p');
+      const updated = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : '';
+      detail.textContent = describeParts([
+        formatRuntimeDisplay(item.runtime),
+        item.sourceLabel || '',
+        updated,
+        item.messageCount + ' messages',
+        item.cwd || '',
+      ]);
+      card.appendChild(detail);
+      const footer = document.createElement('footer');
+      const inspect = document.createElement('button');
+      inspect.type = 'button';
+      inspect.textContent = 'Inspect';
+      inspect.addEventListener('click', () => {
+        openExternalCliHistorySession(item.id).catch(error => {
+          status.textContent = error instanceof Error ? error.message : String(error);
+        });
+      });
+      footer.appendChild(inspect);
+      card.appendChild(footer);
+      root.appendChild(card);
+    }
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+async function openExternalCliHistorySession(id) {
+  const response = await api('/api/external-cli/session?id=' + encodeURIComponent(id));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'Unable to open CLI session.');
+  const nativeSession = payload.session;
+  closeSettings();
+  el('surfaceTitle').textContent = nativeSession.summary.title || nativeSession.summary.nativeSessionId;
+  el('surfaceSubtitle').textContent = describeParts([
+    formatRuntimeDisplay(nativeSession.summary.runtime),
+    nativeSession.summary.sourceLabel || '',
+    nativeSession.summary.cwd || '',
+    nativeSession.summary.nativeSessionId,
+  ]);
+  const actions = el('surfaceActions');
+  actions.textContent = '';
+  const readOnly = document.createElement('span');
+  readOnly.className = 'muted';
+  readOnly.textContent = 'Read-only native history';
+  actions.appendChild(readOnly);
+  const compatibleConfigNames = new Set(Array.isArray(payload.compatibleConfigNames)
+    ? payload.compatibleConfigNames.filter(name => typeof name === 'string')
+    : []);
+  const compatibleConfigs = (state.snapshot?.bridgeState?.configs || []).filter(config =>
+    config.execution === 'cli'
+    && config.runtime === nativeSession.summary.runtime
+    && compatibleConfigNames.has(config.name));
+  if (compatibleConfigs.length > 0) {
+    const configSelect = document.createElement('select');
+    configSelect.setAttribute('aria-label', 'External CLI config');
+    for (const config of compatibleConfigs) {
+      const option = document.createElement('option');
+      option.value = config.name;
+      option.textContent = config.name;
+      configSelect.appendChild(option);
+    }
+    const resume = document.createElement('button');
+    resume.type = 'button';
+    resume.className = 'primary';
+    resume.textContent = 'Resume in this chat';
+    resume.addEventListener('click', async () => {
+      resume.disabled = true;
+      try {
+        const result = await api('/api/external-cli/session/resume', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id, configName: configSelect.value }),
+        });
+        const payload = await result.json();
+        if (!result.ok) throw new Error(payload.error || 'Unable to resume external session.');
+        state.snapshot = payload;
+        applyLoadedState();
+        renderBridgeConfigs();
+        el('surfaceDrawer').classList.add('hidden');
+        addMessage('notice', 'External ' + nativeSession.summary.runtime + ' session is active. The next message resumes native session ' + nativeSession.summary.nativeSessionId + '.');
+      } catch (error) {
+        readOnly.textContent = error instanceof Error ? error.message : String(error);
+      } finally {
+        resume.disabled = false;
+      }
+    });
+    actions.append(configSelect, resume);
+  } else {
+    const hint = document.createElement('span');
+    hint.className = 'muted';
+    hint.textContent = 'Create a matching External CLI config to resume this session.';
+    actions.appendChild(hint);
+  }
+  const list = el('surfaceList');
+  list.textContent = '';
+  if (nativeSession.truncated) {
+    const limited = document.createElement('p');
+    limited.className = 'muted';
+    limited.textContent = 'This transcript is very large. Showing a bounded read-only preview.';
+    list.appendChild(limited);
+  }
+  for (const message of nativeSession.messages || []) {
+    const card = document.createElement('article');
+    card.className = 'surface-item';
+    const role = document.createElement('strong');
+    role.textContent = message.role;
+    card.appendChild(role);
+    if (message.model) {
+      const model = document.createElement('small');
+      model.className = 'muted';
+      model.textContent = ' · ' + message.model;
+      card.appendChild(model);
+    }
+    if (message.text) {
+      const text = document.createElement('p');
+      text.style.whiteSpace = 'pre-wrap';
+      text.textContent = message.text;
+      card.appendChild(text);
+    }
+    if (Array.isArray(message.tools) && message.tools.length) {
+      const tools = document.createElement('pre');
+      tools.textContent = JSON.stringify(message.tools, null, 2);
+      card.appendChild(tools);
+    }
+    list.appendChild(card);
+  }
+  el('surfaceDrawer').classList.remove('hidden');
 }
 function renderBridgeConfigs() {
   const bs = (state.snapshot && state.snapshot.bridgeState) || {};
@@ -21709,11 +25779,11 @@ function renderBridgeConfigs() {
   const configs = bs.configs || [];
   renderRuntimeDiscovery();
   renderAgentProfiles();
+  populateExternalCliRunConfigs();
+  renderExternalCliRuns(bs.externalRuns || []);
   el('bridgeActive').innerHTML = active
-    ? (active.runtime === 'hadamard' && !active.apiKeyMasked && !active.baseURL
-      ? \`<strong>\${active.name}</strong> (hadamard) · \${active.model || '(default model)'}\`
-      : \`<strong>\${active.name}</strong> · \${active.runtime} · \${active.model || '(default model)'}\${active.apiKeyMasked ? ' · key ' + active.apiKeyMasked : ''}\${active.baseURL ? ' · ' + active.baseURL : ''}\`)
-    : 'No active provider config — using the default provider.';
+    ? \`<strong>\${active.name}</strong> · \${active.execution === 'cli' ? 'External CLI' : (active.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API')} · \${active.runtime} · \${active.model || '(runtime default model)'}\${active.execution === 'cli' ? ' · ' + (active.authSource === 'native' ? 'CLI login' : 'key override') : ''}\`
+    : 'No active runtime config — using the Hadamard SDK default.';
   const root = el('bridgeConfigsList');
   root.textContent = '';
   if (configs.length === 0) {
@@ -21735,7 +25805,11 @@ function renderBridgeConfigs() {
     const modelSummary = modelCount > 0
       ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
       : (cfg.model ? cfg.model : 'no models');
-    p.textContent = [cfg.runtime, modelSummary, cfg.apiKeyMasked ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
+    const executionLabel = cfg.execution === 'cli' ? 'External CLI' : (cfg.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API');
+    const authLabel = cfg.execution === 'cli'
+      ? (cfg.authSource === 'native' ? 'reuse CLI login' : 'API key override')
+      : '';
+    p.textContent = [executionLabel, cfg.runtime, authLabel, modelSummary, cfg.apiKeyMasked ? 'key ' + cfg.apiKeyMasked : '', cfg.baseURL].filter(Boolean).join(' · ');
     card.appendChild(p);
     const footer = document.createElement('footer');
     const editBtn = document.createElement('button');
@@ -21953,31 +26027,74 @@ const localRuntimeConfigCache = {};
 // runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
 const RUNTIME_PROVIDER = { claude:'anthropic', codewhale:'anthropic', reasonix:'openai', pi:'openai', codex:'openai', crush:'openai' };
 const WRITABLE_LOCAL_RUNTIMES = new Set(['claude', 'codewhale', 'crush', 'codex']);
+const CLI_SUPPORTED_RUNTIMES = new Set([
+  'claude', 'codewhale', 'pi', 'codex', 'reasonix', 'crush',
+]);
 function toggleCredentialFields() {
   const runtime = el('bridgeCfgRuntime').value;
-  // Hadamard may use SDK defaults (leave key/URL blank) or override with a
-  // named provider — keep credential fields visible either way.
+  const executionSelect = el('bridgeCfgExecution');
+  const authSelect = el('bridgeCfgAuthSource');
+  const cliOption = executionSelect.querySelector('option[value="cli"]');
+  const supportsCli = CLI_SUPPORTED_RUNTIMES.has(runtime);
+  if (cliOption) cliOption.disabled = !supportsCli;
+  if (!supportsCli && executionSelect.value === 'cli') executionSelect.value = 'api';
+  if (runtime === 'hadamard') executionSelect.value = 'api';
+  executionSelect.disabled = runtime === 'hadamard';
+  const execution = executionSelect.value;
+  if (execution !== 'cli') authSelect.value = 'apiKey';
+  authSelect.disabled = execution !== 'cli';
+
   const fields = el('bridgeCredentialFields');
-  if (fields) fields.style.display = '';
+  const usesNativeLogin = execution === 'cli' && authSelect.value === 'native';
+  if (fields) fields.style.display = usesNativeLogin ? 'none' : '';
+  const providerField = el('bridgeProviderField');
+  if (providerField) providerField.style.display = execution === 'cli' ? 'none' : '';
+  const cliOptions = el('bridgeCliOptions');
+  if (cliOptions) cliOptions.classList.toggle('hidden', execution !== 'cli');
+  const projectTrust = el('bridgeProjectTrustField');
+  if (projectTrust) {
+    projectTrust.style.display = execution === 'cli' && (runtime === 'pi' || runtime === 'crush')
+      ? ''
+      : 'none';
+  }
+
   // Auto-select wire protocol from runtime (user can override).
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
   el('bridgeCfgProvider').value = pv;
-  populateReuseDropdown(runtime);
+  const hint = el('bridgeExecutionHint');
+  if (hint) {
+    hint.textContent = execution === 'cli'
+      ? (usesNativeLogin
+        ? 'Actoviq launches the installed CLI and lets it read its own login and configuration. No credential is copied into the UI.'
+        : 'Actoviq launches the installed CLI with this API key in that child process only.')
+      : (runtime === 'hadamard'
+        ? 'Runs in the standalone Hadamard SDK. Leave credentials blank to use the SDK defaults.'
+        : 'Calls the selected provider through Actoviq API adapters; no external CLI is started.');
+  }
+  if (!usesNativeLogin) {
+    populateReuseDropdown(runtime);
+  } else {
+    el('bridgeReuseRow').classList.add('hidden');
+  }
   updateBridgeLocalConfigButton();
 }
 function updateBridgeLocalConfigButton() {
   const btn = el('bridgeCfgUpdateLocal');
   if (!btn) return;
   const runtime = el('bridgeCfgRuntime').value;
-  btn.classList.toggle('hidden', !bridgeEditorUsesLocalConfig || !WRITABLE_LOCAL_RUNTIMES.has(runtime));
+  const directApi = el('bridgeCfgExecution').value === 'api';
+  btn.classList.toggle('hidden', !directApi || !bridgeEditorUsesLocalConfig || !WRITABLE_LOCAL_RUNTIMES.has(runtime));
 }
 function applyLocalRuntimeConfig(local) {
   if (!local) return;
   if (local.provider) setField('bridgeCfgProvider', local.provider);
   setField('bridgeCfgBaseUrl', local.baseURL || '');
-  setField('bridgeCfgApiKey', local.apiKey || '');
-  el('bridgeCfgApiKey').type = local.apiKey ? 'text' : 'password';
-  el('bridgeCfgApiKeyToggle').innerHTML = local.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
+  setField('bridgeCfgApiKey', '');
+  el('bridgeCfgApiKey').type = 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
+  el('bridgeCfgApiKey').placeholder = local.hasApiKey
+    ? 'Local key detected (not exposed) — enter a replacement only'
+    : 'sk-…';
   if (local.model) {
     draftBridgeModels = [{ name: local.model, context1M: false, modality: 'text' }];
     el('bridgeNewModelName').value = local.model;
@@ -22016,7 +26133,7 @@ function populateReuseDropdown(runtime) {
     .then(r => r.ok ? r.json() : null)
     .then(local => {
       localRuntimeConfigCache[runtime] = local;
-      if (!local || (!local.model && !local.baseURL && !local.apiKey)) return;
+      if (!local || (!local.model && !local.baseURL && !local.hasApiKey)) return;
       const opt = document.createElement('option');
       opt.value = '__local__';
       opt.textContent = 'Local CLI config' + (local.model ? ' · ' + local.model : '') + (local.baseURL ? ' · ' + local.baseURL : '');
@@ -22043,7 +26160,7 @@ async function applyReuseConfig(configName) {
   if (configName === '__local__') {
     const runtime = el('bridgeCfgRuntime').value;
     let local = localRuntimeConfigCache[runtime];
-    if (!local || (!local.model && !local.baseURL && !local.apiKey)) {
+    if (!local || (!local.model && !local.baseURL && !local.hasApiKey)) {
       try {
         const res = await api('/api/bridge/detect-local?runtime=' + encodeURIComponent(runtime));
         local = res.ok ? await res.json() : null;
@@ -22058,10 +26175,15 @@ async function applyReuseConfig(configName) {
   const cfg = (state.snapshot?.bridgeState?.configs || []).find(c => c.name === configName);
   if (!cfg) return;
   setField('bridgeCfgProvider', cfg.provider || el('bridgeCfgProvider').value);
+  setField('bridgeCfgCredentialProvider', cfg.credentialProvider || '');
+  el('bridgeCfgTrustProject').checked = cfg.trustProjectResources === true;
   setField('bridgeCfgBaseUrl', cfg.baseURL || '');
-  setField('bridgeCfgApiKey', cfg.apiKey || '');
-  el('bridgeCfgApiKey').type = cfg.apiKey ? 'text' : 'password';
-  el('bridgeCfgApiKeyToggle').innerHTML = cfg.apiKey ? guiIcon('eyeOff') : guiIcon('eye');
+  setField('bridgeCfgApiKey', '');
+  el('bridgeCfgApiKey').type = 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
+  el('bridgeCfgApiKey').placeholder = cfg.hasApiKey
+    ? 'Saved key retained — enter a replacement only'
+    : 'sk-…';
   draftBridgeModels = Array.isArray(cfg.models)
     ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
     : [];
@@ -22074,17 +26196,20 @@ function openBridgeEditor(cfg) {
   el('bridgeEditorTitle').textContent = cfg ? 'Edit config' : 'New config';
   setField('bridgeCfgName', cfg ? cfg.name : '');
   setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
+  setField('bridgeCfgExecution', cfg ? (cfg.execution || 'api') : 'cli');
+  setField('bridgeCfgAuthSource', cfg ? (cfg.authSource || (cfg.execution === 'cli' ? 'native' : 'apiKey')) : 'native');
   setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
-  setField('bridgeCfgApiKey', cfg ? (cfg.apiKey || '') : '');
-  // Editing an existing config: show the saved key in plain text (with the eye
-  // toggle starting visible) so the user can read and copy it directly. New
-  // configs start masked with the eye-closed default.
-  el('bridgeCfgApiKey').type = cfg && cfg.apiKey ? 'text' : 'password';
-  el('bridgeCfgApiKeyToggle').innerHTML = (cfg && cfg.apiKey) ? guiIcon('eyeOff') : guiIcon('eye');
-  el('bridgeCfgApiKey').placeholder = cfg && cfg.apiKey ? 'API key (visible — edit to replace)' : 'sk-…';
+  setField('bridgeCfgCredentialProvider', cfg ? (cfg.credentialProvider || '') : '');
+  el('bridgeCfgTrustProject').checked = Boolean(cfg && cfg.trustProjectResources);
+  setField('bridgeCfgApiKey', '');
+  el('bridgeCfgApiKey').type = 'password';
+  el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
+  el('bridgeCfgApiKey').placeholder = cfg && cfg.hasApiKey
+    ? 'Saved key retained — enter a replacement only'
+    : 'sk-…';
   setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
   el('bridgeCfgClearKey').checked = false;
-  el('bridgeClearKeyRow').style.display = cfg ? '' : 'none';
+  el('bridgeClearKeyRow').style.display = cfg && cfg.hasApiKey ? '' : 'none';
   toggleCredentialFields();
   draftBridgeModels = cfg && Array.isArray(cfg.models)
     ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
@@ -22093,7 +26218,9 @@ function openBridgeEditor(cfg) {
   el('bridgeNewModelName').value = '';
   el('bridgeNewModel1M').checked = false;
   el('bridgeNewModelModality').value = 'text';
-  el('bridgeCfgStatus').textContent = cfg ? 'Editing "' + cfg.name + '" — leave API key blank to keep the saved key.' : '';
+  el('bridgeCfgStatus').textContent = cfg && cfg.hasApiKey
+    ? 'Editing "' + cfg.name + '" — the saved API key is hidden; leave blank to keep it.'
+    : '';
   updateBridgeLocalConfigButton();
   el('bridgeEditorModal').classList.remove('hidden');
   el('bridgeCfgName').focus();
@@ -22174,7 +26301,7 @@ async function updateLocalBridgeConfig() {
       runtime,
       model: defaultModel || undefined,
       baseURL: el('bridgeCfgBaseUrl').value.trim() || undefined,
-      apiKey: el('bridgeCfgApiKey').value.trim() || undefined,
+      hasApiKey: Boolean(el('bridgeCfgApiKey').value.trim()),
       provider: el('bridgeCfgProvider').value,
       source: data.source,
     };
@@ -22197,7 +26324,11 @@ async function saveBridgeConfig() {
   const body = {
     name,
     runtime: el('bridgeCfgRuntime').value,
+    execution: el('bridgeCfgExecution').value,
+    authSource: el('bridgeCfgAuthSource').value,
     provider: el('bridgeCfgProvider').value || 'anthropic',
+    credentialProvider: el('bridgeCfgCredentialProvider').value.trim() || undefined,
+    trustProjectResources: el('bridgeCfgTrustProject').checked,
     apiKey: el('bridgeCfgApiKey').value,
     clearApiKey: clearKey,
     baseURL: el('bridgeCfgBaseUrl').value.trim(),
@@ -22221,6 +26352,7 @@ async function activateBridgeConfig(name) {
   const res = await api('/api/bridge/activate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
   if (!res.ok) { addMessage('error', 'Activation failed: ' + (await res.text())); return; }
   state.snapshot = await res.json();
+  applyLoadedState();
   renderBridgeConfigs();
   addMessage('notice', 'bridge active: ' + name);
 }
@@ -23526,9 +27658,7 @@ document.querySelectorAll('.region-nav').forEach((btn) => {
 el('automationRefreshBtn').addEventListener('click', () => { renderAutomationRegion().catch(console.error); });
 el('pluginsRefreshBtn').addEventListener('click', () => { renderPluginsRegion(state.pluginsView || 'plugins').catch(console.error); });
 el('pluginsViewPluginsBtn').addEventListener('click', () => { renderPluginsRegion('plugins').catch(console.error); });
-el('pluginsViewToolsBtn').addEventListener('click', () => { renderPluginsRegion('tools').catch(console.error); });
 el('pluginsViewSkillsBtn').addEventListener('click', () => { renderPluginsRegion('skills').catch(console.error); });
-el('pluginsViewMcpBtn').addEventListener('click', () => { renderPluginsRegion('mcp').catch(console.error); });
 el('teamNewSquadBtn').addEventListener('click', () => { openNewSquadDialog(); });
 el('teamRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
 el('teamEditToggleBtn').addEventListener('click', () => { openTeamSquadEditor(); });
@@ -23547,8 +27677,6 @@ el('teamSquadModalClose').addEventListener('click', closeTeamSquadEditor);
 el('teamSquadModal').addEventListener('click', (event) => {
   if (event.target === el('teamSquadModal')) closeTeamSquadEditor();
 });
-el('conversationRunSquadBtn').addEventListener('click', () => { runSelectedSquad().catch(console.error); });
-el('gitBtn').addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('composerMetaBranch')?.addEventListener('click', () => { openGitSurface().catch(console.error); });
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
@@ -23576,6 +27704,17 @@ el('settingsOpenAgents').addEventListener('click', () => { closeSettings(); open
 el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); openSurface('plugins').catch(console.error); });
 el('settingsDataRootChoose').addEventListener('click', () => { changeDataRootFromSettings().catch(console.error); });
 el('settingsDataRootOpen').addEventListener('click', () => { api('/api/settings/data-root/open', { method: 'POST' }).catch(console.error); });
+el('externalCliAuthRefresh').addEventListener('click', () => { refreshExternalCliAuth().catch(console.error); });
+el('externalCliHistoryRefresh').addEventListener('click', () => { loadExternalCliHistory().catch(console.error); });
+el('externalCliHistoryMore').addEventListener('click', () => { loadExternalCliHistory(true).catch(error => { el('externalCliHistoryStatus').textContent = String(error); }); });
+el('externalCliHistoryRuntime').addEventListener('change', () => { loadExternalCliHistory().catch(error => { el('externalCliHistoryStatus').textContent = String(error); }); });
+el('externalCliHistoryQuery').addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  loadExternalCliHistory().catch(error => { el('externalCliHistoryStatus').textContent = String(error); });
+});
+el('externalCliRunsRefresh').addEventListener('click', () => { loadExternalCliRuns().catch(error => { el('externalCliRunsStatus').textContent = String(error); }); });
+el('externalCliRunStart').addEventListener('click', () => { startExternalCliRunFromSettings().catch(error => { el('externalCliRunsStatus').textContent = String(error); }); });
 el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
 el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
@@ -23647,6 +27786,8 @@ el('routerEditorModal').addEventListener('click', (event) => {
   if (event.target === el('routerEditorModal')) closeRouterEditor();
 });
 el('bridgeCfgRuntime').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeCfgExecution').addEventListener('change', () => { toggleCredentialFields(); });
+el('bridgeCfgAuthSource').addEventListener('change', () => { toggleCredentialFields(); });
 el('bridgeCfgReuse').addEventListener('change', () => { applyReuseConfig(el('bridgeCfgReuse').value); });
 el('bridgeCfgUpdateLocal').addEventListener('click', () => { updateLocalBridgeConfig().catch(console.error); });
 el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
@@ -23693,6 +27834,11 @@ document.addEventListener('contextmenu', (event) => {
   if (!onTarget) hideContextMenu();
 });
 document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key === '/') {
+    event.preventDefault();
+    cyclePickerModel();
+    return;
+  }
   if (event.key === 'Escape') {
     hideContextMenu();
     closeGraphContextMenu();
@@ -23779,10 +27925,12 @@ el('permissionPickerMenu').addEventListener('click', (event) => event.stopPropag
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('modelPickerSearch').addEventListener('input', (event) => {
   state.pickerQuery = event.target.value || '';
+  state.pickerActiveIndex = 0;
   const keepEditing = state.pickerEditingAgent;
   renderModelPicker();
   if (keepEditing) openPickerEffortEditor(keepEditing);
 });
+el('modelPickerSearch').addEventListener('keydown', (event) => { handlePickerNavigation(event); });
 el('modelPickerSearch').addEventListener('click', (event) => event.stopPropagation());
 el('modelPickerFlyout').addEventListener('click', (event) => event.stopPropagation());
 el('closeSurfaceBtn').addEventListener('click', closeSurface);
@@ -23818,11 +27966,24 @@ el('auxCloseBtn').addEventListener('click', () => showAuxLauncher());
 el('auxToggleBtn').addEventListener('click', () => toggleAuxPanel());
 el('auxPanelToggleBtn').addEventListener('click', () => toggleAuxPanel());
 el('auxFocusBtn').addEventListener('click', () => toggleAuxFocus());
-el('terminalToggleBtn').addEventListener('click', () => toggleTerminalDock());
 el('terminalDockClose').addEventListener('click', () => closeTerminalDock());
 syncAuxChrome();
 syncTerminalToggle();
-loadState().then(hydrateTranscript).catch(error => addMessage('error', error.message));
+async function initializeGui() {
+  await loadState();
+  await hydrateTranscript();
+  const foregroundRunId = state.snapshot?.foregroundRunId;
+  const foreground = (state.snapshot?.runs || []).find(run => run.runId === foregroundRunId);
+  const sessionId = state.snapshot?.session?.id || '';
+  if (foregroundRunId && foreground && foreground.sessionId === sessionId) {
+    state.activeRunId = foregroundRunId;
+    state.activeClientRequestId = foreground.clientRequestId || null;
+    state.running = true;
+    startRailPolling();
+    await recoverDisconnectedRun(sessionId, true, foreground.clientRequestId || null);
+  }
+}
+initializeGui().catch(error => addMessage('error', error.message));
 `;
 }
 
@@ -23861,7 +28022,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       'Usage: actoviq-gui [work-dir] [options]',
       '',
       'Options:',
-      '  --host <host>              Host to bind (default: 127.0.0.1)',
+      '  --host <host>              Loopback host to bind (default: 127.0.0.1)',
       '  --port <port>              Port to bind (default: 4174)',
       '  --config <path>            Load a specific Actoviq settings JSON file',
       '  --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)',

@@ -11,6 +11,7 @@ import {
 } from '../runtime/agentExecution.js';
 
 export type AgentExecutionViewNow = string | number | Date;
+export type AgentExecutionLifecycle = 'running' | 'waiting' | 'completed';
 
 export interface AgentExecutionTimingView {
   createdAt: string;
@@ -40,7 +41,9 @@ export interface AgentExecutionNodeView {
   cwd: string;
   status: AgentExecutionStatus;
   threadStatus: AgentThreadStatus;
+  lifecycle: AgentExecutionLifecycle;
   isActive: boolean;
+  isWaiting: boolean;
   currentActivity: AgentExecutionActivity | null;
   plan: AgentExecutionPlanStep[];
   currentStep: AgentExecutionPlanStep | null;
@@ -73,10 +76,13 @@ export interface AgentExecutionRootView {
   rootSessionId: string | null;
   displayName: string;
   status: AgentExecutionStatus;
+  lifecycle: AgentExecutionLifecycle;
   isActive: boolean;
+  isWaiting: boolean;
   nodeCount: number;
   subagentCount: number;
   activeNodeCount: number;
+  waitingNodeCount: number;
   completedNodeCount: number;
   erroredNodeCount: number;
   interruptedNodeCount: number;
@@ -93,11 +99,15 @@ export interface AgentExecutionRootView {
 }
 
 export interface AgentExecutionProjectView {
+  /** Backward-compatible alias for `running`. */
   active: AgentExecutionRootView[];
+  running: AgentExecutionRootView[];
+  waiting: AgentExecutionRootView[];
   completed: AgentExecutionRootView[];
   totalExecutionCount: number;
   totalAgentCount: number;
   activeExecutionCount: number;
+  waitingExecutionCount: number;
   completedExecutionCount: number;
   erroredExecutionCount: number;
   updatedAt: string | null;
@@ -114,9 +124,19 @@ export interface FormatAgentExecutionTreeOptions {
 }
 
 const ACTIVE_STATUSES = new Set<AgentExecutionStatus>(['pending_init', 'running']);
+const RESUMABLE_STATUSES = new Set<AgentExecutionStatus>(['interrupted']);
 
 function isActiveStatus(status: AgentExecutionStatus): boolean {
   return ACTIVE_STATUSES.has(status);
+}
+
+function executionLifecycle(
+  status: AgentExecutionStatus,
+  threadStatus: AgentThreadStatus,
+): AgentExecutionLifecycle {
+  if (isActiveStatus(status) || threadStatus === 'active') return 'running';
+  if (threadStatus === 'idle' && RESUMABLE_STATUSES.has(status)) return 'waiting';
+  return 'completed';
 }
 
 function timestampMs(value: string | null | undefined): number | null {
@@ -163,7 +183,7 @@ function nodeStartedAt(node: AgentExecutionNode): string {
 }
 
 function nodeCompletedAt(node: AgentExecutionNode): string | null {
-  if (isActiveStatus(node.agentStatus)) {
+  if (executionLifecycle(node.agentStatus, node.threadStatus) === 'running') {
     return null;
   }
   return node.timestamps.turnCompletedAt ??
@@ -221,6 +241,7 @@ function createNodeView(
   const node = treeNode.node;
   const plan = node.currentPlan.map(clonePlanStep);
   const { currentStep, nextSteps } = selectPlanSteps(plan);
+  const lifecycle = executionLifecycle(node.agentStatus, node.threadStatus);
   return {
     id: node.id,
     sessionId: node.sessionId,
@@ -240,7 +261,9 @@ function createNodeView(
     cwd: node.cwd,
     status: node.agentStatus,
     threadStatus: node.threadStatus,
-    isActive: isActiveStatus(node.agentStatus),
+    lifecycle,
+    isActive: lifecycle === 'running',
+    isWaiting: lifecycle === 'waiting',
     currentActivity: cloneActivity(node.currentActivity),
     plan,
     currentStep,
@@ -447,17 +470,29 @@ export function createAgentExecutionRootView(
   const rootNode = tree.root?.node ?? null;
   const focusedNode = selectFocusedNode(snapshot.nodes, rootNode);
   const focusedPlan = selectRootPlan(focusedNode, rootNode);
-  const isActive = snapshot.nodes.some((node) => isActiveStatus(node.agentStatus));
+  const lifecycles = snapshot.nodes.map((node) =>
+    executionLifecycle(node.agentStatus, node.threadStatus)
+  );
+  const isActive = lifecycles.includes('running');
+  const isWaiting = !isActive && lifecycles.includes('waiting');
+  const lifecycle: AgentExecutionLifecycle = isActive
+    ? 'running'
+    : isWaiting
+      ? 'waiting'
+      : 'completed';
   const status = aggregateStatus(snapshot.nodes);
   return {
     rootExecutionId: snapshot.rootExecutionId,
     rootSessionId: root?.sessionId ?? null,
     displayName: root?.displayName ?? snapshot.rootExecutionId,
     status,
+    lifecycle,
     isActive,
+    isWaiting,
     nodeCount: snapshot.nodes.length,
     subagentCount: Math.max(0, snapshot.nodes.length - 1),
-    activeNodeCount: snapshot.nodes.filter((node) => isActiveStatus(node.agentStatus)).length,
+    activeNodeCount: lifecycles.filter((value) => value === 'running').length,
+    waitingNodeCount: lifecycles.filter((value) => value === 'waiting').length,
     completedNodeCount: snapshot.nodes.filter((node) => node.agentStatus === 'completed').length,
     erroredNodeCount: snapshot.nodes.filter((node) =>
       node.agentStatus === 'errored' ||
@@ -496,14 +531,24 @@ export function createAgentExecutionProjectView(
   const executions = snapshots.map((snapshot) =>
     createAgentExecutionRootView(snapshot, nowMs)
   );
-  const active = executions.filter((execution) => execution.isActive).sort(compareRootViews);
-  const completed = executions.filter((execution) => !execution.isActive).sort(compareRootViews);
+  const running = executions
+    .filter((execution) => execution.lifecycle === 'running')
+    .sort(compareRootViews);
+  const waiting = executions
+    .filter((execution) => execution.lifecycle === 'waiting')
+    .sort(compareRootViews);
+  const completed = executions
+    .filter((execution) => execution.lifecycle === 'completed')
+    .sort(compareRootViews);
   return {
-    active,
+    active: running,
+    running,
+    waiting,
     completed,
     totalExecutionCount: executions.length,
     totalAgentCount: executions.reduce((total, execution) => total + execution.nodeCount, 0),
-    activeExecutionCount: active.length,
+    activeExecutionCount: running.length,
+    waitingExecutionCount: waiting.length,
     completedExecutionCount: completed.length,
     erroredExecutionCount: executions.filter(
       (execution) => execution.status === 'errored',

@@ -1,5 +1,7 @@
 ﻿import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -11,11 +13,26 @@ import {
   isExecutable,
   IS_WINDOWS,
   pathExists,
-  quoteForWindowsShell,
+  resolveExecutableInvocation,
 } from './bridgeExecResolver.js';
-import type { BridgeEventNormalizer, RuntimeProvider } from './bridgeProviders.js';
+import type {
+  BridgeEventNormalizer,
+  BridgeProcessControl,
+  RuntimeProvider,
+} from './bridgeProviders.js';
 import { resolveProvider } from './bridgeProviders.js';
+import { terminateManagedProcessTree as terminateActoviqProcessTree } from './bridgeProcessTree.js';
+import { runCrushManaged } from './crushManagedClient.js';
+import {
+  namedExternalCliManagedProfileId,
+  resolveCodewhaleNativeSessionId,
+} from './externalCliSessions.js';
+import {
+  createReasonixManagedClient,
+  type ReasonixManagedClient,
+} from './reasonixManagedClient.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
+import { resolveActoviqHome } from '../config/actoviqHome.js';
 import { ActoviqBridgeProcessError, RunAbortedError } from '../errors.js';
 import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
 import { AsyncQueue } from '../runtime/asyncQueue.js';
@@ -48,6 +65,37 @@ import {
 } from './actoviqTranscripts.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MAX_CAPTURED_STDOUT_BYTES = 4 * 1024 * 1024;
+const MAX_CAPTURED_STDERR_BYTES = 1024 * 1024;
+const MAX_RETAINED_RUN_EVENTS = 1_000;
+const MAX_RETAINED_ASSISTANT_MESSAGES = 128;
+const OUTPUT_TRUNCATION_MARKER = '[Actoviq output truncated]\n';
+
+class BoundedRetention<T> {
+  private readonly values: T[] = [];
+  private nextWriteIndex = 0;
+
+  constructor(private readonly capacity: number) {}
+
+  push(value: T): void {
+    if (this.values.length < this.capacity) {
+      this.values.push(value);
+      return;
+    }
+    this.values[this.nextWriteIndex] = value;
+    this.nextWriteIndex = (this.nextWriteIndex + 1) % this.capacity;
+  }
+
+  toArray(): T[] {
+    if (this.values.length < this.capacity || this.nextWriteIndex === 0) {
+      return [...this.values];
+    }
+    return [
+      ...this.values.slice(this.nextWriteIndex),
+      ...this.values.slice(0, this.nextWriteIndex),
+    ];
+  }
+}
 
 function isAbortErrorLike(error: unknown): boolean {
   return error instanceof RunAbortedError || (error instanceof Error && error.name === 'AbortError');
@@ -160,6 +208,14 @@ function appendOptionalArg(args: string[], flag: string, value: string | number 
 function getStringValue(event: ActoviqBridgeJsonEvent | undefined, key: string): string | undefined {
   const value = event?.[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function getNonEmptyStringValue(
+  event: ActoviqBridgeJsonEvent | undefined,
+  key: string,
+): string | undefined {
+  const value = getStringValue(event, key)?.trim();
+  return value || undefined;
 }
 
 function getNumberValue(event: ActoviqBridgeJsonEvent | undefined, key: string): number | undefined {
@@ -450,7 +506,6 @@ function buildRuntimeCatalog(params: {
 function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
   const args = [
     '-p',
-    prompt,
     '--output-format',
     'stream-json',
     '--verbose',
@@ -480,12 +535,12 @@ function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[
 
   const shouldSkipPermissions =
     options.dangerouslySkipPermissions ??
-    (options.permissionMode == null || options.permissionMode === 'bypassPermissions');
+    options.permissionMode === 'bypassPermissions';
   if (shouldSkipPermissions) {
     args.push('--dangerously-skip-permissions');
   }
 
-  appendOptionalArg(args, '--permission-mode', options.permissionMode);
+  appendOptionalArg(args, '--permission-mode', options.permissionMode ?? 'default');
   appendOptionalArg(args, '--model', options.model);
   appendOptionalArg(args, '--fallback-model', options.fallbackModel);
   appendOptionalArg(args, '--effort', options.effort);
@@ -530,34 +585,593 @@ function buildCliArgs(prompt: string, options: ActoviqBridgeRunOptions): string[
   }
 
   if (typeof options.resume === 'string') {
-    args.push('--resume', options.resume);
+    args.push(`--resume=${options.resume}`);
   } else if (options.resume === true) {
     args.push('--resume');
   } else if (options.sessionId) {
-    args.push('--session-id', options.sessionId);
+    args.push(`--session-id=${options.sessionId}`);
   }
 
   if (options.cliArgs?.length) {
     args.push(...options.cliArgs);
   }
 
+  // Claude's `-p` is a boolean flag; the prompt is positional. Keep arbitrary
+  // prompt text behind the option terminator so it cannot be reinterpreted as
+  // a permission or configuration flag.
+  args.push('--', prompt);
+
   return args;
 }
 
-function buildChildEnvironment(
+interface PreparedChildEnvironment {
+  env: Record<string, string>;
+  secrets: string[];
+  cleanup?: () => Promise<void>;
+}
+
+interface ManagedReasonixEntry {
+  client: ReasonixManagedClient;
+  transcriptPath: string;
+  transcriptCreatedAt: string;
+  transcriptTitle?: string;
+  cleanup?: () => Promise<void>;
+  cleanupPromise?: Promise<void>;
+}
+
+async function writeReasonixTranscriptMetadata(
+  entry: ManagedReasonixEntry,
+  options: {
+    sessionId: string;
+    cwd: string;
+    model?: string;
+    prompt: string;
+  },
+): Promise<void> {
+  entry.transcriptTitle ??= options.prompt.replace(/\s+/gu, ' ').trim().slice(0, 160);
+  const extension = path.extname(entry.transcriptPath);
+  const stem = extension
+    ? entry.transcriptPath.slice(0, -extension.length)
+    : entry.transcriptPath;
+  await writeFile(`${stem}.acp.json`, `${JSON.stringify({
+    sessionId: options.sessionId,
+    title: entry.transcriptTitle || options.sessionId,
+    cwd: options.cwd,
+    model: options.model,
+    createdAt: entry.transcriptCreatedAt,
+    updatedAt: new Date().toISOString(),
+  }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+function reasonixConfigFingerprint(options: ActoviqBridgeRunOptions): string {
+  const env = Object.entries(options.env ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  return createHash('sha256').update(JSON.stringify({
+    authSource: options.authSource ?? 'native',
+    apiKey: options.apiKey ?? '',
+    baseURL: options.baseURL ?? '',
+    credentialProvider: options.credentialProvider ?? '',
+    homeDir: options.homeDir ?? '',
+    model: options.model ?? '',
+    profileName: options.profileName ?? '',
+    env,
+  })).digest('hex');
+}
+
+function reasonixManagedAliasKey(
+  configFingerprint: string,
+  cwd: string,
+  sessionId: string,
+): string {
+  return `${configFingerprint}\0${cwd}\0${sessionId}`;
+}
+
+function validateReasonixManagedSessionId(value: string): string {
+  const normalized = value.trim();
+  if (
+    !normalized
+    || normalized.length > 512
+    || normalized.startsWith('-')
+    || /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw new ActoviqBridgeProcessError(
+      'Reasonix session id must be a non-option value without control characters.',
+    );
+  }
+  return normalized;
+}
+
+const COMMON_UNSUPPORTED_MANAGED_OPTIONS = [
+  'fallbackModel',
+  'systemPrompt',
+  'appendSystemPrompt',
+  'maxTurns',
+  'agent',
+  'agents',
+  'tools',
+  'allowedTools',
+  'disallowedTools',
+  'addDirs',
+  'mcpConfigs',
+  'strictMcpConfig',
+  'settings',
+  'settingSources',
+  'jsonSchema',
+  'files',
+  'bare',
+  'disableSlashCommands',
+  'includeHookEvents',
+  'pluginDirs',
+  'cliArgs',
+] as const satisfies readonly (keyof ActoviqBridgeRunOptions)[];
+
+function managedOptionWasRequested(
+  options: ActoviqBridgeRunOptions,
+  key: keyof ActoviqBridgeRunOptions,
+): boolean {
+  const value = options[key];
+  if (value == null) return false;
+  // `tools: []` and `tools: 'none'` both explicitly disable the native tool
+  // set, so they remain meaningful even though the collection is empty.
+  if (key === 'tools') return true;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'boolean') return value;
+  return true;
+}
+
+function assertManagedOptionsSupported(
+  runtime: 'Reasonix' | 'Crush',
+  options: ActoviqBridgeRunOptions,
+  extraUnsupported: readonly (keyof ActoviqBridgeRunOptions)[] = [],
+): void {
+  const unsupported = [...COMMON_UNSUPPORTED_MANAGED_OPTIONS, ...extraUnsupported]
+    .filter(key => managedOptionWasRequested(options, key));
+  if (unsupported.length === 0) return;
+  throw new ActoviqBridgeProcessError(
+    `${runtime} managed mode cannot enforce bridge option${unsupported.length === 1 ? '' : 's'}: ${unsupported.join(', ')}.`,
+  );
+}
+
+const BRIDGE_AUTH_ENV_KEYS = new Set([
+  'ACTOVIQ_API_KEY',
+  'ACTOVIQ_AUTH_TOKEN',
+  'ACTOVIQ_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'CODEX_API_KEY',
+  'CODEX_ACCESS_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'DEEPSEEK_API_KEY',
+  'DEEPSEEK_BASE_URL',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'XAI_API_KEY',
+  'GROQ_API_KEY',
+  'MISTRAL_API_KEY',
+  'AZURE_OPENAI_API_KEY',
+]);
+const ACTOVIQ_AUTH_ENV_KEYS = new Set([
+  'ACTOVIQ_API_KEY',
+  'ACTOVIQ_AUTH_TOKEN',
+  'ACTOVIQ_BASE_URL',
+]);
+const API_KEY_CHILD_ENV_KEYS = new Set([
+  'ALL_PROXY',
+  'APPDATA',
+  'CI',
+  'COLORTERM',
+  'COMSPEC',
+  'FORCE_COLOR',
+  'HOME',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'LANG',
+  'LOCALAPPDATA',
+  'NODE_ENV',
+  'NO_COLOR',
+  'NO_PROXY',
+  'NUMBER_OF_PROCESSORS',
+  'OS',
+  'PATH',
+  'PATHEXT',
+  'PROCESSOR_ARCHITECTURE',
+  'PROGRAMDATA',
+  'SHELL',
+  'SYSTEMDRIVE',
+  'SYSTEMROOT',
+  'TEMP',
+  'TERM',
+  'TMP',
+  'TMPDIR',
+  'TZ',
+  'USER',
+  'USERNAME',
+  'USERPROFILE',
+  'WINDIR',
+  // Paths needed by common compiler/toolchain subprocesses. Authentication
+  // helpers (AWS/GH/SSH/etc.) are deliberately excluded.
+  'BUN_INSTALL',
+  'CARGO_HOME',
+  'CONDA_PREFIX',
+  'DOTNET_ROOT',
+  'GOPATH',
+  'GOROOT',
+  'JAVA_HOME',
+  'NVM_HOME',
+  'NVM_SYMLINK',
+  'PNPM_HOME',
+  'PYENV_ROOT',
+  'RUSTUP_HOME',
+  'VIRTUAL_ENV',
+]);
+const SENSITIVE_ENV_KEY = /(?:^|_)(?:API_?KEY|AUTH|COOKIE|CREDENTIALS?|KEY|PASS(?:WORD|WD)?|PRIVATE_KEY|SECRET|TOKEN)(?:$|_)/iu;
+
+async function findCrushProjectConfig(workDir: string): Promise<string | undefined> {
+  let directory = path.resolve(workDir);
+  while (true) {
+    for (const name of ['crush.json', '.crush.json']) {
+      const candidate = path.join(directory, name);
+      if (await pathExists(candidate)) return candidate;
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+const PROVIDER_DEFAULT_API_KEY_ENV: Record<string, readonly string[]> = {
+  claude: ['ANTHROPIC_API_KEY'],
+  codewhale: ['DEEPSEEK_API_KEY'],
+  pi: ['OPENAI_API_KEY'],
+  codex: ['OPENAI_API_KEY'],
+  crush: ['CRUSH_OPENAI_API_KEY'],
+  reasonix: ['DEEPSEEK_API_KEY'],
+};
+
+const CREDENTIAL_PROVIDER_ENV: Record<string, readonly string[]> = {
+  anthropic: ['ANTHROPIC_API_KEY'],
+  claude: ['ANTHROPIC_API_KEY'],
+  openai: ['OPENAI_API_KEY'],
+  'openai-codex': ['OPENAI_API_KEY'],
+  codex: ['OPENAI_API_KEY'],
+  deepseek: ['DEEPSEEK_API_KEY'],
+  google: ['GEMINI_API_KEY'],
+  gemini: ['GEMINI_API_KEY'],
+  openrouter: ['OPENROUTER_API_KEY'],
+  xai: ['XAI_API_KEY'],
+  groq: ['GROQ_API_KEY'],
+  mistral: ['MISTRAL_API_KEY'],
+  azure: ['AZURE_OPENAI_API_KEY'],
+};
+
+const PROVIDER_NATIVE_AUTH_ENV: Record<string, readonly string[]> = {
+  claude: [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+  ],
+  codewhale: ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+  pi: ['OPENAI_API_KEY'],
+  codex: ['CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_API_KEY'],
+  crush: ['CRUSH_OPENAI_API_KEY'],
+  reasonix: ['DEEPSEEK_API_KEY'],
+};
+
+const PROVIDER_BASE_URL_ENV: Record<string, string> = {
+  claude: 'ANTHROPIC_BASE_URL',
+  codewhale: 'DEEPSEEK_BASE_URL',
+  pi: 'OPENAI_BASE_URL',
+  codex: 'OPENAI_BASE_URL',
+  crush: 'CRUSH_OPENAI_BASE_URL',
+  reasonix: 'DEEPSEEK_BASE_URL',
+};
+
+function withoutActoviqAuth(values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => !ACTOVIQ_AUTH_ENV_KEYS.has(key.toUpperCase())),
+  );
+}
+
+function withoutProviderAuth(
   provider: RuntimeProvider,
-  envOverrides?: Record<string, string>,
+  values: Record<string, string>,
 ): Record<string, string> {
+  const denied = new Set([
+    ...BRIDGE_AUTH_ENV_KEYS,
+    ...(PROVIDER_NATIVE_AUTH_ENV[provider.id] ?? []),
+  ].map(key => key.toUpperCase()));
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => {
+      const normalized = key.toUpperCase();
+      return !denied.has(normalized)
+        && !SENSITIVE_ENV_KEY.test(normalized)
+        && normalized !== 'SSH_AUTH_SOCK'
+        && !/^(?:AWS|AZURE|GCP|GOOGLE|GH|GITHUB|GITLAB|NPM)_/u.test(normalized)
+        && !(provider.id === 'crush' && normalized.startsWith('CRUSH_'));
+    }),
+  );
+}
+
+function safeProxyEnvironmentValue(key: string, value: string): boolean {
+  if (!/(?:^|_)PROXY$/iu.test(key) || key.toUpperCase() === 'NO_PROXY') return true;
+  try {
+    const parsed = new URL(value);
+    return !parsed.username && !parsed.password;
+  } catch {
+    return key.toUpperCase() === 'NO_PROXY';
+  }
+}
+
+function apiKeyChildBaseEnvironment(values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([key, value]) => {
+      const normalized = key.toUpperCase();
+      return (
+        API_KEY_CHILD_ENV_KEYS.has(normalized)
+        || normalized.startsWith('LC_')
+        || normalized === 'ACTOVIQ_E2E_INVOCATIONS'
+      ) && safeProxyEnvironmentValue(normalized, value);
+    }),
+  );
+}
+
+function environmentValue(
+  values: Record<string, string>,
+  keys: readonly string[],
+): string | undefined {
+  const wanted = new Set(keys.map(key => key.toUpperCase()));
+  return Object.entries(values).find(([key, value]) =>
+    wanted.has(key.toUpperCase()) && Boolean(value.trim()))?.[1];
+}
+
+function credentialProviderHint(options: CreateActoviqBridgeSdkOptions): string | undefined {
+  const explicit = options.credentialProvider?.trim().toLowerCase();
+  if (explicit) return explicit;
+  const model = options.model?.trim();
+  const separator = model?.indexOf('/') ?? -1;
+  if (model && separator > 0) return model.slice(0, separator).toLowerCase();
+  const baseURL = options.baseURL?.toLowerCase() ?? '';
+  return Object.keys(CREDENTIAL_PROVIDER_ENV).find(name => baseURL.includes(name));
+}
+
+function providerCredentialKeys(
+  provider: RuntimeProvider,
+  options: CreateActoviqBridgeSdkOptions,
+): readonly string[] {
+  const hint = credentialProviderHint(options);
+  const keys = (hint && CREDENTIAL_PROVIDER_ENV[hint])
+    || PROVIDER_DEFAULT_API_KEY_ENV[provider.id]
+    || [];
+  return provider.id === 'crush'
+    ? keys.map(key => key.startsWith('CRUSH_') ? key : `CRUSH_${key}`)
+    : keys;
+}
+
+function crushManagedModel(
+  options: CreateActoviqBridgeSdkOptions,
+  credentialProvider: string | undefined,
+): string | undefined {
+  const model = options.model?.trim();
+  if (!model) return undefined;
+  const separator = model.indexOf('/');
+  if (separator <= 0 || !credentialProvider) return model;
+  return model.slice(0, separator).toLowerCase() === credentialProvider
+    ? model.slice(separator + 1)
+    : model;
+}
+
+function providerApiKeyEnvironment(
+  provider: RuntimeProvider,
+  options: CreateActoviqBridgeSdkOptions,
+  apiKey: string | undefined,
+  baseURL: string | undefined,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  const normalizedKey = apiKey?.trim();
+  if (normalizedKey) {
+    for (const key of providerCredentialKeys(provider, options)) env[key] = normalizedKey;
+  }
+  const normalizedBaseURL = baseURL?.trim();
+  const credentialKey = providerCredentialKeys(provider, options)[0];
+  const baseURLKey = credentialKey?.replace(/_API_KEY$/u, '_BASE_URL')
+    ?? PROVIDER_BASE_URL_ENV[provider.id];
+  if (normalizedBaseURL && baseURLKey) env[baseURLKey] = normalizedBaseURL;
+  return env;
+}
+
+function credentialValues(values: Record<string, string>): string[] {
+  return [...new Set(
+    Object.entries(values)
+      .filter(([key, value]) =>
+        value
+        && /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|COOKIE)$/iu.test(key))
+      .map(([, value]) => value),
+  )];
+}
+
+async function ensurePrivateDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!IS_WINDOWS) await chmod(directory, 0o700);
+}
+
+async function persistentExternalCliProfile(
+  provider: RuntimeProvider,
+  options: CreateActoviqBridgeSdkOptions,
+): Promise<string> {
+  const namedIdentity = options.profileName?.trim();
+  const identity = namedIdentity
+    ? `name:${namedIdentity}`
+    : `anonymous:${credentialProviderHint(options) ?? ''}\0${options.baseURL ?? ''}`;
+  const profileId = namedIdentity
+    ? namedExternalCliManagedProfileId(provider.id, namedIdentity)
+    : createHash('sha256').update(`${provider.id}\0${identity}`).digest('hex');
+  const root = path.join(
+    resolveActoviqHome(options.homeDir),
+    'external-cli-profiles',
+    provider.id,
+    profileId,
+  );
+  await ensurePrivateDirectory(root);
+  return root;
+}
+
+async function buildChildEnvironment(
+  provider: RuntimeProvider,
+  options: CreateActoviqBridgeSdkOptions,
+  directCli: boolean,
+): Promise<PreparedChildEnvironment> {
   const loadedConfig = getLoadedJsonConfig();
-  // Actoviq settings are the single source of model/credential config. Each
-  // provider decides how to translate the settings env block into the
-  // credential variables its CLI reads (claude: ANTHROPIC_*; pi/codex: their
-  // own) and in what order they override the inherited process env.
   const settingsEnv = loadedConfig?.env ?? {};
   const baseEnv = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );
-  return provider.buildChildEnv(baseEnv, settingsEnv, envOverrides);
+  const envOverrides = options.env ?? {};
+  const authSource = options.authSource ?? (directCli ? 'native' : undefined);
+
+  // Native mode deliberately bypasses provider.buildChildEnv: Claude's legacy
+  // builder maps ACTOVIQ_* into ANTHROPIC_*, which would override the CLI's
+  // OAuth/keychain login. Inherited process env remains untouched because it is
+  // part of the environment in which the user normally launches the CLI.
+  if (authSource === 'native') {
+    const env = {
+      ...withoutActoviqAuth(baseEnv),
+      ...withoutActoviqAuth(envOverrides),
+    };
+    return {
+      env,
+      secrets: credentialValues(env),
+    };
+  }
+
+  if (authSource === 'apiKey') {
+    const legacyOverrideKeys = provider.id === 'codex' ? ['OPENAI_API_KEY'] : [];
+    const requestedApiKey = options.apiKey
+      ?? environmentValue(envOverrides, [
+        ...providerCredentialKeys(provider, options),
+        ...legacyOverrideKeys,
+      ]);
+    const baseURLKey = PROVIDER_BASE_URL_ENV[provider.id];
+    const requestedBaseURL = options.baseURL
+      ?? (baseURLKey ? environmentValue(envOverrides, [baseURLKey]) : undefined);
+    const authEnv = providerApiKeyEnvironment(
+      provider,
+      options,
+      requestedApiKey,
+      requestedBaseURL,
+    );
+    if (credentialValues(authEnv).length === 0) {
+      throw new ActoviqBridgeProcessError(
+        'authSource "apiKey" requires apiKey or a provider credential in env.',
+      );
+    }
+    const env = {
+      ...withoutProviderAuth(provider, apiKeyChildBaseEnvironment(baseEnv)),
+      // Direct CLI mode never imports ~/.actoviq/settings.json env wholesale.
+      // It may contain unrelated GitHub/AWS/database secrets. Explicit per-run
+      // overrides remain supported, minus competing runtime credentials.
+      ...withoutProviderAuth(provider, envOverrides),
+      ...authEnv,
+    };
+    if (
+      directCli
+      && (
+        provider.id === 'pi'
+        || provider.id === 'codewhale'
+        || provider.id === 'reasonix'
+        || provider.id === 'crush'
+      )
+    ) {
+      // These CLIs prefer their native credential store over environment keys.
+      // An empty per-run config home makes the explicit child-only key win
+      // without reading or modifying the user's login files.
+      const isolatedHome = await mkdtemp(path.join(os.tmpdir(), `actoviq-${provider.id}-auth-`));
+      if (provider.id === 'pi') {
+        env.PI_CODING_AGENT_DIR = isolatedHome;
+        env.PI_CODING_AGENT_SESSION_DIR = path.join(
+          await persistentExternalCliProfile(provider, options),
+          'sessions',
+        );
+        await ensurePrivateDirectory(env.PI_CODING_AGENT_SESSION_DIR);
+      }
+      if (provider.id === 'codewhale') {
+        env.CODEWHALE_HOME = await persistentExternalCliProfile(
+          provider,
+          options,
+        );
+        env.CODEWHALE_CONFIG_PATH = path.join(isolatedHome, 'config.json');
+      }
+      if (provider.id === 'reasonix') {
+        const profileHome = await persistentExternalCliProfile(
+          provider,
+          options,
+        );
+        // Reasonix 0.53 ignores REASONIX_HOME and resolves ~/.reasonix through
+        // os.homedir(). Override both home variables so explicit-key mode does
+        // not read or mutate the user's native config, memory, or skills.
+        env.HOME = profileHome;
+        env.USERPROFILE = profileHome;
+        env.REASONIX_HOME = path.join(profileHome, '.reasonix');
+        await ensurePrivateDirectory(env.REASONIX_HOME);
+      }
+      if (provider.id === 'crush') {
+        const profile = await persistentExternalCliProfile(provider, options);
+        env.CRUSH_GLOBAL_CONFIG = path.join(isolatedHome, 'config');
+        env.CRUSH_GLOBAL_DATA = path.join(profile, 'data');
+        env.CRUSH_CACHE_DIR = path.join(isolatedHome, 'cache');
+        env.XDG_CONFIG_HOME = path.join(isolatedHome, 'xdg-config');
+        await ensurePrivateDirectory(env.CRUSH_GLOBAL_DATA);
+      }
+      return {
+        env,
+        secrets: credentialValues(env),
+        cleanup: () => rm(isolatedHome, { recursive: true, force: true }),
+      };
+    }
+    return { env, secrets: credentialValues(env) };
+  }
+
+  // The vendored bridge keeps its historical Actoviq settings mapping when no
+  // auth source is selected. This preserves the existing non-direct API.
+  return {
+    env: provider.buildChildEnv(baseEnv, settingsEnv, envOverrides),
+    secrets: [],
+  };
+}
+
+function redactText(value: string, secrets: readonly string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    if (!secret) continue;
+    redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted;
+}
+
+function redactEventValue(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === 'string') return redactText(value, secrets);
+  if (Array.isArray(value)) return value.map(item => redactEventValue(item, secrets));
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, redactEventValue(item, secrets)]),
+  );
+}
+
+function redactEvent(
+  event: ActoviqBridgeJsonEvent,
+  secrets: readonly string[],
+): ActoviqBridgeJsonEvent {
+  if (secrets.length === 0) return event;
+  return redactEventValue(event, secrets) as ActoviqBridgeJsonEvent;
 }
 
 async function prefersSystemRipgrep(envOverrides?: Record<string, string>): Promise<boolean> {
@@ -572,6 +1186,8 @@ async function parseStdoutEvents(
   child: ReturnType<typeof spawn>,
   onEvent: (event: ActoviqBridgeJsonEvent) => void,
   normalizer: BridgeEventNormalizer,
+  control?: BridgeProcessControl,
+  secrets: readonly string[] = [],
 ): Promise<void> {
   if (!child.stdout) {
     return;
@@ -586,8 +1202,8 @@ async function parseStdoutEvents(
 
     if (normalizer.rawText) {
       // Plain-text provider — feed each line as-is; no JSON structure.
-      for (const event of normalizer.translate({ _raw: trimmed })) {
-        onEvent(event);
+      for (const event of normalizer.translate({ _raw: trimmed }, control)) {
+        onEvent(redactEvent(event, secrets));
       }
       continue;
     }
@@ -596,57 +1212,70 @@ async function parseStdoutEvents(
     try {
       parsed = JSON.parse(trimmed);
     } catch (error) {
-      throw new ActoviqBridgeProcessError(`Failed to parse Actoviq Runtime stream line: ${trimmed}`, {
+      throw new ActoviqBridgeProcessError(`Failed to parse Actoviq Runtime stream line: ${redactText(trimmed, secrets)}`, {
         cause: error,
       });
     }
 
-    if (!isRecord(parsed) || typeof parsed.type !== 'string') {
+    if (!isRecord(parsed) || (!normalizer.interactive && typeof parsed.type !== 'string')) {
       throw new ActoviqBridgeProcessError('Actoviq Runtime emitted a malformed stream event.');
     }
 
     // Providers whose native wire format differs from the canonical
     // system/assistant/result trio (pi, codex) translate here; claude is a
     // passthrough normalizer, so its behavior is unchanged.
-    for (const event of normalizer.translate(parsed)) {
-      onEvent(event);
+    for (const event of normalizer.translate(parsed, control)) {
+      onEvent(redactEvent(event, secrets));
     }
   }
 
   // Raw-text providers flush accumulated text at stream end.
   if (normalizer.flush) {
     for (const event of normalizer.flush()) {
-      onEvent(event);
+      onEvent(redactEvent(event, secrets));
     }
   }
 }
 
-async function readStderr(child: ReturnType<typeof spawn>): Promise<string> {
-  if (!child.stderr) {
-    return '';
-  }
+async function readBoundedText(
+  stream: NodeJS.ReadableStream | null,
+  maxBytes: number,
+): Promise<string> {
+  if (!stream) return '';
 
-  let stderr = '';
-  for await (const chunk of child.stderr) {
-    stderr += chunk.toString();
+  const markerBytes = Buffer.byteLength(OUTPUT_TRUNCATION_MARKER);
+  const payloadLimit = Math.max(0, maxBytes - markerBytes);
+  let retained: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  let truncated = false;
+  for await (const chunk of stream) {
+    const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    const combined = retained.length === 0 ? next : Buffer.concat([retained, next]);
+    if (combined.length > payloadLimit) {
+      retained = Buffer.from(combined.subarray(combined.length - payloadLimit));
+      truncated = true;
+    } else {
+      retained = combined;
+    }
   }
-  return stderr;
+  return `${truncated ? OUTPUT_TRUNCATION_MARKER : ''}${retained.toString('utf8')}`;
 }
 
-async function readStdout(child: ReturnType<typeof spawn>): Promise<string> {
-  if (!child.stdout) {
-    return '';
-  }
+function readStderr(child: ReturnType<typeof spawn>): Promise<string> {
+  return readBoundedText(child.stderr, MAX_CAPTURED_STDERR_BYTES);
+}
 
-  let stdout = '';
-  for await (const chunk of child.stdout) {
-    stdout += chunk.toString();
-  }
-  return stdout;
+function readStdout(child: ReturnType<typeof spawn>): Promise<string> {
+  return readBoundedText(child.stdout, MAX_CAPTURED_STDOUT_BYTES);
 }
 
 export class ActoviqBridgeRunStream implements AsyncIterable<ActoviqBridgeJsonEvent> {
-  private readonly queue = new AsyncQueue<ActoviqBridgeJsonEvent>();
+  private readonly queue = new AsyncQueue<ActoviqBridgeJsonEvent>({
+    capacity: MAX_RETAINED_RUN_EVENTS,
+    overflowStrategy: 'drop-oldest',
+    isPriority: event => event.type === 'system' || event.type === 'result',
+    priorityReserve: 2,
+    canDrop: event => event.type !== 'system' && event.type !== 'result',
+  });
   readonly result: Promise<ActoviqBridgeRunResult>;
 
   constructor(
@@ -680,21 +1309,28 @@ export class ActoviqBridgeRunStream implements AsyncIterable<ActoviqBridgeJsonEv
 export class ActoviqBridgeSession {
   private started: boolean;
   private runAttempt = 0;
+  private runtimeSessionId: string;
 
   constructor(
     private readonly client: ActoviqBridgeSdkClient,
-    readonly id: string,
+    id: string,
     readonly title: string | undefined,
     private readonly defaults: ActoviqBridgeSessionCreateOptions,
     started = false,
   ) {
+    this.runtimeSessionId = id;
     this.started = started;
+  }
+
+  get id(): string {
+    return this.runtimeSessionId;
   }
 
   async send(prompt: string, options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {}): Promise<ActoviqBridgeRunResult> {
     const runOptions = this.buildRunOptions(options);
     this.runAttempt += 1;
     const result = await this.client.run(prompt, runOptions);
+    this.adoptRuntimeSessionId(result);
     this.started = true;
     return result;
   }
@@ -709,11 +1345,12 @@ export class ActoviqBridgeSession {
     const runStream = this.client.stream(prompt, runOptions);
     this.runAttempt = attempt;
     this.started = true;
-    if (!wasStarted) {
-      void runStream.result.catch(() => {
-        if (this.runAttempt === attempt) this.started = false;
-      });
-    }
+    void runStream.result.then(
+      result => this.adoptRuntimeSessionId(result),
+      () => {
+        if (!wasStarted && this.runAttempt === attempt) this.started = false;
+      },
+    );
     return runStream;
   }
 
@@ -821,6 +1458,11 @@ export class ActoviqBridgeSession {
     }
 
     return merged;
+  }
+
+  private adoptRuntimeSessionId(result: ActoviqBridgeRunResult): void {
+    const sessionId = result.sessionId.trim();
+    if (sessionId) this.runtimeSessionId = sessionId;
   }
 }
 
@@ -1197,6 +1839,13 @@ export class ActoviqBridgeSdkClient {
   readonly context: ActoviqBridgeContextApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
+  private readonly activeChildren = new Set<ReturnType<typeof spawn>>();
+  private readonly reasonixManagedEntries = new Map<string, ManagedReasonixEntry>();
+  private readonly reasonixManagedEntryPromises = new Map<
+    string,
+    Promise<ManagedReasonixEntry>
+  >();
+  private closed = false;
 
   private constructor(
     private readonly executable: string,
@@ -1383,7 +2032,24 @@ export class ActoviqBridgeSdkClient {
   }
 
   async close(): Promise<void> {
-    return Promise.resolve();
+    if (
+      this.closed
+      && this.activeChildren.size === 0
+      && this.reasonixManagedEntries.size === 0
+      && this.reasonixManagedEntryPromises.size === 0
+    ) return;
+    this.closed = true;
+    const pendingEntries = await Promise.allSettled([
+      ...this.reasonixManagedEntryPromises.values(),
+    ]);
+    const reasonixEntries = new Set(this.reasonixManagedEntries.values());
+    for (const pending of pendingEntries) {
+      if (pending.status === 'fulfilled') reasonixEntries.add(pending.value);
+    }
+    await Promise.all([...reasonixEntries].map(entry => this.releaseReasonixEntry(entry)));
+    const children = [...this.activeChildren];
+    await Promise.all(children.map(child => terminateActoviqProcessTree(child)));
+    for (const child of children) this.activeChildren.delete(child);
   }
 
   async getRuntimeInfo(
@@ -1531,38 +2197,56 @@ export class ActoviqBridgeSdkClient {
     rawArgs: string[],
     options: CreateActoviqBridgeSdkOptions & { signal?: AbortSignal } = {},
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    if (this.closed) {
+      throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+    }
     if (options.signal?.aborted) {
       throw new RunAbortedError('The Actoviq Runtime command was aborted before it started.');
     }
 
     const merged = this.mergeOptions(options);
-    const childEnv = buildChildEnvironment(this.provider, merged.env);
+    if (this.closed) throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+    if (options.signal?.aborted) {
+      throw new RunAbortedError('The Actoviq Runtime command was aborted before it started.');
+    }
+    const childEnvironment = await buildChildEnvironment(this.provider, merged, this.directCli);
     if (await prefersSystemRipgrep(merged.env)) {
-      childEnv.USE_BUILTIN_RIPGREP = '0';
+      childEnvironment.env.USE_BUILTIN_RIPGREP = '0';
     }
 
     const spawnArgs = this.directCli
       ? (this.cliPath ? [this.cliPath, ...rawArgs] : rawArgs)
       : [merged.cliPath ?? this.cliPath, ...rawArgs];
-    const child = spawn(merged.executable ?? this.executable, spawnArgs, {
+    const invocation = await resolveExecutableInvocation(
+      merged.executable ?? this.executable,
+      spawnArgs,
+    );
+    if (this.closed) throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+    if (options.signal?.aborted) {
+      throw new RunAbortedError('The Actoviq Runtime command was aborted before it started.');
+    }
+    const child = spawn(invocation.file, invocation.args, {
       cwd: merged.workDir ?? this.defaults.workDir ?? process.cwd(),
-      env: childEnv,
+      env: childEnvironment.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell:
-        IS_WINDOWS &&
-        /\.(?:cmd|bat)$/i.test(merged.executable ?? this.executable),
+      shell: false,
+      detached: !IS_WINDOWS,
     });
+    this.activeChildren.add(child);
+    child.once('close', () => this.activeChildren.delete(child));
 
     let aborted = false;
+    let terminationPromise: Promise<void> | undefined;
     const abort = () => {
       aborted = true;
-      child.kill('SIGTERM');
+      terminationPromise ??= terminateActoviqProcessTree(child);
     };
     options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
 
-    const stdoutPromise = readStdout(child);
-    const stderrPromise = readStderr(child);
+    const stdoutPromise = readStdout(child).then(value => redactText(value, childEnvironment.secrets));
+    const stderrPromise = readStderr(child).then(value => redactText(value, childEnvironment.secrets));
     const exitCodePromise = new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
       child.once('close', code => resolve(code));
@@ -1589,13 +2273,20 @@ export class ActoviqBridgeSdkClient {
 
       return { stdout, stderr, exitCode };
     } catch (error) {
+      terminationPromise ??= terminateActoviqProcessTree(child);
       const normalized = asError(error);
       if (aborted || isAbortErrorLike(normalized)) {
         throw new RunAbortedError('The Actoviq Runtime command was aborted.', { cause: error });
       }
-      throw new ActoviqBridgeProcessError(normalized.message, { cause: error });
+      throw new ActoviqBridgeProcessError(
+        redactText(normalized.message, childEnvironment.secrets),
+        { cause: error },
+      );
     } finally {
       options.signal?.removeEventListener('abort', abort);
+      if (terminationPromise) await terminationPromise;
+      this.activeChildren.delete(child);
+      await childEnvironment.cleanup?.();
     }
   }
 
@@ -1608,13 +2299,23 @@ export class ActoviqBridgeSdkClient {
       close: () => void;
     },
   ): Promise<ActoviqBridgeRunResult> {
+    if (this.closed) {
+      throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+    }
     if (options.signal?.aborted) {
       throw new RunAbortedError('The Actoviq Runtime run was aborted before it started.');
     }
 
-    const childEnv = buildChildEnvironment(this.provider, options.env);
-    if (await prefersSystemRipgrep(options.env)) {
-      childEnv.USE_BUILTIN_RIPGREP = '0';
+    if (this.directCli && this.provider.id === 'reasonix') {
+      return this.executeManagedReasonix(prompt, options, controller);
+    }
+
+    if (this.directCli && this.provider.id === 'crush') {
+      return this.executeManagedCrush(prompt, options, controller);
+    }
+
+    if (options.signal?.aborted) {
+      throw new RunAbortedError('The Actoviq Runtime run was aborted before it started.');
     }
 
     // argv: claude (bundle or directCli) reuses the full stream-json flag set
@@ -1625,49 +2326,91 @@ export class ActoviqBridgeSdkClient {
     const args = this.directCli
       ? (this.cliPath ? [this.cliPath, ...cliArgs] : cliArgs)
       : [options.cliPath ?? this.cliPath, ...cliArgs];
-    // Windows .cmd/.bat shims require shell:true (Node can't spawn them
-    // directly), but shell-mode joining splits args on spaces — so a prompt
-    // like "claude -p My favorite number…" reaches claude as just "My". When
-    // shelling, quote each arg so cmd.exe preserves multi-word values.
-    const shelled =
-      IS_WINDOWS &&
-      /\.(?:cmd|bat)$/i.test(options.executable ?? this.executable);
-    const spawnArgs = shelled ? args.map(quoteForWindowsShell) : args;
-    const child = spawn(options.executable ?? this.executable, spawnArgs, {
-      cwd: options.workDir ?? this.defaults.workDir ?? process.cwd(),
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const invocation = await resolveExecutableInvocation(
+      options.executable ?? this.executable,
+      args,
+    );
+    if (this.closed) throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+    if (options.signal?.aborted) {
+      throw new RunAbortedError('The Actoviq Runtime run was aborted before it started.');
+    }
+    const childEnvironment = await buildChildEnvironment(this.provider, options, this.directCli);
+    if (await prefersSystemRipgrep(options.env)) {
+      childEnvironment.env.USE_BUILTIN_RIPGREP = '0';
+    }
+    const normalizer = this.provider.createNormalizer(prompt, options);
+    const effectiveWorkDir = path.resolve(
+      options.workDir ?? this.defaults.workDir ?? process.cwd(),
+    );
+    const runStartedAtMs = Date.now();
+    const child = spawn(invocation.file, invocation.args, {
+      cwd: effectiveWorkDir,
+      env: childEnvironment.env,
+      stdio: [normalizer.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: shelled,
+      shell: false,
+      detached: !IS_WINDOWS,
     });
+    this.activeChildren.add(child);
+    child.once('close', () => this.activeChildren.delete(child));
 
-    const events: ActoviqBridgeJsonEvent[] = [];
-    const assistantMessages: ActoviqBridgeJsonEvent[] = [];
+    let inputEnded = false;
+    child.stdin?.on('error', () => {
+      // The child may close stdin after its terminal protocol response. The
+      // process exit/result path below remains the source of truth.
+    });
+    const processControl: BridgeProcessControl = {
+      write: record => {
+        if (inputEnded || !child.stdin || child.stdin.destroyed) return;
+        child.stdin.write(`${JSON.stringify(record)}\n`);
+      },
+      endInput: () => {
+        if (inputEnded) return;
+        inputEnded = true;
+        child.stdin?.end();
+      },
+    };
+
+    const retainedEvents = new BoundedRetention<ActoviqBridgeJsonEvent>(MAX_RETAINED_RUN_EVENTS);
+    const retainedAssistantMessages = new BoundedRetention<ActoviqBridgeJsonEvent>(
+      MAX_RETAINED_ASSISTANT_MESSAGES,
+    );
     let initEvent: ActoviqBridgeJsonEvent | undefined;
     let resultEvent: ActoviqBridgeJsonEvent | undefined;
+    let codewhaleNativeSessionId: string | undefined;
     let aborted = false;
+    let terminationPromise: Promise<void> | undefined;
 
     const abort = () => {
       aborted = true;
-      child.kill('SIGTERM');
+      if (normalizer.abort) {
+        normalizer.abort(processControl);
+        terminationPromise ??= (async () => {
+          await new Promise(resolve => setTimeout(resolve, normalizer.abortGraceMs ?? 250));
+          await terminateActoviqProcessTree(child);
+        })();
+      } else {
+        terminationPromise ??= terminateActoviqProcessTree(child);
+      }
     };
     options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
 
-    const normalizer = this.provider.createNormalizer();
+    normalizer.start?.(processControl);
     const stdoutPromise = parseStdoutEvents(child, event => {
-      events.push(structuredClone(event));
+      retainedEvents.push(structuredClone(event));
       if (event.type === 'system' && event.subtype === 'init') {
         initEvent = structuredClone(event);
       }
       if (event.type === 'assistant') {
-        assistantMessages.push(structuredClone(event));
+        retainedAssistantMessages.push(structuredClone(event));
       }
       if (event.type === 'result') {
         resultEvent = structuredClone(event);
       }
       controller.emit(event);
-    }, normalizer);
-    const stderrPromise = readStderr(child);
+    }, normalizer, processControl, childEnvironment.secrets);
+    const stderrPromise = readStderr(child).then(value => redactText(value, childEnvironment.secrets));
 
     const exitCodePromise = new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
@@ -1680,14 +2423,45 @@ export class ActoviqBridgeSdkClient {
       [stderr, exitCode] = await Promise.all([stderrPromise, exitCodePromise, stdoutPromise]).then(
         ([nextStderr, nextExitCode]) => [nextStderr, nextExitCode] as const,
       );
+      if (this.provider.id === 'codewhale' && resultEvent) {
+        const correlationHint = getStringValue(resultEvent, 'correlationHint')
+          ?? getStringValue(initEvent, 'correlationHint');
+        if (correlationHint) {
+          const codewhaleHome = environmentValue(
+            childEnvironment.env,
+            ['CODEWHALE_HOME'],
+          );
+          codewhaleNativeSessionId = await resolveCodewhaleNativeSessionId({
+            correlationHint,
+            cwd: getStringValue(initEvent, 'cwd') ?? effectiveWorkDir,
+            startedAtMs: runStartedAtMs,
+            finishedAtMs: Date.now(),
+            homeDir: options.homeDir
+              ?? environmentValue(childEnvironment.env, ['HOME', 'USERPROFILE']),
+            codewhaleRoot: codewhaleHome
+              ? path.join(path.resolve(effectiveWorkDir, codewhaleHome), 'sessions')
+              : undefined,
+          }).catch(() => undefined);
+        }
+      }
     } catch (error) {
+      // A parser/normalizer/pipe failure can reject before the CLI exits. Keep
+      // the child supervised until its entire process tree has been reclaimed;
+      // otherwise close() would lose it when the record is removed below.
+      terminationPromise ??= terminateActoviqProcessTree(child);
       const normalized = asError(error);
       if (aborted || isAbortErrorLike(normalized)) {
         throw new RunAbortedError('The Actoviq Runtime run was aborted.', { cause: error });
       }
-      throw new ActoviqBridgeProcessError(normalized.message, { cause: error, stderr, exitCode });
+      throw new ActoviqBridgeProcessError(
+        redactText(normalized.message, childEnvironment.secrets),
+        { cause: error, stderr, exitCode },
+      );
     } finally {
       options.signal?.removeEventListener('abort', abort);
+      if (terminationPromise) await terminationPromise;
+      this.activeChildren.delete(child);
+      await childEnvironment.cleanup?.();
     }
 
     if (aborted && !resultEvent) {
@@ -1703,11 +2477,15 @@ export class ActoviqBridgeSdkClient {
       );
     }
 
+    const assistantMessages = retainedAssistantMessages.toArray();
+    const events = retainedEvents.toArray();
+
     const result: ActoviqBridgeRunResult = {
       text: deriveResultText(resultEvent, assistantMessages),
       sessionId:
-        getStringValue(resultEvent, 'session_id') ??
-        getStringValue(initEvent, 'session_id') ??
+        getNonEmptyStringValue(resultEvent, 'session_id') ??
+        getNonEmptyStringValue(initEvent, 'session_id') ??
+        codewhaleNativeSessionId ??
         options.sessionId ??
         (typeof options.resume === 'string' ? options.resume : ''),
       isError: getBooleanValue(resultEvent, 'is_error') ?? false,
@@ -1725,6 +2503,351 @@ export class ActoviqBridgeSdkClient {
     };
 
     return result;
+  }
+
+  private async executeManagedReasonix(
+    prompt: string,
+    options: ActoviqBridgeRunOptions,
+    controller: {
+      emit: (event: ActoviqBridgeJsonEvent) => void;
+      fail: (error: unknown) => void;
+      close: () => void;
+    },
+  ): Promise<ActoviqBridgeRunResult> {
+    assertManagedOptionsSupported('Reasonix', options);
+    if (options.forkSession) {
+      throw new ActoviqBridgeProcessError(
+        'Reasonix managed mode does not expose a native session-fork operation.',
+      );
+    }
+    if (options.resume === true || options.continueMostRecent) {
+      throw new ActoviqBridgeProcessError(
+        'Reasonix managed mode requires an exact persisted session id.',
+      );
+    }
+
+    const nativeSessionId = typeof options.resume === 'string'
+      ? validateReasonixManagedSessionId(options.resume)
+      : undefined;
+    const cwd = path.resolve(options.workDir ?? this.defaults.workDir ?? process.cwd());
+    const configFingerprint = reasonixConfigFingerprint(options);
+    const logicalSessionId = (
+      nativeSessionId ?? options.sessionId?.trim()
+    ) || '__default__';
+    const aliasKey = reasonixManagedAliasKey(configFingerprint, cwd, logicalSessionId);
+    const entry = await this.getOrCreateReasonixEntry(
+      aliasKey,
+      configFingerprint,
+      cwd,
+      nativeSessionId,
+      options,
+    );
+    const retainedEvents = new BoundedRetention<ActoviqBridgeJsonEvent>(MAX_RETAINED_RUN_EVENTS);
+    const retainedAssistantMessages = new BoundedRetention<ActoviqBridgeJsonEvent>(
+      MAX_RETAINED_ASSISTANT_MESSAGES,
+    );
+    let initEvent: ActoviqBridgeJsonEvent | undefined;
+    let resultEvent: ActoviqBridgeJsonEvent | undefined;
+    const onEvent = (event: ActoviqBridgeJsonEvent): void => {
+      retainedEvents.push(structuredClone(event));
+      if (event.type === 'system' && event.subtype === 'init') {
+        initEvent = structuredClone(event);
+      }
+      if (event.type === 'assistant') {
+        retainedAssistantMessages.push(structuredClone(event));
+      }
+      if (event.type === 'result') {
+        resultEvent = structuredClone(event);
+      }
+      controller.emit(event);
+    };
+
+    try {
+      const managed = await entry.client.run({
+        prompt,
+        model: options.model,
+        effort: options.effort,
+        maxBudgetUsd: options.maxBudgetUsd,
+        permissionMode: options.dangerouslySkipPermissions
+          ? 'bypassPermissions'
+          : options.permissionMode ?? 'default',
+        signal: options.signal,
+        onEvent,
+      });
+      if (!resultEvent) {
+        await this.releaseReasonixEntry(entry);
+        throw new ActoviqBridgeProcessError(
+          managed.stderr.trim()
+            ? `Reasonix exited without a result event: ${managed.stderr.trim()}`
+            : 'Reasonix exited without emitting a result event.',
+          { stderr: managed.stderr, exitCode: managed.exitCode },
+        );
+      }
+
+      if (managed.reusable && managed.sessionId) {
+        await writeReasonixTranscriptMetadata(entry, {
+          sessionId: managed.sessionId,
+          cwd,
+          model: options.model,
+          prompt,
+        }).catch(() => undefined);
+        this.reasonixManagedEntries.set(
+          reasonixManagedAliasKey(configFingerprint, cwd, managed.sessionId),
+          entry,
+        );
+      } else if (!managed.reusable) {
+        await this.releaseReasonixEntry(entry);
+      }
+
+      const assistantMessages = retainedAssistantMessages.toArray();
+      return {
+        text: deriveResultText(resultEvent, assistantMessages),
+        sessionId:
+          getNonEmptyStringValue(resultEvent, 'session_id')
+          ?? getNonEmptyStringValue(initEvent, 'session_id')
+          ?? managed.sessionId,
+        isError: getBooleanValue(resultEvent, 'is_error') ?? false,
+        subtype: getStringValue(resultEvent, 'subtype'),
+        stopReason: getStringValue(resultEvent, 'stop_reason'),
+        durationMs: getNumberValue(resultEvent, 'duration_ms'),
+        totalCostUsd: getNumberValue(resultEvent, 'total_cost_usd'),
+        numTurns: getNumberValue(resultEvent, 'num_turns'),
+        exitCode: managed.exitCode,
+        stderr: managed.stderr,
+        initEvent,
+        resultEvent,
+        assistantMessages,
+        events: retainedEvents.toArray(),
+      };
+    } catch (error) {
+      await this.releaseReasonixEntry(entry);
+      const normalized = asError(error);
+      if (options.signal?.aborted || isAbortErrorLike(normalized)) {
+        throw new RunAbortedError('The Reasonix managed run was aborted.', { cause: error });
+      }
+      if (error instanceof ActoviqBridgeProcessError) throw error;
+      throw new ActoviqBridgeProcessError(normalized.message, { cause: error });
+    }
+  }
+
+  private async getOrCreateReasonixEntry(
+    aliasKey: string,
+    configFingerprint: string,
+    cwd: string,
+    nativeSessionId: string | undefined,
+    options: ActoviqBridgeRunOptions,
+  ): Promise<ManagedReasonixEntry> {
+    const cached = this.reasonixManagedEntries.get(aliasKey);
+    if (cached) return cached;
+    const pending = this.reasonixManagedEntryPromises.get(aliasKey);
+    if (pending) return pending;
+
+    const creation = (async () => {
+      const childEnvironment = await buildChildEnvironment(this.provider, options, true);
+      try {
+        const cliArgs = this.provider.buildArgs('', options);
+        const transcriptRoot = path.join(
+          await persistentExternalCliProfile(this.provider, options),
+          '.reasonix',
+          'sessions',
+        );
+        await ensurePrivateDirectory(transcriptRoot);
+        const transcriptIdentity = nativeSessionId
+          ? createHash('sha256').update(nativeSessionId).digest('hex').slice(0, 32)
+          : randomUUID();
+        const transcriptPath = path.join(
+          transcriptRoot,
+          `managed-${transcriptIdentity}.jsonl`,
+        );
+        cliArgs.push('--dir', cwd, '--transcript', transcriptPath);
+        const args = this.cliPath ? [this.cliPath, ...cliArgs] : cliArgs;
+        const invocation = await resolveExecutableInvocation(
+          options.executable ?? this.executable,
+          args,
+        );
+        if (this.closed) {
+          throw new ActoviqBridgeProcessError('The Actoviq Runtime client is closed.');
+        }
+        const client = createReasonixManagedClient({
+          executable: invocation.file,
+          args: invocation.args,
+          cwd,
+          env: childEnvironment.env,
+          nativeSessionId,
+          secrets: childEnvironment.secrets,
+          onSpawn: child => {
+            this.activeChildren.add(child as ReturnType<typeof spawn>);
+            child.once('close', () => {
+              this.activeChildren.delete(child as ReturnType<typeof spawn>);
+            });
+          },
+        });
+        const entry: ManagedReasonixEntry = {
+          client,
+          transcriptPath,
+          transcriptCreatedAt: new Date().toISOString(),
+          cleanup: childEnvironment.cleanup,
+        };
+        this.reasonixManagedEntries.set(aliasKey, entry);
+        return entry;
+      } catch (error) {
+        await childEnvironment.cleanup?.();
+        throw error;
+      }
+    })();
+    this.reasonixManagedEntryPromises.set(aliasKey, creation);
+    try {
+      return await creation;
+    } finally {
+      if (this.reasonixManagedEntryPromises.get(aliasKey) === creation) {
+        this.reasonixManagedEntryPromises.delete(aliasKey);
+      }
+    }
+  }
+
+  private async releaseReasonixEntry(entry: ManagedReasonixEntry): Promise<void> {
+    for (const [key, candidate] of this.reasonixManagedEntries) {
+      if (candidate === entry) this.reasonixManagedEntries.delete(key);
+    }
+    if (!entry.cleanupPromise) {
+      entry.cleanupPromise = (async () => {
+        await entry.client.close().catch(() => undefined);
+        await entry.cleanup?.().catch(() => undefined);
+      })();
+    }
+    await entry.cleanupPromise;
+  }
+
+  private async executeManagedCrush(
+    prompt: string,
+    options: ActoviqBridgeRunOptions,
+    controller: {
+      emit: (event: ActoviqBridgeJsonEvent) => void;
+      fail: (error: unknown) => void;
+      close: () => void;
+    },
+  ): Promise<ActoviqBridgeRunResult> {
+    assertManagedOptionsSupported('Crush', options, ['effort', 'maxBudgetUsd']);
+    if (options.forkSession) {
+      throw new ActoviqBridgeProcessError(
+        'Crush managed mode does not expose a native session-fork operation.',
+      );
+    }
+    if (options.resume === true || options.continueMostRecent) {
+      throw new ActoviqBridgeProcessError(
+        'Crush managed mode requires an exact native session id to resume.',
+      );
+    }
+
+    const cwd = path.resolve(options.workDir ?? this.defaults.workDir ?? process.cwd());
+    if (options.trustProjectResources !== true) {
+      const projectConfig = await findCrushProjectConfig(cwd);
+      if (projectConfig) {
+        throw new ActoviqBridgeProcessError(
+          `Crush project config requires trustProjectResources: ${projectConfig}`,
+        );
+      }
+    }
+
+    const childEnvironment = await buildChildEnvironment(this.provider, options, true);
+    const retainedEvents = new BoundedRetention<ActoviqBridgeJsonEvent>(MAX_RETAINED_RUN_EVENTS);
+    const retainedAssistantMessages = new BoundedRetention<ActoviqBridgeJsonEvent>(
+      MAX_RETAINED_ASSISTANT_MESSAGES,
+    );
+    let initEvent: ActoviqBridgeJsonEvent | undefined;
+    let resultEvent: ActoviqBridgeJsonEvent | undefined;
+
+    const onEvent = (event: ActoviqBridgeJsonEvent): void => {
+      retainedEvents.push(structuredClone(event));
+      if (event.type === 'system' && event.subtype === 'init') {
+        initEvent = structuredClone(event);
+      }
+      if (event.type === 'assistant') {
+        retainedAssistantMessages.push(structuredClone(event));
+      }
+      if (event.type === 'result') {
+        resultEvent = structuredClone(event);
+      }
+      controller.emit(event);
+    };
+
+    try {
+      const credentialProvider = credentialProviderHint(options);
+      const explicitApiKeyMode = (options.authSource ?? 'native') === 'apiKey';
+      const credentialKeys = providerCredentialKeys(this.provider, options);
+      const credentialBaseUrlKeys = credentialKeys
+        .map(key => key.replace(/_API_KEY$/u, '_BASE_URL'));
+      const managed = await runCrushManaged({
+        executable: options.executable ?? this.executable,
+        executableArgs: this.cliPath ? [this.cliPath] : undefined,
+        cwd,
+        prompt,
+        nativeSessionId: typeof options.resume === 'string' ? options.resume : undefined,
+        model: crushManagedModel(options, credentialProvider),
+        credentialProvider,
+        apiKey: explicitApiKeyMode
+          ? environmentValue(childEnvironment.env, credentialKeys)
+          : undefined,
+        baseURL: explicitApiKeyMode
+          ? options.baseURL
+            ?? environmentValue(childEnvironment.env, credentialBaseUrlKeys)
+          : undefined,
+        permissionMode: options.dangerouslySkipPermissions
+          ? 'bypassPermissions'
+          : options.permissionMode,
+        env: childEnvironment.env,
+        inheritEnvironment: false,
+        signal: options.signal,
+        spawnFn: (file, args, spawnOptions) => {
+          const child = spawn(file, [...args], spawnOptions);
+          this.activeChildren.add(child);
+          child.once('close', () => this.activeChildren.delete(child));
+          return child;
+        },
+      }, onEvent);
+
+      if (!resultEvent) {
+        throw new ActoviqBridgeProcessError(
+          managed.stderr.trim()
+            ? `Crush exited without a result event: ${managed.stderr.trim()}`
+            : 'Crush exited without emitting a result event.',
+          { stderr: managed.stderr, exitCode: managed.exitCode },
+        );
+      }
+
+      const assistantMessages = retainedAssistantMessages.toArray();
+      return {
+        text: deriveResultText(resultEvent, assistantMessages),
+        sessionId:
+          getStringValue(resultEvent, 'session_id')
+          ?? getStringValue(initEvent, 'session_id')
+          ?? managed.sessionId,
+        isError: getBooleanValue(resultEvent, 'is_error') ?? false,
+        subtype: getStringValue(resultEvent, 'subtype'),
+        stopReason: getStringValue(resultEvent, 'stop_reason'),
+        durationMs: getNumberValue(resultEvent, 'duration_ms'),
+        totalCostUsd: getNumberValue(resultEvent, 'total_cost_usd'),
+        numTurns: getNumberValue(resultEvent, 'num_turns'),
+        exitCode: managed.exitCode,
+        stderr: managed.stderr,
+        initEvent,
+        resultEvent,
+        assistantMessages,
+        events: retainedEvents.toArray(),
+      };
+    } catch (error) {
+      const normalized = asError(error);
+      if (options.signal?.aborted || isAbortErrorLike(normalized)) {
+        throw new RunAbortedError('The Crush managed run was aborted.', { cause: error });
+      }
+      if (error instanceof ActoviqBridgeProcessError) throw error;
+      throw new ActoviqBridgeProcessError(
+        redactText(normalized.message, childEnvironment.secrets),
+        { cause: error },
+      );
+    } finally {
+      await childEnvironment.cleanup?.();
+    }
   }
 }
 

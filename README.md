@@ -16,7 +16,7 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 ## Vision
 
 - **Multi-agent**: subagent delegation (Task tool), panel-analysis teams, reviewer-auditor pairs, dynamic workflows — agents collaborating, not just a single loop.
-- **Multi-runtime state management**: bridge configs let you pre-configure multiple backends (anthropic / openai / any-compatible) with apiKey + baseURL + model, switch by name mid-session, and the conversation context survives the switch (same session object, same transcript).
+- **Multi-runtime state management**: bridge configs have two explicit modes. `Direct API` calls Anthropic/OpenAI-compatible providers in-process; `External CLI` manages installed Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush runtimes as child processes and preserves native session identities when the CLI protocol exposes them.
 - **Model team collaboration**: leaders dispatch to specialists (`/model router`), panel members investigate in parallel with structured convergence, reviewers report only verifiable issues — teams as first-class tools the agent invokes.
 
 ## Highlights
@@ -24,7 +24,7 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 - **Model Team** — `panel-analysis` (parallel investigation + convergence) and `reviewer` (verifiable-issues-only auditor). Runtime-owned member pooling, streamed `TeamEvent`s, per-member provider config, and inherited permission/retry boundaries.
 - **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.actoviq/routers/`.
 - **Dynamic Workflows** — JS script-based orchestration with explicit trust levels: trusted compatibility execution, isolated local-process execution, or a host-supplied remote/container sandbox for adversarial inputs.
-- **Bridge (named connection configs)** — in-process runtime switching: pre-configure `anthropic`/`openai` backends with name + apiKey + baseURL + model, switch by name mid-session, multi-turn context survives (same session). `/bridge config` single-page editor; `/bridge` lists saved configs; per-config usage tracking in `/cost`.
+- **Bridge (named runtime configs)** — choose `Direct API` for provider-level reuse, or `External CLI` to launch installed Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush; reuse each CLI's native login/config, stream normalized tool and assistant events, stop background work, and browse/resume supported native conversations. An explicit key override is injected only into the child and is not written to the CLI's credential store; Pi, CodeWhale, Reasonix, and Crush keep isolated per-config session profiles so that key-mode history survives restarts without reading the native login store.
 - **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened.
 - **TUI (`actoviq-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
 - **Plan mode + hooks** — `EnterPlanMode`/`ExitPlanMode` tools with plan file; user-configurable `PreToolUse`/`PostToolUse`/`SessionStart` hooks from `settings.json`.
@@ -146,7 +146,7 @@ Features:
 - **Permission presets + per-tool scope** — `/permissions` switches between read-only/workspace/full/plan presets; always-allow rules persist with project or user scope.
 - **Mid-run steering** — keep typing while the agent works and press `Enter`: the message is queued and injected into the very next model request (shown as `⧗ queued`).
 - **Plan mode + hooks** — `/plan` enters plan mode (`EnterPlanMode`/`ExitPlanMode` tools, plan file); `PreToolUse`/`PostToolUse`/`SessionStart` hooks from settings.json; `/hooks` lists them.
-- **Bridge configs** — `/bridge config` manages named connection profiles (name + runtime + apiKey + baseURL + model); `/bridge` lists them; selecting one switches the active runtime in-process. Per-config usage in `/cost` and `/usage`.
+- **Bridge configs** — `/bridge config` manages named API or External CLI profiles for all six managed CLIs. `/bridge status`, `/bridge background`, `/bridge runs`, `/bridge stop`, `/bridge history`, and `/bridge resume` expose the same runtime lifecycle in the TUI and GUI; native history/resume remains subject to each installed CLI's protocol/version support.
 - **Diagnostics + inspection** — `/doctor` checks config health; `/context` inspects the context window; `/cost`/`/usage` track token + spend (per-config breakdown); `/review` reviews the git diff; `/stats` shows session stats.
 - **Context management built in** — the Hadamard SDK auto-compacts long sessions mid-run and reactively recovers when a provider rejects an oversized prompt; compactions surface as `∿ context compacted` notices.
 - **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.actoviq/mcp.json`.

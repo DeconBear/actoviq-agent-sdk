@@ -6,7 +6,7 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -75,29 +75,64 @@ export async function findFirstExistingPath(candidates: string[]): Promise<strin
   return undefined;
 }
 
-const WINDOWS_SHELL_SAFE = /^[A-Za-z0-9@_+=:,./-]+$/;
+export interface ResolvedExecutableInvocation {
+  file: string;
+  args: string[];
+}
 
 /**
- * Quote a single argument for `cmd.exe` when `spawn(..., { shell: true })` is
- * used (required for `.cmd`/`.bat` shims on Windows). Node's `shell: true`
- * joins args with spaces and passes them to `cmd /c` UNquoted, so an arg
- * containing a space — e.g. the prompt passed to `claude -p "<prompt>"` —
- * gets split by cmd.exe into multiple tokens ("My favorite number…" → "My").
- * This wraps space-containing args in double quotes and escapes internal
- * quotes/backslashes per the cmd.exe command-line parsing rules.
- *
- * Only meaningful when spawning through a shell; argv-mode spawns pass each
- * arg verbatim and must NOT be pre-quoted.
+ * Resolve an npm-generated Windows .cmd/.bat shim to its real executable.
+ * User-controlled prompts must never be concatenated into a cmd.exe command
+ * line: cmd expands `%VAR%` even inside quotes and its quote rules cannot make
+ * arbitrary argv safe. Standard npm shims point at either a package .exe or a
+ * JavaScript entry point; both can be launched directly with shell:false.
  */
-export function quoteForWindowsShell(arg: string): string {
-  if (arg === '') return '""';
-  if (WINDOWS_SHELL_SAFE.test(arg)) return arg;
-  // Double backslashes that precede a quote, escape the quote, then double
-  // any trailing backslashes (so they don't escape the closing quote).
-  const escaped = arg
-    .replace(/(\\*)"/g, (_m, bs: string) => bs + bs + '\\"')
-    .replace(/(\\*)$/, (_m, bs: string) => bs + bs);
-  return `"${escaped}"`;
+export async function resolveExecutableInvocation(
+  executable: string,
+  args: string[],
+): Promise<ResolvedExecutableInvocation> {
+  if (!IS_WINDOWS || !/\.(?:cmd|bat)$/i.test(executable)) {
+    return { file: executable, args };
+  }
+
+  let source: string;
+  try {
+    source = await readFile(executable, 'utf8');
+  } catch (error) {
+    throw new Error(`Unable to read Windows CLI shim: ${executable}`, { cause: error });
+  }
+
+  const candidates = [...source.matchAll(/%~?dp0%?[\\/]([^"\r\n]+?\.(?:exe|com|cjs|mjs|js))(?=["\s])/giu)];
+  const match = candidates.at(-1);
+  if (!match?.[1]) {
+    throw new Error(
+      `Unsupported Windows CLI wrapper: ${executable}. Configure the underlying .exe or JavaScript entry point instead.`,
+    );
+  }
+
+  const target = path.resolve(
+    path.dirname(executable),
+    match[1].replace(/[\\/]+/gu, path.sep),
+  );
+  if (!(await pathExists(target))) {
+    throw new Error(`Windows CLI shim target was not found: ${target}`);
+  }
+  if (/\.(?:cjs|mjs|js)$/i.test(target)) {
+    // `process.execPath` is electron.exe inside the desktop app. Launching a
+    // JavaScript npm shim with it would start another Electron application,
+    // not the CLI runtime. An npm-installed CLI necessarily has a Node host
+    // available on PATH, so resolve that host explicitly in Electron.
+    const nodeExecutable = process.versions.electron
+      ? await findExecutableOnPath('node')
+      : process.execPath;
+    if (!nodeExecutable) {
+      throw new Error(
+        `Node.js was not found on PATH for Windows CLI shim target: ${target}`,
+      );
+    }
+    return { file: nodeExecutable, args: [target, ...args] };
+  }
+  return { file: target, args };
 }
 
 export { IS_WINDOWS };

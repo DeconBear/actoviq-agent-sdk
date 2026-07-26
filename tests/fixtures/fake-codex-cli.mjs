@@ -4,15 +4,21 @@
 // agent_message → turn.completed) so the CodexNormalizer in bridgeProviders.ts
 // can translate it into the system/assistant/result trio.
 //
-// Invocation shape mirrors real `codex exec --json ... <prompt>`:
-//   node fake-codex-cli.mjs exec --json --skip-git-repo-check --color never --ephemeral --dangerously-bypass-approvals-and-sandbox [-m X] <prompt>
+// Invocation shapes mirror real Codex:
+//   codex exec --json ... <prompt>
+//   codex exec resume --json ... <thread-id> <prompt>
 import process from 'node:process';
 
 const argv = process.argv.slice(2);
-// codex puts the prompt last positionally (after the subcommand + flags).
-const prompt = argv.filter(arg => !arg.startsWith('-') && arg !== 'exec').pop() ?? '';
+// Codex accepts `--` before positional values. Prefer that boundary so tests
+// can distinguish a prompt beginning with `-` from a CLI option.
+const positionalBoundary = argv.lastIndexOf('--');
+const prompt = positionalBoundary >= 0
+  ? argv.slice(positionalBoundary + 1).at(-1) ?? ''
+  : argv.filter(arg => !arg.startsWith('-') && arg !== 'exec').pop() ?? '';
 const modelIndex = argv.indexOf('-m');
 const modelFlag = modelIndex !== -1 ? argv[modelIndex + 1] : undefined;
+const resumeMode = argv[1] === 'resume';
 
 // Env echo for provider-isolation assertions.
 const openaiKey = process.env.OPENAI_API_KEY ?? undefined;
@@ -32,9 +38,72 @@ if (prompt === 'force-fail') {
   process.exit(0);
 }
 
+if (prompt === 'exercise-tools') {
+  emit({
+    type: 'item.started',
+    item: { id: 'cmd-1', type: 'command_execution', command: 'printf codex-tool', status: 'in_progress' },
+  });
+  emit({
+    type: 'item.completed',
+    item: {
+      id: 'cmd-1',
+      type: 'command_execution',
+      command: 'printf codex-tool',
+      aggregated_output: 'codex-tool',
+      exit_code: 0,
+      status: 'completed',
+    },
+  });
+  emit({
+    type: 'item.started',
+    item: {
+      id: 'file-1',
+      type: 'file_change',
+      changes: [{ path: 'README.md', kind: 'update' }],
+      status: 'in_progress',
+    },
+  });
+  emit({
+    type: 'item.completed',
+    item: {
+      id: 'file-1',
+      type: 'file_change',
+      changes: [{ path: 'README.md', kind: 'update' }],
+      status: 'completed',
+    },
+  });
+  emit({
+    type: 'item.started',
+    item: {
+      id: 'mcp-1',
+      type: 'mcp_tool_call',
+      server: 'filesystem',
+      tool: 'read_file',
+      arguments: { path: 'README.md' },
+      status: 'in_progress',
+    },
+  });
+  emit({
+    type: 'item.completed',
+    item: {
+      id: 'mcp-1',
+      type: 'mcp_tool_call',
+      server: 'filesystem',
+      tool: 'read_file',
+      arguments: { path: 'README.md' },
+      result: { content: [{ type: 'text', text: 'read ok' }] },
+      status: 'completed',
+    },
+  });
+}
+
 // Assistant message as an agent_message item: started (empty) then completed.
 const text = prompt === 'who-am-i'
   ? `codex:agent:${modelFlag ?? 'inherit'}`
+  : prompt === 'check-permissions'
+    ? `codex:args:${argv.join('|')}`
+  : prompt === 'check-resume'
+    ? `codex:${resumeMode ? 'resume' : 'new'}:${argv.includes(threadId) ? threadId : 'missing-thread'}`
   : prompt === 'check-env'
     ? `codex:env:${openaiKey ?? 'none'}:${anthropicBase ?? 'none'}`
     : `codex:${prompt}`;

@@ -12,7 +12,10 @@ import {
   loadDefaultActoviqSettings,
   getLoadedJsonConfig,
   createActoviqCoreTools,
+  createManagedPluginRuntime,
+  resolveActoviqSettingsStore,
   type ActoviqPermissionMode,
+  type ActoviqToolApprover,
   type AgentToolDefinition,
   type TeamDefinition,
   listWorkflows,
@@ -43,6 +46,8 @@ import {
   listProjectIssues,
   listScheduledAutomationTasks,
   resolveActoviqHome,
+  externalSkillPreferencesToRuntimeOptions,
+  readActoviqExternalSkillPreferences,
   transitionProjectIssue,
   WorktreeService,
 } from 'actoviq-agent-sdk';
@@ -64,6 +69,8 @@ if (hasVersionFlag(process.argv.slice(2))) {
 const WORK_DIR = path.resolve(process.argv[2] ?? process.cwd());
 const CONFIG_PATH = process.argv[3] ?? path.join(resolveActoviqHome(), 'settings.json');
 const DEFAULT_PERMISSION_MODE = 'bypassPermissions';
+const MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS = 2;
+const MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS = 35_000;
 const PERMISSION_MODES = new Set<ActoviqPermissionMode>([
   'default',
   'acceptEdits',
@@ -168,13 +175,49 @@ function resultLine(isErr: boolean, dur?: number, output?: unknown) {
 
 // ═══════════════════════════════════════════════════════════════════════
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function closeManagedPluginsForExit(close: () => Promise<void>): Promise<void> {
+  const failures: unknown[] = [];
+  for (let attempt = 1; attempt <= MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS; attempt += 1) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        close(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(
+              `managed plugin cleanup timed out after ${MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS}ms`,
+            ));
+          }, MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS);
+        }),
+      ]);
+      return;
+    } catch (error) {
+      failures.push(error);
+      process.stderr.write(
+        `[actoviq-react] warning: managed plugin cleanup attempt ${attempt}/` +
+        `${MANAGED_PLUGIN_FINAL_CLOSE_ATTEMPTS} failed: ${errorMessage(error)}\n`,
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    'Managed plugin cleanup failed after bounded retries; an external sandbox may remain active and billing may continue.',
+  );
+}
+
 async function main() {
   // Header
   const w = process.stdout.columns || 80;
   process.stdout.write(`\n${C.c}${C.b}╭${'─'.repeat(Math.min(w - 2, 60))}╮${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR.slice(0, 45)}${C.r}\n`);
 
-  const tools = createActoviqCoreTools({ cwd: WORK_DIR });
+  const coreTools = createActoviqCoreTools({ cwd: WORK_DIR });
   const userSuppliedConfig = Boolean(process.argv[3]);
   try {
     if (userSuppliedConfig) await loadJsonConfigFile(CONFIG_PATH);
@@ -198,15 +241,69 @@ async function main() {
       process.stderr.write(`${C.y}⚠ Default settings load failed: ${msg}${C.r}\n`);
     }
   }
+  const managedPluginRuntime = await resolveActoviqSettingsStore({
+    configPath: CONFIG_PATH,
+  }).then(store => createManagedPluginRuntime(store.raw, {
+    cwd: WORK_DIR,
+  })).catch(() => ({
+    tools: [] as AgentToolDefinition[],
+    enabledPluginIds: [],
+    close: async () => undefined,
+  }));
+  const tools = [...new Map(
+    [...coreTools, ...managedPluginRuntime.tools].map(tool => [tool.name, tool]),
+  ).values()];
+  const externalSkillPreferences = await readActoviqExternalSkillPreferences({
+    actoviqHomeDir: resolveActoviqHome(),
+    workDir: WORK_DIR,
+  });
+  let pendingToolApproval: {
+    resolve: (outcome: { behavior: 'allow' | 'deny'; reason: string }) => void;
+  } | null = null;
+  const approver: ActoviqToolApprover = async context => {
+    if (!process.stdin.isTTY) {
+      return {
+        behavior: 'deny',
+        reason: 'Interactive approval requires a TTY.',
+      };
+    }
+    if (pendingToolApproval) {
+      return {
+        behavior: 'deny',
+        reason: 'Another tool approval is already pending.',
+      };
+    }
+    let input = '';
+    try {
+      input = JSON.stringify(context.input);
+    } catch {
+      input = '[unserializable input]';
+    }
+    process.stdout.write(
+      `\n${C.y}Approval required:${C.r} ${C.b}${context.publicName}${C.r}\n` +
+      `${C.d}${context.reason}${input ? `\n${input.slice(0, 500)}` : ''}${C.r}\n` +
+      'Allow this tool once? [y/N] ',
+    );
+    return await new Promise<{ behavior: 'allow' | 'deny'; reason: string }>(resolve => {
+      pendingToolApproval = { resolve };
+    });
+  };
   const sdk = await createAgentSdk({
     workDir: WORK_DIR,
     tools,
     permissionMode: DEFAULT_PERMISSION_MODE,
+    approver,
+    externalSkills: externalSkillPreferencesToRuntimeOptions(externalSkillPreferences),
   });
   const toolMetadata = await sdk.listToolMetadata();
   let session = await sdk.createSession({
     title: path.basename(WORK_DIR),
     permissionMode: DEFAULT_PERMISSION_MODE,
+  });
+  await session.setPermissionContext({
+    mode: session.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+    permissions: session.permissionContext.permissions,
+    approver,
   });
 
   process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${session.model}${C.r}\n`);
@@ -253,12 +350,22 @@ async function main() {
     const existing = managers[0];
     if (existing) {
       managerSession = await sdk.resumeSession(existing.id, { permissionMode: DEFAULT_PERMISSION_MODE });
+      await managerSession.setPermissionContext({
+        mode: managerSession.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+        permissions: managerSession.permissionContext.permissions,
+        approver,
+      });
       return managerSession;
     }
     managerSession = await sdk.createSession({
       title: 'Manager',
       metadata: { __actoviqKind: 'manager' },
       permissionMode: DEFAULT_PERMISSION_MODE,
+    });
+    await managerSession.setPermissionContext({
+      mode: managerSession.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+      permissions: managerSession.permissionContext.permissions,
+      approver,
     });
     return managerSession;
   }
@@ -312,6 +419,7 @@ async function main() {
           await session.setPermissionContext({
             mode: requested as ActoviqPermissionMode,
             permissions: state.permissions,
+            approver,
           });
           process.stdout.write(`${C.g}Permission mode set to ${C.y}${requested}${C.r}\n\n`);
           return;
@@ -344,6 +452,11 @@ async function main() {
             return;
           }
           session = await sdk.resumeSession(sessionId);
+          await session.setPermissionContext({
+            mode: session.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+            permissions: session.permissionContext.permissions,
+            approver,
+          });
           process.stdout.write(
             `${C.g}Resumed ${session.id}: ${session.title} (${session.model})${C.r}\n\n`,
           );
@@ -807,6 +920,7 @@ async function main() {
                 systemPrompt: buildManagerSystemPrompt(WORK_DIR, cfg),
                 tools: managerTools,
                 signal: abortCtrl.signal,
+                approver,
                 ...(cfg.model ? { model: cfg.model } : {}),
                 __actoviqUseDefaultTools: false,
                 __actoviqAllowedTools: managerTools.map(tool => tool.name),
@@ -859,6 +973,7 @@ async function main() {
       signal: abortCtrl.signal,
       model: session.model,
       permissionMode: session.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
+      approver,
       // Attached team is only exposed to the main agent when autoInvoke is on;
       // otherwise attach is a selection and /team ask stays the manual path.
       ...(activeTeamTool && teamPrefs.autoInvoke ? { tools: [activeTeamTool] } : {}),
@@ -941,14 +1056,37 @@ async function main() {
   async function shutdown(code: number, closeReadline = true): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
+    let exitCode = code;
     if (ccT) clearTimeout(ccT);
+    if (pendingToolApproval) {
+      const approval = pendingToolApproval;
+      pendingToolApproval = null;
+      approval.resolve({
+        behavior: 'deny',
+        reason: 'The interactive session is shutting down.',
+      });
+    }
     abortCtrl?.abort();
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
     if (closeReadline) rl.close();
     process.stdout.write(`\n${C.d}Goodbye.${C.r}\n`);
-    try { await sdk.close(); } catch {}
-    process.exit(code);
+    try {
+      await closeManagedPluginsForExit(managedPluginRuntime.close);
+    } catch (error) {
+      exitCode = 1;
+      process.stderr.write(
+        `[actoviq-react] ERROR: ${errorMessage(error)} ` +
+        'Check E2B/Playwright resources manually before assuming billing has stopped.\n',
+      );
+    }
+    try {
+      await sdk.close();
+    } catch (error) {
+      exitCode = 1;
+      process.stderr.write(`[actoviq-react] ERROR: SDK cleanup failed: ${errorMessage(error)}\n`);
+    }
+    process.exit(exitCode);
   }
 
   readline.emitKeypressEvents(process.stdin);
@@ -956,6 +1094,14 @@ async function main() {
 
   process.stdin.on('keypress', (_ch: any, key: any) => {
     if (key?.name === 'c' && key?.ctrl) {
+      if (pendingToolApproval) {
+        const approval = pendingToolApproval;
+        pendingToolApproval = null;
+        approval.resolve({
+          behavior: 'deny',
+          reason: 'The user interrupted the approval prompt.',
+        });
+      }
       cc++;
       if (cc >= 2) { void shutdown(0); return; }
       if (ccT) clearTimeout(ccT); ccT = setTimeout(() => { cc = 0; }, 500);
@@ -970,6 +1116,19 @@ async function main() {
 
   rl.on('line', async (line) => {
     const queued = line.trim();
+    if (pendingToolApproval) {
+      const approval = pendingToolApproval;
+      pendingToolApproval = null;
+      const allowed = /^(?:y|yes)$/i.test(queued);
+      approval.resolve({
+        behavior: allowed ? 'allow' : 'deny',
+        reason: allowed
+          ? 'The user approved this tool once.'
+          : 'The user denied this tool.',
+      });
+      process.stdout.write(`${allowed ? `${C.g}Allowed` : `${C.y}Denied`}.${C.r}\n`);
+      return;
+    }
     if (abortCtrl) {
       if (!queued) {
         rl.prompt();

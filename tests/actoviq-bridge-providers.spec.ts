@@ -280,3 +280,407 @@ describe('BRIDGE_PROVIDER_CREDENTIALS', () => {
     expect(BRIDGE_PROVIDER_CREDENTIALS.crush).toEqual([]);
   });
 });
+
+describe('Codex direct CLI arguments', () => {
+  it('persists a new exec session and resumes the native thread id', () => {
+    const first = codexProvider.buildArgs('first turn', {
+      model: 'gpt-5',
+    });
+    expect(first.slice(0, 2)).toEqual(['exec', '--json']);
+    expect(first).not.toContain('--ephemeral');
+    expect(first.at(-1)).toBe('first turn');
+
+    const resumed = codexProvider.buildArgs('second turn', {
+      model: 'gpt-5',
+      resume: 'thread-native-123',
+    });
+    expect(resumed.slice(0, 3)).toEqual(['exec', 'resume', '--json']);
+    expect(resumed).not.toContain('--ephemeral');
+    expect(resumed).toContain('thread-native-123');
+    expect(resumed.at(-1)).toBe('second turn');
+  });
+
+  it('uses Codex --last when continuing without an explicit thread id', () => {
+    const args = codexProvider.buildArgs('continue turn', {
+      continueMostRecent: true,
+    });
+    expect(args.slice(0, 3)).toEqual(['exec', 'resume', '--json']);
+    expect(args).toContain('--last');
+    expect(args.at(-1)).toBe('continue turn');
+  });
+});
+
+describe('Pi managed RPC adapter', () => {
+  it('keeps prompts out of argv and maps permission modes to bounded tool sets', () => {
+    const safe = piProvider.buildArgs('--version', {
+      model: 'openai/gpt-5',
+      permissionMode: 'default',
+      sessionId: 'pi-session-123',
+    });
+    expect(safe.slice(0, 2)).toEqual(['--mode', 'rpc']);
+    expect(safe).not.toContain('--version');
+    expect(safe).toContain('--provider');
+    expect(safe).toContain('openai');
+    expect(safe).toContain('--model');
+    expect(safe).toContain('gpt-5');
+    expect(safe).toContain('--tools');
+    expect(safe).toContain('read,grep,find,ls');
+    expect(safe).toContain('--session-id');
+    expect(safe).toContain('pi-session-123');
+
+    const edits = piProvider.buildArgs('edit', { permissionMode: 'acceptEdits' });
+    expect(edits).toContain('read,grep,find,ls,edit,write');
+
+    for (const permissionMode of ['default', 'plan', 'acceptEdits'] as const) {
+      const bounded = piProvider.buildArgs('bounded tools', {
+        permissionMode,
+        tools: ['read', 'bash'],
+      });
+      expect(bounded).not.toContain('bash');
+      expect(bounded).toContain('read');
+    }
+
+    const bypass = piProvider.buildArgs('run', { permissionMode: 'bypassPermissions' });
+    expect(bypass).not.toContain('--tools');
+    expect(bypass).not.toContain('--no-tools');
+  });
+
+  it('uses credentialProvider for a plain model while a model prefix takes precedence', () => {
+    const configured = piProvider.buildArgs('configured provider', {
+      credentialProvider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(configured.slice(configured.indexOf('--provider'), configured.indexOf('--provider') + 2))
+      .toEqual(['--provider', 'anthropic']);
+
+    const prefixed = piProvider.buildArgs('prefixed provider', {
+      credentialProvider: 'anthropic',
+      model: 'openai/gpt-5',
+    });
+    expect(prefixed.slice(prefixed.indexOf('--provider'), prefixed.indexOf('--provider') + 2))
+      .toEqual(['--provider', 'openai']);
+  });
+
+  it('rejects interactive or option-like session selection', () => {
+    expect(() => piProvider.buildArgs('resume', { resume: true })).toThrow(/exact session id/i);
+    expect(() => piProvider.buildArgs('resume', { resume: '--approve' })).toThrow(/session id/i);
+  });
+
+  it('normalizes state, thinking, tools, usage, and terminal events', () => {
+    const normalizer = piProvider.createNormalizer('inspect runtime', {
+      permissionMode: 'default',
+      sessionId: 'seed-id',
+    });
+    const outbound: Array<Record<string, unknown>> = [];
+    let inputEnded = false;
+    const control = {
+      write: (record: Record<string, unknown>) => outbound.push(record),
+      endInput: () => { inputEnded = true; },
+    };
+    normalizer.start?.(control);
+    expect(outbound).toEqual([
+      { id: 'actoviq-state', type: 'get_state' },
+      { id: 'actoviq-prompt', type: 'prompt', message: 'inspect runtime' },
+    ]);
+
+    expect(normalizer.translate({
+      id: 'actoviq-state',
+      type: 'response',
+      success: true,
+      data: { sessionId: 'pi-native-1', cwd: '/workspace', model: 'gpt-5' },
+    }, control)).toEqual([expect.objectContaining({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'pi-native-1',
+    })]);
+
+    expect(normalizer.translate({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_delta', delta: 'checking' },
+    }, control)).toEqual([expect.objectContaining({ type: 'stream_event' })]);
+    expect(normalizer.translate({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'done' },
+    }, control)).toEqual([expect.objectContaining({ type: 'stream_event' })]);
+
+    expect(normalizer.translate({
+      type: 'tool_execution_start',
+      toolCallId: 'tool-1',
+      toolName: 'read',
+      args: { path: 'README.md' },
+    }, control)).toEqual([expect.objectContaining({
+      type: 'assistant',
+      message: expect.objectContaining({
+        content: [expect.objectContaining({ type: 'tool_use', id: 'tool-1', name: 'read' })],
+      }),
+    })]);
+    expect(normalizer.translate({
+      type: 'tool_execution_end',
+      toolCallId: 'tool-1',
+      toolName: 'read',
+      result: { content: [{ type: 'text', text: '# readme' }] },
+      isError: false,
+    }, control)).toEqual([expect.objectContaining({
+      type: 'user',
+      message: expect.objectContaining({
+        content: [expect.objectContaining({
+          type: 'tool_result',
+          tool_use_id: 'tool-1',
+          content: '# readme',
+          is_error: false,
+        })],
+      }),
+    })]);
+
+    normalizer.translate({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        model: 'gpt-5',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { cost: { total: 0.01 } },
+        stopReason: 'stop',
+      },
+    }, control);
+    normalizer.translate({ type: 'turn_end' }, control);
+    expect(normalizer.translate({ type: 'agent_end' }, control)).toEqual([
+      expect.objectContaining({
+        type: 'result',
+        subtype: 'success',
+        session_id: 'pi-native-1',
+        result: 'done',
+        total_cost_usd: 0.01,
+      }),
+    ]);
+    expect(inputEnded).toBe(true);
+  });
+});
+
+describe('Codex JSONL tool event normalization', () => {
+  it.each([
+    {
+      item: {
+        id: 'cmd-1',
+        type: 'command_execution',
+        command: 'npm test',
+        aggregated_output: 'all tests passed',
+        exit_code: 0,
+        status: 'completed',
+      },
+      expectedName: 'command_execution',
+      expectedInput: { command: 'npm test' },
+      expectedResult: 'all tests passed',
+      expectedError: false,
+    },
+    {
+      item: {
+        id: 'patch-1',
+        type: 'file_change',
+        changes: [{ path: 'src/index.ts', kind: 'update' }],
+        status: 'completed',
+      },
+      expectedName: 'file_change',
+      expectedInput: { changes: [{ path: 'src/index.ts', kind: 'update' }] },
+      expectedResult: JSON.stringify([{ path: 'src/index.ts', kind: 'update' }], null, 2),
+      expectedError: false,
+    },
+    {
+      item: {
+        id: 'mcp-1',
+        type: 'mcp_tool_call',
+        server: 'filesystem',
+        tool: 'read_file',
+        arguments: { path: 'README.md' },
+        error: { message: 'denied' },
+        status: 'failed',
+      },
+      expectedName: 'mcp__filesystem__read_file',
+      expectedInput: { path: 'README.md' },
+      expectedResult: JSON.stringify({ message: 'denied' }, null, 2),
+      expectedError: true,
+    },
+  ])('maps $item.type start/completion to tool_use and tool_result', ({
+    item,
+    expectedName,
+    expectedInput,
+    expectedResult,
+    expectedError,
+  }) => {
+    const normalizer = codexProvider.createNormalizer();
+    normalizer.translate({ type: 'thread.started', thread_id: 'thread-123' });
+
+    expect(normalizer.translate({ type: 'item.started', item })).toEqual([expect.objectContaining({
+      type: 'assistant',
+      session_id: 'thread-123',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: item.id,
+          name: expectedName,
+          input: expectedInput,
+        }],
+      },
+    })]);
+    expect(normalizer.translate({ type: 'item.completed', item })).toEqual([expect.objectContaining({
+      type: 'user',
+      session_id: 'thread-123',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: item.id,
+          content: expectedResult,
+          is_error: expectedError,
+        }],
+      },
+    })]);
+  });
+});
+
+describe('Codex exec JSONL normalization', () => {
+  it('maps command, file-change, and MCP item lifecycles to paired tool events', () => {
+    const normalizer = codexProvider.createNormalizer();
+    const threadId = 'codex-thread-123';
+
+    expect(normalizer.translate({
+      type: 'thread.started',
+      thread_id: threadId,
+    })).toEqual([expect.objectContaining({
+      type: 'system',
+      subtype: 'init',
+      session_id: threadId,
+    })]);
+
+    const changes = [{ path: 'src/runtime.ts', kind: 'update' }];
+    const mcpResult = {
+      content: [{ type: 'text', text: '# Actoviq' }],
+      structured_content: null,
+    };
+    const cases = [
+      {
+        started: {
+          id: 'cmd-1',
+          type: 'command_execution',
+          command: 'npm test',
+          aggregated_output: '',
+          exit_code: null,
+          status: 'in_progress',
+        },
+        completed: {
+          id: 'cmd-1',
+          type: 'command_execution',
+          command: 'npm test',
+          aggregated_output: '42 tests passed\n',
+          exit_code: 0,
+          status: 'completed',
+        },
+        name: 'command_execution',
+        input: { command: 'npm test' },
+        content: '42 tests passed\n',
+        isError: false,
+      },
+      {
+        started: {
+          id: 'patch-1',
+          type: 'file_change',
+          changes,
+          status: 'in_progress',
+        },
+        completed: {
+          id: 'patch-1',
+          type: 'file_change',
+          changes,
+          status: 'completed',
+        },
+        name: 'file_change',
+        input: { changes },
+        content: JSON.stringify(changes, null, 2),
+        isError: false,
+      },
+      {
+        started: {
+          id: 'mcp-1',
+          type: 'mcp_tool_call',
+          server: 'filesystem',
+          tool: 'read_file',
+          arguments: { path: 'README.md' },
+          status: 'in_progress',
+        },
+        completed: {
+          id: 'mcp-1',
+          type: 'mcp_tool_call',
+          server: 'filesystem',
+          tool: 'read_file',
+          arguments: { path: 'README.md' },
+          result: mcpResult,
+          error: null,
+          status: 'completed',
+        },
+        name: 'mcp__filesystem__read_file',
+        input: { path: 'README.md' },
+        content: JSON.stringify(mcpResult, null, 2),
+        isError: false,
+      },
+      {
+        started: {
+          id: 'mcp-2',
+          type: 'mcp_tool_call',
+          server: 'filesystem',
+          tool: 'read_file',
+          arguments: { path: 'missing.md' },
+          status: 'in_progress',
+        },
+        completed: {
+          id: 'mcp-2',
+          type: 'mcp_tool_call',
+          server: 'filesystem',
+          tool: 'read_file',
+          arguments: { path: 'missing.md' },
+          result: null,
+          error: { message: 'file not found' },
+          status: 'failed',
+        },
+        name: 'mcp__filesystem__read_file',
+        input: { path: 'missing.md' },
+        content: JSON.stringify({ message: 'file not found' }, null, 2),
+        isError: true,
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(normalizer.translate({
+        type: 'item.started',
+        item: testCase.started,
+      })).toEqual([expect.objectContaining({
+        type: 'assistant',
+        session_id: threadId,
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: testCase.started.id,
+            name: testCase.name,
+            input: testCase.input,
+          }],
+        },
+      })]);
+      expect(normalizer.translate({
+        type: 'item.completed',
+        item: testCase.completed,
+      })).toEqual([expect.objectContaining({
+        type: 'user',
+        session_id: threadId,
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: testCase.completed.id,
+            content: testCase.content,
+            is_error: testCase.isError,
+          }],
+        },
+      })]);
+    }
+  });
+});

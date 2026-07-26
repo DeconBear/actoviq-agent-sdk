@@ -274,7 +274,7 @@ describe('agentExecutionView', () => {
     });
   });
 
-  it('groups project executions and sorts both groups deterministically', () => {
+  it('groups running, waiting, and terminal executions deterministically', () => {
     const activeB = executionSnapshot(
       'root-b',
       [executionNode('root-b', 'running')],
@@ -285,10 +285,15 @@ describe('agentExecutionView', () => {
       [executionNode('root-a', 'pending_init')],
       at(20),
     );
-    const completedOld = executionSnapshot(
+    const waiting = executionSnapshot(
       'root-old',
-      [executionNode('root-old', 'completed')],
+      [executionNode('root-old', 'interrupted')],
       at(12),
+    );
+    const completedOld = executionSnapshot(
+      'root-finished',
+      [executionNode('root-finished', 'completed')],
+      at(11),
     );
     const completedNew = executionSnapshot(
       'root-new',
@@ -296,7 +301,7 @@ describe('agentExecutionView', () => {
       at(18),
     );
     const view = createAgentExecutionProjectView(
-      [completedOld, activeB, completedNew, activeA],
+      [waiting, activeB, completedNew, completedOld, activeA],
       at(30),
     );
 
@@ -304,14 +309,22 @@ describe('agentExecutionView', () => {
       'root-a',
       'root-b',
     ]);
+    expect(view.waiting.map((execution) => execution.rootExecutionId)).toEqual(['root-old']);
     expect(view.completed.map((execution) => execution.rootExecutionId)).toEqual([
       'root-new',
-      'root-old',
+      'root-finished',
     ]);
+    expect(view.waiting[0]).toMatchObject({
+      lifecycle: 'waiting',
+      isActive: false,
+      isWaiting: true,
+      waitingNodeCount: 1,
+    });
     expect(view).toMatchObject({
-      totalExecutionCount: 4,
-      totalAgentCount: 4,
+      totalExecutionCount: 5,
+      totalAgentCount: 5,
       activeExecutionCount: 2,
+      waitingExecutionCount: 1,
       completedExecutionCount: 2,
       erroredExecutionCount: 1,
       updatedAt: at(20),

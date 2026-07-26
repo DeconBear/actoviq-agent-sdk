@@ -26,6 +26,12 @@ describe('filterInteractiveCommands', () => {
   it('offers sub-commands once a known parent is committed', () => {
     expect(filterInteractiveCommands('/bridge ')).toEqual([
       'bridge run',
+      'bridge background',
+      'bridge runs',
+      'bridge stop',
+      'bridge status',
+      'bridge history',
+      'bridge resume',
       'bridge switch',
       'bridge model',
       'bridge config',
@@ -45,7 +51,9 @@ describe('filterInteractiveCommands', () => {
   });
 
   it('filters sub-commands by prefix', () => {
-    expect(filterInteractiveCommands('/bridge r')).toEqual(['bridge run']);
+    expect(filterInteractiveCommands('/bridge r')).toEqual(['bridge run', 'bridge runs', 'bridge resume']);
+    expect(filterInteractiveCommands('/bridge back')).toEqual(['bridge background']);
+    expect(filterInteractiveCommands('/bridge stat')).toEqual(['bridge status']);
     // A fully-typed sub-command (no second space yet) still offers itself,
     // so Tab can commit it.
     expect(filterInteractiveCommands('/bridge run')).toEqual(['bridge run']);
@@ -74,6 +82,13 @@ describe('filterInteractiveCommands', () => {
     }
   });
 
+  it('documents every external CLI control command', () => {
+    for (const command of ['background', 'runs', 'stop', 'status', 'history', 'resume']) {
+      expect(SUBCOMMANDS.bridge).toContain(command);
+      expect(SUBCOMMAND_DESCRIPTIONS[`bridge ${command}`]).toBeTruthy();
+    }
+  });
+
   it('offers Agent execution browsing after the definition list command', () => {
     const agentCommands = SUBCOMMANDS.agents;
     expect(agentCommands).toEqual(['list', 'runs', 'show', 'open']);
@@ -84,8 +99,9 @@ describe('filterInteractiveCommands', () => {
     }
   });
 
-  it('submits a selected Agent sub-command exactly once', () => {
+  it('submits a selected sub-command exactly once', () => {
     expect(selectInteractiveCommand('/agents r')).toBe('/agents runs');
     expect(selectInteractiveCommand('/agents runs')).toBe('/agents runs');
+    expect(selectInteractiveCommand('/bridge r', 1)).toBe('/bridge runs');
   });
 });

@@ -47,6 +47,7 @@ export function sessionOptionsFromBrowserUse(
     channel: options.channel,
     cdpUrl: options.cdpUrl,
     userDataDir: options.userDataDir,
+    workspaceDir: options.workspaceDir,
     allowedDomains: options.allowedDomains,
     defaultTimeoutMs: options.defaultTimeoutMs,
     viewport: options.viewport,
@@ -59,6 +60,8 @@ export function createActoviqBrowserTools(
   const session: ActoviqBrowserSessionLike =
     options.session ?? new ActoviqBrowserSession(sessionOptionsFromBrowserUse(options));
   const allowEvaluate = options.allowEvaluate === true;
+  const requiresHostSessionApproval = () =>
+    Boolean(options.cdpUrl?.trim() || options.userDataDir?.trim());
 
   const tools: AgentToolDefinition[] = [
     tool(
@@ -71,6 +74,7 @@ export function createActoviqBrowserTools(
           newTab: z.boolean().optional(),
         }),
         isDestructive: () => false,
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async ({ url, newTab }) => session.navigate(url, { newTab }),
     ),
@@ -79,6 +83,7 @@ export function createActoviqBrowserTools(
         name: withPrefix(options.prefix, 'go_back'),
         description: 'Navigate the active browser tab back in history.',
         inputSchema: z.object({}),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async () => session.goBack(),
     ),
@@ -89,6 +94,7 @@ export function createActoviqBrowserTools(
         inputSchema: z.object({
           ms: z.number().int().min(0).max(60_000).optional(),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async ({ ms }) => {
         await session.wait(ms ?? 1000);
@@ -105,6 +111,7 @@ export function createActoviqBrowserTools(
           maxElements: z.number().int().min(1).max(300).optional(),
         }),
         isReadOnly: () => true,
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async (input) => session.snapshot(input),
     ),
@@ -117,6 +124,7 @@ export function createActoviqBrowserTools(
           x: z.number().optional(),
           y: z.number().optional(),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async (input) => session.click(input),
     ),
@@ -130,6 +138,7 @@ export function createActoviqBrowserTools(
           clear: z.boolean().optional(),
           submit: z.boolean().optional(),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async (input) => session.type(input),
     ),
@@ -140,6 +149,7 @@ export function createActoviqBrowserTools(
         inputSchema: z.object({
           keys: z.string().min(1),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async ({ keys }) => session.press(keys),
     ),
@@ -152,6 +162,7 @@ export function createActoviqBrowserTools(
           pages: z.number().int().min(1).max(10).optional(),
           index: z.number().int().min(0).optional(),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async (input) =>
         session.scroll({
@@ -168,7 +179,9 @@ export function createActoviqBrowserTools(
           path: z.string().min(1).optional(),
           fullPage: z.boolean().optional(),
         }),
-        isReadOnly: () => true,
+        isReadOnly: (input) => !input?.path,
+        isDestructive: (input) => Boolean(input?.path),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async (input) => session.screenshot(input),
     ),
@@ -178,6 +191,7 @@ export function createActoviqBrowserTools(
         description: 'List open browser tabs (id, url, title, active).',
         inputSchema: z.object({}),
         isReadOnly: () => true,
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async () => ({ tabs: await session.tabsDetailed() }),
     ),
@@ -188,6 +202,7 @@ export function createActoviqBrowserTools(
         inputSchema: z.object({
           tabId: z.string().min(1),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async ({ tabId }) => session.switchTab(tabId),
     ),
@@ -198,6 +213,7 @@ export function createActoviqBrowserTools(
         inputSchema: z.object({
           tabId: z.string().min(1).optional(),
         }),
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async ({ tabId }) => session.closeTab(tabId),
     ),
@@ -207,6 +223,7 @@ export function createActoviqBrowserTools(
         description: 'Extract visible text from the active page (truncated). Prefer snapshot for interactive control.',
         inputSchema: z.object({}),
         isReadOnly: () => true,
+        requiresUserInteraction: requiresHostSessionApproval,
       },
       async () => session.extract(),
     ),
@@ -223,6 +240,7 @@ export function createActoviqBrowserTools(
             expression: z.string().min(1),
           }),
           isDestructive: () => true,
+          requiresUserInteraction: requiresHostSessionApproval,
         },
         async ({ expression }) => session.evaluate!(expression),
       ),

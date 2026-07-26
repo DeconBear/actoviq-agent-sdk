@@ -10,6 +10,7 @@ import {
   computeTeamGraphAutoLayoutLanes,
   defaultEdgeTension,
   clearEdgeBezierUiForNodeRef,
+  edgeChordCrossesNodeInterior,
 } from '../src/team/teamGraphLayout.js';
 import { toPersistedTeamDefinition } from '../src/team/teamGraph.js';
 import { getBuiltInTeamDefinition } from '../src/team/teamDefinitions.js';
@@ -149,5 +150,32 @@ describe('teamGraphLayout', () => {
     expect(rowOf('skeptic')).toBe(1);
     expect(rowOf('synthesizer')).toBeGreaterThan(rowOf('researcher'));
     expect(rowOf('return-void')).toBe(lanes.length - 1);
+  });
+
+  it('edgeChordCrossesNodeInterior detects through-card chords', () => {
+    const from = { x: 100, y: 100, w: 168, h: 72 };
+    const to = { x: 100, y: 300, w: 168, h: 72 };
+    // North of from → north of to: chord mid sits inside `from`
+    expect(edgeChordCrossesNodeInterior(
+      { x: 184, y: 100 },
+      { x: 184, y: 300 },
+      from,
+      to,
+    )).toBe(true);
+    // South of from → north of to: mid is between cards
+    expect(edgeChordCrossesNodeInterior(
+      { x: 184, y: 172 },
+      { x: 184, y: 300 },
+      from,
+      to,
+    )).toBe(false);
+    // A short diagonal enters the card only near its endpoint; sparse chord
+    // sampling used to miss this intersection.
+    expect(edgeChordCrossesNodeInterior(
+      { x: 280, y: 90 },
+      { x: 250, y: 120 },
+      from,
+      to,
+    )).toBe(true);
   });
 });

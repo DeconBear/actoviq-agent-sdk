@@ -2,7 +2,8 @@
  * Tavily Search Tool — AI-optimized web search via Tavily REST API.
  * No Python dependency. Uses fetch() directly.
  *
- * Requires: TAVILY_API_KEY env var (get key at https://tavily.com)
+ * Requires: TAVILY_API_KEY env var, managed plugin apiKey, or ~/.tavily/config.json
+ * (get key at https://tavily.com)
  */
 import { z } from 'zod';
 import { tool } from '../runtime/tools.js';
@@ -46,6 +47,12 @@ interface TavilyResponse {
   response_time?: number;
 }
 
+export interface CreateTavilySearchToolOptions {
+  /** Prefer this key over env / config file resolution. */
+  apiKey?: string;
+  timeoutMs?: number;
+}
+
 function formatResults(data: TavilyResponse, input: TavilySearchInput): string {
   const lines: string[] = [];
 
@@ -80,7 +87,74 @@ function formatResults(data: TavilyResponse, input: TavilySearchInput): string {
   return lines.join('\n');
 }
 
-export function createTavilySearchTool() {
+export async function resolveTavilyApiKey(explicit?: string): Promise<string | undefined> {
+  const fromExplicit = explicit?.trim();
+  if (fromExplicit) return fromExplicit;
+  const fromEnv = process.env.TAVILY_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const configPath = path.join(os.homedir(), '.tavily', 'config.json');
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { api_key?: string; apiKey?: string };
+      const key = config.api_key?.trim() || config.apiKey?.trim();
+      if (key) return key;
+    }
+  } catch {
+    // ignore unreadable config
+  }
+  return undefined;
+}
+
+export async function runTavilySearch(
+  input: TavilySearchInput,
+  options: CreateTavilySearchToolOptions = {},
+): Promise<string> {
+  const apiKey = await resolveTavilyApiKey(options.apiKey);
+  if (!apiKey) {
+    return 'Error: Tavily API key not found. Set TAVILY_API_KEY, save apiKey in the Tavily managed plugin, or create ~/.tavily/config.json with {"api_key": "tvly-..."}. Get a free key at https://tavily.com';
+  }
+
+  const body: Record<string, unknown> = {
+    api_key: apiKey,
+    query: input.query,
+    search_depth: input.depth,
+    topic: input.topic,
+    max_results: input.max_results,
+    include_answer: input.include_answer,
+    include_raw_content: input.include_raw_content,
+  };
+  if (input.include_domains) body.include_domains = input.include_domains;
+  if (input.exclude_domains) body.exclude_domains = input.exclude_domains;
+
+  const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+  try {
+    const response = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      return `Tavily search failed: HTTP ${response.status} ${response.statusText}. ${errText.slice(0, 200)}`;
+    }
+
+    const data = (await response.json()) as TavilyResponse;
+    return formatResults(data, input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('abort') || message.includes('timeout')) {
+      return `Tavily search timed out after ${Math.round(timeoutMs / 1000)}s. Try a simpler query or use basic depth.`;
+    }
+    return `Tavily search failed: ${message}`;
+  }
+}
+
+export function createTavilySearchTool(options: CreateTavilySearchToolOptions = {}) {
   return tool(
     {
       name: TAVILY_SEARCH_TOOL_NAME,
@@ -108,63 +182,11 @@ export function createTavilySearchTool() {
       ].join('\n'),
     },
     async (input: TavilySearchInput, _context: ToolExecutionContext, onProgress?: ToolCallProgress) => {
-      // Resolve API key: env var > ~/.tavily/config.json
-      let apiKey = process.env.TAVILY_API_KEY;
-      if (!apiKey) {
-        try {
-          const fs = await import('node:fs');
-          const path = await import('node:path');
-          const os = await import('node:os');
-          const configPath = path.join(os.homedir(), '.tavily', 'config.json');
-          if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-            apiKey = config.api_key;
-          }
-        } catch { /* ignore */ }
-      }
-      if (!apiKey) {
-        return 'Error: Tavily API key not found. Set TAVILY_API_KEY env var or create ~/.tavily/config.json with {"api_key": "tvly-..."}. Get a free key at https://tavily.com';
-      }
-
       onProgress?.({
         toolUseID: '',
         data: { type: 'searching', message: `Tavily search: "${input.query}" (${input.depth}/${input.topic})` },
       });
-
-      const body: Record<string, unknown> = {
-        api_key: apiKey,
-        query: input.query,
-        search_depth: input.depth,
-        topic: input.topic,
-        max_results: input.max_results,
-        include_answer: input.include_answer,
-        include_raw_content: input.include_raw_content,
-      };
-      if (input.include_domains) body.include_domains = input.include_domains;
-      if (input.exclude_domains) body.exclude_domains = input.exclude_domains;
-
-      try {
-        const response = await fetch('https://api.tavily.com/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(30000),
-        });
-
-        if (!response.ok) {
-          const errText = await response.text().catch(() => '');
-          return `Tavily search failed: HTTP ${response.status} ${response.statusText}. ${errText.slice(0, 200)}`;
-        }
-
-        const data = (await response.json()) as TavilyResponse;
-        return formatResults(data, input);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes('abort') || message.includes('timeout')) {
-          return `Tavily search timed out after 30s. Try a simpler query or use basic depth.`;
-        }
-        return `Tavily search failed: ${message}`;
-      }
+      return runTavilySearch(input, options);
     },
   );
 }
