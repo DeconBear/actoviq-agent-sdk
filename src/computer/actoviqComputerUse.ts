@@ -1,5 +1,6 @@
-import { realpath } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { z } from 'zod';
 
@@ -11,6 +12,8 @@ import type {
   CreateActoviqComputerUseOptions,
   LocalMcpServerDefinition,
 } from '../types.js';
+
+const realpath = promisify(realpathCallback.native);
 
 export interface ActoviqComputerUseToolkit {
   tools: AgentToolDefinition[];

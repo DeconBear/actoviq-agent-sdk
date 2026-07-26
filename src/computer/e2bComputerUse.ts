@@ -1,11 +1,15 @@
-import { realpath, writeFile } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { z } from 'zod';
 
 import { signalAborted } from '../runtime/helpers.js';
 import { tool } from '../runtime/tools.js';
 import type { AgentToolDefinition } from '../types.js';
+
+const realpath = promisify(realpathCallback.native);
 
 export interface E2bDesktopSandboxLike {
   sandboxId?: string;

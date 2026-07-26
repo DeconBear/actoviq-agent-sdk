@@ -1,10 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import type { Dirent, Stats } from 'node:fs';
-import { createReadStream } from 'node:fs';
-import { lstat, readdir, realpath, stat } from 'node:fs/promises';
+import { createReadStream, realpath as realpathCallback } from 'node:fs';
+import { lstat, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { resolveActoviqHome } from '../config/actoviqHome.js';
 import { ActoviqSdkError } from '../errors.js';
@@ -21,6 +22,9 @@ import {
   resolveReasonixSessionRoots,
   type ReasonixSessionMessage,
 } from './reasonixSessionParser.js';
+
+/** Prefer native realpath so Windows 8.3 short names canonicalize consistently. */
+const realpathNative = promisify(realpathCallback.native);
 
 export type ExternalCliRuntime = 'claude' | 'codex' | 'pi' | 'codewhale' | 'reasonix' | 'crush';
 export type ExternalCliSessionRole = 'user' | 'assistant' | 'system' | 'tool';
@@ -475,21 +479,15 @@ export async function readExternalCliSession(
     return readCrushSessionHistory(filePath, toCrushHistoryOptions(options, profile));
   }
   const requestedPath = path.resolve(filePath);
-  const configuredRoots = (await getConfiguredRoots(options)).filter(({ root }) =>
-    isPathInside(root, requestedPath),
-  );
-
-  if (configuredRoots.length === 0) {
-    throw unsafeSessionPath(requestedPath);
-  }
-
   const canonicalPath = await resolveFile(requestedPath);
   if (!canonicalPath) {
     return undefined;
   }
 
+  // Canonicalize roots before containment checks so Windows short/long path
+  // forms of the same directory are not treated as distinct trees.
   const allowedRoots: RootSpec[] = [];
-  for (const configuredRoot of configuredRoots) {
+  for (const configuredRoot of await getConfiguredRoots(options)) {
     const canonicalRoot = await resolveDirectory(configuredRoot.root);
     if (canonicalRoot && isPathInside(canonicalRoot, canonicalPath)) {
       allowedRoots.push({ ...configuredRoot, root: canonicalRoot });
@@ -638,8 +636,12 @@ async function managedCrushHistoryProfiles(
     'external-cli-profiles',
     'crush',
   );
+  // resolveDirectory already rejects symlinks via lstat. Do not compare the
+  // realpathed result against the lexical request path: on Windows, native
+  // realpath expands 8.3 short names (RUNNER~1 → runneradmin) and that must
+  // not look like a redirected/symlinked profile root.
   const runtimeRoot = await resolveDirectory(requestedRuntimeRoot);
-  if (!runtimeRoot || !sameResolvedPath(runtimeRoot, requestedRuntimeRoot)) return [];
+  if (!runtimeRoot) return [];
 
   let entries: Dirent[];
   try {
@@ -657,11 +659,11 @@ async function managedCrushHistoryProfiles(
     if (profiles.length >= MAX_MANAGED_PROFILES_PER_RUNTIME) break;
     const requestedProfileRoot = path.join(runtimeRoot, entry.name);
     const profileRoot = await resolveDirectory(requestedProfileRoot);
-    if (!profileRoot || !sameResolvedPath(profileRoot, requestedProfileRoot)) continue;
+    if (!profileRoot) continue;
 
     const requestedDataDir = path.join(profileRoot, 'data');
     const dataDir = await resolveDirectory(requestedDataDir);
-    if (!dataDir || !sameResolvedPath(dataDir, requestedDataDir)) continue;
+    if (!dataDir) continue;
     profiles.push({ id: entry.name, dataDir });
   }
   return profiles;
@@ -681,7 +683,7 @@ async function resolveDirectory(directory: string): Promise<string | undefined> 
     if (requestedInfo.isSymbolicLink() || !requestedInfo.isDirectory()) {
       return undefined;
     }
-    const canonicalPath = await realpath(directory);
+    const canonicalPath = await realpathNative(directory);
     return (await stat(canonicalPath)).isDirectory() ? canonicalPath : undefined;
   } catch {
     return undefined;
@@ -694,7 +696,7 @@ async function resolveFile(filePath: string): Promise<string | undefined> {
     if (requestedInfo.isSymbolicLink() || !requestedInfo.isFile()) {
       return undefined;
     }
-    const canonicalPath = await realpath(filePath);
+    const canonicalPath = await realpathNative(filePath);
     const canonicalInfo = await lstat(canonicalPath);
     return !canonicalInfo.isSymbolicLink() && canonicalInfo.isFile() ? canonicalPath : undefined;
   } catch {

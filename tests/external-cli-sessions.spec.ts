@@ -8,6 +8,7 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import os from 'node:os';
 import path from 'node:path';
@@ -931,8 +932,9 @@ describe('external CLI session history', () => {
       messageCount: 2,
       truncated: true,
     });
+    const canonicalSessionPath = realpathSync.native(sessionPath);
     const checkpointRead = fsSpies.createReadStream.mock.calls.find(
-      call => String(call[0]) === sessionPath,
+      call => String(call[0]) === canonicalSessionPath || String(call[0]) === sessionPath,
     );
     expect(checkpointRead?.[1]).toMatchObject({ end: byteLimit - 1 });
 

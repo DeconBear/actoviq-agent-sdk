@@ -1,4 +1,5 @@
 ﻿#!/usr/bin/env node
+import { writeSync } from 'node:fs';
 import process from 'node:process';
 
 function getFlagValue(flag) {
@@ -42,9 +43,13 @@ const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 if (command === 'agents') {
   const largeStdoutBytes = Number(process.env.ACTOVIQ_TEST_LARGE_STDOUT_BYTES ?? 0);
   if (Number.isFinite(largeStdoutBytes) && largeStdoutBytes > 0) {
-    process.stdout.write(`${'x'.repeat(largeStdoutBytes)}\n`);
+    // writeSync avoids truncated pipe writes when the fixture exits immediately
+    // after a multi-megabyte stdout.write() (seen on Linux CI runners).
+    writeSync(1, Buffer.alloc(largeStdoutBytes, 0x78));
+    writeSync(1, '\n');
   }
-  process.stdout.write(
+  writeSync(
+    1,
     [
       '3 active agents',
       '',
@@ -108,7 +113,8 @@ if (prompt === 'retention-bounds') {
 }
 
 if (prompt === 'large-stderr') {
-  process.stderr.write(`${'s'.repeat(1024 * 1024 + 64 * 1024)}stderr-tail`);
+  writeSync(2, Buffer.alloc(1024 * 1024 + 64 * 1024, 0x73));
+  writeSync(2, 'stderr-tail');
 }
 
 const text =

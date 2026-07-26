@@ -12,6 +12,7 @@ import {
   resolveBrowserScreenshotPath,
 } from '../src/browser/actoviqBrowserSession.js';
 import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+import { realpathSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -403,8 +404,9 @@ describe('browser-use toolkit', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-browser-output-'));
     try {
       await mkdir(path.join(root, 'artifacts'), { recursive: true });
+      const canonicalRoot = realpathSync.native(root);
       expect(resolveBrowserScreenshotPath(root, 'artifacts/page.png')).toBe(
-        path.join(root, 'artifacts', 'page.png'),
+        path.join(canonicalRoot, 'artifacts', 'page.png'),
       );
       expect(() => resolveBrowserScreenshotPath(root, '../outside.png')).toThrow(
         /must stay inside the workspace/i,

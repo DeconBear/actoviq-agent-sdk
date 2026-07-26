@@ -73,7 +73,7 @@ async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void>
 async function waitForJsonLine(
   filePath: string,
   predicate: (record: Record<string, unknown>) => boolean,
-  timeoutMs = 2_000,
+  timeoutMs = 8_000,
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

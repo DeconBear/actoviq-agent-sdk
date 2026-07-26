@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -172,7 +173,7 @@ describe('E2B computer-use plugin', () => {
         { cwd: workspace } as never,
       );
       expect(result).toMatchObject({
-        savedTo: path.join(workspace, 'screen.png'),
+        savedTo: path.join(realpathSync.native(workspace), 'screen.png'),
         sizeBytes: 4,
       });
       expect(await readFile(path.join(workspace, 'screen.png')))

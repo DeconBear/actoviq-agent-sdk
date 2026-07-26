@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -141,7 +142,9 @@ describe('local computer-use permission metadata', () => {
 
       await expect(
         screenshot.execute({ outputPath: 'screen.png' }, { cwd: workspace } as never),
-      ).resolves.toEqual({ savedTo: path.join(workspace, 'screen.png') });
+      ).resolves.toEqual({
+        savedTo: path.join(realpathSync.native(workspace), 'screen.png'),
+      });
       expect(takeScreenshot).toHaveBeenCalledTimes(1);
     } finally {
       await rm(workspace, { recursive: true, force: true });

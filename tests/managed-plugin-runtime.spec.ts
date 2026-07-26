@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -146,14 +147,15 @@ describe('managed plugin runtime', () => {
 
   it('constrains Kimi output and upload paths to the workspace', async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), 'actoviq-kimi-policy-'));
+    const canonicalWorkspace = realpathSync.native(workspace);
     const source = path.join(workspace, 'upload.txt');
     await writeFile(source, 'safe', 'utf8');
 
     try {
       expect(prepareKimiCommandArgs('screenshot', { path: 'screen.png' }, workspace))
-        .toEqual({ path: path.join(workspace, 'screen.png') });
+        .toEqual({ path: path.join(canonicalWorkspace, 'screen.png') });
       expect(prepareKimiCommandArgs('upload', { files: ['upload.txt'] }, workspace))
-        .toEqual({ files: [source] });
+        .toEqual({ files: [realpathSync.native(source)] });
       expect(() =>
         prepareKimiCommandArgs('screenshot', { path: '../outside.png' }, workspace),
       ).toThrow(/inside the workspace/i);
