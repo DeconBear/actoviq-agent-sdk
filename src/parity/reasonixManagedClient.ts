@@ -125,7 +125,13 @@ export class ReasonixManagedClient {
     if (this.closed && !this.child) return;
     this.closed = true;
     const active = this.activeTurn;
-    if (active && this.protocol) this.writeAll(this.protocol.cancel());
+    // Match AbortSignal: send session/cancel and allow a short grace window so
+    // the child can record/ack cancellation before process-tree termination.
+    // Do not gate on activeTurn — protocol may still need cancel after races.
+    if (this.protocol) {
+      this.writeAll(this.protocol.cancel());
+      await new Promise(resolve => setTimeout(resolve, ABORT_GRACE_MS));
+    }
     await this.terminate();
     active?.reject(new Error('Reasonix managed client was closed.'));
     await this.queueTail.catch(() => undefined);
