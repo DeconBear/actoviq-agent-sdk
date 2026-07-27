@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ActoviqProviderApiError } from '../src/errors.js';
-import ActoviqProviderClient from '../src/provider/client.js';
+import ActoviqProviderClient, { normalizeProviderUsage } from '../src/provider/client.js';
 import OpenaiProviderClient from '../src/provider/openai-client.js';
 import { OpenaiModelApi } from '../src/provider/openai-model-api.js';
 import { ActoviqModelApi } from '../src/runtime/actoviqModelApi.js';
@@ -376,6 +376,67 @@ describe('reasoning effort request mapping', () => {
     });
 
     expect(body?.reasoning_effort).toBe('high');
+  });
+});
+
+describe('normalizeProviderUsage', () => {
+  it('maps DeepSeek prompt_cache_hit_tokens onto cache_read_input_tokens', () => {
+    const usage = normalizeProviderUsage({
+      input_tokens: 1000,
+      output_tokens: 20,
+      prompt_cache_hit_tokens: 900,
+      prompt_cache_miss_tokens: 100,
+    });
+
+    expect(usage.cache_read_input_tokens).toBe(900);
+    expect(usage.prompt_cache_hit_tokens).toBe(900);
+    expect(usage.prompt_cache_miss_tokens).toBe(100);
+    expect(usage.input_tokens).toBe(1000);
+  });
+
+  it('does not overwrite an explicit Anthropic cache_read_input_tokens value', () => {
+    const usage = normalizeProviderUsage({
+      input_tokens: 50,
+      cache_read_input_tokens: 40,
+      prompt_cache_hit_tokens: 99,
+    });
+
+    expect(usage.cache_read_input_tokens).toBe(40);
+  });
+
+  it('maps DeepSeek cache fields through createMessage responses', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: 'msg_ds',
+          type: 'message',
+          role: 'assistant',
+          model: 'deepseek-v4-pro',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: {
+            input_tokens: 500,
+            output_tokens: 10,
+            prompt_cache_hit_tokens: 450,
+            prompt_cache_miss_tokens: 50,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    const client = new ActoviqProviderClient({
+      apiKey: 'test-key',
+      baseURL: 'https://api.deepseek.com/anthropic',
+      fetch: fetchImpl,
+    });
+
+    const message = await client.messages.create({
+      model: 'deepseek-v4-pro',
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 32,
+    });
+
+    expect(message.usage?.cache_read_input_tokens).toBe(450);
+    expect(message.usage?.prompt_cache_miss_tokens).toBe(50);
   });
 });
 

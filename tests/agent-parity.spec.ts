@@ -276,8 +276,8 @@ describe('Actoviq advanced parity features', () => {
     }
   });
 
-  it('locally clears old tool results for OpenAI-compatible follow-up requests', async () => {
-    const sessionDirectory = await createTempDir('actoviq-openai-local-microcompact-');
+  it('keeps historical tool results intact for OpenAI-compatible follow-up requests', async () => {
+    const sessionDirectory = await createTempDir('actoviq-openai-prefix-stable-');
     const longPayload = 'lookup-result-'.repeat(200);
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -323,13 +323,11 @@ describe('Actoviq advanced parity features', () => {
       const followUpMessages = JSON.stringify(followUpRequest?.messages);
 
       expect(followUpRequest?.context_management).toBeUndefined();
-      expect(followUpMessages).toContain('[Old tool result content cleared]');
-      expect(followUpMessages).not.toContain(longPayload.slice(0, 80));
+      // Prefix-stable: do not rewrite earlier tool_result content between turns.
+      expect(followUpMessages).not.toContain('[Old tool result content cleared]');
+      expect(followUpMessages).toContain(longPayload.slice(0, 80));
       expect(result.requests[1]?.requestByteLength).toBeGreaterThan(0);
-      expect(result.requests[1]?.localMicrocompact).toMatchObject({
-        enabled: true,
-        clearedToolResults: 1,
-      });
+      expect(result.requests[1]?.localMicrocompact).toBeUndefined();
     } finally {
       await sdk.close();
     }

@@ -221,20 +221,16 @@ export async function executeConversation(
     }
 
     const useAnthropicContextManagement = isAnthropicAPI(options.config.baseURL);
+    // Never rewrite historical tool_result content on the wire. Sliding-window
+    // local microcompact breaks automatic prefix caches (DeepSeek / MiniMax /
+    // other Anthropic-compatible hosts). Align with Claude Code: keep
+    // append-only history and rely on full autocompact for context pressure.
     const preparedMessages = prepareActoviqProviderRequestMessages(
       conversation,
       options.config.compact,
-      { localToolResultMicrocompact: !useAnthropicContextManagement },
+      { localToolResultMicrocompact: false },
     );
-    let localMicrocompact: AgentRequestSummary['localMicrocompact'] | undefined = preparedMessages.clearedToolResults > 0
-      ? {
-          enabled: true,
-          clearedToolResults: preparedMessages.clearedToolResults,
-          tokenEstimateBefore: preparedMessages.tokenEstimateBefore,
-          tokenEstimateAfter: preparedMessages.tokenEstimateAfter,
-        }
-      : undefined;
-    let request: ModelRequest = {
+    const request: ModelRequest = {
       model,
       max_tokens: options.maxTokens ?? options.config.maxTokens,
       system: options.systemPrompt ?? options.config.systemPrompt,
@@ -254,38 +250,10 @@ export async function executeConversation(
       messages: deepClone(preparedMessages.messages),
       signal: options.signal,
     };
-    let requestByteLength = getRequestByteLength(request);
-    let requestTokenEstimate = Math.ceil(
-      (localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter) *
-      tokenEstimateMultiplier,
+    const requestByteLength = getRequestByteLength(request);
+    const requestTokenEstimate = Math.ceil(
+      preparedMessages.tokenEstimateAfter * tokenEstimateMultiplier,
     );
-    const maxRequestBytes = options.config.compact.apiMicrocompactMaxRequestBytes;
-    if (
-      !useAnthropicContextManagement &&
-      maxRequestBytes &&
-      requestByteLength > maxRequestBytes
-    ) {
-      const forcedMessages = prepareActoviqProviderRequestMessages(
-        conversation,
-        options.config.compact,
-        { localToolResultMicrocompact: true, force: true },
-      );
-      const requestByteLengthBefore = requestByteLength;
-      request = {
-        ...request,
-        messages: deepClone(forcedMessages.messages),
-      };
-      requestByteLength = getRequestByteLength(request);
-      requestTokenEstimate = Math.ceil(forcedMessages.tokenEstimateAfter * tokenEstimateMultiplier);
-      localMicrocompact = {
-        enabled: true,
-        clearedToolResults: forcedMessages.clearedToolResults,
-        tokenEstimateBefore: forcedMessages.tokenEstimateBefore,
-        tokenEstimateAfter: forcedMessages.tokenEstimateAfter,
-        requestByteLengthBefore,
-        requestByteLengthAfter: requestByteLength,
-      };
-    }
 
     // Prompt caching: cache stable system/tools prefixes and the latest message
     // on Anthropic API hosts. Multiple breakpoints improve cache retention when
@@ -312,7 +280,7 @@ export async function executeConversation(
       iteration,
       requestTokenEstimate,
       requestByteLength,
-      localMicrocompact,
+      localMicrocompact: undefined,
       timestamp: nowIso(),
     });
 
@@ -444,7 +412,7 @@ export async function executeConversation(
     if (lastRequestInputTokens !== undefined && requestTokenEstimate > 0) {
       const observedMultiplier = clamp(
         lastRequestInputTokens / Math.max(
-          localMicrocompact?.tokenEstimateAfter ?? preparedMessages.tokenEstimateAfter,
+          preparedMessages.tokenEstimateAfter,
           1,
         ),
         0.5,
@@ -569,7 +537,7 @@ export async function executeConversation(
       createdAt: nowIso(),
       requestTokenEstimate,
       requestByteLength,
-      localMicrocompact,
+      localMicrocompact: undefined,
     });
 
     const toolUses = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use');

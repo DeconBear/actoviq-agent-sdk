@@ -1014,32 +1014,10 @@ export async function compactActoviqConversationIfNeeded(
     };
   }
 
-  // Stage 1: clear old large tool results. This alone may bring the
-  // conversation back under the threshold without losing turn structure.
+  // Stage 1: clear old large tool results only as preprocess for Stage 2
+  // summary. Never write microcompact-only mutations back into the live
+  // conversation — that breaks automatic prefix caches (DeepSeek, etc.).
   const microcompacted = compactToolResultContent(messages, config);
-  const afterMicrocompactTokens = Math.ceil(
-    estimateActoviqConversationTokens(microcompacted.messages) * tokenEstimateMultiplier,
-  );
-  const actualUsageTriggered =
-    !context.force &&
-    context.lastRequestInputTokens !== undefined &&
-    context.lastRequestInputTokens >= threshold &&
-    tokenEstimateBefore < threshold;
-  if (!context.force && !actualUsageTriggered && afterMicrocompactTokens < threshold) {
-    if (microcompacted.clearedCount > 0) {
-      compactionFailureCounts.delete(failureKey);
-    }
-    return {
-      messages: microcompacted.messages,
-      compacted: microcompacted.clearedCount > 0,
-      tokenEstimateBefore,
-      tokenEstimateAfter: afterMicrocompactTokens,
-      messagesSummarized: 0,
-      preservedMessages: microcompacted.messages.length,
-      clearedToolResults: microcompacted.clearedCount,
-      reason: microcompacted.clearedCount > 0 ? 'microcompact' : 'threshold_not_met',
-    };
-  }
 
   // Stage 2: summarize older turns, preserving the recent tail and any
   // tool_use blocks referenced by preserved tool_results.
@@ -1059,14 +1037,7 @@ export async function compactActoviqConversationIfNeeded(
   const messagesToSummarize = microcompacted.messages.slice(0, preserveStart);
   const messagesToKeep = microcompacted.messages.slice(preserveStart);
   if (messagesToSummarize.length === 0 || messagesToKeep.length === 0) {
-    return {
-      ...unchanged,
-      messages: microcompacted.messages,
-      compacted: microcompacted.clearedCount > 0,
-      tokenEstimateAfter: afterMicrocompactTokens,
-      clearedToolResults: microcompacted.clearedCount,
-      reason: microcompacted.clearedCount > 0 ? 'microcompact' : 'threshold_not_met',
-    };
+    return { ...unchanged, reason: 'threshold_not_met' };
   }
 
   let retryCount = 0;
@@ -1109,10 +1080,6 @@ export async function compactActoviqConversationIfNeeded(
       const message = error instanceof Error ? error.message : String(error);
       return {
         ...unchanged,
-        messages: microcompacted.messages,
-        compacted: microcompacted.clearedCount > 0,
-        tokenEstimateAfter: afterMicrocompactTokens,
-        clearedToolResults: microcompacted.clearedCount,
         reason: 'failed',
         consecutiveFailures: nextFailures,
         error: message,
@@ -1126,10 +1093,6 @@ export async function compactActoviqConversationIfNeeded(
     compactionFailureCounts.set(failureKey, nextFailures);
     return {
       ...unchanged,
-      messages: microcompacted.messages,
-      compacted: microcompacted.clearedCount > 0,
-      tokenEstimateAfter: afterMicrocompactTokens,
-      clearedToolResults: microcompacted.clearedCount,
       reason: 'failed',
       consecutiveFailures: nextFailures,
       error: 'Compaction returned an empty summary.',

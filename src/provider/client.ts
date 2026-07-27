@@ -154,7 +154,9 @@ function normalizeMessage(payload: unknown): Message {
     throw new Error('Provider response did not contain a valid message payload.');
   }
   const content = Array.isArray(payload.content) ? (payload.content as ContentBlock[]) : [];
+  const usage = isRecord(payload.usage) ? normalizeProviderUsage(payload.usage) : undefined;
   return {
+    ...payload,
     id: typeof payload.id === 'string' ? payload.id : 'msg_unknown',
     type: 'message',
     role: 'assistant',
@@ -168,9 +170,26 @@ function normalizeMessage(payload: unknown): Message {
       typeof payload.stop_sequence === 'string' || payload.stop_sequence === null
         ? (payload.stop_sequence as string | null)
         : null,
-    usage: isRecord(payload.usage) ? (payload.usage as Usage) : undefined,
-    ...payload,
+    usage,
   };
+}
+
+/**
+ * Map provider-specific cache accounting onto Anthropic-shaped usage fields.
+ * DeepSeek reports `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+ * instead of `cache_read_input_tokens` / `cache_creation_input_tokens`.
+ */
+export function normalizeProviderUsage(usage: Record<string, unknown>): Usage {
+  const normalized: Usage = { ...(usage as Usage) };
+  const hit = usage.prompt_cache_hit_tokens;
+  if (
+    typeof hit === 'number' &&
+    Number.isFinite(hit) &&
+    (normalized.cache_read_input_tokens == null)
+  ) {
+    normalized.cache_read_input_tokens = hit;
+  }
+  return normalized;
 }
 
 class MessageAccumulator {
@@ -215,7 +234,7 @@ class MessageAccumulator {
         }
       }
       if (event.usage && isRecord(event.usage)) {
-        this.message!.usage = event.usage as Usage;
+        this.message!.usage = normalizeProviderUsage(event.usage);
       }
     }
   }

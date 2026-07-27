@@ -593,14 +593,16 @@ function canonicalGuiUsage(value: unknown): Usage {
   };
   const inputTokens = count('input_tokens');
   const outputTokens = count('output_tokens');
+  const cacheReadTokens = count('cache_read_input_tokens') || count('prompt_cache_hit_tokens');
+  const cacheWriteTokens = count('cache_creation_input_tokens');
   return {
     ...emptyUsage(),
     requests: 1,
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
-    cacheReadTokens: count('cache_read_input_tokens'),
-    cacheWriteTokens: count('cache_creation_input_tokens'),
+    cacheReadTokens,
+    cacheWriteTokens,
   };
 }
 

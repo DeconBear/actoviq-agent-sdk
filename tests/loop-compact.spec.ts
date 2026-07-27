@@ -184,6 +184,98 @@ describe('compactActoviqConversationIfNeeded', () => {
     expect(String(modelApi.createCalls[0]?.messages[0]?.content)).toContain('analysis one');
   });
 
+  it('does not write microcompact-only tool_result clears back into the conversation', async () => {
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'SUMMARY after clearing verbose tool output' }]),
+    });
+    const longToolResult = 'tool-payload-'.repeat(400);
+    const messages: MessageParam[] = [
+      { role: 'user', content: 'inspect the large output' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_old', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_old', content: longToolResult }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'noted' }] },
+      { role: 'user', content: 'continue' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_new', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_new', content: 'tiny' }],
+      },
+    ];
+
+    const outcome = await compactActoviqConversationIfNeeded(messages, {
+      model: 'test-model',
+      modelApi,
+      compactConfig: baseCompactConfig({
+        loopAutoCompactThresholdTokens: 50,
+        microcompactEnabled: true,
+        microcompactKeepRecentToolResults: 1,
+        microcompactMinContentChars: 20,
+        preserveRecentMessages: 2,
+      }),
+      maxTokens: 1_000,
+      runKey: 'run-no-partial-microcompact',
+    });
+
+    // Must go through full summary compact rather than permanently clearing
+    // historical tool_result content in place.
+    expect(outcome.reason).toBe('compacted');
+    expect(outcome.compacted).toBe(true);
+    expect(outcome.messagesSummarized).toBeGreaterThan(0);
+    expect(JSON.stringify(outcome.messages)).not.toContain(longToolResult.slice(0, 40));
+    expect(modelApi.createCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('leaves the conversation unchanged when summary compaction fails', async () => {
+    const modelApi = new MockModelApi({
+      create: () => {
+        throw new Error('summary model unavailable');
+      },
+    });
+    const longToolResult = 'fail-payload-'.repeat(300);
+    const messages: MessageParam[] = [
+      { role: 'user', content: 'start' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_1', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: longToolResult }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: 'next' },
+    ];
+
+    const outcome = await compactActoviqConversationIfNeeded(messages, {
+      model: 'test-model',
+      modelApi,
+      compactConfig: baseCompactConfig({
+        loopAutoCompactThresholdTokens: 50,
+        microcompactEnabled: true,
+        microcompactKeepRecentToolResults: 0,
+        microcompactMinContentChars: 20,
+        preserveRecentMessages: 2,
+      }),
+      maxTokens: 1_000,
+      runKey: 'run-compact-fail-unchanged',
+    });
+
+    expect(outcome.compacted).toBe(false);
+    expect(outcome.reason).toBe('failed');
+    expect(outcome.messages).toEqual(messages);
+    expect(JSON.stringify(outcome.messages)).toContain(longToolResult.slice(0, 40));
+    expect(JSON.stringify(outcome.messages)).not.toContain('[Old tool result content cleared]');
+  });
+
   it('keeps tool_use/tool_result pairs together when extending the preserved tail', async () => {
     const modelApi = new MockModelApi({
       create: () => makeMessage([{ type: 'text', text: 'pairing summary' }]),
