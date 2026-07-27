@@ -15,10 +15,12 @@ import {
 import type { Message, MessageParam, MessageStreamEvent } from '../src/provider/types.js';
 import {
   compactActoviqConversationIfNeeded,
+  compactActoviqSession,
   formatActoviqCompactSummary,
 } from '../src/runtime/actoviqCompact.js';
+import { createDefaultActoviqSessionMemoryRuntimeState } from '../src/memory/actoviqSessionMemoryState.js';
 import { createTodoWriteTool } from '../src/tools/todo/TodoWriteTool.js';
-import type { ActoviqCompactConfig } from '../src/types.js';
+import type { ActoviqCompactConfig, StoredSession } from '../src/types.js';
 
 const tempDirs: string[] = [];
 let messageCounter = 0;
@@ -721,6 +723,120 @@ describe('TodoWrite state tracking', () => {
     } finally {
       await sdk.close();
     }
+  });
+});
+
+describe('compactActoviqSession prefix stability', () => {
+  function makeStoredSession(messages: MessageParam[]): StoredSession {
+    return {
+      version: 1,
+      revision: 0,
+      id: 'session-prefix-stable',
+      title: 'prefix stable',
+      titleSource: 'manual',
+      model: 'test-model',
+      tags: [],
+      metadata: {},
+      createdAt: '2026-07-27T00:00:00.000Z',
+      updatedAt: '2026-07-27T00:00:00.000Z',
+      status: 'idle',
+      messages,
+      runs: [],
+    };
+  }
+
+  it('does not persist microcompact-only tool_result clears below the auto threshold', async () => {
+    const modelApi = new MockModelApi({
+      create: () => {
+        throw new Error('summary should not run below threshold');
+      },
+    });
+    const longToolResult = 'session-payload-'.repeat(400);
+    const messages: MessageParam[] = [
+      { role: 'user', content: 'inspect' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_old', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_old', content: longToolResult }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+      { role: 'user', content: 'next' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_new', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_new', content: 'tiny' }],
+      },
+    ];
+    const session = makeStoredSession(messages);
+
+    const { session: next, result } = await compactActoviqSession(
+      session,
+      { trigger: 'auto' },
+      {
+        workDir: process.cwd(),
+        model: 'test-model',
+        modelApi,
+        compactConfig: baseCompactConfig({
+          // High enough that only microcompact would previously have fired.
+          autoCompactThresholdTokens: 1_000_000,
+          microcompactEnabled: true,
+          microcompactKeepRecentToolResults: 1,
+          microcompactMinContentChars: 20,
+        }),
+        runtimeState: createDefaultActoviqSessionMemoryRuntimeState(),
+      },
+    );
+
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe('threshold_not_met');
+    expect(next.messages).toEqual(messages);
+    expect(JSON.stringify(next.messages)).toContain(longToolResult.slice(0, 40));
+    expect(JSON.stringify(next.messages)).not.toContain('[Old tool result content cleared]');
+    expect(modelApi.createCalls).toHaveLength(0);
+  });
+
+  it('summarizes when over threshold instead of leaving cleared tool results in place', async () => {
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'SESSION_SUMMARY of older turns' }]),
+    });
+    const longToolResult = 'overflow-payload-'.repeat(500);
+    const messages: MessageParam[] = [
+      { role: 'user', content: `big context ${longToolResult}` },
+      { role: 'assistant', content: [{ type: 'text', text: `analysis ${longToolResult}` }] },
+      { role: 'user', content: `follow ${longToolResult}` },
+      { role: 'assistant', content: [{ type: 'text', text: 'tail answer' }] },
+      { role: 'user', content: 'latest' },
+    ];
+    const session = makeStoredSession(messages);
+
+    const { session: next, result } = await compactActoviqSession(
+      session,
+      { trigger: 'auto', preserveRecentMessages: 2 },
+      {
+        workDir: process.cwd(),
+        model: 'test-model',
+        modelApi,
+        compactConfig: baseCompactConfig({
+          autoCompactThresholdTokens: 50,
+          microcompactEnabled: true,
+          microcompactKeepRecentToolResults: 0,
+          microcompactMinContentChars: 20,
+          preserveRecentMessages: 2,
+        }),
+        runtimeState: createDefaultActoviqSessionMemoryRuntimeState(),
+      },
+    );
+
+    expect(result.compacted).toBe(true);
+    expect(result.reason).toBe('compacted');
+    expect(JSON.stringify(next.messages[0])).toContain('SESSION_SUMMARY');
+    expect(modelApi.createCalls.length).toBeGreaterThanOrEqual(1);
   });
 });
 

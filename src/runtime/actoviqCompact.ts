@@ -631,8 +631,11 @@ export async function compactActoviqSession(
     session.messages.length > filteredMessages.length
       ? session.messages.map(message => structuredClone(message))
       : filteredMessages;
+  // Estimate against the real session prefix. Microcompact is only a
+  // preprocess for full summary — never a standalone mutation that would
+  // break automatic prompt-prefix caches used by createAgentSdk / actoviq-react.
+  const tokenEstimateBefore = estimateActoviqConversationTokens(compactableMessages);
   const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig);
-  const tokenEstimateBefore = estimateActoviqConversationTokens(microcompacted.messages);
 
   if (!context.compactConfig.enabled) {
     return {
@@ -649,7 +652,7 @@ export async function compactActoviqSession(
     };
   }
 
-  if (microcompacted.messages.length === 0) {
+  if (compactableMessages.length === 0) {
     return {
       session,
       result: {
@@ -672,42 +675,6 @@ export async function compactActoviqSession(
       : context.compactConfig.autoCompactThresholdTokens;
 
   if (!options.force && tokenEstimateBefore < effectiveThreshold) {
-    if (microcompacted.clearedCount > 0) {
-      const cloned = structuredClone(session);
-      cloned.messages = microcompacted.messages;
-      cloned.metadata[ACTOVIQ_COMPACT_STATE_KEY] = serializeActoviqCompactState({
-        ...persistedState,
-        microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
-      });
-      const latestBoundary = getLatestPersistedCompactBoundary(cloned);
-      appendPersistedCompactHistory(cloned, {
-        kind: 'microcompact',
-        timestamp: nowIso(),
-        trigger: options.trigger,
-        logicalParentUuid: latestBoundary?.uuid,
-        metadata: {
-          trigger: options.trigger,
-          preTokens: tokenEstimateBefore,
-          tokensSaved:
-            tokenEstimateBefore - estimateActoviqConversationTokens(cloned.messages),
-          compactedToolIds: microcompacted.clearedToolIds,
-        },
-      });
-      return {
-        session: cloned,
-        result: {
-          compacted: true,
-          trigger: options.trigger,
-          reason: 'microcompact',
-          tokenEstimateBefore,
-          tokenEstimateAfter: estimateActoviqConversationTokens(cloned.messages),
-          compactCount: persistedState.compactCount,
-          microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
-          state: context.runtimeState,
-        },
-      };
-    }
-
     return {
       session,
       result: {
@@ -749,7 +716,7 @@ export async function compactActoviqSession(
         reason: 'threshold_not_met',
         tokenEstimateBefore,
         compactCount: persistedState.compactCount,
-        microcompactCount: persistedState.microcompactCount + microcompacted.clearedCount,
+        microcompactCount: persistedState.microcompactCount,
         state: context.runtimeState,
       },
     };

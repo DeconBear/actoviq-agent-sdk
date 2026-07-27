@@ -30,7 +30,7 @@ const DEFAULT_COMPACT_CONFIG = {
   apiMicrocompactMaxInputTokens: 180_000,
   apiMicrocompactTargetInputTokens: 40_000,
   apiMicrocompactMaxRequestBytes: 1_500_000,
-  apiMicrocompactClearToolResults: true,
+  apiMicrocompactClearToolResults: false,
   apiMicrocompactClearToolUses: false,
   toolResultArtifactMaxChars: 80_000,
   toolResultsPerMessageMaxChars: 200_000,
