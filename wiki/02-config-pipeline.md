@@ -156,13 +156,14 @@ const DEFAULT_COMPACT_CONFIG = {
   autoCompactThresholdTokens: 155_000,
   preserveRecentMessages: 8,
   maxSummaryTokens: 20_000,
-  microcompactEnabled: true,
+  microcompactEnabled: true, // preprocess for full summary only; not persisted alone
   microcompactKeepRecentToolResults: 3,
   microcompactMinContentChars: 1_000,
   apiMicrocompactEnabled: true,
   apiMicrocompactMaxInputTokens: 180_000,
   apiMicrocompactTargetInputTokens: 40_000,
   apiMicrocompactMaxRequestBytes: 1_500_000,
+  apiMicrocompactClearToolResults: false, // keep prefixes stable (DeepSeek/etc.)
   toolResultArtifactMaxChars: 80_000,
   toolResultsPerMessageMaxChars: 200_000,
   loopAutoCompactEnabled: true,

@@ -15,7 +15,7 @@
 | 06 | [子代理系统](06-subagent-system.md) | Agent/Task 委派、后台任务 | `src/runtime/actoviqAgents.ts`, `src/runtime/actoviqBackgroundTasks.ts` |
 | 07 | [工具系统](07-tool-system.md) | tool() 工厂、核心/文件/Shell 工具 | `src/runtime/tools.ts`, `src/tools/*` |
 | 08 | [Provider 层](08-provider-layer.md) | ModelApi、Anthropic/OpenAI 适配器 | `src/runtime/actoviqModelApi.ts`, `src/provider/*` |
-| 09 | [上下文注入](09-context-injection.md) | 系统提示词、通知、压缩 | `src/runtime/agentClient.ts:2105-2800` |
+| 09 | [上下文注入](09-context-injection.md) | 系统提示词、通知、前缀稳定压缩 | `src/runtime/agentClient.ts`、`src/runtime/actoviqCompact.ts` |
 | 10 | [权限系统](10-permissions.md) | 工具权限决策管道 | `src/runtime/actoviqPermissions.ts` |
 | 11 | [钩子系统](11-hooks-system.md) | 生命周期钩子 | `src/hooks/actoviqHooks.ts` |
 | 12 | [记忆与梦境](12-memory-and-dream.md) | 记忆整合、Dream 过程 | `src/memory/*` |

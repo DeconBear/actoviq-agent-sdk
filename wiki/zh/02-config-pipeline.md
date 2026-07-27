@@ -61,11 +61,14 @@ function encodeActoviqProjectPath(workDir: string): string {
 autoCompactThresholdTokens: 155_000,
 preserveRecentMessages: 8,
 contextWindowTokens: 200_000,
+apiMicrocompactClearToolResults: false, // 保持前缀稳定（DeepSeek 等自动缓存）
 
 // 运行时默认值：
 provider = 'anthropic', maxTokens = 32000,
 timeoutMs = 600000, maxToolIterations = Infinity
 ```
+
+回合之间保持 append-only：不在请求侧滑动清空历史 `tool_result`；上下文压力走整段摘要 compact。
 
 ### 边界情况
 

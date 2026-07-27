@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## v0.4.8 - 2026-07-27
+
+### Runtime / prompt cache
+
+- Keep conversation history **append-only** on the wire and in session compact: no sliding-window rewrite of historical `tool_result` content between ReAct turns or auto session compact (aligns with Claude Code third-party behavior).
+- Context pressure is handled by **full summary compact** (in-loop + session), not by nibbling earlier tool results. Default `apiMicrocompactClearToolResults` is now `false`.
+- Map DeepSeek `prompt_cache_hit_tokens` → `cache_read_input_tokens` for local usage / GUI reporting. DeepSeek Context Caching remains automatic on their side; Anthropic hosts still receive explicit `cache_control` breakpoints.
+
+### GUI / docs
+
+- Document that the desktop **Agent graph** orchestration UI remains **under active iteration and optimization** (not a stable product surface). Prefer `/team`, saved team definitions, and SDK `createTeam()` / graph runtime for production workflows.
+
+### Notes
+
+- This release stays on the **0.4.x** line. **1.0.0 is not published yet.**
+
 ## v0.4.7 - 2026-07-12
 
 ### GUI
@@ -14,7 +30,7 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ### Still under development (not product-ready in 0.4.7)
 
-- Main **Agent** / team-graph region UI
+- Main **Agent** / team-graph / **Agent graph orchestration UI** — still being iterated and optimized; do not treat as finished
 - Settings: **Profile**, **Browser**, **Computer control**, dedicated **Worktrees** tab
 - Keyboard shortcut remapping (reference list only)
 - Full 1.0 runtime/package surface (tracked as unreleased below)

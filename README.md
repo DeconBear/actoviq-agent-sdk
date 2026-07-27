@@ -9,7 +9,9 @@
 
 Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
 
-**Actoviq** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**. The GUI still hides some under-development panels (see `CHANGELOG.md` for 0.4.7).
+**Actoviq** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**.
+
+> **Note:** The desktop **Agent graph** orchestration UI (visual team / graph editor) is **still under active iteration and optimization** — expect UX and API changes. Prefer `/team`, saved team definitions, and the SDK `createTeam()` / graph runtime for production workflows today. See `CHANGELOG.md`.
 
 Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Actoviq remains independent with its own public surface and documentation.
 
@@ -25,7 +27,7 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 - **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.actoviq/routers/`.
 - **Dynamic Workflows** — JS script-based orchestration with explicit trust levels: trusted compatibility execution, isolated local-process execution, or a host-supplied remote/container sandbox for adversarial inputs.
 - **Bridge (named runtime configs)** — choose `Direct API` for provider-level reuse, or `External CLI` to launch installed Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush; reuse each CLI's native login/config, stream normalized tool and assistant events, stop background work, and browse/resume supported native conversations. An explicit key override is injected only into the child and is not written to the CLI's credential store; Pi, CodeWhale, Reasonix, and Crush keep isolated per-config session profiles so that key-mode history survives restarts without reading the native login store.
-- **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened.
+- **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened. The visual **Agent graph** orchestration UI is shipping in-progress and continues to be iterated (not a stable product surface yet).
 - **TUI (`actoviq-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
 - **Plan mode + hooks** — `EnterPlanMode`/`ExitPlanMode` tools with plan file; user-configurable `PreToolUse`/`PostToolUse`/`SessionStart` hooks from `settings.json`.
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout.
@@ -148,7 +150,7 @@ Features:
 - **Plan mode + hooks** — `/plan` enters plan mode (`EnterPlanMode`/`ExitPlanMode` tools, plan file); `PreToolUse`/`PostToolUse`/`SessionStart` hooks from settings.json; `/hooks` lists them.
 - **Bridge configs** — `/bridge config` manages named API or External CLI profiles for all six managed CLIs. `/bridge status`, `/bridge background`, `/bridge runs`, `/bridge stop`, `/bridge history`, and `/bridge resume` expose the same runtime lifecycle in the TUI and GUI; native history/resume remains subject to each installed CLI's protocol/version support.
 - **Diagnostics + inspection** — `/doctor` checks config health; `/context` inspects the context window; `/cost`/`/usage` track token + spend (per-config breakdown); `/review` reviews the git diff; `/stats` shows session stats.
-- **Context management built in** — the Hadamard SDK auto-compacts long sessions mid-run and reactively recovers when a provider rejects an oversized prompt; compactions surface as `∿ context compacted` notices.
+- **Context management built in** — the Hadamard SDK auto-compacts long sessions mid-run (full summary compact) and reactively recovers when a provider rejects an oversized prompt; notices surface as ∿ context compacted. History stays **append-only** between turns so automatic prefix caches (e.g. DeepSeek Context Caching) stay hot; Anthropic hosts still get explicit cache_control breakpoints. Oversized tool outputs are artifacted at write time rather than rewriting earlier messages.
 - **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.actoviq/mcp.json`.
 - **Image attachments** — `@<path>.png` tokens expand into image content blocks (in-process, read as base64).
 
@@ -181,6 +183,7 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 - **Command palette + slash commands**, settings (provider / model / keys / appearance), workspace switching, and empty-chat cleanup
 - **Per-tool permission prompts** (queued so concurrent requests don't collide) and a token-usage readout
 - **Project Documents + Issues** — each Project detail page has `Document` and `Issues` tabs. Issues use the guarded `backlog → todo → in_progress → in_review/blocked → done` lifecycle, support priorities, labels, acceptance criteria, comments, and links back to their worker sessions.
+- **Agent graph orchestration UI** — visual team/graph editor lives in the GUI **Agent** region; **it is still being iterated and optimized** and should not be treated as a finished product surface. Prefer saved teams + `/team` / SDK APIs for stable workflows.
 - **Agent Profiles for issue dispatch** — Settings → Models & routing can bind a named profile to a saved bridge config and model. `/issues start <id> [agent-profile]` asks the Project Manager for a worker brief, starts a linked session without changing the globally active runtime, and requires the worker to report through `IssueReport`.
 - **Movable data root** — Settings → General can copy the complete Actoviq data root to an empty directory, validate it, write the bootstrap pointer, rebuild the SDK/session store, and retain the previous directory for manual cleanup.
 

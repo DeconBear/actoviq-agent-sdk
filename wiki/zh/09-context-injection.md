@@ -33,22 +33,23 @@ System Prompt =
 
 ### 压缩系统
 
-两种压缩模式：
+**前缀稳定策略（对齐 Claude Code）：** 回合之间**不回写**历史 `tool_result`。滑动窗口清空会打断 DeepSeek 等自动前缀缓存。超大工具输出在**写入时**落盘归档；上下文压力靠整段摘要 compact。
 
-**微压缩**（每次请求）：在每次 API 调用前修剪过大的工具结果。
+**完全压缩**（对话中途 / 会话级）：超过 `autoCompactThresholdTokens`（默认 155K）时，用模型总结旧消息，保留最近消息（默认 8 条），注入摘要。会有一次有意的 cache miss，之后新前缀再稳定。
 
-**完全压缩**（对话中途）：当上下文超过 `autoCompactThresholdTokens`（默认 155K）时，通过模型总结旧消息，保留最近消息（默认 8 条），将摘要作为合成系统消息注入。
+**Anthropic prompt cache：** 仅在 `*.anthropic.com` 上打 `cache_control` 断点。DeepSeek 等兼容端依赖其自动 Context Caching；`prompt_cache_hit_tokens` 会映射为本地的 `cache_read_input_tokens`。
 
 ```
 上下文大小检查（每次模型请求前）
     │
-    ├── < 155K tokens → 无操作
-    └── ≥ 155K tokens → compactActoviqConversationIfNeeded()
-        ├── 微压缩：修剪旧工具结果
-        ├── 完全压缩：总结 + 保留最近消息
+    ├── < 阈值 → append-only（不改写历史）
+    └── ≥ 阈值 → compactActoviqConversationIfNeeded()
+        ├── 仅整段摘要 compact（microcompact 只作摘要输入预处理，不写回会话）
         └── 断路器：连续 3 次失败 → 停止压缩
 ```
 
+`createAgentSdk` / `actoviq-react` 使用的会话级 `compactActoviqSession` 遵循同样规则。
+
 ### 工具结果归档
 
-当工具结果超过 `toolResultArtifactMaxChars`（默认 80K）时，写入文件并替换为占位符。
+当工具结果超过 `toolResultArtifactMaxChars`（默认 80K）时，写入文件并替换为占位符（只影响当前结果，不回改更早消息）。

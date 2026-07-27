@@ -130,6 +130,8 @@ const tool = createTeamTool(definition);
 /team ask <name> <prompt>  — 向团队提问
 ```
 
+GUI **Agent graph** 编排 UI 仍在持续迭代与优化中；生产工作流请优先使用已保存 team 定义、`/team` 与 SDK API。
+
 ## 设计决策
 
 - **ADR-6**：无限迭代默认——模型自主决定收敛

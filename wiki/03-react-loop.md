@@ -48,11 +48,16 @@ executeConversation(options)
     │   │
     │   ├── 2. Build ModelRequest
     │   │      • System prompt (tools + skills + memory + env)
-    │   │      • Messages (full conversation history)
+    │   │      • Messages (full conversation history, append-only)
     │   │      • Tool definitions (JSON Schema)
     │   │      • Model, maxTokens, temperature, effort
     │   │      • Skip context_management for non-Anthropic providers
+    │   │      • Anthropic hosts: optional prompt-cache `cache_control` breakpoints
     │   │      • Strip type:custom for DeepSeek
+    │   │
+    │   ├── 2b. Context pressure (if needed)
+    │   │      • Full summary compact only — never rewrite earlier tool_result
+    │   │        text in place (keeps DeepSeek / automatic prefix caches hot)
     │   │
     │   ├── 3. Send to model
     │   │      • Streaming: iterate AsyncGenerator<MessageStreamEvent>

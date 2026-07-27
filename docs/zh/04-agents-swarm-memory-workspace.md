@@ -227,16 +227,19 @@ console.log(autoResult.task?.id);
 
 Hadamard SDK 当前支持：
 
-1. 自动 compact
-2. reactive compact
-3. API-oriented microcompact
+1. 自动整段摘要 compact（in-loop + 会话级）
+2. provider 拒绝对话过长时的 reactive compact
+3. 超大工具结果在**写入时**落盘归档
 4. compact history 和 continuity metadata 持久化
+
+**前缀稳定：** 回合之间保持 append-only，**不会**滑动清空更早的 `tool_result`（否则会打断 DeepSeek 等自动前缀缓存）。默认 `apiMicrocompactClearToolResults = false`。Anthropic 主机仍可打 `cache_control`；DeepSeek 的 `prompt_cache_hit_tokens` 会映射为本地 `cache_read_input_tokens`。
 
 它最重要的作用是：
 
 1. 长对话时控制上下文长度
 2. 压缩后尽量保持推理连续性
 3. 让 session-memory 和 compact 一起工作
+4. 在第三方自动缓存场景下尽量维持高命中率
 
 手动 compact 可以附加摘要要求，并以结构化结果返回失败状态：
 

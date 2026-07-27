@@ -16,7 +16,7 @@ connects), and **code details** (how it's implemented).
 | 06 | [Subagent System](06-subagent-system.md) | Agent/Task delegation, background tasks | `src/runtime/actoviqAgents.ts`, `src/runtime/actoviqBackgroundTasks.ts` |
 | 07 | [Tool System](07-tool-system.md) | tool() factory, core/file/shell tools | `src/runtime/tools.ts`, `src/tools/*` |
 | 08 | [Provider Layer](08-provider-layer.md) | ModelApi, Anthropic/OpenAI adapters | `src/runtime/actoviqModelApi.ts`, `src/provider/*` |
-| 09 | [Context Injection](09-context-injection.md) | System prompt, notifications, compaction | `src/runtime/agentClient.ts:2105-2800`, `src/runtime/actoviqCompact.ts` |
+| 09 | [Context Injection](09-context-injection.md) | System prompt, notifications, prefix-stable compaction | `src/runtime/agentClient.ts`, `src/runtime/actoviqCompact.ts` |
 | 10 | [Permissions](10-permissions.md) | Tool permission decision pipeline | `src/runtime/actoviqPermissions.ts` |
 | 11 | [Hooks System](11-hooks-system.md) | Lifecycle hooks (session/run/stop) | `src/hooks/actoviqHooks.ts` |
 | 12 | [Memory & Dream](12-memory-and-dream.md) | Memory consolidation, dream process | `src/memory/*` |

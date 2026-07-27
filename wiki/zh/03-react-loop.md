@@ -22,7 +22,9 @@ executeConversation(options)
     │
     ├── [循环] while (true):
     │   ├── 1. 解析工具适配器（MCP + 本地）
-    │   ├── 2. 构建 ModelRequest（系统提示词 + 消息 + 工具 + 参数）
+    │   ├── 2. 构建 ModelRequest（系统提示词 + append-only 消息 + 工具 + 参数）
+    │   │   • Anthropic 主机可打 cache_control；DeepSeek 等依赖自动前缀缓存
+    │   ├── 2b. 上下文压力：仅整段摘要 compact（不回写历史 tool_result）
     │   ├── 3. 发送给模型（流式或非流式）
     │   ├── 4. 提取 tool_use 块 → 如果没有 → 返回结果（循环结束）
     │   ├── 5. 执行工具（最多 10 个并发）
@@ -32,7 +34,7 @@ executeConversation(options)
     │   │   d. 追踪连续失败
     │   ├── 6. 推送 tool_result 块（tool_use_id 必须匹配）
     │   ├── 7. 检查停止条件（maxToolIterations? / 3 连败? / signal?）
-    │   ├── 8. 需要时压缩上下文
+    │   ├── 8. 需要时压缩上下文（同上：只摘要，不啃历史前缀）
     │   └── 9. 发送事件 + 继续循环
     │
     └── [返回] AgentRunResult

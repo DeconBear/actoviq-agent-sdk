@@ -218,10 +218,17 @@ Repository example:
 
 The Hadamard SDK supports:
 
-1. automatic compact
-2. reactive compact
-3. API-oriented microcompact shaping
+1. automatic full-summary compact (in-loop + session)
+2. reactive compact when a provider rejects an oversized prompt
+3. write-time tool-result artifacting for oversized outputs
 4. persisted compact history and continuity metadata
+
+**Prefix stability:** between turns the runtime keeps history append-only. It does
+**not** slide-clear earlier `tool_result` text (that would break automatic prefix
+caches such as DeepSeek Context Caching). `apiMicrocompactClearToolResults`
+defaults to `false`. Anthropic hosts may still receive explicit `cache_control`
+breakpoints; DeepSeek `prompt_cache_hit_tokens` map to `cache_read_input_tokens`
+for local reporting.
 
 This matters most in long-running sessions and multi-turn task flows.
 

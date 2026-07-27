@@ -59,39 +59,45 @@ collectPendingTaskNotifications(sessionId)
 
 ### Compaction System
 
-Location: `src/runtime/actoviqCompact.ts`
+Location: `src/runtime/actoviqCompact.ts`, `src/runtime/conversationEngine.ts`
 
-Two compaction modes:
+**Prefix-stable policy (Hadamard + Claude Code alignment):** do **not** rewrite
+historical `tool_result` content between turns. Sliding-window “clear old tool
+results” breaks automatic prefix caches (DeepSeek Context Caching, etc.).
+Oversized outputs are artifacted **when written**; later pressure uses a full
+summary compact instead.
 
-**Microcompact** (per-request): Trims oversized tool results before each API
-call to keep request size under provider limits.
-
-**Full compact** (mid-conversation): When context exceeds
+**Full compact** (mid-conversation / session): When context exceeds
 `autoCompactThresholdTokens` (default 155K), summarizes old messages via the
 model, preserves recent messages (default 8), and injects the summary as a
-synthetic system message.
+synthetic user/system reminder. One intentional cache miss, then the new prefix
+is stable again.
+
+**Anthropic prompt cache:** on `*.anthropic.com` hosts, requests may add
+`cache_control` breakpoints on system / tools / last message. Third-party
+Anthropic-compatible hosts (DeepSeek, MiniMax, …) rely on provider-side
+automatic caching; DeepSeek usage fields `prompt_cache_hit_tokens` are mapped
+to `cache_read_input_tokens` for local reporting.
 
 ```
 Context size check (before each model request)
     │
-    ├── < 155K tokens → no action
+    ├── < threshold → append-only history (no rewrite)
     │
-    └── ≥ 155K tokens → compactActoviqConversationIfNeeded()
+    └── ≥ threshold → compactActoviqConversationIfNeeded()
         │
-        ├── Microcompact first (trim old tool results)
-        │   • Clear tool results older than microcompactKeepRecentToolResults
-        │   • Artifact oversized results to files
-        │   • Replace with placeholder text
-        │
-        ├── If still too large → full compact
-        │   • Select messages to summarize
-        │   • Call model to generate summary
+        ├── Full summary compact only
+        │   • Optionally preprocess cleared tool text as summary *input*
+        │   • Never persist microcompact-only mutations to the live session
         │   • Preserve recent messages (default 8)
-        │   • Inject summary as system message
         │   • Maintain tool_use_id ↔ tool_result pairing
         │
         └── Circuit breaker: 3 consecutive failures → stop compacting
 ```
+
+Session-level `compactActoviqSession` (used by `createAgentSdk` / `actoviq-react`
+after turns) follows the same rule: below threshold → unchanged session; above
+threshold → full summary only.
 
 ### Compaction State Persistence
 
@@ -204,10 +210,11 @@ export async function compactActoviqConversationIfNeeded(
   }
 
   try {
-    // 4. Microcompact: trim old tool results
+    // 4. Optional microcompact only as *input preprocess* for the summary call.
+    //    Never return microcompact-only mutations to the live conversation.
     const microcompacted = microcompactConversation(messages, context);
 
-    // 5. Full compact: summarize old messages
+    // 5. Full compact: summarize old messages; on failure return original messages
     const compacted = await fullCompactConversation(microcompacted, context);
 
     compactionFailureCounts.delete(context.workDir);
