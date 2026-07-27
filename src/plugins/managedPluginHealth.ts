@@ -5,6 +5,12 @@ import {
 } from './managedPluginCatalog.js';
 import { createGitHubPlugin } from './githubPlugin.js';
 import { createKimiWebBridgePlugin } from './kimiWebBridgePlugin.js';
+import {
+  availableMediaProfiles,
+  hasMediaGenSecret,
+  isMediaGenPluginId,
+  kindForPluginId,
+} from './mediaGenProfiles.js';
 import { resolveExaApiKey, runExaSearch } from '../tools/exaSearch.js';
 import { resolveTavilyApiKey, runTavilySearch } from '../tools/tavilySearch.js';
 
@@ -132,6 +138,30 @@ export async function probeManagedPlugin(
       return { state: 'degraded', detail: result.slice(0, 240) };
     }
     return { state: 'ready', detail: 'Exa search responded successfully.' };
+  }
+
+  if (isMediaGenPluginId(pluginId)) {
+    const kind = kindForPluginId(pluginId);
+    if (!hasMediaGenSecret(config, kind)) {
+      return {
+        state: 'needs-setup',
+        detail: `Add at least one ${kind} generation profile with an API key.`,
+      };
+    }
+    const profiles = availableMediaProfiles(config, kind);
+    const defaultId = stringValue(config.defaultProfileId);
+    const preferred = defaultId
+      ? profiles.find(profile => profile.id === defaultId) ?? profiles[0]
+      : profiles[0];
+    return {
+      state: 'ready',
+      detail:
+        `${profiles.length} profile(s) configured`
+        + (preferred
+          ? `; default ${preferred.id} (${preferred.provider}/${preferred.model}). `
+          : '. ')
+        + 'Connection checks do not call billable generation APIs.',
+    };
   }
 
   try {

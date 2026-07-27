@@ -1858,6 +1858,11 @@
         "signature": "export interface CreateGitWorktreeWorkspaceOptions {\nrepositoryPath: string;\npath?: string;\nparentDir?: string;\nname?: string;\nref?: string;\nbranch?: string;\ndetach?: boolean;\nforce?: boolean;\nmetadata?: Record<string, string>;\n}"
       },
       {
+        "name": "createImageGenTool",
+        "kind": "function",
+        "signature": "export declare function createImageGenTool(options: ImageGenToolOptions): AgentToolDefinition<ImageGenInput, ImageGenResult>;"
+      },
+      {
         "name": "createIssueReportTool",
         "kind": "function",
         "signature": "export declare function createIssueReportTool(options: {\nworkDir: string;\nhomeDir: string;\nstorageMode: IssueStorageMode;\nissueId: string;\nonReported?: (issue: ProjectIssue) => void;\n}): AgentToolDefinition;"
@@ -1886,6 +1891,11 @@
         "name": "CreateManagerToolsOptions",
         "kind": "interface",
         "signature": "export interface CreateManagerToolsOptions {\nworkDir: string;\nhomeDir: string;\nconfig?: ManagerConfig;\nissueStorageMode?: IssueStorageMode;\n}"
+      },
+      {
+        "name": "createMeshGenTool",
+        "kind": "function",
+        "signature": "export declare function createMeshGenTool(options: MeshGenToolOptions): AgentToolDefinition<MeshGenInput, MeshGenResult>;"
       },
       {
         "name": "createModelTeam",
@@ -1966,6 +1976,11 @@
         "name": "createToolSearchTool",
         "kind": "function",
         "signature": "export declare function createToolSearchTool(): AgentToolDefinition;"
+      },
+      {
+        "name": "createVideoGenTool",
+        "kind": "function",
+        "signature": "export declare function createVideoGenTool(options: VideoGenToolOptions): AgentToolDefinition<VideoGenInput, VideoGenResult>;"
       },
       {
         "name": "createWorkspace",
@@ -2628,6 +2643,11 @@
         "signature": "export interface HatchActoviqBuddyOptions extends ActoviqBuddyOptions {\nname: string;\npersonality: string;\n}"
       },
       {
+        "name": "IMAGE_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "IMAGE_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional image-generation prompt \\u2014 NOT a verbatim short user utterance (unless the user already supplied a complete professional prompt; then use it with only light completion of missing dimensions).\\n\\nFormulas (from Qwen Image skill):\\n- Basic: Entity + Environment + Style\\n- Advanced (default target): Entity(details) + Environment(details) + Style + Camera Language + Atmosphere + Detail Modifiers\\n\\nCover: subject details, setting, lighting (golden hour / rim light / studio), shot size (close-up / medium / long), perspective (eye level / low angle), lens (85mm / wide), style keywords (realistic / watercolor / C4D / Pixar / Chinese ink), quality modifiers (sharp focus, 8K).\\nFor posters or on-image text: explicitly state the exact wording and layout position.\\nOptional `negativePrompt`: exclude unwanted elements. Default when user is silent: \\\"low quality, blurry, distorted, deformed, bad anatomy, extra limbs, watermark, text, signature, out of frame, cropped\\\".\\nOptional `userIntent`: short original user wording for audit only \\u2014 never sent to the provider API.\\nDashScope `promptExtend`: true for short prompts (<~30 words), false when the advanced formula is already fully specified.\""
+      },
+      {
         "name": "InMemoryTaskStore",
         "kind": "class",
         "signature": "export declare class InMemoryTaskStore implements ScheduledTaskStore {\nprivate readonly tasks;\nsave(task: ScheduledTaskRecord): Promise<void>;\nload(id: string): Promise<ScheduledTaskRecord | undefined>;\nlist(): Promise<ScheduledTaskRecord[]>;\ndelete(id: string): Promise<void>;\n}"
@@ -2895,7 +2915,7 @@
       {
         "name": "MANAGED_PLUGIN_IDS",
         "kind": "value",
-        "signature": "MANAGED_PLUGIN_IDS: readonly [\n\"ocr\",\n\"computer-use\",\n\"github\",\n\"kimi-webbridge\",\n\"playwright\",\n\"tavily\",\n\"exa\"\n]"
+        "signature": "MANAGED_PLUGIN_IDS: readonly [\n\"ocr\",\n\"computer-use\",\n\"github\",\n\"kimi-webbridge\",\n\"playwright\",\n\"tavily\",\n\"exa\",\n\"image-gen\",\n\"video-gen\",\n\"mesh-gen\"\n]"
       },
       {
         "name": "ManagedOcrConfig",
@@ -3018,6 +3038,16 @@
         "signature": "export declare class McpConnectionManager {\nprivate readonly clientInfo;\nprivate readonly connections;\nprivate readonly pendingConnections;\nprivate readonly requestTimeoutMs;\nprivate readonly catalogTtlMs;\nprivate readonly clientFactory;\nconstructor(clientInfo: {\nname: string;\nversion: string;\n}, options?: McpConnectionManagerOptions);\nresolveToolAdapters(localTools?: AgentToolDefinition[], servers?: AgentMcpServerDefinition[], options?: ResolveMcpToolsOptions): Promise<ResolvedToolAdapter[]>;\ncloseAll(): Promise<void>;\nprivate getConnection;\nprivate connect;\nprivate listTools;\nprivate requestOptions;\nprivate evictSupersededConnections;\nprivate invalidateConnection;\nprivate callExternalTool;\n}"
       },
       {
+        "name": "MEDIA_GEN_PLUGIN_IDS",
+        "kind": "value",
+        "signature": "MEDIA_GEN_PLUGIN_IDS: readonly [\n\"image-gen\",\n\"video-gen\",\n\"mesh-gen\"\n]"
+      },
+      {
+        "name": "MEDIA_GEN_PROVIDER_LINKS",
+        "kind": "value",
+        "signature": "MEDIA_GEN_PROVIDER_LINKS: Record<MediaGenProvider, {\napiKeyUrl: string;\ndocsUrl: string;\nlabel: string;\n}>"
+      },
+      {
         "name": "MemberStatus",
         "kind": "interface",
         "signature": "export interface MemberStatus {\nid: string;\nmodel: string;\nrole?: string;\nok: boolean;\nerror?: string;\ntoolCalls?: number;\ndurationMs?: number;\nskipped?: boolean;\n}"
@@ -3026,6 +3056,11 @@
         "name": "mergeActoviqHooks",
         "kind": "function",
         "signature": "export declare function mergeActoviqHooks(base: ActoviqHooks | undefined, extra: ActoviqHooks | undefined): ActoviqHooks | undefined;"
+      },
+      {
+        "name": "MESH_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "MESH_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional text-to-3D prompt \\u2014 NOT a vague short utterance (unless the user already gave a complete modeling brief).\\n\\nFormula: Subject (geometry & parts) + Materials/PBR + Scale/use-case + Topology intent (lowpoly / game-ready / organic) + Style.\\nEmphasize a single modelable object, closed mesh, material regions; for characters specify pose and clothing layers.\\nAvoid cinematic multi-shot prose \\u2014 prefer sculptable object language.\\nOptional `userIntent`: audit only \\u2014 not sent to the API.\""
       },
       {
         "name": "migrateActoviqHomeData",
@@ -4101,6 +4136,11 @@
         "name": "ValidationResult",
         "kind": "type",
         "signature": "export type ValidationResult = {\nresult: true;\n} | {\nresult: false;\nmessage: string;\nerrorCode?: number;\n};"
+      },
+      {
+        "name": "VIDEO_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "VIDEO_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional video-generation prompt \\u2014 NOT a verbatim short user utterance (unless the user already supplied a complete professional prompt).\\n\\nt2v formula (Qwen/Wan skill): Entity + Scene + Motion + Aesthetic control + Stylization.\\nWeak prompts often miss aesthetics and camera moves \\u2014 always enrich those dimensions.\\ni2v (when `imagePath` is set): focus on Motion + Camera Movement (+ Sound); the image defines entity/scene/style.\\n\\nCamera dictionary: camera pushes in / pulls out / moves left / orbiting / fixed camera; speed: slowly / quickly / gently.\\nMulti-shot narrative (longer clips): overall theme line, then:\\n Shot 1 [0\\u2013Xs]: shot size, camera, lighting, action, dialogue, sound\\n Shot 2 [X\\u2013Ys]: ...\\nOptional sound (when the model supports audio): Voice / SFX / BGM descriptions.\\nOptional `negativePrompt` default: \\\"low quality, blurry, distorted, watermark, static, frozen, jittery, inconsistent lighting, flickering\\\".\\nOptional `userIntent`: audit only \\u2014 not sent to the API.\\nDashScope/HappyHorse `promptExtend`: true for short prompts or multi-shot that needs vendor rewrite; false for fully specified advanced prompts.\""
       },
       {
         "name": "WaitForActoviqBackgroundTaskOptions",
@@ -8299,6 +8339,11 @@
         "signature": "export interface CreateGitWorktreeWorkspaceOptions {\nrepositoryPath: string;\npath?: string;\nparentDir?: string;\nname?: string;\nref?: string;\nbranch?: string;\ndetach?: boolean;\nforce?: boolean;\nmetadata?: Record<string, string>;\n}"
       },
       {
+        "name": "createImageGenTool",
+        "kind": "function",
+        "signature": "export declare function createImageGenTool(options: ImageGenToolOptions): AgentToolDefinition<ImageGenInput, ImageGenResult>;"
+      },
+      {
         "name": "createIssueReportTool",
         "kind": "function",
         "signature": "export declare function createIssueReportTool(options: {\nworkDir: string;\nhomeDir: string;\nstorageMode: IssueStorageMode;\nissueId: string;\nonReported?: (issue: ProjectIssue) => void;\n}): AgentToolDefinition;"
@@ -8327,6 +8372,11 @@
         "name": "CreateManagerToolsOptions",
         "kind": "interface",
         "signature": "export interface CreateManagerToolsOptions {\nworkDir: string;\nhomeDir: string;\nconfig?: ManagerConfig;\nissueStorageMode?: IssueStorageMode;\n}"
+      },
+      {
+        "name": "createMeshGenTool",
+        "kind": "function",
+        "signature": "export declare function createMeshGenTool(options: MeshGenToolOptions): AgentToolDefinition<MeshGenInput, MeshGenResult>;"
       },
       {
         "name": "createModelTeam",
@@ -8407,6 +8457,11 @@
         "name": "createToolSearchTool",
         "kind": "function",
         "signature": "export declare function createToolSearchTool(): AgentToolDefinition;"
+      },
+      {
+        "name": "createVideoGenTool",
+        "kind": "function",
+        "signature": "export declare function createVideoGenTool(options: VideoGenToolOptions): AgentToolDefinition<VideoGenInput, VideoGenResult>;"
       },
       {
         "name": "createWorkspace",
@@ -9079,6 +9134,11 @@
         "signature": "export interface HatchActoviqBuddyOptions extends ActoviqBuddyOptions {\nname: string;\npersonality: string;\n}"
       },
       {
+        "name": "IMAGE_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "IMAGE_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional image-generation prompt \\u2014 NOT a verbatim short user utterance (unless the user already supplied a complete professional prompt; then use it with only light completion of missing dimensions).\\n\\nFormulas (from Qwen Image skill):\\n- Basic: Entity + Environment + Style\\n- Advanced (default target): Entity(details) + Environment(details) + Style + Camera Language + Atmosphere + Detail Modifiers\\n\\nCover: subject details, setting, lighting (golden hour / rim light / studio), shot size (close-up / medium / long), perspective (eye level / low angle), lens (85mm / wide), style keywords (realistic / watercolor / C4D / Pixar / Chinese ink), quality modifiers (sharp focus, 8K).\\nFor posters or on-image text: explicitly state the exact wording and layout position.\\nOptional `negativePrompt`: exclude unwanted elements. Default when user is silent: \\\"low quality, blurry, distorted, deformed, bad anatomy, extra limbs, watermark, text, signature, out of frame, cropped\\\".\\nOptional `userIntent`: short original user wording for audit only \\u2014 never sent to the provider API.\\nDashScope `promptExtend`: true for short prompts (<~30 words), false when the advanced formula is already fully specified.\""
+      },
+      {
         "name": "InMemoryTaskStore",
         "kind": "class",
         "signature": "export declare class InMemoryTaskStore implements ScheduledTaskStore {\nprivate readonly tasks;\nsave(task: ScheduledTaskRecord): Promise<void>;\nload(id: string): Promise<ScheduledTaskRecord | undefined>;\nlist(): Promise<ScheduledTaskRecord[]>;\ndelete(id: string): Promise<void>;\n}"
@@ -9386,7 +9446,7 @@
       {
         "name": "MANAGED_PLUGIN_IDS",
         "kind": "value",
-        "signature": "MANAGED_PLUGIN_IDS: readonly [\n\"ocr\",\n\"computer-use\",\n\"github\",\n\"kimi-webbridge\",\n\"playwright\",\n\"tavily\",\n\"exa\"\n]"
+        "signature": "MANAGED_PLUGIN_IDS: readonly [\n\"ocr\",\n\"computer-use\",\n\"github\",\n\"kimi-webbridge\",\n\"playwright\",\n\"tavily\",\n\"exa\",\n\"image-gen\",\n\"video-gen\",\n\"mesh-gen\"\n]"
       },
       {
         "name": "ManagedOcrConfig",
@@ -9509,6 +9569,16 @@
         "signature": "export declare class McpConnectionManager {\nprivate readonly clientInfo;\nprivate readonly connections;\nprivate readonly pendingConnections;\nprivate readonly requestTimeoutMs;\nprivate readonly catalogTtlMs;\nprivate readonly clientFactory;\nconstructor(clientInfo: {\nname: string;\nversion: string;\n}, options?: McpConnectionManagerOptions);\nresolveToolAdapters(localTools?: AgentToolDefinition[], servers?: AgentMcpServerDefinition[], options?: ResolveMcpToolsOptions): Promise<ResolvedToolAdapter[]>;\ncloseAll(): Promise<void>;\nprivate getConnection;\nprivate connect;\nprivate listTools;\nprivate requestOptions;\nprivate evictSupersededConnections;\nprivate invalidateConnection;\nprivate callExternalTool;\n}"
       },
       {
+        "name": "MEDIA_GEN_PLUGIN_IDS",
+        "kind": "value",
+        "signature": "MEDIA_GEN_PLUGIN_IDS: readonly [\n\"image-gen\",\n\"video-gen\",\n\"mesh-gen\"\n]"
+      },
+      {
+        "name": "MEDIA_GEN_PROVIDER_LINKS",
+        "kind": "value",
+        "signature": "MEDIA_GEN_PROVIDER_LINKS: Record<MediaGenProvider, {\napiKeyUrl: string;\ndocsUrl: string;\nlabel: string;\n}>"
+      },
+      {
         "name": "MemberStatus",
         "kind": "interface",
         "signature": "export interface MemberStatus {\nid: string;\nmodel: string;\nrole?: string;\nok: boolean;\nerror?: string;\ntoolCalls?: number;\ndurationMs?: number;\nskipped?: boolean;\n}"
@@ -9517,6 +9587,11 @@
         "name": "mergeActoviqHooks",
         "kind": "function",
         "signature": "export declare function mergeActoviqHooks(base: ActoviqHooks | undefined, extra: ActoviqHooks | undefined): ActoviqHooks | undefined;"
+      },
+      {
+        "name": "MESH_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "MESH_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional text-to-3D prompt \\u2014 NOT a vague short utterance (unless the user already gave a complete modeling brief).\\n\\nFormula: Subject (geometry & parts) + Materials/PBR + Scale/use-case + Topology intent (lowpoly / game-ready / organic) + Style.\\nEmphasize a single modelable object, closed mesh, material regions; for characters specify pose and clothing layers.\\nAvoid cinematic multi-shot prose \\u2014 prefer sculptable object language.\\nOptional `userIntent`: audit only \\u2014 not sent to the API.\""
       },
       {
         "name": "migrateActoviqHomeData",
@@ -10687,6 +10762,11 @@
         "name": "ValidationResult",
         "kind": "type",
         "signature": "export type ValidationResult = {\nresult: true;\n} | {\nresult: false;\nmessage: string;\nerrorCode?: number;\n};"
+      },
+      {
+        "name": "VIDEO_GEN_PROMPT_GUIDANCE",
+        "kind": "value",
+        "signature": "VIDEO_GEN_PROMPT_GUIDANCE = \"PROMPT REWRITE (required):\\nThe `prompt` argument must be a professional video-generation prompt \\u2014 NOT a verbatim short user utterance (unless the user already supplied a complete professional prompt).\\n\\nt2v formula (Qwen/Wan skill): Entity + Scene + Motion + Aesthetic control + Stylization.\\nWeak prompts often miss aesthetics and camera moves \\u2014 always enrich those dimensions.\\ni2v (when `imagePath` is set): focus on Motion + Camera Movement (+ Sound); the image defines entity/scene/style.\\n\\nCamera dictionary: camera pushes in / pulls out / moves left / orbiting / fixed camera; speed: slowly / quickly / gently.\\nMulti-shot narrative (longer clips): overall theme line, then:\\n Shot 1 [0\\u2013Xs]: shot size, camera, lighting, action, dialogue, sound\\n Shot 2 [X\\u2013Ys]: ...\\nOptional sound (when the model supports audio): Voice / SFX / BGM descriptions.\\nOptional `negativePrompt` default: \\\"low quality, blurry, distorted, watermark, static, frozen, jittery, inconsistent lighting, flickering\\\".\\nOptional `userIntent`: audit only \\u2014 not sent to the API.\\nDashScope/HappyHorse `promptExtend`: true for short prompts or multi-shot that needs vendor rewrite; false for fully specified advanced prompts.\""
       },
       {
         "name": "WaitForActoviqBackgroundTaskOptions",

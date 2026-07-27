@@ -9389,6 +9389,14 @@ body[data-theme="dark"] {
 .plugin-config-grid input, .plugin-config-grid select, .plugin-config-grid textarea { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 8px 10px; outline: none; font: inherit; font-size: 12.5px; }
 .plugin-config-grid textarea { min-height: 78px; resize: vertical; }
 .plugin-config-grid input:focus, .plugin-config-grid select:focus, .plugin-config-grid textarea:focus { border-color: var(--border-active); box-shadow: var(--shadow-focus); }
+.plugin-profiles { grid-column: 1 / -1; display: grid; gap: 10px; }
+.plugin-profile-row { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated, var(--bg-surface)); }
+.plugin-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.plugin-profile-grid label { min-width: 0; display: grid; gap: 5px; color: var(--text-2); font-size: 11px; }
+.plugin-profile-key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.plugin-profile-actions { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.plugin-profile-actions button, .plugin-profiles-add { min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); font: inherit; font-size: 12px; cursor: pointer; }
+.plugin-profile-actions button:hover, .plugin-profiles-add:hover { border-color: var(--border-active); }
 .plugin-checkbox { display: flex !important; grid-template-columns: auto 1fr !important; align-items: center; justify-content: start; gap: 8px !important; }
 .plugin-checkbox input { width: auto; }
 .plugin-secret-note { grid-column: 1 / -1; margin: -4px 0 0; color: var(--text-2); font-size: 11px; }
@@ -20348,11 +20356,13 @@ async function loadManagedPluginCatalog(action, testOnly) {
   return testOnly ? payload.catalog : payload;
 }
 function managedPluginIcon(id) {
-  if (id === 'ocr') return 'eye';
+  if (id === 'ocr' || id === 'image-gen') return 'eye';
   if (id === 'computer-use') return 'computer';
   if (id === 'github') return 'git';
   if (id === 'kimi-webbridge') return 'globe';
   if (id === 'tavily' || id === 'exa') return 'search';
+  if (id === 'video-gen') return 'browser';
+  if (id === 'mesh-gen') return 'computer';
   return 'browser';
 }
 function managedPluginStateLabel(value) {
@@ -20434,8 +20444,76 @@ function pluginField(root, options) {
   root.appendChild(label);
   return input;
 }
+function mediaGenProviderOptions(pluginId) {
+  if (pluginId === 'image-gen') return [
+    { value: 'gemini', label: 'Gemini (Nano Banana)' },
+    { value: 'openai', label: 'OpenAI GPT Image' },
+    { value: 'dashscope', label: 'Qwen-Image (DashScope)' },
+  ];
+  if (pluginId === 'video-gen') return [
+    { value: 'seedance', label: 'Seedance (Volcengine Ark)' },
+    { value: 'hailuo', label: 'Hailuo (MiniMax)' },
+    { value: 'happyhorse', label: 'HappyHorse (DashScope)' },
+  ];
+  return [
+    { value: 'meshy', label: 'Meshy' },
+    { value: 'tripo', label: 'Tripo3D' },
+    { value: 'rodin', label: 'Rodin (Hyper3D)' },
+  ];
+}
+function mediaGenProviderLinks(provider) {
+  const map = {
+    gemini: { apiKeyUrl: 'https://aistudio.google.com/apikey', docsUrl: 'https://ai.google.dev/gemini-api/docs/image-generation' },
+    openai: { apiKeyUrl: 'https://platform.openai.com/api-keys', docsUrl: 'https://platform.openai.com/docs/guides/image-generation' },
+    dashscope: { apiKeyUrl: 'https://bailian.console.aliyun.com/?tab=model#/api-key', docsUrl: 'https://help.aliyun.com/zh/model-studio/qwen-image-api' },
+    seedance: { apiKeyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey', docsUrl: 'https://www.volcengine.com/docs/82379/1520757' },
+    hailuo: { apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', docsUrl: 'https://platform.minimaxi.com/document/video_generation' },
+    happyhorse: { apiKeyUrl: 'https://bailian.console.aliyun.com/?tab=model#/api-key', docsUrl: 'https://help.aliyun.com/zh/model-studio/happyhorse-text-to-video-api-reference' },
+    meshy: { apiKeyUrl: 'https://www.meshy.ai/api', docsUrl: 'https://docs.meshy.ai/api/text-to-3d' },
+    tripo: { apiKeyUrl: 'https://platform.tripo3d.ai/', docsUrl: 'https://platform.tripo3d.ai/docs/generation' },
+    rodin: { apiKeyUrl: 'https://hyper3d.ai/', docsUrl: 'https://developer.hyper3d.ai/' },
+  };
+  return map[provider] || map.openai;
+}
+function mediaGenDefaultModel(provider) {
+  const map = {
+    gemini: 'gemini-2.0-flash-preview-image-generation',
+    openai: 'gpt-image-2',
+    dashscope: 'qwen-image-3.0-pro',
+    seedance: 'doubao-seedance-1-5-pro-251215',
+    hailuo: 'MiniMax-Hailuo-02',
+    happyhorse: 'happyhorse-1.1-t2v',
+    meshy: 'latest',
+    tripo: 'turbo_v1.5-20260123',
+    rodin: 'rodin',
+  };
+  return map[provider] || '';
+}
+function mediaGenDefaultBaseURL(provider) {
+  const map = {
+    gemini: 'https://generativelanguage.googleapis.com/v1beta',
+    openai: 'https://api.openai.com/v1',
+    dashscope: 'https://dashscope.aliyuncs.com/api/v1',
+    seedance: 'https://ark.cn-beijing.volces.com/api/v3',
+    hailuo: 'https://api.minimax.chat/v1',
+    happyhorse: 'https://dashscope.aliyuncs.com/api/v1',
+    meshy: 'https://api.meshy.ai',
+    tripo: 'https://api.tripo3d.ai',
+    rodin: 'https://api.hyper3d.com',
+  };
+  return map[provider] || '';
+}
+function isMediaGenPlugin(id) {
+  return id === 'image-gen' || id === 'video-gen' || id === 'mesh-gen';
+}
 function pluginFieldDefinitions(plugin) {
   const c = plugin.config || {};
+  if (isMediaGenPlugin(plugin.id)) return [
+    { name: 'defaultProfileId', label: 'Default profile id', value: c.defaultProfileId || '', full: true, placeholder: 'Leave empty to use the first configured profile' },
+    { name: 'timeoutMs', label: 'Request timeout (ms)', type: 'number', value: c.timeoutMs || 120000 },
+    { name: 'pollIntervalMs', label: 'Poll interval (ms)', type: 'number', value: c.pollIntervalMs || 3000 },
+    { name: 'maxWaitMs', label: 'Max wait (ms)', type: 'number', value: c.maxWaitMs || 900000 },
+  ];
   if (plugin.id === 'ocr') return [
     { name: 'provider', label: 'Provider', type: 'select', value: c.provider || 'qwen', options: [
       { value: 'qwen', label: 'Qwen / DashScope' },
@@ -20498,6 +20576,126 @@ function pluginFieldDefinitions(plugin) {
     { name: 'allowEvaluate', label: 'Allow JavaScript evaluation', type: 'checkbox', value: c.allowEvaluate === true },
   ];
 }
+function appendMediaGenProfilesEditor(form, plugin) {
+  const wrap = document.createElement('div');
+  wrap.className = 'plugin-profiles';
+  wrap.dataset.mediaProfiles = '1';
+  const head = document.createElement('div');
+  head.className = 'plugin-profile-actions';
+  const title = document.createElement('strong');
+  title.textContent = 'Model profiles';
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'plugin-profiles-add';
+  add.textContent = 'Add profile';
+  head.append(title, add);
+  const list = document.createElement('div');
+  list.className = 'plugin-profiles-list';
+  const profiles = Array.isArray(plugin.config?.profiles) && plugin.config.profiles.length
+    ? plugin.config.profiles
+    : [{ id: '', provider: mediaGenProviderOptions(plugin.id)[0].value, model: '', baseURL: '', secretConfigured: false }];
+  const renderRow = (profile) => {
+    const row = document.createElement('div');
+    row.className = 'plugin-profile-row';
+    const grid = document.createElement('div');
+    grid.className = 'plugin-profile-grid';
+    const field = (name, labelText, value, type) => {
+      const label = document.createElement('label');
+      const span = document.createElement('span');
+      span.textContent = labelText;
+      let input;
+      if (type === 'select') {
+        input = document.createElement('select');
+        for (const option of mediaGenProviderOptions(plugin.id)) {
+          const node = document.createElement('option');
+          node.value = option.value;
+          node.textContent = option.label;
+          input.appendChild(node);
+        }
+        input.value = value || mediaGenProviderOptions(plugin.id)[0].value;
+      } else {
+        input = document.createElement('input');
+        input.type = type === 'password' ? 'password' : 'text';
+        input.value = type === 'password' ? '' : (value || '');
+        if (type === 'password') {
+          input.autocomplete = 'new-password';
+          input.placeholder = profile.secretConfigured ? 'Saved — leave blank to keep' : 'Enter API key';
+        }
+      }
+      input.dataset.profileField = name;
+      label.append(span, input);
+      return { label, input };
+    };
+    const idField = field('id', 'Profile id', profile.id || '');
+    const labelField = field('label', 'Label', profile.label || '');
+    const providerField = field('provider', 'Provider', profile.provider || '', 'select');
+    const modelField = field('model', 'Model', profile.model || mediaGenDefaultModel(providerField.input.value));
+    const baseField = field('baseURL', 'Base URL', profile.baseURL || mediaGenDefaultBaseURL(providerField.input.value));
+    baseField.label.style.gridColumn = '1 / -1';
+    const keyWrap = document.createElement('label');
+    keyWrap.style.gridColumn = '1 / -1';
+    const keyTitle = document.createElement('span');
+    keyTitle.textContent = 'API key';
+    const keyRow = document.createElement('div');
+    keyRow.className = 'plugin-profile-key-row';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.autocomplete = 'new-password';
+    keyInput.dataset.profileField = 'apiKey';
+    keyInput.placeholder = profile.secretConfigured ? 'Saved — leave blank to keep' : 'Enter API key';
+    const getKey = document.createElement('button');
+    getKey.type = 'button';
+    getKey.textContent = 'Get API Key';
+    const syncKeyLink = () => {
+      const links = mediaGenProviderLinks(providerField.input.value);
+      getKey.onclick = () => window.open(links.apiKeyUrl, '_blank', 'noopener,noreferrer');
+    };
+    syncKeyLink();
+    providerField.input.addEventListener('change', () => {
+      if (modelField.input.dataset.touched !== '1') {
+        modelField.input.value = mediaGenDefaultModel(providerField.input.value);
+      }
+      if (baseField.input.dataset.touched !== '1') {
+        baseField.input.value = mediaGenDefaultBaseURL(providerField.input.value);
+      }
+      syncKeyLink();
+    });
+    modelField.input.addEventListener('input', () => { modelField.input.dataset.touched = '1'; });
+    baseField.input.addEventListener('input', () => { baseField.input.dataset.touched = '1'; });
+    keyRow.append(keyInput, getKey);
+    keyWrap.append(keyTitle, keyRow);
+    grid.append(idField.label, labelField.label, providerField.label, modelField.label, baseField.label, keyWrap);
+    const actions = document.createElement('div');
+    actions.className = 'plugin-profile-actions';
+    const docs = document.createElement('button');
+    docs.type = 'button';
+    docs.textContent = 'Provider docs';
+    docs.addEventListener('click', () => {
+      const links = mediaGenProviderLinks(providerField.input.value);
+      window.open(links.docsUrl, '_blank', 'noopener,noreferrer');
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => row.remove());
+    actions.append(docs, remove);
+    row.append(grid, actions);
+    list.appendChild(row);
+  };
+  for (const profile of profiles) renderRow(profile);
+  add.addEventListener('click', () => {
+    const provider = mediaGenProviderOptions(plugin.id)[0].value;
+    renderRow({
+      id: provider + '-' + String(list.children.length + 1),
+      provider,
+      model: mediaGenDefaultModel(provider),
+      baseURL: mediaGenDefaultBaseURL(provider),
+      secretConfigured: false,
+    });
+  });
+  wrap.append(head, list);
+  form.appendChild(wrap);
+}
 function pluginFormConfig(form) {
   const config = {};
   for (const input of form.querySelectorAll('[data-plugin-field]')) {
@@ -20506,6 +20704,26 @@ function pluginFormConfig(form) {
     else if (input.type === 'number') config[name] = input.value.trim() ? Number(input.value) : undefined;
     else if (name === 'allowedDomains') config[name] = input.value.split(',').map(v => v.trim()).filter(Boolean);
     else config[name] = input.value;
+  }
+  const profilesRoot = form.querySelector('[data-media-profiles]');
+  if (profilesRoot) {
+    const profiles = [];
+    for (const row of profilesRoot.querySelectorAll('.plugin-profile-row')) {
+      const read = (name) => row.querySelector('[data-profile-field="' + name + '"]')?.value?.trim() || '';
+      const id = read('id');
+      const provider = read('provider');
+      if (!id || !provider) continue;
+      const entry = {
+        id,
+        provider,
+        model: read('model'),
+        label: read('label') || undefined,
+        baseURL: read('baseURL') || undefined,
+        apiKey: read('apiKey'),
+      };
+      profiles.push(entry);
+    }
+    config.profiles = profiles;
   }
   return config;
 }
@@ -20591,7 +20809,9 @@ function renderManagedPluginDetail(body, plugin) {
             ? 'Connection checks issue one lightweight Tavily search request.'
             : plugin.id === 'exa'
               ? 'Connection checks issue one lightweight Exa search request.'
-              : 'Save the configuration, then run a connection check.'
+              : isMediaGenPlugin(plugin.id)
+                ? 'Configure one or more model profiles with API keys. Connection checks do not call billable generation APIs. Use Get API Key to open the provider console.'
+                : 'Save the configuration, then run a connection check.'
   );
   detail.appendChild(health);
 
@@ -20608,6 +20828,7 @@ function renderManagedPluginDetail(body, plugin) {
   form.className = 'plugin-config-grid';
   form.addEventListener('submit', (event) => event.preventDefault());
   for (const field of pluginFieldDefinitions(plugin)) pluginField(form, field);
+  if (isMediaGenPlugin(plugin.id)) appendMediaGenProfilesEditor(form, plugin);
   if (plugin.id === 'ocr') {
     const provider = form.querySelector('[data-plugin-field="provider"]');
     const baseURL = form.querySelector('[data-plugin-field="baseURL"]');
@@ -20650,7 +20871,9 @@ function renderManagedPluginDetail(body, plugin) {
     clear.id = 'managedPluginClearSecret';
     clear.type = 'checkbox';
     const clearText = document.createElement('span');
-    clearText.textContent = 'Clear the saved credential when saving';
+    clearText.textContent = isMediaGenPlugin(plugin.id)
+      ? 'Clear all saved profile API keys when saving'
+      : 'Clear the saved credential when saving';
     clearLabel.append(clear, clearText);
     form.appendChild(clearLabel);
   }
@@ -20668,7 +20891,9 @@ function renderManagedPluginDetail(body, plugin) {
             ? 'You can leave the key blank when TAVILY_API_KEY or ~/.tavily/config.json is already configured.'
             : plugin.id === 'exa'
               ? 'You can leave the key blank when EXA_API_KEY or ~/.exa/config.json is already configured. Keys: https://dashboard.exa.ai/api-keys'
-              : 'Only localhost daemon URLs are accepted; WebBridge keeps browsing data and login state on this device.';
+              : isMediaGenPlugin(plugin.id)
+                ? 'Each profile keeps its own API key. Leave a key blank when saving to keep the previously stored credential. The agent rewrites casual prompts into professional generation prompts and chooses among configured profiles.'
+                : 'Only localhost daemon URLs are accepted; WebBridge keeps browsing data and login state on this device.';
   form.appendChild(note);
   const actions = document.createElement('div');
   actions.className = 'plugin-detail-actions';

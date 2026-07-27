@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, with automated updates from GitHub Releases.
 
+## Unreleased
+
+### Managed plugins
+
+- Add **Image Generation**, **Video Generation**, and **3D Generation** managed plugins with multi-profile / multi-key configuration (Gemini Nano Banana, GPT Image 2, Qwen-Image; Seedance, Hailuo, HappyHorse; Meshy, Tripo, Rodin).
+- Agent tools `generate_image` / `generate_video` / `generate_mesh` inject Qwen-style professional prompt-rewrite guidance and let the model choose among configured profiles.
+- Customize → Plugins includes a profile list editor with **Get API Key** links to each provider console.
+
 ## v0.4.8 - 2026-07-27
 
 ### Runtime / prompt cache

@@ -2,6 +2,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
+import {
+  hasMediaGenSecret,
+  isMediaGenPluginId,
+  kindForPluginId,
+  mergeMediaProfiles,
+  publicMediaProfiles,
+  serializeMediaProfiles,
+  type MediaGenKind,
+  type MediaGenPluginId,
+} from './mediaGenProfiles.js';
+
 export const MANAGED_PLUGIN_IDS = [
   'ocr',
   'computer-use',
@@ -10,6 +21,9 @@ export const MANAGED_PLUGIN_IDS = [
   'playwright',
   'tavily',
   'exa',
+  'image-gen',
+  'video-gen',
+  'mesh-gen',
 ] as const;
 
 export type ManagedPluginId = typeof MANAGED_PLUGIN_IDS[number];
@@ -24,7 +38,7 @@ export interface ManagedPluginDefinition {
   id: ManagedPluginId;
   name: string;
   description: string;
-  category: 'Featured' | 'Vision' | 'Developer' | 'Browser automation' | 'Search';
+  category: 'Featured' | 'Vision' | 'Developer' | 'Browser automation' | 'Search' | 'Media';
   featured: boolean;
 }
 
@@ -107,9 +121,33 @@ export const MANAGED_PLUGIN_DEFINITIONS: readonly ManagedPluginDefinition[] = [
     category: 'Search',
     featured: true,
   },
+  {
+    id: 'image-gen',
+    name: 'Image Generation',
+    description:
+      'Generate images with Gemini Nano Banana, GPT Image 2, and Qwen-Image. Configure multiple models and keys; the agent picks one per request.',
+    category: 'Vision',
+    featured: true,
+  },
+  {
+    id: 'video-gen',
+    name: 'Video Generation',
+    description:
+      'Generate videos with Seedance, Hailuo, and HappyHorse. Configure multiple models and keys; the agent picks one per request.',
+    category: 'Media',
+    featured: true,
+  },
+  {
+    id: 'mesh-gen',
+    name: '3D Generation',
+    description:
+      'Generate 3D meshes with Meshy, Tripo, and Rodin. Configure multiple models and keys; the agent picks one per request.',
+    category: 'Media',
+    featured: true,
+  },
 ] as const;
 
-type ConfigFieldKind = 'string' | 'number' | 'boolean' | 'string-array';
+type ConfigFieldKind = 'string' | 'number' | 'boolean' | 'string-array' | 'profiles';
 
 interface ConfigFieldSpec {
   kind: ConfigFieldKind;
@@ -120,7 +158,18 @@ interface ConfigFieldSpec {
 interface ManagedPluginSpec {
   fields: Record<string, ConfigFieldSpec>;
   secretField?: 'apiKey' | 'token' | 'e2bApiKey';
+  /** Per-profile apiKey secrets instead of a single top-level secretField. */
+  profileSecrets?: boolean;
+  mediaKind?: MediaGenKind;
 }
+
+const MEDIA_COMMON_FIELDS: Record<string, ConfigFieldSpec> = {
+  defaultProfileId: { kind: 'string' },
+  timeoutMs: { kind: 'number', default: 120_000 },
+  pollIntervalMs: { kind: 'number', default: 3_000 },
+  maxWaitMs: { kind: 'number', default: 900_000 },
+  profiles: { kind: 'profiles', default: [] },
+};
 
 const PLUGIN_SPECS: Record<ManagedPluginId, ManagedPluginSpec> = {
   ocr: {
@@ -203,6 +252,21 @@ const PLUGIN_SPECS: Record<ManagedPluginId, ManagedPluginSpec> = {
       timeoutMs: { kind: 'number', default: 30_000 },
     },
   },
+  'image-gen': {
+    profileSecrets: true,
+    mediaKind: 'image',
+    fields: { ...MEDIA_COMMON_FIELDS, timeoutMs: { kind: 'number', default: 180_000 } },
+  },
+  'video-gen': {
+    profileSecrets: true,
+    mediaKind: 'video',
+    fields: { ...MEDIA_COMMON_FIELDS, timeoutMs: { kind: 'number', default: 120_000 } },
+  },
+  'mesh-gen': {
+    profileSecrets: true,
+    mediaKind: 'mesh',
+    fields: { ...MEDIA_COMMON_FIELDS, timeoutMs: { kind: 'number', default: 120_000 } },
+  },
 };
 
 export function readManagedPluginCatalog(
@@ -215,10 +279,7 @@ export function readManagedPluginCatalog(
     const present = hasStoredPluginEntry(source, definition.id);
     const enabled = config.enabled === true;
     const spec = PLUGIN_SPECS[definition.id];
-    const secret = spec.secretField ? config[spec.secretField] : undefined;
-    const secretConfigured = Boolean(
-      typeof secret === 'string' && secret.trim(),
-    );
+    const secretConfigured = resolveSecretConfigured(definition.id, config, spec);
     const health = options.health?.[definition.id];
     const state = resolveState(
       definition.id,
@@ -269,6 +330,13 @@ export function readStoredManagedPluginConfig(
   if (typeof combined.enabled === 'boolean') result.enabled = combined.enabled;
   const spec = PLUGIN_SPECS[pluginId];
   for (const [field, fieldSpec] of Object.entries(spec.fields)) {
+    if (fieldSpec.kind === 'profiles') {
+      const kind = spec.mediaKind!;
+      result.profiles = serializeMediaProfiles(
+        mergeMediaProfiles(undefined, combined.profiles, kind),
+      );
+      continue;
+    }
     const normalized = normalizeFieldValue(field, combined[field], fieldSpec, false);
     if (normalized !== undefined) result[field] = normalized;
     else if (fieldSpec.default !== undefined) result[field] = cloneDefault(fieldSpec.default);
@@ -304,6 +372,18 @@ export function patchManagedPluginSettings(
 
   const spec = PLUGIN_SPECS[pluginId];
   for (const [field, fieldSpec] of Object.entries(spec.fields)) {
+    if (fieldSpec.kind === 'profiles') {
+      if (!Object.hasOwn(values, 'profiles') && patch.clearSecret !== true) continue;
+      const kind = spec.mediaKind!;
+      const merged = mergeMediaProfiles(
+        current.profiles,
+        Object.hasOwn(values, 'profiles') ? values.profiles : current.profiles,
+        kind,
+        { clearSecrets: patch.clearSecret === true },
+      );
+      next.profiles = serializeMediaProfiles(merged);
+      continue;
+    }
     if (!Object.hasOwn(values, field)) continue;
     const normalized = normalizeFieldValue(field, values[field], fieldSpec, true);
     if (normalized === undefined) delete next[field];
@@ -341,12 +421,29 @@ export function patchManagedPluginSettings(
   return raw;
 }
 
+function resolveSecretConfigured(
+  pluginId: ManagedPluginId,
+  config: Record<string, unknown>,
+  spec: ManagedPluginSpec,
+): boolean {
+  if (spec.profileSecrets && spec.mediaKind) {
+    return hasMediaGenSecret(config, spec.mediaKind);
+  }
+  const secret = spec.secretField ? config[spec.secretField] : undefined;
+  return Boolean(typeof secret === 'string' && secret.trim());
+}
+
 function publicConfig(
   pluginId: ManagedPluginId,
   stored: Record<string, unknown>,
 ): Record<string, unknown> {
   const config: Record<string, unknown> = {};
-  for (const field of Object.keys(PLUGIN_SPECS[pluginId].fields)) {
+  const spec = PLUGIN_SPECS[pluginId];
+  for (const [field, fieldSpec] of Object.entries(spec.fields)) {
+    if (fieldSpec.kind === 'profiles' && spec.mediaKind) {
+      config.profiles = publicMediaProfiles(stored.profiles, spec.mediaKind);
+      continue;
+    }
     if (Object.hasOwn(stored, field)) config[field] = cloneDefault(stored[field]);
   }
   return config;
@@ -377,6 +474,7 @@ function resolveState(
       ? (health?.state ?? 'ready')
       : 'needs-setup';
   }
+  if (isMediaGenPluginId(pluginId) && !secretConfigured) return 'needs-setup';
   return health?.state ?? 'ready';
 }
 
@@ -423,6 +521,7 @@ function normalizeFieldValue(
   spec: ConfigFieldSpec,
   strict: boolean,
 ): unknown {
+  if (spec.kind === 'profiles') return undefined;
   if (value === undefined || value === null) return undefined;
   if (spec.kind === 'string') {
     if (typeof value !== 'string') {
@@ -476,11 +575,18 @@ function assertManagedPluginId(value: string): asserts value is ManagedPluginId 
 }
 
 function cloneDefault(value: unknown): unknown {
-  if (Array.isArray(value)) return [...value];
-  if (isRecord(value)) return { ...value };
+  if (Array.isArray(value)) return value.map(item => cloneDefault(item));
+  if (isRecord(value)) {
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) next[key] = cloneDefault(entry);
+    return next;
+  }
   return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+export type { MediaGenPluginId };
+export { kindForPluginId, isMediaGenPluginId };

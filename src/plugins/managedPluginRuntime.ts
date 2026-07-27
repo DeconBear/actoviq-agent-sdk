@@ -25,8 +25,21 @@ import {
   type ManagedOcrApi,
   type ManagedOcrProvider,
 } from './ocrPlugin.js';
+import {
+  buildImageGenConfigFromStored,
+  createImageGenTool,
+} from './imageGenPlugin.js';
+import {
+  buildVideoGenConfigFromStored,
+  createVideoGenTool,
+} from './videoGenPlugin.js';
+import {
+  buildMeshGenConfigFromStored,
+  createMeshGenTool,
+} from './meshGenPlugin.js';
 import { createExaSearchTool } from '../tools/exaSearch.js';
 import { createTavilySearchTool } from '../tools/tavilySearch.js';
+import { hasMediaGenSecret } from './mediaGenProfiles.js';
 
 export interface ManagedPluginRuntimeOptions {
   cwd: string;
@@ -155,6 +168,36 @@ export function createManagedPluginRuntime(
     tools.push(createExaSearchTool({
       apiKey: stringValue(exa.apiKey) || undefined,
       timeoutMs: numberValue(exa.timeoutMs),
+    }));
+  }
+
+  const imageGen = readStoredManagedPluginConfig(raw, 'image-gen');
+  if (imageGen.enabled === true && hasMediaGenSecret(imageGen, 'image')) {
+    enabledPluginIds.push('image-gen');
+    tools.push(createImageGenTool({
+      cwd: options.cwd,
+      config: buildImageGenConfigFromStored(imageGen),
+      name: 'generate_image',
+    }));
+  }
+
+  const videoGen = readStoredManagedPluginConfig(raw, 'video-gen');
+  if (videoGen.enabled === true && hasMediaGenSecret(videoGen, 'video')) {
+    enabledPluginIds.push('video-gen');
+    tools.push(createVideoGenTool({
+      cwd: options.cwd,
+      config: buildVideoGenConfigFromStored(videoGen),
+      name: 'generate_video',
+    }));
+  }
+
+  const meshGen = readStoredManagedPluginConfig(raw, 'mesh-gen');
+  if (meshGen.enabled === true && hasMediaGenSecret(meshGen, 'mesh')) {
+    enabledPluginIds.push('mesh-gen');
+    tools.push(createMeshGenTool({
+      cwd: options.cwd,
+      config: buildMeshGenConfigFromStored(meshGen),
+      name: 'generate_mesh',
     }));
   }
 

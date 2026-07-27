@@ -188,6 +188,18 @@ export type {
   ManagedOcrInput,
   ManagedOcrResult,
 } from './plugins/ocrPlugin.js';
+export { createImageGenTool } from './plugins/imageGenPlugin.js';
+export { createVideoGenTool } from './plugins/videoGenPlugin.js';
+export { createMeshGenTool } from './plugins/meshGenPlugin.js';
+export {
+  MEDIA_GEN_PROVIDER_LINKS,
+  MEDIA_GEN_PLUGIN_IDS,
+} from './plugins/mediaGenProfiles.js';
+export {
+  IMAGE_GEN_PROMPT_GUIDANCE,
+  VIDEO_GEN_PROMPT_GUIDANCE,
+  MESH_GEN_PROMPT_GUIDANCE,
+} from './plugins/mediaGenPromptGuidance.js';
 export { createGitHubPlugin } from './plugins/githubPlugin.js';
 export { createKimiWebBridgePlugin } from './plugins/kimiWebBridgePlugin.js';
 export {

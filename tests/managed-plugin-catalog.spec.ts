@@ -19,6 +19,9 @@ describe('managed plugin catalog', () => {
       'playwright',
       'tavily',
       'exa',
+      'image-gen',
+      'video-gen',
+      'mesh-gen',
     ]);
     expect(catalog.plugins.map(plugin => plugin.id)).toEqual([
       'ocr',
@@ -28,6 +31,9 @@ describe('managed plugin catalog', () => {
       'playwright',
       'tavily',
       'exa',
+      'image-gen',
+      'video-gen',
+      'mesh-gen',
     ]);
     expect(catalog.plugins.every(plugin => plugin.state === 'available')).toBe(true);
   });
@@ -203,5 +209,86 @@ describe('managed plugin catalog', () => {
       secretConfigured: true,
     });
     expect(exa?.config).not.toHaveProperty('apiKey');
+  });
+
+  it('stores per-profile media generation secrets without returning them', () => {
+    const raw: Record<string, unknown> = {};
+    patchManagedPluginSettings(raw, 'image-gen', {
+      enabled: true,
+      defaultProfileId: 'nano-banana',
+      profiles: [
+        {
+          id: 'nano-banana',
+          provider: 'gemini',
+          model: 'gemini-2.0-flash-preview-image-generation',
+          apiKey: 'gem-secret',
+        },
+        {
+          id: 'gpt-image',
+          provider: 'openai',
+          model: 'gpt-image-2',
+          apiKey: 'oai-secret',
+        },
+      ],
+    });
+
+    const plugin = readManagedPluginCatalog(raw).plugins.find(item => item.id === 'image-gen');
+    expect(plugin).toMatchObject({
+      enabled: true,
+      state: 'ready',
+      secretConfigured: true,
+      config: {
+        defaultProfileId: 'nano-banana',
+      },
+    });
+    expect(plugin?.config.profiles).toEqual([
+      expect.objectContaining({
+        id: 'nano-banana',
+        provider: 'gemini',
+        secretConfigured: true,
+      }),
+      expect.objectContaining({
+        id: 'gpt-image',
+        provider: 'openai',
+        secretConfigured: true,
+      }),
+    ]);
+    expect(JSON.stringify(plugin?.config)).not.toContain('gem-secret');
+    expect(JSON.stringify(plugin?.config)).not.toContain('oai-secret');
+
+    const stored = readStoredManagedPluginConfig(raw, 'image-gen');
+    expect(stored.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'nano-banana', apiKey: 'gem-secret' }),
+      expect.objectContaining({ id: 'gpt-image', apiKey: 'oai-secret' }),
+    ]));
+
+    patchManagedPluginSettings(raw, 'image-gen', {
+      profiles: [
+        {
+          id: 'nano-banana',
+          provider: 'gemini',
+          model: 'gemini-2.0-flash-preview-image-generation',
+          apiKey: '',
+        },
+        {
+          id: 'gpt-image',
+          provider: 'openai',
+          model: 'gpt-image-2',
+          apiKey: 'oai-rotated',
+        },
+      ],
+    });
+    expect(readStoredManagedPluginConfig(raw, 'image-gen').profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'nano-banana', apiKey: 'gem-secret' }),
+      expect.objectContaining({ id: 'gpt-image', apiKey: 'oai-rotated' }),
+    ]));
+
+    patchManagedPluginSettings(raw, 'image-gen', { clearSecret: true });
+    const cleared = readStoredManagedPluginConfig(raw, 'image-gen').profiles as Array<Record<string, unknown>>;
+    expect(cleared.every(profile => !profile.apiKey)).toBe(true);
+    expect(readManagedPluginCatalog(raw).plugins.find(item => item.id === 'image-gen')).toMatchObject({
+      state: 'needs-setup',
+      secretConfigured: false,
+    });
   });
 });
