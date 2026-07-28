@@ -70,16 +70,24 @@ describe('GUI Project Agent execution view', () => {
     expect(css).toContain('.detail-conversations-toggle:focus-visible');
     expect(css).toContain('@media (max-width: 860px)');
     for (const [id, label] of [
-      ['newSession', 'New chat'],
       ['navProject', 'Project'],
       ['navTeam', 'Agent'],
       ['navAutomation', 'Automation'],
       ['navPlugins', 'Customize'],
       ['settingsBtn', 'Settings'],
       ['detailConversationsBtn', 'Conversations'],
+      ['detailNewConversationBtn', '+ New conversation'],
     ]) {
+      if (id === 'detailNewConversationBtn') {
+        expect(html).toContain(`id="${id}"`);
+        expect(html).toContain('+ New conversation');
+        continue;
+      }
       expect(html).toMatch(new RegExp(`id="${id}"[^>]*aria-label="${label}"`));
     }
+    expect(html).not.toContain('id="newSession"');
+    expect(js).toContain('createNewSession');
+    expect(js).not.toContain("el('newSession')");
   });
 
   it('keeps the project Agent workspace usable at tablet and narrow widths', () => {

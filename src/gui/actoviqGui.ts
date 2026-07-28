@@ -8487,7 +8487,6 @@ export function createActoviqGuiHtml(): string {
         <span class="brand-mark">${guiIcon('logo')}</span>
         <span class="brand-name">Actoviq</span>
       </div>
-      <button id="newSession" class="nav-btn new-chat-btn" aria-label="New chat" title="New chat"><span class="nav-icon">${guiIcon('plus')}</span><span>New chat</span></button>
       <nav class="primary-nav" aria-label="Primary">
         <button id="navProject" class="nav-btn region-nav active" data-region="project" aria-label="Project" title="Project"><span class="nav-icon">${guiIcon('folder')}</span><span>Project</span></button>
         <button id="navTeam" class="nav-btn region-nav" data-region="team" aria-label="Agent" title="Agent"><span class="nav-icon">${guiIcon('team')}</span><span>Agent</span></button>
@@ -9514,9 +9513,6 @@ body[data-theme="dark"] {
   --syn-meta: #c586c0;
 }
 /* --- App shell: 4-region navigation (plan/UI_PLAN §3). --- */
-.new-chat-btn { background: var(--btn-primary-bg); color: var(--btn-primary-fg); border-color: transparent; font-weight: 600; }
-.new-chat-btn:hover { background: var(--btn-primary-bg-hover); }
-.new-chat-btn .nav-icon { color: var(--fg-on-accent); }
 .region-nav.active {
   background: var(--surface-selected);
   color: var(--brand);
@@ -11208,7 +11204,6 @@ button.composer-meta-chip:hover {
 body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .app { border: 0; background: var(--bg-app); }
 .sidebar { padding: 14px 10px 12px; gap: 10px; background: var(--bg-sidebar); box-shadow: 1px 0 0 var(--border); }
-body[data-sidebar-mode="nav"] .new-chat-btn { display: none; }
 .brand { height: 34px; margin-bottom: 4px; }
 .brand-mark { width: 28px; height: 28px; border-radius: 9px; background: var(--avatar-gradient); }
 .brand-name, .region-header h1, .proj-card .pc-title { letter-spacing: 0; }
@@ -28174,7 +28169,6 @@ el('composer').addEventListener('drop', async (event) => {
   el('dropOverlay').classList.add('hidden');
   await addFiles(event.dataTransfer.files);
 });
-el('newSession').addEventListener('click', createNewSession);
 document.querySelectorAll('.region-nav').forEach((btn) => {
   btn.addEventListener('click', () => { switchRegion(btn.getAttribute('data-region')).catch(console.error); });
 });
