@@ -130,6 +130,11 @@ import {
   resolveGitHubDigestForUpdate,
   readManagerConfig,
   writeManagerConfig,
+  createAssistantGlobalTools,
+  buildAssistantGlobalSystemPrompt,
+  readAssistantConfig,
+  writeAssistantConfig,
+  isAssistantScope,
   readProjectPlanFile,
   writeProjectPlanFile,
   readProgressFile,
@@ -172,7 +177,6 @@ import {
   listAgentProfiles,
   listSelectableAgents,
   matchSelectableAgent,
-  resolveAgentProfileRun,
   resolveSelectableAgentRun,
   agentProfileRunOverrides,
   transitionProjectIssue,
@@ -902,6 +906,43 @@ async function pathExists(targetPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Normalize pasted/picked workspace paths (quotes, file://, resolve) and require a directory. */
+function normalizeWorkspacePathInput(raw: string): string {
+  let value = raw.trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"'))
+    || (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  if (/^file:/i.test(value)) {
+    try {
+      value = fileURLToPath(value);
+    } catch {
+      throw new Error(`Invalid file URL: ${raw.trim()}`);
+    }
+  }
+  if (!value) throw new Error('Missing project path');
+  return path.resolve(value);
+}
+
+async function resolveWorkspaceDirectory(raw: string): Promise<string> {
+  const resolved = normalizeWorkspacePathInput(raw);
+  let st;
+  try {
+    st = await stat(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Workspace does not exist: ${resolved}`);
+    }
+    throw error;
+  }
+  if (!st.isDirectory()) {
+    throw new Error(`Not a directory: ${resolved}`);
+  }
+  return resolved;
 }
 
 interface StoredSessionFile {
@@ -2035,7 +2076,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     serverSessionResumeQueue = pending.then(() => undefined, () => undefined);
     return pending;
   }
-  const credentiallessSessionStore = new SessionStore(
+  let credentiallessSessionStore = new SessionStore(
     await ensureProjectDataMigrated(workDir),
   );
   const unavailableWithoutHadamardCredential = (): never => {
@@ -2466,6 +2507,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       throw error;
     }
     if (previousSdk) await previousSdk.close().catch(() => undefined);
+    await resetManagerAndAssistantSessions();
   }
 
   async function externalSkillCatalogSnapshot() {
@@ -2642,40 +2684,76 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   async function switchProject(nextWorkDir: string): Promise<Record<string, unknown>> {
     if (foregroundRun()) {
-      throw new Error('Cannot switch projects while a run is active.');
+      throw new Error('Cannot switch projects while a run is active. Stop the run, then open the workspace again.');
     }
-    const resolved = path.resolve(nextWorkDir);
-    if (!(await pathExists(resolved))) {
-      throw new Error(`Workspace does not exist: ${resolved}`);
-    }
+    const resolved = await resolveWorkspaceDirectory(nextWorkDir);
+    const previousWorkDir = workDir;
+    const previousSystemPrompt = systemPrompt;
     const previousSdk = sdk;
+    const previousSession = session;
+    const previousNeedsCredentials = needsCredentials;
+    const previousToolMetadata = toolMetadata;
     workDir = resolved;
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
-    await rebuildTools();
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
     routedModelLabel = null;
     managerGuiSession = null;
     managerDedupeTriggered = false;
-    const nextSdk = await createCleanSdk();
     try {
-      const sessions = await nextSdk.sessions.list();
-      const resumable = sessions.find(item => item.messageCount > 0 && item.status !== 'closed' && isVisibleChatSession(item))
-        ?? sessions.find(item => item.messageCount > 0 && isVisibleChatSession(item))
-        ?? sessions.find(item => item.status !== 'closed' && isVisibleChatSession(item));
-      session = resumable
-        ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
-        : await nextSdk.createSession({ model: options.model, permissionMode });
-      // Tool metadata is not needed to paint project detail; fill after open returns.
-      toolMetadata = [];
-      sdk = nextSdk;
-      await restoreSessionRuntimeSelection();
+      await rebuildTools();
+      try {
+        const nextSdk = await createCleanSdk();
+        try {
+          const sessions = await nextSdk.sessions.list();
+          const resumable = sessions.find(item => item.messageCount > 0 && item.status !== 'closed' && isVisibleChatSession(item))
+            ?? sessions.find(item => item.messageCount > 0 && isVisibleChatSession(item))
+            ?? sessions.find(item => item.status !== 'closed' && isVisibleChatSession(item));
+          session = resumable
+            ? await nextSdk.resumeSession(resumable.id, { model: options.model, permissionMode: options.permissionMode })
+            : await nextSdk.createSession({ model: options.model, permissionMode });
+          // Tool metadata is not needed to paint project detail; fill after open returns.
+          toolMetadata = [];
+          sdk = nextSdk;
+          needsCredentials = false;
+          await restoreSessionRuntimeSelection();
+          if (previousSdk) await previousSdk.close().catch(() => undefined);
+          void nextSdk.listToolMetadata().then((meta) => { toolMetadata = meta; }).catch(() => undefined);
+        } catch (error) {
+          await nextSdk.close().catch(() => undefined);
+          throw error;
+        }
+      } catch (error) {
+        if (!/No Actoviq credential|credential was found/i.test((error as Error).message)) {
+          throw error;
+        }
+        // Match boot: allow opening a workspace without Hadamard credentials
+        // (External CLI / browse-only). Point the credentialless store at the
+        // new project so sessions stay scoped correctly.
+        credentiallessSessionStore = new SessionStore(
+          await ensureProjectDataMigrated(workDir),
+        );
+        needsCredentials = true;
+        sdk = null;
+        toolMetadata = [];
+        session = hydrateCredentiallessSession(await credentiallessSessionStore.create({
+          title: 'External CLI chat',
+          model: options.model ?? 'external-cli',
+          metadata: { __actoviqWorkDir: workDir },
+        }));
+        if (previousSdk) await previousSdk.close().catch(() => undefined);
+      }
     } catch (error) {
-      await nextSdk.close().catch(() => undefined);
+      workDir = previousWorkDir;
+      systemPrompt = previousSystemPrompt;
+      sdk = previousSdk;
+      session = previousSession;
+      needsCredentials = previousNeedsCredentials;
+      toolMetadata = previousToolMetadata;
+      await rebuildTools().catch(() => undefined);
       throw error;
     }
-    if (previousSdk) await previousSdk.close().catch(() => undefined);
     const storeHome = (await resolveActoviqSettingsStore({
       configPath: options.configPath,
       homeDir: currentHomeInput(),
@@ -2687,7 +2765,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       rememberWorkspace(workDir, storeHome).catch(() => undefined),
       resyncAutomationScheduler().catch(() => undefined),
       syncRailReminders().catch(() => undefined),
-      nextSdk.listToolMetadata().then((meta) => { toolMetadata = meta; }).catch(() => undefined),
     ]);
     return state({ light: true });
   }
@@ -3246,17 +3323,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return events;
   }
 
-  // ── Project Manager (plan M0/M1) ─────────────────────────────────
-  // The Manager is a per-project governance agent with a hard-restricted tool
-  // surface (createManagerTools: Read/Glob/Grep + WebFetch + PlanWrite +
-  // ProgressWrite — no shell, no Team, no Task). It runs on a dedicated
-  // kind='manager' session so it never touches the main chat context, and the
-  // host (this GUI process) collects git/conversation context itself.
+  // ── Assistant (Global / Project Manager) ─────────────────────────
+  // Project scope: per-workspace governance agent (createManagerTools).
+  // Global scope: cross-project + settings tools (createAssistantGlobalTools),
+  // with an independent session under <data-root>/assistant/.
   let managerGuiSession: AgentSession | null = null;
+  let assistantGlobalSdk: ActoviqAgentClient | null = null;
+  let assistantGlobalSession: AgentSession | null = null;
   let managerDedupeTriggered = false;
 
   function managerHomeDir(): string {
     return resolveGuiHomeDir();
+  }
+
+  function assistantSessionDirectory(homeDir = managerHomeDir()): string {
+    return path.join(homeDir, 'assistant');
+  }
+
+  async function closeAssistantGlobalSdk(): Promise<void> {
+    const previous = assistantGlobalSdk;
+    assistantGlobalSdk = null;
+    assistantGlobalSession = null;
+    if (previous) await previous.close().catch(() => undefined);
+  }
+
+  async function resetManagerAndAssistantSessions(): Promise<void> {
+    managerGuiSession = null;
+    await closeAssistantGlobalSdk();
   }
 
   async function dedupeManagerSessions(): Promise<string | undefined> {
@@ -3290,10 +3383,112 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     managerGuiSession = await sdk!.createSession({
       title: 'Manager',
-      metadata: { __actoviqKind: 'manager' },
+      kind: 'manager',
+      metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'project' },
       permissionMode: 'bypassPermissions',
     });
     return managerGuiSession;
+  }
+
+  async function getAssistantGlobalSdk(): Promise<ActoviqAgentClient> {
+    if (assistantGlobalSdk) return assistantGlobalSdk;
+    if (needsCredentials || !sdk) {
+      throw new Error('No API key configured — open Settings → General to add one.');
+    }
+    const homeDir = managerHomeDir();
+    const sessionDirectory = assistantSessionDirectory(homeDir);
+    await mkdir(sessionDirectory, { recursive: true });
+    assistantGlobalSdk = await createAgentSdk({
+      ...(currentHomeInput() ? { homeDir: currentHomeInput() } : {}),
+      workDir: sessionDirectory,
+      sessionDirectory,
+      tools: [],
+      permissionMode: 'bypassPermissions',
+      ...(options.model ? { model: options.model } : {}),
+    });
+    return assistantGlobalSdk;
+  }
+
+  async function getAssistantGlobalSession(): Promise<AgentSession> {
+    if (assistantGlobalSession) return assistantGlobalSession;
+    const client = await getAssistantGlobalSdk();
+    const stored = await client.sessions.list();
+    const existing = stored
+      .filter(item => item.kind === 'manager')
+      .sort((a, b) => {
+        if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
+        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+      })[0];
+    if (existing) {
+      assistantGlobalSession = await client.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      return assistantGlobalSession;
+    }
+    assistantGlobalSession = await client.createSession({
+      title: 'Assistant (Global)',
+      kind: 'manager',
+      metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
+      permissionMode: 'bypassPermissions',
+    });
+    return assistantGlobalSession;
+  }
+
+  function buildAssistantGlobalHost(homeDir: string): Parameters<typeof createAssistantGlobalTools>[0] {
+    return {
+      homeDir,
+      currentWorkDir: workDir,
+      getAppState: () => ({
+        region: 'gui',
+        workDir,
+        needsCredentials,
+        activeAgent: activeBridgeConfig?.name ?? null,
+        bridgeMode,
+        model: session?.model ?? null,
+      }),
+      openProject: async (projectPath: string) => {
+        await switchProject(projectPath);
+        invalidateHeavyState();
+        return { workDir };
+      },
+      applySettings: async (patch: Record<string, unknown>) => {
+        await withRuntimeMutation(async () => {
+          await saveSettings(patch);
+        });
+        return { ok: true, detail: 'Settings applied' };
+      },
+      activateAgent: async (name: string) => {
+        await withRuntimeMutation(async () => {
+          const resolved = await resolveSelectableAgentRun(name, homeDir);
+          const cfg = {
+            ...resolved.bridgeConfig,
+            model: resolved.selectable.model,
+          };
+          await activateBridgeConfig(cfg);
+          await persistSessionRuntimeMetadata();
+          const effort = resolved.profile.effort || resolved.selectable.effort;
+          if (effort === 'auto' || isEffort(effort)) {
+            await session.mergeMetadata({ __actoviqEffort: effort });
+          }
+        });
+        invalidateHeavyState();
+        return { ok: true, detail: `Activated ${name}` };
+      },
+      readSettingsRaw: async () => {
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: currentHomeInput(),
+        });
+        return structuredClone(store.raw);
+      },
+      writeSettingsRaw: async (raw: Record<string, unknown>) => {
+        const store = await resolveActoviqSettingsStore({
+          configPath: options.configPath,
+          homeDir: currentHomeInput(),
+        });
+        await persistActoviqSettingsStore(store.configPath, raw);
+        await loadJsonConfigFile(store.configPath);
+        invalidateHeavyState();
+      },
+    };
   }
 
   /** Host-collected read-only context for Manager runs (the Manager has no shell). */
@@ -3348,25 +3543,28 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
 
   /**
-   * Run one Manager turn ('update' = progress-doc sync, 'chat' = free-form
-   * governance chat). Registers a RunRegistry kind='manager' run (single
-   * instance per project) and streams tool activity through `send`.
-   * Returns the Manager's final text.
+   * Run one Assistant turn. Project scope: progress update or governance chat.
+   * Global scope: cross-project / settings chat (update mode is rejected).
    */
   async function runManagerTurn(opts: {
     mode: 'update' | 'chat';
+    scope?: 'global' | 'project';
     instruction?: string;
     text?: string;
     send: (event: GuiRunEvent) => void;
     clientRequestId?: string;
     replayEvents?: Array<GuiRunEvent & { sequence: number }>;
   }): Promise<string> {
-    const label = opts.mode === 'update' ? 'manager:update' : 'manager:chat';
-    return withRuntimeRun(label, () => runManagerTurnLeased(opts));
+    const scope = opts.scope === 'global' ? 'global' : 'project';
+    const label = scope === 'global'
+      ? 'assistant:global'
+      : (opts.mode === 'update' ? 'manager:update' : 'manager:chat');
+    return withRuntimeRun(label, () => runManagerTurnLeased({ ...opts, scope }));
   }
 
   async function runManagerTurnLeased(opts: {
     mode: 'update' | 'chat';
+    scope: 'global' | 'project';
     instruction?: string;
     text?: string;
     send: (event: GuiRunEvent) => void;
@@ -3376,72 +3574,120 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     if (needsCredentials || !sdk) throw new Error('No API key configured — open Settings → General to add one.');
     for (const run of runs.values()) {
       if (run.desc.kind === 'manager' && run.desc.status === 'running') {
-        throw new Error('A Manager run is already in progress for this project.');
+        throw new Error('An Assistant run is already in progress.');
       }
     }
     const homeDir = managerHomeDir();
-    const cfg = await readManagerConfig(workDir, homeDir);
-    const managerIssueStorage = await issueStorageFor(workDir, homeDir);
-    const managerTools = await createManagerTools({ workDir, homeDir, config: cfg, issueStorageMode: managerIssueStorage });
+    const scope = opts.scope;
+
+    if (scope === 'global' && opts.mode === 'update') {
+      throw new Error('Update progress is only available in Project scope.');
+    }
+
     let prompt: string;
-    if (opts.mode === 'update') {
-      const { gitSummary, conversationSummaries, sessionSummaries } = await collectManagerHostContext();
-      const plan = await readProjectPlanFile(workDir, homeDir);
-      const progress = await readProgressFile(workDir, homeDir);
-      const issues = await listProjectIssues(workDir, homeDir, managerIssueStorage);
-      const githubDigest = await resolveGitHubDigestForUpdate(workDir, opts.instruction);
-      prompt = buildUpdateProgressPrompt({
-        instruction: opts.instruction,
-        gitSummary,
-        conversationSummaries,
-        githubDigest,
-        currentPlanJson: JSON.stringify(plan, null, 2),
-        currentProgress: progress ?? undefined,
-        currentIssuesJson: JSON.stringify(issues.map(issue => ({
-          key: `ISS-${issue.number}`,
-          title: issue.title,
-          status: issue.status,
-          priority: issue.priority,
-          agentConfig: issue.agentConfig,
-          activeSessionId: issue.activeSessionId,
-          linkedSessions: issue.sessionIds
-            .map(id => sessionSummaries.find(summary => summary.id === id))
-            .filter(Boolean),
-          updatedAt: issue.updatedAt,
-        })), null, 2),
-      });
-    } else {
-      prompt = opts.text?.trim() ?? '';
-      if (!prompt) throw new Error('Empty manager message.');
-    }
-    let managerModel: string | null = cfg.model ?? session.model ?? null;
+    let managerTools: Awaited<ReturnType<typeof createManagerTools>>;
+    let systemPrompt: string;
+    let managerModel: string | null;
     let managerModelApi: Awaited<ReturnType<typeof buildRouteModelApi>>['modelApi'] | undefined;
-    if (cfg.bridgeConfig) {
-      const bridgeCfg = findBridgeConfig(cfg.bridgeConfig, homeDir);
-      if (!bridgeCfg) throw new Error(`Manager provider config "${cfg.bridgeConfig}" not found.`);
-      const hadamardUsesDefaults = bridgeCfg.runtime === 'hadamard'
-        && !(typeof bridgeCfg.apiKey === 'string' && bridgeCfg.apiKey.trim())
-        && !(typeof bridgeCfg.baseURL === 'string' && bridgeCfg.baseURL.trim());
-      if (hadamardUsesDefaults) {
-        managerModel = cfg.model || bridgeCfg.model || session.model || null;
-      } else {
-        const routed = await buildRouteModelApi({
-          model: cfg.model || bridgeCfg.model || session.model || 'default',
-          provider: bridgeCfg.provider,
-          baseURL: bridgeCfg.baseURL,
-          apiKey: bridgeCfg.apiKey,
-          maxTokens: 32000,
-        });
-        managerModel = routed.model;
-        managerModelApi = routed.modelApi;
+    let managerSession: AgentSession;
+
+    if (scope === 'global') {
+      const cfg = await readAssistantConfig(homeDir);
+      managerTools = await createAssistantGlobalTools(buildAssistantGlobalHost(homeDir));
+      systemPrompt = buildAssistantGlobalSystemPrompt(workDir);
+      prompt = opts.text?.trim() ?? '';
+      if (!prompt) throw new Error('Empty assistant message.');
+      managerModel = cfg.model ?? session.model ?? null;
+      managerModelApi = undefined;
+      if (cfg.bridgeConfig) {
+        const bridgeCfg = findBridgeConfig(cfg.bridgeConfig, homeDir);
+        if (!bridgeCfg) throw new Error(`Assistant provider config "${cfg.bridgeConfig}" not found.`);
+        const hadamardUsesDefaults = bridgeCfg.runtime === 'hadamard'
+          && !(typeof bridgeCfg.apiKey === 'string' && bridgeCfg.apiKey.trim())
+          && !(typeof bridgeCfg.baseURL === 'string' && bridgeCfg.baseURL.trim());
+        if (hadamardUsesDefaults) {
+          managerModel = cfg.model || bridgeCfg.model || session.model || null;
+        } else {
+          const routed = await buildRouteModelApi({
+            model: cfg.model || bridgeCfg.model || session.model || 'default',
+            provider: bridgeCfg.provider,
+            baseURL: bridgeCfg.baseURL,
+            apiKey: bridgeCfg.apiKey,
+            maxTokens: 32000,
+          });
+          managerModel = routed.model;
+          managerModelApi = routed.modelApi;
+        }
       }
+      managerSession = await getAssistantGlobalSession();
+    } else {
+      const cfg = await readManagerConfig(workDir, homeDir);
+      const managerIssueStorage = await issueStorageFor(workDir, homeDir);
+      managerTools = await createManagerTools({ workDir, homeDir, config: cfg, issueStorageMode: managerIssueStorage });
+      systemPrompt = buildManagerSystemPrompt(workDir, cfg);
+      if (opts.mode === 'update') {
+        const { gitSummary, conversationSummaries, sessionSummaries } = await collectManagerHostContext();
+        const plan = await readProjectPlanFile(workDir, homeDir);
+        const progress = await readProgressFile(workDir, homeDir);
+        const issues = await listProjectIssues(workDir, homeDir, managerIssueStorage);
+        const githubDigest = await resolveGitHubDigestForUpdate(workDir, opts.instruction);
+        prompt = buildUpdateProgressPrompt({
+          instruction: opts.instruction,
+          gitSummary,
+          conversationSummaries,
+          githubDigest,
+          currentPlanJson: JSON.stringify(plan, null, 2),
+          currentProgress: progress ?? undefined,
+          currentIssuesJson: JSON.stringify(issues.map(issue => ({
+            key: `ISS-${issue.number}`,
+            title: issue.title,
+            status: issue.status,
+            priority: issue.priority,
+            agentConfig: issue.agentConfig,
+            activeSessionId: issue.activeSessionId,
+            linkedSessions: issue.sessionIds
+              .map(id => sessionSummaries.find(summary => summary.id === id))
+              .filter(Boolean),
+            updatedAt: issue.updatedAt,
+          })), null, 2),
+        });
+      } else {
+        prompt = opts.text?.trim() ?? '';
+        if (!prompt) throw new Error('Empty manager message.');
+      }
+      managerModel = cfg.model ?? session.model ?? null;
+      managerModelApi = undefined;
+      if (cfg.bridgeConfig) {
+        const bridgeCfg = findBridgeConfig(cfg.bridgeConfig, homeDir);
+        if (!bridgeCfg) throw new Error(`Manager provider config "${cfg.bridgeConfig}" not found.`);
+        const hadamardUsesDefaults = bridgeCfg.runtime === 'hadamard'
+          && !(typeof bridgeCfg.apiKey === 'string' && bridgeCfg.apiKey.trim())
+          && !(typeof bridgeCfg.baseURL === 'string' && bridgeCfg.baseURL.trim());
+        if (hadamardUsesDefaults) {
+          managerModel = cfg.model || bridgeCfg.model || session.model || null;
+        } else {
+          const routed = await buildRouteModelApi({
+            model: cfg.model || bridgeCfg.model || session.model || 'default',
+            provider: bridgeCfg.provider,
+            baseURL: bridgeCfg.baseURL,
+            apiKey: bridgeCfg.apiKey,
+            maxTokens: 32000,
+          });
+          managerModel = routed.model;
+          managerModelApi = routed.modelApi;
+        }
+      }
+      managerSession = await getManagerSession();
     }
-    const managerSession = await getManagerSession();
+
     const runId = 'r-mgr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const abort = new AbortController();
     const desc: GuiRunDescriptor = {
       runId, clientRequestId: opts.clientRequestId,
-      kind: 'manager', label: opts.mode === 'update' ? 'manager:update' : 'manager:chat',
+      kind: 'manager',
+      label: scope === 'global'
+        ? 'assistant:global'
+        : (opts.mode === 'update' ? 'manager:update' : 'manager:chat'),
       sessionId: managerSession.id, model: managerModel, startedAt: Date.now(),
       status: 'running', toolCalls: 0, tokenUsage: { input: 0, output: 0 },
     };
@@ -3455,13 +3701,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (compactResult.compacted) {
           opts.send({
             type: 'status',
-            message: `manager · compacted ${compactResult.messagesRemoved ?? '?'} older messages`,
+            message: `assistant · compacted ${compactResult.messagesRemoved ?? '?'} older messages`,
             runId,
           });
         }
       } catch { /* auto-compact is best-effort */ }
       const runOptions = {
-        systemPrompt: buildManagerSystemPrompt(workDir, cfg),
+        systemPrompt,
         tools: managerTools,
         signal: abort.signal,
         ...(managerModel ? { model: managerModel } : {}),
@@ -4959,8 +5205,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       .find(candidate => candidate.id === context.issueId);
     if (!issue) throw new Error(`Issue not found while resuming durable child: ${context.issueId}`);
 
+    // Must match issue dispatch / composer: saved profiles AND ephemeral config presets.
     const resolvedProfile = context.requestedProfile
-      ? await resolveAgentProfileRun(context.requestedProfile, context.homeDir)
+      ? await resolveSelectableAgentRun(context.requestedProfile, context.homeDir)
       : null;
     let modelApi = resolvedProfile?.modelApi;
     let model = resolvedProfile?.model ?? context.workerModel ?? undefined;
@@ -4984,6 +5231,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
     }
 
+    const profileOverrides = agentProfileRunOverrides(resolvedProfile?.profile);
+    const effort = profileOverrides.effort
+      ?? (context.effort === 'auto' || isEffort(context.effort) ? context.effort : undefined);
+
     const workerSession = await sdk.resumeSession(context.sessionId, {
       model,
       permissionMode: context.permissionMode,
@@ -5003,12 +5254,14 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       systemPrompt: context.systemPrompt,
       signal: request.options.signal,
       permissionMode: context.permissionMode,
-      effort: context.effort as NonNullable<Parameters<typeof workerSession.stream>[1]>['effort'],
+      ...(effort ? { effort } : {}),
       approver,
       classifier: preToolUseHookClassifier,
       canUseTool,
       ...(model ? { model } : {}),
       ...(modelApi ? { modelApi } : {}),
+      ...(typeof profileOverrides.maxTokens === 'number' ? { maxTokens: profileOverrides.maxTokens } : {}),
+      ...(typeof profileOverrides.temperature === 'number' ? { temperature: profileOverrides.temperature } : {}),
       tools: [issueReportTool],
     });
     for await (const event of stream) {
@@ -5182,6 +5435,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       ].join('\n');
       send({ type: 'user', text: workerPrompt });
       durableIssueSinks.set(runId, send);
+      const profileOverrides = agentProfileRunOverrides(resolvedProfile?.profile);
+      const dispatchEffort = profileOverrides.effort ?? currentEffort() ?? 'auto';
       const coordinator = await durableIssueCoordinatorFor(targetPath, homeDir);
       const result = await coordinator.run({
         childId: runId,
@@ -5199,7 +5454,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           bridgeConfigName: resolvedProfile?.bridgeConfig.name ?? activeBridgeConfig?.name ?? null,
           workerModel: workerModel ?? null,
           permissionMode: workerPermissionMode,
-          effort: currentEffort(),
+          effort: dispatchEffort,
           systemPrompt: issueSystemPrompt,
           prompt: workerPrompt,
         } as unknown as JsonValue,
@@ -6447,18 +6702,46 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
   if (req.method === 'GET' && url.pathname === '/api/manager/state') {
     const homeDir = managerHomeDir();
+    const scope = isAssistantScope(url.searchParams.get('scope'))
+      ? url.searchParams.get('scope') as 'global' | 'project'
+      : 'project';
+    const running = [...runs.values()].some(run => run.desc.kind === 'manager' && run.desc.status === 'running');
+    let transcript: Array<{ kind: string; text: string }> = [];
+    try {
+      if (!needsCredentials && sdk) {
+        transcript = managerPanelTranscript(
+          scope === 'global' ? await getAssistantGlobalSession() : await getManagerSession(),
+        );
+      }
+    } catch { /* panel hydration is best-effort */ }
+    if (scope === 'global') {
+      const cfg = await readAssistantConfig(homeDir);
+      return json(res, 200, {
+        scope: 'global',
+        canUseProjectScope: true,
+        currentProjectPath: workDir,
+        config: cfg,
+        plan: { milestones: 0, today: 0, upcoming: 0 },
+        progressChars: 0,
+        progressPreview: null,
+        updatePreview: null,
+        progressPath: null,
+        progressUpdatedAt: null,
+        running,
+        transcript,
+        schedules: [],
+      });
+    }
     const cfg = await readManagerConfig(workDir, homeDir);
     const plan = await readProjectPlanFile(workDir, homeDir);
     const progress = await readProgressFile(workDir, homeDir);
     const progressPath = managerProgressPath(workDir, homeDir);
     let progressUpdatedAt: string | null = null;
     try { progressUpdatedAt = (await stat(progressPath)).mtime.toISOString(); } catch { /* none yet */ }
-    const running = [...runs.values()].some(run => run.desc.kind === 'manager' && run.desc.status === 'running');
-    let transcript: Array<{ kind: string; text: string }> = [];
-    try {
-      if (!needsCredentials && sdk) transcript = managerPanelTranscript(await getManagerSession());
-    } catch { /* panel hydration is best-effort */ }
     return json(res, 200, {
+      scope: 'project',
+      canUseProjectScope: true,
+      currentProjectPath: workDir,
       config: cfg,
       plan: { milestones: plan.milestones.length, today: plan.today.length, upcoming: plan.upcoming.length },
       progressChars: progress?.length ?? 0,
@@ -6474,12 +6757,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     });
   }
   if (req.method === 'POST' && url.pathname === '/api/manager/config') {
-    // Manager settings (plan M0/M3): model override, read-scope allowlist,
-    // and the PROGRESS.md workspace mirror toggle.
+    // Assistant settings: Project → manager.json; Global → <data-root>/assistant.json
     try {
       const body = await readJson(req);
+      const scope = isAssistantScope(body.scope) ? body.scope : 'project';
       const next = await withRuntimeMutation(async () => {
         const homeDir = managerHomeDir();
+        if (scope === 'global') {
+          const current = await readAssistantConfig(homeDir);
+          const config = {
+            model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
+            bridgeConfig: typeof body.bridgeConfig === 'string'
+              ? (body.bridgeConfig.trim() || undefined)
+              : current.bridgeConfig,
+          };
+          await writeAssistantConfig(config, homeDir);
+          return config;
+        }
         const current = await readManagerConfig(workDir, homeDir);
         const config: ManagerConfig = {
           ...current,
@@ -6498,7 +6792,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         await writeManagerConfig(workDir, homeDir, config);
         return config;
       });
-      return json(res, 200, { ok: true, config: next });
+      return json(res, 200, { ok: true, scope, config: next });
     } catch (error) {
       return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
     }
@@ -6507,8 +6801,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     if (runtimeMutationInProgress) {
       return json(res, 409, { error: 'Runtime configuration is being updated. Try again in a moment.' });
     }
-    // NDJSON stream for the Project-view Manager panel (plan M0/M1).
     const body = await readJson(req);
+    const scope = isAssistantScope(body.scope) ? body.scope : 'project';
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'cache-control': 'no-store',
@@ -6518,9 +6812,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     try {
       const isUpdate = url.pathname === '/api/manager/update';
       const text = await runManagerTurn(isUpdate
-        ? { mode: 'update', instruction: typeof body.instruction === 'string' ? body.instruction : undefined, send }
-        : { mode: 'chat', text: typeof body.text === 'string' ? body.text : '', send });
-      send({ type: 'manager.result', text, updated: isUpdate });
+        ? {
+          mode: 'update',
+          scope,
+          instruction: typeof body.instruction === 'string' ? body.instruction : undefined,
+          send,
+        }
+        : {
+          mode: 'chat',
+          scope,
+          text: typeof body.text === 'string' ? body.text : '',
+          send,
+        });
+      send({ type: 'manager.result', text, updated: isUpdate, scope });
       send({ type: 'done' });
     } catch (error) {
       send({ type: 'error', message: (error as Error).message });
@@ -8434,16 +8738,16 @@ export function createActoviqGuiHtml(): string {
     <aside class="context-rail hidden" id="contextRail" aria-label="Context panel"></aside>
     <div id="railToast" class="rail-toast hidden" role="status" aria-live="polite"></div>
   </div>
-  <div id="managerShell" class="manager-shell hidden" aria-live="polite">
-    <button type="button" id="managerFab" class="manager-fab" title="Project Manager" aria-label="Open Project Manager">
-      <span class="manager-fab-icon">${guiIcon('agent')}</span>
+  <div id="managerShell" class="manager-shell" aria-live="polite">
+    <button type="button" id="managerFab" class="manager-fab" title="Assistant" aria-label="Open Assistant">
+      <span class="manager-fab-icon">${guiIcon('chat')}</span>
     </button>
     <div id="managerBackdrop" class="manager-backdrop hidden" aria-hidden="true"></div>
-    <aside class="manager-widget hidden" id="managerPanel" aria-label="Project Manager">
+    <aside class="manager-widget hidden" id="managerPanel" aria-label="Assistant">
       <header class="manager-widget-header">
         <div class="manager-widget-head-main">
           <span class="manager-widget-brand" aria-hidden="true">${guiIcon('logo')}</span>
-          <span id="managerHeaderTitle" class="manager-widget-topic">Project Manager</span>
+          <span id="managerHeaderTitle" class="manager-widget-topic">Assistant</span>
         </div>
         <div class="manager-widget-controls">
           <button type="button" id="managerUpdateQuick" class="manager-ctrl-btn" title="Update progress">${guiIcon('refresh')}</button>
@@ -8452,6 +8756,10 @@ export function createActoviqGuiHtml(): string {
           <button type="button" id="managerCloseBtn" class="manager-ctrl-btn" title="Close">${guiIcon('close')}</button>
         </div>
       </header>
+      <div class="manager-scope-bar" role="tablist" aria-label="Assistant scope">
+        <button type="button" id="managerScopeGlobal" class="manager-scope-btn" data-scope="global" role="tab" aria-selected="false">Global</button>
+        <button type="button" id="managerScopeProject" class="manager-scope-btn" data-scope="project" role="tab" aria-selected="true">Project</button>
+      </div>
       <div class="manager-widget-body">
         <div id="managerTranscript" class="manager-transcript"></div>
         <div id="managerThinking" class="manager-thinking" aria-live="polite" aria-hidden="true">
@@ -8470,8 +8778,8 @@ export function createActoviqGuiHtml(): string {
               <option value="">Config / session default</option>
             </select>
           </label>
-          <p class="manager-cfg-hint">Pick a saved provider config, then choose a model from that config (or leave Model on default). The Manager stays read-only: it observes the project and writes only its own plan/progress files.</p>
-          <label>Read scope
+          <p class="manager-cfg-hint" id="managerCfgHint">Pick a saved provider config, then choose a model from that config (or leave Model on default). Project mode observes the current workspace and writes only plan/progress files.</p>
+          <label id="managerCfgReadScopeRow">Read scope
             <select id="managerCfgScope">
               <option value="workspace-only">workspace-only</option>
               <option value="workspace+docs">workspace+docs</option>
@@ -8482,7 +8790,7 @@ export function createActoviqGuiHtml(): string {
           <label id="managerCfgPathsLabel">Allowed read paths (one per line)
             <textarea id="managerCfgPaths" rows="3" placeholder="D:\\docs\\project-notes"></textarea>
           </label>
-          <label class="manager-cfg-check">
+          <label class="manager-cfg-check" id="managerCfgMirrorRow">
             <input type="checkbox" id="managerCfgMirror"> Mirror PROGRESS.md into workspace (.actoviq/PROGRESS.md)
           </label>
           <div class="manager-actions">
@@ -8495,9 +8803,9 @@ export function createActoviqGuiHtml(): string {
         <div class="manager-composer">
           <span class="manager-composer-avatar" aria-hidden="true">${guiIcon('logo')}</span>
           <div class="manager-composer-main">
-            <span class="manager-composer-label">Project Manager <span id="managerPanelMeta" class="manager-panel-meta"></span></span>
+            <span class="manager-composer-label"><span id="managerComposerRole">Assistant</span> <span id="managerPanelMeta" class="manager-panel-meta"></span></span>
             <form id="managerChatForm" class="manager-chat-form">
-              <input id="managerChatInput" autocomplete="off" placeholder="Ask the Manager…">
+              <input id="managerChatInput" autocomplete="off" placeholder="Ask the Assistant…">
               <button type="submit" id="managerChatSend" class="manager-send-btn" title="Send" aria-label="Send">${guiIcon('send')}</button>
             </form>
           </div>
@@ -8735,15 +9043,12 @@ export function createActoviqGuiHtml(): string {
       <section>
         <h2>Agent</h2>
         <button type="button" class="settings-tab" data-settings-tab="capabilities"><span class="settings-icon">${guiIcon('tools')}</span>Capabilities</button>
-        <button type="button" class="settings-tab" data-settings-tab="automation"><span class="settings-icon">${guiIcon('automation')}</span>Automation</button>
         <button type="button" class="settings-tab" data-settings-tab="sessions"><span class="settings-icon">${guiIcon('chat')}</span>Chats</button>
         <button type="button" class="settings-tab" data-settings-tab="memory"><span class="settings-icon">${guiIcon('memory')}</span>Memory</button>
       </section>
       <section>
         <h2>Integrations</h2>
         <button type="button" class="settings-tab" data-settings-tab="mcp"><span class="settings-icon">${guiIcon('plug')}</span>MCP servers</button>
-        <button type="button" class="settings-tab" data-settings-tab="browser"><span class="settings-icon">${guiIcon('browser')}</span>Browser</button>
-        <button type="button" class="settings-tab" data-settings-tab="computer"><span class="settings-icon">${guiIcon('computer')}</span>Computer control</button>
       </section>
       <section>
         <h2>Coding</h2>
@@ -8918,29 +9223,7 @@ export function createActoviqGuiHtml(): string {
           <h2>Plugins</h2>
           <div class="settings-action-row"><button type="button" id="settingsOpenPlugins" class="secondary-btn">Open plugins drawer</button></div>
           <div id="settingsPluginsList" class="settings-card-list compact"></div>
-        </div>
-      </section>
-      <section class="settings-panel" data-settings-panel="automation">
-        <h1>Automation</h1>
-        <div class="settings-group">
-          <h2>Scheduled tasks</h2>
-          <p>Run a saved workflow or prompt on a local cron schedule for this workspace.</p>
-          <input id="settingsScheduleId" type="hidden">
-          <div class="automation-schedule-grid">
-            <label>Name<input id="settingsScheduleName" autocomplete="off" placeholder="daily review"></label>
-            <label>Cron<input id="settingsScheduleCron" autocomplete="off" placeholder="0 9 * * *"></label>
-            <label>Type<select id="settingsScheduleKind"><option value="workflow">Workflow</option><option value="prompt">Prompt</option><option value="manager">Manager update</option></select></label>
-            <label>Workflow<input id="settingsScheduleWorkflow" list="settingsWorkflowNames" autocomplete="off" placeholder="workflow name"></label>
-          </div>
-          <label class="automation-schedule-payload">Input or prompt<textarea id="settingsScheduleInput" autocomplete="off" placeholder="workflow input, or the prompt to run"></textarea></label>
-          <datalist id="settingsWorkflowNames"></datalist>
-          <div class="settings-action-row">
-            <label class="check-row"><input id="settingsScheduleEnabled" type="checkbox" checked>Enabled</label>
-            <button type="button" id="settingsScheduleSave" class="primary">Save schedule</button>
-            <button type="button" id="settingsScheduleClear" class="secondary-btn">New schedule</button>
-          </div>
-          <p id="settingsScheduleStatus" class="muted"></p>
-          <div id="settingsScheduledTasksList" class="settings-card-list"></div>
+          <p class="muted">Browser (Playwright) and Computer Use are configured under Customize → Plugins, not here.</p>
         </div>
         <div class="settings-group">
           <h2>Agents</h2>
@@ -8952,15 +9235,6 @@ export function createActoviqGuiHtml(): string {
             <button type="button" id="settingsTeamOff" class="secondary-btn">No agent</button>
           </div>
           <div id="settingsTeamsList" class="settings-card-list"></div>
-        </div>
-        <div class="settings-group">
-          <h2>Worktrees</h2>
-          <div class="settings-command-row">
-            <label>Worktree name<input id="settingsWorktreeName" autocomplete="off" placeholder="feature-name"></label>
-            <button type="button" id="settingsEnterWorktree" class="secondary-btn">Create / enter</button>
-            <button type="button" id="settingsExitWorktree" class="secondary-btn">Exit</button>
-          </div>
-          <div class="settings-action-row"><button type="button" id="settingsAutomationWorktreeList" class="secondary-btn">List worktrees</button></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="sessions">
@@ -9018,31 +9292,6 @@ export function createActoviqGuiHtml(): string {
           <div id="mcpServersList" class="settings-card-list"></div>
         </div>
       </section>
-      <section class="settings-panel" data-settings-panel="browser">
-        <h1>Browser</h1>
-        <div class="settings-group">
-          <p class="muted">Playwright-powered page automation for the agent (browser-use style: snapshot → indexed click/type). Separate from OS-level Computer control. Requires <code>playwright</code> and <code>npx playwright install chromium</code>.</p>
-          <label class="check-row"><input id="settingsBrowserEnabled" type="checkbox">Enable browser tools in this GUI</label>
-          <label class="check-row"><input id="settingsBrowserHeadless" type="checkbox" checked>Headless Chromium</label>
-        </div>
-        <div class="settings-group two-col">
-          <label>Channel<select id="settingsBrowserChannel"><option value="chromium">Chromium (bundled)</option><option value="chrome">Google Chrome</option><option value="msedge">Microsoft Edge</option></select></label>
-          <label>Default timeout (ms)<input id="settingsBrowserTimeoutMs" type="number" min="1000" max="180000" step="1000" value="30000"></label>
-        </div>
-        <div class="settings-group">
-          <label>Allowed domains<input id="settingsBrowserAllowedDomains" autocomplete="off" placeholder="example.com, github.com"></label>
-          <p class="muted">Comma-separated host allowlist. Empty allows all domains.</p>
-          <label>User data dir<input id="settingsBrowserUserDataDir" autocomplete="off" placeholder="Leave empty for ephemeral profile"></label>
-          <p class="muted">Optional persistent Chromium profile (reuses logins).</p>
-          <label>CDP URL<input id="settingsBrowserCdpUrl" autocomplete="off" placeholder="http://127.0.0.1:9222"></label>
-          <p class="muted">Connect to an already-running Chrome/Edge instead of launching.</p>
-          <label class="check-row"><input id="settingsBrowserAllowEvaluate" type="checkbox">Allow <code>browser_evaluate</code> (dangerous)</label>
-        </div>
-      </section>
-      <section class="settings-panel" data-settings-panel="computer">
-        <h1>Computer control</h1>
-        <div class="settings-group"><p>Computer control appears when the matching tools are registered for this workspace.</p></div>
-      </section>
       <section class="settings-panel" data-settings-panel="hooks">
         <h1>Hooks</h1>
         <div class="settings-group">
@@ -9087,7 +9336,17 @@ export function createActoviqGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="worktree">
         <h1>Worktrees</h1>
-        <div class="settings-group"><button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button></div>
+        <div class="settings-group">
+          <div class="settings-command-row">
+            <label>Worktree name<input id="settingsWorktreeName" autocomplete="off" placeholder="feature-name"></label>
+            <button type="button" id="settingsEnterWorktree" class="secondary-btn">Create / enter</button>
+            <button type="button" id="settingsExitWorktree" class="secondary-btn">Exit</button>
+          </div>
+          <div class="settings-action-row">
+            <button type="button" id="settingsWorktreeBtn" class="secondary-btn">List worktrees</button>
+            <button type="button" id="settingsAutomationWorktreeList" class="secondary-btn">List via /worktree</button>
+          </div>
+        </div>
       </section>
       <div class="settings-autosave-status" aria-live="polite">
         <span id="settingsStatus" class="muted"></span>
@@ -9994,6 +10253,33 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
+}
+.manager-scope-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px 0;
+  flex: 0 0 auto;
+}
+.manager-scope-btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--bg-muted, var(--bg-surface));
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.manager-scope-btn[aria-selected="true"],
+.manager-scope-btn.active {
+  color: var(--brand);
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+  background: color-mix(in srgb, var(--brand) 10%, var(--bg-surface));
+}
+.manager-scope-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
 }
 .manager-ctrl-btn {
   width: 28px;
@@ -12450,6 +12736,7 @@ const state = {
   permissionQueue: [],
   snapshot: null,
   loadError: null,
+  lastProjectOpenError: null,
   sessionsLimit: 16,
   queue: [],
   running: false,
@@ -14000,9 +14287,6 @@ function renderSettingsCommandPanels() {
   renderSettingsCardList('settingsMcpList', (snapshot.tools || []).filter(tool => tool.provider === 'mcp'), (root, tool) => {
     addSettingsCard(root, tool.name, tool.server || 'mcp', tool.description);
   });
-  renderWorkflowNameOptions(snapshot.workflows || []);
-  if (!el('settingsScheduleCron').value.trim()) setField('settingsScheduleCron', '0 9 * * *');
-  renderScheduledTasksList(snapshot.scheduledTasks || []);
   // snapshot.teams already includes the built-in presets (shadowed by any
   // same-named user file) — no client-side placeholder list.
   const teams = snapshot.teams || [];
@@ -14031,143 +14315,31 @@ function renderSettingsCommandPanels() {
     ]);
   });
 }
-function renderWorkflowNameOptions(workflows) {
-  const root = el('settingsWorkflowNames');
-  if (!root) return;
-  root.textContent = '';
-  for (const workflow of workflows || []) {
-    const option = document.createElement('option');
-    option.value = workflow.name;
-    root.appendChild(option);
-  }
-}
-function clearScheduledTaskForm() {
-  setField('settingsScheduleId', '');
-  setField('settingsScheduleName', '');
-  setField('settingsScheduleCron', '0 9 * * *');
-  setField('settingsScheduleKind', 'workflow');
-  setField('settingsScheduleWorkflow', '');
-  setField('settingsScheduleInput', '');
-  setChecked('settingsScheduleEnabled', true);
-  el('settingsScheduleStatus').textContent = '';
-}
-function editScheduledTask(task) {
-  setField('settingsScheduleId', task.id || '');
-  setField('settingsScheduleName', task.name || '');
-  setField('settingsScheduleCron', task.cron || '0 9 * * *');
-  setField('settingsScheduleKind', task.kind || 'workflow');
-  setField('settingsScheduleWorkflow', task.workflowName || '');
-  setField('settingsScheduleInput', task.kind === 'prompt' ? (task.prompt || '') : (task.input || ''));
-  setChecked('settingsScheduleEnabled', task.enabled !== false);
-  el('settingsScheduleStatus').textContent = 'Editing ' + (task.name || task.id);
-}
-function scheduledTaskDetail(task) {
-  return [
-    task.kind,
-    task.kind === 'workflow' ? task.workflowName : 'prompt',
-    task.enabled ? 'enabled' : 'paused',
-    'next ' + formatScheduleTime(task.nextRunAt),
-    task.lastResult ? 'last ' + task.lastResult : '',
-  ].filter(Boolean).join(' - ');
-}
-function formatScheduleTime(value) {
-  if (!value) return 'not scheduled';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-function renderScheduledTasksList(tasks) {
-  const root = el('settingsScheduledTasksList');
-  root.textContent = '';
-  if (!tasks || tasks.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = 'No scheduled tasks yet.';
-    root.appendChild(empty);
-    return;
-  }
-  for (const task of tasks) {
-    const card = document.createElement('article');
-    card.className = 'settings-card';
-    const strong = document.createElement('strong');
-    strong.textContent = task.name || task.id;
-    const p = document.createElement('p');
-    p.textContent = describeParts([task.cron, scheduledTaskDetail(task), task.lastError]);
-    const footer = document.createElement('footer');
-    const run = document.createElement('button');
-    run.type = 'button';
-    run.textContent = 'Run now';
-    run.addEventListener('click', () => runScheduledTask(task.id));
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.textContent = 'Edit';
-    edit.addEventListener('click', () => editScheduledTask(task));
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.textContent = task.enabled ? 'Pause' : 'Enable';
-    toggle.addEventListener('click', () => toggleScheduledTask(task.id, !task.enabled));
-    const del = document.createElement('button');
-    del.type = 'button';
-    del.textContent = 'Delete';
-    del.addEventListener('click', () => {
-      if (confirm('Delete scheduled task "' + (task.name || task.id) + '"?')) deleteScheduledTask(task.id);
-    });
-    footer.append(run, edit, toggle, del);
-    card.append(strong, p, footer);
-    root.appendChild(card);
-  }
-}
 async function refreshScheduledTaskUi(payload) {
   if (payload && payload.state) state.snapshot = payload.state;
   else await loadState();
-  if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
   if (!el('regionAutomation').classList.contains('hidden')) await renderAutomationRegion();
-}
-async function saveScheduledTaskFromSettings() {
-  const kindValue = el('settingsScheduleKind').value;
-  const kind = kindValue === 'prompt' ? 'prompt' : kindValue === 'manager' ? 'manager' : 'workflow';
-  const input = el('settingsScheduleInput').value.trim();
-  const body = {
-    id: el('settingsScheduleId').value.trim() || undefined,
-    name: el('settingsScheduleName').value.trim() || undefined,
-    cron: el('settingsScheduleCron').value.trim() || '0 9 * * *',
-    kind,
-    enabled: el('settingsScheduleEnabled').checked,
-    workflowName: kind === 'workflow' ? el('settingsScheduleWorkflow').value.trim() : undefined,
-    // manager tasks reuse "input" as the optional update instruction
-    input: kind === 'workflow' || kind === 'manager' ? input : undefined,
-    prompt: kind === 'prompt' ? input : undefined,
-  };
-  el('settingsScheduleStatus').textContent = 'Saving schedule...';
-  const res = await api('/api/scheduled-tasks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    el('settingsScheduleStatus').textContent = payload.error || 'Could not save schedule';
-    return;
-  }
-  await refreshScheduledTaskUi(payload);
-  el('settingsScheduleStatus').textContent = 'Schedule saved';
 }
 async function toggleScheduledTask(id, enabled) {
   const res = await api('/api/scheduled-tasks/toggle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, enabled }) });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not update schedule'; return; }
+  if (!res.ok) { flashStatus(payload.error || 'Could not update schedule'); return; }
   await refreshScheduledTaskUi(payload);
 }
 async function deleteScheduledTask(id) {
   const res = await api('/api/scheduled-tasks/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not delete schedule'; return; }
+  if (!res.ok) { flashStatus(payload.error || 'Could not delete schedule'); return; }
   await refreshScheduledTaskUi(payload);
 }
 async function runScheduledTask(id) {
-  el('settingsScheduleStatus').textContent = 'Running scheduled task...';
+  flashStatus('Running scheduled task...');
   const res = await api('/api/scheduled-tasks/run', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
   const payload = await res.json().catch(() => ({}));
-  if (!res.ok) { el('settingsScheduleStatus').textContent = payload.error || 'Could not run schedule'; return; }
+  if (!res.ok) { flashStatus(payload.error || 'Could not run schedule'); return; }
   for (const event of payload.events || []) handleEvent(event);
   await refreshScheduledTaskUi(payload);
-  el('settingsScheduleStatus').textContent = 'Run complete';
+  flashStatus('Run complete');
 }
 function renderProjects() {
   // Legacy sidebar chat list removed — keep Pinned/Recent in sync only.
@@ -15306,11 +15478,20 @@ async function switchProject(projectPath, view = 'conversation') {
   state.transcriptCache = {};
   state.activeSessionId = null;
   state.lastHydratedMessages = null;
+  state.lastProjectOpenError = null;
   managerTranscriptHydrated = false;
   resetManagerClientState('');
   const res = await api('/api/project/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
-  if (!res.ok) { addMessage('error', await res.text()); return false; }
-  state.snapshot = await res.json();
+  const raw = await res.text();
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = { error: raw }; }
+  if (!res.ok) {
+    const message = payload.error || raw || 'Could not open this workspace.';
+    state.lastProjectOpenError = message;
+    addMessage('error', message);
+    return false;
+  }
+  state.snapshot = payload;
   managerBoundWorkDir = state.snapshot?.workDir || projectPath || '';
   transcript.textContent = '';
   state.toolNodes.clear();
@@ -15344,7 +15525,7 @@ async function addWorkspace() {
     if (!ok) {
       openWorkspaceDialog();
       el('workspacePathInput').value = picked;
-      el('workspaceStatus').textContent = 'Could not open this workspace.';
+      el('workspaceStatus').textContent = state.lastProjectOpenError || 'Could not open this workspace.';
     }
     return;
   }
@@ -15368,7 +15549,7 @@ async function submitWorkspace(event) {
   }
   el('workspaceStatus').textContent = 'Opening workspace...';
   const ok = await switchProject(projectPath);
-  el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
+  el('workspaceStatus').textContent = ok ? '' : (state.lastProjectOpenError || 'Could not open this workspace.');
   if (ok) closeWorkspaceDialog();
 }
 async function createNewSession() {
@@ -15798,16 +15979,15 @@ function switchProjectView(view) {
       renderConvSidebarDetail();
     });
   }
-  // Manager chat: only inside an opened project (detail view). Hidden on the
-  // projects overview, in conversations, and outside the Project region.
+  // Assistant FAB is always available; Project scope activates inside an opened
+  // project (detail / conversation). Global scope works from overview and other regions.
   if (view === 'detail') {
     const wd = state.snapshot?.workDir || '';
     if (wd && managerBoundWorkDir && wd !== managerBoundWorkDir) resetManagerClientState(wd);
     else if (wd && !managerBoundWorkDir) managerBoundWorkDir = wd;
     syncManagerVisibility(view);
-    // Defer manager hydrate so project detail paints first.
     requestAnimationFrame(() => {
-      if (state.projectView === 'detail') refreshManagerState(!managerTranscriptHydrated);
+      refreshManagerState(!managerTranscriptHydrated);
     });
   } else {
     syncManagerVisibility(view);
@@ -27066,31 +27246,101 @@ function openProjectGitFromSettings() {
   setProjectDetailTab('git');
 }
 function showSettingsTab(tab) {
-  document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === tab));
-  document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === tab));
-  if (tab === 'git') refreshGitSettingsSummary().catch(() => undefined);
-  if (tab === 'hooks') refreshHooksSettings().catch(() => undefined);
-  if (tab === 'shortcuts') renderShortcutsPanel();
-  if (tab === 'models') renderBridgeConfigs();
-  if (tab === 'mcp') renderMcpServers();
-  if (tab === 'sessions') renderArchived();
+  const requested = String(tab || 'general');
+  const hasTab = !!document.querySelector('.settings-tab[data-settings-tab="' + requested + '"]');
+  const active = hasTab ? requested : 'general';
+  document.querySelectorAll('.settings-tab').forEach(button => button.classList.toggle('active', button.dataset.settingsTab === active));
+  document.querySelectorAll('.settings-panel').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === active));
+  if (active === 'git') refreshGitSettingsSummary().catch(() => undefined);
+  if (active === 'hooks') refreshHooksSettings().catch(() => undefined);
+  if (active === 'shortcuts') renderShortcutsPanel();
+  if (active === 'models') renderBridgeConfigs();
+  if (active === 'mcp') renderMcpServers();
+  if (active === 'sessions') renderArchived();
 }
-// ── Project Manager widget (Multica-style FAB + floating chat) ───
-// A per-project governance chat + one-click progress sync. Talks to the
-// /api/manager/* endpoints; the Manager itself is tool-restricted server-side.
+// ── Assistant widget (global FAB + Global/Project scope) ───
+// Talks to /api/manager/* with scope=global|project. Global uses assistant
+// tools; Project keeps the original Manager update/plan/issues surface.
 let managerBusy = false;
 let managerTranscriptHydrated = false;
 let managerUiMode = 'closed';
 let managerBoundWorkDir = '';
+let assistantScope = 'global';
+let assistantScopeHydratedFor = '';
+function canUseProjectAssistantScope() {
+  return state.activeRegion === 'project'
+    && (state.projectView === 'detail' || state.projectView === 'conversation');
+}
+function preferredAssistantScope() {
+  return canUseProjectAssistantScope() ? 'project' : 'global';
+}
+function applyAssistantScopeUi() {
+  if (!canUseProjectAssistantScope() && assistantScope === 'project') {
+    assistantScope = 'global';
+  }
+  const globalBtn = el('managerScopeGlobal');
+  const projectBtn = el('managerScopeProject');
+  if (globalBtn) {
+    globalBtn.setAttribute('aria-selected', assistantScope === 'global' ? 'true' : 'false');
+    globalBtn.classList.toggle('active', assistantScope === 'global');
+  }
+  if (projectBtn) {
+    const ok = canUseProjectAssistantScope();
+    projectBtn.disabled = !ok;
+    projectBtn.setAttribute('aria-selected', assistantScope === 'project' ? 'true' : 'false');
+    projectBtn.classList.toggle('active', assistantScope === 'project');
+    projectBtn.title = ok ? 'Current project Manager' : 'Open a project to use Project scope';
+  }
+  const isGlobal = assistantScope === 'global';
+  const role = el('managerComposerRole');
+  if (role) role.textContent = isGlobal ? 'Assistant' : 'Project Manager';
+  const title = el('managerHeaderTitle');
+  if (title && (title.textContent === 'Assistant' || title.textContent === 'Project Manager' || !managerTranscriptHydrated)) {
+    title.textContent = isGlobal ? 'Assistant' : 'Project Manager';
+  }
+  const input = el('managerChatInput');
+  if (input) input.placeholder = isGlobal ? 'Ask the Assistant…' : 'Ask the Manager…';
+  const hint = el('managerCfgHint');
+  if (hint) {
+    hint.textContent = isGlobal
+      ? 'Pick a saved provider config for the Global Assistant (cross-project overview + settings tools). No source Write/Edit/Bash.'
+      : 'Pick a saved provider config, then choose a model from that config (or leave Model on default). Project mode observes the current workspace and writes only plan/progress files.';
+  }
+  el('managerCfgReadScopeRow')?.classList.toggle('hidden', isGlobal);
+  el('managerCfgPathsLabel')?.classList.toggle('hidden', isGlobal);
+  el('managerCfgMirrorRow')?.classList.toggle('hidden', isGlobal);
+  el('managerUpdateBtn')?.classList.toggle('hidden', isGlobal);
+  el('managerUpdateQuick')?.classList.toggle('hidden', isGlobal);
+  syncManagerCfgPathsVisibility();
+}
+function setAssistantScope(next, opts = {}) {
+  const scope = next === 'project' ? 'project' : 'global';
+  if (scope === 'project' && !canUseProjectAssistantScope()) return;
+  if (assistantScope === scope && !opts.force) {
+    applyAssistantScopeUi();
+    return;
+  }
+  assistantScope = scope;
+  managerTranscriptHydrated = false;
+  const t = el('managerTranscript');
+  if (t) t.textContent = '';
+  managerToolNodes.clear();
+  managerCurrentAssistant = null;
+  applyAssistantScopeUi();
+  if (opts.refresh !== false) refreshManagerState(true);
+}
 function resetManagerClientState(nextWorkDir) {
   managerTranscriptHydrated = false;
   managerUiMode = 'closed';
   managerBoundWorkDir = typeof nextWorkDir === 'string' ? nextWorkDir : '';
+  assistantScopeHydratedFor = '';
+  assistantScope = preferredAssistantScope();
   const t = el('managerTranscript');
   if (t) t.textContent = '';
   const title = el('managerHeaderTitle');
-  if (title) title.textContent = 'Project Manager';
+  if (title) title.textContent = assistantScope === 'global' ? 'Assistant' : 'Project Manager';
   el('managerConfigForm')?.classList.add('hidden');
+  applyAssistantScopeUi();
 }
 function managerUpdateHeaderTitle(text) {
   const title = el('managerHeaderTitle');
@@ -27121,21 +27371,25 @@ function setManagerUiMode(mode) {
     expandBtn.innerHTML = mode === 'expanded' ? guiIcon('minimize') : guiIcon('maximize');
     expandBtn.title = mode === 'expanded' ? 'Restore' : 'Expand';
   }
+  applyAssistantScopeUi();
 }
 function managerShellVisible() {
-  return state.activeRegion === 'project' && state.projectView === 'detail';
+  return true;
 }
 function syncManagerVisibility(view) {
-  if (!managerShellVisible()) {
-    setManagerUiMode('closed');
-    el('managerShell')?.classList.add('hidden');
-    el('managerFab')?.classList.add('hidden');
-    el('managerPanel')?.classList.add('hidden');
-    el('managerBackdrop')?.classList.add('hidden');
-    return;
+  if (!canUseProjectAssistantScope() && assistantScope === 'project') {
+    setAssistantScope('global', { refresh: false });
+  } else if (
+    canUseProjectAssistantScope()
+    && view === 'detail'
+    && assistantScopeHydratedFor !== (state.snapshot?.workDir || '')
+  ) {
+    assistantScopeHydratedFor = state.snapshot?.workDir || '';
+    setAssistantScope('project', { refresh: false, force: true });
   }
   el('managerShell')?.classList.remove('hidden');
   setManagerUiMode(managerUiMode);
+  applyAssistantScopeUi();
 }
 const managerToolNodes = new Map();
 let managerCurrentAssistant = null;
@@ -27298,16 +27552,23 @@ function hydrateManagerTranscript(items, force) {
 }
 async function refreshManagerState(forceHydrate = false) {
   if (!managerShellVisible()) return;
+  applyAssistantScopeUi();
   try {
-    const res = await api('/api/manager/state');
+    const res = await api('/api/manager/state?scope=' + encodeURIComponent(assistantScope));
     if (!res.ok) return;
     const data = await res.json();
     if (Array.isArray(data.transcript)) hydrateManagerTranscript(data.transcript, forceHydrate);
     const meta = el('managerPanelMeta');
     if (meta) {
-      meta.textContent = data.progressUpdatedAt
-        ? 'updated ' + formatRelativeTime(data.progressUpdatedAt)
-        : 'no progress doc yet';
+      if (assistantScope === 'global') {
+        meta.textContent = data.currentProjectPath
+          ? 'focus ' + String(data.currentProjectPath).split(/[/\\\\]/).filter(Boolean).pop()
+          : 'global';
+      } else {
+        meta.textContent = data.progressUpdatedAt
+          ? 'updated ' + formatRelativeTime(data.progressUpdatedAt)
+          : 'no progress doc yet';
+      }
     }
     const line = el('managerStatusLine');
     if (line) {
@@ -27315,21 +27576,29 @@ async function refreshManagerState(forceHydrate = false) {
       const modelLabel = cfg.bridgeConfig
         ? (cfg.model ? (cfg.bridgeConfig + ' / ' + cfg.model) : cfg.bridgeConfig)
         : (cfg.model || 'session default');
-      const parts = [
-        (data.plan.milestones || 0) + ' milestones · ' + (data.plan.today || 0) + ' today · ' + (data.plan.upcoming || 0) + ' upcoming',
-        'model: ' + modelLabel + ' (read-only)',
-        'readScope: ' + (cfg.readScope || 'workspace-only'),
-      ];
-      if (cfg.mirrorProgressToWorkspace) parts.push('mirror: on');
-      if (data.schedules && data.schedules.length) parts.push(data.schedules.length + ' schedule' + (data.schedules.length === 1 ? '' : 's'));
-      line.textContent = parts.join('  ·  ');
+      if (assistantScope === 'global') {
+        line.textContent = [
+          'scope: global',
+          'model: ' + modelLabel,
+          'cross-project + settings tools',
+        ].join('  ·  ');
+      } else {
+        const parts = [
+          (data.plan?.milestones || 0) + ' milestones · ' + (data.plan?.today || 0) + ' today · ' + (data.plan?.upcoming || 0) + ' upcoming',
+          'model: ' + modelLabel + ' (read-only)',
+          'readScope: ' + (cfg.readScope || 'workspace-only'),
+        ];
+        if (cfg.mirrorProgressToWorkspace) parts.push('mirror: on');
+        if (data.schedules && data.schedules.length) parts.push(data.schedules.length + ' schedule' + (data.schedules.length === 1 ? '' : 's'));
+        line.textContent = parts.join('  ·  ');
+      }
     }
     el('managerPanel')?.classList.toggle('running', !!data.running);
     el('managerFab')?.classList.toggle('running', !!data.running);
   } catch (e) { /* panel state is best-effort */ }
 }
 async function managerStream(path, payload) {
-  if (managerBusy) { managerAddMsg('error', 'Manager is busy — wait for the current run.'); return; }
+  if (managerBusy) { managerAddMsg('error', 'Assistant is busy — wait for the current run.'); return; }
   managerBusy = true;
   managerCurrentAssistant = null;
   setManagerThinking(true, 'Thinking…');
@@ -27343,9 +27612,9 @@ async function managerStream(path, payload) {
     const res = await api(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload || {}),
+      body: JSON.stringify({ ...(payload || {}), scope: assistantScope }),
     });
-    if (!res.ok || !res.body) { managerAddMsg('error', 'Manager request failed (' + res.status + ')'); return; }
+    if (!res.ok || !res.body) { managerAddMsg('error', 'Assistant request failed (' + res.status + ')'); return; }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -27478,7 +27747,7 @@ function openManagerConfigForm() {
     let configs = state.snapshot?.bridgeState?.configs || [];
     try {
       const [mgrRes] = await Promise.all([
-        api('/api/manager/state'),
+        api('/api/manager/state?scope=' + encodeURIComponent(assistantScope)),
         configs.length ? Promise.resolve(null) : loadState().catch(() => null),
       ]);
       if (mgrRes?.ok) {
@@ -27492,11 +27761,15 @@ function openManagerConfigForm() {
     if (el('managerCfgScope')) el('managerCfgScope').value = cfg.readScope || 'workspace-only';
     if (el('managerCfgPaths')) el('managerCfgPaths').value = (cfg.allowedReadPaths || []).join('\\n');
     if (el('managerCfgMirror')) el('managerCfgMirror').checked = !!cfg.mirrorProgressToWorkspace;
-    syncManagerCfgPathsVisibility();
+    applyAssistantScopeUi();
     form.classList.remove('hidden');
   })();
 }
 function syncManagerCfgPathsVisibility() {
+  if (assistantScope === 'global') {
+    el('managerCfgPathsLabel')?.classList.add('hidden');
+    return;
+  }
   const scope = el('managerCfgScope')?.value || 'workspace-only';
   el('managerCfgPathsLabel')?.classList.toggle('hidden', scope === 'workspace-only' || scope === 'full-access');
 }
@@ -27506,18 +27779,22 @@ function wireManagerPanel() {
   el('managerFab')?.addEventListener('click', () => {
     setManagerUiMode('compact');
     el('managerChatInput')?.focus();
+    refreshManagerState(!managerTranscriptHydrated);
   });
   el('managerCloseBtn')?.addEventListener('click', () => setManagerUiMode('closed'));
   el('managerBackdrop')?.addEventListener('click', () => setManagerUiMode('compact'));
   el('managerExpandBtn')?.addEventListener('click', () => {
     setManagerUiMode(managerUiMode === 'expanded' ? 'compact' : 'expanded');
   });
+  el('managerScopeGlobal')?.addEventListener('click', () => setAssistantScope('global'));
+  el('managerScopeProject')?.addEventListener('click', () => setAssistantScope('project'));
   el('managerUpdateQuick')?.addEventListener('click', () => el('managerUpdateBtn')?.click());
   el('managerSettingsQuick')?.addEventListener('click', () => openManagerConfigForm());
   el('managerUpdateBtn')?.addEventListener('click', async () => {
+    if (assistantScope !== 'project') return;
     if (managerUiMode === 'closed') setManagerUiMode('compact');
     try {
-      const res = await api('/api/manager/state');
+      const res = await api('/api/manager/state?scope=project');
       if (res.ok) {
         const data = await res.json();
         const preview = data.updatePreview || 'Update progress documents from recent activity?';
@@ -27527,7 +27804,10 @@ function wireManagerPanel() {
     managerAddMsg('user', 'Update progress');
     managerStream('/api/manager/update', {});
   });
-  el('managerSchedulesLink')?.addEventListener('click', () => { openSettings('automation').catch(console.error); });
+  el('managerSchedulesLink')?.addEventListener('click', () => {
+    setManagerUiMode('closed');
+    void switchRegion('automation');
+  });
   el('managerCfgBridge')?.addEventListener('change', () => {
     // Switching provider resets to that config's default model unless the
     // current selection still exists in the new list.
@@ -27544,16 +27824,23 @@ function wireManagerPanel() {
       const res = await api('/api/manager/config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          bridgeConfig: el('managerCfgBridge')?.value || '',
-          model: el('managerCfgModel')?.value || '',
-          readScope: el('managerCfgScope')?.value || 'workspace-only',
-          allowedReadPaths: (el('managerCfgPaths')?.value || '').split('\\n').map((p) => p.trim()).filter(Boolean),
-          mirrorProgressToWorkspace: !!el('managerCfgMirror')?.checked,
-        }),
+        body: JSON.stringify(assistantScope === 'global'
+          ? {
+            scope: 'global',
+            bridgeConfig: el('managerCfgBridge')?.value || '',
+            model: el('managerCfgModel')?.value || '',
+          }
+          : {
+            scope: 'project',
+            bridgeConfig: el('managerCfgBridge')?.value || '',
+            model: el('managerCfgModel')?.value || '',
+            readScope: el('managerCfgScope')?.value || 'workspace-only',
+            allowedReadPaths: (el('managerCfgPaths')?.value || '').split('\\n').map((p) => p.trim()).filter(Boolean),
+            mirrorProgressToWorkspace: !!el('managerCfgMirror')?.checked,
+          }),
       });
       if (res.ok) {
-        managerAddMsg('tool', 'Manager settings saved.');
+        managerAddMsg('tool', 'Assistant settings saved.');
         el('managerConfigForm')?.classList.add('hidden');
         refreshManagerState();
       } else {
@@ -27574,7 +27861,9 @@ function wireManagerPanel() {
     managerStream('/api/manager/chat', { text });
   });
   if (state.snapshot?.workDir) managerBoundWorkDir = state.snapshot.workDir;
+  assistantScope = preferredAssistantScope();
   syncManagerVisibility(state.projectView || 'overview');
+  applyAssistantScopeUi();
 }
 wireManagerPanel();
 function renderDataRootStatus(dataRoot) {
@@ -27680,15 +27969,6 @@ async function openSettings(tab = 'general') {
   setChecked('settingsDeveloperTools', preferences.developerTools === true);
   setChecked('settingsShowBranchInComposer', preferences.showBranchInComposer !== false);
   setField('settingsOutputStyle', preferences.outputStyle || state.snapshot?.outputStyle || 'default');
-  const browser = settings.browser || {};
-  setChecked('settingsBrowserEnabled', browser.enabled === true);
-  setChecked('settingsBrowserHeadless', browser.headless !== false);
-  setField('settingsBrowserChannel', browser.channel || 'chromium');
-  setField('settingsBrowserAllowedDomains', Array.isArray(browser.allowedDomains) ? browser.allowedDomains.join(', ') : '');
-  setField('settingsBrowserUserDataDir', browser.userDataDir || '');
-  setField('settingsBrowserCdpUrl', browser.cdpUrl || '');
-  setField('settingsBrowserTimeoutMs', String(browser.defaultTimeoutMs || 30000));
-  setChecked('settingsBrowserAllowEvaluate', browser.allowEvaluate === true);
   renderBridgeConfigs();
   renderMcpServers();
   renderShortcutsPanel();
@@ -27729,16 +28009,6 @@ function collectSettingsBody() {
       developerTools: el('settingsDeveloperTools').checked,
       outputStyle: el('settingsOutputStyle')?.value || 'default',
       showBranchInComposer: el('settingsShowBranchInComposer')?.checked !== false,
-    },
-    browser: {
-      enabled: !!el('settingsBrowserEnabled')?.checked,
-      headless: el('settingsBrowserHeadless')?.checked !== false,
-      channel: el('settingsBrowserChannel')?.value || 'chromium',
-      allowedDomains: el('settingsBrowserAllowedDomains')?.value || '',
-      userDataDir: el('settingsBrowserUserDataDir')?.value || '',
-      cdpUrl: el('settingsBrowserCdpUrl')?.value || '',
-      defaultTimeoutMs: Number(el('settingsBrowserTimeoutMs')?.value || 30000),
-      allowEvaluate: !!el('settingsBrowserAllowEvaluate')?.checked,
     },
   };
 }
@@ -27806,8 +28076,7 @@ function wireSettingsAutosave() {
   form.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id || !String(target.id).startsWith('settings')) return;
-    // Schedule/team fields have their own APIs. Output style persists via preferences + /output-style.
-    if (target.id.startsWith('settingsSchedule')) return;
+    // Team fields have their own APIs. Output style persists via preferences + /output-style.
     if (target.id.startsWith('settingsTeam')) return;
     if (target.id === 'settingsOutputStyle') {
       submitText('/output-style ' + target.value);
@@ -27824,7 +28093,6 @@ function wireSettingsAutosave() {
     const target = event.target;
     if (!target || !target.id || !String(target.id).startsWith('settings')) return;
     if (target.id === 'settingsOutputStyle') return;
-    if (target.id.startsWith('settingsSchedule')) return;
     if (target.id.startsWith('settingsTeam')) return;
     const tag = String(target.tagName || '').toLowerCase();
     const type = String(target.type || '').toLowerCase();
@@ -27970,8 +28238,6 @@ el('externalCliHistoryQuery').addEventListener('keydown', event => {
 });
 el('externalCliRunsRefresh').addEventListener('click', () => { loadExternalCliRuns().catch(error => { el('externalCliRunsStatus').textContent = String(error); }); });
 el('externalCliRunStart').addEventListener('click', () => { startExternalCliRunFromSettings().catch(error => { el('externalCliRunsStatus').textContent = String(error); }); });
-el('settingsScheduleSave').addEventListener('click', () => { saveScheduledTaskFromSettings().catch(console.error); });
-el('settingsScheduleClear').addEventListener('click', clearScheduledTaskForm);
 el('settingsTeamOff').addEventListener('click', () => { runSettingsCommand('/team off', 'Disabling team...').catch(console.error); });
 async function saveTeamPreferencesFromSettings() {
   el('settingsStatus').textContent = 'Saving team preferences...';

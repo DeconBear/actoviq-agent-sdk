@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   analyzeActoviqBridgeEvents,
+  ActoviqBridgeSession,
   clearLoadedJsonConfig,
   createActoviqBridgeSdk,
   loadJsonConfigFile,
@@ -186,7 +187,10 @@ describe('Actoviq Runtime SDK bridge', () => {
     }
   });
 
-  it('marks a streaming session as started before the stream finishes', async () => {
+  // Regression for GitHub #8 / superseded PR #10: stream() must flip `started`
+  // synchronously so a back-to-back second stream() routes through --resume
+  // instead of --session-id (which would orphan the first session).
+  it('regression #8: back-to-back stream() uses resume before the first stream settles', async () => {
     const tempDir = await createTempDir('actoviq-runtime-session-stream-race-');
     const sdk = await createActoviqBridgeSdk({
       executable: process.execPath,
@@ -200,11 +204,75 @@ describe('Actoviq Runtime SDK bridge', () => {
       const secondStream = session.stream('who-am-i');
       const [first, second] = await Promise.all([firstStream.result, secondStream.result]);
 
+      expect(first.sessionId).toBe(session.id);
       expect(first.text).toBe('mode:session-id;agent:inherit');
       expect(second.text).toBe('mode:resume;agent:inherit');
     } finally {
       await sdk.close();
     }
+  });
+
+  it('regression #8: unit — started flips sync; failed first stream rolls back to session-id', async () => {
+    type Captured = { resume?: string; sessionId?: string };
+    const captured: Captured[] = [];
+    const pending: Array<{
+      resolve: (value: { text: string; sessionId: string }) => void;
+      reject: (error: Error) => void;
+    }> = [];
+
+    const client = {
+      stream(_prompt: string, options: Captured) {
+        captured.push({
+          resume: typeof options.resume === 'string' ? options.resume : undefined,
+          sessionId: typeof options.sessionId === 'string' ? options.sessionId : undefined,
+        });
+        const result = new Promise<{ text: string; sessionId: string }>((resolve, reject) => {
+          pending.push({ resolve, reject });
+        });
+        return {
+          async *[Symbol.asyncIterator]() { /* no events needed */ },
+          result,
+        };
+      },
+    };
+
+    const session = new ActoviqBridgeSession(
+      client as never,
+      'sess-1',
+      'Unit Session',
+      {},
+      false,
+    );
+
+    // Back-to-back: second call must see started=true synchronously.
+    const first = session.stream('one');
+    const second = session.stream('two');
+    expect(captured).toEqual([
+      { resume: undefined, sessionId: 'sess-1' },
+      { resume: 'sess-1', sessionId: undefined },
+    ]);
+    pending[0]!.resolve({ text: 'ok', sessionId: 'sess-1' });
+    pending[1]!.resolve({ text: 'ok2', sessionId: 'sess-1' });
+    await expect(first.result).resolves.toMatchObject({ text: 'ok' });
+    await expect(second.result).resolves.toMatchObject({ text: 'ok2' });
+
+    // Solo failure of a fresh session: roll started back so the retry uses session-id.
+    const fresh = new ActoviqBridgeSession(
+      client as never,
+      'sess-2',
+      'Fresh Session',
+      {},
+      false,
+    );
+    const failing = fresh.stream('boom');
+    expect(captured[2]).toEqual({ resume: undefined, sessionId: 'sess-2' });
+    pending[2]!.reject(new Error('stream failed'));
+    await expect(failing.result).rejects.toThrow(/stream failed/);
+
+    const retry = fresh.stream('retry');
+    expect(captured[3]).toEqual({ resume: undefined, sessionId: 'sess-2' });
+    pending[3]!.resolve({ text: 'recovered', sessionId: 'sess-2' });
+    await expect(retry.result).resolves.toMatchObject({ text: 'recovered' });
   });
 
   it('exposes structured runtime info, skills, commands, and agents', async () => {

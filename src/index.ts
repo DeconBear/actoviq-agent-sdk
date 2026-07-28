@@ -573,6 +573,22 @@ export type {
   ProjectPlanMilestone,
   CreateManagerToolsOptions,
 } from './manager/projectManager.js';
+export {
+  createAssistantGlobalTools,
+  buildAssistantGlobalSystemPrompt,
+  readAssistantConfig,
+  writeAssistantConfig,
+  assistantConfigPath,
+  listAssistantProjectBriefs,
+  isAssistantScope,
+  DEFAULT_ASSISTANT_CONFIG,
+} from './manager/assistantGlobalTools.js';
+export type {
+  AssistantScope,
+  AssistantGlobalConfig,
+  AssistantGlobalHost,
+  AssistantProjectBrief,
+} from './manager/assistantGlobalTools.js';
 
 // ── Model Router (a /model routing layer) ─────────────────────────────
 export {

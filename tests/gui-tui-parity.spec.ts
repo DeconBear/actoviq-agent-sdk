@@ -103,7 +103,7 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('data-settings-tab="general"');
     expect(html).toContain('data-settings-tab="models"');
     expect(html).toContain('data-settings-tab="capabilities"');
-    expect(html).toContain('data-settings-tab="automation"');
+    expect(html).not.toContain('data-settings-tab="automation"');
     expect(html).toContain('data-settings-tab="sessions"');
     expect(html).toContain('data-settings-tab="memory"');
     expect(html).toContain('id="settingsRouterStatus"');
@@ -135,9 +135,12 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('<h2>Agents</h2>');
     expect(html).toContain('id="navTeam"');
     expect(html).toContain('data-settings-tab="profile"');
-    expect(html).toContain('data-settings-tab="browser"');
-    expect(html).toContain('data-settings-tab="computer"');
+    expect(html).not.toContain('data-settings-tab="browser"');
+    expect(html).not.toContain('data-settings-tab="computer"');
     expect(html).toContain('data-settings-tab="worktree"');
+    expect(html).toContain('Browser (Playwright) and Computer Use are configured under Customize');
+    expect(html).toContain('id="navAutomation"');
+    expect(html).toContain('id="regionAutomation"');
     expect(gui).toContain('createManagedPluginRuntime');
     expect(tui).toContain('createManagedPluginRuntime');
     expect(gui).toContain('readManagedPluginCatalog');
@@ -342,7 +345,7 @@ describe('TUI and GUI parity', () => {
     expect(gui).toContain('streamIssueDispatch');
     expect(gui).toContain('buildDecomposeIssuePrompt');
     expect(gui).toContain('IssueReport');
-    expect(gui).toContain('resolveAgentProfileRun');
+    expect(gui).toContain('resolveSelectableAgentRun');
     expect(gui).toContain("case 'tool.input.delta'");
     expect(tui).toContain("case 'tool.input.delta'");
     expect(tui).toContain('preparing ${name}');
@@ -361,13 +364,19 @@ describe('TUI and GUI parity', () => {
     expect(js).not.toContain('Test Runner');
     expect(js).toContain('updateLocalBridgeConfig');
 
-    // Project Manager panel (plan M0/M1) + team preferences (plan §3.3).
+    // Assistant FAB (global entry + Global/Project scope).
     expect(html).toContain('id="managerPanel"');
     expect(html).toContain('id="managerFab"');
     expect(html).toContain('id="managerShell"');
     expect(html).toContain('id="managerUpdateBtn"');
     expect(html).toContain('id="managerChatInput"');
     expect(html).toContain('id="managerTranscript"');
+    expect(html).toContain('id="managerScopeGlobal"');
+    expect(html).toContain('id="managerScopeProject"');
+    expect(html).toContain('Assistant');
+    expect(html).toContain('id="managerFab"');
+    expect(gui).toContain("manager-fab-icon\">${guiIcon('chat')}");
+    expect(gui).toContain('id="managerScopeGlobal"');
     expect(html).toContain('id="settingsTeamAutoInvoke"');
     expect(html).toContain('id="settingsTeamDefaultAttached"');
     expect(html).not.toContain('id="settingsTeamPrefsSave"');
@@ -375,6 +384,7 @@ describe('TUI and GUI parity', () => {
     expect(css).toContain('.manager-widget');
     expect(css).toContain('.manager-fab');
     expect(css).toContain('.manager-transcript');
+    expect(css).toContain('.manager-scope-bar');
     expect(js).toContain('/api/manager/state');
     expect(js).toContain('/api/manager/update');
     expect(js).toContain('/api/manager/chat');
@@ -383,7 +393,10 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('setManagerUiMode');
     expect(js).toContain('managerBoundWorkDir');
     expect(js).toContain('resetManagerClientState');
-    expect(js).toContain("state.projectView === 'detail'");
+    expect(js).toContain('assistantScope');
+    expect(js).toContain('canUseProjectAssistantScope');
+    expect(js).toContain('setAssistantScope');
+    expect(js).toMatch(/function managerShellVisible\(\)\s*\{\s*return true;/);
     expect(js).toContain('managerAddMsg');
     expect(js).toContain('managerAddToolActivity');
     expect(js).toContain('managerTranscriptHydrated');
@@ -613,9 +626,11 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="managerCfgModel"');
     expect(html).toContain('<select id="managerCfgModel">');
     expect(html).toContain('value="full-access"');
-    expect(html).toContain('Manager stays read-only');
+    expect(html).toContain('writes only plan/progress files');
     expect(js).toContain('/api/manager/config');
     expect(js).toContain('bridgeConfig');
+    expect(js).toContain('assistantScope');
+    expect(html).toContain('id="managerScopeGlobal"');
     expect(html).toContain('id="managerThinking"');
     expect(html).toContain('id="managerThinkingLabel"');
     expect(css).toContain('.manager-thinking');
