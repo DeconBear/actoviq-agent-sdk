@@ -3,7 +3,6 @@
 - 状态：Accepted（1.0 contract；工作树版本不等同于已发布 npm release）
 - 日期：2026-07-11
 - 决策范围：package root、`actoviq-agent-sdk/compat`、migration telemetry
-- 对应规划：[SDK 架构审计与优化规划](../zh/08-sdk-architecture-audit-and-optimization-plan.md)
 
 ## 上下文
 
@@ -105,7 +104,6 @@ Root 在兼容期冻结：只接受安全修复、类型修复和必要 deprecat
 - [`tests/provider-v2-legacy.spec.ts`](../../tests/provider-v2-legacy.spec.ts)：双向 provider adapter。
 - [`tests/surface-run-events.spec.ts`](../../tests/surface-run-events.spec.ts) 与 [`tests/runtime-bridge-adapter.spec.ts`](../../tests/runtime-bridge-adapter.spec.ts)：事件/Bridge adapter。
 - [`etc/public-api.json`](../../etc/public-api.json) 与 `scripts/public-api.mjs`：公开 API snapshot/diff gate。
-- [迁移指南](../zh/09-sdk-v2-migration-guide.md)：仓库旧 TypeScript 示例到 1.0/compat 的完整映射矩阵。
 - 既有 root compatibility suite 覆盖旧行为。
 
 仍缺的 2.0 删除证据：主要旧 symbol 的全量 diagnostic、真实发布后的采用/弃用数据，以及依赖外部凭据或服务的旧示例在 release 环境中的矩阵结果。1.0 已具备 API diff gate、离线迁移矩阵和 adapter 测试，但这些不能替代真实迁移数据；因此不得宣称 2.0 可以删除 façade。
@@ -120,6 +118,4 @@ Root 在兼容期冻结：只接受安全修复、类型修复和必要 deprecat
 
 ## 参考
 
-- [迁移指南](../zh/09-sdk-v2-migration-guide.md)
-- [支持、安全、SemVer 与故障模型](../zh/10-support-security-semver-and-failure-model.md)
 - 本地参考：`E:\BaiduSyncdisk\research\Programming_Development\procontributor\claude_\openai-agents-python`

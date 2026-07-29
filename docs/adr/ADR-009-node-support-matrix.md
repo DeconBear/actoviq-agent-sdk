@@ -3,7 +3,6 @@
 - 状态：Accepted（Node 22.13+ / 24 contract 已对齐）
 - 日期：2026-07-11
 - 决策范围：SDK/runtime、Node adapters、Electron/CI
-- 对应规划：[SDK 架构审计与优化规划](../zh/08-sdk-architecture-audit-and-optimization-plan.md)
 
 ## 上下文
 
@@ -81,7 +80,6 @@ SDK/runtime 与 Electron desktop build 支持 Node 22.13+ 和 Node 24 LTS。Node
 - [`tests/storage-v2.spec.ts`](../../tests/storage-v2.spec.ts)：默认 Node SQLite driver 的行为（在具备模块的运行时）。
 - [`tests/workflow-executor-v2-security.spec.ts`](../../tests/workflow-executor-v2-security.spec.ts)：Node permission-model local executor。
 - `scripts/pty-spike`：desktop native smoke harness。
-- [SDK 1.0 实施与验收报告](../zh/12-sdk-1.0-implementation-and-verification-report.md)：本地 Node 22/24 typecheck/build/full suite 与 package dry-run 结果。
 
 本地 `npm pack --dry-run` 已通过；外部发布仍必须附实际 CI run URL/结果。文档/配置文件和本机结果不能替代远端 OS matrix 证据。
 
@@ -101,4 +99,3 @@ SDK/runtime 与 Electron desktop build 支持 Node 22.13+ 和 Node 24 LTS。Node
 
 - [Node.js release status](https://nodejs.org/en/about/previous-releases)
 - [Node.js `node:vm`](https://nodejs.org/api/vm.html)
-- [支持矩阵与版本策略](../zh/10-support-security-semver-and-failure-model.md)

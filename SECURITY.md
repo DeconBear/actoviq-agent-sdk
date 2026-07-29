@@ -16,7 +16,7 @@ Do not open a public issue for a suspected vulnerability. Use the repository's [
 
 Avoid including real credentials or private user data. If private reporting is unavailable, open a public issue containing no exploit details and ask a maintainer to establish a private channel.
 
-The maintainers will acknowledge receipt, validate severity, coordinate remediation and disclosure, and publish an advisory when appropriate. Response targets and the full threat/failure policy are documented in [docs/zh/10-support-security-semver-and-failure-model.md](docs/zh/10-support-security-semver-and-failure-model.md).
+The maintainers will acknowledge receipt, validate severity, coordinate remediation and disclosure, and publish an advisory when appropriate.
 
 ## Security boundaries
 

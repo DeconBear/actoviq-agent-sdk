@@ -3,7 +3,6 @@
 - 状态：Accepted（storage schema v1 / SDK 1.0 contract）
 - 日期：2026-07-11
 - 决策范围：`actoviq-agent-sdk/node`、runtime durable state
-- 对应规划：[SDK 架构审计与优化规划](../zh/08-sdk-architecture-audit-and-optimization-plan.md)
 
 ## 上下文
 
@@ -87,7 +86,7 @@ Migrator 先解析与 dry-run，再把整个 source directory 复制到 source �
 - [`tests/node-checkpoint-adapter.spec.ts`](../../tests/node-checkpoint-adapter.spec.ts)：serialized run state 与 SQLite checkpoint 映射。
 - [`tests/session-store.spec.ts`](../../tests/session-store.spec.ts)：旧 JSON store 的 schema/revision/CAS 兼容强化。
 
-Phase 6 benchmark 门禁已通过：`npm run bench:runtime` 覆盖 10k/100k SQLite append/load/snapshot 场景；smoke 为 32 项 invariant，full 为 35 项。结果与复现命令见 [SDK 1.0 实施与验收报告](../zh/12-sdk-1.0-implementation-and-verification-report.md)。这些本机基线用于回归比较，不等同于所有部署存储介质的吞吐承诺。
+Phase 6 benchmark 门禁已通过：`npm run bench:runtime` 覆盖 10k/100k SQLite append/load/snapshot 场景；smoke 为 32 项 invariant，full 为 35 项。这些本机基线用于回归比较，不等同于所有部署存储介质的吞吐承诺。
 
 ## 回滚方式
 
@@ -96,7 +95,7 @@ Phase 6 benchmark 门禁已通过：`npm run bench:runtime` 覆盖 10k/100k SQLi
 3. apply 失败时 SQLite transaction 自动回滚；保留错误、backup 和 source 供调查。
 4. apply 成功但应用验证失败时，停止新写入并把读取/写入路由切回未修改的 JSON v1 source；不要把两边同时设为 writer。
 5. 若必须恢复目标库，关闭所有 SQLite 连接后恢复迁移前整库备份；当前 API 不提供逐 session destructive rollback。
-6. 详细操作见 [JSON → SQLite 迁移 Runbook](../zh/11-json-v1-to-sqlite-migration-runbook.md)。
+6. 切换前必须完成 dry-run、备份恢复演练、单 writer 验证和环境级回滚演练。
 
 ## 参考
 

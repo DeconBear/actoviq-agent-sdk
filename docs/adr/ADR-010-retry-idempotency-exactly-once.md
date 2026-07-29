@@ -3,7 +3,6 @@
 - 状态：Accepted
 - 日期：2026-07-11
 - 决策范围：provider transport、tool/MCP、checkpoint、child/background
-- 对应规划：[SDK 架构审计与优化规划](../zh/08-sdk-architecture-audit-and-optimization-plan.md)
 
 ## 上下文
 

@@ -96,7 +96,7 @@ try {
 }
 ```
 
-Existing 0.x applications may keep importing `createAgentSdk` from the package root or `/compat`. See the [1.0 migration guide](./docs/zh/09-sdk-v2-migration-guide.md); new applications should use the responsibility subpaths above.
+Existing 0.x applications may keep importing `createAgentSdk` from the package root or `/compat`; new applications should use the responsibility subpaths above.
 
 Run the repository examples with:
 
@@ -218,11 +218,6 @@ Start with these examples:
 
 Architecture and operations:
 
-- [Architecture audit and implementation plan](./docs/zh/08-sdk-architecture-audit-and-optimization-plan.md)
-- [1.0 migration guide](./docs/zh/09-sdk-v2-migration-guide.md)
-- [Support, security, SemVer, and failure model](./docs/zh/10-support-security-semver-and-failure-model.md)
-- [JSON v1 to SQLite migration runbook](./docs/zh/11-json-v1-to-sqlite-migration-runbook.md)
-- [1.0 implementation and verification report](./docs/zh/12-sdk-1.0-implementation-and-verification-report.md)
 - [Security policy](./SECURITY.md)
 
 ## Contributing

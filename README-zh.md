@@ -95,7 +95,7 @@ try {
 }
 ```
 
-0.x 应用可继续从 package root 或 `/compat` 导入 `createAgentSdk`。新应用应使用上述职责 subpath；迁移步骤见 [1.0 迁移指南](./docs/zh/09-sdk-v2-migration-guide.md)。
+0.x 应用可继续从 package root 或 `/compat` 导入 `createAgentSdk`；新应用应使用上述职责 subpath。
 
 运行仓库示例：
 
@@ -165,11 +165,6 @@ npx actoviq-gui [工作目录] [选项]
 
 架构与运维文档：
 
-- [架构审计与实施规划](./docs/zh/08-sdk-architecture-audit-and-optimization-plan.md)
-- [1.0 迁移指南](./docs/zh/09-sdk-v2-migration-guide.md)
-- [支持、安全、SemVer 与 failure model](./docs/zh/10-support-security-semver-and-failure-model.md)
-- [JSON v1 → SQLite 迁移 Runbook](./docs/zh/11-json-v1-to-sqlite-migration-runbook.md)
-- [1.0 实施与端到端验收报告](./docs/zh/12-sdk-1.0-implementation-and-verification-report.md)
 - [安全报告政策](./SECURITY.md)
 
 ## 参与贡献
