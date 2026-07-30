@@ -6,7 +6,15 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ## Unreleased
 
-## v0.4.9 - 2026-07-28
+## v0.4.9 - 2026-07-30
+
+### Platform
+
+- **Policy / sandbox / hooks** — host/user/project policy resolution, OS sandbox adapters (Linux bubblewrap / macOS sandbox-exec / Windows degraded), and typed lifecycle hooks.
+- **Checkpoints / goals / session graph** — durable file+conversation checkpoints, goal contracts, and session fork/tree/catalog primitives.
+- **App-server / remote / VS Code** — stdio/WebSocket JSON app-server, file-backed remote job leases, and a VS Code extension client.
+- **Plugin packages** — versioned installable plugins with integrity-required trust grants.
+- **Code intel / updates / worktrees / proposals** — LSP tools, app update service, task worktree coordination, context rules, review/diff stores, memory and team proposals.
 
 ### GUI
 
@@ -21,13 +29,15 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - Agent tools `generate_image` / `generate_video` / `generate_mesh` inject Qwen-style professional prompt-rewrite guidance and let the model choose among configured profiles.
 - Customize → Plugins includes a profile list editor with **Get API Key** links to each provider console.
 
-### Bridge / tests
+### Bridge / tests / CI
 
 - Add regression coverage for consecutive `ActoviqBridgeSession.stream()` calls so the second turn uses `--resume` (GitHub #8).
+- Harden GUI publish update-metadata validation (`workflow_dispatch` may rebuild an existing tag with the current builder).
 
 ### Notes
 
 - This release stays on the **0.4.x** line. **1.0.0 is not published yet.**
+- Windows shell sandbox remains best-effort/degraded; `enforcement: required` fails closed when OS isolation is unavailable.
 
 ## v0.4.8 - 2026-07-27
 
