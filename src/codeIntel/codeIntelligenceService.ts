@@ -1,6 +1,8 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import { LspProcess } from './lspProcess.js';
 import { LanguageServerRegistry } from './languageServerRegistry.js';
@@ -11,6 +13,7 @@ import type {
   WorkspaceSymbol,
 } from './types.js';
 
+const realpathNative = promisify(realpathCallback.native);
 interface ServerState {
   definition: LanguageServerDefinition;
   process: LspProcess;
@@ -114,8 +117,19 @@ export class CodeIntelligenceService {
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`Code intelligence path escapes workspace: ${absolute}`);
     }
-    const rootReal = await realpath(this.workDir).catch(() => this.workDir);
-    const targetReal = await realpath(absolute).catch(() => absolute);
+    const rootReal = await realpathNative(this.workDir).catch(() => path.resolve(this.workDir));
+    let probe = absolute;
+    while (true) {
+      try {
+        await realpathNative(probe);
+        break;
+      } catch {
+        const parent = path.dirname(probe);
+        if (parent === probe) break;
+        probe = parent;
+      }
+    }
+    const targetReal = await realpathNative(probe).catch(() => path.resolve(probe));
     const realRelative = path.relative(rootReal, targetReal);
     if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
       throw new Error(`Code intelligence path resolves outside workspace: ${absolute}`);

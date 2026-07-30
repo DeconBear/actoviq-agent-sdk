@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { realpath as realpathCallback } from 'node:fs';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { writeJsonAtomic } from '../storage/atomicJsonWrite.js';
 import { assertSafeStorageSegment } from '../storage/pathSafety.js';
@@ -15,6 +17,8 @@ import type {
   FileCheckpointStatus,
 } from './types.js';
 
+/** Prefer native realpath so Windows 8.3 short names (RUNNER~1) canonicalize. */
+const realpathNative = promisify(realpathCallback.native);
 const DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 export interface FileCheckpointServiceOptions {
@@ -352,9 +356,12 @@ export class FileCheckpointService {
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`Checkpoint path escapes workspace: ${target}`);
     }
-    const rootReal = await realpath(this.workspaceRoot).catch(() => this.workspaceRoot);
+    const rootReal = await realpathNative(this.workspaceRoot).catch(() => path.resolve(this.workspaceRoot));
+    // recordChange often receives buffers for files that are not on disk yet, so
+    // walk to the nearest existing ancestor before realpath (Windows 8.3 safe).
     const probe = requireExisting ? target : path.dirname(target);
-    const probeReal = await realpath(probe).catch(() => path.resolve(probe));
+    const probeExisting = await nearestExistingPath(probe);
+    const probeReal = await realpathNative(probeExisting).catch(() => path.resolve(probeExisting));
     const realRelative = path.relative(rootReal, probeReal);
     if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
       throw new Error(`Checkpoint path resolves outside workspace: ${target}`);
@@ -367,6 +374,22 @@ export class FileCheckpointService {
     this.queue = result.then(() => undefined, () => undefined);
     return result;
   }
+}
+
+function nearestExistingPath(target: string): Promise<string> {
+  return (async () => {
+    let current = path.resolve(target);
+    while (true) {
+      try {
+        await realpathNative(current);
+        return current;
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) return current;
+        current = parent;
+      }
+    }
+  })();
 }
 
 function hash(content: Buffer): string {
