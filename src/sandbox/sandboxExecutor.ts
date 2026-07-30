@@ -87,6 +87,10 @@ export class SandboxExecutor {
       for (const root of LINUX_SYSTEM_READ_ROOTS) {
         args.push('--ro-bind-try', root, root);
       }
+      // PATH / interpreter dirs may be absent on some hosts — bind-try them.
+      for (const root of hostToolReadRoots(request)) {
+        args.push('--ro-bind-try', root, root);
+      }
       const writable = uniqueResolved(this.policy.writableRoots);
       const readable = uniqueResolved([
         ...this.policy.readRoots,
@@ -242,14 +246,52 @@ const MACOS_SYSTEM_READ_ROOTS = [
   '/tmp',
   '/dev',
   '/etc',
+  '/opt/homebrew',
+  '/opt/local',
 ] as const;
+
+/** Temp dirs shells / runtimes may touch even when cwd is elsewhere. */
+const MACOS_SYSTEM_WRITE_ROOTS = [
+  '/private/tmp',
+  '/tmp',
+  '/private/var/folders',
+  '/var/folders',
+] as const;
+
+/**
+ * Directories that must stay readable so `bash -lc` / PATH lookups can resolve
+ * Node and other host toolchains (e.g. GitHub Actions hostedtoolcache).
+ */
+function hostToolReadRoots(
+  request: SandboxExecutionRequest,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const pathDirs = (env.PATH ?? env.Path ?? '')
+    .split(path.delimiter)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(entry => path.resolve(entry));
+  const home = env.HOME ?? env.USERPROFILE;
+  const anchors = [
+    path.dirname(request.executable),
+    path.dirname(process.execPath),
+    // Node distributions often keep ICU / shared files next to `bin/`.
+    path.dirname(path.dirname(process.execPath)),
+    ...(home ? [path.resolve(home)] : []),
+  ];
+  return [...new Set([...pathDirs, ...anchors])];
+}
 
 function macosProfile(policy: SandboxPolicy, request: SandboxExecutionRequest): string {
   const rules = [
     '(version 1)',
     '(deny default)',
     '(allow process*)',
+    '(allow signal)',
     '(allow sysctl-read)',
+    '(allow mach*)',
+    '(allow iokit-open)',
+    '(allow user-preference-read)',
     '(allow file-read-metadata)',
   ];
   for (const root of MACOS_SYSTEM_READ_ROOTS) {
@@ -259,12 +301,15 @@ function macosProfile(policy: SandboxPolicy, request: SandboxExecutionRequest): 
     ...policy.readRoots,
     ...policy.writableRoots,
     request.cwd,
-    path.dirname(request.executable),
+    ...hostToolReadRoots(request, request.env ?? process.env),
   ]);
   for (const root of readable) {
     rules.push(`(allow file-read* (subpath "${escapeProfile(root)}"))`);
   }
-  for (const root of uniqueResolved(policy.writableRoots)) {
+  for (const root of uniqueResolved([
+    ...policy.writableRoots,
+    ...MACOS_SYSTEM_WRITE_ROOTS,
+  ])) {
     rules.push(`(allow file-write* (subpath "${escapeProfile(root)}"))`);
   }
   if (policy.network.mode === 'allow') rules.push('(allow network*)');

@@ -52,6 +52,7 @@ describe('sandbox path validation', () => {
         args: string[];
         cwd: string;
         timeoutMs: number;
+        env?: NodeJS.ProcessEnv;
       }) => { executable: string; args: string[] };
       capability: { adapter: string };
     };
@@ -60,15 +61,53 @@ describe('sandbox path validation', () => {
         .rejects.toThrow('outside allowed roots');
       return;
     }
+    const toolBin = path.join(root, 'tool-bin');
+    await mkdir(toolBin);
     const invocation = probe.wrapInvocation({
       executable: '/bin/echo',
       args: ['hi'],
       cwd: workspace,
       timeoutMs: 1_000,
+      env: { PATH: toolBin },
     });
     expect(invocation.executable).toBe('bwrap');
     expect(invocation.args).toContain('--tmpfs');
     expect(invocation.args).not.toEqual(expect.arrayContaining(['--ro-bind', '/', '/']));
     expect(invocation.args).toEqual(expect.arrayContaining(['--bind', workspace, workspace]));
+    expect(invocation.args).toEqual(
+      expect.arrayContaining(['--ro-bind-try', toolBin, toolBin]),
+    );
+  });
+
+  it('includes PATH tool directories in macOS seatbelt profiles', () => {
+    const root = path.join(os.tmpdir(), 'actoviq-sandbox-macos-profile');
+    const executor = new SandboxExecutor({
+      ...resolveSandboxPolicy(root),
+      enforcement: 'best-effort',
+    });
+    const probe = executor as unknown as {
+      wrapInvocation: (request: {
+        executable: string;
+        args: string[];
+        cwd: string;
+        timeoutMs: number;
+        env?: NodeJS.ProcessEnv;
+      }) => { executable: string; args: string[] };
+      capability: { adapter: string };
+    };
+    if (probe.capability.adapter !== 'macos-sandbox-exec') return;
+    const toolBin = path.join(root, 'tool-bin');
+    const invocation = probe.wrapInvocation({
+      executable: '/bin/bash',
+      args: ['-lc', 'node -e "1"'],
+      cwd: root,
+      timeoutMs: 1_000,
+      env: { PATH: toolBin },
+    });
+    expect(invocation.executable).toBe('/usr/bin/sandbox-exec');
+    expect(invocation.args[0]).toBe('-p');
+    const profile = invocation.args[1] ?? '';
+    expect(profile).toContain(`(allow file-read* (subpath "${toolBin}")`);
+    expect(profile).toContain('(allow mach*)');
   });
 });

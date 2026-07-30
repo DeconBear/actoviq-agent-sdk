@@ -18,7 +18,11 @@ describe('sandbox process lifecycle', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-process-'));
     tempDirs.push(root);
     await mkdir(root, { recursive: true });
+    // Isolation is orthogonal: this assertion covers process-tree kill + the
+    // policy timeout clamp. Keep enforcement off so a degraded FS profile
+    // cannot exit the child before the timer fires (macOS seatbelt edge cases).
     const executor = new SandboxExecutor(resolveSandboxPolicy(root, {
+      enforcement: 'off',
       process: { timeoutMs: 250 },
     }));
     const started = Date.now();
