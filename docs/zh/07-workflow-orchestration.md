@@ -2,6 +2,16 @@
 
 这一章介绍编排层：工作流（DAG 多步骤流水线）、并行原语、会话生命周期管理与会话检查点。
 
+## 0. 先分清三种工作流
+
+| 能力 | 入口 | 用途 |
+|---|---|---|
+| Agent 步骤工作流 | `createAgentSdk().workflow` | 每个步骤是独立 ReAct session，支持 Builder/JSON、tools、MCP、skills 和模型选择 |
+| 确定性内存 DAG | `actoviq-agent-sdk/orchestration` 的 `WorkflowGraph` | TypeScript 节点、条件边、稳定拓扑顺序、并发和 reducer |
+| 脚本执行与信任路由 | `actoviq-agent-sdk/workflow` | 区分 trusted、local-isolated、external sandbox，并限制消息/输出/时间 |
+
+前 5 节主要讲 `createAgentSdk().workflow`；第 6 节讲模块化 Runtime 的两个职责 subpath。
+
 ## 1. 工作流编排
 
 **工作流**是一个 DAG 步骤图。每个步骤是一次独立的 ReAct 会话。通过 `dependsOn` 连接的步骤构成 DAG——同级步骤并行执行。
@@ -541,7 +551,9 @@ console.log(`已关闭 ${closed} 个会话`);
 
 ## 4. 会话检查点
 
-检查点让你可以保存和恢复会话状态——适用于风险重构前的快照或探索替代方案。
+`session.saveCheckpoint()` 保存会话快照，适合探索替代对话分支。Hadamard 文件检查点则按 turn 捕获文件工具的修改，支持预览并确认恢复 `files`、`conversation` 或 `both`；二者是不同存储层。
+
+GUI/TUI 在覆盖磁盘前会校验当前文件指纹，检测到外部修改时报告冲突。Bash、MCP 或插件绕过 Hadamard 文件工具产生的写入不会被描述成已捕获。
 
 ### 4.1 保存与恢复
 
@@ -610,6 +622,94 @@ npm run example:actoviq-checkpoint          # 会话检查点
 ```
 
 ---
+
+## 6. 模块化 Runtime：WorkflowGraph 与 trust tier
+
+### 6.1 确定性 WorkflowGraph
+
+`WorkflowGraph` 只负责图语义，不解析自然语言 workflow 定义，也不隐式创建 session：
+
+```ts
+import {
+  RunTreeController,
+  WorkflowGraph,
+} from 'actoviq-agent-sdk/orchestration';
+
+const tree = new RunTreeController();
+const scope = tree.createRoot({
+  runId: 'release-check',
+  services: runtime.services,
+  tenantSession: {
+    tenantId: 'local-user',
+    namespace: 'release',
+    sessionId: 'release-main',
+  },
+});
+
+const graph = new WorkflowGraph<string>({
+  nodes: [
+    {
+      id: 'detect',
+      execute: ({ input }) => input,
+    },
+    {
+      id: 'linux',
+      execute: () => 'run-linux-checks',
+    },
+    {
+      id: 'windows',
+      execute: () => 'run-windows-checks',
+    },
+    {
+      id: 'summary',
+      activation: 'any',
+      reduce: ({ inputs }) => [...inputs.values()].join(', '),
+    },
+  ],
+  edges: [
+    {
+      from: 'detect',
+      to: 'linux',
+      when: ({ sourceOutput }) => sourceOutput === 'linux',
+    },
+    {
+      from: 'detect',
+      to: 'windows',
+      when: ({ sourceOutput }) => sourceOutput === 'windows',
+    },
+    { from: 'linux', to: 'summary' },
+    { from: 'windows', to: 'summary' },
+  ],
+});
+
+const result = await graph.execute({
+  input: process.platform,
+  scope,
+  maxConcurrency: 2,
+});
+
+console.log(result.order);
+console.log(result.outputs.get('summary'));
+```
+
+构造时会拒绝空图、重复节点、未知边、自环和循环；执行结果的 `order` 与 map 顺序稳定。`activation: "all"` 是 barrier，`"any"` 用于条件分支汇合。循环 Agent 协作不应伪装成 `WorkflowGraph` 的环，而应使用 bounded reviewer preset、child runner 或显式循环控制器。
+
+### 6.2 Workflow executor 的信任边界
+
+`actoviq-agent-sdk/workflow` 处理“执行一段 workflow source”：
+
+- `TrustedCompatibilityWorkflowExecutor`：仅用于显式 trusted source，并受 wall deadline、取消与输出限制约束。
+- `LocalIsolatedProcessWorkflowExecutor`：使用本地进程权限能力降低 ambient access，但不等于多租户安全沙箱。
+- `WorkflowExecutorRouter`：默认拒绝 untrusted source；只有显式提供 external `SandboxWorkflowExecutor` 才会转发。
+
+因此不要把 `node:vm`、子进程或 permission prompt 描述成真正的 OS sandbox。来自用户、插件或远程 registry 的 workflow source 默认视为 untrusted。
+
+### 6.3 两条路线怎样选择
+
+- 需要“每一步让 Agent 使用工具解决问题”：用 `sdk.workflow`。
+- 需要稳定、可测试、无模型参与的 DAG 控制流：用 `WorkflowGraph`。
+- 需要执行动态脚本：用 workflow executor router，并先确定 trust tier。
+- 需要图形化 Model Team：使用 GUI Team/Agent Graph；它和这里的底层 DAG contract 不是同一个保存格式。
 
 下一章：
 

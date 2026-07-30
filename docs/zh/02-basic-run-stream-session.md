@@ -6,6 +6,8 @@
 2. 流式调用 `stream(...)`
 3. 多轮对话 `session`
 
+前 13 节使用 `createAgentSdk()` 交互/兼容入口；最后一节说明模块化 `AgentRuntime` 的对应 contract。
+
 ## 1. `createAgentSdk()`
 
 Hadamard SDK 的入口是：
@@ -92,10 +94,10 @@ Hadamard SDK 的 session 历史是本地文件存储。
 默认目录：
 
 ```text
-~/.actoviq/actoviq-agent-sdk
+~/.actoviq/projects/<workspace-key>
 ```
 
-里面保存的内容通常包括：
+其中 `<workspace-key>` 由规范化工作目录生成。旧版全局目录中的可归属数据会在首次解析项目目录时尝试迁移。里面保存的内容通常包括：
 
 1. session ID
 2. 标题
@@ -119,9 +121,16 @@ const sdk = await createAgentSdk({
 
 ## 8. session ID 可以自定义吗？
 
-当前不可以。
+可以，在创建时传入 `id`：
 
-session ID 是 SDK 自动生成的。现在你可以自定义的是：
+```ts
+const session = await sdk.createSession({
+  id: 'release-planning-2026',
+  title: 'Release Planning',
+});
+```
+
+ID 必须满足安全存储段约束，而且不能与现有 session 冲突；不传时由 SDK 自动生成。你还可以自定义：
 
 1. `title`
 2. `tags`
@@ -170,7 +179,26 @@ const restored = await sdk.resumeSession(session.id);
 console.log((await restored.send('发布步骤里必须包含什么？')).text);
 ```
 
-## 11. 并行运行任务
+## 11. GUI 的 Session Center 与项目多工作路径
+
+GUI 的 Project → Chats 是统一 Session Center。它只读取 Workspace Registry 中登记的项目和 Global Assistant 目录，不扫描数据目录中的全部历史哈希：
+
+- 默认显示普通用户对话；按类型可查看 Global Assistant、Project Manager 和只读的 Agent 子会话。
+- 支持项目、运行状态、归档状态和关键词筛选，每页按需加载。
+- 排序优先级是运行/等待中、置顶、最近更新。
+- 普通对话和 Assistant Session 可以新建、打开、重命名、置顶、归档、恢复；永久删除只对已归档且未运行的 Session 开放。
+- Agent 子会话由 Agent Monitor 管理，Session Center 不单独归档或删除它们。
+
+一个逻辑项目可以登记一个主路径和多个附加工作路径。项目会话的存储 locator 始终使用主路径，因此切换到附加路径不会生成第二个“同名项目”；新 turn 会记录当时的活动工作路径。操作步骤：
+
+1. 打开项目详情。
+2. 点击顶部 `+ Work path`，选择已经存在的目录。
+3. 用路径下拉框切换当前路径。
+4. 若要移除附加路径，先切回主路径，再确认移除。该操作只修改 Registry，不删除源文件。
+
+旧版单路径 Registry 会被当作只含主路径的项目读取，无需批量迁移。
+
+## 12. 并行运行任务
 
 用 `sdk.parallel()` 并发运行独立任务：
 
@@ -190,7 +218,7 @@ const fastest = await sdk.race([
 ]);
 ```
 
-## 12. 会话生命周期
+## 13. 会话生命周期
 
 配置 `sessionManager` 自动管理空闲超时和会话上限：
 
@@ -204,17 +232,102 @@ const stats = await sdk.sessions.stats();
 await sdk.sessions.prune({ status: 'idle', olderThan: '1h' });
 ```
 
-## 13. 会话检查点
+## 14. 会话检查点
 
-保存和恢复会话状态，方便尝试不同方案：
+检查点分两层：
 
-```ts
-const cp = await session.saveCheckpoint('重构前');
-await session.send('大规模重构……');
-await session.restoreCheckpoint(cp.id); // 撤销
+- `session.saveCheckpoint()` 保存对话快照。
+- Hadamard 文件检查点会记录 `Write`、`Edit`、`NotebookEdit` 产生的文件变化，可预览后选择恢复 `files`、`conversation` 或 `both`。
+
+GUI/TUI 的恢复操作都要求显式确认；文件已被外部修改时会报告冲突，不会静默覆盖。Bash 或第三方工具绕过 Hadamard 文件工具产生的修改不会被伪装成已捕获。
+
+## 15. Session 分支、自动 Worktree 与编辑器
+
+Session 支持树状 lineage、从稳定消息节点 fork/clone，以及非活动分支摘要。交互面使用：
+
+```text
+/session tree
+/session fork <message-id>
+/session clone <message-id>
+/session label <name>
 ```
 
+启用 `autoWorktree` 后，新建主 Session 会获得独立的 Git worktree；任务修改可在 Diff Review 中预览并确认应用。一个 Session 的分支关系与 Git 分支不是同一概念：前者保存对话 lineage，后者隔离文件变更。
+
+仓库还提供 transport-neutral app-server 和轻量 VS Code/Cursor 扩展。编辑器通过相同的 Session、Goal、审批、Diff 和 Checkpoint contract 工作，不需要把 GUI 页面嵌入 IDE。
+
 所有编排功能的完整文档见第 07 章。
+
+## 16. 模块化 Runtime 的 run、stream 与 session
+
+`AgentRuntime` 不创建一个带方法的 session 对象。它通过 `RunOptions` 接收稳定的 `tenantId`、`sessionId` 与可选 revision，并通过 `RuntimeServices` 中的 `sessions` service 读写历史：
+
+```ts
+import type { AgentSpec } from 'actoviq-agent-sdk/core';
+import {
+  ModelRegistry,
+  OpenAIResponsesProvider,
+} from 'actoviq-agent-sdk/providers';
+import {
+  AgentRuntime,
+  RuntimeServices,
+} from 'actoviq-agent-sdk/runtime';
+import {
+  SqliteRuntimeSessionAdapter,
+  SqliteStorageV2,
+} from 'actoviq-agent-sdk/node';
+
+const storage = await SqliteStorageV2.open({
+  filename: './data/agent.sqlite',
+});
+
+const runtime = new AgentRuntime({
+  models: new ModelRegistry([
+    new OpenAIResponsesProvider({
+      apiKey: process.env.OPENAI_API_KEY,
+    }),
+  ]),
+  defaultModel: {
+    provider: 'openai-responses',
+    model: 'gpt-4.1-mini',
+  },
+  services: new RuntimeServices({
+    sessions: {
+      factory: () => new SqliteRuntimeSessionAdapter({
+        store: storage.sessions,
+      }),
+    },
+  }),
+});
+
+const agent: AgentSpec = {
+  id: 'chat',
+  name: 'Chat',
+  instructions: 'Answer briefly.',
+};
+
+try {
+  await runtime.run(agent, '记住发布代号是 Sparrow。', {
+    tenantId: 'local-user',
+    sessionId: 'release-chat',
+  });
+  const result = await runtime.run(agent, '发布代号是什么？', {
+    tenantId: 'local-user',
+    sessionId: 'release-chat',
+  });
+  console.log(result.output);
+} finally {
+  await runtime.close();
+  await storage.close();
+}
+```
+
+重要差异：
+
+- 传了 `sessionId` 却没有注册 `sessions` service，会明确失败，不会静默退化成内存会话。
+- 同一 tenant/session 的并发 turn 会串行化；不同 session 仍受 runtime 全局并发上限控制。
+- `runtime.stream(...)` 返回 `RunHandle`。它既是 `AsyncIterable<RunEvent>`，也提供 `result`、`cancel()` 和 `snapshot()`。
+- interruption/checkpoint 是 run-state contract；`createAgentSdk()` 的 `session.saveCheckpoint()` 是更高层的会话便利 API，两者不要混为同一存储格式。
 
 下一章：
 

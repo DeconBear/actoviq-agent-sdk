@@ -6,9 +6,12 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ## Unreleased
 
+## v0.4.9 - 2026-07-28
+
 ### GUI
 
 - Upgrade the bottom-right FAB to a global **Assistant**: always visible, chat icon, Global/Project scope. Global mode lists project briefs and can change settings/plugins/bridge/automation/MCP (no source Write/Edit/Bash); Project mode keeps Manager update/plan/issues.
+- Remove the redundant sidebar **New chat** button; start chats from project detail **+ New conversation**.
 - Fix opening local workspace paths: strip quotes / `file://`, require directories, surface API errors in the Open workspace dialog, roll back on failure, and allow credentialless opens (External CLI).
 - Remove Settings → **Automation** / **Browser** / **Computer control**. Configure schedules in the main **Automation** region; configure Playwright and Computer Use under **Customize → Plugins**.
 
@@ -17,6 +20,14 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - Add **Image Generation**, **Video Generation**, and **3D Generation** managed plugins with multi-profile / multi-key configuration (Gemini Nano Banana, GPT Image 2, Qwen-Image; Seedance, Hailuo, HappyHorse; Meshy, Tripo, Rodin).
 - Agent tools `generate_image` / `generate_video` / `generate_mesh` inject Qwen-style professional prompt-rewrite guidance and let the model choose among configured profiles.
 - Customize → Plugins includes a profile list editor with **Get API Key** links to each provider console.
+
+### Bridge / tests
+
+- Add regression coverage for consecutive `ActoviqBridgeSession.stream()` calls so the second turn uses `--resume` (GitHub #8).
+
+### Notes
+
+- This release stays on the **0.4.x** line. **1.0.0 is not published yet.**
 
 ## v0.4.8 - 2026-07-27
 

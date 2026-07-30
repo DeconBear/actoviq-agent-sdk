@@ -12,6 +12,7 @@ const zhSidebar = [
       { text: '05 测试、排错与速查', link: '/zh/05-testing-troubleshooting-cheatsheet' },
       { text: '06 从 0 到 1 做完整 Clean Agent', link: '/zh/06-build-a-complete-clean-agent' },
       { text: '07 Workflow 编排', link: '/zh/07-workflow-orchestration' },
+      { text: '附录 Bridge Runtime', link: '/zh/bridge-runtime' },
     ],
   },
 ];

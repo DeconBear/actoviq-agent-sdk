@@ -266,6 +266,143 @@ const dreamResult = await sdk.slashCommands.run('dream', {
 6. `skills`
 7. `agents`
 
+## 10. Plan 模式与 Goal 模式不是一回事
+
+Plan 模式控制“这一阶段能不能产生修改”：
+
+```text
+/plan
+```
+
+进入后，Agent 可以调查代码、读取配置并写计划，但变更型工具受 Plan 权限边界约束。退出时展示计划并等待确认；没有确认，不应把计划当成实施授权。GUI、TUI 和 CLI 使用同一个命令定义与权限语义。
+
+Goal 模式控制“多轮执行要持续追求什么目标”：
+
+```text
+/goal 完成发布前检查并修复所有回归
+/goal
+/goal pause
+/goal resume
+/goal clear
+```
+
+Goal 随 Session 保存。runtime 每轮只注入短目标上下文，并记录 token、turn、tool 使用和进度证据。为了避免模型在工作未完成时自行宣布成功，`complete` 必须由 `UpdateGoal` 携带运行证据；普通 UI 命令只能查看、创建、暂停、恢复或清除目标。
+
+可以先用 Plan 模式形成获批方案，再用 Goal 约束长时间实施。Plan 结束不表示 Goal 完成，Goal 存在也不会自动授予写权限。
+
+## 11. Managed Policy、OS Sandbox 与审计
+
+权限决策和 OS 隔离是两层：
+
+- permission policy 决定工具调用是 `allow`、`ask` 还是 `deny`。
+- sandbox 在执行层限制读写根、网络和子进程；平台能力不足时会明确标记 degraded。
+
+项目策略放在 `.actoviq/policy.json`，用户和主机策略分别放在 `~/.actoviq/policy/user.json`、`~/.actoviq/policy/host.json`。高权威策略可以锁定设置：
+
+```json
+{
+  "version": 1,
+  "revision": 1,
+  "scope": "project",
+  "settings": {
+    "model": "medium",
+    "sandbox": { "network": { "mode": "deny" } },
+    "plugins": {
+      "allowedPublishers": ["example.org"],
+      "allowedCapabilities": ["tools", "skills"]
+    }
+  },
+  "rules": [
+    { "id": "no-shell", "effect": "deny", "tool": "Bash" }
+  ],
+  "lockedSettings": ["model", "sandbox"],
+  "updatedAt": "2026-07-30T00:00:00.000Z"
+}
+```
+
+托管 deny 会在 `bypassPermissions` 之前生效。插件在安装、启用或信任前也会检查 registry、publisher 和 capability allowlist。Settings 会显示有效策略来源和锁定字段；决策审计写入独立的脱敏 append-only 日志。
+
+## 12. Typed Hooks 与插件包
+
+Typed Hooks 覆盖 Session、Turn、Model、Tool、Permission、Compact、Stop、Worktree 等生命周期事件，handler 可以是 command、prompt 或 HTTP。Hook 配置先做 schema 校验，再按稳定顺序执行；旧式三类 shell hook 仍通过兼容 adapter 工作。
+
+插件命令在 GUI/TUI/CLI 使用同一语义：
+
+```text
+/plugin search <query>
+/plugin install <local-package-directory>
+/plugin pin <plugin-id> <version>
+/plugin enable <plugin-id>
+/plugin trust <plugin-id>
+```
+
+包 manifest 使用稳定 ID、SemVer、package-local entry、integrity、publisher、signature、capabilities 和 permissions。安装版本不可变，更新会安装新版本；符号链接、特殊文件、路径穿越和 integrity 不匹配会被拒绝。
+
+## 13. 模块化 Runtime 的 ToolRegistry 与 ToolPolicy
+
+`tool(...)`、`permissions`、MCP 和 clean helpers 属于 `createAgentSdk()` 的高层组合接口。模块化 Runtime 使用更小的 `RuntimeTool` contract：
+
+```ts
+import {
+  AgentRuntime,
+  ToolRegistry,
+  type RuntimeTool,
+  type ToolPolicy,
+} from 'actoviq-agent-sdk/runtime';
+
+const addNumbers: RuntimeTool<unknown, { a: number; b: number }, number> = {
+  descriptor: {
+    name: 'add_numbers',
+    description: 'Add two numbers.',
+    input: {
+      parse(value) {
+        const input = value as { a?: unknown; b?: unknown };
+        if (typeof input.a !== 'number' || typeof input.b !== 'number') {
+          throw new TypeError('a and b must be numbers');
+        }
+        return { a: input.a, b: input.b };
+      },
+      jsonSchema: {
+        type: 'object',
+        properties: {
+          a: { type: 'number' },
+          b: { type: 'number' },
+        },
+        required: ['a', 'b'],
+        additionalProperties: false,
+      },
+    },
+    behavior: {
+      effect: 'read',
+    },
+  },
+  execute: (_context, input) => input.a + input.b,
+};
+
+const policy: ToolPolicy = {
+  authorize({ tool }) {
+    return tool.behavior?.effect === 'read'
+      ? { type: 'allow' }
+      : { type: 'deny', reason: 'Only read tools are allowed.' };
+  },
+};
+
+const tools = new ToolRegistry([addNumbers]);
+
+const runtime = new AgentRuntime({
+  models,
+  tools,
+  toolPolicy: policy,
+});
+```
+
+其中 `models` 是前一章构造的 `ModelRegistry`。实际项目还应注意：
+
+- 未声明 `behavior.effect` 的工具按 `side-effect` 处理，不会默认当成只读。
+- `effect` 只描述副作用语义；是否允许由 `ToolPolicy` 决定。
+- 需要人工确认时返回 `interrupt`，并为 runtime 配置 checkpoint store，之后使用 interruption decision 恢复。
+- Runtime v2 不会自动扫描 MCP 或 skills。要继续使用自动发现和交互式权限 UI，选择 `createAgentSdk()` 入口。
+
 下一章：
 
 - [04-agents-swarm-memory-workspace.md](./04-agents-swarm-memory-workspace.md)

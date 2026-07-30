@@ -75,6 +75,7 @@ jobs:
             runner: windows-latest
             eb_args: --win --x64
             artifact_glob: Actoviq-*-win-x64.exe
+            update_metadata: latest.yml
           - name: Windows arm64
             runner: windows-latest
             eb_args: --win --arm64
@@ -92,6 +93,7 @@ jobs:
             eb_args: --linux AppImage --x64
             # electron-builder names AppImage arch x86_64 (not x64).
             artifact_glob: 'Actoviq-*-linux-x86_64.AppImage'
+            update_metadata: latest-linux.yml
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             eb_args: --linux AppImage --arm64
@@ -127,7 +129,23 @@ jobs:
           npm run build
 
       - name: Package installer
-        run: npx electron-builder ${{ matrix.eb_args }}
+        run: npx electron-builder ${{ matrix.eb_args }} --publish never
+
+      - name: Validate update metadata
+        if: matrix.update_metadata != ''
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(dist_electron/${{ matrix.artifact_glob }})
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "Expected exactly one updater artifact, found ${#files[@]}."
+            exit 1
+          fi
+          node scripts/validate-gui-update-metadata.mjs \
+            "${{ needs.ensure-release.outputs.tag }}" \
+            "dist_electron/${{ matrix.update_metadata }}" \
+            "${files[0]}" \
+            ${{ github.event_name == 'workflow_dispatch' && '--allow-package-mismatch' || '' }}
 
       - name: Upload installer to GitHub Release
         env:
@@ -143,13 +161,23 @@ jobs:
             ls -la dist_electron || true
             exit 1
           fi
-          # Also attach .blockmap when present (useful for future auto-update).
+          metadata=()
+          if [[ -n "${{ matrix.update_metadata }}" ]]; then
+            metadata_path="dist_electron/${{ matrix.update_metadata }}"
+            if [[ ! -f "${metadata_path}" ]]; then
+              echo "Missing update metadata: ${metadata_path}"
+              ls -la dist_electron || true
+              exit 1
+            fi
+            metadata+=("${metadata_path}")
+          fi
+          # Attach the blockmap and x64 channel metadata used by electron-updater.
           for f in "${files[@]}"; do
             extras=()
             if [[ -f "${f}.blockmap" ]]; then
               extras+=("${f}.blockmap")
             fi
-            gh release upload "${TAG}" "${f}" "${extras[@]}" \
+            gh release upload "${TAG}" "${f}" "${extras[@]}" "${metadata[@]}" \
               --repo "${{ github.repository }}" \
               --clobber
           done

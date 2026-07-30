@@ -1,6 +1,6 @@
 {
   "name": "actoviq-agent-sdk",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Agent team platform — multi-agent, multi-runtime, model team collaboration with TUI, GUI, and MCP.",
   "repository": {
     "type": "git",
@@ -45,7 +45,12 @@
       "assets/actoviq-icon.png"
     ],
     "npmRebuild": false,
-    "publish": null,
+    "publish": {
+      "provider": "github",
+      "owner": "DeconBear",
+      "repo": "actoviq-agent-sdk",
+      "releaseType": "release"
+    },
     "win": {
       "target": [
         "nsis"
@@ -85,6 +90,7 @@
     "actoviq-react": "./bin/actoviq-react.js",
     "actoviq-tui": "./bin/actoviq-tui.js",
     "actoviq-gui": "./bin/actoviq-gui.js",
+    "actoviq-app-server": "./bin/actoviq-app-server.js",
     "actoviq-interactive-agent": "./bin/actoviq-interactive-agent.js",
     "actoviq-link-runtime": "./bin/actoviq-link-runtime.js"
   },
@@ -186,6 +192,8 @@
     "package:check": "npm run build && npm run verify:package && npm run verify:packed && npm pack --dry-run",
     "api:check": "node scripts/public-api.mjs",
     "api:update": "npm run build && node scripts/public-api.mjs --update",
+    "extension:build": "npm --prefix extensions/vscode run build",
+    "extension:test": "npm --prefix extensions/vscode test",
     "bench:standard": "tsx bench/standard/run-all.ts",
     "bench:runtime:smoke": "tsx bench/runtime/run.ts --mode smoke --output tmp/runtime-benchmark-smoke.json",
     "bench:runtime": "tsx bench/runtime/run.ts --mode full --output tmp/runtime-benchmark-full.json",
@@ -230,6 +238,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "electron-updater": "^6.8.9",
     "glob": "^13.0.0",
     "lodash-es": "^4.17.23",
     "zod": "^4.1.12"

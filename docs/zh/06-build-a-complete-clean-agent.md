@@ -2,6 +2,8 @@
 
 这篇教程的目标不是只让你跑一个 demo，而是手把手带你做出一个“能持续对话、能调用工具、能使用 skills、能保留会话”的 Hadamard SDK 项目。整篇教程只使用 `createAgentSdk()`。
 
+> 路线说明：本章故意使用交互/兼容入口，因为它最适合快速做完整产品。需要显式组合 provider、runtime、storage 和 tool policy 的服务端 SDK，请结合 01–04 章的模块化 Runtime 小节。
+
 ## 你最终会得到什么
 
 做完之后，你会有一个可以直接运行的终端聊天程序，具备这些能力：
@@ -309,8 +311,10 @@ await oldSession.send('继续刚才的话题');
 默认情况下，Hadamard SDK 会把 session 数据保存到：
 
 ```text
-~/.actoviq/actoviq-agent-sdk
+~/.actoviq/projects/<workspace-key>
 ```
+
+`<workspace-key>` 由规范化的 `workDir` 生成，因此不同项目默认隔离。
 
 如果你想改保存位置，可以在创建 SDK 时指定：
 
@@ -323,14 +327,16 @@ const sdk = await createAgentSdk({
 
 ### session ID 能自定义吗？
 
-当前不能直接手动指定 `session.id`。
+可以在创建时传入安全且不冲突的 ID：
 
-你可以自定义的是：
+```ts
+const session = await sdk.createSession({
+  id: 'my-clean-agent-main',
+  title: 'My Clean Agent',
+});
+```
 
-1. `title`
-2. `metadata`
-3. `tags`
-4. `sessionDirectory`
+不传 `id` 时 SDK 会自动生成。`title`、`metadata`、`tags` 和 `sessionDirectory` 也都可以自定义。
 
 ## 十、如果你要继续扩展，下一步最值得做什么
 
@@ -394,6 +400,23 @@ const sdk = await createAgentSdk({
 2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
 3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
 4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+
+## 十二、什么时候迁移到模块化 Runtime
+
+以下情况适合继续保留本章结构：
+
+1. 需要 GUI/TUI/CLI 相同的 sessions、skills、memory、MCP 和工具体验
+2. 希望通过 settings 自动解析 provider 和工作目录
+3. 应用主要是本地交互 Agent
+
+以下情况适合改用职责 subpath：
+
+1. 服务端需要 tenant-aware SQLite session store
+2. provider capability、tools、middleware、policy 必须显式装配
+3. 需要将 run events 投影到自定义 API、队列或 telemetry
+4. 需要确定性 `WorkflowGraph`、durable child 或受信任级别不同的 workflow executor
+
+迁移时先把本章的 agent prompt 抽成 `AgentSpec`，再依次接 `ModelRegistry`、`AgentRuntime`、`ToolRegistry` 和 `RuntimeServices`；不要一次同时迁移 UI、存储和业务工具。
 
 ## 十三、你下一步应该怎么做
 

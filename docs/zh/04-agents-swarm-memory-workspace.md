@@ -106,6 +106,21 @@ team.setRuntimeContext({
 
 - [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
 
+### GUI：让 Assistant 提议 Agent Graph
+
+Global Assistant 与 Project Manager 都能读取 Team 并生成 Agent Graph 提案，但没有绕过确认直接写 Team 文件的能力：
+
+1. 在 Assistant 面板新建或选择一个 Session。
+2. Global Assistant 需要明确指定已登记的项目路径；Project Manager 固定使用当前项目。
+3. 描述要增加、删除或重连的角色，例如“为 reviewer 增加失败后回到 implementer 的循环边”。
+4. Proposal Card 会显示节点/边差异、解释、校验问题和目标项目。点击 Preview 只打开草稿画布，不写磁盘。
+5. 校验失败时不能 Apply。若原 Team 在预览期间被外部修改，也会因基础版本指纹冲突而拒绝应用。
+6. 点击 Apply 后才使用 Team 保存服务持久化；Reject 不产生写入。内置 Team 不能被覆盖，需要另存为新名称。
+
+修改已有图时，稳定 ID 的旧节点会保留坐标，未变化边会保留手工端点；自动布局只补新增或缺少位置的节点。循环边采用语义化回边绕行，不把“几何最短”当作唯一目标。
+
+Assistant 支持多个 Session。Global 与每个项目分别记住当前活动 Session；可以新建、恢复、重命名和归档，不会再自动删除“重复的 Manager Session”。
+
 ## 4. Workspace 管理
 
 如果你不希望 agent 直接在当前目录工作，可以先创建独立 workspace，再把它传给 SDK。
@@ -183,7 +198,21 @@ const state = await session.compactState({
 - [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
 - [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
 
-## 7. Dream：长期记忆整理
+## 7. 可审阅 Memory 提案与 Remote Worker
+
+模型发现稳定规则时只创建 Memory Proposal，不会直接写长期记忆。交互面使用：
+
+```text
+/memory proposals
+/memory apply <proposal-id>
+/memory reject <proposal-id>
+```
+
+Apply 前会展示目标、内容和来源；Reject 不产生持久写入。项目 `.actoviq/rules/` 与用户规则按 path glob、priority 和 provenance 解析，`/rules why` 可解释本轮为何命中某条规则。
+
+Remote Worker 是可自托管协议，不绑定特定云厂商。它提供 durable job、事件 cursor、lease/heartbeat、断线续传、takeover、approval 回传和内容哈希 artifact。远端 worker 不能自行批准高风险工具；审批仍回到原 Session policy。artifact 会校验大小、哈希与 workspace path 映射，避免把远端路径直接写进本地任意位置。
+
+## 8. Dream：长期记忆整理
 
 Dream 可以理解成一次“对最近若干会话做记忆整理和巩固”的 Hadamard SDK 过程。它不会单独占据教程导航，而是作为 memory 系统的一部分来理解。
 
@@ -223,7 +252,7 @@ console.log(autoResult.task?.id);
 
 - [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
 
-## 8. Compact
+## 9. Compact
 
 Hadamard SDK 当前支持：
 
@@ -255,6 +284,48 @@ if (!result.compacted) {
 ```
 
 compact 历史与连续三次失败后的断路器状态都会随会话保存，因此 `resumeSession()` 不会重置恢复状态。
+
+## 10. 模块化 Runtime 的 Agent Profiles
+
+`createAgentSdk()` 的 named agents、swarm、buddy、dream 和 memory 是产品级组合能力。模块化 Runtime 则通过不可变 `AgentSpec` 与 profile 描述依赖：
+
+```ts
+import {
+  buildProfile,
+  inspectProfile,
+  runProfile,
+} from 'actoviq-agent-sdk/profiles';
+
+const profile = buildProfile('chat', {
+  model: {
+    provider: 'openai-responses',
+    model: 'gpt-4.1-mini',
+  },
+});
+
+console.log(inspectProfile(profile));
+
+const result = await runProfile(
+  runtime,
+  profile,
+  '请概括当前项目。',
+);
+
+console.log(result.output);
+```
+
+内置 profile 包括：
+
+1. `chat`
+2. `coding`
+3. `research`
+4. `workflow`
+5. `supervisor`
+6. `background`
+
+Profile 不是“打开一个名称就自动拥有全部能力”。它会声明 required services、middleware、tools、workspace 和安全预期；`runProfile()` 在执行前检查 runtime 组合，缺能力就明确失败。例如 `coding` 需要 workspace service、workspace boundary/policy middleware、读写工具以及 `workspaceId`。
+
+这样做的目的，是让新应用的 agent 能力可检查、可测试，而不是由隐式全局状态决定。需要自动扫描 Markdown agent 定义、Team/Swarm 或 GUI 编排时，继续使用 `createAgentSdk()` 交互入口。
 
 下一章：
 

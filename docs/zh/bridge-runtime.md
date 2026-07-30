@@ -1,4 +1,6 @@
-# 05. Bridge Runtime 兼容说明
+# 附录：Bridge Runtime 兼容说明
+
+> Bridge 是兼容外部 Agent CLI 的可选路径。Hadamard SDK 本身不依赖 Bridge；新应用的独立 Runtime 主线见 01–04 章。
 
 这一章解释什么是 bridge，以及什么时候才需要使用它。
 
