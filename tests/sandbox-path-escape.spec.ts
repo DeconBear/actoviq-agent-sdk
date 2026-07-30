@@ -79,7 +79,7 @@ describe('sandbox path validation', () => {
     );
   });
 
-  it('includes PATH tool directories in macOS seatbelt profiles', () => {
+  it('includes writable roots (not blanket host writes) in macOS seatbelt profiles', () => {
     const root = path.join(os.tmpdir(), 'actoviq-sandbox-macos-profile');
     const executor = new SandboxExecutor({
       ...resolveSandboxPolicy(root),
@@ -96,19 +96,20 @@ describe('sandbox path validation', () => {
       capability: { adapter: string };
     };
     if (probe.capability.adapter !== 'macos-sandbox-exec') return;
-    const toolBin = path.join(root, 'tool-bin');
     const invocation = probe.wrapInvocation({
       executable: '/bin/bash',
       args: ['-lc', 'node -e "1"'],
       cwd: root,
       timeoutMs: 1_000,
-      env: { PATH: toolBin },
+      env: process.env,
     });
     expect(invocation.executable).toBe('/usr/bin/sandbox-exec');
     expect(invocation.args[0]).toBe('-p');
     const profile = invocation.args[1] ?? '';
-    expect(profile).toContain(`(allow file-read* (subpath "${toolBin}")`);
-    expect(profile).toContain('(allow mach-lookup)');
+    expect(profile).toContain('(allow default)');
+    expect(profile).toContain('(deny file-write*)');
+    expect(profile).toContain(`(allow file-write* (subpath "${path.resolve(root)}")`);
+    expect(profile).not.toContain('(deny default)');
   });
 
   it('can write files with the host Node binary under the active sandbox adapter', async () => {
@@ -123,7 +124,10 @@ describe('sandbox path validation', () => {
       timeoutMs: 5_000,
       env: process.env,
     });
-    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(
+      result.exitCode,
+      `stderr=${result.stderr}\nstdout=${result.stdout}\nadapter=${result.capability.adapter}`,
+    ).toBe(0);
     expect(await readFile(marker, 'utf8')).toBe('ok');
   });
 });

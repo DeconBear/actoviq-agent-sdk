@@ -233,23 +233,6 @@ const LINUX_SYSTEM_READ_ROOTS = [
   '/etc/ld.so.conf.d',
 ] as const;
 
-/** Host paths sandboxed macOS processes still need to load dyld / system libs. */
-const MACOS_SYSTEM_READ_ROOTS = [
-  '/usr',
-  '/bin',
-  '/sbin',
-  '/System',
-  '/Library',
-  '/private/etc',
-  '/private/var/db/dyld',
-  '/private/tmp',
-  '/tmp',
-  '/dev',
-  '/etc',
-  '/opt/homebrew',
-  '/opt/local',
-] as const;
-
 /** Temp dirs shells / runtimes may touch even when cwd is elsewhere. */
 const MACOS_SYSTEM_WRITE_ROOTS = [
   '/private/tmp',
@@ -283,36 +266,27 @@ function hostToolReadRoots(
 }
 
 function macosProfile(policy: SandboxPolicy, request: SandboxExecutionRequest): string {
-  // Keep the profile conservative: invalid SBPL atoms make sandbox-exec exit
-  // immediately (seen as exit code 1), which breaks every sandboxed tool call.
+  // Prefer allow-default + deny writes: selective deny-default profiles routinely
+  // break Node (dyld/mach/frameworks) on GitHub-hosted macOS runners. ReadRoots
+  // stay enforced in JS via assertPathAllowed; seatbelt is the write backstop.
   const rules = [
     '(version 1)',
-    '(deny default)',
-    '(allow process*)',
-    '(allow sysctl-read)',
-    '(allow file-read-metadata)',
-    '(allow mach-lookup)',
-    '(allow mach-register)',
+    '(allow default)',
+    '(deny file-write*)',
+    '(allow file-write* (literal "/dev/null"))',
+    '(allow file-write* (literal "/dev/zero"))',
+    '(allow file-write* (literal "/dev/dtracehelper"))',
   ];
-  for (const root of MACOS_SYSTEM_READ_ROOTS) {
-    rules.push(`(allow file-read* (subpath "${escapeProfile(root)}"))`);
-  }
-  const readable = uniqueResolved([
-    ...policy.readRoots,
-    ...policy.writableRoots,
-    request.cwd,
-    ...hostToolReadRoots(request, request.env ?? process.env),
-  ]);
-  for (const root of readable) {
-    rules.push(`(allow file-read* (subpath "${escapeProfile(root)}"))`);
-  }
   for (const root of uniqueResolved([
     ...policy.writableRoots,
     ...MACOS_SYSTEM_WRITE_ROOTS,
+    request.cwd,
   ])) {
     rules.push(`(allow file-write* (subpath "${escapeProfile(root)}"))`);
   }
-  if (policy.network.mode === 'allow') rules.push('(allow network*)');
+  if (policy.network.mode === 'deny') {
+    rules.push('(deny network*)');
+  }
   return rules.join('\n');
 }
 
