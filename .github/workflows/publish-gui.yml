@@ -177,7 +177,15 @@ jobs:
             if [[ -f "${f}.blockmap" ]]; then
               extras+=("${f}.blockmap")
             fi
-            gh release upload "${TAG}" "${f}" "${extras[@]}" "${metadata[@]}" \
+            # Under `set -u`, empty arrays must not be expanded as "${arr[@]}".
+            upload_args=("${f}")
+            if [[ ${#extras[@]} -gt 0 ]]; then
+              upload_args+=("${extras[@]}")
+            fi
+            if [[ ${#metadata[@]} -gt 0 ]]; then
+              upload_args+=("${metadata[@]}")
+            fi
+            gh release upload "${TAG}" "${upload_args[@]}" \
               --repo "${{ github.repository }}" \
               --clobber
           done

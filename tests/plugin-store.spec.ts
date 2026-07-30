@@ -41,7 +41,7 @@ describe('PluginPackageStore', () => {
     expect(await store.list('demo')).toEqual([]);
   });
 
-  it('rejects package symlinks and preserves an already installed version', async () => {
+  it('rejects package symlinks and replaces same-version installs when entry bits change', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-store-safe-'));
     dirs.push(dir);
     const source = path.join(dir, 'source');
@@ -59,8 +59,9 @@ describe('PluginPackageStore', () => {
     const installed = await store.install(source);
     await writeFile(path.join(source, 'index.js'), 'export const value = 2;\n');
     await store.install(source);
+    // Same version with different entry content must not silently keep stale bits.
     expect(await readFile(path.join(installed.packagePath, 'index.js'), 'utf8'))
-      .toBe('export const value = 1;\n');
+      .toBe('export const value = 2;\n');
 
     const linkedSource = path.join(dir, 'linked');
     await mkdir(linkedSource);
