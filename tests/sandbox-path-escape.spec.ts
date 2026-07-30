@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -108,6 +108,22 @@ describe('sandbox path validation', () => {
     expect(invocation.args[0]).toBe('-p');
     const profile = invocation.args[1] ?? '';
     expect(profile).toContain(`(allow file-read* (subpath "${toolBin}")`);
-    expect(profile).toContain('(allow mach*)');
+    expect(profile).toContain('(allow mach-lookup)');
+  });
+
+  it('can write files with the host Node binary under the active sandbox adapter', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-node-write-'));
+    tempDirs.push(root);
+    const executor = new SandboxExecutor(resolveSandboxPolicy(root));
+    const marker = path.join(root, 'ok.txt');
+    const result = await executor.execute({
+      executable: process.execPath,
+      args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ok')`],
+      cwd: root,
+      timeoutMs: 5_000,
+      env: process.env,
+    });
+    expect(result.exitCode, result.stderr || result.stdout).toBe(0);
+    expect(await readFile(marker, 'utf8')).toBe('ok');
   });
 });

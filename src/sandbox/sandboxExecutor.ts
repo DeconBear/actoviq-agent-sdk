@@ -283,16 +283,16 @@ function hostToolReadRoots(
 }
 
 function macosProfile(policy: SandboxPolicy, request: SandboxExecutionRequest): string {
+  // Keep the profile conservative: invalid SBPL atoms make sandbox-exec exit
+  // immediately (seen as exit code 1), which breaks every sandboxed tool call.
   const rules = [
     '(version 1)',
     '(deny default)',
     '(allow process*)',
-    '(allow signal)',
     '(allow sysctl-read)',
-    '(allow mach*)',
-    '(allow iokit-open)',
-    '(allow user-preference-read)',
     '(allow file-read-metadata)',
+    '(allow mach-lookup)',
+    '(allow mach-register)',
   ];
   for (const root of MACOS_SYSTEM_READ_ROOTS) {
     rules.push(`(allow file-read* (subpath "${escapeProfile(root)}"))`);

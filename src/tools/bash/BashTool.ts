@@ -181,7 +181,7 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
           return { stdout: '', stderr: '', exitCode: 0, backgroundTaskId: child.pid?.toString() };
         }
 
-        if (context.sandboxExecutor) {
+          if (context.sandboxExecutor) {
           const output = await context.sandboxExecutor.execute({
             executable: shell.executable,
             args: [...shell.args, input.command],
@@ -189,6 +189,7 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
             timeoutMs,
             signal: context.signal,
             maxBuffer: 10 * 1024 * 1024,
+            env: process.env,
             disableRequested: input.dangerouslyDisableSandbox,
           });
           return {
@@ -239,6 +240,7 @@ async function runBashCommand(
           timeoutMs,
           signal,
           maxBuffer: 10 * 1024 * 1024,
+          env: process.env,
           disableRequested,
         })
       : await execFile(shell.executable, [...shell.args, command], {

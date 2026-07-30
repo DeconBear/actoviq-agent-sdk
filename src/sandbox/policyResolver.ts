@@ -27,8 +27,13 @@ export function defaultSandboxPolicy(workDir: string): SandboxPolicy {
 }
 
 /**
- * Merge host → user → project → Session policies. Later policies can only
- * tighten roots/network/limits; they cannot weaken a stricter parent policy.
+ * Merge host → user → project → session/options policies.
+ *
+ * Roots, network, and process limits only tighten. `enforcement: 'off'` is
+ * allowed when the current policy still has `allowUserDisable: true` (so an
+ * explicit settings/options opt-out works, while a parent that locked
+ * `allowUserDisable: false` cannot be weakened). Partial overlays omit
+ * `allowUserDisable` without clearing the inherited flag.
  */
 export function resolveSandboxPolicy(
   workDir: string,
@@ -37,7 +42,11 @@ export function resolveSandboxPolicy(
   let effective = defaultSandboxPolicy(workDir);
   for (const policy of policies) {
     if (!policy) continue;
-    const enforcement = stricterEnforcement(effective.enforcement, policy.enforcement);
+    const enforcement = resolveEnforcement(
+      effective.enforcement,
+      policy.enforcement,
+      effective.allowUserDisable,
+    );
     const readRoots = policy.readRoots
       ? intersectRoots(effective.readRoots, policy.readRoots)
       : effective.readRoots;
@@ -45,6 +54,9 @@ export function resolveSandboxPolicy(
       ? intersectRoots(effective.writableRoots, policy.writableRoots)
       : effective.writableRoots;
     const network = tightenNetwork(effective.network, policy.network);
+    const allowUserDisable = policy.allowUserDisable === undefined
+      ? effective.allowUserDisable
+      : effective.allowUserDisable && policy.allowUserDisable;
     effective = {
       version: 1,
       enforcement,
@@ -56,18 +68,22 @@ export function resolveSandboxPolicy(
         maxOutputBytes: minimumDefined(effective.process.maxOutputBytes, policy.process?.maxOutputBytes),
         maxProcesses: minimumDefined(effective.process.maxProcesses, policy.process?.maxProcesses),
       },
-      allowUserDisable: effective.allowUserDisable && policy.allowUserDisable === true,
+      allowUserDisable,
       source: policy.source ?? effective.source,
     };
   }
   return effective;
 }
 
-function stricterEnforcement(
+function resolveEnforcement(
   current: SandboxEnforcement,
   next: SandboxEnforcement | undefined,
+  allowUserDisable: boolean,
 ): SandboxEnforcement {
   if (!next) return current;
+  if (next === 'off') {
+    return allowUserDisable ? 'off' : current;
+  }
   return ENFORCEMENT_RANK[next] > ENFORCEMENT_RANK[current] ? next : current;
 }
 
