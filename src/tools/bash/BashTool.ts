@@ -6,7 +6,11 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { tool } from '../../runtime/tools.js';
 import { isReadOnlyBashCommand } from '../../runtime/bashClassification.js';
-import type { ActoviqBackgroundTaskRecord, AgentToolDefinition } from '../../types.js';
+import type {
+  ActoviqBackgroundTaskRecord,
+  AgentToolDefinition,
+  ToolExecutionContext,
+} from '../../types.js';
 import { BASH_DESCRIPTION } from './prompt.js';
 
 export const BASH_TOOL_NAME = 'Bash';
@@ -121,7 +125,15 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
                   toolCallCount: 1,
                   toolErrorCount: 0,
                 });
-                const output = await runBashCommand(shell, input.command, context.cwd, timeoutMs, signal);
+                const output = await runBashCommand(
+                  shell,
+                  input.command,
+                  context.cwd,
+                  timeoutMs,
+                  signal,
+                  context.sandboxExecutor,
+                  input.dangerouslyDisableSandbox,
+                );
                 await mkdir(path.dirname(taskRecord.outputFile), { recursive: true });
                 await writeFile(taskRecord.outputFile, output.text, 'utf8');
                 await updateProgress({
@@ -152,6 +164,13 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
               outputFile: task.outputFile,
             };
           }
+          if (context.sandboxExecutor) {
+            return {
+              stdout: '',
+              stderr: 'Sandboxed background commands require the Hadamard task manager so their lifecycle can be tracked.',
+              exitCode: 1,
+            };
+          }
           const child = spawn(shell.executable, [...shell.args, input.command], {
             cwd: context.cwd,
             stdio: 'ignore',
@@ -162,6 +181,23 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
           return { stdout: '', stderr: '', exitCode: 0, backgroundTaskId: child.pid?.toString() };
         }
 
+        if (context.sandboxExecutor) {
+          const output = await context.sandboxExecutor.execute({
+            executable: shell.executable,
+            args: [...shell.args, input.command],
+            cwd: context.cwd,
+            timeoutMs,
+            signal: context.signal,
+            maxBuffer: 10 * 1024 * 1024,
+            disableRequested: input.dangerouslyDisableSandbox,
+          });
+          return {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exitCode: output.exitCode,
+            sandbox: output.capability,
+          };
+        }
         const output = await execFile(shell.executable, [...shell.args, input.command], {
           cwd: context.cwd,
           encoding: 'utf-8',
@@ -191,16 +227,28 @@ async function runBashCommand(
   cwd: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  sandboxExecutor?: ToolExecutionContext['sandboxExecutor'],
+  disableRequested?: boolean,
 ): Promise<{ stdout: string; stderr: string; exitCode: number; text: string }> {
   try {
-    const output = await execFile(shell.executable, [...shell.args, command], {
-      cwd,
-      encoding: 'utf-8',
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024,
-      windowsHide: true,
-      signal,
-    });
+    const output = sandboxExecutor
+      ? await sandboxExecutor.execute({
+          executable: shell.executable,
+          args: [...shell.args, command],
+          cwd,
+          timeoutMs,
+          signal,
+          maxBuffer: 10 * 1024 * 1024,
+          disableRequested,
+        })
+      : await execFile(shell.executable, [...shell.args, command], {
+          cwd,
+          encoding: 'utf-8',
+          timeout: timeoutMs,
+          maxBuffer: 10 * 1024 * 1024,
+          windowsHide: true,
+          signal,
+        });
     const stdout = output.stdout.trim();
     const stderr = output.stderr.trim();
     return {

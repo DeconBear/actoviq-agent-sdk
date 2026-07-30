@@ -41,6 +41,25 @@ export interface ToolExecutionContext {
   model?: string;
   provider?: string;
   effort?: ActoviqEffort;
+  /** Internal per-turn file journal supplied by the Hadamard runtime. */
+  fileChangeJournal?: {
+    record(change: {
+      sessionId: string;
+      turnId: string;
+      filePath: string;
+      before: Buffer | null;
+      after: Buffer | null;
+    }): Promise<unknown>;
+  };
+  /** OS isolation boundary, separate from the permission approval decision. */
+  sandboxExecutor?: {
+    readonly policy: import('./sandbox/types.js').SandboxPolicy;
+    readonly capability: import('./sandbox/types.js').SandboxCapabilityReport;
+    execute(
+      request: import('./sandbox/types.js').SandboxExecutionRequest,
+    ): Promise<import('./sandbox/types.js').SandboxExecutionResult>;
+    assertPathAllowed(filePath: string, access: 'read' | 'write'): Promise<string>;
+  };
 }
 
 export type ActoviqPermissionMode =
@@ -373,6 +392,13 @@ export interface ResolvedRuntimeConfig {
   compact: ActoviqCompactConfig;
   provider: 'anthropic' | 'openai';
   effort?: ActoviqEffort;
+  sandbox: import('./sandbox/types.js').SandboxPolicy;
+  sandboxCapabilities: import('./sandbox/types.js').SandboxCapabilityReport;
+  languageServers: import('./codeIntel/types.js').LanguageServerDefinition[];
+  typedHooks: import('./hooks/hookTypes.js').TypedHookDefinition[];
+  autoWorktree: boolean;
+  /** Effective host/user/project/session policy applied to this runtime. */
+  effectivePolicy: import('./policy/types.js').ResolvedPolicy;
 }
 
 export interface ActoviqSessionStartHookContext {
@@ -794,6 +820,14 @@ export interface CreateAgentSdkOptions {
   effort?: ActoviqEffort;
   modelApi?: ModelApi;
   sessionManager?: SessionManagerConfig;
+  sandbox?: import('./sandbox/policyResolver.js').SandboxPolicyInput;
+  languageServers?: import('./codeIntel/types.js').LanguageServerDefinition[];
+  /** Typed lifecycle hooks shared by SDK, GUI, TUI, and CLI runtimes. */
+  typedHooks?: import('./hooks/hookTypes.js').TypedHookDefinition[];
+  /** Create a durable Session-owned git worktree for new main Sessions. */
+  autoWorktree?: boolean;
+  /** Additional session-scoped managed policy documents. */
+  policyDocuments?: import('./policy/types.js').PolicyDocument[];
 }
 
 export interface ActoviqCompactConfig {
@@ -918,6 +952,10 @@ export interface SessionCreateOptions {
   kind?: 'main' | 'worktree' | 'manager' | 'agent';
   /** Direct conversation parent. This is execution topology, not transcript forking. */
   parentSessionId?: string;
+  /** Stable source message where a conversation branch diverged. */
+  parentMessageId?: string;
+  /** User-visible label for a branch in the Session tree. */
+  branchName?: string;
   originalWorkDir?: string;
 }
 
@@ -1478,6 +1516,39 @@ export type AgentEvent =
       timestamp: string;
     }
   | {
+      type: 'checkpoint.created';
+      runId: string;
+      sessionId: string;
+      checkpointId: string;
+      timestamp: string;
+    }
+  | {
+      type:
+        | 'checkpoint.restore.requested'
+        | 'checkpoint.restore.completed'
+        | 'checkpoint.restore.conflicted';
+      runId: string;
+      sessionId: string;
+      checkpointId: string;
+      timestamp: string;
+    }
+  | {
+      type: 'sandbox.applied' | 'sandbox.degraded' | 'sandbox.violation';
+      runId: string;
+      sessionId?: string;
+      capability: import('./sandbox/types.js').SandboxCapabilityReport;
+      violation?: import('./sandbox/types.js').SandboxViolation;
+      timestamp: string;
+    }
+  | {
+      type: 'hook.lifecycle';
+      runId: string;
+      sessionId?: string;
+      lifecycleEvent: import('./hooks/hookTypes.js').ActoviqLifecycleEvent;
+      outputs: import('./hooks/hookTypes.js').TypedHookOutput[];
+      timestamp: string;
+    }
+  | {
       type: 'conversation.compacted';
       runId: string;
       iteration: number;
@@ -1654,6 +1725,8 @@ export interface StoredSession {
   worktreePath?: string;
   worktreeBranch?: string;
   parentSessionId?: string;
+  parentMessageId?: string;
+  branchName?: string;
   originalWorkDir?: string;
 }
 
@@ -1679,6 +1752,8 @@ export interface SessionSummary {
   runCount: number;
   /** True when the session file lives in the project archive/ directory. */
   archived?: boolean;
+  /** User pin used by Session Center sorting. */
+  pinned?: boolean;
   /** Session kind — Agent sessions are independent child conversations. */
   kind?: 'main' | 'worktree' | 'manager' | 'agent';
   /** Direct parent conversation for an Agent/worktree session. */
@@ -1738,6 +1813,8 @@ export interface SessionCheckpoint {
   sessionId: string;
   createdAt: string;
   snapshot: StoredSession;
+  /** Locator for the separate file-change manifest; file bodies never live in Session JSON. */
+  fileManifestLocator?: string;
 }
 
 export interface SessionCheckpointSummary {

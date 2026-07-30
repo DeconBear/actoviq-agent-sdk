@@ -64,6 +64,8 @@ export function isAssistantScope(value: unknown): value is AssistantScope {
 export interface AssistantGlobalConfig {
   model?: string;
   bridgeConfig?: string;
+  /** Selected Global Assistant conversation. Optional for pre-upgrade configs. */
+  activeSessionId?: string;
 }
 
 export const DEFAULT_ASSISTANT_CONFIG: AssistantGlobalConfig = {};
@@ -81,6 +83,9 @@ export async function readAssistantConfig(homeDir?: string): Promise<AssistantGl
       bridgeConfig: typeof raw.bridgeConfig === 'string' && raw.bridgeConfig.trim()
         ? raw.bridgeConfig.trim()
         : undefined,
+      activeSessionId: typeof raw.activeSessionId === 'string' && raw.activeSessionId.trim()
+        ? raw.activeSessionId.trim()
+        : undefined,
     };
   } catch {
     return { ...DEFAULT_ASSISTANT_CONFIG };
@@ -96,6 +101,7 @@ export async function writeAssistantConfig(
   await writeFile(filePath, JSON.stringify({
     ...(config.model ? { model: config.model } : {}),
     ...(config.bridgeConfig ? { bridgeConfig: config.bridgeConfig } : {}),
+    ...(config.activeSessionId ? { activeSessionId: config.activeSessionId } : {}),
   }, null, 2), 'utf8');
 }
 

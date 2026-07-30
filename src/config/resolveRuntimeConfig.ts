@@ -16,6 +16,12 @@ import {
   getActoviqProjectSessionDirectory,
   migrateLegacyActoviqProjectData,
 } from './projectSessionDirectory.js';
+import { resolveSandboxPolicy } from '../sandbox/policyResolver.js';
+import { SandboxExecutor } from '../sandbox/sandboxExecutor.js';
+import { parseTypedHooks } from '../hooks/hookConfig.js';
+import { loadPolicyDocuments } from '../policy/policyLoader.js';
+import { resolvePolicy } from '../policy/policyResolver.js';
+import { policySetting } from '../policy/runtimePolicy.js';
 
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 const DEFAULT_COMPACT_CONFIG = {
@@ -64,6 +70,11 @@ export async function resolveRuntimeConfig(
   const homeDir = resolveActoviqHome(options.homeDir);
   const workDir = path.resolve(options.workDir ?? process.cwd());
   const loadedConfig = getLoadedJsonConfig();
+  const effectivePolicy = resolvePolicy(await loadPolicyDocuments({
+    homeDir,
+    workDir,
+    explicit: options.policyDocuments,
+  }));
 
   const envFromLoadedConfig = loadedConfig?.env ?? {};
   const envSources = [envFromLoadedConfig, process.env];
@@ -94,6 +105,7 @@ export async function resolveRuntimeConfig(
     max: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MAX_MODEL', ...envSources),
   };
   const requestedModel =
+    policySetting<string>(effectivePolicy, 'model') ??
     options.model ??
     getRuntimeConfigValue('ACTOVIQ_MODEL', ...envSources);
   const selectedModel = requestedModel
@@ -118,6 +130,7 @@ export async function resolveRuntimeConfig(
     ? resolveActoviqModelReference(requestedFallbackModel, modelTiers).model
     : undefined;
   const requestedEffort =
+    policySetting<string>(effectivePolicy, 'effort') ??
     options.effort ??
     getRuntimeConfigValue('ACTOVIQ_EFFORT', ...envSources);
   if (
@@ -142,6 +155,28 @@ export async function resolveRuntimeConfig(
         `Could not migrate legacy Actoviq project data: ${(error as Error).message}`,
       );
     }
+  }
+  const rawSandbox = loadedConfig?.raw?.sandbox;
+  const configuredSandbox = rawSandbox && typeof rawSandbox === 'object' && !Array.isArray(rawSandbox)
+    ? rawSandbox as import('../sandbox/policyResolver.js').SandboxPolicyInput
+    : undefined;
+  const sandbox = resolveSandboxPolicy(
+    workDir,
+    policySetting<import('../sandbox/policyResolver.js').SandboxPolicyInput>(
+      effectivePolicy,
+      'sandbox',
+    ),
+    configuredSandbox,
+    options.sandbox,
+  );
+  const sandboxCapabilities = new SandboxExecutor(sandbox).capability;
+  const languageServers = options.languageServers
+    ?? normalizeLanguageServers(loadedConfig?.raw?.languageServers);
+  const typedHookConfig = options.typedHooks
+    ? { hooks: options.typedHooks, issues: [] }
+    : parseTypedHooks(loadedConfig?.raw?.typedHooks);
+  if (typedHookConfig.issues.length > 0) {
+    throw new ConfigurationError(typedHookConfig.issues.join(' '));
   }
 
   return {
@@ -182,7 +217,46 @@ export async function resolveRuntimeConfig(
     },
     provider,
     effort: requestedEffort as ResolvedRuntimeConfig['effort'],
+    sandbox,
+    sandboxCapabilities,
+    languageServers,
+    typedHooks: typedHookConfig.hooks,
+    autoWorktree:
+      policySetting<boolean>(effectivePolicy, 'autoWorktree')
+      ?? options.autoWorktree
+      ?? (typeof loadedConfig?.raw?.autoWorktree === 'boolean'
+        ? loadedConfig.raw.autoWorktree
+        : false),
+    effectivePolicy,
   };
+}
+
+function normalizeLanguageServers(
+  value: unknown,
+): import('../codeIntel/types.js').LanguageServerDefinition[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.id !== 'string'
+      || typeof record.command !== 'string'
+      || !Array.isArray(record.languages)
+      || !Array.isArray(record.extensions)
+    ) return [];
+    return [{
+      id: record.id,
+      command: record.command,
+      languages: record.languages.filter((entry): entry is string => typeof entry === 'string'),
+      extensions: record.extensions.filter((entry): entry is string => typeof entry === 'string'),
+      ...(Array.isArray(record.args)
+        ? { args: record.args.filter((entry): entry is string => typeof entry === 'string') }
+        : {}),
+      ...(record.initializationOptions !== undefined
+        ? { initializationOptions: record.initializationOptions }
+        : {}),
+    }];
+  });
 }
 
 function resolvePositiveTimeout(

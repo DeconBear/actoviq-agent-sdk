@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { ToolExecutionError } from '../errors.js';
 import { tool } from '../runtime/tools.js';
-import type { AgentToolDefinition } from '../types.js';
+import type { AgentToolDefinition, ToolExecutionContext } from '../types.js';
 
 export const NOTEBOOK_EDIT_TOOL_NAME = 'NotebookEdit';
 
@@ -49,8 +49,10 @@ export function createNotebookEditTool(): AgentToolDefinition {
       }),
       isDestructive: () => true,
     },
-    async (input) => {
+    async (input, context) => {
       const notebookPath = resolveNotebookPath(input.notebook_path);
+      await context.sandboxExecutor?.assertPathAllowed(notebookPath, 'write');
+      const before = await readFile(notebookPath);
       const notebook = await readNotebook(notebookPath);
       const mode = input.edit_mode ?? 'replace';
 
@@ -74,6 +76,7 @@ export function createNotebookEditTool(): AgentToolDefinition {
         const cell = createNotebookCell(input.cell_type, input.new_source);
         notebook.cells.splice(insertIndex, 0, cell);
         await writeNotebook(notebookPath, notebook);
+        await recordNotebookChange(context, notebookPath, before);
         return {
           notebook_path: notebookPath,
           edit_mode: mode,
@@ -102,6 +105,7 @@ export function createNotebookEditTool(): AgentToolDefinition {
         nextType,
       );
       await writeNotebook(notebookPath, notebook);
+      await recordNotebookChange(context, notebookPath, before);
       return {
         notebook_path: notebookPath,
         edit_mode: mode,
@@ -111,6 +115,21 @@ export function createNotebookEditTool(): AgentToolDefinition {
       };
     },
   );
+}
+
+async function recordNotebookChange(
+  context: ToolExecutionContext,
+  notebookPath: string,
+  before: Buffer,
+): Promise<void> {
+  if (!context.fileChangeJournal || !context.sessionId) return;
+  await context.fileChangeJournal.record({
+    sessionId: context.sessionId,
+    turnId: context.runId,
+    filePath: notebookPath,
+    before,
+    after: await readFile(notebookPath),
+  });
 }
 
 function resolveNotebookPath(rawPath: string): string {

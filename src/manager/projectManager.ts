@@ -137,6 +137,8 @@ export interface ManagerConfig {
   mirrorProgressToWorkspace: boolean;
   /** Optional extra instructions appended to the manager system prompt. */
   promptOverride?: string;
+  /** Selected Project Manager conversation. Optional for pre-upgrade configs. */
+  activeSessionId?: string;
 }
 
 export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
@@ -168,6 +170,9 @@ export async function readManagerConfig(workDir: string, homeDir: string): Promi
       mirrorProgressToWorkspace: raw.mirrorProgressToWorkspace === true,
       promptOverride:
         typeof raw.promptOverride === 'string' && raw.promptOverride.trim() ? raw.promptOverride : undefined,
+      activeSessionId: typeof raw.activeSessionId === 'string' && raw.activeSessionId.trim()
+        ? raw.activeSessionId.trim()
+        : undefined,
     };
   } catch {
     return { ...DEFAULT_MANAGER_CONFIG };
@@ -192,9 +197,17 @@ function isWithin(candidate: string, root: string): boolean {
 }
 
 /** Compute the roots the manager may read, per config. Empty = unrestricted. */
-export function resolveManagerReadRoots(workDir: string, homeDir: string, config: ManagerConfig): string[] {
+export function resolveManagerReadRoots(
+  workDir: string,
+  homeDir: string,
+  config: ManagerConfig,
+  projectPath = workDir,
+): string[] {
   if (config.readScope === 'full-access') return [];
-  const roots = [normalizeRoot(workDir), normalizeRoot(getActoviqProjectSessionDirectory(workDir, homeDir))];
+  const roots = [
+    normalizeRoot(workDir),
+    normalizeRoot(getActoviqProjectSessionDirectory(projectPath, homeDir)),
+  ];
   if (config.readScope === 'workspace+docs' || config.readScope === 'explicit-allowlist') {
     for (const extra of config.allowedReadPaths) roots.push(normalizeRoot(extra));
   }
@@ -236,6 +249,8 @@ function restrictToolReadScope(
 // ── Manager tools ─────────────────────────────────────────────────
 
 export interface CreateManagerToolsOptions {
+  /** Stable logical Project locator. Defaults to the active work directory. */
+  projectPath?: string;
   workDir: string;
   homeDir: string;
   config?: ManagerConfig;
@@ -274,8 +289,9 @@ function summarizeManagerIssue(issue: ProjectIssue): Record<string, unknown> {
  */
 export async function createManagerTools(options: CreateManagerToolsOptions): Promise<AgentToolDefinition[]> {
   const { workDir, homeDir } = options;
-  const config = options.config ?? (await readManagerConfig(workDir, homeDir));
-  const roots = resolveManagerReadRoots(workDir, homeDir, config);
+  const projectPath = options.projectPath ?? workDir;
+  const config = options.config ?? (await readManagerConfig(projectPath, homeDir));
+  const roots = resolveManagerReadRoots(workDir, homeDir, config, projectPath);
 
   const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
   const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
@@ -314,8 +330,8 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
         today: input.today,
         upcoming: input.upcoming,
       };
-      await writeProjectPlanFile(workDir, homeDir, plan);
-      return { path: managerPlanPath(workDir, homeDir) };
+      await writeProjectPlanFile(projectPath, homeDir, plan);
+      return { path: managerPlanPath(projectPath, homeDir) };
     },
   );
 
@@ -333,7 +349,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
         `Progress written to ${output.path}${output.mirrored ? ` (mirrored to ${output.mirrored})` : ''}`,
     },
     async (input) => {
-      const filePath = managerProgressPath(workDir, homeDir);
+      const filePath = managerProgressPath(projectPath, homeDir);
       await mkdir(path.dirname(filePath), { recursive: true });
       await writeFile(filePath, input.content, 'utf8');
       let mirrored: string | undefined;
@@ -362,7 +378,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
       serialize: (output: { issues: unknown[] }) => `Listed ${output.issues.length} issue(s)`,
     },
     async (input) => {
-      const issues = await listProjectIssues(workDir, homeDir, issueStorageMode);
+      const issues = await listProjectIssues(projectPath, homeDir, issueStorageMode);
       const filtered = issues
         .filter(issue => !input.status || issue.status === input.status)
         .filter(issue => input.includeClosed === true || (issue.status !== 'done' && issue.status !== 'cancelled'))
@@ -382,7 +398,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
       serialize: (output: { issue?: ProjectIssue }) => output.issue ? `Read ISS-${output.issue.number}` : 'Issue not found',
     },
     async (input) => {
-      const issues = await listProjectIssues(workDir, homeDir, issueStorageMode);
+      const issues = await listProjectIssues(projectPath, homeDir, issueStorageMode);
       return { issue: issues.find(issue => matchesManagerIssue(issue, input.id)) };
     },
   );
@@ -411,7 +427,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
       if (input.priority !== undefined && !isIssuePriority(input.priority)) {
         throw new Error(`Invalid issue priority: ${input.priority}`);
       }
-      const issue = await createProjectIssue(workDir, homeDir, {
+      const issue = await createProjectIssue(projectPath, homeDir, {
         title: input.title,
         description: input.description,
         status: input.status === 'backlog' ? 'backlog' : 'todo',
@@ -458,15 +474,15 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
         ...(input.brief !== undefined ? { brief: input.brief } : {}),
       };
       let issue = Object.keys(patch).length > 0
-        ? await updateProjectIssue(workDir, homeDir, input.id, patch, issueStorageMode)
-        : (await listProjectIssues(workDir, homeDir, issueStorageMode)).find(candidate => matchesManagerIssue(candidate, input.id));
+        ? await updateProjectIssue(projectPath, homeDir, input.id, patch, issueStorageMode)
+        : (await listProjectIssues(projectPath, homeDir, issueStorageMode)).find(candidate => matchesManagerIssue(candidate, input.id));
       if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
       if (input.status !== undefined) {
         if (!isIssueStatus(input.status)) throw new Error(`Invalid issue status: ${input.status}`);
         if (input.status === 'in_progress') {
           throw new Error('Manager cannot set in_progress. Start/dispatch the issue instead.');
         }
-        issue = await transitionProjectIssue(workDir, homeDir, input.id, input.status, 'manager', issueStorageMode);
+        issue = await transitionProjectIssue(projectPath, homeDir, input.id, input.status, 'manager', issueStorageMode);
         if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
       }
       return { issue };
@@ -487,7 +503,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
     },
     async (input) => {
       const kind = input.kind === 'progress' || input.kind === 'system' ? input.kind : 'comment';
-      const issue = await addIssueComment(workDir, homeDir, input.id, { body: input.body, kind, actor: 'manager' }, issueStorageMode);
+      const issue = await addIssueComment(projectPath, homeDir, input.id, { body: input.body, kind, actor: 'manager' }, issueStorageMode);
       if (!issue) throw new Error(`Issue not found: ${String(input.id)}`);
       return { issue };
     },

@@ -62,6 +62,24 @@ export function createPowerShellTool(): AgentToolDefinition {
       );
 
       try {
+        if (context.sandboxExecutor) {
+          const result = await context.sandboxExecutor.execute({
+            executable: 'powershell.exe',
+            args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+            cwd: context.cwd,
+            timeoutMs,
+            signal: context.signal,
+            maxBuffer: 10 * 1024 * 1024,
+          });
+          return {
+            command,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            signal: result.signal,
+            sandbox: result.capability,
+          };
+        }
         const result = await execFile(
           'powershell.exe',
           ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],

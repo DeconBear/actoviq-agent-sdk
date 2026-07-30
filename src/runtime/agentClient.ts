@@ -50,7 +50,35 @@ import { AgentExecutionStore } from '../storage/agentExecutionStore.js';
 import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
 import { MailboxStore } from '../storage/mailboxStore.js';
 import { SessionStore } from '../storage/sessionStore.js';
+import { SessionGraph } from '../storage/sessionGraph.js';
+import { SessionForkService } from '../storage/sessionForkService.js';
+import { TaskWorktreeCoordinator } from '../worktree/taskWorktreeCoordinator.js';
+import { ReviewStore, ThreadDiffService } from '../review/index.js';
+import { RuleStore } from '../context/ruleStore.js';
+import { resolveContextRules } from '../context/ruleResolver.js';
+import { createMemoryProposalTools } from '../memory/memoryProposalTools.js';
+import { MemoryProposalService } from '../memory/memoryProposalService.js';
+import { ApprovalPolicy } from '../policy/approvalPolicy.js';
+import { AuditLog } from '../policy/auditLog.js';
+import { assertPolicyPatchAllowed } from '../policy/policyResolver.js';
+import {
+  policyPermissionMode,
+  policyPermissionRules,
+} from '../policy/runtimePolicy.js';
 import { TeammateStore } from '../storage/teammateStore.js';
+import {
+  createCheckpointTools,
+  FileChangeJournal,
+  FileCheckpointService,
+} from '../checkpoint/index.js';
+import { SandboxExecutor } from '../sandbox/sandboxExecutor.js';
+import {
+  CodeIntelligenceService,
+  createCodeIntelligenceTools,
+  LanguageServerRegistry,
+} from '../codeIntel/index.js';
+import { HookRunner } from '../hooks/hookRunner.js';
+import { createPromptHookHandler } from '../hooks/handlers/promptHook.js';
 import type {
   ActoviqAgentDefinition,
   ActoviqAgentDefinitionSummary,
@@ -91,6 +119,12 @@ import type {
 import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
 import { createActoviqFileTools } from '../tools/actoviqFileTools.js';
 import { BASH_TOOL_NAME, createBashTool } from '../tools/bash/BashTool.js';
+import {
+  buildGoalPrompt,
+  createGoalTools,
+  GoalService,
+  StoredSessionGoalPort,
+} from '../goal/index.js';
 import {
   ActoviqWorkspace,
   createGitWorktreeWorkspace,
@@ -626,11 +660,22 @@ export class ActoviqAgentClient {
   readonly tasks: ActoviqBackgroundTasksApi;
   readonly buddy: ActoviqBuddyApi;
   readonly memory: ActoviqMemoryApi;
+  readonly memoryProposals: MemoryProposalService;
   readonly dream: ActoviqDreamApi;
   readonly swarm: ActoviqSwarmApi;
   readonly context: ActoviqContextApi;
   readonly slashCommands: ActoviqSlashCommandsApi;
   readonly workflow: WorkflowApi;
+  /** File/conversation checkpoints recorded for Session turns. */
+  readonly checkpoints: FileCheckpointService;
+  readonly sessionGraph: SessionGraph;
+  readonly sessionForks: SessionForkService;
+  readonly taskWorktrees?: TaskWorktreeCoordinator;
+  readonly threadDiffs = new ThreadDiffService();
+  readonly reviews: ReviewStore;
+  readonly approvalPolicy: ApprovalPolicy;
+  readonly auditLog: AuditLog;
+  readonly codeIntelligence?: CodeIntelligenceService;
   /** Persistent, project-scoped root/child Agent execution graph. */
   readonly executions: ActoviqAgentExecutionsApi;
   private readonly sessionManager: SessionManager;
@@ -650,6 +695,16 @@ export class ActoviqAgentClient {
   private readonly defaultPermissions?: CreateAgentSdkOptions['permissions'];
   private readonly defaultClassifier?: ActoviqToolClassifier;
   private readonly defaultApprover?: ActoviqToolApprover;
+  private readonly fileChangeJournal: FileChangeJournal;
+  private readonly sandboxExecutor: SandboxExecutor;
+  private readonly typedHookRunner?: HookRunner;
+  /**
+   * Per in-flight turn stack slot for RestoreCheckpoint → conversationEngine.
+   * Idle restores never push; nested runs each own a slot.
+   */
+  private readonly conversationRestoreStack: Array<
+    import('../provider/types.js').MessageParam[] | undefined
+  > = [];
 
   private constructor(
     readonly config: Awaited<ReturnType<typeof resolveRuntimeConfig>>,
@@ -672,9 +727,83 @@ export class ActoviqAgentClient {
     sessionManagerConfig?: CreateAgentSdkOptions['sessionManager'],
     private readonly maxSubagentDepth = 1,
     private readonly maxSubagentFanout = 8,
+    taskWorktreeCoordinator?: TaskWorktreeCoordinator,
   ) {
     this.sessionManager = new SessionManager(this.store, sessionManagerConfig);
+    this.sessionGraph = new SessionGraph(this.store);
+    this.sessionForks = new SessionForkService(this.store);
+    this.taskWorktrees = taskWorktreeCoordinator;
+    this.reviews = new ReviewStore(path.join(this.config.sessionDirectory, 'reviews'));
+    this.approvalPolicy = new ApprovalPolicy(
+      path.join(this.config.homeDir, 'policy', 'approvals.json'),
+    );
+    this.auditLog = new AuditLog(path.join(this.config.homeDir, 'policy', 'audit.ndjson'));
     this.executions = new ActoviqAgentExecutionsApi(executionStore);
+    this.checkpoints = new FileCheckpointService({
+      storageRoot: path.join(this.config.sessionDirectory, 'file-checkpoints'),
+      workspaceRoot: this.config.workDir,
+      restoreConversation: async (sessionId, checkpointId) => {
+        const checkpoint = await this.store.loadCheckpoint(sessionId, checkpointId);
+        const next = await this.store.mutate(sessionId, current => ({
+          ...checkpoint.snapshot,
+          id: current.id,
+          revision: current.revision,
+        }));
+        // Only signal the in-memory ReAct loop when a turn is active; idle
+        // restores (slash command / app-server) update durable state only.
+        if (this.conversationRestoreStack.length > 0) {
+          this.conversationRestoreStack[this.conversationRestoreStack.length - 1] =
+            deepClone(next.messages);
+        }
+      },
+    });
+    this.fileChangeJournal = new FileChangeJournal(this.checkpoints);
+    this.sandboxExecutor = new SandboxExecutor(this.config.sandbox);
+    if (this.config.typedHooks.length > 0) {
+      this.typedHookRunner = new HookRunner({
+        hooks: this.config.typedHooks,
+        defaultTimeoutMs: this.config.hookTimeoutMs,
+        promptHandler: createPromptHookHandler(async (prompt, input, signal) => {
+          const response = await this.modelApi.createMessage({
+            model: this.config.model,
+            max_tokens: 512,
+            system:
+              'Evaluate an Actoviq lifecycle hook. Reply with JSON only: ' +
+              '{"behavior":"continue|block","feedback":"short reason"}.',
+            messages: [{
+              role: 'user',
+              content: `${prompt}\n\nLifecycle input:\n${JSON.stringify(input.payload)}`,
+            }],
+            signal,
+          });
+          const text = extractTextFromContent(response.content).trim();
+          try {
+            const parsed = JSON.parse(text) as Record<string, unknown>;
+            return {
+              behavior: parsed.behavior === 'block' ? 'block' : 'continue',
+              ...(typeof parsed.feedback === 'string'
+                ? { feedback: parsed.feedback }
+                : {}),
+            };
+          } catch {
+            return {
+              behavior: /^block\b/iu.test(text) ? 'block' : 'continue',
+              ...(text ? { feedback: truncateText(text, 500) } : {}),
+            };
+          }
+        }),
+      });
+    }
+    if (this.config.languageServers.length > 0) {
+      this.codeIntelligence = new CodeIntelligenceService({
+        workDir: this.config.workDir,
+        registry: new LanguageServerRegistry(this.config.languageServers),
+        timeoutMs: this.config.toolTimeoutMs,
+      });
+      for (const tool of createCodeIntelligenceTools(this.codeIntelligence)) {
+        this.replaceDefaultTool(tool);
+      }
+    }
     this.sessions = new AgentSessionsApi(
       this.store,
       (sessionId, options) => this.resumeSession(sessionId, options),
@@ -719,6 +848,17 @@ export class ActoviqAgentClient {
       homeDir: this.config.homeDir,
       projectPath: this.config.workDir,
     });
+    this.memoryProposals = new MemoryProposalService(
+      path.join(this.config.homeDir, 'memory-proposals'),
+      [this.config.homeDir, this.config.workDir],
+    );
+    for (const proposalTool of createMemoryProposalTools({
+      service: this.memoryProposals,
+      homeDir: this.config.homeDir,
+      workDir: this.config.workDir,
+    })) {
+      this.replaceDefaultTool(proposalTool);
+    }
     this.dream = createActoviqDreamApi(
       this.memory,
       {
@@ -923,6 +1063,18 @@ export class ActoviqAgentClient {
         defaultTools.push(...createActoviqBrowserTools(browserUseOptions));
       }
     }
+    let taskWorktreeCoordinator: TaskWorktreeCoordinator | undefined;
+    if (config.autoWorktree) {
+      const repoRoot = (await execFile(
+        'git',
+        ['-C', config.workDir, 'rev-parse', '--show-toplevel'],
+        { encoding: 'utf8', windowsHide: true },
+      )).stdout.trim();
+      taskWorktreeCoordinator = new TaskWorktreeCoordinator({
+        repoRoot,
+        storageRoot: path.join(config.sessionDirectory, 'task-worktrees'),
+      });
+    }
     const client = new ActoviqAgentClient(
       config,
       store,
@@ -937,13 +1089,17 @@ export class ActoviqAgentClient {
       options.hooks,
       agentDefinitions,
       skillDefinitions,
-      options.permissionMode,
-      options.permissions,
+      policyPermissionMode(config.effectivePolicy) ?? options.permissionMode,
+      [
+        ...policyPermissionRules(config.effectivePolicy),
+        ...(options.permissions ?? []),
+      ],
       options.classifier,
       options.approver,
       options.sessionManager,
       options.maxSubagentDepth,
       options.maxSubagentFanout,
+      taskWorktreeCoordinator,
     );
     const interruptedTasks = await client.backgroundTaskManager.reconcileInterruptedTasks();
     await client.reconcileInterruptedAgentExecutions(interruptedTasks);
@@ -1057,7 +1213,7 @@ export class ActoviqAgentClient {
 
   async createSession(options: SessionCreateOptions = {}): Promise<AgentSession> {
     const model = this.resolveModel(options.model);
-    const stored = await this.store.create({
+    let stored = await this.store.create({
       id: options.id,
       title: options.title,
       systemPrompt: options.systemPrompt ?? this.config.systemPrompt,
@@ -1081,6 +1237,30 @@ export class ActoviqAgentClient {
       },
       initialMessages: options.initialMessages,
     });
+    if (this.taskWorktrees && (options.kind === undefined || options.kind === 'main')) {
+      try {
+        const locator = await this.taskWorktrees.createOrResume(stored.id);
+        stored = await this.store.mutate(stored.id, current => ({
+          ...current,
+          kind: 'worktree',
+          worktreePath: locator.worktreePath,
+          worktreeBranch: locator.branch,
+          originalWorkDir: locator.repoRoot,
+          metadata: {
+            ...current.metadata,
+            __actoviqWorkDir: locator.worktreePath,
+            __actoviqWorktreeBaseCommit: locator.baseCommit,
+          },
+        }));
+      } catch (error) {
+        await this.taskWorktrees.cleanup(stored.id, {
+          force: true,
+          deleteBranch: true,
+        }).catch(() => undefined);
+        await this.store.delete(stored.id).catch(() => undefined);
+        throw error;
+      }
+    }
     return this.hydrateSession(stored);
   }
 
@@ -1122,6 +1302,34 @@ export class ActoviqAgentClient {
       return prepared;
     });
     return this.hydrateSession(stored);
+  }
+
+  async getSessionDiff(sessionId: string): Promise<import('../review/types.js').ThreadDiff> {
+    const stored = await this.store.load(sessionId);
+    const locator = await this.taskWorktrees?.read(sessionId);
+    const worktreePath = locator?.worktreePath ?? stored.worktreePath;
+    const repoRoot = locator?.repoRoot ?? stored.originalWorkDir;
+    const baseCommit = locator?.baseCommit
+      ?? (typeof stored.metadata.__actoviqWorktreeBaseCommit === 'string'
+        ? stored.metadata.__actoviqWorktreeBaseCommit
+        : undefined);
+    if (!worktreePath || !repoRoot || !baseCommit) {
+      throw new Error(`Session "${sessionId}" does not own an automatic worktree.`);
+    }
+    return this.threadDiffs.compute({
+      sessionId,
+      repoRoot,
+      worktreePath,
+      baseCommit,
+    });
+  }
+
+  async applySessionDiff(
+    sessionId: string,
+    targetDir?: string,
+  ): Promise<import('../review/types.js').DiffApplyResult> {
+    const diff = await this.getSessionDiff(sessionId);
+    return this.threadDiffs.apply(diff, targetDir ?? diff.repoRoot);
   }
 
   private hasPersistedSessionResumeOverrides(options: SessionResumeOptions): boolean {
@@ -1242,6 +1450,11 @@ export class ActoviqAgentClient {
     }
     try {
       await this.mcpManager.closeAll();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.codeIntelligence?.close();
     } catch (error) {
       errors.push(error);
     }
@@ -1988,6 +2201,7 @@ export class ActoviqAgentClient {
   }
 
   private async setSessionModel(session: AgentSession, model: string): Promise<StoredSession> {
+    assertPolicyPatchAllowed(this.config.effectivePolicy, { model });
     const next = session.snapshot();
     next.model = this.resolveModel(model);
     next.updatedAt = nowIso();
@@ -2000,7 +2214,12 @@ export class ActoviqAgentClient {
     checkpointId: string,
   ): Promise<void> {
     const checkpoint = await this.store.loadCheckpoint(session.id, checkpointId);
-    session.replace(checkpoint.snapshot);
+    const next = await this.store.mutate(session.id, current => ({
+      ...checkpoint.snapshot,
+      id: current.id,
+      revision: current.revision,
+    }));
+    session.replace(next);
   }
 
   private async runSkillOnSession(
@@ -2245,22 +2464,58 @@ export class ActoviqAgentClient {
       options.__actoviqDisallowedTools,
     );
 
+    // Goal runtime contract: when a session exists, expose the active goal to
+    // the model (short context in the system prompt + GetGoal/CreateGoal/
+    // UpdateGoal tools). The GoalService is the single authority over goal
+    // state; both runtime tools and UI surfaces call it. See plan/13 P0.2.
+    const goalService = this.resolveGoalService(session, liveSession);
+    let goalTools = session?.id
+      ? mergeUniqueByName(
+          mergedTools,
+          createCheckpointTools({
+            service: this.checkpoints,
+            sessionId: session.id,
+          }),
+        )
+      : mergedTools;
+    let goalPromptPart: string | undefined;
+    if (goalService) {
+      const goal = await goalService.read();
+      goalPromptPart = buildGoalPrompt(goal);
+      const toolsWithGoal = mergeUniqueByName(
+        goalTools,
+        createGoalTools({ getGoalService: () => goalService }),
+      );
+      goalTools = filterAgentTools(
+        toolsWithGoal,
+        options.__actoviqAllowedTools,
+        options.__actoviqDisallowedTools,
+      );
+    }
+
     // Collect tool prompts for system prompt assembly
-    const toolPromptParts = await collectToolPrompts(mergedTools, {
+    const toolPromptParts = await collectToolPrompts(goalTools, {
       workDir,
       permissionMode: options.permissionMode ?? this.defaultPermissionMode,
     });
     const systemPrompt = await this.resolveSystemPrompt(
       options,
       session,
-      [...(augmentations?.systemPromptParts ?? []), ...toolPromptParts],
+      [
+        ...(augmentations?.systemPromptParts ?? []),
+        ...(goalPromptPart ? [goalPromptPart] : []),
+        ...toolPromptParts,
+      ],
     );
 
+    const sandboxExecutor = this.sandboxExecutorForWorkDir(workDir);
     const runtimeConfig =
       options.__actoviqMaxToolIterations || workDir !== this.config.workDir
         ? {
             ...this.config,
             workDir,
+            sandbox: sandboxExecutor.policy,
+            sandboxCapabilities: sandboxExecutor.capability,
             ...(options.__actoviqMaxToolIterations
               ? { maxToolIterations: options.__actoviqMaxToolIterations }
               : {}),
@@ -2284,6 +2539,40 @@ export class ActoviqAgentClient {
         : undefined;
 
     let checkpointSession = session ? deepClone(session) : undefined;
+    let fileCheckpointStarted = false;
+    if (session?.id) {
+      const conversationCheckpoint = await this.store.saveCheckpoint(
+        session.id,
+        `Before turn ${runId}`,
+      );
+      const fileCheckpoint = await this.fileChangeJournal.beginTurn({
+        sessionId: session.id,
+        turnId: runId,
+        label: `Before turn ${runId}`,
+        conversationCheckpointId: conversationCheckpoint.id,
+      });
+      await this.store.attachFileCheckpointManifest(
+        session.id,
+        conversationCheckpoint.id,
+        fileCheckpoint.id,
+      );
+      fileCheckpointStarted = true;
+      emit?.({
+        type: 'checkpoint.created',
+        runId,
+        sessionId: session.id,
+        checkpointId: fileCheckpoint.id,
+        timestamp: fileCheckpoint.createdAt,
+      });
+    }
+    emit?.({
+      type: sandboxExecutor.capability.degraded ? 'sandbox.degraded' : 'sandbox.applied',
+      runId,
+      sessionId: session?.id,
+          capability: sandboxExecutor.capability,
+      timestamp: nowIso(),
+    });
+    this.conversationRestoreStack.push(undefined);
     try {
       const rawResult = await withDeadline(
         `Agent run ${runId}`,
@@ -2296,7 +2585,7 @@ export class ActoviqAgentClient {
           prefixedMessages: augmentations?.prefixedMessages,
           sessionId: session?.id,
           systemPrompt,
-          tools: mergedTools,
+          tools: goalTools,
           mcpServers: mergeUniqueByName(
             options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
             options.mcpServers ?? [],
@@ -2311,7 +2600,9 @@ export class ActoviqAgentClient {
           signal,
           permissionMode: options.permissionMode ?? this.defaultPermissionMode,
           permissions: options.permissions ?? this.defaultPermissions,
-          classifier: options.classifier ?? this.defaultClassifier,
+          classifier: this.resolvePermissionClassifier(
+            options.classifier ?? this.defaultClassifier,
+          ),
           approver: options.approver ?? this.defaultApprover,
           canUseTool: options.canUseTool,
           hooks: augmentations?.hooks,
@@ -2321,18 +2612,37 @@ export class ActoviqAgentClient {
           emit: (event: AgentEvent) => {
             this.executions.recordRuntimeEvent(executionIdentity, event);
             this.activateConditionalSkillsFromEvent(event);
+            if (event.type === 'tool.permission') {
+              void this.auditLog.append({
+                id: `${runId}:${event.iteration}:${event.decision.publicName}`,
+                type: 'permission.decision',
+                actor: 'hadamard-runtime',
+                occurredAt: event.timestamp,
+                data: {
+                  sessionId: session?.id,
+                  decision: event.decision,
+                },
+              }).catch(() => undefined);
+            }
             emit?.(event);
           },
           onConversationCheckpoint: checkpointSession
             ? async (messages) => {
-                const snap = deepClone(checkpointSession!);
-                snap.messages = deepClone(messages);
-                snap.updatedAt = nowIso();
-                snap.metadata = {
-                  ...snap.metadata,
-                  __actoviqWorkDir: workDir,
-                  ...(options.metadata ?? {}),
-                  ...serializeAgentExecutionIdentity(executionIdentity),
+                // Reload before saving so metadata written by Goal tools or
+                // catalog actions during the turn is preserved. Keep this on
+                // SessionStore.save: checkpoint failures are part of the
+                // reactive-compaction recovery contract.
+                const current = await this.store.load(checkpointSession!.id);
+                const snap = {
+                  ...current,
+                  messages: deepClone(messages),
+                  updatedAt: nowIso(),
+                  metadata: {
+                    ...current.metadata,
+                    __actoviqWorkDir: workDir,
+                    ...(options.metadata ?? {}),
+                    ...serializeAgentExecutionIdentity(executionIdentity),
+                  },
                 };
                 await this.store.save(snap);
                 checkpointSession = snap;
@@ -2342,11 +2652,21 @@ export class ActoviqAgentClient {
                 }
               }
             : undefined,
+          takePendingConversationRestore: () => {
+            if (this.conversationRestoreStack.length === 0) return undefined;
+            const index = this.conversationRestoreStack.length - 1;
+            const restored = this.conversationRestoreStack[index];
+            this.conversationRestoreStack[index] = undefined;
+            return restored;
+          },
           skipRunStartedEvent,
           skipInitialInput,
           modelApi: options.modelApi ?? this.modelApi,
           config: runtimeConfig,
           mcpManager: this.mcpManager,
+          fileChangeJournal: fileCheckpointStarted ? this.fileChangeJournal : undefined,
+          sandboxExecutor,
+          typedHookRunner: this.typedHookRunner,
         }),
       );
       const result: AgentRunResult = {
@@ -2366,8 +2686,35 @@ export class ActoviqAgentClient {
       }).catch((error) => {
         console.warn(`[AgentExecution] Failed to complete ${runId}: ${asError(error).message}`);
       });
+      if (goalService) {
+        const summary = result.text.trim().replace(/\s+/gu, ' ').slice(0, 320);
+        const goalUsage = result.usage as Record<string, unknown> | undefined;
+        await goalService.progress({
+          note: summary || 'Turn completed.',
+          toolCalls: result.toolCalls.length,
+          tokens: Number(goalUsage?.totalTokens ?? goalUsage?.total_tokens ?? 0)
+            || (
+              Number(goalUsage?.inputTokens ?? goalUsage?.input_tokens ?? 0)
+              + Number(goalUsage?.outputTokens ?? goalUsage?.output_tokens ?? 0)
+            ),
+        }).catch((error) => {
+          console.warn(`[Goal] Failed to record progress for ${runId}: ${asError(error).message}`);
+        });
+      }
+      if (fileCheckpointStarted && session?.id) {
+        await this.fileChangeJournal.sealTurn(session.id, runId, 'completed');
+      }
       return result;
     } catch (error) {
+      if (fileCheckpointStarted && session?.id) {
+        await this.fileChangeJournal.sealTurn(
+          session.id,
+          runId,
+          options.signal?.aborted || error instanceof RunAbortedError ? 'aborted' : 'failed',
+        ).catch(checkpointError => {
+          console.warn(`[Checkpoint] Failed to seal ${runId}: ${asError(checkpointError).message}`);
+        });
+      }
       if (!isActoviqPromptTooLongError(error) || !deferPromptTooLongSettlement) {
         const interrupted = options.signal?.aborted || error instanceof RunAbortedError;
         await this.executions.settleTurn(executionIdentity, runId, {
@@ -2378,6 +2725,8 @@ export class ActoviqAgentClient {
         });
       }
       throw error;
+    } finally {
+      this.conversationRestoreStack.pop();
     }
   }
 
@@ -2481,6 +2830,25 @@ export class ActoviqAgentClient {
     }
   }
 
+  /**
+   * Resolve a GoalService for the current run, or undefined if there is no
+   * session to anchor it to. Prefers the live `AgentSession` (which owns
+   * `mergeMetadata`); falls back to a store-backed port over the snapshot.
+   */
+  private resolveGoalService(
+    session?: StoredSession,
+    liveSession?: AgentSession,
+  ): GoalService | undefined {
+    if (liveSession) {
+      return GoalService.forSession(liveSession);
+    }
+    if (session?.id) {
+      const port = new StoredSessionGoalPort(this.store, session.id, session.metadata);
+      return new GoalService({ port });
+    }
+    return undefined;
+  }
+
   private async resolveSystemPrompt(
     options: AgentRunOptions,
     session?: StoredSession,
@@ -2494,7 +2862,15 @@ export class ActoviqAgentClient {
     const buddyPrompt = await this.buddy.getIntroText({
       userId: options.userId ?? this.config.userId,
     });
-    const promptParts = [basePrompt, memoryPrompt, buddyPrompt, ...extraSystemPromptParts].filter(
+    const touchedPaths = Array.isArray(options.metadata?.paths)
+      ? options.metadata.paths.filter((value): value is string => typeof value === 'string')
+      : [];
+    const [userRules, projectRules] = await Promise.all([
+      new RuleStore(path.join(this.config.homeDir, 'rules.json')).list(),
+      new RuleStore(path.join(this.resolveRunWorkDir(options), '.actoviq', 'rules.json')).list(),
+    ]);
+    const rulePrompt = resolveContextRules([...userRules, ...projectRules], touchedPaths).prompt;
+    const promptParts = [basePrompt, memoryPrompt, buddyPrompt, rulePrompt, ...extraSystemPromptParts].filter(
       (value): value is string => typeof value === 'string' && value.trim().length > 0,
     );
 
@@ -4424,6 +4800,41 @@ export class ActoviqAgentClient {
     );
   }
 
+  private sandboxExecutorForWorkDir(workDir: string): SandboxExecutor {
+    const resolved = path.resolve(workDir);
+    if (resolved === path.resolve(this.config.workDir)) return this.sandboxExecutor;
+    const remap = (roots: string[]) => roots.map(root => {
+      const relative = path.relative(this.config.workDir, root);
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+        ? path.resolve(resolved, relative)
+        : path.resolve(root);
+    });
+    return new SandboxExecutor({
+      ...this.config.sandbox,
+      readRoots: remap(this.config.sandbox.readRoots),
+      writableRoots: remap(this.config.sandbox.writableRoots),
+      source: `${this.config.sandbox.source ?? 'runtime'}:worktree`,
+    });
+  }
+
+  private resolvePermissionClassifier(
+    fallback?: ActoviqToolClassifier,
+  ): ActoviqToolClassifier {
+    return async context => {
+      const input = isRecord(context.input) ? context.input : {};
+      const targetPath = [input.file_path, input.path, input.notebook_path, input.cwd]
+        .find((value): value is string => typeof value === 'string');
+      const remembered = await this.approvalPolicy.decide(context.publicName, targetPath);
+      if (remembered) {
+        return {
+          behavior: remembered,
+          reason: `Remembered ${remembered} decision from the managed approval policy.`,
+        };
+      }
+      return fallback?.(context);
+    };
+  }
+
   private resolveSessionAgentOptions(
     session: StoredSession,
     options: AgentRunOptions,
@@ -4669,10 +5080,14 @@ async function isGitWorkspaceDirty(workDir: string): Promise<boolean> {
     const timeout = setTimeout(() => controller.abort(), 10_000);
     try {
       const { stdout } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const child = execFileCallback('git', ['-C', workDir, 'status', '--porcelain'], {
+        const child = execFileCallback(
+          'git',
+          ['-C', workDir, 'status', '--porcelain', '--untracked-files=all'],
+          {
           windowsHide: true,
           signal: controller.signal,
-        });
+          },
+        );
         child.on('error', reject);
         let stdout = '';
         let stderr = '';
@@ -4691,9 +5106,9 @@ async function isGitWorkspaceDirty(workDir: string): Promise<boolean> {
       clearTimeout(timeout);
     }
   } catch {
-    // If git is unavailable, timed out, or the repo is broken,
-    // conservatively treat as not dirty to avoid leaking worktrees.
-    return false;
+    // A failed status check must never authorize deleting a worktree that may
+    // contain edits. Retaining it is safer than losing delegated work.
+    return true;
   }
 }
 

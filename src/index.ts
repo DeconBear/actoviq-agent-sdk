@@ -202,6 +202,13 @@ export {
 } from './plugins/mediaGenPromptGuidance.js';
 export { createGitHubPlugin } from './plugins/githubPlugin.js';
 export { createKimiWebBridgePlugin } from './plugins/kimiWebBridgePlugin.js';
+export * from './plugins/packageManifest.js';
+export * from './plugins/pluginPackageStore.js';
+export * from './plugins/pluginResolver.js';
+export * from './plugins/pluginLoader.js';
+export * from './plugins/pluginRegistryClient.js';
+export * from './plugins/pluginTrustStore.js';
+export * from './plugins/pluginManager.js';
 export {
   ActoviqSdkError,
   ActoviqProviderApiError,
@@ -228,6 +235,28 @@ export type { ActoviqFileToolsOptions } from './tools/actoviqFileTools.js';
 export { createActoviqWebTools } from './tools/actoviqWebTools.js';
 export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
 export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
+export * from './goal/index.js';
+export * from './checkpoint/index.js';
+export * from './sandbox/index.js';
+export * from './remote/index.js';
+export * from './context/ruleTypes.js';
+export * from './context/ruleStore.js';
+export * from './context/ruleResolver.js';
+export * from './context/ruleCommandService.js';
+export * from './memory/memoryProposalService.js';
+export * from './memory/memoryProposalTools.js';
+export * from './memory/memoryProposalCommandService.js';
+export * from './policy/index.js';
+export * from './app-server/index.js';
+export * from './codeIntel/index.js';
+export * from './worktree/taskWorktreeCoordinator.js';
+export * from './review/index.js';
+export * from './hooks/hookTypes.js';
+export * from './hooks/hookRunner.js';
+export * from './hooks/hookConfig.js';
+export * from './hooks/handlers/commandHook.js';
+export * from './hooks/handlers/promptHook.js';
+export * from './hooks/handlers/httpHook.js';
 export { createBashTool, BASH_TOOL_NAME } from './tools/bash/BashTool.js';
 export { createTavilySearchTool, TAVILY_SEARCH_TOOL_NAME, resolveTavilyApiKey, runTavilySearch } from './tools/tavilySearch.js';
 export { createExaSearchTool, EXA_SEARCH_TOOL_NAME, resolveExaApiKey, runExaSearch } from './tools/exaSearch.js';
@@ -386,6 +415,9 @@ export { tool } from './runtime/tools.js';
 export { MailboxStore } from './storage/mailboxStore.js';
 export { AgentExecutionStore } from './storage/agentExecutionStore.js';
 export { SessionStore } from './storage/sessionStore.js';
+export * from './storage/sessionGraph.js';
+export * from './storage/sessionForkService.js';
+export * from './storage/sessionBranchSummary.js';
 export { TeammateStore } from './storage/teammateStore.js';
 export {
   ActoviqWorkspace,
@@ -537,6 +569,44 @@ export {
   DEFAULT_TEAM_PREFERENCES,
 } from './team/teamPreferences.js';
 export type { TeamPreferences } from './team/teamPreferences.js';
+export {
+  TeamProposalConflictError,
+  TeamProposalStore,
+  diffTeamDefinitions,
+  mergeTeamProposalLayout,
+  teamDefinitionFingerprint,
+} from './team/teamProposalService.js';
+export type {
+  ApplyTeamProposalResult,
+  StageTeamProposalInput,
+  TeamGraphProposal,
+  TeamProposalDiff,
+  TeamProposalStatus,
+} from './team/teamProposalService.js';
+export {
+  buildAssistantTeamSystemPrompt,
+  createAssistantTeamTools,
+} from './team/assistantTeamTools.js';
+export type {
+  AssistantTeamToolHost,
+  AssistantTeamToolScope,
+} from './team/assistantTeamTools.js';
+export {
+  SessionCatalog,
+  sessionCatalogLocatorKey,
+} from './storage/sessionCatalog.js';
+export type {
+  SessionCatalogAction,
+  SessionCatalogActionInput,
+  SessionCatalogActivity,
+  SessionCatalogItem,
+  SessionCatalogLocator,
+  SessionCatalogOptions,
+  SessionCatalogPage,
+  SessionCatalogQuery,
+  SessionCatalogRuntimeStatus,
+  SessionCatalogType,
+} from './storage/sessionCatalog.js';
 
 // ── Project Manager (per-project governance agent) ───────────────────
 export {

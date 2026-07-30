@@ -295,14 +295,26 @@ export class AgentSession {
   }
 
   async mergeMetadata(metadata: Record<string, unknown>): Promise<void> {
+    await this.mutateMetadata(current => ({ ...current, ...metadata }));
+  }
+
+  /**
+   * Atomically update Session metadata through SessionStore.mutate.
+   *
+   * This avoids a stale live AgentSession overwriting metadata written by a
+   * concurrent catalog/action/runtime path between snapshot and save.
+   */
+  async mutateMetadata(
+    mutation: (metadata: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const updatedAt = new Date().toISOString();
-    const updated = {
-      ...this.stored,
-      metadata: { ...this.stored.metadata, ...metadata },
+    const updated = await this.store.mutate(this.stored.id, current => ({
+      ...current,
+      metadata: mutation({ ...current.metadata }),
       updatedAt,
-    };
-    await this.store.save(updated);
+    }));
     this.stored = updated;
+    return { ...updated.metadata };
   }
 
   async delete(): Promise<void> {

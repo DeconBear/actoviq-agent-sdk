@@ -195,6 +195,7 @@ describe('Manager config (manager.json)', () => {
       allowedReadPaths: ['/docs'],
       mirrorProgressToWorkspace: true,
       promptOverride: 'Track the v2 launch.',
+      activeSessionId: 'manager-session-2',
     });
     const cfg = await readManagerConfig(workDir, homeDir);
     expect(cfg.model).toBe('claude-x');
@@ -202,6 +203,7 @@ describe('Manager config (manager.json)', () => {
     expect(cfg.allowedReadPaths).toEqual(['/docs']);
     expect(cfg.mirrorProgressToWorkspace).toBe(true);
     expect(cfg.promptOverride).toBe('Track the v2 launch.');
+    expect(cfg.activeSessionId).toBe('manager-session-2');
   });
 
   it('falls back to safe defaults for missing/invalid config', async () => {

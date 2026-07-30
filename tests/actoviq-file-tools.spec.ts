@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { ToolExecutionError } from '../src/errors.js';
 import { createActoviqFileTools } from '../src/index.js';
+import { resolveSandboxPolicy } from '../src/sandbox/policyResolver.js';
+import { SandboxExecutor } from '../src/sandbox/sandboxExecutor.js';
 import type { AgentToolDefinition, ToolExecutionContext } from '../src/types.js';
 
 const tempDirs: string[] = [];
@@ -167,5 +169,27 @@ describe('Actoviq Runtime parity file tools', () => {
         context,
       ),
     ).rejects.toThrow('Invalid regular expression');
+  });
+
+  it('applies sandbox read roots to Glob and Grep search paths', async () => {
+    const root = await createTempDir('actoviq-parity-sandbox-search-');
+    const workspace = path.join(root, 'workspace');
+    const outside = path.join(root, 'outside');
+    await Promise.all([mkdir(workspace), mkdir(outside)]);
+    await writeFile(path.join(outside, 'secret.txt'), 'secret\n', 'utf8');
+    const tools = createActoviqFileTools({ cwd: workspace });
+    const context = {
+      ...createContext(workspace),
+      sandboxExecutor: new SandboxExecutor(resolveSandboxPolicy(workspace)),
+    };
+
+    await expect(getTool(tools, 'Glob').execute(
+      { pattern: '**/*', path: outside },
+      context,
+    )).rejects.toThrow('outside allowed roots');
+    await expect(getTool(tools, 'Grep').execute(
+      { pattern: 'secret', path: outside },
+      context,
+    )).rejects.toThrow('outside allowed roots');
   });
 });

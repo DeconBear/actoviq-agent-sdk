@@ -48,10 +48,15 @@ describe('assistant global helpers', () => {
   });
 
   it('persists assistant.json model/bridgeConfig', async () => {
-    await writeAssistantConfig({ model: 'gpt-test', bridgeConfig: 'demo' }, homeDir);
+    await writeAssistantConfig({
+      model: 'gpt-test',
+      bridgeConfig: 'demo',
+      activeSessionId: 'global-session-2',
+    }, homeDir);
     await expect(readAssistantConfig(homeDir)).resolves.toEqual({
       model: 'gpt-test',
       bridgeConfig: 'demo',
+      activeSessionId: 'global-session-2',
     });
   });
 

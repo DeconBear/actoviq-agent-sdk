@@ -33,6 +33,7 @@ import type {
   ModelRequest,
   ResolvedToolExecutionResult,
   ResolvedRuntimeConfig,
+  ToolExecutionContext,
   ToolCallProgress,
 } from '../types.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
@@ -48,6 +49,11 @@ import {
   prepareActoviqProviderRequestMessages,
 } from './actoviqApiMicrocompact.js';
 import { decideActoviqToolPermission } from './actoviqPermissions.js';
+import { HookRunner } from '../hooks/hookRunner.js';
+import type {
+  ActoviqLifecycleEvent,
+  TypedHookOutput,
+} from '../hooks/hookTypes.js';
 import {
   assistantMessageToParam,
   buildUserMessage,
@@ -92,6 +98,12 @@ export interface ExecuteConversationOptions {
    * on disk (instead of only persisting when the whole run finishes).
    */
   onConversationCheckpoint?: (messages: MessageParam[]) => void | Promise<void>;
+  /**
+   * When RestoreCheckpoint rewrites the durable transcript mid-turn, return the
+   * restored messages here so the in-memory ReAct loop adopts them and does not
+   * overwrite the restore via onConversationCheckpoint.
+   */
+  takePendingConversationRestore?: () => MessageParam[] | undefined;
   skipRunStartedEvent?: boolean;
   skipInitialInput?: boolean;
   modelApi: ModelApi;
@@ -99,6 +111,9 @@ export interface ExecuteConversationOptions {
   mcpManager: McpConnectionManager;
   /** Override the working directory for this execution (used by worktrees). */
   sessionWorkDir?: string;
+  fileChangeJournal?: ToolExecutionContext['fileChangeJournal'];
+  sandboxExecutor?: ToolExecutionContext['sandboxExecutor'];
+  typedHookRunner?: HookRunner;
 }
 
 export async function executeConversation(
@@ -130,6 +145,8 @@ export async function executeConversation(
       timestamp: startedAt,
     });
   }
+  await requireLifecycleContinue(options, 'SessionStart', { input: promptText });
+  await requireLifecycleContinue(options, 'TurnStart', { input: promptText });
 
   // Persist the user turn before the first provider request. Besides crash
   // recovery, this makes a newly spawned child conversation immediately
@@ -218,6 +235,11 @@ export async function executeConversation(
         clearedToolResults: loopCompact.clearedToolResults,
         timestamp: nowIso(),
       });
+      await requireLifecycleContinue(options, 'Compact', {
+        iteration,
+        trigger: 'auto',
+        messagesSummarized: loopCompact.messagesSummarized,
+      });
     }
 
     const useAnthropicContextManagement = isAnthropicAPI(options.config.baseURL);
@@ -282,6 +304,12 @@ export async function executeConversation(
       requestByteLength,
       localMicrocompact: undefined,
       timestamp: nowIso(),
+    });
+    await requireLifecycleContinue(options, 'ModelRequest', {
+      iteration,
+      model,
+      requestTokenEstimate,
+      requestByteLength,
     });
 
     let message: Awaited<ReturnType<ModelApi['createMessage']>>;
@@ -391,6 +419,13 @@ export async function executeConversation(
     streamInterruptionRetryIteration = 0;
     streamInterruptionRetries = 0;
     reactiveCompactAttempted = false;
+    await requireLifecycleContinue(options, 'ModelResponse', {
+      iteration,
+      model,
+      messageId: message.id,
+      stopReason: message.stop_reason ?? null,
+      usage: message.usage,
+    });
 
     if (!options.streaming) {
       const text = extractTextFromContent(message.content);
@@ -607,7 +642,7 @@ export async function executeConversation(
       if (!finalMessage) {
         throw new ActoviqSdkError('No final message was produced.');
       }
-      return {
+      const result: AgentRunResult = {
         runId: options.runId,
         sessionId: options.sessionId,
         model,
@@ -624,6 +659,16 @@ export async function executeConversation(
         startedAt,
         completedAt,
       };
+      await runTypedLifecycleHooks(options, 'Stop', {
+        iteration,
+        stopReason: result.stopReason,
+      });
+      await runTypedLifecycleHooks(options, 'TurnEnd', {
+        iteration,
+        stopReason: result.stopReason,
+        toolCalls: result.toolCalls.length,
+      });
+      return result;
     }
 
     if (iteration >= options.config.maxToolIterations) {
@@ -640,7 +685,7 @@ export async function executeConversation(
       }
       const completedAt = nowIso();
       if (finalMessage) {
-        return {
+        const result: AgentRunResult = {
           runId: options.runId,
           sessionId: options.sessionId,
           model,
@@ -659,6 +704,16 @@ export async function executeConversation(
           startedAt,
           completedAt,
         };
+        await runTypedLifecycleHooks(options, 'Stop', {
+          iteration,
+          stopReason: result.incompleteReason,
+        });
+        await runTypedLifecycleHooks(options, 'TurnEnd', {
+          iteration,
+          stopReason: result.incompleteReason,
+          toolCalls: result.toolCalls.length,
+        });
+        return result;
       }
       throw new ActoviqSdkError(
         `The run exceeded the max tool iteration limit (${options.config.maxToolIterations}).`,
@@ -703,6 +758,18 @@ export async function executeConversation(
             `No tool named "${toolUse.name}" is currently registered.`,
           );
         }
+        const preToolOutputs = await runTypedLifecycleHooks(
+          options,
+          'PreToolUse',
+          { iteration, input: toolUse.input },
+          toolUse.name,
+        );
+        if (hasLifecycleBlock(preToolOutputs)) {
+          throw new ToolExecutionError(
+            toolUse.name,
+            lifecycleBlockReason('PreToolUse', preToolOutputs),
+          );
+        }
         const permissionDecision = await decideActoviqToolPermission({
           mode: options.permissionMode ?? 'default',
           rules: options.permissions ?? [],
@@ -732,6 +799,18 @@ export async function executeConversation(
           decision: permissionDecision,
           timestamp: permissionDecision.timestamp,
         });
+        const permissionHookOutputs = await runTypedLifecycleHooks(
+          options,
+          'PermissionDecision',
+          { iteration, decision: permissionDecision },
+          toolUse.name,
+        );
+        if (hasLifecycleBlock(permissionHookOutputs)) {
+          throw new ToolExecutionError(
+            toolUse.name,
+            lifecycleBlockReason('PermissionDecision', permissionHookOutputs),
+          );
+        }
         if (permissionDecision.behavior === 'deny') {
           throw new ToolExecutionError(toolUse.name, permissionDecision.reason);
         }
@@ -774,6 +853,8 @@ export async function executeConversation(
             model,
             provider: options.config.provider,
             effort,
+            fileChangeJournal: options.fileChangeJournal,
+            sandboxExecutor: options.sandboxExecutor,
           }, onProgress),
         );
         // Per-tool declared cap first (default 50k via tool factory), clamped
@@ -795,6 +876,23 @@ export async function executeConversation(
         output = execution.rawOutput;
         isError = execution.isError ?? false;
         content = modelFacingExecution.content;
+        const postToolOutputs = await runTypedLifecycleHooks(
+          options,
+          'PostToolUse',
+          {
+            iteration,
+            input: executionInput,
+            output: execution.rawOutput,
+            isError,
+          },
+          toolUse.name,
+        );
+        if (hasLifecycleBlock(postToolOutputs)) {
+          throw new ToolExecutionError(
+            toolUse.name,
+            lifecycleBlockReason('PostToolUse', postToolOutputs),
+          );
+        }
       } catch (error) {
         const normalized =
           error instanceof ToolExecutionError
@@ -914,6 +1012,62 @@ export async function executeConversation(
     // the very next request (mirrors Claude Code's queued-command attachments).
     const queuedInputs = (await options.drainQueuedInputs?.()) ?? [];
 
+    // RestoreCheckpoint may have rewritten the durable transcript during this
+    // tool batch. Adopt that snapshot and stop the turn so mid-run persistence
+    // cannot overwrite the restore with the pre-restore in-memory conversation.
+    const restoredConversation = options.takePendingConversationRestore?.();
+    if (restoredConversation) {
+      conversation.splice(0, conversation.length, ...deepClone(restoredConversation));
+      toolResults = [];
+      if (options.onConversationCheckpoint) {
+        try {
+          await options.onConversationCheckpoint(deepClone(conversation));
+        } catch {
+          // Never fail the turn over a checkpoint write.
+        }
+      }
+      const completedAt = nowIso();
+      const restoreText =
+        'Conversation restored from checkpoint. The in-flight turn was discarded.';
+      const result: AgentRunResult = {
+        runId: options.runId,
+        sessionId: options.sessionId,
+        model,
+        text: restoreText,
+        message: {
+          id: `restore-${options.runId}`,
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: restoreText }],
+          model,
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+        messages: conversation,
+        stopReason: 'end_turn',
+        incompleteReason: 'conversation_restored',
+        hookStopReason,
+        usage: aggregateRequestUsage(requestSummaries),
+        requests: requestSummaries,
+        toolCalls,
+        permissionDecisions,
+        ...(loopCompactions.length > 0 ? { loopCompactions } : {}),
+        startedAt,
+        completedAt,
+      };
+      await runTypedLifecycleHooks(options, 'Stop', {
+        iteration,
+        stopReason: result.incompleteReason,
+      });
+      await runTypedLifecycleHooks(options, 'TurnEnd', {
+        iteration,
+        stopReason: result.incompleteReason,
+        toolCalls: result.toolCalls.length,
+      });
+      return result;
+    }
+
     // Always push tool results before any early return so the conversation
     // never ends with dangling tool_use blocks (which would make a persisted
     // session unusable: providers reject unpaired tool_use ids on resume).
@@ -946,7 +1100,7 @@ export async function executeConversation(
     if (consecutiveFailures >= 3 && lastFailedTool) {
       const completedAt = nowIso();
       if (finalMessage) {
-        return {
+        const result: AgentRunResult = {
           runId: options.runId,
           sessionId: options.sessionId,
           model,
@@ -964,12 +1118,76 @@ export async function executeConversation(
           startedAt,
           completedAt,
         };
+        await runTypedLifecycleHooks(options, 'Stop', {
+          iteration,
+          stopReason: result.incompleteReason,
+        });
+        await runTypedLifecycleHooks(options, 'TurnEnd', {
+          iteration,
+          stopReason: result.incompleteReason,
+          toolCalls: result.toolCalls.length,
+        });
+        return result;
       }
       throw new ActoviqSdkError(
         `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
       );
     }
   }
+}
+
+async function runTypedLifecycleHooks(
+  options: ExecuteConversationOptions,
+  event: ActoviqLifecycleEvent,
+  payload: Record<string, unknown>,
+  toolName?: string,
+): Promise<TypedHookOutput[]> {
+  if (!options.typedHookRunner) return [];
+  const outputs = await options.typedHookRunner.run({
+    event,
+    runId: options.runId,
+    sessionId: options.sessionId,
+    cwd: options.sessionWorkDir ?? options.config.workDir,
+    toolName,
+    payload,
+    signal: options.signal,
+  });
+  if (outputs.length > 0) {
+    options.emit?.({
+      type: 'hook.lifecycle',
+      runId: options.runId,
+      sessionId: options.sessionId,
+      lifecycleEvent: event,
+      outputs,
+      timestamp: nowIso(),
+    });
+  }
+  return outputs;
+}
+
+async function requireLifecycleContinue(
+  options: ExecuteConversationOptions,
+  event: ActoviqLifecycleEvent,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const outputs = await runTypedLifecycleHooks(options, event, payload);
+  if (hasLifecycleBlock(outputs)) {
+    throw new ActoviqSdkError(lifecycleBlockReason(event, outputs));
+  }
+}
+
+function hasLifecycleBlock(outputs: TypedHookOutput[]): boolean {
+  return outputs.some(output => output.behavior === 'block');
+}
+
+function lifecycleBlockReason(
+  event: ActoviqLifecycleEvent,
+  outputs: TypedHookOutput[],
+): string {
+  const blocked = outputs.find(output => output.behavior === 'block');
+  return blocked?.feedback
+    ? `${event} hook "${blocked.hookId}" blocked: ${blocked.feedback}`
+    : `${event} hook "${blocked?.hookId ?? 'unknown'}" blocked.`;
 }
 
 const ARTIFACTED_OUTPUT_MARKER = 'Tool output was large (';

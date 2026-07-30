@@ -37,7 +37,10 @@ const SESSION_TURN_HEARTBEAT_MS = 5_000;
 const SESSION_TURN_LOCK_RETRY_MS = 25;
 
 export class SessionStore {
-  constructor(private readonly rootDirectory: string) {}
+  constructor(
+    private readonly rootDirectory: string,
+    private readonly collectionDirectory = 'sessions',
+  ) {}
 
   /**
    * Serialize a complete mutating turn across SDK clients/processes. The
@@ -122,6 +125,8 @@ export class SessionStore {
       runs: [],
       kind: options.kind,
       parentSessionId: options.parentSessionId,
+      parentMessageId: options.parentMessageId,
+      branchName: options.branchName,
       originalWorkDir: options.originalWorkDir,
     };
     await this.save(session);
@@ -373,7 +378,7 @@ export class SessionStore {
   }
 
   private sessionsDirectory(): string {
-    return joinUnderStorageRoot(this.rootDirectory, 'sessions');
+    return joinUnderStorageRoot(this.rootDirectory, this.collectionDirectory);
   }
 
   private sessionPath(sessionId: string): string {
@@ -439,6 +444,25 @@ export class SessionStore {
         throw error;
       }
     }
+  }
+
+  async attachFileCheckpointManifest(
+    sessionId: string,
+    checkpointId: string,
+    fileManifestLocator: string,
+  ): Promise<void> {
+    const checkpoint = await this.loadCheckpoint(sessionId, checkpointId);
+    checkpoint.fileManifestLocator = assertSafeStorageSegment(
+      'fileManifestLocator',
+      fileManifestLocator,
+    );
+    await writeJsonAtomic(
+      path.join(
+        this.checkpointsDirectory(sessionId),
+        safeStorageFileName('checkpointId', checkpointId, 'json'),
+      ),
+      checkpoint,
+    );
   }
 
   private async removeOwnedTurnLock(lockPath: string, token: string): Promise<void> {
@@ -511,6 +535,7 @@ export class SessionStore {
       brief: truncateText(extractConversationBrief(session.messages), 100),
       messageCount: session.messages.length,
       runCount: session.runs.length,
+      ...(session.metadata.__actoviqPinned === true ? { pinned: true } : {}),
     };
   }
 }

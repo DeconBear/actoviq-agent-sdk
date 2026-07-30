@@ -68,8 +68,9 @@ const Read = (opts: { cwd: string; maxReadLines: number; readState: ReadState })
       isReadOnly: () => true,
       prompt: fileReadPrompt,
     },
-    async (input) => {
+    async (input, context) => {
       const resolvedPath = resolvePath(input.file_path, opts.cwd);
+      await context.sandboxExecutor?.assertPathAllowed(resolvedPath, 'read');
       let fileStats;
       try { fileStats = await fsStat(resolvedPath); } catch {
         throw new ToolExecutionError('Read', `File not found: ${resolvedPath}`);
@@ -132,8 +133,9 @@ const Write = (opts: { cwd: string; readState: ReadState }) =>
       isDestructive: () => true,
       prompt: fileWritePrompt,
     },
-    async (input) => {
+    async (input, context) => {
       const resolvedPath = resolvePath(input.file_path, opts.cwd);
+      await context.sandboxExecutor?.assertPathAllowed(resolvedPath, 'write');
       let existing;
       try { existing = await fsStat(resolvedPath); } catch { /* new file */ }
 
@@ -141,8 +143,11 @@ const Write = (opts: { cwd: string; readState: ReadState }) =>
         ensurePreviouslyRead(opts.readState, resolvedPath, existing.mtimeMs, 'Write');
       }
 
+      const before = existing?.isFile() ? await readFile(resolvedPath) : null;
+      const after = Buffer.from(input.content, 'utf8');
       await mkdir(path.dirname(resolvedPath), { recursive: true });
-      await writeFile(resolvedPath, input.content, 'utf-8');
+      await writeFile(resolvedPath, after);
+      await recordFileChange(context, resolvedPath, before, after);
       const finalStats = await fsStat(resolvedPath);
       opts.readState.set(resolvedPath, { mtimeMs: finalStats.mtimeMs });
 
@@ -178,8 +183,9 @@ const Edit = (opts: { cwd: string; readState: ReadState }) =>
       isDestructive: () => true,
       prompt: fileEditPrompt,
     },
-    async (input) => {
+    async (input, context) => {
       const resolvedPath = resolvePath(input.file_path, opts.cwd);
+      await context.sandboxExecutor?.assertPathAllowed(resolvedPath, 'write');
       let fileStats;
       try { fileStats = await fsStat(resolvedPath); } catch {
         throw new ToolExecutionError('Edit', `File not found: ${resolvedPath}`);
@@ -206,7 +212,10 @@ const Edit = (opts: { cwd: string; readState: ReadState }) =>
         ? originalContent.split(input.old_string).join(input.new_string)
         : originalContent.replace(input.old_string, input.new_string);
 
-      await writeFile(resolvedPath, updatedContent, 'utf-8');
+      const before = Buffer.from(originalContent, 'utf8');
+      const after = Buffer.from(updatedContent, 'utf8');
+      await writeFile(resolvedPath, after);
+      await recordFileChange(context, resolvedPath, before, after);
       const finalStats = await fsStat(resolvedPath);
       opts.readState.set(resolvedPath, { mtimeMs: finalStats.mtimeMs });
 
@@ -240,14 +249,18 @@ const Glob = (opts: { cwd: string; defaultGlobLimit: number }) =>
       isReadOnly: () => true,
       prompt: fileSearchPrompt,
     },
-    async (input) => {
+    async (input, context) => {
       const searchRoot = resolvePath(input.path ?? opts.cwd, opts.cwd);
+      await context.sandboxExecutor?.assertPathAllowed(searchRoot, 'read');
       const matches: string[] = [];
       const stream = glob.stream(input.pattern, {
         cwd: searchRoot, absolute: true, nodir: true, ignore: defaultGlobExcludes, windowsPathsNoEscape: true,
       });
       for await (const match of stream) {
-        if (typeof match === 'string') matches.push(match);
+        if (typeof match === 'string') {
+          await context.sandboxExecutor?.assertPathAllowed(match, 'read');
+          matches.push(match);
+        }
         if (matches.length >= (input.limit ?? opts.defaultGlobLimit)) break;
       }
       return {
@@ -294,8 +307,9 @@ const Grep = (opts: { cwd: string; defaultGrepLimit: number }) =>
       isReadOnly: () => true,
       prompt: fileSearchPrompt,
     },
-    async (input) => {
+    async (input, context) => {
       const searchRoot = resolvePath(input.path ?? opts.cwd, opts.cwd);
+      await context.sandboxExecutor?.assertPathAllowed(searchRoot, 'read');
       const outputMode = input.output_mode ?? 'files_with_matches';
       const limit = input.head_limit ?? opts.defaultGrepLimit;
       const ignoreCase = input['-i'] ?? false;
@@ -326,6 +340,7 @@ const Grep = (opts: { cwd: string; defaultGrepLimit: number }) =>
       const files = await findFiles(searchRoot, input.glob);
       for (const f of files) {
         try {
+          await context.sandboxExecutor?.assertPathAllowed(f, 'read');
           const buffer = await readFile(f);
           if (isProbablyBinary(buffer)) continue;
           const content = buffer.toString('utf-8');
@@ -470,4 +485,20 @@ function isPDFPath(filePath: string): boolean {
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function recordFileChange(
+  context: ToolExecutionContext,
+  filePath: string,
+  before: Buffer | null,
+  after: Buffer | null,
+): Promise<void> {
+  if (!context.fileChangeJournal || !context.sessionId) return;
+  await context.fileChangeJournal.record({
+    sessionId: context.sessionId,
+    turnId: context.runId,
+    filePath,
+    before,
+    after,
+  });
 }

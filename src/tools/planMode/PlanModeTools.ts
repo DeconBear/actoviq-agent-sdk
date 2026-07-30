@@ -8,7 +8,8 @@
  * the plan to a per-project plan file and returns it so the TUI can show it
  * and the user can approve (switching out of plan mode) or revise.
  */
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 
@@ -25,7 +26,7 @@ Use this tool ONLY when you have finished researching and are ready to present a
 
 export interface PlanModeToolContext {
   /** Called when the agent requests entering/exiting plan mode. */
-  onPlanModeChange?: (mode: ActoviqPermissionMode) => void;
+  onPlanModeChange?: (mode: ActoviqPermissionMode) => void | Promise<void>;
   /** Per-project plan directory (plan file is written here). */
   planDir?: string;
 }
@@ -65,7 +66,7 @@ export function createPlanModeTools(
         `## EnterPlanMode\n\nCall this to enter plan mode for a task that warrants research-then-propose. While in plan mode, you may only read/explore — do not attempt edits. When your plan is ready, call ExitPlanMode.`,
     },
     async () => {
-      ctx.onPlanModeChange?.('plan');
+      await ctx.onPlanModeChange?.('plan');
       return { mode: 'plan', note: 'Entered plan mode. Mutating tools are now blocked. Research, then call ExitPlanMode with your plan.' };
     },
   );
@@ -85,13 +86,17 @@ export function createPlanModeTools(
       prompt: () => EXIT_PLAN_MODE_PROMPT,
     },
     async ({ plan }) => {
-      try {
-        mkdirSync(planDir, { recursive: true });
-        writeFileSync(path.join(planDir, 'plan.md'), plan, 'utf-8');
-      } catch {
-        // best-effort — the plan still returns to the caller
-      }
-      return { plan, planFile: path.join(planDir, 'plan.md'), note: 'Plan written. The user can review/approve it (via /plan) before implementation.' };
+      const planFile = path.join(planDir, 'plan.md');
+      await mkdir(planDir, { recursive: true });
+      await writeFile(planFile, plan, 'utf-8');
+      return {
+        plan,
+        planFile,
+        status: 'awaiting_approval',
+        approvalRequired: true,
+        actions: ['approve', 'revise'],
+        note: 'Plan written. The user must approve it before implementation. Plan mode remains active until approval.',
+      };
     },
   );
 
