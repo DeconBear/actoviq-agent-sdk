@@ -28,6 +28,7 @@ describe('TUI and GUI parity', () => {
       'init',
       'compact',
       'memory',
+      'rules',
       'context',
       'cost',
       'usage',
@@ -35,6 +36,7 @@ describe('TUI and GUI parity', () => {
       'batch',
       'goal',
       'review',
+      'diff',
       'stats',
       'export',
       'model',
@@ -43,7 +45,9 @@ describe('TUI and GUI parity', () => {
       'permissions',
       'plan',
       'rewind',
+      'checkpoint',
       'sessions',
+      'session',
       'resume',
       'tools',
       'skills',
@@ -51,12 +55,14 @@ describe('TUI and GUI parity', () => {
       'mcp',
       'hooks',
       'plugins',
+      'plugin',
       'dream',
       'workflows',
       'worktree',
       'team',
       'issues',
       'manager',
+      'assistant',
       'bridge',
       'exit',
     ]);
@@ -82,6 +88,12 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('id="projectMenuBtn"');
     expect(html).toContain('id="sidebarRecents"');
     expect(html).toContain('id="overviewNewWorkspaceBtn"');
+    expect(html).toContain('id="projectChats"');
+    expect(html).toContain('id="sessionCenterList"');
+    expect(js).toContain("if (view === 'chats')");
+    expect(js).toContain('void refreshSessionCenter();');
+    expect(js).toContain("if (item.type === 'assistant-project') switchProjectView('detail');");
+    expect(html).toContain('id="managerSessionSelect"');
     expect(html).toContain('id="workspaceModal"');
     expect(html).toContain('id="workspaceChoices"');
     expect(html).toContain('id="workspacePathInput"');
@@ -143,6 +155,20 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="regionAutomation"');
     expect(gui).toContain('createManagedPluginRuntime');
     expect(tui).toContain('createManagedPluginRuntime');
+    expect(gui).toContain("event.type === 'team.proposal'");
+    expect(tui).toContain('createAssistantTeamTools');
+    expect(SUBCOMMANDS.assistant).toEqual(['chat', 'sessions', 'new', 'resume', 'team']);
+    expect(SUBCOMMANDS.session).toEqual([
+      'tree',
+      'fork',
+      'clone',
+      'label',
+      'rename',
+      'pin',
+      'archive',
+      'restore',
+      'delete',
+    ]);
     expect(gui).toContain('readManagedPluginCatalog');
     expect(tui).toContain('readManagedPluginCatalog');
     expect(html).not.toContain('wip-hidden');
@@ -159,6 +185,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('Insert Loop');
     expect(js).toContain('openInsertParallelDialog');
     expect(js).toContain('openInsertLoopDialog');
+    expect(js).toContain('pickAutoEdgeRoute');
+    expect(js).toContain('spreadGraphPortIndex');
     expect(js).toContain('Need Dispatch → agents → Exit');
     expect(js).toContain('Design with agent');
     expect(js).toContain('/api/team/propose');
@@ -670,6 +698,7 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('defaultEdgeBezierOffsets');
     expect(js).toContain('graphNodeRef');
     expect(js).toContain('computeTeamGraphAutoLayoutLanes');
+    expect(js).toContain('computeTeamGraphAutoLayout');
     expect(js).toContain('resolveEdgeBezierPoints');
     expect(js).toContain('Reset curve');
     expect(js).toContain('RISKY_NODE_TOOLS');
@@ -679,6 +708,9 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('renderGraphModeCanvas');
     expect(js).toContain('applyGraphAutoLayout');
     expect(js).toContain('wireGraphBoardConnect');
+    expect(js).toContain('scheduleGraphBoardGeometryUpdate');
+    expect(js).toContain('graphDefinitionViewportStates');
+    expect(js).not.toContain('applySmartSidesToEdges');
     expect(js).toContain('graph-board');
     expect(js).toContain('saveTargetField');
   });

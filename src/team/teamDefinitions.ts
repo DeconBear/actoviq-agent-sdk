@@ -55,9 +55,8 @@ export interface LoadedTeamDefinition {
 /**
  * Built-in team presets, available everywhere `/team` lists or loads — even
  * with no team files on disk. A user file of the same name in `.actoviq/teams/`
- * or `~/.actoviq/teams/` shadows the built-in (same rule as
- * `BUILT_IN_ROUTER_PROFILES`). Built-ins are never overwritten by save; clone
- * to a new name to customize.
+ * or `~/.actoviq/teams/` shadows the built-in. Built-ins are never overwritten
+ * by save; clone to a new name to customize.
  *
  * Members use `model: ''` meaning "the session's current model" — call
  * `instantiateTeamDefinition(def, model)` before running.

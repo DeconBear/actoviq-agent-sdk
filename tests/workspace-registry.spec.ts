@@ -4,10 +4,16 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  addProjectWorkPath,
+  findWorkspaceProject,
   forgetWorkspaceFromRegistry,
   readWorkspaceRegistry,
+  removeProjectWorkPath,
   rememberWorkspace,
+  setProjectActiveWorkPath,
   setWorkspacePinned,
+  workspaceActiveWorkPath,
+  workspaceWorkPaths,
 } from '../src/gui/workspaceRegistry.js';
 
 describe('workspaceRegistry', () => {
@@ -70,5 +76,52 @@ describe('workspaceRegistry', () => {
     await setWorkspacePinned(a, home, false);
     entries = await readWorkspaceRegistry(home);
     expect(entries.find((e) => e.path === path.resolve(a))?.pinned).toBeUndefined();
+  });
+
+  it('adds multiple work paths without splitting one project into registry rows', async () => {
+    const home = await tempHome();
+    const primary = path.join(home, 'product');
+    const docs = path.join(home, 'product-docs');
+    await rememberWorkspace(primary, home, '2026-07-09T01:00:00.000Z');
+    await addProjectWorkPath(primary, docs, home, { activate: true });
+
+    let entries = await readWorkspaceRegistry(home);
+    expect(entries).toHaveLength(1);
+    expect(workspaceWorkPaths(entries[0]!)).toEqual([path.resolve(primary), path.resolve(docs)]);
+    expect(workspaceActiveWorkPath(entries[0]!)).toBe(path.resolve(docs));
+    expect(findWorkspaceProject(entries, docs)?.path).toBe(path.resolve(primary));
+
+    await rememberWorkspace(docs, home, '2026-07-09T03:00:00.000Z');
+    entries = await readWorkspaceRegistry(home);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.lastOpenedAt).toBe('2026-07-09T03:00:00.000Z');
+    expect(workspaceActiveWorkPath(entries[0]!)).toBe(path.resolve(docs));
+  });
+
+  it('switches and removes additional paths but protects the primary path', async () => {
+    const home = await tempHome();
+    const primary = path.join(home, 'product');
+    const api = path.join(home, 'product-api');
+    await rememberWorkspace(primary, home);
+    await addProjectWorkPath(primary, api, home);
+    await setProjectActiveWorkPath(primary, api, home);
+    expect(workspaceActiveWorkPath((await readWorkspaceRegistry(home))[0]!)).toBe(path.resolve(api));
+
+    await removeProjectWorkPath(primary, api, home);
+    const [project] = await readWorkspaceRegistry(home);
+    expect(workspaceWorkPaths(project!)).toEqual([path.resolve(primary)]);
+    expect(workspaceActiveWorkPath(project!)).toBe(path.resolve(primary));
+    await expect(removeProjectWorkPath(primary, primary, home))
+      .rejects.toThrow('primary project path cannot be removed');
+  });
+
+  it('rejects assigning one work path to two projects', async () => {
+    const home = await tempHome();
+    const first = path.join(home, 'first');
+    const second = path.join(home, 'second');
+    await rememberWorkspace(first, home);
+    await rememberWorkspace(second, home);
+    await expect(addProjectWorkPath(first, second, home))
+      .rejects.toThrow('already belongs to another project');
   });
 });

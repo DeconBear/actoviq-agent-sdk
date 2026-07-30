@@ -147,20 +147,27 @@ describe('GUI Project Agent execution view', () => {
     );
   });
 
-  it('provides a model-first picker with grouped metadata and keyboard controls', () => {
+  it('provides configured routers and cascading config/agent model controls', () => {
     const html = createActoviqGuiHtml();
     const js = createActoviqGuiClientScript();
     const css = createActoviqGuiStyles();
 
     expect(html).toContain('id="modelPickerBtn"');
     expect(html).toContain('aria-haspopup="listbox"');
-    expect(html).toContain('placeholder="Search models, providers, runtimes"');
+    expect(html).toContain('placeholder="Search models, routers, providers"');
     expect(html).toContain('Ctrl / ⌘ + / to cycle');
-    expect(js).toContain("appendPickerSection(items, 'Recent'");
-    expect(js).toContain("appendPickerSection(items, 'Agent presets'");
-    expect(js).toContain("appendPickerSection(items, 'Models'");
-    expect(js).toContain("label.textContent = 'Auto'");
-    expect(js).toContain("agent.execution === 'cli' ? 'CLI runtime' : 'Direct API'");
+    expect(js).toContain("appendPickerRouterSection(items, targets.routers");
+    expect(js).toContain("appendPickerSection(items, 'Configurations'");
+    expect(js).toContain("appendPickerSection(items, 'Agents'");
+    expect(js).toContain('const routers = (snap.routers || []).map');
+    expect(js).toContain("api('/api/router/activate'");
+    expect(js).not.toContain("label.textContent = 'Auto'");
+    expect(js).not.toContain("Use this conversation’s default model");
+    expect(js).toContain("modelHeading.textContent = 'Model'");
+    expect(js).toContain("effortHeading.textContent = 'Reasoning'");
+    expect(js).toContain("ev.key === 'ArrowRight'");
+    expect(js).toContain("event.key !== 'ArrowLeft'");
+    expect(js).toContain('bridgeConfig: target?.name');
     expect(js).toContain("event.key === '/'");
     expect(js).toContain("event.key === 'ArrowDown'");
     expect(js).toContain('current < 0 ? 0 : Math.min(current + 1');
@@ -170,9 +177,43 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain('function positionModelPickerFlyout()');
     expect(js).toContain("button.closest('.workbench-chat')");
     expect(js).toContain('Stop or wait for the active response before switching models.');
-    expect(css).toContain('.picker-item-chips');
+    expect(css).toContain('.picker-detail-item');
+    expect(css).toContain('.picker-row-trailing');
     expect(css).toContain('.model-picker-btn-copy');
+    expect(css).toContain('border-radius: 999px');
     expect(css).toContain('var(--model-picker-menu-width');
+    expect(css).toContain('.model-picker-flyout {\n  position: absolute;\n  right: 0;');
+    expect(css).toContain('left: calc(100% + 6px)');
+    expect(css).toContain('min-height: 30px');
+    expect(css).toContain('font-size: 11px');
+    expect(js).toContain('const menuWidth = Math.min(248');
+    expect(js).toContain('const submenuWidth = menuWidth');
+  });
+
+  it('provides a functional add-context catalog from the composer plus button', () => {
+    const html = createActoviqGuiHtml();
+    const js = createActoviqGuiClientScript();
+    const css = createActoviqGuiStyles();
+
+    expect(html).toContain('id="fileUploadBtn"');
+    expect(html).toContain('aria-label="Add context"');
+    expect(html).toContain('id="addContextMenu"');
+    expect(html).toContain('id="folderInput"');
+    expect(html).toContain('webkitdirectory');
+    expect(js).toContain("title: 'Files'");
+    expect(js).toContain("title: 'Folder'");
+    expect(js).toContain("title: 'Plugins'");
+    expect(js).toContain("title: 'Skills'");
+    expect(js).toContain("title: 'Reference conversation'");
+    expect(js).toContain("title: 'Search task history'");
+    expect(js).toContain("api('/api/session-center/reference'");
+    expect(js).toContain('payload.activeSkillIds');
+    expect(js).toContain('invoke the registered Skill tool');
+    expect(js).toContain('<actoviq-context type="');
+    expect(js).toContain("event.key === 'ArrowLeft'");
+    expect(css).toContain('.add-context-menu');
+    expect(css).toContain('.add-context-row');
+    expect(css).toContain('font-size: 12px');
   });
 
   it('does not let stale state requests overwrite a newer mutation', () => {

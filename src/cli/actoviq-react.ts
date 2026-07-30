@@ -30,6 +30,14 @@ import {
   createTeamTool,
   readTeamPreferences,
   createManagerTools,
+  createAssistantTeamTools,
+  buildAssistantTeamSystemPrompt,
+  TeamProposalStore,
+  SessionCatalog,
+  createAssistantGlobalTools,
+  buildAssistantGlobalSystemPrompt,
+  readAssistantConfig,
+  writeAssistantConfig,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
   formatManagerUpdatePreview,
@@ -50,8 +58,10 @@ import {
   readActoviqExternalSkillPreferences,
   transitionProjectIssue,
   WorktreeService,
+  GoalService,
 } from 'actoviq-agent-sdk';
 import { readProjectMeta } from '../gui/projectMeta.js';
+import { readWorkspaceRegistry } from '../gui/workspaceRegistry.js';
 import {
   LegacySurfaceEventPipeline,
 } from '../surfaces/index.js';
@@ -60,6 +70,7 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import * as readline from 'node:readline';
 import { hasVersionFlag, readPackageVersion } from './version.js';
+import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 
 if (hasVersionFlag(process.argv.slice(2))) {
   process.stdout.write(`${readPackageVersion(import.meta.url)}\n`);
@@ -139,6 +150,9 @@ const CMDS: Record<string, string> = {
   memory:  'Show memory/compact state',
   model:   'Show or set the session model',
   permissions: 'Show or set the permission mode',
+  plan:    'Enter, review, approve, or revise a read-only plan',
+  goal:    'Create, inspect, pause, resume, or clear a persistent goal',
+  checkpoint: 'List, preview, or restore file/conversation checkpoints',
   sessions: 'List stored sessions',
   resume:  'Resume a stored session',
   tools:   'List available tools',
@@ -217,7 +231,13 @@ async function main() {
   process.stdout.write(`\n${C.c}${C.b}╭${'─'.repeat(Math.min(w - 2, 60))}╮${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  dir     : ${C.y}${WORK_DIR.slice(0, 45)}${C.r}\n`);
 
-  const coreTools = createActoviqCoreTools({ cwd: WORK_DIR });
+  let applyPlanPermission: (() => Promise<void>) | undefined;
+  const coreTools = createActoviqCoreTools({
+    cwd: WORK_DIR,
+    onPlanModeChange: async mode => {
+      if (mode === 'plan') await applyPlanPermission?.();
+    },
+  });
   const userSuppliedConfig = Boolean(process.argv[3]);
   try {
     if (userSuppliedConfig) await loadJsonConfigFile(CONFIG_PATH);
@@ -305,6 +325,13 @@ async function main() {
     permissions: session.permissionContext.permissions,
     approver,
   });
+  applyPlanPermission = async () => {
+    await session.setPermissionContext({
+      mode: 'plan',
+      permissions: [],
+      approver,
+    });
+  };
 
   process.stdout.write(`${C.c}│${C.r}  model   : ${C.y}${session.model}${C.r}\n`);
   process.stdout.write(`${C.c}│${C.r}  tools   : ${C.y}${toolMetadata.length} tools loaded${C.r}\n`);
@@ -316,6 +343,151 @@ async function main() {
   // Persistent Manager session (kind: 'manager') — reused across /manager
   // update/chat turns so the Manager keeps its own conversation context.
   let managerSession: Awaited<ReturnType<typeof sdk.createSession>> | null = null;
+  const assistantTeamProposals = new TeamProposalStore();
+  async function interactiveSessionCatalog(): Promise<SessionCatalog> {
+    const registered = await readWorkspaceRegistry(sdk.config.homeDir);
+    return new SessionCatalog({
+      homeDir: sdk.config.homeDir,
+      projectPaths: [WORK_DIR, ...registered.map(item => item.path)],
+    });
+  }
+  let globalAssistantSdk: Awaited<ReturnType<typeof createAgentSdk>> | null = null;
+  let globalAssistantSession: Awaited<ReturnType<typeof sdk.createSession>> | null = null;
+  async function resolveGlobalAssistantSession() {
+    const homeDir = sdk.config.homeDir;
+    const config = await readAssistantConfig(homeDir);
+    if (!globalAssistantSdk) {
+      const sessionDirectory = path.join(homeDir, 'assistant');
+      globalAssistantSdk = await createAgentSdk({
+        workDir: sessionDirectory,
+        sessionDirectory,
+        tools: [],
+        permissionMode: DEFAULT_PERMISSION_MODE,
+        ...(config.model ? { model: config.model } : {}),
+      });
+    }
+    if (globalAssistantSession && globalAssistantSession.id === config.activeSessionId) {
+      return globalAssistantSession;
+    }
+    const stored = (await globalAssistantSdk.sessions.list())
+      .filter(item => item.kind === 'manager')
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = stored.find(item => item.id === config.activeSessionId) ?? stored[0];
+    globalAssistantSession = existing
+      ? await globalAssistantSdk.resumeSession(existing.id, { permissionMode: DEFAULT_PERMISSION_MODE })
+      : await globalAssistantSdk.createSession({
+        title: 'Assistant (Global)',
+        kind: 'manager',
+        metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
+        permissionMode: DEFAULT_PERMISSION_MODE,
+      });
+    if (config.activeSessionId !== globalAssistantSession.id) {
+      await writeAssistantConfig({ ...config, activeSessionId: globalAssistantSession.id }, homeDir);
+    }
+    return globalAssistantSession;
+  }
+  async function runGlobalAssistantCommand(sub: string): Promise<void> {
+    const homeDir = sdk.config.homeDir;
+    const globalSession = await resolveGlobalAssistantSession();
+    const config = await readAssistantConfig(homeDir);
+    if (sub === 'sessions') {
+      const sessions = (await globalAssistantSdk!.sessions.list()).filter(item => item.kind === 'manager');
+      process.stdout.write(`${C.b}Global Assistant Sessions${C.r}\n`);
+      for (const item of sessions) {
+        process.stdout.write(`${item.id === config.activeSessionId ? C.g : C.d}${item.id} · ${item.title} · ${item.messageCount} messages${C.r}\n`);
+      }
+      process.stdout.write('\n');
+      return;
+    }
+    if (sub === 'new') {
+      globalAssistantSession = await globalAssistantSdk!.createSession({
+        title: 'Assistant (Global)',
+        kind: 'manager',
+        metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
+        permissionMode: DEFAULT_PERMISSION_MODE,
+      });
+      await writeAssistantConfig({ ...config, activeSessionId: globalAssistantSession.id }, homeDir);
+      process.stdout.write(`${C.g}Global Assistant Session created: ${globalAssistantSession.id}${C.r}\n\n`);
+      return;
+    }
+    if (sub.startsWith('resume ')) {
+      const id = sub.slice('resume '.length).trim();
+      const found = (await globalAssistantSdk!.sessions.list())
+        .find(item => item.id === id && item.kind === 'manager');
+      if (!found) {
+        process.stdout.write(`${C.R}Global Assistant Session not found: ${id}${C.r}\n\n`);
+        return;
+      }
+      globalAssistantSession = await globalAssistantSdk!.resumeSession(id, { permissionMode: DEFAULT_PERMISSION_MODE });
+      await writeAssistantConfig({ ...config, activeSessionId: id }, homeDir);
+      process.stdout.write(`${C.g}Global Assistant Session selected: ${found.title}${C.r}\n\n`);
+      return;
+    }
+    const isTeam = sub === 'team' || sub.startsWith('team ');
+    const isChat = sub === 'chat' || sub.startsWith('chat ') || isTeam;
+    const prompt = isTeam
+      ? (sub === 'team' ? '' : `Propose a Team Graph for this request. Use an explicit registered projectPath. ${sub.slice('team'.length).trim()}`)
+      : isChat ? sub.slice('chat'.length).trim() : '';
+    if (!prompt) {
+      process.stdout.write(`${C.d}Usage: /assistant [chat <message>|sessions|new|resume <id>|team <request>]${C.r}\n\n`);
+      return;
+    }
+    const proposals: import('../team/teamProposalService.js').TeamGraphProposal[] = [];
+    const assistantTools = [
+      ...await createAssistantGlobalTools({ homeDir, currentWorkDir: WORK_DIR }),
+      ...createAssistantTeamTools({
+        scope: 'global',
+        assistantSessionId: globalSession.id,
+        currentWorkDir: WORK_DIR,
+        homeDir,
+        proposals: assistantTeamProposals,
+        onProposal: proposal => { proposals.push(proposal); },
+      }),
+    ];
+    const stream = globalSession.stream(prompt, {
+      systemPrompt: `${buildAssistantGlobalSystemPrompt(WORK_DIR)}\n${buildAssistantTeamSystemPrompt('global')}`,
+      tools: assistantTools,
+      ...(config.model ? { model: config.model } : {}),
+      __actoviqUseDefaultTools: false,
+      __actoviqAllowedTools: assistantTools.map(item => item.name),
+    } as Parameters<typeof globalSession.stream>[1]);
+    for await (const event of stream) {
+      if (event.type === 'tool.call') toolLine(
+        event.call.name,
+        surfaceRecord(event.call.input) ?? {},
+      );
+    }
+    const result = await stream.result;
+    if (result.text) process.stdout.write(`${result.text}\n`);
+    for (const proposal of proposals) {
+      process.stdout.write(`${C.b}Team proposal · ${proposal.teamName}${C.r}\n`);
+      for (const [label, values] of [
+        ['+ nodes', proposal.diff.addedNodes],
+        ['- nodes', proposal.diff.removedNodes],
+        ['~ nodes', proposal.diff.changedNodes],
+        ['+ edges', proposal.diff.addedEdges],
+        ['- edges', proposal.diff.removedEdges],
+        ['~ edges', proposal.diff.changedEdges],
+      ] as Array<[string, string[]]>) {
+        if (values.length) process.stdout.write(`${C.d}${label}: ${values.join(', ')}${C.r}\n`);
+      }
+      if (proposal.problems.length) {
+        process.stdout.write(`${C.R}${proposal.problems.join('\n')}${C.r}\n`);
+        assistantTeamProposals.reject(proposal.id);
+        continue;
+      }
+      const choice = await new Promise<string>(resolve => {
+        rl.question(`${C.y}Apply this Team proposal? [y/N] ${C.r}`, answer => resolve(answer.trim().toLowerCase()));
+      });
+      if (choice === 'y' || choice === 'yes') {
+        const applied = await assistantTeamProposals.apply(proposal.id, homeDir);
+        process.stdout.write(`${C.g}Team saved: ${applied.filePath}${C.r}\n`);
+      } else {
+        assistantTeamProposals.reject(proposal.id);
+      }
+    }
+    process.stdout.write('\n');
+  }
 
   // ── Team state (Phase 0: attach / autoInvoke / status) ─────────
   const teamPrefs = readTeamPreferences(getLoadedJsonConfig()?.raw);
@@ -339,17 +511,18 @@ async function main() {
 
   async function resolveManagerSession() {
     if (managerSession) return managerSession;
+    const cfg = await readManagerConfig(WORK_DIR, sdk.config.homeDir);
     const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
-    managers.sort((a, b) => {
-      if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
-      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-    });
-    for (const dup of managers.slice(1)) {
-      await sdk.sessions.delete(dup.id).catch(() => undefined);
-    }
-    const existing = managers[0];
+    managers.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = managers.find(item => item.id === cfg.activeSessionId) ?? managers[0];
     if (existing) {
       managerSession = await sdk.resumeSession(existing.id, { permissionMode: DEFAULT_PERMISSION_MODE });
+      if (cfg.activeSessionId !== existing.id) {
+        await writeManagerConfig(WORK_DIR, sdk.config.homeDir, {
+          ...cfg,
+          activeSessionId: existing.id,
+        });
+      }
       await managerSession.setPermissionContext({
         mode: managerSession.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
         permissions: managerSession.permissionContext.permissions,
@@ -361,6 +534,10 @@ async function main() {
       title: 'Manager',
       metadata: { __actoviqKind: 'manager' },
       permissionMode: DEFAULT_PERMISSION_MODE,
+    });
+    await writeManagerConfig(WORK_DIR, sdk.config.homeDir, {
+      ...cfg,
+      activeSessionId: managerSession.id,
     });
     await managerSession.setPermissionContext({
       mode: managerSession.permissionContext.mode ?? DEFAULT_PERMISSION_MODE,
@@ -425,6 +602,28 @@ async function main() {
           return;
         }
         case 'sessions': {
+          const args = sp === -1 ? '' : t.slice(sp + 1).trim();
+          if (args) {
+            const value = (flag: string) => args.match(new RegExp(`(?:^|\\s)--${flag}\\s+("[^"]+"|\\S+)`))?.[1]?.replace(/^"|"$/g, '');
+            const rawType = value('type') || 'user';
+            const page = await (await interactiveSessionCatalog()).query({
+              types: rawType === 'all'
+                ? ['user', 'assistant-global', 'assistant-project', 'agent']
+                : [rawType as import('../storage/sessionCatalog.js').SessionCatalogType],
+              archived: value('archived') === 'all' ? 'all' : value('archived') === 'archived',
+              ...(value('project') ? { projectPaths: [value('project')!] } : {}),
+              ...(value('status')
+                ? { runtimeStatuses: [value('status') as import('../storage/sessionCatalog.js').SessionCatalogRuntimeStatus] }
+                : {}),
+              keyword: value('query'),
+              pageSize: 200,
+            });
+            for (const item of page.items) {
+              process.stdout.write(`${C.d}${item.pinned ? '★' : ' '} ${item.locator.sessionId} · ${item.projectName} · ${item.type} · ${item.title}${item.archived ? ' · archived' : ''}${C.r}\n`);
+            }
+            process.stdout.write('\n');
+            return;
+          }
           const sessions = await sdk.sessions.list();
           if (sessions.length === 0) {
             process.stdout.write(`${C.d}No stored sessions.${C.r}\n\n`);
@@ -466,10 +665,44 @@ async function main() {
           process.stdout.write(`${C.d}${toolMetadata.map(t => `${C.y}${t.name}${C.r}`).join(', ')}${C.r}\n\n`);
           return;
         case 'memory':
+          if (sp !== -1 && /^(proposals|apply|reject)\b/u.test(t.slice(sp + 1).trim())) {
+            try {
+              const { MemoryProposalCommandService } = await import('../memory/memoryProposalCommandService.js');
+              const result = await new MemoryProposalCommandService(
+                sdk.config.homeDir,
+                sdk.config.workDir,
+              ).execute(t.slice(sp + 1).trim());
+              process.stdout.write(`${C.g}${result.message}${C.r}\n`);
+              for (const item of result.items ?? []) {
+                process.stdout.write(`${C.d}${item.label}${item.description ? ` · ${item.description}` : ''}${C.r}\n`);
+              }
+              process.stdout.write('\n');
+            } catch (error) {
+              process.stdout.write(`${C.R}${error instanceof Error ? error.message : String(error)}${C.r}\n\n`);
+            }
+            return;
+          }
           try { const s = await session.compactState();
             process.stdout.write(`${C.d}${JSON.stringify(s as any, null, 2)}${C.r}\n\n`); }
           catch { process.stdout.write(`${C.d}N/A${C.r}\n\n`); }
           return;
+        case 'rules': {
+          try {
+            const { RuleCommandService } = await import('../context/ruleCommandService.js');
+            const result = await new RuleCommandService(
+              sdk.config.homeDir,
+              sdk.config.workDir,
+            ).execute(sp === -1 ? 'list' : t.slice(sp + 1).trim());
+            process.stdout.write(`${C.g}${result.message}${C.r}\n`);
+            for (const item of result.items ?? []) {
+              process.stdout.write(`${C.d}${item.label}${item.description ? ` · ${item.description}` : ''}${C.r}\n`);
+            }
+            process.stdout.write('\n');
+          } catch (error) {
+            process.stdout.write(`${C.R}${error instanceof Error ? error.message : String(error)}${C.r}\n\n`);
+          }
+          return;
+        }
         case 'compact':
           try {
             const summaryInstructions = sp === -1 ? undefined : t.slice(sp + 1).trim() || undefined;
@@ -803,9 +1036,331 @@ async function main() {
           return;
         }
         // ── Project Manager ────────────────────────────────────────
+        case 'assistant': {
+          const sub = sp === -1 ? '' : t.slice(sp + 1).trim();
+          try {
+            await runGlobalAssistantCommand(sub);
+          } catch (error: any) {
+            process.stdout.write(`${C.R}Assistant error: ${error.message}${C.r}\n\n`);
+          }
+          return;
+        }
+        case 'plan': {
+          const requested = sp === -1 ? '' : t.slice(sp + 1).trim();
+          if (requested === 'approve' || requested === 'off') {
+            if (requested === 'approve' && !readPlanFile(WORK_DIR)) {
+              process.stdout.write(`${C.R}There is no saved plan to approve.${C.r}\n\n`);
+              return;
+            }
+            await session.setPermissionContext({
+              mode: DEFAULT_PERMISSION_MODE,
+              permissions: [],
+              approver,
+            });
+            process.stdout.write(
+              `${C.g}${requested === 'approve' ? 'Plan approved — implementation permissions restored.' : 'Plan mode disabled without approval.'}${C.r}\n\n`,
+            );
+            return;
+          }
+          if (requested === 'view') {
+            const plan = readPlanFile(WORK_DIR);
+            process.stdout.write(plan
+              ? `${C.b}Plan · awaiting approval${C.r}\n\n${plan}\n\n`
+              : `${C.d}No saved plan yet.${C.r}\n\n`);
+            return;
+          }
+          if (requested === 'revise' || requested.startsWith('revise ')) {
+            await applyPlanPermission!();
+            const feedback = requested.slice('revise'.length).trim();
+            if (!feedback) {
+              process.stdout.write(`${C.d}Plan remains read-only. Use /plan revise <feedback>.${C.r}\n\n`);
+              return;
+            }
+            return processMsg(
+              `Revise the saved plan using this feedback. Stay in Plan mode and call ExitPlanMode again when ready:\n\n${feedback}`,
+            );
+          }
+          await applyPlanPermission!();
+          const plan = readPlanFile(WORK_DIR);
+          process.stdout.write(plan
+            ? `${C.b}Plan · awaiting approval${C.r}\n\n${plan}\n\n${C.d}Use /plan approve or /plan revise <feedback>.${C.r}\n\n`
+            : `${C.d}Plan mode enabled. Mutating tools are blocked; ask the agent to research and call ExitPlanMode.${C.r}\n\n`);
+          return;
+        }
+        case 'goal': {
+          const requested = sp === -1 ? '' : t.slice(sp + 1).trim();
+          const service = GoalService.forSession(session);
+          if (!requested) {
+            const goal = await service.read();
+            process.stdout.write(goal
+              ? `${C.b}Goal${C.r} ${C.y}${goal.status}${C.r} · revision ${goal.revision}\n${goal.objective}\n${C.d}${goal.evidence.length} evidence entries${C.r}\n\n`
+              : `${C.d}No goal set. Use /goal <objective>.${C.r}\n\n`);
+            return;
+          }
+          if (requested === 'clear') {
+            await service.clear();
+            process.stdout.write(`${C.g}Goal cleared.${C.r}\n\n`);
+            return;
+          }
+          if (requested === 'pause' || requested === 'resume') {
+            const result = await service.transition(requested === 'pause' ? 'paused' : 'active');
+            process.stdout.write(result.ok
+              ? `${C.g}Goal ${requested === 'pause' ? 'paused' : 'resumed'}.${C.r}\n\n`
+              : `${C.R}${result.message}${C.r}\n\n`);
+            return;
+          }
+          if (requested === 'complete' || requested === 'done') {
+            process.stdout.write(
+              `${C.R}Goal completion requires runtime evidence. Ask the agent to call UpdateGoal, or use /goal clear.${C.r}\n\n`,
+            );
+            return;
+          }
+          await service.create({ objective: requested });
+          process.stdout.write(`${C.g}Goal set:${C.r} ${requested}\n\n`);
+          return;
+        }
+        case 'checkpoint': {
+          const requested = sp === -1 ? 'list' : t.slice(sp + 1).trim();
+          const [action = 'list', checkpointId, modeValue, ...flags] = requested.split(/\s+/u).filter(Boolean);
+          if (action === 'list') {
+            const checkpoints = await sdk.checkpoints.list(session.id);
+            if (checkpoints.length === 0) {
+              process.stdout.write(`${C.d}No checkpoints for this Session.${C.r}\n\n`);
+            } else {
+              for (const item of checkpoints) {
+                process.stdout.write(
+                  `${C.d}${item.id} · ${item.status} · ${item.entries.length} file(s) · ${item.createdAt}${C.r}\n`,
+                );
+              }
+              process.stdout.write('\n');
+            }
+            return;
+          }
+          if (!checkpointId) {
+            process.stdout.write(`${C.R}Usage: /checkpoint show <id> | restore <id> [files|conversation|both] --confirm${C.r}\n\n`);
+            return;
+          }
+          if (action === 'show') {
+            const preview = await sdk.checkpoints.preview(session.id, checkpointId);
+            process.stdout.write(`${C.b}Checkpoint ${checkpointId}${C.r}\n`);
+            for (const file of preview.files) {
+              process.stdout.write(`  ${file.action.padEnd(13)} ${file.path}${file.binary ? ' · binary' : ''}\n`);
+            }
+            for (const conflict of preview.conflicts) {
+              process.stdout.write(`${C.R}  conflict ${conflict.path}: ${conflict.message}${C.r}\n`);
+            }
+            process.stdout.write('\n');
+            return;
+          }
+          if (action === 'restore') {
+            const mode = ['files', 'conversation', 'both'].includes(modeValue ?? '')
+              ? modeValue as import('../checkpoint/types.js').CheckpointRestoreMode
+              : 'both';
+            const confirmed = flags.includes('--confirm') || modeValue === '--confirm';
+            if (!confirmed) {
+              process.stdout.write(
+                `${C.R}Preview first, then run /checkpoint restore ${checkpointId} ${mode} --confirm${C.r}\n\n`,
+              );
+              return;
+            }
+            const preview = await sdk.checkpoints.preview(session.id, checkpointId);
+            const result = await sdk.checkpoints.restore({
+              sessionId: session.id,
+              checkpointId,
+              mode,
+            });
+            if (result.conflicts.length > 0) {
+              for (const conflict of result.conflicts) {
+                process.stdout.write(`${C.R}${conflict.path}: ${conflict.message}${C.r}\n`);
+              }
+              process.stdout.write('\n');
+              return;
+            }
+            if (result.conversationRestored && preview.checkpoint.conversationCheckpointId) {
+              await session.restoreCheckpoint(preview.checkpoint.conversationCheckpointId);
+            }
+            process.stdout.write(
+              `${C.g}Checkpoint restored · ${result.restoredFiles.length} file(s)${result.conversationRestored ? ' · conversation' : ''}.${C.r}\n\n`,
+            );
+            return;
+          }
+          process.stdout.write(`${C.R}Usage: /checkpoint list|show|restore${C.r}\n\n`);
+          return;
+        }
+        case 'diff': {
+          const args = sp === -1 ? 'show' : t.slice(sp + 1).trim() || 'show';
+          try {
+            const diff = await sdk.getSessionDiff(session.id);
+            if (args === 'show') {
+              process.stdout.write(`${C.b}Session Diff${C.r}\n`);
+              for (const file of diff.files) {
+                process.stdout.write(`${file.status} ${file.path} ${C.g}+${file.additions}${C.r} ${C.R}-${file.deletions}${C.r}\n`);
+              }
+              process.stdout.write(diff.files.length ? '\n' : `${C.d}(no changes)${C.r}\n\n`);
+              return;
+            }
+            if (args === 'apply --confirm') {
+              const result = await sdk.applySessionDiff(session.id);
+              process.stdout.write(`${result.applied ? C.g : C.R}${result.message}${C.r}\n\n`);
+              return;
+            }
+            process.stdout.write(`${C.d}Usage: /diff show | apply --confirm${C.r}\n\n`);
+          } catch (error) {
+            process.stdout.write(`${C.R}${error instanceof Error ? error.message : String(error)}${C.r}\n\n`);
+          }
+          return;
+        }
+        case 'plugin': {
+          try {
+            const { PluginPackageManager } = await import('../plugins/pluginManager.js');
+            const manager = new PluginPackageManager(
+              path.join(sdk.config.homeDir, 'plugin-packages'),
+              process.env.ACTOVIQ_PLUGIN_REGISTRY,
+              sdk.config.effectivePolicy,
+            );
+            const result = await manager.execute(sp === -1 ? 'list' : t.slice(sp + 1).trim());
+            process.stdout.write(`${C.g}${result.message}${C.r}\n`);
+            for (const item of result.items ?? []) {
+              process.stdout.write(`${C.d}${item.label}${item.description ? ` · ${item.description}` : ''}${C.r}\n`);
+            }
+            process.stdout.write('\n');
+          } catch (error) {
+            process.stdout.write(`${C.R}${error instanceof Error ? error.message : String(error)}${C.r}\n\n`);
+          }
+          return;
+        }
+        case 'session': {
+          const args = sp === -1 ? '' : t.slice(sp + 1).trim();
+          const [action, ...rest] = args.split(/\s+/);
+          if (!action) {
+            process.stdout.write(`${C.d}Usage: /session tree | fork <message-id> [label] | clone [label] | label <name> | rename <title> | pin [on|off] | archive | restore <id> | delete <id>${C.r}\n\n`);
+            return;
+          }
+          if (action === 'tree') {
+            const roots = await sdk.sessionGraph.roots();
+            const lines: string[] = [];
+            const visit = (node: (typeof roots)[number], depth: number) => {
+              const current = node.session.id === session.id ? '*' : '-';
+              lines.push(`${'  '.repeat(depth)}${current} ${node.session.branchName || node.session.title} (${node.session.id})`);
+              node.children.forEach(child => visit(child, depth + 1));
+            };
+            roots.forEach(root => visit(root, 0));
+            process.stdout.write(`${C.b}Session Tree${C.r}\n${lines.join('\n') || '(empty)'}\n\n`);
+            return;
+          }
+          if (action === 'fork') {
+            const messageId = rest.shift();
+            if (!messageId) {
+              const refs = await sdk.sessionGraph.ensureMessageIds(session.id);
+              process.stdout.write(`${C.d}Usage: /session fork <message-id> [label]\n${refs.map(ref => `${ref.id} · ${ref.message.role}`).join('\n')}${C.r}\n\n`);
+              return;
+            }
+            const forked = await sdk.sessionForks.forkAtMessage(session.id, messageId, {
+              branchName: rest.join(' ').trim() || undefined,
+            });
+            session = await sdk.resumeSession(forked.id);
+            process.stdout.write(`${C.g}Session branch created: ${forked.id}${C.r}\n\n`);
+            return;
+          }
+          if (action === 'clone') {
+            const cloned = await sdk.sessionForks.clone(session.id, {
+              branchName: rest.join(' ').trim() || undefined,
+            });
+            session = await sdk.resumeSession(cloned.id);
+            process.stdout.write(`${C.g}Session cloned: ${cloned.id}${C.r}\n\n`);
+            return;
+          }
+          if (action === 'label') {
+            const label = rest.join(' ').trim();
+            if (!label) {
+              process.stdout.write(`${C.d}Usage: /session label <name>${C.r}\n\n`);
+              return;
+            }
+            await sdk.sessionForks.label(session.id, label);
+            session = await sdk.resumeSession(session.id);
+            process.stdout.write(`${C.g}Session branch labeled: ${label}${C.r}\n\n`);
+            return;
+          }
+          const catalog = await interactiveSessionCatalog();
+          const all = await catalog.query({
+            types: ['user', 'assistant-global', 'assistant-project'],
+            archived: 'all',
+            pageSize: 200,
+          });
+          const targetId = action === 'restore' || action === 'delete' ? rest[0] : session.id;
+          const item = all.items.find(candidate => candidate.locator.sessionId === targetId);
+          if (!item) {
+            process.stdout.write(`${C.R}Session not found: ${targetId || ''}${C.r}\n\n`);
+            return;
+          }
+          if (action === 'rename') {
+            const title = rest.join(' ').trim();
+            if (!title) {
+              process.stdout.write(`${C.d}Usage: /session rename <title>${C.r}\n\n`);
+              return;
+            }
+            await catalog.action({ action: 'rename', locator: item.locator, title });
+            if (item.locator.sessionId === session.id) session = await sdk.resumeSession(session.id);
+          } else if (action === 'pin') {
+            await catalog.action({
+              action: 'pin',
+              locator: item.locator,
+              pinned: rest[0] === 'off' ? false : rest[0] === 'on' ? true : undefined,
+            });
+          } else if (action === 'archive') {
+            await catalog.action({ action: 'archive', locator: item.locator });
+            if (item.locator.sessionId === session.id) {
+              session = await sdk.createSession({ model: session.model, permissionMode: DEFAULT_PERMISSION_MODE });
+            }
+          } else if (action === 'restore') {
+            await catalog.action({ action: 'restore', locator: item.locator });
+          } else if (action === 'delete') {
+            await catalog.action({ action: 'delete', locator: item.locator });
+          } else {
+            process.stdout.write(`${C.R}Unknown /session action: ${action}${C.r}\n\n`);
+            return;
+          }
+          process.stdout.write(`${C.g}Session ${action} complete.${C.r}\n\n`);
+          return;
+        }
         case 'manager': {
           const sub = sp === -1 ? '' : t.slice(sp + 1).trim();
           const homeDir = sdk.config.homeDir;
+          if (sub === 'sessions') {
+            const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
+            const cfg = await readManagerConfig(WORK_DIR, homeDir);
+            process.stdout.write(`${C.b}Manager Sessions${C.r}\n`);
+            for (const item of managers) {
+              process.stdout.write(`${item.id === cfg.activeSessionId ? C.g + '●' : C.d + '○'} ${item.id} · ${item.title} · ${item.messageCount} messages${C.r}\n`);
+            }
+            process.stdout.write('\n');
+            return;
+          }
+          if (sub === 'new') {
+            const cfg = await readManagerConfig(WORK_DIR, homeDir);
+            managerSession = await sdk.createSession({
+              title: 'Manager',
+              kind: 'manager',
+              metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'project' },
+              permissionMode: DEFAULT_PERMISSION_MODE,
+            });
+            await writeManagerConfig(WORK_DIR, homeDir, { ...cfg, activeSessionId: managerSession.id });
+            process.stdout.write(`${C.g}Manager Session created: ${managerSession.id}${C.r}\n\n`);
+            return;
+          }
+          if (sub.startsWith('resume ')) {
+            const id = sub.slice('resume '.length).trim();
+            const found = (await sdk.sessions.list()).find(item => item.id === id && item.kind === 'manager');
+            if (!found) {
+              process.stdout.write(`${C.R}Manager Session not found: ${id}${C.r}\n\n`);
+              return;
+            }
+            const cfg = await readManagerConfig(WORK_DIR, homeDir);
+            managerSession = await sdk.resumeSession(id, { permissionMode: DEFAULT_PERMISSION_MODE });
+            await writeManagerConfig(WORK_DIR, homeDir, { ...cfg, activeSessionId: id });
+            process.stdout.write(`${C.g}Manager Session selected: ${found.title}${C.r}\n\n`);
+            return;
+          }
           if (!sub || sub === 'status') {
             const cfg = await readManagerConfig(WORK_DIR, homeDir);
             const plan = await readProjectPlanFile(WORK_DIR, homeDir);
@@ -861,20 +1416,37 @@ async function main() {
             process.stdout.write('\n');
             return;
           }
+          const isTeam = sub === 'team' || sub.startsWith('team ');
           const isUpdate = sub === 'update' || sub.startsWith('update ');
-          const isChat = sub === 'chat' || sub.startsWith('chat ');
+          const isChat = sub === 'chat' || sub.startsWith('chat ') || isTeam;
           if (isUpdate || isChat) {
             const arg = isUpdate
               ? (sub === 'update' ? '' : sub.slice('update'.length).trim())
-              : sub.slice('chat'.length).trim();
+              : isTeam
+                ? (sub === 'team'
+                  ? ''
+                  : `Propose a Team Graph for this request. Inspect existing Teams first when relevant. ${sub.slice('team'.length).trim()}`)
+                : sub.slice('chat'.length).trim();
             if (isChat && !arg) {
-              process.stdout.write(`${C.d}Usage: /manager chat <message>${C.r}\n\n`);
+              process.stdout.write(`${C.d}${isTeam ? 'Usage: /manager team <request>' : 'Usage: /manager chat <message>'}${C.r}\n\n`);
               return;
             }
             if (isUpdate) process.stdout.write(`${C.d}Manager: updating progress documents...${C.r}\n`);
             try {
               const cfg = await readManagerConfig(WORK_DIR, homeDir);
-              const managerTools = await createManagerTools({ workDir: WORK_DIR, homeDir, config: cfg });
+              const turnProposals: import('../team/teamProposalService.js').TeamGraphProposal[] = [];
+              managerSession = await resolveManagerSession();
+              const managerTools = [
+                ...await createManagerTools({ workDir: WORK_DIR, homeDir, config: cfg }),
+                ...createAssistantTeamTools({
+                  scope: 'project',
+                  assistantSessionId: managerSession.id,
+                  currentWorkDir: WORK_DIR,
+                  homeDir,
+                  proposals: assistantTeamProposals,
+                  onProposal: proposal => { turnProposals.push(proposal); },
+                }),
+              ];
               let prompt: string;
               if (isUpdate) {
                 // Host-collected context (the Manager itself has no shell).
@@ -906,7 +1478,6 @@ async function main() {
               } else {
                 prompt = arg;
               }
-              managerSession = await resolveManagerSession();
               try {
                 const compactResult = await managerSession.compact({});
                 if (compactResult.compacted) {
@@ -917,7 +1488,7 @@ async function main() {
               } catch { /* auto-compact is best-effort */ }
               abortCtrl = new AbortController();
               const runOptions = {
-                systemPrompt: buildManagerSystemPrompt(WORK_DIR, cfg),
+                systemPrompt: `${buildManagerSystemPrompt(WORK_DIR, cfg)}\n${buildAssistantTeamSystemPrompt('project')}`,
                 tools: managerTools,
                 signal: abortCtrl.signal,
                 approver,
@@ -946,6 +1517,46 @@ async function main() {
               }
               const result = await stream.result;
               if (result.text) process.stdout.write(`${result.text}\n`);
+              for (const proposal of turnProposals) {
+                const diff = proposal.diff;
+                process.stdout.write(
+                  `\n${C.b}Team proposal · ${proposal.teamName}${C.r}\n`
+                  + `${C.d}${proposal.explanation || '(no explanation)'}${C.r}\n`
+                  + [
+                    ['+ nodes', diff.addedNodes],
+                    ['- nodes', diff.removedNodes],
+                    ['~ nodes', diff.changedNodes],
+                    ['+ edges', diff.addedEdges],
+                    ['- edges', diff.removedEdges],
+                    ['~ edges', diff.changedEdges],
+                  ].filter(([, values]) => (values as string[]).length)
+                    .map(([label, values]) => `${C.d}${label}: ${(values as string[]).join(', ')}${C.r}`)
+                    .join('\n')
+                  + (proposal.problems.length
+                    ? `\n${C.R}${proposal.problems.join('\n')}${C.r}`
+                    : '')
+                  + '\n',
+                );
+                if (proposal.problems.length) {
+                  assistantTeamProposals.reject(proposal.id);
+                  process.stdout.write(`${C.R}Invalid proposal; no file was written.${C.r}\n`);
+                  continue;
+                }
+                const choice = await new Promise<string>(resolve => {
+                  rl.question(`${C.y}Apply this Team proposal? [y/N] ${C.r}`, answer => resolve(answer.trim().toLowerCase()));
+                });
+                if (choice === 'y' || choice === 'yes') {
+                  try {
+                    const applied = await assistantTeamProposals.apply(proposal.id, homeDir);
+                    process.stdout.write(`${C.g}Team saved: ${applied.proposal.teamName} (${applied.filePath})${C.r}\n`);
+                  } catch (error: any) {
+                    process.stdout.write(`${C.R}Team apply failed: ${error.message}${C.r}\n`);
+                  }
+                } else {
+                  assistantTeamProposals.reject(proposal.id);
+                  process.stdout.write(`${C.d}Proposal rejected; no file was written.${C.r}\n`);
+                }
+              }
               if (isUpdate) {
                 process.stdout.write(`${C.g}✓ Progress updated${C.r}${C.d} · ${managerProgressPath(WORK_DIR, homeDir)}${C.r}\n\n`);
               } else {
@@ -958,7 +1569,7 @@ async function main() {
             }
             return;
           }
-          process.stdout.write(`${C.d}Usage: /manager [status|chat <message>|update [instruction]|config|schedule]${C.r}\n\n`);
+          process.stdout.write(`${C.d}Usage: /manager [status|chat <message>|update [instruction]|sessions|new|resume <id>|team <request>|config|schedule]${C.r}\n\n`);
           return;
         }
         default:
@@ -1082,6 +1693,7 @@ async function main() {
     }
     try {
       await sdk.close();
+      if (globalAssistantSdk) await globalAssistantSdk.close();
     } catch (error) {
       exitCode = 1;
       process.stderr.write(`[actoviq-react] ERROR: SDK cleanup failed: ${errorMessage(error)}\n`);

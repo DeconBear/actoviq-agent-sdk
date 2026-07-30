@@ -61,6 +61,9 @@ describe('GUI Customize plugins API', () => {
         'playwright',
         'tavily',
         'exa',
+        'image-gen',
+        'video-gen',
+        'mesh-gen',
       ]);
       expect(initial.body.plugins.every(plugin => plugin.state === 'available')).toBe(true);
 

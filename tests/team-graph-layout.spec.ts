@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   defaultEdgeBezierOffsets,
+  defaultEdgeBezierOffsetsForSides,
   resolveEdgeBezierPoints,
   writeEdgeBezierUi,
   clearEdgeBezierUi,
@@ -11,6 +12,9 @@ import {
   defaultEdgeTension,
   clearEdgeBezierUiForNodeRef,
   edgeChordCrossesNodeInterior,
+  computeTeamGraphAutoLayout,
+  pickAutoEdgeRoute,
+  spreadGraphPortIndex,
 } from '../src/team/teamGraphLayout.js';
 import { toPersistedTeamDefinition } from '../src/team/teamGraph.js';
 import { getBuiltInTeamDefinition } from '../src/team/teamDefinitions.js';
@@ -150,6 +154,84 @@ describe('teamGraphLayout', () => {
     expect(rowOf('skeptic')).toBe(1);
     expect(rowOf('synthesizer')).toBeGreaterThan(rowOf('researcher'));
     expect(rowOf('return-void')).toBe(lanes.length - 1);
+  });
+
+  it('side-aware curve handles leave through the selected sides', () => {
+    const off = defaultEdgeBezierOffsetsForSides(
+      { x: 160, y: 50 },
+      { x: 180, y: 130 },
+      'e',
+      'n',
+    );
+    expect(off.c1.dx).toBeGreaterThan(0);
+    expect(off.c1.dy).toBe(0);
+    expect(off.c2.dx).toBe(0);
+    expect(off.c2.dy).toBeLessThan(0);
+  });
+
+  it('routes loop edges through an outer same-side corridor', () => {
+    const route = pickAutoEdgeRoute(
+      { x: 100, y: 260, w: 168, h: 72 },
+      { x: 100, y: 80, w: 168, h: 72 },
+      { loop: true, fromPortCount: 3, toPortCount: 3 },
+    );
+    expect(route.fromSide).toBe('e');
+    expect(route.toSide).toBe('e');
+    expect(route.curve.c1.dx).toBeGreaterThan(80);
+    expect(route.curve.c2.dx).toBe(route.curve.c1.dx);
+  });
+
+  it('renders self-loops as a visible outward arc', () => {
+    const rect = { x: 100, y: 100, w: 168, h: 72 };
+    const route = pickAutoEdgeRoute(rect, rect, {
+      loop: true,
+      selfLoop: true,
+      fromPortCount: 3,
+      toPortCount: 3,
+    });
+    expect(route.fromSide).toBe('e');
+    expect(route.toSide).toBe('e');
+    expect(route.fromPort).toBe(0);
+    expect(route.toPort).toBe(2);
+    expect(route.curve.c1.dy).toBeLessThan(0);
+    expect(route.curve.c2.dy).toBeGreaterThan(0);
+  });
+
+  it('spreads sibling loop routes over the available ports', () => {
+    expect(spreadGraphPortIndex(0, 2, 3)).toBe(0);
+    expect(spreadGraphPortIndex(1, 2, 3)).toBe(2);
+    expect(spreadGraphPortIndex(1, 3, 3)).toBe(1);
+    expect(spreadGraphPortIndex(1, 3, 1)).toBe(0);
+  });
+
+  it('computeTeamGraphAutoLayout centers compact rows using card-sized gaps', () => {
+    const def: TeamDefinition = {
+      name: 'compact-layout',
+      mode: 'graph',
+      members: [],
+      nodes: [
+        { kind: 'task', id: 'task' },
+        { kind: 'agent', id: 'a', model: 'm' },
+        { kind: 'agent', id: 'b', model: 'm' },
+        { kind: 'agent', id: 'c', model: 'm' },
+        { kind: 'return', id: 'return', returnMode: 'void' },
+      ],
+      edges: [
+        { from: 'task', to: 'a' },
+        { from: 'task', to: 'b' },
+        { from: 'task', to: 'c' },
+        { from: 'a', to: 'return' },
+        { from: 'b', to: 'return' },
+        { from: 'c', to: 'return' },
+      ],
+    };
+    const positions = computeTeamGraphAutoLayout(def);
+    expect(positions).toHaveLength(def.nodes!.length);
+    expect(positions[0]!.y).toBeLessThan(positions[1]!.y);
+    expect(positions[1]!.y).toBe(positions[2]!.y);
+    expect(positions[2]!.x - positions[1]!.x).toBe(252);
+    expect(positions[4]!.y).toBeGreaterThan(positions[1]!.y);
+    expect(positions[0]!.x).toBe(positions[4]!.x);
   });
 
   it('edgeChordCrossesNodeInterior detects through-card chords', () => {

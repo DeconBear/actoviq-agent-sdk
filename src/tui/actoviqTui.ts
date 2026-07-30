@@ -30,6 +30,14 @@ import {
   createTeamTool,
   readTeamPreferences,
   createManagerTools,
+  createAssistantTeamTools,
+  buildAssistantTeamSystemPrompt,
+  TeamProposalStore,
+  SessionCatalog,
+  createAssistantGlobalTools,
+  buildAssistantGlobalSystemPrompt,
+  readAssistantConfig,
+  writeAssistantConfig,
   buildManagerSystemPrompt,
   buildUpdateProgressPrompt,
   formatManagerUpdatePreview,
@@ -56,6 +64,9 @@ import {
   resolveRoutedRun,
   transitionProjectIssue,
   WorktreeService,
+  GoalService,
+  GOAL_METADATA_KEY,
+  normalizeGoal,
 } from '../index.js';
 import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
 import { ExternalCliRuntimeManager } from '../parity/externalCliRuntimeManager.js';
@@ -67,6 +78,7 @@ import {
 } from '../parity/externalCliSessions.js';
 import { parseCrushSessionReferenceDetails } from '../parity/crushSessionHistory.js';
 import { readProjectMeta } from '../gui/projectMeta.js';
+import { readWorkspaceRegistry } from '../gui/workspaceRegistry.js';
 import {
   persistActoviqSettingsStore,
   resolveActoviqSettingsStore,
@@ -796,25 +808,86 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
   // Persistent Manager session (kind: 'manager') — reused across /manager
   // update/chat turns so the Manager keeps its own conversation context.
   let managerTuiSession: Awaited<ReturnType<typeof sdk.createSession>> | null = null;
+  const assistantTeamProposals = new TeamProposalStore();
+  async function interactiveSessionCatalog(): Promise<SessionCatalog> {
+    const registered = await readWorkspaceRegistry(sdk.config.homeDir);
+    return new SessionCatalog({
+      homeDir: sdk.config.homeDir,
+      projectPaths: [sdk.config.workDir, ...registered.map(item => item.path)],
+    });
+  }
+  function managerProposalDiffForTui(
+    proposal: import('../team/teamProposalService.js').TeamGraphProposal,
+  ): string[] {
+    return [
+      ['+ nodes', proposal.diff.addedNodes],
+      ['- nodes', proposal.diff.removedNodes],
+      ['~ nodes', proposal.diff.changedNodes],
+      ['+ edges', proposal.diff.addedEdges],
+      ['- edges', proposal.diff.removedEdges],
+      ['~ edges', proposal.diff.changedEdges],
+    ].filter(([, values]) => (values as string[]).length)
+      .map(([label, values]) => `${A.dim}${label}: ${(values as string[]).join(', ')}${A.reset}`);
+  }
+  let globalAssistantSdk: Awaited<ReturnType<typeof createAgentSdk>> | null = null;
+  let globalAssistantSession: Awaited<ReturnType<typeof sdk.createSession>> | null = null;
+  async function resolveGlobalAssistantSession() {
+    const homeDir = sdk.config.homeDir;
+    const config = await readAssistantConfig(homeDir);
+    if (!globalAssistantSdk) {
+      const sessionDirectory = path.join(homeDir, 'assistant');
+      globalAssistantSdk = await createAgentSdk({
+        workDir: sessionDirectory,
+        sessionDirectory,
+        tools: [],
+        permissionMode: 'bypassPermissions',
+        ...(config.model ? { model: config.model } : {}),
+      });
+    }
+    if (globalAssistantSession && globalAssistantSession.id === config.activeSessionId) {
+      return globalAssistantSession;
+    }
+    const stored = (await globalAssistantSdk.sessions.list())
+      .filter(item => item.kind === 'manager')
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = stored.find(item => item.id === config.activeSessionId) ?? stored[0];
+    globalAssistantSession = existing
+      ? await globalAssistantSdk.resumeSession(existing.id, { permissionMode: 'bypassPermissions' })
+      : await globalAssistantSdk.createSession({
+        title: 'Assistant (Global)',
+        kind: 'manager',
+        metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
+        permissionMode: 'bypassPermissions',
+      });
+    if (config.activeSessionId !== globalAssistantSession.id) {
+      await writeAssistantConfig({ ...config, activeSessionId: globalAssistantSession.id }, homeDir);
+    }
+    return globalAssistantSession;
+  }
   async function resolveManagerTuiSession() {
     if (managerTuiSession) return managerTuiSession;
+    const cfg = await readManagerConfig(sdk.config.workDir, sdk.config.homeDir);
     const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
-    managers.sort((a, b) => {
-      if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
-      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-    });
-    for (const dup of managers.slice(1)) {
-      await sdk.sessions.delete(dup.id).catch(() => undefined);
-    }
-    const existing = managers[0];
+    managers.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = managers.find(item => item.id === cfg.activeSessionId) ?? managers[0];
     if (existing) {
       managerTuiSession = await sdk.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      if (cfg.activeSessionId !== existing.id) {
+        await writeManagerConfig(sdk.config.workDir, sdk.config.homeDir, {
+          ...cfg,
+          activeSessionId: existing.id,
+        });
+      }
       return managerTuiSession;
     }
     managerTuiSession = await sdk.createSession({
       title: 'Manager',
       metadata: { __actoviqKind: 'manager' },
       permissionMode: 'bypassPermissions',
+    });
+    await writeManagerConfig(sdk.config.workDir, sdk.config.homeDir, {
+      ...cfg,
+      activeSessionId: managerTuiSession.id,
     });
     return managerTuiSession;
   }
@@ -3248,36 +3321,39 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     appendStatic([...formatInfoLine(`effort set to: ${currentEffort() ?? 'auto'}`), '']);
   }
 
-  // ── /goal: session-scoped goal with status tracking ─────────────────
-  const GOAL_METADATA_KEY = '__actoviqGoal';
-  type GoalStatus = 'active' | 'paused' | 'complete';
-  interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
+  // ── /goal: session-scoped goal managed by the shared GoalService ─────
+  // The service is the single authority over goal lifecycle (see plan/13
+  // P0.2); the TUI only reads and steers it (create/clear/pause/resume).
+  // Complete/blocked are runtime-only transitions, set via the Goal tools.
+  function goalService(): GoalService {
+    return GoalService.forSession(session);
+  }
 
-  function getGoal(): SessionGoal | null {
-    const raw = session.metadata[GOAL_METADATA_KEY];
-    if (typeof raw === 'string') {
-      try { return JSON.parse(raw) as SessionGoal; } catch { /* ignore */ }
-    }
-    if (typeof raw === 'object' && raw !== null) return raw as SessionGoal;
-    return null;
+  async function getGoal() {
+    return goalService().read();
   }
 
   async function setGoal(objective: string): Promise<void> {
-    const goal: SessionGoal = { objective, status: 'active', setAt: new Date().toISOString() };
-    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
+    await goalService().create({ objective });
   }
 
   async function clearGoal(): Promise<void> {
-    const md = { ...session.metadata };
-    delete md[GOAL_METADATA_KEY];
-    await session.mergeMetadata(md);
+    await goalService().clear();
   }
 
   function goalContextLine(): string {
-    const g = getGoal();
-    if (!g) return '';
-    const statusMarks: Record<GoalStatus, string> = { active: `${A.green}▶${A.reset}`, paused: `${A.yellow}‖${A.reset}`, complete: `${A.dim}✓${A.reset}` };
-    return ` · goal:${statusMarks[g.status] ?? ''}${A.dim}${truncateToWidth(g.objective, 30)}${A.reset}`;
+    // Normalize through the shared Goal schema while keeping status rendering
+    // synchronous over the already-cached Session metadata.
+    const goal = normalizeGoal(session.metadata[GOAL_METADATA_KEY], new Date().toISOString());
+    if (!goal) return '';
+    const marks: Record<string, string> = {
+      active: `${A.green}▶${A.reset}`,
+      paused: `${A.yellow}‖${A.reset}`,
+      complete: `${A.dim}✓${A.reset}`,
+      blocked: `${A.red}⊘${A.reset}`,
+    };
+    const mark = marks[goal.status ?? 'active'] ?? '';
+    return ` · goal:${mark}${A.dim}${truncateToWidth(goal.objective, 30)}${A.reset}`;
   }
 
   async function chooseOutputStyle(arg: string): Promise<void> {
@@ -3817,9 +3893,44 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           // ExitPlanMode tools; /plan toggles the permission mode and lets the
           // user view/open the plan file the agent wrote.
           const arg = args.trim().toLowerCase();
-          if (arg === 'off') {
+          if (arg === 'off' || arg === 'approve') {
+            if (arg === 'approve' && !readPlanFile(sdk.config.workDir)) {
+              appendStatic([...formatErrorLine('there is no saved plan to approve'), '']);
+              return;
+            }
             await session.setPermissionContext({ mode: permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default', permissions: [], approver });
-            appendStatic([...formatInfoLine('plan mode off — back to default permissions'), '']);
+            appendStatic([
+              ...formatInfoLine(arg === 'approve'
+                ? 'plan approved — implementation permissions restored'
+                : 'plan mode off without approval'),
+              '',
+            ]);
+            return;
+          }
+          if (arg === 'view') {
+            const plan = readPlanFile(sdk.config.workDir);
+            appendStatic(plan
+              ? [
+                  `${A.bold}Current plan · awaiting approval${A.reset}`,
+                  '',
+                  ...renderRichText(plan, screen.width),
+                  '',
+                ]
+              : [...formatInfoLine('no saved plan yet'), '']);
+            return;
+          }
+          if (arg === 'revise' || arg.startsWith('revise ')) {
+            if (session.permissionContext.mode !== 'plan') {
+              await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+            }
+            const feedback = args.trim().slice('revise'.length).trim();
+            if (!feedback) {
+              appendStatic([...formatInfoLine('plan remains read-only; use /plan revise <feedback>'), '']);
+              return;
+            }
+            await startRun(
+              `Revise the saved plan using this feedback. Stay in Plan mode and call ExitPlanMode again when ready:\n\n${feedback}`,
+            );
             return;
           }
           if (arg === 'open') {
@@ -3851,6 +3962,74 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           }
           return;
         }
+        case 'checkpoint': {
+          const [action = 'list', checkpointId, modeValue, ...flags] = args.trim().split(/\s+/u).filter(Boolean);
+          if (action === 'list') {
+            const checkpoints = await sdk.checkpoints.list(session.id);
+            appendStatic(checkpoints.length > 0
+              ? [
+                  `${A.bold}Checkpoints${A.reset}`,
+                  ...checkpoints.map(item =>
+                    `  ${item.id}  ${A.dim}${item.status} · ${item.entries.length} file(s) · ${item.createdAt}${A.reset}`
+                  ),
+                  '',
+                ]
+              : [...formatInfoLine('no checkpoints for this Session'), '']);
+            return;
+          }
+          if (!checkpointId) {
+            appendStatic([...formatErrorLine('usage: /checkpoint show <id> | restore <id> [files|conversation|both] --confirm'), '']);
+            return;
+          }
+          if (action === 'show') {
+            const preview = await sdk.checkpoints.preview(session.id, checkpointId);
+            appendStatic([
+              `${A.bold}Checkpoint ${checkpointId}${A.reset}`,
+              ...preview.files.map(file => `  ${file.action.padEnd(13)} ${file.path}${file.binary ? ' · binary' : ''}`),
+              ...(preview.conflicts.length > 0
+                ? ['', `${A.red}Conflicts${A.reset}`, ...preview.conflicts.map(conflict => `  ${conflict.path}: ${conflict.message}`)]
+                : ['', `${A.dim}No restore conflicts detected.${A.reset}`]),
+              '',
+            ]);
+            return;
+          }
+          if (action === 'restore') {
+            const mode = ['files', 'conversation', 'both'].includes(modeValue ?? '')
+              ? modeValue as import('../checkpoint/types.js').CheckpointRestoreMode
+              : 'both';
+            const confirmed = flags.includes('--confirm') || modeValue === '--confirm';
+            if (!confirmed) {
+              appendStatic([
+                ...formatErrorLine(`preview first, then run /checkpoint restore ${checkpointId} ${mode} --confirm`),
+                '',
+              ]);
+              return;
+            }
+            const preview = await sdk.checkpoints.preview(session.id, checkpointId);
+            const result = await sdk.checkpoints.restore({
+              sessionId: session.id,
+              checkpointId,
+              mode,
+            });
+            if (result.conflicts.length > 0) {
+              appendStatic([
+                ...result.conflicts.flatMap(conflict => formatErrorLine(`${conflict.path}: ${conflict.message}`)),
+                '',
+              ]);
+              return;
+            }
+            if (result.conversationRestored && preview.checkpoint.conversationCheckpointId) {
+              await session.restoreCheckpoint(preview.checkpoint.conversationCheckpointId);
+            }
+            appendStatic([
+              ...formatInfoLine(`checkpoint restored · ${result.restoredFiles.length} file(s)${result.conversationRestored ? ' · conversation' : ''}`),
+              '',
+            ]);
+            return;
+          }
+          appendStatic([...formatErrorLine('usage: /checkpoint list|show|restore'), '']);
+          return;
+        }
         case 'rewind': {
           const n = parseInt(args, 10);
           if (!n || n < 1) {
@@ -3875,6 +4054,31 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           return;
         }
         case 'sessions': {
+          if (args) {
+            const value = (flag: string) => args.match(new RegExp(`(?:^|\\s)--${flag}\\s+("[^"]+"|\\S+)`))?.[1]?.replace(/^"|"$/g, '');
+            const rawType = value('type') || 'user';
+            const types = rawType === 'all'
+              ? ['user', 'assistant-global', 'assistant-project', 'agent'] as const
+              : [rawType as import('../storage/sessionCatalog.js').SessionCatalogType];
+            const archiveFlag = value('archived') || 'active';
+            const page = await (await interactiveSessionCatalog()).query({
+              types: [...types],
+              archived: archiveFlag === 'all' ? 'all' : archiveFlag === 'archived',
+              ...(value('project') ? { projectPaths: [value('project')!] } : {}),
+              ...(value('status')
+                ? { runtimeStatuses: [value('status') as import('../storage/sessionCatalog.js').SessionCatalogRuntimeStatus] }
+                : {}),
+              keyword: value('query'),
+              pageSize: 200,
+            });
+            appendStatic([
+              ...(page.items.length
+                ? page.items.map(item => `${item.pinned ? '★' : ' '} ${item.locator.sessionId} · ${item.projectName} · ${item.type} · ${item.title}${item.archived ? ' · archived' : ''}`)
+                : formatInfoLine('no matching Sessions')),
+              '',
+            ]);
+            return;
+          }
           const sessions = (await sdk.sessions.list()).filter(isTuiChatSession);
           appendStatic([
             ...(sessions.length > 0
@@ -3898,6 +4102,23 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           ]);
           return;
         case 'memory': {
+          if (/^(proposals|apply|reject)\b/u.test(args)) {
+            try {
+              const { MemoryProposalCommandService } = await import('../memory/memoryProposalCommandService.js');
+              const result = await new MemoryProposalCommandService(
+                sdk.config.homeDir,
+                sdk.config.workDir,
+              ).execute(args);
+              appendStatic([
+                ...formatInfoLine(result.message),
+                ...(result.items ?? []).map(item => `  ${A.bold}${item.label}${A.reset}${item.description ? ` ${A.dim}· ${item.description}${A.reset}` : ''}`),
+                '',
+              ]);
+            } catch (error) {
+              appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
+            }
+            return;
+          }
           try {
             const state = await session.compactState();
             appendStatic([`${A.dim}${JSON.stringify(state, null, 2)}${A.reset}`, '']);
@@ -4027,32 +4248,33 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         }
         case 'goal': {
           const arg = args.trim();
+          const svc = goalService();
           if (!arg) {
-            const g = getGoal();
+            const g = await svc.read();
             if (!g) {
               appendStatic([...formatInfoLine('no goal set — use /goal <objective> to set one'), '']);
             } else {
-              const marks: Record<GoalStatus, string> = { active: `${A.green}▶ active${A.reset}`, paused: `${A.yellow}‖ paused${A.reset}`, complete: `${A.dim}✓ complete${A.reset}` };
-              appendStatic([`${A.bold}Goal${A.reset}  ${marks[g.status]}  ${A.dim}${g.setAt.slice(0, 10)}${A.reset}`, `  ${g.objective}`, '']);
+              const marks: Record<string, string> = { active: `${A.green}▶ active${A.reset}`, paused: `${A.yellow}‖ paused${A.reset}`, complete: `${A.dim}✓ complete${A.reset}`, blocked: `${A.red}⊘ blocked${A.reset}` };
+              appendStatic([`${A.bold}Goal${A.reset}  ${marks[g.status] ?? ''}  ${A.dim}${g.createdAt.slice(0, 10)}${A.reset}`, `  ${g.objective}`, '']);
             }
             return;
           }
           if (arg === 'clear') { await clearGoal(); appendStatic([...formatInfoLine('goal cleared'), '']); return; }
           if (arg === 'pause') {
-            const g = getGoal();
-            if (g && g.status === 'active') { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'paused' } }); appendStatic([...formatInfoLine('goal paused'), '']); }
-            else { appendStatic([...formatInfoLine('no active goal to pause'), '']); }
+            const r = await svc.transition('paused');
+            appendStatic(r.ok ? [...formatInfoLine('goal paused'), ''] : [...formatInfoLine(r.message), '']);
             return;
           }
           if (arg === 'resume') {
-            const g = getGoal();
-            if (g && g.status === 'paused') { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'active' } }); appendStatic([...formatInfoLine('goal resumed'), '']); }
-            else { appendStatic([...formatInfoLine('no paused goal to resume'), '']); }
+            const r = await svc.transition('active');
+            appendStatic(r.ok ? [...formatInfoLine('goal resumed'), ''] : [...formatInfoLine(r.message), '']);
             return;
           }
           if (arg === 'complete' || arg === 'done') {
-            const g = getGoal();
-            if (g) { await session.mergeMetadata({ [GOAL_METADATA_KEY]: { ...g, status: 'complete' } }); appendStatic([...formatInfoLine('goal marked complete'), '']); }
+            // Complete is a runtime-only transition requiring evidence; the UI
+            // cannot mark a goal complete without evidence. Steer the user to
+            // let the agent complete it via UpdateGoal, or clear it instead.
+            appendStatic([...formatInfoLine('goal completion requires runtime evidence — ask the agent to call UpdateGoal with status "complete", or use /goal clear'), '']);
             return;
           }
           await setGoal(arg);
@@ -4218,6 +4440,42 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
         case 'plugins':
           await showPlugins();
           return;
+        case 'plugin': {
+          try {
+            const { PluginPackageManager } = await import('../plugins/pluginManager.js');
+            const manager = new PluginPackageManager(
+              path.join(sdk.config.homeDir, 'plugin-packages'),
+              process.env.ACTOVIQ_PLUGIN_REGISTRY,
+              sdk.config.effectivePolicy,
+            );
+            const result = await manager.execute(args || 'list');
+            appendStatic([
+              ...formatInfoLine(result.message),
+              ...(result.items ?? []).map(item => `  ${A.bold}${item.label}${A.reset}${item.description ? ` ${A.dim}· ${item.description}${A.reset}` : ''}`),
+              '',
+            ]);
+          } catch (error) {
+            appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
+          }
+          return;
+        }
+        case 'rules': {
+          try {
+            const { RuleCommandService } = await import('../context/ruleCommandService.js');
+            const result = await new RuleCommandService(
+              sdk.config.homeDir,
+              sdk.config.workDir,
+            ).execute(args || 'list');
+            appendStatic([
+              ...formatInfoLine(result.message),
+              ...(result.items ?? []).map(item => `  ${A.bold}${item.label}${A.reset}${item.description ? ` ${A.dim}· ${item.description}${A.reset}` : ''}`),
+              '',
+            ]);
+          } catch (error) {
+            appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
+          }
+          return;
+        }
         // ── v0.5.0: Dynamic Workflows ────────────────────────────
         case 'workflows': {
           const runSavedWorkflow = async (wfName: string, wfTask?: string): Promise<void> => {
@@ -4698,8 +4956,277 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
           appendStatic([...formatErrorLine('usage: /issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]'), '']);
           return;
         }
+        case 'assistant': {
+          const homeDir = sdk.config.homeDir;
+          const globalSession = await resolveGlobalAssistantSession();
+          if (args === 'sessions') {
+            const config = await readAssistantConfig(homeDir);
+            const sessions = (await globalAssistantSdk!.sessions.list()).filter(item => item.kind === 'manager');
+            appendStatic([
+              `${A.bold}Global Assistant Sessions${A.reset}`,
+              ...sessions.map(item => `${item.id === config.activeSessionId ? A.green + '●' : A.dim + '○'} ${item.id} · ${item.title} · ${item.messageCount} messages${A.reset}`),
+              '',
+            ]);
+            return;
+          }
+          if (args === 'new') {
+            const config = await readAssistantConfig(homeDir);
+            globalAssistantSession = await globalAssistantSdk!.createSession({
+              title: 'Assistant (Global)',
+              kind: 'manager',
+              metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
+              permissionMode: 'bypassPermissions',
+            });
+            await writeAssistantConfig({ ...config, activeSessionId: globalAssistantSession.id }, homeDir);
+            appendStatic([...formatInfoLine(`Global Assistant Session created: ${globalAssistantSession.id}`), '']);
+            return;
+          }
+          if (args.startsWith('resume ')) {
+            const id = args.slice('resume '.length).trim();
+            const found = (await globalAssistantSdk!.sessions.list())
+              .find(item => item.id === id && item.kind === 'manager');
+            if (!found) {
+              appendStatic([...formatErrorLine(`Global Assistant Session not found: ${id}`), '']);
+              return;
+            }
+            const config = await readAssistantConfig(homeDir);
+            globalAssistantSession = await globalAssistantSdk!.resumeSession(id, { permissionMode: 'bypassPermissions' });
+            await writeAssistantConfig({ ...config, activeSessionId: id }, homeDir);
+            appendStatic([...formatInfoLine(`Global Assistant Session selected: ${found.title}`), '']);
+            return;
+          }
+          const isTeam = args === 'team' || args.startsWith('team ');
+          const isChat = args === 'chat' || args.startsWith('chat ') || isTeam;
+          if (!isChat) {
+            appendStatic([...formatErrorLine('usage: /assistant [chat <message>|sessions|new|resume <id>|team <request>]'), '']);
+            return;
+          }
+          const prompt = isTeam
+            ? (args === 'team'
+              ? ''
+              : `Propose a Team Graph for this request. Use an explicit registered projectPath. ${args.slice('team'.length).trim()}`)
+            : args.slice('chat'.length).trim();
+          if (!prompt) {
+            appendStatic([...formatErrorLine(isTeam ? 'usage: /assistant team <request>' : 'usage: /assistant chat <message>'), '']);
+            return;
+          }
+          const proposals: import('../team/teamProposalService.js').TeamGraphProposal[] = [];
+          const tools = [
+            ...await createAssistantGlobalTools({ homeDir, currentWorkDir: sdk.config.workDir }),
+            ...createAssistantTeamTools({
+              scope: 'global',
+              assistantSessionId: globalSession.id,
+              currentWorkDir: sdk.config.workDir,
+              homeDir,
+              proposals: assistantTeamProposals,
+              onProposal: proposal => { proposals.push(proposal); },
+            }),
+          ];
+          try {
+            const config = await readAssistantConfig(homeDir);
+            const stream = globalSession.stream(prompt, {
+              systemPrompt: `${buildAssistantGlobalSystemPrompt(sdk.config.workDir)}\n${buildAssistantTeamSystemPrompt('global')}`,
+              tools,
+              ...(config.model ? { model: config.model } : {}),
+              __actoviqUseDefaultTools: false,
+              __actoviqAllowedTools: tools.map(item => item.name),
+            } as Parameters<typeof globalSession.stream>[1]);
+            for await (const event of stream) {
+              if (event.type === 'tool.call') appendStatic([`${A.dim}  ⚙ ${event.call.name}${A.reset}`]);
+            }
+            const result = await stream.result;
+            if (result.text) appendStatic([...renderRichText(result.text, screen.width), '']);
+            for (const proposal of proposals) {
+              appendStatic([
+                `${A.bold}Team proposal · ${proposal.teamName}${A.reset}`,
+                ...managerProposalDiffForTui(proposal),
+                '',
+              ]);
+              const choice = await selectItem({
+                title: `Team proposal "${proposal.teamName}"`,
+                subtitle: proposal.problems.length ? proposal.problems.join(' · ') : `Target: ${proposal.projectPath}`,
+                items: [
+                  ...(!proposal.problems.length
+                    ? [{ id: 'apply', label: 'Apply', description: 'check base version and save' }]
+                    : []),
+                  { id: 'reject', label: 'Reject', description: 'no file write' },
+                  { id: 'later', label: 'Keep pending', description: 'decide later' },
+                ],
+              });
+              if (choice === 'apply') {
+                const applied = await assistantTeamProposals.apply(proposal.id, homeDir);
+                appendStatic([...formatInfoLine(`Team saved: ${applied.filePath}`), '']);
+              } else if (choice === 'reject') {
+                assistantTeamProposals.reject(proposal.id);
+              }
+            }
+          } catch (error: any) {
+            appendStatic([...formatErrorLine(`Assistant error: ${error.message}`), '']);
+          }
+          return;
+        }
+        case 'diff': {
+          const sub = args || 'show';
+          try {
+            const diff = await sdk.getSessionDiff(session.id);
+            if (sub === 'show') {
+              appendStatic([
+                `${A.bold}Session Diff${A.reset}`,
+                ...(diff.files.length
+                  ? diff.files.map(file => `  ${file.status} ${file.path} ${A.green}+${file.additions}${A.reset} ${A.red}-${file.deletions}${A.reset}`)
+                  : [`  ${A.dim}(no changes)${A.reset}`]),
+                '',
+              ]);
+              return;
+            }
+            if (sub === 'apply --confirm') {
+              const result = await sdk.applySessionDiff(session.id);
+              appendStatic([
+                ...(result.applied ? formatInfoLine(result.message) : formatErrorLine(result.message)),
+                '',
+              ]);
+              return;
+            }
+            appendStatic([...formatErrorLine('usage: /diff show | apply --confirm'), '']);
+          } catch (error) {
+            appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
+          }
+          return;
+        }
+        case 'session': {
+          const [action, ...rest] = args.split(/\s+/);
+          if (!action) {
+            appendStatic([...formatErrorLine('usage: /session tree | fork <message-id> [label] | clone [label] | label <name> | rename <title> | pin [on|off] | archive | restore <id> | delete <id>'), '']);
+            return;
+          }
+          if (action === 'tree') {
+            const roots = await sdk.sessionGraph.roots();
+            const lines: string[] = [`${A.bold}Session Tree${A.reset}`];
+            const visit = (node: (typeof roots)[number], depth: number) => {
+              const marker = node.session.id === session.id ? `${A.green}*${A.reset}` : '-';
+              lines.push(`${'  '.repeat(depth)}${marker} ${node.session.branchName || node.session.title} ${A.dim}${node.session.id}${A.reset}`);
+              node.children.forEach(child => visit(child, depth + 1));
+            };
+            roots.forEach(root => visit(root, 0));
+            appendStatic([...lines, '']);
+            return;
+          }
+          if (action === 'fork') {
+            const messageId = rest.shift();
+            if (!messageId) {
+              const refs = await sdk.sessionGraph.ensureMessageIds(session.id);
+              appendStatic([
+                ...formatErrorLine('usage: /session fork <message-id> [label]'),
+                ...refs.map(ref => `  ${A.dim}${ref.id}${A.reset} · ${ref.message.role}`),
+                '',
+              ]);
+              return;
+            }
+            const forked = await sdk.sessionForks.forkAtMessage(session.id, messageId, {
+              branchName: rest.join(' ').trim() || undefined,
+            });
+            session = await sdk.resumeSession(forked.id);
+            appendStatic([...formatInfoLine(`Session branch created: ${forked.id}`), '']);
+            return;
+          }
+          if (action === 'clone') {
+            const cloned = await sdk.sessionForks.clone(session.id, {
+              branchName: rest.join(' ').trim() || undefined,
+            });
+            session = await sdk.resumeSession(cloned.id);
+            appendStatic([...formatInfoLine(`Session cloned: ${cloned.id}`), '']);
+            return;
+          }
+          if (action === 'label') {
+            const label = rest.join(' ').trim();
+            if (!label) {
+              appendStatic([...formatErrorLine('usage: /session label <name>'), '']);
+              return;
+            }
+            await sdk.sessionForks.label(session.id, label);
+            session = await sdk.resumeSession(session.id);
+            appendStatic([...formatInfoLine(`Session branch labeled: ${label}`), '']);
+            return;
+          }
+          const catalog = await interactiveSessionCatalog();
+          const all = await catalog.query({
+            types: ['user', 'assistant-global', 'assistant-project'],
+            archived: 'all',
+            pageSize: 200,
+          });
+          const targetId = action === 'restore' || action === 'delete' ? rest[0] : session.id;
+          const item = all.items.find(candidate => candidate.locator.sessionId === targetId);
+          if (!item) {
+            appendStatic([...formatErrorLine(`Session not found: ${targetId || ''}`), '']);
+            return;
+          }
+          if (action === 'rename') {
+            const title = rest.join(' ').trim();
+            if (!title) {
+              appendStatic([...formatErrorLine('usage: /session rename <title>'), '']);
+              return;
+            }
+            await catalog.action({ action: 'rename', locator: item.locator, title });
+            if (item.locator.sessionId === session.id) session = await sdk.resumeSession(session.id);
+          } else if (action === 'pin') {
+            await catalog.action({
+              action: 'pin',
+              locator: item.locator,
+              pinned: rest[0] === 'off' ? false : rest[0] === 'on' ? true : undefined,
+            });
+          } else if (action === 'archive') {
+            await catalog.action({ action: 'archive', locator: item.locator });
+            if (item.locator.sessionId === session.id) {
+              session = await sdk.createSession({ model: session.model, permissionMode: currentPermissionMode() });
+            }
+          } else if (action === 'restore') {
+            await catalog.action({ action: 'restore', locator: item.locator });
+          } else if (action === 'delete') {
+            await catalog.action({ action: 'delete', locator: item.locator });
+          } else {
+            appendStatic([...formatErrorLine(`unknown /session action: ${action}`), '']);
+            return;
+          }
+          appendStatic([...formatInfoLine(`Session ${action} complete.`), '']);
+          return;
+        }
         case 'manager': {
           const homeDir = sdk.config.homeDir;
+          if (args === 'sessions') {
+            const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            appendStatic([
+              `${A.bold}Manager Sessions${A.reset}`,
+              ...managers.map(item => `${item.id === cfg.activeSessionId ? A.green + '●' : A.dim + '○'} ${item.id} · ${item.title} · ${item.messageCount} messages${A.reset}`),
+              '',
+            ]);
+            return;
+          }
+          if (args === 'new') {
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            managerTuiSession = await sdk.createSession({
+              title: 'Manager',
+              kind: 'manager',
+              metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'project' },
+              permissionMode: 'bypassPermissions',
+            });
+            await writeManagerConfig(sdk.config.workDir, homeDir, { ...cfg, activeSessionId: managerTuiSession.id });
+            appendStatic([...formatInfoLine(`Manager Session created: ${managerTuiSession.id}`), '']);
+            return;
+          }
+          if (args.startsWith('resume ')) {
+            const id = args.slice('resume '.length).trim();
+            const found = (await sdk.sessions.list()).find(item => item.id === id && item.kind === 'manager');
+            if (!found) {
+              appendStatic([...formatErrorLine(`Manager Session not found: ${id}`), '']);
+              return;
+            }
+            const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
+            managerTuiSession = await sdk.resumeSession(id, { permissionMode: 'bypassPermissions' });
+            await writeManagerConfig(sdk.config.workDir, homeDir, { ...cfg, activeSessionId: id });
+            appendStatic([...formatInfoLine(`Manager Session selected: ${found.title}`), '']);
+            return;
+          }
           if (!args || args === 'status') {
             const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
             const plan = await readProjectPlanFile(sdk.config.workDir, homeDir);
@@ -4760,20 +5287,37 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
             ]);
             return;
           }
+          const isTeam = args === 'team' || args.startsWith('team ');
           const isUpdate = args === 'update' || args.startsWith('update ');
-          const isChat = args === 'chat' || args.startsWith('chat ');
+          const isChat = args === 'chat' || args.startsWith('chat ') || isTeam;
           if (isUpdate || isChat) {
             const arg = isUpdate
               ? (args === 'update' ? '' : args.slice('update'.length).trim())
-              : args.slice('chat'.length).trim();
+              : isTeam
+                ? (args === 'team'
+                  ? ''
+                  : `Propose a Team Graph for this request. Inspect existing Teams first when relevant. ${args.slice('team'.length).trim()}`)
+                : args.slice('chat'.length).trim();
             if (isChat && !arg) {
-              appendStatic([...formatErrorLine('usage: /manager chat <message>'), '']);
+              appendStatic([...formatErrorLine(isTeam ? 'usage: /manager team <request>' : 'usage: /manager chat <message>'), '']);
               return;
             }
             if (isUpdate) appendStatic([...formatInfoLine('Manager: updating progress documents…'), '']);
             try {
               const cfg = await readManagerConfig(sdk.config.workDir, homeDir);
-              const managerTools = await createManagerTools({ workDir: sdk.config.workDir, homeDir, config: cfg });
+              const turnProposals: import('../team/teamProposalService.js').TeamGraphProposal[] = [];
+              managerTuiSession = await resolveManagerTuiSession();
+              const managerTools = [
+                ...await createManagerTools({ workDir: sdk.config.workDir, homeDir, config: cfg }),
+                ...createAssistantTeamTools({
+                  scope: 'project',
+                  assistantSessionId: managerTuiSession.id,
+                  currentWorkDir: sdk.config.workDir,
+                  homeDir,
+                  proposals: assistantTeamProposals,
+                  onProposal: proposal => { turnProposals.push(proposal); },
+                }),
+              ];
               let prompt: string;
               if (isUpdate) {
                 // Host-collected context — the Manager itself has no shell.
@@ -4805,7 +5349,6 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               } else {
                 prompt = arg;
               }
-              managerTuiSession = await resolveManagerTuiSession();
               try {
                 const compactResult = await managerTuiSession.compact({});
                 if (compactResult.compacted) {
@@ -4813,7 +5356,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
                 }
               } catch { /* auto-compact is best-effort */ }
               const runOptions = {
-                systemPrompt: buildManagerSystemPrompt(sdk.config.workDir, cfg),
+                systemPrompt: `${buildManagerSystemPrompt(sdk.config.workDir, cfg)}\n${buildAssistantTeamSystemPrompt('project')}`,
                 tools: managerTools,
                 ...(cfg.model ? { model: cfg.model } : {}),
                 __actoviqUseDefaultTools: false,
@@ -4825,13 +5368,57 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
               }
               const result = await stream.result;
               if (result.text) appendStatic([...renderRichText(result.text, screen.width), '']);
+              for (const proposal of turnProposals) {
+                const diff = proposal.diff;
+                appendStatic([
+                  `${A.bold}Team proposal · ${proposal.teamName}${A.reset}`,
+                  `${A.dim}${proposal.explanation || '(no explanation)'}${A.reset}`,
+                  ...[
+                    ['+ nodes', diff.addedNodes],
+                    ['- nodes', diff.removedNodes],
+                    ['~ nodes', diff.changedNodes],
+                    ['+ edges', diff.addedEdges],
+                    ['- edges', diff.removedEdges],
+                    ['~ edges', diff.changedEdges],
+                  ].filter(([, values]) => (values as string[]).length)
+                    .map(([label, values]) => `${A.dim}${label}: ${(values as string[]).join(', ')}${A.reset}`),
+                  ...(proposal.problems.length
+                    ? proposal.problems.map(problem => `${A.red}invalid: ${problem}${A.reset}`)
+                    : []),
+                  '',
+                ]);
+                const choice = await selectItem({
+                  title: `Team proposal "${proposal.teamName}"`,
+                  subtitle: proposal.problems.length
+                    ? 'Invalid proposal — Apply is unavailable'
+                    : `Target: ${proposal.projectPath}`,
+                  items: [
+                    ...(!proposal.problems.length
+                      ? [{ id: 'apply', label: 'Apply', description: 'validate base version and write the Team definition' }]
+                      : []),
+                    { id: 'reject', label: 'Reject', description: 'discard without writing' },
+                    { id: 'later', label: 'Keep pending', description: 'do not write now' },
+                  ],
+                });
+                if (choice === 'apply') {
+                  try {
+                    const applied = await assistantTeamProposals.apply(proposal.id, homeDir);
+                    appendStatic([...formatInfoLine(`Team saved: ${applied.proposal.teamName} (${applied.filePath})`), '']);
+                  } catch (error: any) {
+                    appendStatic([...formatErrorLine(`Team apply failed: ${error.message}`), '']);
+                  }
+                } else if (choice === 'reject') {
+                  assistantTeamProposals.reject(proposal.id);
+                  appendStatic([...formatInfoLine('Team proposal rejected; no file was written.'), '']);
+                }
+              }
               if (isUpdate) appendStatic([...formatInfoLine(`progress updated · ${managerProgressPath(sdk.config.workDir, homeDir)}`), '']);
             } catch (error: any) {
               appendStatic([...formatErrorLine(`manager error: ${error.message}`), '']);
             }
             return;
           }
-          appendStatic([...formatErrorLine('usage: /manager [status|chat <message>|update [instruction]|config|schedule]'), '']);
+          appendStatic([...formatErrorLine('usage: /manager [status|chat <message>|update [instruction]|sessions|new|resume <id>|team <request>|config|schedule]'), '']);
           return;
         }
         default:
@@ -5234,6 +5821,7 @@ export async function runActoviqTui(options: ActoviqTuiOptions = {}): Promise<vo
     }
     const cleanupResults = await Promise.allSettled([
       sdk.close(),
+      ...(globalAssistantSdk ? [globalAssistantSdk.close()] : []),
       externalCliRuntimeManager.close(),
       ...[...externalBridgeRuntimes.values()].map(runtime => runtime.client.close()),
     ]);

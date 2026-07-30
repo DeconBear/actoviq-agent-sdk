@@ -132,6 +132,10 @@ import {
   writeManagerConfig,
   createAssistantGlobalTools,
   buildAssistantGlobalSystemPrompt,
+  createAssistantTeamTools,
+  buildAssistantTeamSystemPrompt,
+  TeamProposalStore,
+  SessionCatalog,
   readAssistantConfig,
   writeAssistantConfig,
   isAssistantScope,
@@ -183,6 +187,11 @@ import {
   updateProjectIssue,
   upsertAgentProfile,
   WorktreeService,
+  GoalService,
+  GOAL_METADATA_KEY,
+  normalizeGoal,
+  type Goal,
+  type GoalStatus,
   ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
   serializeActoviqSessionPermissionState,
   type ActoviqAgentClient,
@@ -298,6 +307,10 @@ import {
 import { probeManagedPlugin } from '../plugins/managedPluginHealth.js';
 import { createManagedPluginRuntime } from '../plugins/managedPluginRuntime.js';
 import { readPackageVersion } from '../cli/version.js';
+import {
+  createUnsupportedAppUpdateController,
+  type AppUpdateController,
+} from '../update/appUpdateService.js';
 import { discoverActoviqPlugins } from '../tui/pluginCatalog.js';
 import { ACTOVIQ_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
 import {
@@ -328,10 +341,16 @@ import {
   type ProjectStatus,
 } from './projectMeta.js';
 import {
+  addProjectWorkPath,
+  findWorkspaceProject,
   forgetWorkspaceFromRegistry,
   readWorkspaceRegistry,
+  removeProjectWorkPath,
   rememberWorkspace,
+  setProjectActiveWorkPath,
   setWorkspacePinned,
+  workspaceActiveWorkPath,
+  workspaceWorkPaths,
 } from './workspaceRegistry.js';
 import { resolveGuiAssetsDir } from './guiAssets.js';
 import { getTranscriptClientScript, getTranscriptStyles } from './transcript/index.js';
@@ -453,6 +472,8 @@ export interface ActoviqGuiOptions {
   model?: string;
   resumeSessionId?: string;
   continueMostRecent?: boolean;
+  /** Electron-only update bridge. Browser/dev launches receive a read-only unsupported state. */
+  appUpdater?: AppUpdateController;
 }
 
 export interface ActoviqGuiServer {
@@ -1256,9 +1277,10 @@ async function projectSessionOverview(
   workDir: string,
   homeDir: string,
   recentLimit = 3,
+  workPaths: string[] = [workDir],
 ): Promise<{ count: number; lastUsedAt: string; recentSessions: SidebarRecentSession[] }> {
   const projectRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
-  const workKey = normalizeFsPath(workDir);
+  const workKeys = new Set(workPaths.map(normalizeFsPath));
   let count = 0;
   let lastUsedAt = '';
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
@@ -1266,7 +1288,7 @@ async function projectSessionOverview(
   // Single directory pass — previously stats + recents each readdir+parsed every JSON.
   for (const item of await listStoredSessionFiles(projectRoot)) {
     if (item.messageCount === 0 || !isVisibleChatSession(item)) continue;
-    if (item.workDir && normalizeFsPath(item.workDir) !== workKey) continue;
+    if (item.workDir && !workKeys.has(normalizeFsPath(item.workDir))) continue;
     count += 1;
     lastUsedAt = maxIso(lastUsedAt, item.updatedAt || '');
     candidates.push({
@@ -1298,6 +1320,8 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
   const projects = new Map<string, {
     name: string;
     path: string;
+    workPaths: string[];
+    activeWorkPath: string;
     sessionCount: number;
     active: boolean;
     pinned: boolean;
@@ -1308,15 +1332,30 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     issueCounts: { total: number; open: number; review: number; closed: number };
   }>();
   const maxIso = (a: string, b: string) => (!a ? b : !b ? a : (a > b ? a : b));
-  const addProject = (projectPath: string, sessionCount = 0, lastUsedAt = '', pinned = false) => {
+  const addProject = (
+    projectPath: string,
+    sessionCount = 0,
+    lastUsedAt = '',
+    pinned = false,
+    workPaths: string[] = [projectPath],
+    activeWorkPath = projectPath,
+  ) => {
     const resolved = path.resolve(projectPath);
+    const resolvedWorkPaths = [...new Set(workPaths.map(candidate => path.resolve(candidate)))];
+    const resolvedActiveWorkPath = resolvedWorkPaths.find(candidate =>
+      normalizeFsPath(candidate) === normalizeFsPath(activeWorkPath)
+    ) ?? resolved;
     const key = normalizeFsPath(resolved);
     const existing = projects.get(key);
     projects.set(key, {
       name: path.basename(resolved) || resolved,
       path: resolved,
+      workPaths: existing?.workPaths ?? resolvedWorkPaths,
+      activeWorkPath: normalizeFsPath(current) === normalizeFsPath(resolvedActiveWorkPath)
+        ? current
+        : (existing?.activeWorkPath ?? resolvedActiveWorkPath),
       sessionCount: Math.max(existing?.sessionCount ?? 0, sessionCount),
-      active: normalizeFsPath(resolved) === normalizeFsPath(current),
+      active: resolvedWorkPaths.some(candidate => normalizeFsPath(candidate) === normalizeFsPath(current)),
       pinned: Boolean(existing?.pinned || pinned),
       lastUsedAt: maxIso(existing?.lastUsedAt ?? '', lastUsedAt),
       note: existing?.note ?? '',
@@ -1325,14 +1364,33 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
       issueCounts: existing?.issueCounts ?? { total: 0, open: 0, review: 0, closed: 0 },
     });
   };
-  addProject(current, 0);
 
   // Only remembered + current workspaces — never scan every ~/.actoviq/projects/*
   // hash (bench pollution made project open O(all historical dirs)).
   const registry = await readWorkspaceRegistry(homeDir);
+  const currentProject = findWorkspaceProject(registry, current);
+  if (currentProject) {
+    addProject(
+      currentProject.path,
+      0,
+      currentProject.lastOpenedAt,
+      currentProject.pinned === true,
+      workspaceWorkPaths(currentProject),
+      current,
+    );
+  } else {
+    addProject(current, 0);
+  }
   await Promise.all(registry.map(async (entry) => {
     if (!(await pathExists(entry.path))) return;
-    addProject(entry.path, 0, entry.lastOpenedAt, entry.pinned === true);
+    addProject(
+      entry.path,
+      0,
+      entry.lastOpenedAt,
+      entry.pinned === true,
+      workspaceWorkPaths(entry),
+      workspaceActiveWorkPath(entry),
+    );
   }));
 
   const rows = [...projects.values()];
@@ -1348,7 +1406,7 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
     });
     const [note, overview, meta] = await Promise.all([
       readWorkspaceNote(project.path, homeDir),
-      projectSessionOverview(project.path, homeDir, 3),
+      projectSessionOverview(project.path, homeDir, 3, project.workPaths),
       readProjectMeta(project.path, homeDir),
     ]);
     project.note = note;
@@ -1937,6 +1995,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   const port = options.port ?? DEFAULT_PORT;
   const permissionMode: ActoviqPermissionMode = options.permissionMode ?? 'bypassPermissions';
   const authToken = randomBytes(32).toString('hex');
+  const appUpdater = options.appUpdater ?? createUnsupportedAppUpdateController(
+    readPackageVersion(import.meta.url),
+    'Automatic updates are available only in a packaged Actoviq desktop app.',
+  );
   let guiWorkMode: 'coding' | 'daily' = 'coding';
   let systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
   let guiHomeOverride: string | undefined;
@@ -1956,6 +2018,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     guiHomeOverride
       ? resolveActoviqHome(guiHomeOverride, { inputKind: 'dataRoot' })
       : resolveActoviqHome(options.homeDir);
+  let projectPrimaryPath = workDir;
+  const refreshProjectPrimaryPath = async (
+    candidateWorkPath = workDir,
+    homeDir = resolveGuiHomeDir(),
+  ): Promise<string> => {
+    const registered = findWorkspaceProject(
+      await readWorkspaceRegistry(homeDir),
+      candidateWorkPath,
+    );
+    projectPrimaryPath = registered?.path ?? path.resolve(candidateWorkPath);
+    return projectPrimaryPath;
+  };
+  await refreshProjectPrimaryPath();
   const migratedProjectData = new Set<string>();
   const ensureProjectDataMigrated = async (
     projectPath: string,
@@ -2056,6 +2131,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return createAgentSdk({
       ...(currentHomeInput() ? { homeDir: currentHomeInput() } : {}),
       workDir,
+      sessionDirectory: getActoviqProjectSessionDirectory(projectPrimaryPath, resolveGuiHomeDir()),
       tools,
       permissionMode,
       externalSkills: externalSkillPreferencesToRuntimeOptions(externalSkillPreferences),
@@ -2077,7 +2153,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return pending;
   }
   let credentiallessSessionStore = new SessionStore(
-    await ensureProjectDataMigrated(workDir),
+    await ensureProjectDataMigrated(projectPrimaryPath),
   );
   const unavailableWithoutHadamardCredential = (): never => {
     throw new Error('This operation requires a configured Hadamard provider credential.');
@@ -2333,6 +2409,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   // Same session → context survives switching bridge↔hadamard. No child process.
   let bridgeMode = false;
   let activeBridgeConfig: PersistedBridgeConfig | null = null;
+  // Set only when the user selected a named picker entry. A plain config/model
+  // selection must not inherit sampling overrides from a profile that happens
+  // to reference the same model.
+  let activeAgentSelectionName: string | null = null;
   let activeBridgeModelApi: Awaited<ReturnType<typeof buildRouteModelApi>> | null = null;
   let bridgeModelLabel: string | null = null;
   const externalCliRuntimeManager = options.externalCliRuntimeManager
@@ -2688,19 +2768,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
     const resolved = await resolveWorkspaceDirectory(nextWorkDir);
     const previousWorkDir = workDir;
+    const previousProjectPrimaryPath = projectPrimaryPath;
     const previousSystemPrompt = systemPrompt;
     const previousSdk = sdk;
     const previousSession = session;
     const previousNeedsCredentials = needsCredentials;
     const previousToolMetadata = toolMetadata;
     workDir = resolved;
+    await refreshProjectPrimaryPath(resolved);
     systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
     routedModelLabel = null;
     managerGuiSession = null;
-    managerDedupeTriggered = false;
     try {
       await rebuildTools();
       try {
@@ -2732,7 +2813,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         // (External CLI / browse-only). Point the credentialless store at the
         // new project so sessions stay scoped correctly.
         credentiallessSessionStore = new SessionStore(
-          await ensureProjectDataMigrated(workDir),
+          await ensureProjectDataMigrated(projectPrimaryPath),
         );
         needsCredentials = true;
         sdk = null;
@@ -2746,6 +2827,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       }
     } catch (error) {
       workDir = previousWorkDir;
+      projectPrimaryPath = previousProjectPrimaryPath;
       systemPrompt = previousSystemPrompt;
       sdk = previousSdk;
       session = previousSession;
@@ -2777,12 +2859,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return isEffort(stored) ? stored : sdk?.config.effort;
   };
   const currentAgentSamplingOverrides = () => {
-    const agent = activeBridgeConfig
-      ? matchSelectableAgent(
-        activeBridgeConfig.name,
-        activeBridgeConfig.model || bridgeModelLabel,
-        resolveGuiHomeDir(),
-      )
+    const agent = activeAgentSelectionName
+      ? findSelectableAgent(activeAgentSelectionName, resolveGuiHomeDir())
       : undefined;
     const fromAgent = agentProfileRunOverrides(agent);
     return {
@@ -2949,8 +3027,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const bridgeConfigs = readBridgeConfigs(homeDir).configs;
     const agentProfiles = listAgentProfiles(homeDir);
     const selectableAgents = listSelectableAgents(homeDir);
-    const activeAgent = activeBridgeConfig
-      ? matchSelectableAgent(activeBridgeConfig.name, activeBridgeConfig.model || bridgeModelLabel, homeDir) ?? null
+    const activeAgent = activeAgentSelectionName
+      ? findSelectableAgent(activeAgentSelectionName, homeDir) ?? null
       : null;
     // Hide 0-message conversations entirely — they're auto-cleaned on the
     // backend (cleanupStoredEmptySessions), and showing empty chats in the
@@ -2963,6 +3041,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     const activeProject = heavy.projects.find(project => project.active);
     return {
       workDir,
+      projectPath: activeProject?.path ?? projectPrimaryPath,
+      projectWorkPaths: activeProject?.workPaths ?? [workDir],
+      activeWorkPath: workDir,
       session: sessionView(session),
       permissionMode: currentPermissionMode(),
       effort: currentEffort() ?? 'auto',
@@ -2974,7 +3055,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       commandUsages: Object.fromEntries(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS).map(name => [name, commandUsage(name)])),
       tools: toolMetadata,
       projects: heavy.projects,
-      projectPlan: await readProjectPlan(workDir, homeDir),
+      projectPlan: await readProjectPlan(projectPrimaryPath, homeDir),
       issueSummary: activeProject?.issueCounts ?? { total: 0, open: 0, review: 0, closed: 0 },
       sessions,
       archivedSessions,
@@ -3000,6 +3081,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
         browser: readActoviqBrowserSettings(store?.raw ?? {}),
         bridge: store?.raw?.bridge ?? {},
+        sandbox: sdk
+          ? {
+              policy: sdk.config.sandbox,
+              capability: sdk.config.sandboxCapabilities,
+            }
+          : null,
+        policy: sdk?.config.effectivePolicy ?? null,
         dataRoot: {
           root: homeDir,
           pointerPath: getActoviqHomePointerPath(pointerHomeDir()),
@@ -3330,7 +3418,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   let managerGuiSession: AgentSession | null = null;
   let assistantGlobalSdk: ActoviqAgentClient | null = null;
   let assistantGlobalSession: AgentSession | null = null;
-  let managerDedupeTriggered = false;
+  const teamProposals = new TeamProposalStore();
 
   function managerHomeDir(): string {
     return resolveGuiHomeDir();
@@ -3338,6 +3426,74 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
   function assistantSessionDirectory(homeDir = managerHomeDir()): string {
     return path.join(homeDir, 'assistant');
+  }
+
+  async function createSessionCenterCatalog(): Promise<SessionCatalog> {
+    const homeDir = managerHomeDir();
+    const registry = await readWorkspaceRegistry(homeDir);
+    const projectPaths = uniquePaths([workDir, ...registry.map(item => item.path)]);
+    const runningSessionIds = new Set(
+      [...runs.values()]
+        .filter(run => run.desc.status === 'running')
+        .map(run => run.desc.sessionId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    );
+    const waitingSessionIds = new Set<string>();
+    await Promise.all(projectPaths.map(async projectPath => {
+      const root = getActoviqProjectSessionDirectory(projectPath, homeDir);
+      const tasks = await new BackgroundTaskStore(root).list().catch(() => []);
+      for (const task of tasks) {
+        if (task.status !== 'queued') continue;
+        if (task.sessionId) waitingSessionIds.add(task.sessionId);
+        if (task.parentSessionId) waitingSessionIds.add(task.parentSessionId);
+      }
+    }));
+    return new SessionCatalog({
+      homeDir,
+      projectPaths,
+      globalAssistantRoot: assistantSessionDirectory(homeDir),
+      activity: { runningSessionIds, waitingSessionIds },
+    });
+  }
+
+  async function selectAssistantCatalogItem(
+    item: import('../storage/sessionCatalog.js').SessionCatalogItem,
+  ): Promise<void> {
+    const homeDir = managerHomeDir();
+    if (item.type === 'assistant-global') {
+      const config = await readAssistantConfig(homeDir);
+      await writeAssistantConfig({ ...config, activeSessionId: item.locator.sessionId }, homeDir);
+      assistantGlobalSession = null;
+      return;
+    }
+    if (item.type === 'assistant-project' && item.projectPath) {
+      const config = await readManagerConfig(item.projectPath, homeDir);
+      await writeManagerConfig(item.projectPath, homeDir, {
+        ...config,
+        activeSessionId: item.locator.sessionId,
+      });
+      if (normalizeFsPath(item.projectPath) === normalizeFsPath(projectPrimaryPath)) managerGuiSession = null;
+    }
+  }
+
+  async function selectAssistantFallback(
+    item: import('../storage/sessionCatalog.js').SessionCatalogItem,
+    catalog: SessionCatalog,
+  ): Promise<void> {
+    if (item.type !== 'assistant-global' && item.type !== 'assistant-project') return;
+    const sameType = await catalog.query({
+      types: [item.type],
+      archived: false,
+      ...(item.projectPath ? { projectPaths: [item.projectPath] } : {}),
+      pageSize: 1,
+    });
+    const next = sameType.items[0] ?? await catalog.action({
+      action: 'create',
+      type: item.type,
+      ...(item.projectPath ? { projectPath: item.projectPath } : {}),
+      model: session.model,
+    });
+    await selectAssistantCatalogItem(next);
   }
 
   async function closeAssistantGlobalSdk(): Promise<void> {
@@ -3352,33 +3508,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     await closeAssistantGlobalSdk();
   }
 
-  async function dedupeManagerSessions(): Promise<string | undefined> {
-    if (!sdk) return undefined;
-    const managers = (await sdk.sessions.list()).filter(item => item.kind === 'manager');
-    if (managers.length === 0) return undefined;
-    managers.sort((a, b) => {
-      if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
-      return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-    });
-    const keep = managers[0]!;
-    for (const dup of managers.slice(1)) {
-      await sdk.sessions.delete(dup.id).catch(() => undefined);
-    }
-    return keep.id;
-  }
-
   async function getManagerSession(): Promise<AgentSession> {
     if (managerGuiSession) return managerGuiSession;
-    await dedupeManagerSessions();
+    const homeDir = managerHomeDir();
+    const config = await readManagerConfig(projectPrimaryPath, homeDir);
     const stored = await sdk!.sessions.list();
-    const existing = stored
+    const managers = stored
       .filter(item => item.kind === 'manager')
-      .sort((a, b) => {
-        if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
-        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-      })[0];
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = managers.find(item => item.id === config.activeSessionId) ?? managers[0];
     if (existing) {
       managerGuiSession = await sdk!.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      if (config.activeSessionId !== existing.id) {
+        await writeManagerConfig(projectPrimaryPath, homeDir, { ...config, activeSessionId: existing.id });
+      }
       return managerGuiSession;
     }
     managerGuiSession = await sdk!.createSession({
@@ -3387,6 +3530,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'project' },
       permissionMode: 'bypassPermissions',
     });
+    await writeManagerConfig(projectPrimaryPath, homeDir, { ...config, activeSessionId: managerGuiSession.id });
     return managerGuiSession;
   }
 
@@ -3412,15 +3556,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   async function getAssistantGlobalSession(): Promise<AgentSession> {
     if (assistantGlobalSession) return assistantGlobalSession;
     const client = await getAssistantGlobalSdk();
+    const homeDir = managerHomeDir();
+    const config = await readAssistantConfig(homeDir);
     const stored = await client.sessions.list();
-    const existing = stored
+    const managers = stored
       .filter(item => item.kind === 'manager')
-      .sort((a, b) => {
-        if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount;
-        return (b.updatedAt || '').localeCompare(a.updatedAt || '');
-      })[0];
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const existing = managers.find(item => item.id === config.activeSessionId) ?? managers[0];
     if (existing) {
       assistantGlobalSession = await client.resumeSession(existing.id, { permissionMode: 'bypassPermissions' });
+      if (config.activeSessionId !== existing.id) {
+        await writeAssistantConfig({ ...config, activeSessionId: existing.id }, homeDir);
+      }
       return assistantGlobalSession;
     }
     assistantGlobalSession = await client.createSession({
@@ -3429,6 +3576,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       metadata: { __actoviqKind: 'manager', __actoviqAssistantScope: 'global' },
       permissionMode: 'bypassPermissions',
     });
+    await writeAssistantConfig({ ...config, activeSessionId: assistantGlobalSession.id }, homeDir);
     return assistantGlobalSession;
   }
 
@@ -3593,8 +3741,19 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
 
     if (scope === 'global') {
       const cfg = await readAssistantConfig(homeDir);
-      managerTools = await createAssistantGlobalTools(buildAssistantGlobalHost(homeDir));
-      systemPrompt = buildAssistantGlobalSystemPrompt(workDir);
+      managerSession = await getAssistantGlobalSession();
+      managerTools = [
+        ...await createAssistantGlobalTools(buildAssistantGlobalHost(homeDir)),
+        ...createAssistantTeamTools({
+          scope: 'global',
+          assistantSessionId: managerSession.id,
+          currentWorkDir: workDir,
+          homeDir,
+          proposals: teamProposals,
+          onProposal: proposal => opts.send({ type: 'team.proposal', proposal }),
+        }),
+      ];
+      systemPrompt = `${buildAssistantGlobalSystemPrompt(workDir)}\n${buildAssistantTeamSystemPrompt('global')}`;
       prompt = opts.text?.trim() ?? '';
       if (!prompt) throw new Error('Empty assistant message.');
       managerModel = cfg.model ?? session.model ?? null;
@@ -3619,17 +3778,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           managerModelApi = routed.modelApi;
         }
       }
-      managerSession = await getAssistantGlobalSession();
     } else {
-      const cfg = await readManagerConfig(workDir, homeDir);
-      const managerIssueStorage = await issueStorageFor(workDir, homeDir);
-      managerTools = await createManagerTools({ workDir, homeDir, config: cfg, issueStorageMode: managerIssueStorage });
-      systemPrompt = buildManagerSystemPrompt(workDir, cfg);
+      const cfg = await readManagerConfig(projectPrimaryPath, homeDir);
+      const managerIssueStorage = await issueStorageFor(projectPrimaryPath, homeDir);
+      managerSession = await getManagerSession();
+      managerTools = [
+        ...await createManagerTools({
+          projectPath: projectPrimaryPath,
+          workDir,
+          homeDir,
+          config: cfg,
+          issueStorageMode: managerIssueStorage,
+        }),
+        ...createAssistantTeamTools({
+          scope: 'project',
+          assistantSessionId: managerSession.id,
+          currentWorkDir: workDir,
+          homeDir,
+          proposals: teamProposals,
+          onProposal: proposal => opts.send({ type: 'team.proposal', proposal }),
+        }),
+      ];
+      systemPrompt = `${buildManagerSystemPrompt(workDir, cfg)}\n${buildAssistantTeamSystemPrompt('project')}`;
       if (opts.mode === 'update') {
         const { gitSummary, conversationSummaries, sessionSummaries } = await collectManagerHostContext();
-        const plan = await readProjectPlanFile(workDir, homeDir);
-        const progress = await readProgressFile(workDir, homeDir);
-        const issues = await listProjectIssues(workDir, homeDir, managerIssueStorage);
+        const plan = await readProjectPlanFile(projectPrimaryPath, homeDir);
+        const progress = await readProgressFile(projectPrimaryPath, homeDir);
+        const issues = await listProjectIssues(projectPrimaryPath, homeDir, managerIssueStorage);
         const githubDigest = await resolveGitHubDigestForUpdate(workDir, opts.instruction);
         prompt = buildUpdateProgressPrompt({
           instruction: opts.instruction,
@@ -3677,7 +3852,6 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           managerModelApi = routed.modelApi;
         }
       }
-      managerSession = await getManagerSession();
     }
 
     const runId = 'r-mgr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -3960,16 +4134,18 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   function disableBridge(): void {
     bridgeMode = false;
     activeBridgeConfig = null;
+    activeAgentSelectionName = null;
     activeBridgeModelApi = null;
     bridgeModelLabel = null;
     // session context stays intact — switching back to the default provider.
   }
 
   // ── Goal: session-scoped objective stored in session metadata ─────────
-  const GOAL_METADATA_KEY = '__actoviqGoal';
   const RUNTIME_METADATA_KEY = '__actoviqRuntime';
   const CONFIG_NAME_METADATA_KEY = '__actoviqConfigName';
   const RUNTIME_MODEL_METADATA_KEY = '__actoviqRuntimeModel';
+  const AGENT_SELECTION_METADATA_KEY = '__actoviqAgentSelection';
+  const ROUTER_NAME_METADATA_KEY = '__actoviqRouterName';
   const EXTERNAL_SESSION_METADATA_KEY = '__actoviqExternalSessionId';
   const EXTERNAL_SESSIONS_METADATA_KEY = '__actoviqExternalSessions';
   interface ExternalSessionBinding {
@@ -4079,6 +4255,8 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         [RUNTIME_METADATA_KEY]: config?.runtime ?? 'hadamard',
         [CONFIG_NAME_METADATA_KEY]: config?.name ?? null,
         [RUNTIME_MODEL_METADATA_KEY]: config?.model ?? modelLabel ?? null,
+        [AGENT_SELECTION_METADATA_KEY]: activeAgentSelectionName,
+        [ROUTER_NAME_METADATA_KEY]: activeRouter?.name ?? null,
       });
     } catch {
       // never fail a turn over metadata write
@@ -4086,19 +4264,38 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
   async function restoreSessionRuntimeSelection(): Promise<void> {
     const configName = session.metadata[CONFIG_NAME_METADATA_KEY];
+    const routerName = session.metadata[ROUTER_NAME_METADATA_KEY];
+    const storedRouter = typeof routerName === 'string' && routerName.trim()
+      ? loadRouterProfile(routerName.trim(), workDir, resolveGuiHomeDir())
+      : null;
     if (typeof configName !== 'string' || !configName.trim()) {
       disableBridge();
+      activeRouter = storedRouter?.profile ?? null;
+      routedModelLabel = null;
       return;
     }
     const stored = findBridgeConfig(configName, resolveGuiHomeDir());
     if (!stored) {
       disableBridge();
+      activeRouter = storedRouter?.profile ?? null;
+      routedModelLabel = null;
       return;
     }
+    activeRouter = null;
+    routedModelLabel = null;
     const model = session.metadata[RUNTIME_MODEL_METADATA_KEY];
     const config = typeof model === 'string' && model.trim()
       ? { ...stored, model: model.trim() }
       : stored;
+    const storedAgentName = session.metadata[AGENT_SELECTION_METADATA_KEY];
+    const storedAgent = typeof storedAgentName === 'string'
+      ? findSelectableAgent(storedAgentName, resolveGuiHomeDir())
+      : undefined;
+    activeAgentSelectionName = storedAgent
+      && storedAgent.bridgeConfig === config.name
+      && storedAgent.model === config.model
+      ? storedAgent.name
+      : null;
     try {
       await activateBridgeConfig(config);
     } catch {
@@ -4412,32 +4609,20 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     };
   }
 
-  type GoalStatus = 'active' | 'paused' | 'complete';
-  interface SessionGoal { objective: string; status: GoalStatus; setAt: string }
-  function getGoal(): SessionGoal | null {
-    const raw = session.metadata[GOAL_METADATA_KEY];
-    if (typeof raw === 'string') {
-      try { return JSON.parse(raw) as SessionGoal; } catch { /* ignore */ }
-    }
-    if (typeof raw === 'object' && raw !== null) return raw as SessionGoal;
-    return null;
+  function goalService(): GoalService {
+    return GoalService.forSession(session);
   }
-  async function setGoal(objective: string): Promise<SessionGoal> {
-    const goal: SessionGoal = { objective, status: 'active', setAt: new Date().toISOString() };
-    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
-    return goal;
+  function getGoal(): Goal | null {
+    return normalizeGoal(session.metadata[GOAL_METADATA_KEY], new Date().toISOString());
+  }
+  async function setGoal(objective: string): Promise<Goal> {
+    return goalService().create({ objective });
   }
   async function clearGoal(): Promise<void> {
-    // mergeMetadata can't delete a key; setting undefined clears it functionally
-    // (getGoal treats falsy as null) and JSON.stringify drops it on save.
-    await session.mergeMetadata({ [GOAL_METADATA_KEY]: undefined });
+    await goalService().clear();
   }
-  async function setGoalStatus(status: GoalStatus): Promise<SessionGoal | null> {
-    const goal = getGoal();
-    if (!goal) return null;
-    goal.status = status;
-    await session.mergeMetadata({ [GOAL_METADATA_KEY]: goal });
-    return goal;
+  async function transitionGoal(status: 'active' | 'paused') {
+    return goalService().transition(status);
   }
 
   // ── Batch: read a file and return its prompts for sequential execution ─
@@ -4490,6 +4675,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             return runtimeMutationCommand(async () => {
               activeRouter = null;
               routedModelLabel = null;
+              await persistSessionRuntimeMetadata();
               return [{ type: 'notice', message: 'router off; using the fixed model' }];
             });
           }
@@ -4507,8 +4693,10 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const loaded = loadRouterProfile(routerArg, workDir);
           if (!loaded) return [{ type: 'error', message: `router profile not found: ${routerArg}` }];
           return runtimeMutationCommand(async () => {
+            disableBridge();
             activeRouter = loaded.profile;
             routedModelLabel = null;
+            await persistSessionRuntimeMetadata();
             return [{ type: 'notice', message: `router active: ${loaded.profile.name}` }];
           });
         }
@@ -4533,6 +4721,30 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           ? runtimeMutationCommand(() => setPermissionPreset(args.toLowerCase().replace(/[ _]/g, '-')))
           : [{ type: 'command.result', title: 'Permissions', text: `current: ${currentPermissionMode()}` }];
       case 'sessions': {
+        if (args) {
+          const value = (flag: string) => args.match(new RegExp(`(?:^|\\s)--${flag}\\s+("[^"]+"|\\S+)`))?.[1]?.replace(/^"|"$/g, '');
+          const rawType = value('type') || 'user';
+          const page = await (await createSessionCenterCatalog()).query({
+            types: rawType === 'all'
+              ? ['user', 'assistant-global', 'assistant-project', 'agent']
+              : [rawType as import('../storage/sessionCatalog.js').SessionCatalogType],
+            archived: value('archived') === 'all' ? 'all' : value('archived') === 'archived',
+            ...(value('project') ? { projectPaths: [value('project')!] } : {}),
+            ...(value('status')
+              ? { runtimeStatuses: [value('status') as import('../storage/sessionCatalog.js').SessionCatalogRuntimeStatus] }
+              : {}),
+            keyword: value('query'),
+            pageSize: 200,
+          });
+          return [{
+            type: 'command.result',
+            title: 'Session Center',
+            items: page.items.map(item => ({
+              label: item.locator.sessionId,
+              description: `${item.projectName} · ${item.type} · ${item.title}${item.archived ? ' · archived' : ''}`,
+            })),
+          }];
+        }
         const sessions = await listGuiSessions();
         return [{
           type: 'command.result',
@@ -4568,7 +4780,42 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }];
       case 'memory':
         if (!sdk) return [{ type: 'error', message: 'Memory compaction requires a configured Hadamard provider credential.' }];
+        if (/^(proposals|apply|reject)\b/u.test(args)) {
+          try {
+            const { MemoryProposalCommandService } = await import('../memory/memoryProposalCommandService.js');
+            const result = await new MemoryProposalCommandService(
+              sdk.config.homeDir,
+              workDir,
+            ).execute(args);
+            return [{
+              type: 'command.result',
+              title: 'Memory proposals',
+              text: result.message,
+              items: result.items,
+            }, { type: 'state' }];
+          } catch (error) {
+            return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
+          }
+        }
         return [{ type: 'command.result', title: 'Memory', text: JSON.stringify(await session.compactState(), null, 2) }];
+      case 'rules': {
+        if (!sdk) return [{ type: 'error', message: 'Rules require a configured Hadamard provider.' }];
+        try {
+          const { RuleCommandService } = await import('../context/ruleCommandService.js');
+          const result = await new RuleCommandService(
+            sdk.config.homeDir,
+            workDir,
+          ).execute(args || 'list');
+          return [{
+            type: 'command.result',
+            title: 'Rules',
+            text: result.message,
+            items: result.items,
+          }, { type: 'state' }];
+        } catch (error) {
+          return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
+        }
+      }
       case 'compact': {
         if (!sdk) return [{ type: 'error', message: 'Compaction requires a configured Hadamard provider credential.' }];
         const result = await session.compact({ force: true, summaryInstructions: args || undefined });
@@ -4629,6 +4876,25 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             detail: plugin.path,
           })),
         }];
+      }
+      case 'plugin': {
+        try {
+          const { PluginPackageManager } = await import('../plugins/pluginManager.js');
+          const manager = new PluginPackageManager(
+            path.join(resolveGuiHomeDir(), 'plugin-packages'),
+            process.env.ACTOVIQ_PLUGIN_REGISTRY,
+            sdk?.config.effectivePolicy,
+          );
+          const result = await manager.execute(args || 'list');
+          return [{
+            type: 'command.result',
+            title: 'Plugin packages',
+            text: result.message,
+            items: result.items,
+          }, { type: 'state' }];
+        } catch (error) {
+          return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
+        }
       }
       case 'workflows': {
         if (args.startsWith('run ')) {
@@ -4801,26 +5067,200 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         }
         return [{ type: 'error', message: 'usage: /issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]' }];
       }
+      case 'assistant': {
+        const catalog = await createSessionCenterCatalog();
+        if (args === 'sessions') {
+          const page = await catalog.query({
+            types: ['assistant-global'],
+            archived: false,
+            pageSize: 200,
+          });
+          const active = (await readAssistantConfig(managerHomeDir())).activeSessionId;
+          return [{
+            type: 'command.result',
+            title: 'Global Assistant Sessions',
+            items: page.items.map(item => ({
+              label: item.locator.sessionId === active
+                ? `${item.locator.sessionId} (current)`
+                : item.locator.sessionId,
+              description: item.title,
+            })),
+          }];
+        }
+        if (args === 'new') {
+          const item = await catalog.action({
+            action: 'create',
+            type: 'assistant-global',
+            model: session.model,
+          });
+          await selectAssistantCatalogItem(item);
+          return [{ type: 'notice', message: `Global Assistant Session created: ${item.locator.sessionId}` }];
+        }
+        if (args.startsWith('resume ')) {
+          const id = args.slice('resume '.length).trim();
+          const page = await catalog.query({
+            types: ['assistant-global'],
+            archived: false,
+            pageSize: 200,
+          });
+          const item = page.items.find(candidate => candidate.locator.sessionId === id);
+          if (!item) return [{ type: 'error', message: `Global Assistant Session not found: ${id}` }];
+          await selectAssistantCatalogItem(item);
+          return [{ type: 'notice', message: `Global Assistant Session selected: ${item.title}` }];
+        }
+        if (args === 'chat' || args === 'team') {
+          return [{ type: 'error', message: `usage: /assistant ${args} <message>` }];
+        }
+        return [{ type: 'error', message: 'usage: /assistant [chat <message>|sessions|new|resume <id>|team <request>]' }];
+      }
+      case 'session': {
+        const [action, ...rest] = args.split(/\s+/);
+        if (!action) {
+          return [{ type: 'error', message: 'usage: /session tree | fork <message-id> [label] | clone [label] | label <name> | rename <title> | pin [on|off] | archive | restore <id> | delete <id>' }];
+        }
+        if (!sdk) {
+          return [{ type: 'error', message: 'Session branching requires a configured Hadamard provider.' }];
+        }
+        if (action === 'tree') {
+          const roots = await sdk.sessionGraph.roots();
+          const items: Array<{ label: string; description: string }> = [];
+          const visit = (node: (typeof roots)[number], depth: number) => {
+            items.push({
+              label: `${'  '.repeat(depth)}${node.session.id === session.id ? '●' : '○'} ${node.session.branchName || node.session.title}`,
+              description: node.session.id,
+            });
+            node.children.forEach(child => visit(child, depth + 1));
+          };
+          roots.forEach(root => visit(root, 0));
+          return [{ type: 'command.result', title: 'Session Tree', items }];
+        }
+        if (action === 'fork') {
+          const messageId = rest.shift();
+          if (!messageId) {
+            const refs = await sdk.sessionGraph.ensureMessageIds(session.id);
+            return [{
+              type: 'command.result',
+              title: 'Choose a message id for /session fork',
+              items: refs.map(ref => ({ label: ref.id, description: ref.message.role })),
+            }];
+          }
+          const forked = await sdk.sessionForks.forkAtMessage(session.id, messageId, {
+            branchName: rest.join(' ').trim() || undefined,
+          });
+          session = await resumeGuiSession(forked.id, { permissionMode: options.permissionMode });
+          return [{ type: 'notice', message: `Session branch created: ${forked.id}` }, { type: 'state' }];
+        }
+        if (action === 'clone') {
+          const cloned = await sdk.sessionForks.clone(session.id, {
+            branchName: rest.join(' ').trim() || undefined,
+          });
+          session = await resumeGuiSession(cloned.id, { permissionMode: options.permissionMode });
+          return [{ type: 'notice', message: `Session cloned: ${cloned.id}` }, { type: 'state' }];
+        }
+        if (action === 'label') {
+          const label = rest.join(' ').trim();
+          if (!label) return [{ type: 'error', message: 'usage: /session label <name>' }];
+          await sdk.sessionForks.label(session.id, label);
+          session = await resumeGuiSession(session.id, { permissionMode: options.permissionMode });
+          return [{ type: 'notice', message: `Session branch labeled: ${label}` }, { type: 'state' }];
+        }
+        const catalog = await createSessionCenterCatalog();
+        const page = await catalog.query({
+          types: ['user', 'assistant-global', 'assistant-project'],
+          archived: 'all',
+          pageSize: 200,
+        });
+        const targetId = action === 'restore' || action === 'delete' ? rest[0] : session.id;
+        const item = page.items.find(candidate => candidate.locator.sessionId === targetId);
+        if (!item) return [{ type: 'error', message: `Session not found: ${targetId || ''}` }];
+        if (action === 'rename') {
+          const title = rest.join(' ').trim();
+          if (!title) return [{ type: 'error', message: 'usage: /session rename <title>' }];
+          await catalog.action({ action: 'rename', locator: item.locator, title });
+          if (item.locator.sessionId === session.id) {
+            session = await resumeGuiSession(session.id, { permissionMode: options.permissionMode });
+          }
+        } else if (action === 'pin') {
+          await catalog.action({
+            action: 'pin',
+            locator: item.locator,
+            pinned: rest[0] === 'off' ? false : rest[0] === 'on' ? true : undefined,
+          });
+        } else if (action === 'archive') {
+          await catalog.action({ action: 'archive', locator: item.locator });
+          if (item.locator.sessionId === session.id) {
+            session = await createGuiSession({ model: options.model, permissionMode });
+          }
+        } else if (action === 'restore') {
+          await catalog.action({ action: 'restore', locator: item.locator });
+        } else if (action === 'delete') {
+          await catalog.action({ action: 'delete', locator: item.locator });
+        } else {
+          return [{ type: 'error', message: `Unknown /session action: ${action}` }];
+        }
+        return [{ type: 'notice', message: `Session ${action} complete.` }, { type: 'state' }];
+      }
       case 'manager': {
         // `/manager update` and `/manager chat <msg>` are intercepted by the
         // streaming path in /api/send (they register a RunRegistry
         // kind='manager' run); the synchronous sub-commands are handled here.
         const homeDir = resolveGuiHomeDir();
+        if (args === 'sessions') {
+          const page = await (await createSessionCenterCatalog()).query({
+            types: ['assistant-project'],
+            projectPaths: [projectPrimaryPath],
+            archived: false,
+            pageSize: 200,
+          });
+          return [{
+            type: 'command.result',
+            title: 'Project Manager Sessions',
+            items: page.items.map(item => ({
+              label: item.locator.sessionId,
+              description: `${item.title}${item.locator.sessionId === (page.items.find(x => x.locator.sessionId === managerGuiSession?.id)?.locator.sessionId) ? ' · current' : ''}`,
+            })),
+          }];
+        }
+        if (args === 'new') {
+          const catalog = await createSessionCenterCatalog();
+          const item = await catalog.action({
+            action: 'create',
+            type: 'assistant-project',
+            projectPath: projectPrimaryPath,
+            model: session.model,
+          });
+          await selectAssistantCatalogItem(item);
+          return [{ type: 'notice', message: `Manager Session created: ${item.locator.sessionId}` }];
+        }
+        if (args.startsWith('resume ')) {
+          const id = args.slice('resume '.length).trim();
+          const catalog = await createSessionCenterCatalog();
+          const page = await catalog.query({
+            types: ['assistant-project'],
+            projectPaths: [projectPrimaryPath],
+            archived: false,
+            pageSize: 200,
+          });
+          const item = page.items.find(candidate => candidate.locator.sessionId === id);
+          if (!item) return [{ type: 'error', message: `Manager Session not found: ${id}` }];
+          await selectAssistantCatalogItem(item);
+          return [{ type: 'notice', message: `Manager Session selected: ${item.title}` }];
+        }
         if (!args || args === 'status') {
-          const cfg = await readManagerConfig(workDir, homeDir);
-          const plan = await readProjectPlanFile(workDir, homeDir);
-          const progress = await readProgressFile(workDir, homeDir);
+          const cfg = await readManagerConfig(projectPrimaryPath, homeDir);
+          const plan = await readProjectPlanFile(projectPrimaryPath, homeDir);
+          const progress = await readProgressFile(projectPrimaryPath, homeDir);
           const lines = [
             `model: ${cfg.model ?? `${session.model} (session default)`}`,
             `readScope: ${cfg.readScope}`,
             `mirror to workspace: ${cfg.mirrorProgressToWorkspace ? 'on' : 'off'}`,
             `plan.json: ${plan.milestones.length} milestones · ${plan.today.length} today · ${plan.upcoming.length} upcoming`,
-            `PROGRESS.md: ${progress ? `${progress.length} chars · ${managerProgressPath(workDir, homeDir)}` : '(none yet — /manager update)'}`,
+            `PROGRESS.md: ${progress ? `${progress.length} chars · ${managerProgressPath(projectPrimaryPath, homeDir)}` : '(none yet — /manager update)'}`,
           ];
           return [{ type: 'command.result', title: 'Manager', text: lines.join('\n') }];
         }
         if (args === 'config') {
-          const cfg = await readManagerConfig(workDir, homeDir);
+          const cfg = await readManagerConfig(projectPrimaryPath, homeDir);
           return [{
             type: 'command.result',
             title: 'Manager config',
@@ -4907,18 +5347,65 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return runBatch(args);
       case 'goal': {
         const goal = getGoal();
-        const mark = (s: GoalStatus) => (s === 'active' ? '▶' : s === 'paused' ? '‖' : '✓');
+        const mark = (s: GoalStatus) => (
+          s === 'active' ? '▶' : s === 'paused' ? '‖' : s === 'blocked' ? '⊘' : '✓'
+        );
         if (!args) {
           return goal
-            ? [{ type: 'command.result', title: 'Goal', text: `${mark(goal.status)} ${goal.objective}\nstatus: ${goal.status} · set: ${goal.setAt}` }]
+            ? [{
+                type: 'command.result',
+                title: 'Goal',
+                text: [
+                  `${mark(goal.status)} ${goal.objective}`,
+                  `status: ${goal.status} · revision: ${goal.revision} · created: ${goal.createdAt}`,
+                  goal.completionCriteria ? `criteria: ${goal.completionCriteria}` : '',
+                  goal.evidence.length > 0 ? `evidence: ${goal.evidence.length}` : '',
+                ].filter(Boolean).join('\n'),
+              }]
             : [{ type: 'notice', message: 'no goal set — /goal <objective>' }];
         }
         if (args === 'clear') { await clearGoal(); return [{ type: 'notice', message: 'goal cleared' }, { type: 'state' }]; }
-        if (args === 'pause') { const g = await setGoalStatus('paused'); return g ? [{ type: 'notice', message: 'goal paused' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to pause' }]; }
-        if (args === 'resume') { const g = await setGoalStatus('active'); return g ? [{ type: 'notice', message: 'goal resumed' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to resume' }]; }
-        if (args === 'complete' || args === 'done') { const g = await setGoalStatus('complete'); return g ? [{ type: 'notice', message: 'goal complete' }, { type: 'state' }] : [{ type: 'error', message: 'no goal to complete' }]; }
+        if (args === 'pause' || args === 'resume') {
+          const result = await transitionGoal(args === 'pause' ? 'paused' : 'active');
+          return result.ok
+            ? [{ type: 'notice', message: `goal ${args === 'pause' ? 'paused' : 'resumed'}` }, { type: 'state' }]
+            : [{ type: 'error', message: result.message }];
+        }
+        if (args === 'complete' || args === 'done') {
+          return [{
+            type: 'error',
+            message: 'goal completion requires runtime evidence — ask the agent to call UpdateGoal with status "complete", or use /goal clear',
+          }];
+        }
         await setGoal(args);
         return [{ type: 'notice', message: `goal set: ${args.slice(0, 60)}` }, { type: 'state' }];
+      }
+      case 'diff': {
+        if (!sdk) return [{ type: 'error', message: 'Session diff requires a configured Hadamard provider.' }];
+        const sub = args || 'show';
+        try {
+          const diff = await sdk.getSessionDiff(session.id);
+          if (sub === 'show') {
+            return [{
+              type: 'command.result',
+              title: 'Session Diff',
+              items: diff.files.map(file => ({
+                label: `${file.status} ${file.path}`,
+                description: `+${file.additions} -${file.deletions}`,
+              })),
+            }];
+          }
+          if (sub === 'apply --confirm') {
+            const result = await sdk.applySessionDiff(session.id);
+            return [{
+              type: result.applied ? 'notice' : 'error',
+              message: result.message,
+            }];
+          }
+          return [{ type: 'error', message: 'usage: /diff show | apply --confirm' }];
+        } catch (error) {
+          return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
+        }
       }
       case 'review': {
         const diff = await gitText(['--no-pager', 'diff']);
@@ -4997,12 +5484,41 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         return [{ type: 'command.result', title: 'Hooks', text: lines.join('\n') }];
       }
       case 'plan': {
-        if (args === 'off') {
+        if (args === 'off' || args === 'approve') {
           return runtimeMutationCommand(async () => {
+            if (args === 'approve' && !readPlanFile(workDir)) {
+              return [{ type: 'error', message: 'there is no saved plan to approve' }];
+            }
             const mode = permissionMode === 'bypassPermissions' ? 'bypassPermissions' : 'default';
             await session.setPermissionContext({ mode, permissions: [], approver });
-            return [{ type: 'notice', message: 'plan mode off' }, { type: 'state' }];
+            return [
+              {
+                type: 'notice',
+                message: args === 'approve'
+                  ? 'plan approved — implementation permissions restored'
+                  : 'plan mode off without approval',
+              },
+              { type: 'state' },
+            ];
           });
+        }
+        if (args === 'view') {
+          const plan = readPlanFile(workDir);
+          return plan
+            ? [{ type: 'command.result', title: 'Plan · awaiting approval', text: plan }]
+            : [{ type: 'notice', message: 'no saved plan yet' }];
+        }
+        if (args === 'revise' || args.startsWith('revise ')) {
+          const feedback = args.slice('revise'.length).trim();
+          if (currentPermissionMode() !== 'plan') {
+            await session.setPermissionContext({ mode: 'plan', permissions: [], approver });
+          }
+          return feedback
+            ? [{
+                type: 'agent.prompt',
+                text: `Revise the saved plan using this feedback. Stay in Plan mode and call ExitPlanMode again when ready:\n\n${feedback}`,
+              }, { type: 'state' }]
+            : [{ type: 'notice', message: 'plan remains read-only; use /plan revise <feedback>' }, { type: 'state' }];
         }
         if (args === 'open') {
           openPathInSystem(planFilePath(workDir));
@@ -5017,6 +5533,73 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             ? [{ type: 'command.result', title: 'Plan', text: plan }, { type: 'state' }]
             : [{ type: 'notice', message: 'plan mode on — research, then ExitPlanMode. No plan yet.' }, { type: 'state' }];
         });
+      }
+      case 'checkpoint': {
+        const [action = 'list', checkpointId, modeValue, ...flags] = args.split(/\s+/u).filter(Boolean);
+        if (action === 'list') {
+          const checkpoints = await sdk!.checkpoints.list(session.id);
+          return [{
+            type: 'command.result',
+            title: 'Checkpoints',
+            text: checkpoints.length > 0
+              ? checkpoints.map(item =>
+                  `${item.id} · ${item.status} · ${item.entries.length} file(s) · ${item.createdAt}`
+                ).join('\n')
+              : 'No checkpoints for this Session.',
+          }];
+        }
+        if (!checkpointId) {
+          return [{ type: 'error', message: 'usage: /checkpoint show <id> | restore <id> [files|conversation|both] --confirm' }];
+        }
+        if (action === 'show') {
+          const preview = await sdk!.checkpoints.preview(session.id, checkpointId);
+          return [{
+            type: 'command.result',
+            title: `Checkpoint ${checkpointId}`,
+            text: [
+              ...preview.files.map(file =>
+                `${file.action.padEnd(13)} ${file.path}${file.binary ? ' · binary' : ''}`
+              ),
+              ...(preview.conflicts.length > 0
+                ? ['', 'Conflicts:', ...preview.conflicts.map(conflict => `- ${conflict.path}: ${conflict.message}`)]
+                : ['', 'No restore conflicts detected.']),
+            ].join('\n'),
+          }];
+        }
+        if (action === 'restore') {
+          const mode = ['files', 'conversation', 'both'].includes(modeValue ?? '')
+            ? modeValue as import('../checkpoint/types.js').CheckpointRestoreMode
+            : 'both';
+          const confirmed = flags.includes('--confirm') || modeValue === '--confirm';
+          if (!confirmed) {
+            return [{
+              type: 'error',
+              message: `Preview first with /checkpoint show ${checkpointId}, then run /checkpoint restore ${checkpointId} ${mode} --confirm`,
+            }];
+          }
+          return runtimeMutationCommand(async () => {
+            const preview = await sdk!.checkpoints.preview(session.id, checkpointId);
+            const result = await sdk!.checkpoints.restore({
+              sessionId: session.id,
+              checkpointId,
+              mode,
+            });
+            if (result.conflicts.length > 0) {
+              return [{
+                type: 'error',
+                message: result.conflicts.map(conflict => `${conflict.path}: ${conflict.message}`).join('\n'),
+              }];
+            }
+            if (result.conversationRestored && preview.checkpoint.conversationCheckpointId) {
+              await session.restoreCheckpoint(preview.checkpoint.conversationCheckpointId);
+            }
+            return [{
+              type: 'notice',
+              message: `checkpoint restored · ${result.restoredFiles.length} file(s)${result.conversationRestored ? ' · conversation' : ''}`,
+            }, { type: 'state' }];
+          });
+        }
+        return [{ type: 'error', message: 'usage: /checkpoint list|show|restore' }];
       }
       case 'bridge': {
         if (args === 'off') {
@@ -5637,18 +6220,33 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     }
 
     if (input === '/manager update' || input.startsWith('/manager update ')
-      || input.startsWith('/manager chat ')) {
+      || input.startsWith('/manager chat ') || input.startsWith('/manager team ')
+      || input.startsWith('/assistant chat ') || input.startsWith('/assistant team ')) {
       // Streamed Manager run (plan M1): registers a RunRegistry kind='manager'
       // run so the Monitor shows it live. Single-instance per project.
       const isUpdate = input === '/manager update' || input.startsWith('/manager update ');
+      const isGlobal = input.startsWith('/assistant ');
       try {
         let result: string;
         if (isUpdate) {
           const instruction = input.slice('/manager update'.length).trim() || undefined;
           result = await runManagerTurn({ mode: 'update', instruction, send, clientRequestId, replayEvents });
         } else {
-          const text = input.slice('/manager chat'.length).trim();
-          result = await runManagerTurn({ mode: 'chat', text, send, clientRequestId, replayEvents });
+          const teamPrefix = isGlobal ? '/assistant team' : '/manager team';
+          const chatPrefix = isGlobal ? '/assistant chat' : '/manager chat';
+          const isTeam = input.startsWith(teamPrefix + ' ');
+          const request = input.slice((isTeam ? teamPrefix : chatPrefix).length).trim();
+          const text = isTeam
+            ? `Propose a Team Graph for this request. Inspect existing Teams first when relevant. ${request}`
+            : request;
+          result = await runManagerTurn({
+            mode: 'chat',
+            scope: isGlobal ? 'global' : 'project',
+            text,
+            send,
+            clientRequestId,
+            replayEvents,
+          });
         }
         send({
           type: 'command.result',
@@ -6123,6 +6721,46 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
     return { ok: true, pinned, state: await state() };
   }
 
+  async function updateProjectWorkPath(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const action = typeof body.action === 'string' ? body.action : '';
+    const primary = typeof body.projectPath === 'string' && body.projectPath.trim()
+      ? path.resolve(body.projectPath.trim())
+      : projectPrimaryPath;
+    const rawWorkPath = typeof body.workPath === 'string' ? body.workPath.trim() : '';
+    if (!rawWorkPath) throw new Error('Missing work path.');
+    const target = await resolveWorkspaceDirectory(rawWorkPath);
+    const store = await resolveActoviqSettingsStore({
+      configPath: options.configPath,
+      homeDir: currentHomeInput(),
+    }).catch(() => undefined);
+    const homeDir = store?.homeDir ?? resolveGuiHomeDir();
+
+    if (action === 'add') {
+      await addProjectWorkPath(primary, target, homeDir);
+      if (body.activate === true) await switchProject(target);
+    } else if (action === 'activate') {
+      const before = findWorkspaceProject(await readWorkspaceRegistry(homeDir), primary);
+      const previousActive = before ? workspaceActiveWorkPath(before) : primary;
+      await setProjectActiveWorkPath(primary, target, homeDir);
+      try {
+        await switchProject(target);
+      } catch (error) {
+        await setProjectActiveWorkPath(primary, previousActive, homeDir).catch(() => undefined);
+        throw error;
+      }
+    } else if (action === 'remove') {
+      if (normalizeFsPath(target) === normalizeFsPath(workDir)) {
+        throw new Error('Cannot remove the active work path. Switch to another path first.');
+      }
+      await removeProjectWorkPath(primary, target, homeDir);
+    } else {
+      throw new Error('Unknown work-path action.');
+    }
+    invalidateHeavyState();
+    await refreshProjectPrimaryPath();
+    return { ok: true, state: await state({ light: true }) };
+  }
+
   const issueTargetPath = (rawPath: unknown): string =>
     typeof rawPath === 'string' && rawPath.trim()
       ? path.resolve(rawPath.trim())
@@ -6286,11 +6924,37 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         catch { return text(res, 404, 'Not found'); } // prepare:xterm not run yet
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
-        if (!managerDedupeTriggered && sdk) {
-          managerDedupeTriggered = true;
-          await dedupeManagerSessions().catch(() => undefined);
-        }
         return json(res, 200, await state());
+      }
+      if (req.method === 'GET' && url.pathname === '/api/app-update') {
+        return json(res, 200, appUpdater.snapshot());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/app-update/check') {
+        try {
+          return json(res, 200, await appUpdater.check());
+        } catch (error) {
+          return json(res, 400, {
+            ...appUpdater.snapshot(),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/app-update/upgrade') {
+        try {
+          const update = await withRuntimeMutation(() => appUpdater.download());
+          json(res, 200, update);
+          setTimeout(() => {
+            void appUpdater.install().catch(error => {
+              console.error(`[actoviq-gui] update install failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }, 500);
+          return;
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), {
+            ...runtimeMutationErrorBody(error),
+            update: appUpdater.snapshot(),
+          });
+        }
       }
       if (req.method === 'GET' && url.pathname === '/api/runs') {
         return json(res, 200, liveRunState());
@@ -6616,6 +7280,39 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       return json(res, 400, { error: (error as Error).message });
     }
   }
+  const teamProposalMatch = url.pathname.match(/^\/api\/team\/proposals\/([^/]+)(?:\/(apply|reject))?$/);
+  if (teamProposalMatch) {
+    const proposalId = decodeURIComponent(teamProposalMatch[1]!);
+    const action = teamProposalMatch[2];
+    try {
+      const proposal = teamProposals.get(proposalId);
+      if (!proposal) return json(res, 404, { error: `Unknown Team proposal: ${proposalId}` });
+      if (req.method === 'GET' && !action) {
+        return json(res, 200, { proposal });
+      }
+      if (req.method === 'POST' && action === 'reject') {
+        return json(res, 200, { ok: true, proposal: teamProposals.reject(proposalId) });
+      }
+      if (req.method === 'POST' && action === 'apply') {
+        const applied = await withRuntimeMutation(
+          () => teamProposals.apply(proposalId, managerHomeDir()),
+        );
+        return json(res, 200, {
+          ok: true,
+          proposal: applied.proposal,
+          filePath: applied.filePath,
+          definition: applied.proposal.draft,
+          openCanvas: {
+            projectPath: applied.proposal.projectPath,
+            teamName: applied.proposal.teamName,
+          },
+        });
+      }
+      return json(res, 405, { error: 'Method not allowed' });
+    } catch (error) {
+      return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+    }
+  }
   if (req.method === 'POST' && url.pathname === '/api/team/propose') {
     try {
       if (!sdk) return json(res, 503, { error: 'SDK not ready — configure a model first' });
@@ -6707,13 +7404,24 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       : 'project';
     const running = [...runs.values()].some(run => run.desc.kind === 'manager' && run.desc.status === 'running');
     let transcript: Array<{ kind: string; text: string }> = [];
+    let activeAssistantSessionId: string | undefined;
     try {
       if (!needsCredentials && sdk) {
-        transcript = managerPanelTranscript(
-          scope === 'global' ? await getAssistantGlobalSession() : await getManagerSession(),
-        );
+        const selected = scope === 'global' ? await getAssistantGlobalSession() : await getManagerSession();
+        activeAssistantSessionId = selected.id;
+        transcript = managerPanelTranscript(selected);
       }
     } catch { /* panel hydration is best-effort */ }
+    const catalog = await createSessionCenterCatalog();
+    const assistantSessions = await catalog.query({
+      types: [scope === 'global' ? 'assistant-global' : 'assistant-project'],
+      archived: false,
+      ...(scope === 'project' ? { projectPaths: [projectPrimaryPath] } : {}),
+      pageSize: 200,
+    });
+    const proposals = activeAssistantSessionId
+      ? teamProposals.listForSession(activeAssistantSessionId)
+      : [];
     if (scope === 'global') {
       const cfg = await readAssistantConfig(homeDir);
       return json(res, 200, {
@@ -6729,19 +7437,23 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         progressUpdatedAt: null,
         running,
         transcript,
+        assistantSessions: assistantSessions.items,
+        activeSessionId: activeAssistantSessionId ?? cfg.activeSessionId ?? null,
+        proposals,
         schedules: [],
       });
     }
-    const cfg = await readManagerConfig(workDir, homeDir);
-    const plan = await readProjectPlanFile(workDir, homeDir);
-    const progress = await readProgressFile(workDir, homeDir);
-    const progressPath = managerProgressPath(workDir, homeDir);
+    const cfg = await readManagerConfig(projectPrimaryPath, homeDir);
+    const plan = await readProjectPlanFile(projectPrimaryPath, homeDir);
+    const progress = await readProgressFile(projectPrimaryPath, homeDir);
+    const progressPath = managerProgressPath(projectPrimaryPath, homeDir);
     let progressUpdatedAt: string | null = null;
     try { progressUpdatedAt = (await stat(progressPath)).mtime.toISOString(); } catch { /* none yet */ }
     return json(res, 200, {
       scope: 'project',
       canUseProjectScope: true,
-      currentProjectPath: workDir,
+      currentProjectPath: projectPrimaryPath,
+      activeWorkPath: workDir,
       config: cfg,
       plan: { milestones: plan.milestones.length, today: plan.today.length, upcoming: plan.upcoming.length },
       progressChars: progress?.length ?? 0,
@@ -6751,6 +7463,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       progressUpdatedAt,
       running,
       transcript,
+      assistantSessions: assistantSessions.items,
+      activeSessionId: activeAssistantSessionId ?? cfg.activeSessionId ?? null,
+      proposals,
       schedules: (await listScheduledAutomationTasks(workDir))
         .filter(task => task.kind === 'manager')
         .map(task => ({ name: task.name, cron: task.cron, enabled: task.enabled })),
@@ -6766,6 +7481,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (scope === 'global') {
           const current = await readAssistantConfig(homeDir);
           const config = {
+            ...current,
             model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
             bridgeConfig: typeof body.bridgeConfig === 'string'
               ? (body.bridgeConfig.trim() || undefined)
@@ -6774,7 +7490,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           await writeAssistantConfig(config, homeDir);
           return config;
         }
-        const current = await readManagerConfig(workDir, homeDir);
+        const current = await readManagerConfig(projectPrimaryPath, homeDir);
         const config: ManagerConfig = {
           ...current,
           model: typeof body.model === 'string' ? (body.model.trim() || undefined) : current.model,
@@ -6789,7 +7505,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
             ? body.mirrorProgressToWorkspace
             : current.mirrorProgressToWorkspace,
         };
-        await writeManagerConfig(workDir, homeDir, config);
+        await writeManagerConfig(projectPrimaryPath, homeDir, config);
         return config;
       });
       return json(res, 200, { ok: true, scope, config: next });
@@ -6903,7 +7619,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
   if (req.method === 'GET' && url.pathname === '/api/plan') {
     const hd = resolveGuiHomeDir();
-    return json(res, 200, await readProjectPlan(workDir, hd));
+    return json(res, 200, await readProjectPlan(projectPrimaryPath, hd));
   }
   if (req.method === 'POST' && url.pathname === '/api/plan') {
     try {
@@ -6914,7 +7630,7 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         upcoming: Array.isArray(body.upcoming) ? body.upcoming : [],
       };
       const hd = resolveGuiHomeDir();
-      await writeProjectPlan(workDir, hd, next);
+      await writeProjectPlan(projectPrimaryPath, hd, next);
       return json(res, 200, { ok: true, plan: next });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
@@ -6922,15 +7638,15 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
   }
   if (req.method === 'GET' && url.pathname === '/api/project-doc') {
     const hd = resolveGuiHomeDir();
-    const content = (await readProgressFile(workDir, hd)) ?? '';
-    return json(res, 200, { content, path: managerProgressPath(workDir, hd) });
+    const content = (await readProgressFile(projectPrimaryPath, hd)) ?? '';
+    return json(res, 200, { content, path: managerProgressPath(projectPrimaryPath, hd) });
   }
   if (req.method === 'POST' && url.pathname === '/api/project-doc') {
     try {
       const body = await readJson(req);
       const content = typeof body.content === 'string' ? body.content : '';
       const hd = resolveGuiHomeDir();
-      const savedPath = await writeProgressFile(workDir, hd, content);
+      const savedPath = await writeProgressFile(projectPrimaryPath, hd, content);
       return json(res, 200, { ok: true, path: savedPath });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
@@ -7525,24 +8241,65 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
       if (req.method === 'POST' && url.pathname === '/api/agent/activate') {
         const body = await readJson(req);
         const name = typeof body.name === 'string' ? body.name.trim() : '';
-        if (!name) return json(res, 400, { error: 'Missing agent name' });
+        const configName = typeof body.bridgeConfig === 'string' ? body.bridgeConfig.trim() : '';
+        const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+        if (!name && !configName) {
+          return json(res, 400, { error: 'Missing agent name or config name' });
+        }
         try {
           await withRuntimeMutation(async () => {
-            const resolved = await resolveSelectableAgentRun(name, resolveGuiHomeDir());
-            // Keep the selectable/profile model string (may be a min/medium/max
-            // tier alias). activateBridgeConfig expands tiers for the ModelApi
-            // and bridgeModelLabel; matching activeAgent must still see the alias.
-            const cfg = {
-              ...resolved.bridgeConfig,
-              model: resolved.selectable.model,
-            };
+            let cfg: PersistedBridgeConfig;
+            let defaultEffort: string | undefined;
+            let nextAgentSelectionName: string | null = null;
+            if (name) {
+              const resolved = await resolveSelectableAgentRun(name, resolveGuiHomeDir());
+              // Keep the selectable/profile model string (may be a min/medium/max
+              // tier alias). activateBridgeConfig expands tiers for the ModelApi.
+              cfg = {
+                ...resolved.bridgeConfig,
+                model: resolved.selectable.model,
+              };
+              nextAgentSelectionName = resolved.selectable.name;
+              defaultEffort = resolved.profile.effort || resolved.selectable.effort;
+            } else {
+              const stored = findBridgeConfig(configName, resolveGuiHomeDir());
+              if (!stored) throw new Error(`Bridge config not found: ${configName}`);
+              cfg = {
+                ...stored,
+                ...(requestedModel ? { model: requestedModel } : {}),
+              };
+            }
             await activateBridgeConfig(cfg);
+            activeAgentSelectionName = nextAgentSelectionName;
+            activeRouter = null;
+            routedModelLabel = null;
             await persistSessionRuntimeMetadata();
             const requestedEffort = typeof body.effort === 'string' ? body.effort.trim() : '';
-            const effort = requestedEffort || resolved.profile.effort || resolved.selectable.effort;
+            const effort = requestedEffort || defaultEffort;
             if (effort === 'auto' || isEffort(effort)) {
               await session.mergeMetadata({ __actoviqEffort: effort });
             }
+          });
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+        invalidateHeavyState();
+        return json(res, 200, await state());
+      }
+      if (req.method === 'POST' && url.pathname === '/api/router/activate') {
+        const body = await readJson(req);
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name) return json(res, 400, { error: 'Missing router name' });
+        const loaded = loadRouterProfile(name, workDir, resolveGuiHomeDir());
+        if (!loaded) {
+          return json(res, 404, { error: `Configured router not found: ${name}` });
+        }
+        try {
+          await withRuntimeMutation(async () => {
+            disableBridge();
+            activeRouter = loaded.profile;
+            routedModelLabel = null;
+            await persistSessionRuntimeMetadata();
           });
         } catch (error) {
           return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
@@ -7558,6 +8315,9 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         try {
           await withRuntimeMutation(async () => {
             await activateBridgeConfig(cfg);
+            activeAgentSelectionName = null;
+            activeRouter = null;
+            routedModelLabel = null;
             await persistSessionRuntimeMetadata();
           });
         } catch (error) {
@@ -7679,12 +8439,13 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
           const actoviqHome = store?.homeDir ?? resolveGuiHomeDir();
           const loaded = loadRouterProfile(name, workDir, actoviqHome);
           if (!loaded) return json(res, 404, { error: `router profile not found: ${name}` });
-          if (loaded.source === 'built-in') {
-            return json(res, 400, { error: 'Cannot delete a built-in router profile' });
-          }
           const deleted = await deleteRouterProfile(name, workDir, actoviqHome);
           if (!deleted) return json(res, 404, { error: `router profile not found: ${name}` });
-          if (activeRouter?.name === name) activeRouter = null;
+          if (activeRouter?.name === name) {
+            activeRouter = null;
+            routedModelLabel = null;
+            await persistSessionRuntimeMetadata();
+          }
           invalidateHeavyState();
           return json(res, 200, await state());
         } finally {
@@ -7779,6 +8540,130 @@ export async function startActoviqGuiServer(options: ActoviqGuiOptions = {}): Pr
         if (!nextWorkDir) return json(res, 400, { error: 'Missing project path' });
         try {
           return json(res, 200, await withRuntimeMutation(() => switchProject(nextWorkDir)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/project/work-path') {
+        try {
+          const body = await readJson(req);
+          return json(res, 200, await withRuntimeMutation(() => updateProjectWorkPath(body)));
+        } catch (error) {
+          return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
+        }
+      }
+      if (req.method === 'GET' && url.pathname === '/api/session-center') {
+        try {
+          const split = (name: string): string[] =>
+            url.searchParams.getAll(name)
+              .flatMap(value => value.split(','))
+              .map(value => value.trim())
+              .filter(Boolean);
+          const rawTypes = split('type').filter(value =>
+            value === 'user'
+            || value === 'assistant-global'
+            || value === 'assistant-project'
+            || value === 'agent');
+          const rawStatuses = split('status').filter(value =>
+            value === 'running' || value === 'waiting' || value === 'idle');
+          const rawArchived = url.searchParams.get('archived');
+          const catalog = await createSessionCenterCatalog();
+          return json(res, 200, await catalog.query({
+            ...(split('projectPath').length ? { projectPaths: split('projectPath') } : {}),
+            ...(rawTypes.length
+              ? { types: rawTypes as import('../storage/sessionCatalog.js').SessionCatalogType[] }
+              : {}),
+            ...(rawStatuses.length
+              ? { runtimeStatuses: rawStatuses as import('../storage/sessionCatalog.js').SessionCatalogRuntimeStatus[] }
+              : {}),
+            archived: rawArchived === 'all' ? 'all' : rawArchived === 'true',
+            keyword: url.searchParams.get('q') ?? undefined,
+            page: Number(url.searchParams.get('page')) || 1,
+            pageSize: Number(url.searchParams.get('pageSize')) || 50,
+          }));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session-center/reference') {
+        try {
+          const body = await readJson(req);
+          if (!isPlainRecord(body.locator)) {
+            return json(res, 400, { error: 'Session reference requires a locator.' });
+          }
+          const catalog = await createSessionCenterCatalog();
+          return json(res, 200, await catalog.reference(
+            body.locator as unknown as import('../storage/sessionCatalog.js').SessionCatalogLocator,
+          ));
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/session-center/action') {
+        try {
+          const body = await readJson(req);
+          const action = typeof body.action === 'string' ? body.action : '';
+          if (!['create', 'open', 'rename', 'pin', 'archive', 'restore', 'delete'].includes(action)) {
+            return json(res, 400, { error: 'Unknown Session Center action.' });
+          }
+          const result = await withRuntimeMutation(async () => {
+            const catalog = await createSessionCenterCatalog();
+            const item = await catalog.action({
+              action: action as import('../storage/sessionCatalog.js').SessionCatalogAction,
+              locator: isPlainRecord(body.locator)
+                ? body.locator as unknown as import('../storage/sessionCatalog.js').SessionCatalogLocator
+                : undefined,
+              projectPath: typeof body.projectPath === 'string' ? body.projectPath : undefined,
+              type: body.type === 'user'
+                || body.type === 'assistant-global'
+                || body.type === 'assistant-project'
+                ? body.type
+                : undefined,
+              title: typeof body.title === 'string' ? body.title : undefined,
+              pinned: typeof body.pinned === 'boolean' ? body.pinned : undefined,
+              model: session.model,
+            });
+            const shouldOpen = (action === 'open' || action === 'create') && !item.archived;
+            if (shouldOpen && item.projectPath && normalizeFsPath(item.projectPath) !== normalizeFsPath(workDir)) {
+              await switchProject(item.projectPath);
+            }
+            if (shouldOpen) {
+              if (item.type === 'user') {
+                session = await resumeGuiSession(item.locator.sessionId, {
+                  model: options.model,
+                  permissionMode: options.permissionMode,
+                });
+                await restoreSessionRuntimeSelection();
+              } else if (item.type === 'assistant-global' || item.type === 'assistant-project') {
+                await selectAssistantCatalogItem(item);
+              }
+            }
+            if (
+              (action === 'archive' || action === 'delete')
+              && (item.type === 'assistant-global' || item.type === 'assistant-project')
+            ) {
+              const homeDir = managerHomeDir();
+              const activeId = item.type === 'assistant-global'
+                ? (await readAssistantConfig(homeDir)).activeSessionId
+                : item.projectPath
+                  ? (await readManagerConfig(item.projectPath, homeDir)).activeSessionId
+                  : undefined;
+              if (activeId === item.locator.sessionId) {
+                await selectAssistantFallback(item, catalog);
+              }
+            }
+            if (
+              action === 'archive'
+              && item.type === 'user'
+              && session.id === item.locator.sessionId
+            ) {
+              session = await createGuiSession({ model: options.model, permissionMode });
+              await restoreSessionRuntimeSelection();
+            }
+            invalidateHeavyState();
+            return { ok: true, item, state: shouldOpen ? await state() : undefined };
+          });
+          return json(res, 200, result);
         } catch (error) {
           return json(res, runtimeMutationErrorStatus(error), runtimeMutationErrorBody(error));
         }
@@ -8515,6 +9400,7 @@ export function createActoviqGuiHtml(): string {
             <p>Workspace overview and agent progress</p>
           </div>
           <div class="region-actions">
+            <button type="button" id="overviewChatsBtn" class="pill-btn">Chats</button>
             <button type="button" id="overviewNewWorkspaceBtn" class="pill-btn">+ New workspace</button>
           </div>
         </header>
@@ -8547,12 +9433,56 @@ export function createActoviqGuiHtml(): string {
             <p id="detailProjectPath" class="pc-path"></p>
           </div>
           <div class="region-actions">
+            <select id="detailWorkPathSelect" class="overview-toolbar-select project-work-path-select" aria-label="Active project work path"></select>
+            <button type="button" id="detailAddWorkPathBtn" class="pill-btn">+ Work path</button>
+            <button type="button" id="detailRemoveWorkPathBtn" class="pill-btn hidden">Remove path</button>
+            <button type="button" id="detailChatsBtn" class="pill-btn">All chats</button>
             <button type="button" id="detailOpenLocationBtn" class="pill-btn">Open location</button>
             <button type="button" id="detailNewConversationBtn" class="pill-btn">+ New conversation</button>
             <button type="button" id="detailConversationsBtn" class="pill-btn detail-conversations-toggle" aria-label="Conversations" title="Show conversations" aria-expanded="false" aria-controls="projectDetailSidebar">Conversations</button>
           </div>
         </header>
         <div class="detail-body" id="detailBody"></div>
+      </section>
+      <section class="project-chats hidden" id="projectChats">
+        <header class="region-header">
+          <div class="region-titles">
+            <h1>Chats <span id="sessionCenterCount" class="overview-count">0</span></h1>
+            <p>Sessions across registered projects</p>
+          </div>
+          <div class="region-actions">
+            <button type="button" id="sessionCenterBack" class="pill-btn">Back to projects</button>
+            <button type="button" id="sessionCenterNew" class="pill-btn primary">+ New chat</button>
+          </div>
+        </header>
+        <div class="session-center-toolbar">
+          <label class="overview-search-wrap"><span class="search-icon">${guiIcon('search')}</span><input id="sessionCenterSearch" class="overview-search" placeholder="Search chats..." autocomplete="off"></label>
+          <select id="sessionCenterProject" class="overview-toolbar-select" aria-label="Project filter"><option value="">All projects</option></select>
+          <select id="sessionCenterType" class="overview-toolbar-select" aria-label="Session type">
+            <option value="user">User chats</option>
+            <option value="all">All types</option>
+            <option value="assistant-global">Global Assistant</option>
+            <option value="assistant-project">Project Manager</option>
+            <option value="agent">Agent child sessions</option>
+          </select>
+          <select id="sessionCenterStatus" class="overview-toolbar-select" aria-label="Run status">
+            <option value="">All run states</option>
+            <option value="running">Running</option>
+            <option value="waiting">Waiting</option>
+            <option value="idle">Idle</option>
+          </select>
+          <select id="sessionCenterArchived" class="overview-toolbar-select" aria-label="Archive state">
+            <option value="false">Active</option>
+            <option value="all">Active + archived</option>
+            <option value="true">Archived</option>
+          </select>
+        </div>
+        <div id="sessionCenterList" class="session-center-list"></div>
+        <div class="session-center-pager">
+          <button type="button" id="sessionCenterPrev" class="pill-btn">Previous</button>
+          <span id="sessionCenterPage" class="muted">Page 1</span>
+          <button type="button" id="sessionCenterNext" class="pill-btn">Next</button>
+        </div>
       </section>
       <section class="project-conversation hidden" id="projectConversation">
       <header class="topbar">
@@ -8607,8 +9537,12 @@ export function createActoviqGuiHtml(): string {
                 <div id="queueList" class="queue-list hidden"></div>
                 <div class="composer-footer">
                   <div class="composer-left">
-                    <button type="button" id="fileUploadBtn" class="round-btn" title="Attach files" aria-label="Attach files">${guiIcon('plus')}</button>
-                    <input id="fileInput" type="file" multiple class="hidden-file-input">
+                    <div class="add-context-wrapper">
+                      <button type="button" id="fileUploadBtn" class="round-btn" title="Add context" aria-label="Add context" aria-haspopup="menu" aria-expanded="false">${guiIcon('plus')}</button>
+                      <div id="addContextMenu" class="add-context-menu hidden" role="menu" aria-label="Add context"></div>
+                      <input id="fileInput" type="file" multiple class="hidden-file-input">
+                      <input id="folderInput" type="file" multiple webkitdirectory directory class="hidden-file-input">
+                    </div>
                     <div class="permission-picker-wrapper">
                       <button type="button" id="permissionPickerBtn" class="permission-picker-btn" title="Permission mode" aria-haspopup="listbox" aria-expanded="false">
                         <span class="permission-picker-icon" id="permissionPickerIcon">${guiIcon('shield')}</span>
@@ -8625,7 +9559,7 @@ export function createActoviqGuiHtml(): string {
                         <div id="modelPickerMenu" class="model-picker-menu">
                           <div class="picker-heading"><strong>Select model</strong><span>Ctrl / ⌘ + / to cycle</span></div>
                           <div class="picker-search-wrap">
-                            <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search models, providers, runtimes" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="modelPickerItems" aria-expanded="true">
+                            <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search models, routers, providers" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="modelPickerItems" aria-expanded="true">
                           </div>
                           <div id="modelPickerItems" class="picker-list" role="listbox" aria-label="Models"></div>
                         </div>
@@ -8758,6 +9692,12 @@ export function createActoviqGuiHtml(): string {
       <div class="manager-scope-bar" role="tablist" aria-label="Assistant scope">
         <button type="button" id="managerScopeGlobal" class="manager-scope-btn" data-scope="global" role="tab" aria-selected="false">Global</button>
         <button type="button" id="managerScopeProject" class="manager-scope-btn" data-scope="project" role="tab" aria-selected="true">Project</button>
+      </div>
+      <div class="manager-session-bar">
+        <select id="managerSessionSelect" aria-label="Assistant Session"></select>
+        <button type="button" id="managerSessionNew" class="manager-ctrl-btn" title="New Session">＋</button>
+        <button type="button" id="managerSessionRename" class="manager-ctrl-btn" title="Rename Session">${guiIcon('edit')}</button>
+        <button type="button" id="managerSessionArchive" class="manager-ctrl-btn" title="Archive Session">${guiIcon('archive')}</button>
       </div>
       <div class="manager-widget-body">
         <div id="managerTranscript" class="manager-transcript"></div>
@@ -9074,6 +10014,16 @@ export function createActoviqGuiHtml(): string {
           <div class="settings-action-row"><button type="button" id="settingsDataRootOpen" class="secondary-btn">Open data folder</button></div>
         </div>
         <div class="settings-group">
+          <h2>Application updates</h2>
+          <div class="settings-help-row">
+            <span><strong id="settingsUpdateTitle">Checking Actoviq version...</strong><small id="settingsUpdateStatus">Updates are installed only after you confirm Upgrade.</small></span>
+          </div>
+          <div class="settings-action-row">
+            <button type="button" id="settingsUpdateCheck" class="secondary-btn">Check for updates</button>
+            <button type="button" id="settingsUpdateUpgrade" class="primary" disabled>Upgrade</button>
+          </div>
+        </div>
+        <div class="settings-group">
           <h2>Permissions</h2>
           <div class="settings-row"><span><strong>Default permission</strong><small>Read and edit files in the workspace.</small></span><input id="settingsDefaultPermission" type="checkbox"></div>
           <div class="settings-row"><span><strong>Auto review</strong><small>Auto-accept workspace edits when possible.</small></span><input id="settingsAutoAudit" type="checkbox"></div>
@@ -9086,6 +10036,24 @@ export function createActoviqGuiHtml(): string {
               <option value="read-only">Read-only</option>
             </select>
           </label>
+        </div>
+        <div class="settings-group">
+          <h2>Effective sandbox</h2>
+          <div class="settings-help-row">
+            <span>
+              <strong id="settingsSandboxTitle">Loading sandbox capability...</strong>
+              <small id="settingsSandboxStatus">Permission approval and OS isolation are evaluated separately.</small>
+            </span>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h2>Managed policy</h2>
+          <div class="settings-help-row">
+            <span>
+              <strong id="settingsPolicyTitle">No managed policy loaded</strong>
+              <small id="settingsPolicyStatus">Host, user, and project policies are merged by authority.</small>
+            </span>
+          </div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="models">
@@ -9778,6 +10746,7 @@ body[data-theme="dark"] {
 .project-detail-tab { min-height: 30px; border: 0; border-bottom: 2px solid transparent; border-radius: 7px 7px 0 0; background: transparent; color: var(--text-2); padding: 0 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .project-detail-tab:hover { color: var(--text-1); background: var(--surface-hover); }
 .project-detail-tab.active { color: var(--brand); border-bottom-color: var(--brand); background: var(--brand-soft); }
+.project-work-path-select { max-width: min(280px, 28vw); }
 .project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
 .detail-main .project-doc-panel { flex: 1; border-right: 0; }
 .project-doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
@@ -10276,6 +11245,114 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .manager-scope-btn:disabled {
   opacity: .45;
   cursor: not-allowed;
+}
+.manager-session-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+.manager-session-bar select {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 8px;
+}
+.manager-proposal-card {
+  margin: 10px 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+.manager-proposal-card header,
+.manager-proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.manager-proposal-card p,
+.manager-proposal-card ul {
+  margin: 7px 0;
+}
+.manager-proposal-card .proposal-problems {
+  color: var(--danger);
+}
+.manager-proposal-actions {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+.project-chats {
+  min-width: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--background);
+}
+.session-center-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) repeat(4, minmax(130px, auto));
+  gap: 10px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.session-center-list {
+  display: grid;
+  gap: 9px;
+  padding: 16px 24px;
+}
+.session-center-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.session-center-row.running,
+.session-center-row.waiting {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.session-center-main strong,
+.session-center-main small {
+  display: block;
+}
+.session-center-main p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-center-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.session-center-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 24px 20px;
+}
+@media (max-width: 1000px) {
+  .session-center-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+  .session-center-toolbar .overview-search-wrap {
+    grid-column: 1 / -1;
+  }
 }
 .manager-ctrl-btn {
   width: 28px;
@@ -11084,6 +12161,116 @@ button.composer-meta-chip:hover {
 .composer.dragging { border-color: var(--brand); box-shadow: var(--shadow-focus); }
 .composer textarea { resize: none; border: 0; outline: none; min-height: 58px; max-height: 190px; width: 100%; background: transparent; color: var(--text-1); }
 .hidden-file-input { display: none; }
+.add-context-wrapper { position: relative; display: inline-flex; }
+.add-context-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 45;
+  width: min(590px, calc(100vw - 44px));
+  max-height: min(430px, calc(100vh - 150px));
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--bg-surface);
+  box-shadow: 0 16px 44px rgba(24, 24, 27, .15), 0 2px 8px rgba(24, 24, 27, .06);
+}
+.add-context-menu.hidden { display: none; }
+.add-context-section + .add-context-section {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+.add-context-heading {
+  padding: 3px 8px 4px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+.add-context-row {
+  width: 100%;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, auto) minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.add-context-row:hover, .add-context-row:focus-visible, .add-context-row.active {
+  background: var(--surface-hover);
+  outline: none;
+}
+.add-context-row:disabled { cursor: default; opacity: .52; }
+.add-context-row-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-2);
+}
+.add-context-row-icon .ui-icon { width: 16px; height: 16px; }
+.add-context-row-title {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.add-context-row-desc {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.add-context-row-end { color: var(--text-muted); font-size: 11px; text-align: right; }
+.add-context-header {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+  padding: 2px 2px 6px;
+}
+.add-context-back {
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+}
+.add-context-back:hover { background: var(--surface-hover); color: var(--text-1); }
+.add-context-search {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-1);
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.add-context-search:focus { border-color: var(--brand); box-shadow: var(--shadow-focus); }
+.add-context-empty {
+  padding: 24px 12px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 12px;
+}
 .drop-overlay { position: absolute; inset: 8px; z-index: 3; border: 1px dashed var(--brand); border-radius: 14px; background: color-mix(in srgb, var(--brand-soft) 92%, transparent); color: var(--brand); display: grid; place-items: center; font-weight: 600; pointer-events: none; }
 .drop-overlay.hidden { display: none; }
 .attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -11598,7 +12785,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .graph-groups-layer { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: visible; }
 .graph-node.board-node { position: absolute; margin: 0; cursor: grab; user-select: none; touch-action: none; pointer-events: auto; }
 .graph-node.board-node.dragging { cursor: grabbing; box-shadow: 0 8px 28px color-mix(in srgb, var(--brand) 18%, transparent); z-index: 3; }
-.graph-port { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 0; background: transparent; box-shadow: none; z-index: 2; opacity: 0; }
+.graph-port { position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 1px solid transparent; background: transparent; box-shadow: none; z-index: 2; opacity: 0; transition: opacity .12s ease, background-color .12s ease, box-shadow .12s ease; }
+.graph-node.board-node:hover .graph-port, .graph-node.board-node.selected .graph-port { opacity: .65; border-color: var(--brand); background: var(--bg-surface); }
 .graph-port-in { top: -7px; left: 50%; margin-left: -7px; }
 .graph-port-out { bottom: -7px; left: 50%; margin-left: -7px; cursor: crosshair; }
 .graph-port[data-side=n] { top: -7px; bottom: auto; right: auto; margin-left: -7px; margin-top: 0; }
@@ -12351,77 +13539,79 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 .model-picker-wrapper { position: relative; display: inline-flex; }
 .model-picker-btn { min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 .model-picker-btn:hover { background: var(--bg-surface-2); }
-.composer .model-picker-btn { border: 0; background: transparent; min-width: 144px; max-width: 250px; min-height: 38px; padding: 3px 7px; font-size: 12.5px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; text-align: right; }
-.composer .model-picker-btn:hover { background: var(--surface-hover); }
-.model-picker-btn-copy { min-width: 0; display: grid; justify-items: end; gap: 1px; }
-.model-picker-btn-copy strong, .model-picker-btn-copy small { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-picker-btn-copy strong { color: var(--text-1); font-size: 12.5px; font-weight: 650; }
-.model-picker-btn-copy small { color: var(--text-2); font-size: 10.5px; font-weight: 400; }
+.composer .model-picker-btn { border: 1px solid var(--border); border-radius: 999px; background: var(--bg-surface-2); min-width: 0; max-width: 220px; min-height: 28px; padding: 2px 8px 2px 10px; font-size: 11.5px; display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; text-align: right; box-shadow: 0 1px 2px rgba(24, 24, 27, .04); }
+.composer .model-picker-btn:hover { background: var(--surface-hover); border-color: var(--border-active); }
+.model-picker-btn-copy { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.model-picker-btn-copy strong, .model-picker-btn-copy small { max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-picker-btn-copy strong { color: var(--text-1); font-size: 11.5px; font-weight: 650; }
+.model-picker-btn-copy small { color: var(--text-2); font-size: 10.5px; font-weight: 500; }
 .model-picker-caret { flex: 0 0 auto; color: var(--text-2); }
 .model-picker-btn.pending { cursor: progress; opacity: .78; }
 .model-picker-flyout {
   position: absolute;
   right: 0;
   bottom: calc(100% + 6px);
-  display: flex;
-  flex-direction: row-reverse;
-  align-items: flex-start;
-  gap: 8px;
+  width: var(--model-picker-menu-width, min(248px, calc(100vw - 32px)));
   z-index: 20;
 }
 .model-picker-flyout.hidden { display: none; }
 .model-picker-menu {
-  width: var(--model-picker-menu-width, min(420px, calc(100vw - 32px)));
-  max-height: 460px;
+  width: 100%;
+  max-height: 360px;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border: 0;
-  border-radius: 16px;
-  box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(24, 24, 27, .10), 0 2px 6px rgba(24, 24, 27, .04);
   overflow: hidden;
 }
-.picker-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 14px 3px; }
-.picker-heading strong { color: var(--text-1); font-size: 13.5px; }
-.picker-heading span { color: var(--text-2); font-size: 10.5px; white-space: nowrap; }
-.picker-search-wrap { padding: 10px 10px 4px; flex: 0 0 auto; }
+.picker-heading { display: none; }
+.picker-search-wrap { padding: 6px 6px 2px; flex: 0 0 auto; }
 .picker-search {
   width: 100%;
   box-sizing: border-box;
   border: 0;
-  border-radius: 10px;
-  background: var(--bg-app);
+  border-radius: 7px;
+  background: transparent;
   color: var(--text-1);
   font: inherit;
-  font-size: 13px;
-  padding: 8px 12px;
+  font-size: 11px;
+  padding: 5px 6px;
   outline: none;
 }
-.picker-search:focus { box-shadow: inset 0 0 0 1px var(--border-active); }
-.picker-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 6px 8px; max-height: 374px; }
+.picker-search::placeholder { color: var(--text-3); }
+.picker-search:focus { background: var(--bg-app); box-shadow: inset 0 0 0 1px var(--border-active); }
+.picker-list { flex: 1 1 auto; overflow-y: auto; padding: 2px 4px 5px; max-height: 320px; }
 .picker-edit-popover {
-  width: 168px;
-  align-self: flex-start;
+  position: absolute;
+  left: calc(100% + 6px);
+  right: auto;
+  top: 0;
+  bottom: auto;
+  width: var(--model-picker-submenu-width, 248px);
+  max-height: 360px;
+  box-sizing: border-box;
   background: var(--bg-surface);
-  border: 0;
-  border-radius: 16px;
-  box-shadow: 0 12px 40px rgba(24, 24, 27, .14), 0 2px 8px rgba(24, 24, 27, .06);
-  padding: 6px;
-  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(24, 24, 27, .10), 0 2px 6px rgba(24, 24, 27, .04);
+  padding: 4px;
+  overflow-y: auto;
 }
 .picker-edit-popover.hidden { display: none; }
 .picker-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
-  min-height: 48px;
-  padding: 8px 10px;
+  min-height: 30px;
+  padding: 4px 7px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 7px;
   background: transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-1);
   cursor: pointer;
   text-align: left;
@@ -12429,10 +13619,10 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 }
 .picker-item:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 .picker-item:hover { background: var(--surface-hover); }
-.picker-item.selected { background: var(--brand-soft); }
+.picker-item.selected { background: var(--bg-surface-2); }
 .picker-item.editing { background: var(--surface-hover); }
 .picker-item.disabled { cursor: not-allowed; opacity: .58; }
-.picker-item-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.picker-item-copy { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 5px; }
 .picker-item-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .picker-item-meta {
   flex: 0 1 auto;
@@ -12441,78 +13631,63 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 400;
   color: var(--text-2);
 }
 .picker-item-chips { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
 .picker-item-chips > span { border: 1px solid var(--border); border-radius: 999px; padding: 1px 5px; color: var(--text-2); background: var(--bg-app); font-size: 9.5px; font-weight: 650; }
-.picker-item-actions {
-  display: none;
-  align-items: center;
-  gap: 1px;
-  flex: 0 0 auto;
-  margin-left: 4px;
-}
-.picker-item.selected .picker-item-actions { display: inline-flex; }
-.picker-reset-btn,
-.picker-edit-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  padding: 4px 7px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.picker-reset-btn { width: 24px; height: 24px; padding: 0; font-size: 14px; }
-.picker-reset-btn:hover,
-.picker-edit-btn:hover { background: rgba(0,0,0,.06); color: var(--text-1); }
-.picker-edit-btn.open { background: rgba(0,0,0,.08); color: var(--text-1); }
+.picker-row-trailing { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); }
+.picker-chevron { width: 11px; text-align: center; font-size: 13px; line-height: 1; }
 .picker-check {
-  flex: 0 0 16px;
-  width: 16px;
-  margin-left: 2px;
+  flex: 0 0 14px;
+  width: 14px;
+  margin-left: 1px;
   color: var(--text-1);
   font-weight: 600;
   text-align: center;
-  font-size: 13px;
+  font-size: 11px;
 }
 .picker-check.spacer { visibility: hidden; }
 .picker-section-label {
-  padding: 8px 8px 4px;
-  font-size: 12px;
+  padding: 6px 7px 2px;
+  font-size: 9.5px;
   font-weight: 600;
   color: var(--text-2);
+  letter-spacing: .02em;
 }
-.picker-effort-item {
+.picker-detail-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 28px;
+  padding: 3px 7px;
   border: 0;
   border-radius: 7px;
   background: transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: 11px;
   color: var(--text-1);
   cursor: pointer;
   text-align: left;
 }
-.picker-effort-item:hover { background: rgba(0,0,0,.045); }
-.picker-effort-item.selected { background: transparent; }
-.picker-effort-item .picker-item-label { font-weight: 400; }
-.picker-effort-item .picker-check { margin-left: auto; }
-.picker-placeholder { padding: 14px 12px; font-size: 12px; color: var(--text-2); text-align: center; }
+.picker-detail-item:hover { background: var(--surface-hover); }
+.picker-detail-item.selected { background: transparent; }
+.picker-detail-item .picker-item-label { font-weight: 400; }
+.picker-detail-item .picker-check { margin-left: auto; }
+.picker-detail-heading { display: flex; align-items: center; gap: 6px; padding: 6px 7px; border-bottom: 1px solid var(--border); }
+.picker-detail-heading .picker-item-copy { display: grid; gap: 1px; }
+.picker-detail-heading strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-detail-heading small { color: var(--text-2); font-size: 9.5px; }
+.picker-detail-close { flex: 0 0 22px; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font: inherit; font-size: 15px; cursor: pointer; }
+.picker-detail-close:hover { background: var(--surface-hover); color: var(--text-1); }
+.picker-placeholder { padding: 12px 10px; font-size: 11px; color: var(--text-2); text-align: center; }
 .picker-error { margin: 5px 8px 8px; padding: 8px 10px; border-radius: 8px; color: var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); font-size: 11.5px; line-height: 1.4; }
+@media (max-width: 720px) {
+  .model-picker-flyout { right: 0; }
+  .picker-edit-popover { left: calc(100% + 6px); right: auto; top: 0; bottom: auto; width: var(--model-picker-menu-width, min(248px, calc(100vw - 32px))); max-height: 210px; }
+}
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
 .router-editor { width: min(720px, 100%); }
 .router-editor textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); font: inherit; }
@@ -12623,6 +13798,7 @@ const _ICONS = {
   automation: '<path d="M4 12a8 8 0 0 1 13.66-5.66"/><path d="M18 4v5h-5"/><path d="M20 12a8 8 0 0 1-13.66 5.66"/><path d="M6 20v-5h5"/>',
   chat: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>',
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
   logo: '<circle cx="12" cy="12" r="2.4"/><circle cx="5" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="19" r="1.5"/><path d="M7.1 12h2.5"/><path d="M14.4 12h2.5"/><path d="M12 7.1v2.5"/><path d="M12 14.4v2.5"/><path d="m18.3 4.2.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6Z"/>',
@@ -12739,6 +13915,8 @@ const state = {
   activeSurface: null,
   attachments: [],
   attachmentCounter: 0,
+  addContextView: 'root',
+  addContextRequest: 0,
   lastUsageText: '',
   toolNodes: new Map(),
   // Active chat run id (from the run.started event). Sent with /api/abort so
@@ -12841,6 +14019,7 @@ const state = {
   teamSaveTarget: 'project',
   teamGraphFitView: false,
   teamGraphBoardDragging: false,
+  teamProposalPreviewId: null,
   teamDirty: false,
   lastTeamMemberId: null,
   lastTeamMemberRole: null,
@@ -14250,21 +15429,18 @@ function renderSettingsCommandPanels() {
   const routers = snapshot.routers || [];
   renderSettingsCardList('settingsRoutersList', routers, (root, router) => {
     const isActive = router.name === snapshot.activeRouterName;
-    const isBuiltIn = router.source === 'built-in';
     const actions = [
       { label: isActive ? 'Active' : 'Use', disabled: isActive, handler: () => runSettingsCommand('/model router ' + router.name, 'Applying router...') },
-      { label: isBuiltIn ? 'Customize' : 'Edit', handler: () => openRouterEditor(router) },
-    ];
-    if (!isBuiltIn) {
-      actions.push({
+      { label: 'Edit', handler: () => openRouterEditor(router) },
+      {
         label: 'Delete',
         handler: () => {
           if (window.confirm('Delete router profile "' + router.name + '"?')) {
             deleteRouterProfileViaApi(router.name).catch(console.error);
           }
         },
-      });
-    }
+      },
+    ];
     addSettingsCard(root, router.name, router.profile?.routes ? router.profile.routes.length + ' routes' : '', router.source, actions);
   });
   renderSettingsCardList('settingsToolsList', (snapshot.tools || []).slice(0, 40), (root, tool) => {
@@ -14372,7 +15548,7 @@ function appendSidebarProjectGroup(root, project) {
   });
   row.append(folder, name, pin);
   row.addEventListener('click', () => {
-    void openSidebarProject(project.path);
+    void openSidebarProject(project.activeWorkPath || project.path);
   });
   row.addEventListener('contextmenu', (event) => {
     event.preventDefault();
@@ -14385,7 +15561,7 @@ function appendSidebarProjectGroup(root, project) {
       },
       {
         label: 'Open project',
-        onClick: () => openSidebarProject(project.path),
+        onClick: () => openSidebarProject(project.activeWorkPath || project.path),
       },
       ...(project.active ? [] : [{
         label: 'Forget workspace',
@@ -14416,7 +15592,7 @@ function appendSidebarProjectGroup(root, project) {
       time.textContent = session.updatedAt ? formatRelativeTimeShort(session.updatedAt) : '';
       srow.append(title, time);
       srow.addEventListener('click', () => {
-        void openSidebarSession(project.path, session.id);
+        void openSidebarSession(project.activeWorkPath || project.path, session.id);
       });
       group.appendChild(srow);
     }
@@ -14501,7 +15677,9 @@ function renderWorkspaceChoices() {
     const title = document.createElement('strong');
     title.textContent = project.name || project.path;
     const detail = document.createElement('small');
-    detail.textContent = project.path;
+    detail.textContent = project.path + ((project.workPaths || []).length > 1
+      ? ' · ' + project.workPaths.length + ' work paths'
+      : '');
     label.append(title, detail);
     const count = document.createElement('span');
     count.className = 'workspace-count';
@@ -14513,7 +15691,7 @@ function renderWorkspaceChoices() {
         return;
       }
       el('workspaceStatus').textContent = 'Switching workspace...';
-      const ok = await switchProject(project.path);
+      const ok = await switchProject(project.activeWorkPath || project.path);
       el('workspaceStatus').textContent = ok ? '' : 'Could not open this workspace.';
       if (ok) closeWorkspaceDialog();
     });
@@ -14891,21 +16069,17 @@ function updatePickerBtn() {
   const snap = state.snapshot || {};
   const activeAgent = snap.activeAgent;
   const activeConfig = snap.bridgeState?.activeConfig;
+  const activeRouterName = snap.activeRouterName;
   const effortLabel = formatEffortLabel(snap.effort);
-  const model = activeAgent?.model || activeConfig?.model || snap.session?.model || 'Auto';
+  const model = activeRouterName ? 'Router' : activeAgent?.model || activeConfig?.model || snap.session?.model || 'Default';
   const runtime = activeAgent ? pickerRuntimeLabel(activeAgent) : activeConfig?.runtime || 'Session default';
-  const execution = activeAgent?.execution || activeConfig?.execution;
   btn.textContent = '';
   const copy = document.createElement('span');
   copy.className = 'model-picker-btn-copy';
   const primary = document.createElement('strong');
   primary.textContent = model;
   const secondary = document.createElement('small');
-  secondary.textContent = [
-    runtime,
-    execution === 'cli' ? 'CLI' : execution === 'api' ? 'API' : '',
-    effortLabel,
-  ].filter(Boolean).join(' · ');
+  secondary.textContent = activeRouterName || effortLabel || '';
   copy.append(primary, secondary);
   const caret = document.createElement('span');
   caret.className = 'model-picker-caret';
@@ -14913,9 +16087,11 @@ function updatePickerBtn() {
   btn.append(copy, caret);
   btn.classList.toggle('pending', state.pickerSelectionPending);
   btn.disabled = state.pickerSelectionPending;
-  btn.title = activeAgent
-    ? [activeAgent.name, activeAgent.bridgeConfig, activeAgent.model, runtime, effortLabel && ('effort ' + effortLabel)].filter(Boolean).join(' · ')
-    : 'Use the session default model';
+  btn.title = activeRouterName
+    ? ['Router', activeRouterName, snap.routedModelLabel && ('last route ' + snap.routedModelLabel)].filter(Boolean).join(' · ')
+    : activeAgent
+      ? [activeAgent.name, activeAgent.bridgeConfig, activeAgent.model, runtime, effortLabel && ('effort ' + effortLabel)].filter(Boolean).join(' · ')
+      : 'Use the session default model';
 }
 
 function makePickerCheck(visible) {
@@ -14936,80 +16112,221 @@ function closePickerEffortEditor() {
   const list = el('modelPickerItems');
   if (list) {
     list.querySelectorAll('.picker-item').forEach((row) => row.classList.remove('editing'));
-    list.querySelectorAll('.picker-edit-btn').forEach((btn) => btn.classList.remove('open'));
+    list.querySelectorAll('.picker-item').forEach((row) => row.setAttribute('aria-expanded', 'false'));
   }
 }
 
-function renderPickerEffortPopover(agentName) {
+function pickerTargetFromKey(key) {
+  const value = String(key || '');
+  const splitAt = value.indexOf(':');
+  if (splitAt < 1) return null;
+  const kind = value.slice(0, splitAt);
+  const name = value.slice(splitAt + 1);
+  if (kind === 'config') {
+    const config = (state.snapshot?.bridgeState?.configs || []).find(item => item.name === name);
+    return config ? { kind, name, label: config.name, config } : null;
+  }
+  if (kind === 'agent') {
+    const agent = (state.snapshot?.selectableAgents || []).find(item => item.source === 'profile' && item.name === name);
+    return agent ? { kind, name, label: agent.name, agent } : null;
+  }
+  return null;
+}
+
+function pickerConfigModels(config) {
+  const names = [];
+  const add = (value) => {
+    const name = String(value || '').trim();
+    if (name && !names.includes(name)) names.push(name);
+  };
+  add(config?.model);
+  for (const item of config?.models || []) add(item?.name);
+  return names;
+}
+
+function pickerTargetModel(target) {
+  if (target?.kind === 'agent') return target.agent.model;
+  const active = state.snapshot?.bridgeState?.activeConfig;
+  if (active?.name === target?.name && active.model) return active.model;
+  return pickerConfigModels(target?.config)[0] || target?.config?.model || '';
+}
+
+function renderPickerEffortPopover(targetKey) {
   const pop = el('modelPickerEditPopover');
   if (!pop) return;
+  const target = pickerTargetFromKey(targetKey);
+  if (!target) {
+    closePickerEffortEditor();
+    return;
+  }
   pop.textContent = '';
   pop.classList.remove('hidden');
   pop.style.marginTop = '0px';
 
   const heading = document.createElement('div');
-  heading.className = 'picker-section-label';
-  heading.textContent = 'Effort';
+  heading.className = 'picker-detail-heading';
+  const headingCopy = document.createElement('span');
+  headingCopy.className = 'picker-item-copy';
+  const headingTitle = document.createElement('strong');
+  headingTitle.textContent = target.label;
+  const headingMeta = document.createElement('small');
+  headingMeta.textContent = target.kind === 'agent' ? 'Agent' : pickerRuntimeLabel(target.config);
+  headingCopy.append(headingTitle, headingMeta);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'picker-detail-close';
+  close.title = 'Back';
+  close.setAttribute('aria-label', 'Close model options');
+  close.textContent = '×';
+  close.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closePickerEffortEditor();
+  });
+  heading.append(headingCopy, close);
   pop.appendChild(heading);
 
+  const modelHeading = document.createElement('div');
+  modelHeading.className = 'picker-section-label';
+  modelHeading.textContent = 'Model';
+  pop.appendChild(modelHeading);
+  const models = target.kind === 'agent'
+    ? [target.agent.model]
+    : pickerConfigModels(target.config);
+  const activeConfig = state.snapshot?.bridgeState?.activeConfig;
   const activeAgent = state.snapshot?.activeAgent;
-  const agentIsActive = !!activeAgent && activeAgent.name === agentName;
+  const targetIsActive = target.kind === 'agent'
+    ? activeAgent?.name === target.name
+    : !activeAgent && activeConfig?.name === target.name;
+  const currentModel = targetIsActive
+    ? (activeAgent?.model || activeConfig?.model || '')
+    : pickerTargetModel(target);
+  for (const modelName of models) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'picker-detail-item';
+    item.dataset.model = modelName;
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = modelName;
+    item.append(label, makePickerCheck(targetIsActive && currentModel === modelName));
+    item.addEventListener('click', (event) => {
+      event.stopPropagation();
+      void selectPickerTarget(target, modelName, null, { close: false });
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft') return;
+      event.preventDefault();
+      closePickerEffortEditor();
+      el('modelPickerItems')?.querySelector('.picker-item[data-picker-value="' + CSS.escape(targetKey) + '"]')?.focus();
+    });
+    pop.appendChild(item);
+  }
+
+  const effortHeading = document.createElement('div');
+  effortHeading.className = 'picker-section-label';
+  effortHeading.textContent = 'Reasoning';
+  pop.appendChild(effortHeading);
   const curEffort = (state.snapshot?.effort) || 'auto';
-  const profileEffort = activeAgent?.effort || '';
+  const profileEffort = target.kind === 'agent' ? (target.agent.effort || '') : '';
 
   for (const e of PICKER_EFFORTS) {
     const item = document.createElement('button');
     item.type = 'button';
-    item.className = 'picker-effort-item';
+    item.className = 'picker-detail-item';
     const label = document.createElement('span');
     label.className = 'picker-item-label';
     label.textContent = formatEffortLabel(e);
     item.appendChild(label);
-    const selected = agentIsActive && (e === curEffort || (curEffort === 'auto' && e === 'medium' && !profileEffort));
+    const selected = targetIsActive && (e === curEffort || (curEffort === 'auto' && e === 'medium' && !profileEffort));
     if (selected) {
       item.classList.add('selected');
       item.appendChild(makePickerCheck(true));
+    } else {
+      item.appendChild(makePickerCheck(false));
     }
     if (profileEffort === e) item.title = 'Profile default';
     item.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      void selectPickerAgent(agentName, e, { close: true });
+      void selectPickerTarget(target, pickerTargetModel(target), e, { close: true });
+    });
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft') return;
+      event.preventDefault();
+      closePickerEffortEditor();
+      el('modelPickerItems')?.querySelector('.picker-item[data-picker-value="' + CSS.escape(targetKey) + '"]')?.focus();
     });
     pop.appendChild(item);
   }
 
   requestAnimationFrame(() => {
     const menu = el('modelPickerMenu');
-    const row = el('modelPickerItems')?.querySelector('.picker-item[data-agent-name="' + CSS.escape(agentName) + '"]');
+    const row = el('modelPickerItems')?.querySelector('.picker-item[data-picker-value="' + CSS.escape(targetKey) + '"]');
     if (!menu || !row || !pop) return;
-    const offset = Math.max(0, row.getBoundingClientRect().top - menu.getBoundingClientRect().top);
-    pop.style.marginTop = offset + 'px';
+    const menuRect = menu.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const popHeight = pop.getBoundingClientRect().height;
+    const viewportGap = 12;
+    const minOffset = viewportGap - menuRect.top;
+    const availableBottom = Math.min(window.innerHeight - viewportGap, menuRect.bottom);
+    const maxOffset = availableBottom - menuRect.top - popHeight;
+    const offset = Math.max(minOffset, Math.min(maxOffset, rowRect.top - menuRect.top));
+    pop.style.marginTop = Math.round(offset) + 'px';
   });
 }
 
-function openPickerEffortEditor(agentName) {
-  state.pickerEditingAgent = agentName;
+function openPickerEffortEditor(targetKey) {
+  state.pickerEditingAgent = targetKey;
   const list = el('modelPickerItems');
   if (list) {
     list.querySelectorAll('.picker-item').forEach((row) => {
-      row.classList.toggle('editing', row.dataset.agentName === agentName);
-    });
-    list.querySelectorAll('.picker-edit-btn').forEach((btn) => {
-      btn.classList.toggle('open', btn.dataset.agentName === agentName);
+      const open = row.dataset.pickerValue === targetKey;
+      row.classList.toggle('editing', open);
+      row.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   }
-  renderPickerEffortPopover(agentName);
+  renderPickerEffortPopover(targetKey);
 }
 
-function filteredPickerAgents() {
-  const agents = state.snapshot?.selectableAgents || [];
+function filteredPickerTargets() {
+  const snap = state.snapshot || {};
+  const routers = (snap.routers || []).map(router => ({
+    key: 'router:' + router.name,
+    kind: 'router',
+    name: router.name,
+    label: router.name,
+    meta: [
+      router.profile?.routes?.length ? router.profile.routes.length + ' routes' : '',
+      router.profile?.routerModel?.model || '',
+    ].filter(Boolean).join(' · '),
+    search: [
+      'router',
+      router.name,
+      router.profile?.description,
+      router.profile?.routerModel?.model,
+      ...(router.profile?.routes || []).flatMap(route => [route.role, route.name, route.model, route.when]),
+    ].filter(Boolean).join(' '),
+  }));
+  const configs = (snap.bridgeState?.configs || []).map(config => ({
+    key: 'config:' + config.name,
+    kind: 'config',
+    name: config.name,
+    label: config.name,
+    meta: [pickerRuntimeLabel(config), config.execution === 'cli' ? 'CLI' : 'API'].filter(Boolean).join(' · '),
+    search: [config.name, config.runtime, config.provider, config.model, ...(config.models || []).map(item => item.name)].filter(Boolean).join(' '),
+  }));
+  const agents = (snap.selectableAgents || [])
+    .filter(agent => agent.source === 'profile')
+    .map(agent => ({
+      key: 'agent:' + agent.name,
+      kind: 'agent',
+      name: agent.name,
+      label: agent.name,
+      meta: [agent.model, agent.bridgeConfig].filter(Boolean).join(' · '),
+      search: [agent.name, agent.model, agent.bridgeConfig, agent.description, agent.runtime, agent.provider].filter(Boolean).join(' '),
+  }));
   const query = String(state.pickerQuery || '').trim().toLowerCase();
-  if (!query) return agents;
-  return agents.filter((agent) => {
-    const hay = [agent.name, agent.model, agent.bridgeConfig, agent.description, agent.effort, agent.runtime, agent.provider, agent.execution]
-      .filter(Boolean).join(' ').toLowerCase();
-    return hay.includes(query);
-  });
+  const filter = (items) => query ? items.filter(item => item.search.toLowerCase().includes(query)) : items;
+  return { routers: filter(routers), configs: filter(configs), agents: filter(agents) };
 }
 
 function pickerRows() {
@@ -15053,100 +16370,109 @@ function handlePickerNavigation(event) {
   return false;
 }
 
-function appendPickerSection(items, label, agents, activeAgent, activeConfigName, editing, selectionBlocked) {
-  if (!agents.length) return;
+function appendPickerSection(items, label, targets, activeAgent, activeConfigName, editing, selectionBlocked) {
+  if (!targets.length) return;
   const heading = document.createElement('div');
   heading.className = 'picker-section-label';
   heading.textContent = label;
   items.appendChild(heading);
-  for (const agent of agents) {
+  for (const target of targets) {
     const item = document.createElement('div');
-    item.id = 'model-picker-option-' + String(agent.name).replace(/[^A-Za-z0-9_-]/g, '-');
+    item.id = 'model-picker-option-' + String(target.key).replace(/[^A-Za-z0-9_-]/g, '-');
     item.className = 'picker-item';
     item.setAttribute('role', 'option');
+    item.setAttribute('aria-haspopup', 'dialog');
     item.tabIndex = -1;
-    item.dataset.agentName = agent.name;
-    item.dataset.pickerValue = agent.name;
-    const isActive = activeAgent?.name === agent.name
-      || (!activeAgent && activeConfigName && agent.bridgeConfig === activeConfigName && agent.model === state.snapshot?.bridgeState?.activeConfig?.model);
+    item.dataset.pickerValue = target.key;
+    const isActive = target.kind === 'agent'
+      ? activeAgent?.name === target.name
+      : !activeAgent && activeConfigName === target.name;
     item.setAttribute('aria-selected', isActive ? 'true' : 'false');
     item.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
+    item.setAttribute('aria-expanded', editing === target.key ? 'true' : 'false');
     if (isActive) item.classList.add('selected');
-    if (editing && editing === agent.name) item.classList.add('editing');
+    if (editing === target.key) item.classList.add('editing');
     if (selectionBlocked) item.classList.add('disabled');
 
     const copy = document.createElement('span');
     copy.className = 'picker-item-copy';
-    const model = document.createElement('span');
-    model.className = 'picker-item-label';
-    model.textContent = agent.model || agent.name;
+    const title = document.createElement('span');
+    title.className = 'picker-item-label';
+    title.textContent = target.label;
     const meta = document.createElement('span');
     meta.className = 'picker-item-meta';
-    meta.textContent = [
-      agent.source === 'profile' ? (agent.name + ' preset') : agent.bridgeConfig,
-      pickerRuntimeLabel(agent),
-      agent.execution === 'cli' ? 'CLI runtime' : 'Direct API',
-    ].filter(Boolean).join(' · ');
-    copy.append(model, meta);
+    meta.textContent = target.meta;
+    copy.append(title, meta);
     item.appendChild(copy);
 
-    const chips = document.createElement('span');
-    chips.className = 'picker-item-chips';
-    if (agent.context1M) {
-      const chip = document.createElement('span'); chip.textContent = '1M'; chips.appendChild(chip);
-    }
-    if (agent.modality === 'multimodal') {
-      const chip = document.createElement('span'); chip.textContent = 'Vision'; chips.appendChild(chip);
-    }
-    const effort = isActive ? state.snapshot?.effort : agent.effort;
-    if (effort && effort !== 'auto') {
-      const chip = document.createElement('span'); chip.textContent = formatEffortLabel(effort); chips.appendChild(chip);
-    }
-    if (chips.children.length) item.appendChild(chips);
-
-    if (isActive) {
-      const actions = document.createElement('span');
-      actions.className = 'picker-item-actions';
-      const profileEffort = agent.effort || 'auto';
-      const curEffort = state.snapshot?.effort || 'auto';
-      if (curEffort !== profileEffort) {
-        const resetBtn = document.createElement('button');
-        resetBtn.type = 'button';
-        resetBtn.className = 'picker-reset-btn';
-        resetBtn.title = 'Reset effort to model default';
-        resetBtn.textContent = '↺';
-        resetBtn.disabled = selectionBlocked;
-        resetBtn.addEventListener('click', (ev) => {
-          ev.stopPropagation();
-          void selectPickerAgent(agent.name, profileEffort, { close: false });
-        });
-        actions.appendChild(resetBtn);
-      }
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'picker-edit-btn' + (editing === agent.name ? ' open' : '');
-      editBtn.dataset.agentName = agent.name;
-      editBtn.title = 'Change effort for this conversation';
-      editBtn.textContent = 'Effort';
-      editBtn.disabled = selectionBlocked;
-      editBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (state.pickerEditingAgent === agent.name) closePickerEffortEditor();
-        else openPickerEffortEditor(agent.name);
-      });
-      actions.appendChild(editBtn);
-      item.appendChild(actions);
-    }
-    item.appendChild(makePickerCheck(isActive));
-    const activateAgent = () => {
-      if (selectionBlocked || isActive) return;
-      closePickerEffortEditor();
-      void selectPickerAgent(agent.name, null, { close: true });
+    const trailing = document.createElement('span');
+    trailing.className = 'picker-row-trailing';
+    if (isActive) trailing.appendChild(makePickerCheck(true));
+    const chevron = document.createElement('span');
+    chevron.className = 'picker-chevron';
+    chevron.textContent = '›';
+    trailing.appendChild(chevron);
+    item.appendChild(trailing);
+    const openTarget = () => {
+      if (selectionBlocked) return;
+      if (state.pickerEditingAgent === target.key) closePickerEffortEditor();
+      else openPickerEffortEditor(target.key);
     };
-    item.addEventListener('click', activateAgent);
+    item.addEventListener('click', openTarget);
+    item.addEventListener('mouseenter', () => {
+      if (!selectionBlocked && state.pickerEditingAgent !== target.key) openPickerEffortEditor(target.key);
+    });
     item.addEventListener('keydown', (ev) => {
       if (handlePickerNavigation(ev)) return;
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); activateAgent(); }
+      if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'ArrowRight') {
+        ev.preventDefault();
+        openTarget();
+      }
+    });
+    items.appendChild(item);
+  }
+}
+
+function appendPickerRouterSection(items, routers, activeRouterName, selectionBlocked) {
+  if (!routers.length) return;
+  const heading = document.createElement('div');
+  heading.className = 'picker-section-label';
+  heading.textContent = 'Routers';
+  items.appendChild(heading);
+  for (const router of routers) {
+    const item = document.createElement('div');
+    item.id = 'model-picker-option-' + String(router.key).replace(/[^A-Za-z0-9_-]/g, '-');
+    item.className = 'picker-item';
+    item.setAttribute('role', 'option');
+    item.tabIndex = -1;
+    item.dataset.pickerValue = router.key;
+    const isActive = activeRouterName === router.name;
+    item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    item.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
+    if (isActive) item.classList.add('selected');
+    if (selectionBlocked) item.classList.add('disabled');
+
+    const copy = document.createElement('span');
+    copy.className = 'picker-item-copy';
+    const title = document.createElement('span');
+    title.className = 'picker-item-label';
+    title.textContent = router.label;
+    const meta = document.createElement('span');
+    meta.className = 'picker-item-meta';
+    meta.textContent = router.meta;
+    copy.append(title, meta);
+    item.append(copy, makePickerCheck(isActive));
+
+    const activate = () => {
+      if (!selectionBlocked && !isActive) void selectPickerRouter(router.name);
+    };
+    item.addEventListener('click', activate);
+    item.addEventListener('keydown', (event) => {
+      if (handlePickerNavigation(event)) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        activate();
+      }
     });
     items.appendChild(item);
   }
@@ -15162,49 +16488,23 @@ function renderModelPicker() {
   if (search && search.value !== (state.pickerQuery || '')) {
     search.value = state.pickerQuery || '';
   }
-  const agents = filteredPickerAgents();
+  const targets = filteredPickerTargets();
   const activeAgent = snap.activeAgent;
   const activeConfigName = snap.bridgeState?.activeConfig?.name;
+  const activeRouterName = !activeAgent && !activeConfigName ? snap.activeRouterName : null;
   const editing = state.pickerEditingAgent;
   const selectionBlocked = Boolean(state.pickerSelectionPending || state.running || snap.running);
 
-  if ((snap.selectableAgents || []).length === 0) {
+  if (!targets.routers.length && !targets.configs.length && !targets.agents.length) {
     const ph = document.createElement('div');
     ph.className = 'picker-placeholder';
     ph.textContent = 'No models configured — add a provider in Settings → Models';
     items.appendChild(ph);
   }
-  const query = String(state.pickerQuery || '').trim().toLowerCase();
-  if (!query || 'auto session default'.includes(query)) {
-    const auto = document.createElement('div');
-    auto.id = 'model-picker-option-auto';
-    auto.className = 'picker-item picker-item-auto' + (!activeAgent && !activeConfigName ? ' selected' : '') + (selectionBlocked ? ' disabled' : '');
-    auto.setAttribute('role', 'option');
-    auto.setAttribute('aria-selected', !activeAgent && !activeConfigName ? 'true' : 'false');
-    auto.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
-    auto.tabIndex = -1;
-    auto.dataset.pickerValue = '';
-    const copy = document.createElement('span');
-    copy.className = 'picker-item-copy';
-    const label = document.createElement('span'); label.className = 'picker-item-label'; label.textContent = 'Auto';
-    const meta = document.createElement('span'); meta.className = 'picker-item-meta'; meta.textContent = 'Use this conversation’s default model';
-    copy.append(label, meta);
-    auto.append(copy, makePickerCheck(!activeAgent && !activeConfigName));
-    auto.addEventListener('click', () => { if (!selectionBlocked && (activeAgent || activeConfigName)) void selectPickerAgent('', null, { close: true }); });
-    auto.addEventListener('keydown', (ev) => {
-      if (handlePickerNavigation(ev)) return;
-      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); auto.click(); }
-    });
-    items.appendChild(auto);
-  }
 
-  const byName = new Map(agents.map(agent => [agent.name, agent]));
-  const recent = (state.pickerRecentNames || []).map(name => byName.get(name)).filter(Boolean);
-  const recentNames = new Set(recent.map(agent => agent.name));
-  const remaining = agents.filter(agent => !recentNames.has(agent.name));
-  appendPickerSection(items, 'Recent', recent, activeAgent, activeConfigName, editing, selectionBlocked);
-  appendPickerSection(items, 'Agent presets', remaining.filter(agent => agent.source === 'profile'), activeAgent, activeConfigName, editing, selectionBlocked);
-  appendPickerSection(items, 'Models', remaining.filter(agent => agent.source !== 'profile'), activeAgent, activeConfigName, editing, selectionBlocked);
+  appendPickerRouterSection(items, targets.routers, activeRouterName, selectionBlocked);
+  appendPickerSection(items, 'Configurations', targets.configs, activeAgent, activeConfigName, editing, selectionBlocked);
+  appendPickerSection(items, 'Agents', targets.agents, activeAgent, activeConfigName, editing, selectionBlocked);
 
   if (state.pickerError) {
     const error = document.createElement('div');
@@ -15214,7 +16514,7 @@ function renderModelPicker() {
     items.appendChild(error);
   }
 
-  if (editing && (snap.selectableAgents || []).some((a) => a.name === editing)) {
+  if (editing && pickerTargetFromKey(editing)) {
     renderPickerEffortPopover(editing);
   } else {
     closePickerEffortEditor();
@@ -15227,7 +16527,52 @@ function renderModelPicker() {
   updatePickerBtn();
 }
 
+function selectPickerTarget(target, model, effort, opts) {
+  if (target?.kind === 'agent') {
+    return selectPickerAgent(target.name, effort, opts);
+  }
+  return selectPickerSelection({
+    bridgeConfig: target?.name || '',
+    model: model || '',
+  }, effort, opts);
+}
+
 async function selectPickerAgent(agentName, effort, opts) {
+  if (!agentName) return selectPickerSelection(null, effort, opts);
+  return selectPickerSelection({ name: agentName }, effort, opts, agentName);
+}
+
+async function selectPickerRouter(name) {
+  if (state.pickerSelectionPending || state.running || state.snapshot?.running) return;
+  const requestSequence = ++state.pickerSelectionSequence;
+  state.pickerSelectionPending = true;
+  state.pickerError = '';
+  renderModelPicker();
+  try {
+    const res = await api('/api/router/activate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (requestSequence !== state.pickerSelectionSequence) return;
+    if (!res.ok) throw new Error(payload.error || 'Could not activate router.');
+    state.snapshot = payload;
+    applyLoadedState();
+    closeModelPicker();
+  } catch (error) {
+    if (requestSequence !== state.pickerSelectionSequence) return;
+    state.pickerError = error && error.message ? error.message : 'Could not activate router.';
+  } finally {
+    if (requestSequence === state.pickerSelectionSequence) {
+      state.pickerSelectionPending = false;
+      updatePickerBtn();
+      if (state.pickerError) renderModelPicker();
+    }
+  }
+}
+
+async function selectPickerSelection(selection, effort, opts, recentAgentName) {
   const close = !opts || opts.close !== false;
   if (state.pickerSelectionPending || state.running || state.snapshot?.running) {
     state.pickerError = 'Stop or wait for the active response before switching models.';
@@ -15239,20 +16584,24 @@ async function selectPickerAgent(agentName, effort, opts) {
   state.pickerError = '';
   renderModelPicker();
   try {
-    const res = !agentName
+    const res = !selection
       ? await api('/api/bridge/off', { method: 'POST' })
       : await api('/api/agent/activate', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name: agentName, ...(effort ? { effort } : {}) }),
+          body: JSON.stringify({ ...selection, ...(effort ? { effort } : {}) }),
         });
     const payload = await res.json().catch(() => ({}));
     if (requestSequence !== state.pickerSelectionSequence) return;
     if (!res.ok) throw new Error(payload.error || 'Could not switch models.');
     state.snapshot = payload;
-    if (agentName) rememberPickerAgent(agentName);
+    if (recentAgentName) rememberPickerAgent(recentAgentName);
     applyLoadedState();
-    state.pickerEditingAgent = null;
+    if (!close && state.pickerEditingAgent) {
+      renderPickerEffortPopover(state.pickerEditingAgent);
+    } else {
+      state.pickerEditingAgent = null;
+    }
     if (close) closeModelPicker();
   } catch (error) {
     if (requestSequence !== state.pickerSelectionSequence) return;
@@ -15283,8 +16632,11 @@ function positionModelPickerFlyout() {
   const buttonRect = button.getBoundingClientRect();
   const leftEdge = Math.max(12, boundaryRect.left + 12);
   const rightEdge = Math.min(window.innerWidth - 12, boundaryRect.right - 12, buttonRect.right);
-  const availableWidth = Math.max(180, Math.floor(rightEdge - leftEdge));
-  flyout.style.setProperty('--model-picker-menu-width', Math.min(420, availableWidth) + 'px');
+  const availableWidth = Math.max(240, Math.floor(rightEdge - leftEdge));
+  const menuWidth = Math.min(248, Math.max(208, availableWidth));
+  const submenuWidth = menuWidth;
+  flyout.style.setProperty('--model-picker-menu-width', menuWidth + 'px');
+  flyout.style.setProperty('--model-picker-submenu-width', submenuWidth + 'px');
 }
 
 function toggleModelPicker() {
@@ -15945,6 +17297,185 @@ function avatarStack(labels) {
   }
   return stack;
 }
+const sessionCenterState = { page: 1, totalPages: 1, timer: null };
+function sessionCenterTypes() {
+  const value = el('sessionCenterType')?.value || 'user';
+  return value === 'all'
+    ? ['user', 'assistant-global', 'assistant-project', 'agent']
+    : [value];
+}
+function fillSessionCenterProjects() {
+  const select = el('sessionCenterProject');
+  if (!select) return;
+  const current = select.value;
+  select.textContent = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = 'All projects';
+  select.appendChild(all);
+  for (const project of state.snapshot?.projects || []) {
+    const option = document.createElement('option');
+    option.value = project.path;
+    option.textContent = project.name || project.path;
+    select.appendChild(option);
+  }
+  if ([...select.options].some(option => option.value === current)) select.value = current;
+}
+async function sessionCenterAction(action, item, extra) {
+  const res = await api('/api/session-center/action', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      action,
+      ...(item ? { locator: item.locator } : {}),
+      ...(extra || {}),
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
+  return payload;
+}
+async function openSessionCenterItem(item) {
+  try {
+    const payload = await sessionCenterAction('open', item);
+    await loadState();
+    if (item.type === 'agent') {
+      switchProjectView('detail');
+      setProjectDetailTab('agents');
+      return;
+    }
+    if (item.type === 'assistant-global' || item.type === 'assistant-project') {
+      if (item.type === 'assistant-project') switchProjectView('detail');
+      setAssistantScope(item.type === 'assistant-global' ? 'global' : 'project', { refresh: false, force: true });
+      setManagerUiMode('compact');
+      await refreshManagerState(true);
+      return;
+    }
+    if (payload.state) state.snapshot = payload.state;
+    switchProjectView('conversation');
+  } catch (error) {
+    flashStatus('Open failed: ' + (error.message || error));
+  }
+}
+function sessionCenterButton(label, handler, opts) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'pill-btn' + (opts?.danger ? ' danger' : '');
+  button.textContent = label;
+  button.disabled = Boolean(opts?.disabled);
+  button.addEventListener('click', handler);
+  return button;
+}
+function renderSessionCenterItems(page) {
+  const host = el('sessionCenterList');
+  if (!host) return;
+  host.textContent = '';
+  el('sessionCenterCount').textContent = String(page.total || 0);
+  sessionCenterState.totalPages = page.totalPages || 1;
+  el('sessionCenterPage').textContent = 'Page ' + (page.page || 1) + ' of ' + sessionCenterState.totalPages;
+  el('sessionCenterPrev').disabled = (page.page || 1) <= 1;
+  el('sessionCenterNext').disabled = (page.page || 1) >= sessionCenterState.totalPages;
+  if (!page.items?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'region-empty';
+    empty.textContent = 'No matching Sessions.';
+    host.appendChild(empty);
+    return;
+  }
+  for (const item of page.items) {
+    const row = document.createElement('article');
+    row.className = 'session-center-row ' + item.runtimeStatus;
+    const main = document.createElement('div');
+    main.className = 'session-center-main';
+    const title = document.createElement('strong');
+    title.textContent = (item.pinned ? '★ ' : '') + (item.title || item.locator.sessionId);
+    const meta = document.createElement('small');
+    meta.className = 'muted';
+    meta.textContent = [
+      item.projectName,
+      item.type,
+      item.runtimeStatus,
+      item.archived ? 'archived' : '',
+      formatRelativeTime(item.updatedAt),
+    ].filter(Boolean).join(' · ');
+    const preview = document.createElement('p');
+    preview.textContent = item.brief || item.preview || 'No messages yet';
+    main.append(title, meta, preview);
+    const actions = document.createElement('div');
+    actions.className = 'session-center-actions';
+    if (!item.archived) {
+      actions.appendChild(sessionCenterButton(
+        item.type === 'agent' ? 'Open Monitor' : 'Open',
+        () => { void openSessionCenterItem(item); },
+      ));
+    }
+    if (item.type !== 'agent') {
+      actions.appendChild(sessionCenterButton('Rename', async () => {
+        const title = window.prompt('Rename Session', item.title || '');
+        if (!title?.trim()) return;
+        try {
+          await sessionCenterAction('rename', item, { title: title.trim() });
+          await refreshSessionCenter();
+        } catch (error) { flashStatus('Rename failed: ' + (error.message || error)); }
+      }));
+      actions.appendChild(sessionCenterButton(item.pinned ? 'Unpin' : 'Pin', async () => {
+        try {
+          await sessionCenterAction('pin', item, { pinned: !item.pinned });
+          await refreshSessionCenter();
+        } catch (error) { flashStatus('Pin failed: ' + (error.message || error)); }
+      }));
+      if (item.archived) {
+        actions.appendChild(sessionCenterButton('Restore', async () => {
+          try {
+            await sessionCenterAction('restore', item);
+            await refreshSessionCenter();
+          } catch (error) { flashStatus('Restore failed: ' + (error.message || error)); }
+        }));
+        actions.appendChild(sessionCenterButton('Delete', async () => {
+          if (!window.confirm('Permanently delete "' + item.title + '"? This cannot be undone.')) return;
+          try {
+            await sessionCenterAction('delete', item);
+            await refreshSessionCenter();
+          } catch (error) { flashStatus('Delete failed: ' + (error.message || error)); }
+        }, { danger: true }));
+      } else {
+        actions.appendChild(sessionCenterButton('Archive', async () => {
+          if (!window.confirm('Archive "' + item.title + '"?')) return;
+          try {
+            await sessionCenterAction('archive', item);
+            await refreshSessionCenter();
+          } catch (error) { flashStatus('Archive failed: ' + (error.message || error)); }
+        }, { disabled: item.runtimeStatus !== 'idle' }));
+      }
+    }
+    row.append(main, actions);
+    host.appendChild(row);
+  }
+}
+async function refreshSessionCenter() {
+  if (state.projectView !== 'chats') return;
+  fillSessionCenterProjects();
+  const params = new URLSearchParams();
+  for (const type of sessionCenterTypes()) params.append('type', type);
+  const projectPath = el('sessionCenterProject')?.value || '';
+  if (projectPath) params.set('projectPath', projectPath);
+  const status = el('sessionCenterStatus')?.value || '';
+  if (status) params.set('status', status);
+  params.set('archived', el('sessionCenterArchived')?.value || 'false');
+  const q = el('sessionCenterSearch')?.value.trim() || '';
+  if (q) params.set('q', q);
+  params.set('page', String(sessionCenterState.page));
+  params.set('pageSize', '50');
+  try {
+    const res = await api('/api/session-center?' + params.toString());
+    const page = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(page.error || ('HTTP ' + res.status));
+    renderSessionCenterItems(page);
+  } catch (error) {
+    const host = el('sessionCenterList');
+    if (host) host.textContent = 'Could not load Sessions: ' + (error.message || error);
+  }
+}
 function switchProjectView(view) {
   const prev = state.projectView;
   if (view !== 'detail') setDetailConversationDrawer(false);
@@ -15957,13 +17488,19 @@ function switchProjectView(view) {
   }
   const ov = el('projectOverview');
   const dt = el('projectDetail');
+  const chats = el('projectChats');
   const cv = el('projectConversation');
-  if (!ov || !dt || !cv) return;
+  if (!ov || !dt || !chats || !cv) return;
   ov.classList.toggle('hidden', view !== 'overview');
   dt.classList.toggle('hidden', view !== 'detail');
+  chats.classList.toggle('hidden', view !== 'chats');
   cv.classList.toggle('hidden', view !== 'conversation');
-  document.body.dataset.sidebarMode = view === 'overview' ? 'nav' : 'full';
+  document.body.dataset.sidebarMode = view === 'overview' || view === 'chats' ? 'nav' : 'full';
   state.projectView = view;
+  if (view === 'chats') {
+    sessionCenterState.page = 1;
+    void refreshSessionCenter();
+  }
   if (view !== 'detail') state.detailSelectedId = null;
   else if (prev === 'conversation') state.detailSelectedId = null;
   if (view === 'detail') {
@@ -18404,6 +19941,69 @@ function renderConvSidebarDetail() {
   }
   panel.appendChild(actions);
 }
+function renderProjectWorkPaths() {
+  const select = el('detailWorkPathSelect');
+  if (!select) return;
+  const primary = String(state.snapshot?.projectPath || state.snapshot?.workDir || '');
+  const active = String(state.snapshot?.workDir || '');
+  const paths = Array.isArray(state.snapshot?.projectWorkPaths) && state.snapshot.projectWorkPaths.length
+    ? state.snapshot.projectWorkPaths
+    : [primary];
+  select.textContent = '';
+  for (const workPath of paths) {
+    const option = document.createElement('option');
+    option.value = workPath;
+    const leaf = String(workPath).split(/[\\\\/]/).filter(Boolean).pop() || workPath;
+    option.textContent = (sameWorkspacePath(workPath, primary) ? 'Primary · ' : '') + leaf;
+    option.title = workPath;
+    option.selected = sameWorkspacePath(workPath, active);
+    select.appendChild(option);
+  }
+  select.disabled = paths.length < 2;
+  select.title = active;
+  const remove = el('detailRemoveWorkPathBtn');
+  if (remove) remove.classList.toggle('hidden', !active || sameWorkspacePath(active, primary));
+}
+
+async function addProjectWorkPathFromPicker() {
+  const picked = await pickFolderViaApi();
+  if (!picked) return;
+  const projectPath = state.snapshot?.projectPath || state.snapshot?.workDir;
+  const res = await api('/api/project/work-path', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'add', projectPath, workPath: picked }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    flashStatus(payload.error || 'Could not add work path.');
+    return;
+  }
+  const opened = await switchProject(picked, 'detail');
+  if (opened) flashStatus('Work path added');
+}
+
+async function removeActiveProjectWorkPath() {
+  const projectPath = state.snapshot?.projectPath || '';
+  const workPath = state.snapshot?.workDir || '';
+  if (!projectPath || !workPath || sameWorkspacePath(projectPath, workPath)) return;
+  if (!window.confirm('Remove this work path from the project? Files will not be deleted.')) return;
+  if (!(await switchProject(projectPath, 'detail'))) return;
+  const res = await api('/api/project/work-path', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'remove', projectPath, workPath }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    flashStatus(payload.error || 'Could not remove work path.');
+    return;
+  }
+  state.snapshot = payload.state || state.snapshot;
+  applyLoadedState();
+  flashStatus('Work path removed');
+}
+
 function renderProjectDetail() {
   if (state.terminalHostMode === 'project') parkTerminalDock();
   const name = projectNameFromSnapshot();
@@ -18424,7 +20024,11 @@ function renderProjectDetail() {
     bc.append(crumb, sep, cur);
   }
   const pp = el('detailProjectPath');
-  if (pp) pp.textContent = w;
+  if (pp) {
+    const primary = state.snapshot?.projectPath || w;
+    pp.textContent = sameWorkspacePath(primary, w) ? w : w + ' · project ' + primary;
+  }
+  renderProjectWorkPaths();
   const body = el('detailBody');
   if (!body) return;
   body.textContent = '';
@@ -19496,6 +21100,356 @@ function completeSlash(name) {
   el('slashMenu').classList.add('hidden');
   input.focus();
 }
+function closeAddContextMenu() {
+  const menu = el('addContextMenu');
+  if (!menu) return;
+  menu.classList.add('hidden');
+  el('fileUploadBtn').setAttribute('aria-expanded', 'false');
+  state.addContextRequest += 1;
+}
+function addContextRow(options) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'add-context-row';
+  button.setAttribute('role', 'menuitem');
+  if (options.disabled) button.disabled = true;
+  const icon = document.createElement('span');
+  icon.className = 'add-context-row-icon';
+  icon.innerHTML = guiIcon(options.icon || 'plus');
+  const title = document.createElement('span');
+  title.className = 'add-context-row-title';
+  title.textContent = options.title;
+  const desc = document.createElement('span');
+  desc.className = 'add-context-row-desc';
+  desc.textContent = options.description || '';
+  const end = document.createElement('span');
+  end.className = 'add-context-row-end';
+  end.textContent = options.end || '';
+  button.append(icon, title, desc, end);
+  if (options.onClick) button.addEventListener('click', options.onClick);
+  return button;
+}
+function addContextSection(menu, title, rows) {
+  const section = document.createElement('section');
+  section.className = 'add-context-section';
+  const heading = document.createElement('div');
+  heading.className = 'add-context-heading';
+  heading.textContent = title;
+  section.appendChild(heading);
+  rows.forEach(row => section.appendChild(row));
+  menu.appendChild(section);
+}
+function setComposerCommand(command) {
+  closeAddContextMenu();
+  input.value = command;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+  renderSlashMenu();
+}
+function addContextAttachment(name, contextType, text) {
+  state.attachments.push({
+    id: 'att-' + (++state.attachmentCounter),
+    kind: 'context',
+    contextType,
+    name,
+    size: 0,
+    type: 'text/plain',
+    path: '',
+    text,
+    note: '',
+  });
+  renderAttachments();
+  closeAddContextMenu();
+  input.focus();
+}
+function renderAddContextRoot() {
+  const menu = el('addContextMenu');
+  menu.textContent = '';
+  state.addContextView = 'root';
+  state.addContextRequest += 1;
+  addContextSection(menu, 'Add', [
+    addContextRow({
+      icon: 'list',
+      title: 'Files',
+      description: 'Attach one or more files',
+      onClick: () => { closeAddContextMenu(); el('fileInput').click(); },
+    }),
+    addContextRow({
+      icon: 'folder',
+      title: 'Folder',
+      description: 'Attach files from a folder',
+      onClick: () => { closeAddContextMenu(); el('folderInput').click(); },
+    }),
+    addContextRow({
+      icon: 'review',
+      title: 'Goal',
+      description: 'Set a goal to keep pursuing',
+      onClick: () => setComposerCommand('/goal '),
+    }),
+    addContextRow({
+      icon: 'memory',
+      title: 'Plan mode',
+      description: 'Start with an implementation plan',
+      onClick: () => setComposerCommand('/plan '),
+    }),
+  ]);
+  addContextSection(menu, 'Tools and context', [
+    addContextRow({
+      icon: 'plug',
+      title: 'Plugins',
+      description: 'Use an enabled plugin',
+      end: '›',
+      onClick: () => void renderAddContextPlugins(),
+    }),
+    addContextRow({
+      icon: 'tools',
+      title: 'Skills',
+      description: 'Use a registered Skill',
+      end: '›',
+      onClick: () => void renderAddContextSkills(),
+    }),
+    addContextRow({
+      icon: 'chat',
+      title: 'Reference conversation',
+      description: 'Add context from another chat',
+      end: '›',
+      onClick: () => void renderAddContextSessions(false),
+    }),
+    addContextRow({
+      icon: 'search',
+      title: 'Search task history',
+      description: 'Search chats, assistants, and Agent tasks',
+      end: '›',
+      onClick: () => void renderAddContextSessions(true),
+    }),
+  ]);
+}
+function renderAddContextHeader(title, placeholder, onInput) {
+  const menu = el('addContextMenu');
+  menu.textContent = '';
+  const header = document.createElement('div');
+  header.className = 'add-context-header';
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'add-context-back';
+  back.setAttribute('aria-label', 'Back');
+  back.innerHTML = guiIcon('chevronLeft');
+  back.addEventListener('click', renderAddContextRoot);
+  const search = document.createElement('input');
+  search.className = 'add-context-search';
+  search.type = 'search';
+  search.placeholder = placeholder || ('Search ' + title.toLowerCase());
+  search.setAttribute('aria-label', title);
+  search.addEventListener('input', () => onInput(search.value));
+  header.append(back, search);
+  menu.appendChild(header);
+  queueMicrotask(() => search.focus());
+  return { menu, search };
+}
+function addContextEmpty(menu, text) {
+  const empty = document.createElement('div');
+  empty.className = 'add-context-empty';
+  empty.textContent = text;
+  menu.appendChild(empty);
+}
+async function renderAddContextPlugins() {
+  state.addContextView = 'plugins';
+  const request = ++state.addContextRequest;
+  const view = renderAddContextHeader('Plugins', 'Search plugins', render);
+  addContextEmpty(view.menu, 'Loading plugins…');
+  let payload;
+  try {
+    payload = state.pluginCatalogData || await loadManagedPluginCatalog();
+  } catch (error) {
+    if (request === state.addContextRequest) addContextEmpty(view.menu, error.message || String(error));
+    return;
+  }
+  if (request !== state.addContextRequest) return;
+  function render(query) {
+    if (!payload) return;
+    view.menu.querySelectorAll('.add-context-section,.add-context-empty').forEach(node => node.remove());
+    const normalized = String(query || '').trim().toLowerCase();
+    const plugins = (payload.plugins || []).filter(plugin =>
+      !normalized || (plugin.name + ' ' + plugin.description).toLowerCase().includes(normalized));
+    if (!plugins.length) {
+      addContextEmpty(view.menu, 'No plugins match your search.');
+      return;
+    }
+    addContextSection(view.menu, 'Plugins', plugins.map(plugin => {
+      const usable = plugin.enabled && (plugin.state === 'ready' || plugin.state === 'degraded');
+      return addContextRow({
+        icon: 'plug',
+        title: plugin.name,
+        description: plugin.description,
+        end: usable ? 'Add' : 'Configure',
+        onClick: () => {
+          if (!usable) {
+            closeAddContextMenu();
+            state.pluginsView = 'plugins';
+            void switchRegion('plugins');
+            return;
+          }
+          addContextAttachment(
+            plugin.name + ' plugin',
+            'plugin',
+            'Use the enabled "' + plugin.name + '" plugin and its available tools for this request.',
+          );
+        },
+      });
+    }));
+  }
+  render('');
+}
+async function renderAddContextSkills() {
+  state.addContextView = 'skills';
+  const request = ++state.addContextRequest;
+  const view = renderAddContextHeader('Skills', 'Search skills', render);
+  addContextEmpty(view.menu, 'Loading skills…');
+  let payload;
+  try {
+    payload = state.skillCatalogData || await loadSkillCatalog();
+  } catch (error) {
+    if (request === state.addContextRequest) addContextEmpty(view.menu, error.message || String(error));
+    return;
+  }
+  if (request !== state.addContextRequest) return;
+  function render(query) {
+    if (!payload) return;
+    view.menu.querySelectorAll('.add-context-section,.add-context-empty').forEach(node => node.remove());
+    const normalized = String(query || '').trim().toLowerCase();
+    const activeIds = new Set(payload.activeSkillIds || []);
+    const seen = new Set();
+    const skills = ((payload.catalog && payload.catalog.skills) || []).filter(skill => {
+      if (!activeIds.has(skill.id) || seen.has(skill.name)) return false;
+      seen.add(skill.name);
+      return !normalized || (skill.name + ' ' + (skill.description || '')).toLowerCase().includes(normalized);
+    }).sort((left, right) => left.name.localeCompare(right.name));
+    const rows = skills.map(skill => addContextRow({
+      icon: 'tools',
+      title: skill.name,
+      description: skill.description || 'Registered runtime Skill',
+      end: 'Add',
+      onClick: () => addContextAttachment(
+        skill.name + ' Skill',
+        'skill',
+        'Before handling this request, invoke the registered Skill tool with skill "' + skill.name + '".',
+      ),
+    }));
+    rows.push(addContextRow({
+      icon: 'gear',
+      title: 'Manage skills',
+      description: 'Open the Skill catalog',
+      end: 'Open',
+      onClick: () => {
+        closeAddContextMenu();
+        state.pluginsView = 'skills';
+        void switchRegion('plugins');
+      },
+    }));
+    addContextSection(view.menu, 'Skills', rows);
+  }
+  render('');
+}
+async function addSessionReference(locator) {
+  const res = await api('/api/session-center/reference', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ locator }),
+  });
+  const reference = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(reference.error || 'Unable to reference this Session.');
+  const item = reference.item || {};
+  const transcriptText = (reference.messages || []).map(message =>
+    (message.role === 'assistant' ? 'Assistant' : 'User') + ': ' + message.text).join('\\n\\n');
+  addContextAttachment(
+    'Chat: ' + (item.title || locator.sessionId),
+    'conversation',
+    [
+      'Referenced Session: ' + (item.title || locator.sessionId),
+      'Project: ' + (item.projectName || item.projectPath || 'Global Assistant'),
+      'Session type: ' + (item.type || 'user'),
+      '',
+      transcriptText || '(No readable user/assistant messages.)',
+    ].join('\\n'),
+  );
+}
+async function renderAddContextSessions(searchAll) {
+  state.addContextView = searchAll ? 'history' : 'sessions';
+  const request = ++state.addContextRequest;
+  let searchTimer = null;
+  const view = renderAddContextHeader(
+    searchAll ? 'Task history' : 'Conversations',
+    searchAll ? 'Search all task history' : 'Search conversations',
+    query => {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => void load(query), 180);
+    },
+  );
+  async function load(query) {
+    const loadRequest = ++state.addContextRequest;
+    view.menu.querySelectorAll('.add-context-section,.add-context-empty').forEach(node => node.remove());
+    addContextEmpty(view.menu, 'Loading Sessions…');
+    const params = new URLSearchParams();
+    if (searchAll) {
+      ['user', 'assistant-global', 'assistant-project', 'agent'].forEach(type => params.append('type', type));
+      params.set('archived', 'all');
+    } else {
+      params.set('type', 'user');
+      params.set('archived', 'false');
+      if (state.snapshot && state.snapshot.workDir) params.append('projectPath', state.snapshot.workDir);
+    }
+    if (String(query || '').trim()) params.set('q', String(query).trim());
+    params.set('pageSize', '50');
+    try {
+      const res = await api('/api/session-center?' + params.toString());
+      const page = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(page.error || 'Unable to load Sessions.');
+      if (loadRequest !== state.addContextRequest) return;
+      view.menu.querySelectorAll('.add-context-section,.add-context-empty').forEach(node => node.remove());
+      const items = (page.items || []).filter(item =>
+        item.locator && item.locator.sessionId !== state.activeSessionId);
+      if (!items.length) {
+        addContextEmpty(view.menu, searchAll && !String(query || '').trim()
+          ? 'Type to search task history.'
+          : 'No Sessions match your search.');
+        return;
+      }
+      addContextSection(view.menu, searchAll ? 'Task history' : 'Conversations', items.map(item =>
+        addContextRow({
+          icon: item.type === 'agent' ? 'agent' : 'chat',
+          title: item.title,
+          description: (item.projectName || 'Global') + (item.preview ? ' · ' + item.preview : ''),
+          end: item.archived ? 'Archived' : 'Add',
+          onClick: async () => {
+            try {
+              await addSessionReference(item.locator);
+            } catch (error) {
+              window.alert(error.message || String(error));
+            }
+          },
+        })));
+    } catch (error) {
+      if (loadRequest !== state.addContextRequest) return;
+      view.menu.querySelectorAll('.add-context-section,.add-context-empty').forEach(node => node.remove());
+      addContextEmpty(view.menu, error.message || String(error));
+    }
+  }
+  state.addContextRequest = request;
+  await load('');
+}
+function openAddContextMenu() {
+  const menu = el('addContextMenu');
+  if (!menu.classList.contains('hidden')) {
+    closeAddContextMenu();
+    return;
+  }
+  closeModelPicker();
+  closePermissionPicker();
+  renderAddContextRoot();
+  menu.classList.remove('hidden');
+  el('fileUploadBtn').setAttribute('aria-expanded', 'true');
+  menu.querySelector('.add-context-row')?.focus();
+}
 function formatFileSize(bytes) {
   if (!bytes) return '0 B';
   if (bytes < 1024) return bytes + ' B';
@@ -19513,7 +21467,9 @@ function renderAttachments() {
     const chip = document.createElement('div');
     chip.className = 'attachment-chip';
     const label = document.createElement('small');
-    label.textContent = attachment.name + ' - ' + formatFileSize(attachment.size);
+    label.textContent = attachment.kind === 'context'
+      ? attachment.name
+      : attachment.name + ' - ' + formatFileSize(attachment.size);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = 'x';
@@ -19546,7 +21502,8 @@ async function addFileAttachment(file) {
   }
   state.attachments.push({
     id: 'att-' + (++state.attachmentCounter),
-    name: file.name || 'file',
+    kind: 'file',
+    name: file.webkitRelativePath || file.name || 'file',
     size: file.size || 0,
     type: file.type || '',
     path: localPath,
@@ -19554,8 +21511,8 @@ async function addFileAttachment(file) {
     note,
   });
 }
-async function addFiles(files) {
-  const list = Array.from(files || []).slice(0, 8);
+async function addFiles(files, limit = 8) {
+  const list = Array.from(files || []).slice(0, limit);
   for (const file of list) await addFileAttachment(file);
   renderAttachments();
   if (list.length > 0) input.focus();
@@ -19566,8 +21523,22 @@ function clearAttachments() {
 }
 function buildSubmissionText(text) {
   if (state.attachments.length === 0) return text;
-  const lines = [text || 'Please review the attached file(s).', '', 'Attached files:'];
-  for (const attachment of state.attachments) {
+  const lines = [text || 'Use the selected context for this request.'];
+  const files = state.attachments.filter(attachment => attachment.kind !== 'context');
+  const contexts = state.attachments.filter(attachment => attachment.kind === 'context');
+  if (contexts.length) {
+    lines.push('', 'Selected context:');
+    for (const attachment of contexts) {
+      lines.push(
+        '',
+        '<actoviq-context type="' + attachment.contextType + '" name="' + attachment.name.replace(/"/g, '&quot;') + '">',
+        attachment.text || '',
+        '</actoviq-context>',
+      );
+    }
+  }
+  if (files.length) lines.push('', 'Attached files:');
+  for (const attachment of files) {
     lines.push('', '--- ' + attachment.name + ' ---');
     lines.push('Size: ' + formatFileSize(attachment.size));
     if (attachment.type) lines.push('Type: ' + attachment.type);
@@ -21479,6 +23450,7 @@ async function renderTeamRegion() {
 }
 async function selectTeam(name, opts) {
   opts = opts || {};
+  state.teamProposalPreviewId = null;
   state.teamSelected = name;
   document.querySelectorAll('.squad-chip').forEach((c) => c.classList.toggle('active', c.dataset.name === name));
   let def = !opts.force && state.teamDefinitionCache[name] ? state.teamDefinitionCache[name] : null;
@@ -22432,8 +24404,6 @@ function renderTeamEdgeEditorPanel(edge, idx, def, host) {
     delete edge.ui.fromSide;
     delete edge.ui.toSide;
     clearEdgeBezierUi(edge);
-    const board = el('teamGraph')?.querySelector('.graph-board');
-    applySmartSidesToEdges(def, board);
     setTeamSavedStatus(false);
     renderTeamGraph(def, def.name);
     renderTeamEdgeEditorPanel(edge, idx, def, host);
@@ -22952,6 +24922,11 @@ function teField(label, value, onChange, textarea) {
 async function saveTeamDefinition() {
   const def = state.teamDefinition;
   if (!def || !def.name) return;
+  if (state.teamProposalPreviewId) {
+    window.alert('This is a staged Assistant proposal. Use Apply on its Proposal card so the base version is checked before saving.');
+    return;
+  }
+  if (view === 'chats') void refreshSessionCenter();
   // Server-side /api/team/save migrates (migrateTeamDefinitionToGraph) +
   // validates before writing — the renderer doesn't have that helper in scope.
   try {
@@ -23503,24 +25478,8 @@ function ensureGraphNodeLayout(def) {
 function applyGraphAutoLayout(def) {
   const nodes = def.nodes || [];
   for (const edge of def.edges || []) clearEdgeBezierUi(edge);
-  const lanes = computeTeamGraphAutoLayoutLanes(def);
-  const startY = 48;
-  const rowGap = 210;
-  const colGap = 260;
-  const startX = 80;
-  const canvasW = 880;
-  const portW = (idx) => {
-    const k = nodes[idx]?.kind;
-    return k === 'task' || k === 'return' ? 112 : 168;
-  };
-  lanes.forEach((indices, row) => {
-    const rowWidth = indices.reduce((sum, idx, col) => sum + portW(idx) + (col ? colGap : 0), 0);
-    let x = startX + Math.max(0, (canvasW - rowWidth) / 2);
-    indices.forEach((nodeIdx) => {
-      const w = portW(nodeIdx);
-      nodes[nodeIdx].ui = { ...(nodes[nodeIdx].ui || {}), x, y: startY + row * rowGap };
-      x += w + colGap;
-    });
+  computeTeamGraphAutoLayout(def).forEach((position, index) => {
+    nodes[index].ui = { ...(nodes[index].ui || {}), ...position };
   });
   // Don't mark dirty here — ensureGraphNodeLayout calls this on initial load
   // (adding missing positions), which isn't a user edit. The Auto-layout
@@ -23530,7 +25489,7 @@ const GRAPH_BOARD_PAD = 600;
 const GRAPH_VIEW_MIN_SCALE = 0.2;
 const GRAPH_VIEW_MAX_SCALE = 2.5;
 /** Snap points per side on agent nodes (task/return stay single). Purely visual hit targets. */
-const GRAPH_AGENT_SNAP_COUNT = 5;
+const GRAPH_AGENT_SNAP_COUNT = 3;
 /** left percentage for snap point i of count (1-based, evenly spaced). */
 function graphSnapLeftPct(i, count) {
   return ((i + 1) / (count + 1)) * 100 + '%';
@@ -23544,6 +25503,27 @@ function graphSnapDefault(node) {
   return Math.floor(graphSnapCountFor(node) / 2);
 }
 const graphViewportStates = new WeakMap();
+const graphDefinitionViewportStates = new WeakMap();
+function bindGraphViewportState(viewport, def) {
+  let vp = graphDefinitionViewportStates.get(def);
+  const fresh = !vp;
+  if (!vp) {
+    vp = { scale: 1, panX: 0, panY: 0 };
+    graphDefinitionViewportStates.set(def, vp);
+  }
+  graphViewportStates.set(viewport, vp);
+  return fresh;
+}
+function reconcileGraphViewportOrigin(viewport, board) {
+  const vp = getGraphViewportState(viewport);
+  const origin = graphBoardOrigin(board);
+  if (Number.isFinite(vp.originX) && Number.isFinite(vp.originY)) {
+    vp.panX += (origin.x - vp.originX) * vp.scale;
+    vp.panY += (origin.y - vp.originY) * vp.scale;
+  }
+  vp.originX = origin.x;
+  vp.originY = origin.y;
+}
 function graphBoardViewport(board) {
   return board?.closest('.graph-board-viewport');
 }
@@ -23630,6 +25610,7 @@ function wireGraphBoardViewport(viewport, stage, board) {
   let panOrigX = 0;
   let panOrigY = 0;
   let panMoved = false;
+  let suppressPanClick = false;
   let marquee = false;
   let mqOriginX = 0;
   let mqOriginY = 0;
@@ -23647,6 +25628,7 @@ function wireGraphBoardViewport(viewport, stage, board) {
   const onPanUp = () => {
     if (!panning) return;
     panning = false;
+    suppressPanClick = panMoved;
     viewport.classList.remove('panning');
     applyGraphControlModeCursor(viewport);
     window.removeEventListener('mousemove', onPanMove);
@@ -23772,24 +25754,33 @@ function wireGraphBoardViewport(viewport, stage, board) {
 
   viewport.addEventListener('mousedown', (e) => {
     closeGraphContextMenu();
-    if (e.target.closest('.graph-node') || e.target.closest('.graph-port')) return;
-    if (e.target.closest('.graph-group-bar')) return;
-    if (e.target.closest('path.graph-edge-hit')) return;
-    if (e.target.closest('circle.graph-edge-handle')) return;
-    if (e.target.closest('.graph-ctx-menu')) return;
     const wantPan = e.button === 1
       || state.graphControlMode === 'hand'
       || state.graphSpaceHeld;
     if (wantPan && (e.button === 0 || e.button === 1)) {
+      if (e.target.closest('.graph-port')
+        || e.target.closest('circle.graph-edge-handle')
+        || e.target.closest('.graph-ctx-menu')) return;
       e.preventDefault();
       startPan(e);
       return;
     }
+    if (e.target.closest('.graph-node')) return;
+    if (e.target.closest('.graph-group-bar')) return;
+    if (e.target.closest('path.graph-edge-hit')) return;
+    if (e.target.closest('circle.graph-edge-handle')) return;
+    if (e.target.closest('.graph-ctx-menu')) return;
     if (e.button === 0 && state.graphControlMode === 'pointer') {
       e.preventDefault();
       startMarquee(e);
     }
   });
+  viewport.addEventListener('click', (e) => {
+    if (!suppressPanClick) return;
+    suppressPanClick = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
 
   viewport.addEventListener('contextmenu', (e) => {
     if (e.target.closest('.graph-node') || e.target.closest('path.graph-edge-hit') || e.target.closest('circle.graph-edge-handle')) return;
@@ -23817,27 +25808,15 @@ function wireGraphBoardViewport(viewport, stage, board) {
     const my = e.clientY - vr.top;
     const worldX = (mx - vp.panX) / vp.scale;
     const worldY = (my - vp.panY) / vp.scale;
-    const factor = e.deltaY < 0 ? 1.08 : 0.925;
+    const deltaPixels = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? vr.height : 1);
+    const factor = Math.exp(-Math.max(-240, Math.min(240, deltaPixels)) * 0.001);
     const nextScale = Math.min(GRAPH_VIEW_MAX_SCALE, Math.max(GRAPH_VIEW_MIN_SCALE, vp.scale * factor));
+    if (nextScale === vp.scale) return;
     vp.scale = nextScale;
     vp.panX = mx - worldX * nextScale;
     vp.panY = my - worldY * nextScale;
     applyGraphViewportTransform(viewport, stage);
   }, { passive: false });
-}
-function computeGraphBoardBounds(def) {
-  const content = computeGraphNodeContentBounds(def);
-  if (!content) {
-    return { minX: -GRAPH_BOARD_PAD, minY: -GRAPH_BOARD_PAD, w: 800 + GRAPH_BOARD_PAD * 2, h: 520 + GRAPH_BOARD_PAD * 2 };
-  }
-  const minX = content.minX - GRAPH_BOARD_PAD;
-  const minY = content.minY - GRAPH_BOARD_PAD;
-  return {
-    minX,
-    minY,
-    w: content.w + GRAPH_BOARD_PAD * 2,
-    h: content.h + GRAPH_BOARD_PAD * 2,
-  };
 }
 function positionGraphBoardNodes(board, def) {
   const origin = graphBoardOrigin(board);
@@ -23898,6 +25877,8 @@ function syncGraphBoardSize(board, def, opts) {
     layer.style.minHeight = h + 'px';
   }
   positionGraphBoardNodes(board, def);
+  const groupsLayer = board.querySelector('.graph-groups-layer');
+  if (groupsLayer) positionGraphUiGroups(board, groupsLayer, def);
   // When the origin shifts (board grew because content exceeded bounds), every
   // card's board-local position changes by (minX - prev.x, minY - prev.y) since
   // card.left = worldX - origin.x. Compensate the pan so existing content stays
@@ -23909,6 +25890,8 @@ function syncGraphBoardSize(board, def, opts) {
       const vp = getGraphViewportState(viewport);
       vp.panX += (minX - prev.x) * vp.scale;
       vp.panY += (minY - prev.y) * vp.scale;
+      vp.originX = minX;
+      vp.originY = minY;
       applyGraphViewportTransform(viewport, stage);
     }
   }
@@ -23952,6 +25935,27 @@ function graphBoardPortPoint(card, kind, portIndex, side) {
   if (s === 'w') return { x: x0, y: y0 + h * t };
   return { x: x0 + w, y: y0 + h * t };
 }
+function closestGraphPort(board, selector, clientX, clientY, accept) {
+  let best = null;
+  let bestDistance = 32;
+  board.querySelectorAll(selector).forEach((port) => {
+    const card = port.closest('.graph-node.board-node');
+    const ref = card?.dataset.graphRef;
+    if (!card || !ref || (accept && !accept(ref, card))) return;
+    const rect = port.getBoundingClientRect();
+    const distance = Math.hypot(rect.left + rect.width / 2 - clientX, rect.top + rect.height / 2 - clientY);
+    if (distance >= bestDistance) return;
+    bestDistance = distance;
+    best = {
+      port,
+      card,
+      ref,
+      side: port.dataset.side,
+      portIndex: port.dataset.port != null ? parseInt(port.dataset.port, 10) : 0,
+    };
+  });
+  return best;
+}
 function graphEdgeBezierPath(x1, y1, x2, y2, ui) {
   return resolveEdgeBezierPoints({ x: x1, y: y1 }, { x: x2, y: y2 }, ui).path;
 }
@@ -23968,114 +25972,78 @@ function formatGraphEdgeConditionLabel(raw) {
   }
   return s.length > 22 ? s.slice(0, 21) + '…' : s;
 }
-function graphEdgeEndpoints(board, edge) {
+function graphEdgeEndpoints(board, edge, edgeIndex) {
   const fromCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
   const toCard = board.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
   if (!fromCard || !toCard) return null;
+  const def = state.teamDefinition;
+  const fromNode = (def?.nodes || []).find((node) => graphRefOf(node) === String(edge.from).trim());
+  const toNode = (def?.nodes || []).find((node) => graphRefOf(node) === String(edge.to).trim());
+  const fromCount = graphSnapCountFor(fromNode);
+  const toCount = graphSnapCountFor(toNode);
+  let fromSide = edge.ui?.fromSide;
+  let toSide = edge.ui?.toSide;
+  let fromPort = edge.ui?.fromPort;
+  let toPort = edge.ui?.toPort;
+  let autoCurve = null;
+  if (!edge.ui?.sideLocked || !fromSide || !toSide) {
+    const picked = pickAutoEdgeRoute(graphNodeBoardRect(fromCard), graphNodeBoardRect(toCard), {
+      loop: edge.loop === true,
+      selfLoop: String(edge.from).trim() === String(edge.to).trim(),
+      fromPortCount: fromCount,
+      toPortCount: toCount,
+    });
+    fromSide = picked.fromSide;
+    toSide = picked.toSide;
+    fromPort = picked.fromPort;
+    toPort = picked.toPort;
+    autoCurve = picked.curve;
+    const selfLoop = String(edge.from).trim() === String(edge.to).trim();
+    if (edge.loop === true && !selfLoop) {
+      const outgoingLoops = (def?.edges || [])
+        .map((candidate, index) => ({ candidate, index }))
+        .filter(({ candidate }) => candidate.loop === true && String(candidate.from).trim() === String(edge.from).trim());
+      const incomingLoops = (def?.edges || [])
+        .map((candidate, index) => ({ candidate, index }))
+        .filter(({ candidate }) => candidate.loop === true && String(candidate.to).trim() === String(edge.to).trim());
+      fromPort = spreadGraphPortIndex(
+        outgoingLoops.findIndex(({ index }) => index === edgeIndex),
+        outgoingLoops.length,
+        fromCount,
+      );
+      toPort = spreadGraphPortIndex(
+        incomingLoops.findIndex(({ index }) => index === edgeIndex),
+        incomingLoops.length,
+        toCount,
+      );
+    }
+    const siblings = (def?.edges || [])
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate }) => graphEdgePairKey(candidate) === graphEdgePairKey(edge));
+    if (edge.loop !== true && siblings.length > 1) {
+      const lane = siblings.findIndex(({ index }) => index === edgeIndex);
+      const raw = lane - (siblings.length - 1) / 2;
+      const offset = raw < 0 ? Math.floor(raw) : Math.ceil(raw);
+      fromPort = Math.max(0, Math.min(fromCount - 1, fromPort + offset));
+      toPort = Math.max(0, Math.min(toCount - 1, toPort + offset));
+    }
+  }
+  const p1 = sideAnchor(graphNodeBoardRect(fromCard), fromSide, fromPort ?? graphSnapDefault(fromNode), fromCount);
+  const p2 = sideAnchor(graphNodeBoardRect(toCard), toSide, toPort ?? graphSnapDefault(toNode), toCount);
   return {
-    p1: graphBoardPortPoint(fromCard, 'out', edge.ui?.fromPort, edge.ui?.fromSide),
-    p2: graphBoardPortPoint(toCard, 'in', edge.ui?.toPort, edge.ui?.toSide),
+    p1,
+    p2,
+    curveUi: autoCurve || defaultEdgeBezierOffsetsForSides(p1, p2, fromSide, toSide),
   };
 }
-function applySmartSidesToEdges(def, board) {
-  if (!def) return;
-  const origin = board ? graphBoardOrigin(board) : { x: 0, y: 0 };
-  for (const edge of def.edges || []) {
-    migrateLegacyEdgeSides(edge);
-    const fromNode = (def.nodes || []).find((n) => graphRefOf(n) === String(edge.from).trim());
-    const toNode = (def.nodes || []).find((n) => graphRefOf(n) === String(edge.to).trim());
-    if (!fromNode || !toNode) continue;
-    const fromCard = board?.querySelector('.graph-node.board-node[data-graph-ref="' + edge.from + '"]');
-    const toCard = board?.querySelector('.graph-node.board-node[data-graph-ref="' + edge.to + '"]');
-    const fromSize = graphNodeBoardSize(fromNode);
-    const toSize = graphNodeBoardSize(toNode);
-    const fromRect = fromCard
-      ? graphNodeBoardRect(fromCard)
-      : { x: (fromNode.ui?.x ?? 0) - origin.x, y: (fromNode.ui?.y ?? 0) - origin.y, w: fromSize.w, h: fromSize.h };
-    const toRect = toCard
-      ? graphNodeBoardRect(toCard)
-      : { x: (toNode.ui?.x ?? 0) - origin.x, y: (toNode.ui?.y ?? 0) - origin.y, w: toSize.w, h: toSize.h };
-    const fromPortCount = graphSnapCountFor(fromNode);
-    const toPortCount = graphSnapCountFor(toNode);
-    if (edge.ui?.sideLocked && edge.ui?.fromSide && edge.ui?.toSide) {
-      const p1 = sideAnchor(fromRect, edge.ui.fromSide, edge.ui.fromPort ?? Math.floor(fromPortCount / 2), fromPortCount);
-      const p2 = sideAnchor(toRect, edge.ui.toSide, edge.ui.toPort ?? Math.floor(toPortCount / 2), toPortCount);
-      // Locked sides that cut through a node look like a leftover "old" curve — unlock and re-pick.
-      if (!edgeChordCrossesNodeInterior(p1, p2, fromRect, toRect)) continue;
-      delete edge.ui.sideLocked;
-    } else if (edge.ui?.sideLocked) {
-      continue;
-    }
-    const picked = pickShortestSides(fromRect, toRect, {
-      fromPortCount,
-      toPortCount,
-    });
-    clearEdgeBezierUi(edge);
-    edge.ui = {
-      ...(edge.ui || {}),
-      fromSide: picked.fromSide,
-      toSide: picked.toSide,
-      fromPort: picked.fromPort,
-      toPort: picked.toPort,
-    };
-  }
-  nudgeOpposingGraphEdgePorts(def);
+function graphEdgeCurveUi(edge, endpoints) {
+  return edge.ui?.c1 || edge.ui?.c2 ? edge.ui : endpoints.curveUi;
 }
 /** Stable undirected pair key for A⇄B edge grouping. */
 function graphEdgePairKey(edge) {
   const a = String(edge.from).trim();
   const b = String(edge.to).trim();
   return a < b ? a + '\\0' + b : b + '\\0' + a;
-}
-/**
- * Offset ports on reverse/parallel edges between the same nodes so A→B and B→A
- * don't share one corridor (which reads as an "old curve" beside the new one).
- */
-function nudgeOpposingGraphEdgePorts(def) {
-  const edges = def.edges || [];
-  const groups = new Map();
-  for (const edge of edges) {
-    const key = graphEdgePairKey(edge);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(edge);
-  }
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    group.forEach((edge, n) => {
-      if (n === 0) return;
-      if (edge.ui?.sideLocked) return;
-      edge.ui = edge.ui || {};
-      const fromNode = (def.nodes || []).find((node) => graphRefOf(node) === String(edge.from).trim());
-      const toNode = (def.nodes || []).find((node) => graphRefOf(node) === String(edge.to).trim());
-      const fc = graphSnapCountFor(fromNode);
-      const tc = graphSnapCountFor(toNode);
-      const fp = edge.ui.fromPort != null ? edge.ui.fromPort : graphSnapDefault(fromNode);
-      const tp = edge.ui.toPort != null ? edge.ui.toPort : graphSnapDefault(toNode);
-      const delta = n % 2 === 1 ? 1 : -1;
-      edge.ui.fromPort = Math.max(0, Math.min(fc - 1, fp + delta));
-      edge.ui.toPort = Math.max(0, Math.min(tc - 1, tp + delta));
-      clearEdgeBezierUi(edge);
-    });
-  }
-}
-/** Hide other edges on the same A⇄B pair while dragging one endpoint (prevents ghost twin). */
-function hideSiblingEdgesForDrag(svg, def, idx) {
-  const edges = def.edges || [];
-  const edge = edges[idx];
-  if (!edge) return;
-  const key = graphEdgePairKey(edge);
-  edges.forEach((ed, i) => {
-    if (i === idx) return;
-    if (graphEdgePairKey(ed) !== key) return;
-    for (const sel of [
-      'path.graph-edge-hit[data-edge-idx="' + i + '"]',
-      'path.graph-edge-visible[data-edge-idx="' + i + '"]',
-      'g.graph-edge-label-group[data-edge-idx="' + i + '"]',
-    ]) {
-      const node = svg.querySelector(sel);
-      if (node) node.setAttribute('visibility', 'hidden');
-    }
-  });
 }
 function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
   const d = bez.path;
@@ -24100,13 +26068,12 @@ function applyGraphEdgeGeometry(svg, idx, p1, p2, bez, selected) {
       label.setAttribute('x', String(mx));
       label.setAttribute('y', String(my));
       if (bg) {
-        try {
-          const box = label.getBBox();
-          bg.setAttribute('x', String(box.x - 7));
-          bg.setAttribute('y', String(box.y - 3));
-          bg.setAttribute('width', String(box.width + 14));
-          bg.setAttribute('height', String(box.height + 6));
-        } catch (_) { /* ignore */ }
+        const width = parseFloat(bg.getAttribute('width') || '0');
+        const height = parseFloat(bg.getAttribute('height') || '0');
+        if (width > 0 && height > 0) {
+          bg.setAttribute('x', String(mx - width / 2));
+          bg.setAttribute('y', String(my - height / 2));
+        }
       }
     }
   }
@@ -24127,7 +26094,7 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
   const kind = isFrom ? 'out' : 'in';
   const card = board.querySelector('.graph-node.board-node[data-graph-ref="' + cardRef + '"]');
   if (!card) return;
-  const endpoints = graphEdgeEndpoints(board, edge);
+  const endpoints = graphEdgeEndpoints(board, edge, idx);
   if (!endpoints) return;
   const start = isFrom ? endpoints.p1 : endpoints.p2;
   const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -24139,43 +26106,63 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
   circle.dataset.handle = which;
   let dragging = false;
   let highlighted = null;
-  const ports = () => Array.from(card.querySelectorAll(kind === 'out' ? '.graph-port-out' : '.graph-port-in'));
+  let originalEdge = null;
   const clearHighlight = () => {
     if (highlighted) { highlighted.classList.remove('snap-target'); highlighted = null; }
   };
+  const restoreOriginal = () => {
+    if (!originalEdge) return;
+    for (const key of Object.keys(edge)) delete edge[key];
+    Object.assign(edge, structuredClone(originalEdge));
+  };
   const nearestSnap = (clientX, clientY) => {
-    let best = -1, bestD = Infinity;
-    ports().forEach((p, i) => {
-      const r = p.getBoundingClientRect();
-      const d = Math.hypot(r.left + r.width / 2 - clientX, r.top + r.height / 2 - clientY);
-      if (d < bestD) { bestD = d; best = i; }
-    });
-    return best >= 0 ? best : null;
+    const otherRef = String(isFrom ? edge.to : edge.from).trim();
+    return closestGraphPort(
+      board,
+      kind === 'out' ? '.graph-port-out' : '.graph-port-in',
+      clientX,
+      clientY,
+      (ref) => ref !== otherRef,
+    );
   };
   const paintLive = (clientX, clientY) => {
-    const snapIdx = nearestSnap(clientX, clientY);
+    const snap = nearestSnap(clientX, clientY);
     clearHighlight();
-    const ps = ports();
-    if (snapIdx == null || !ps[snapIdx]) return null;
-    highlighted = ps[snapIdx];
+    restoreOriginal();
+    if (!snap) {
+      const live = graphEdgeEndpoints(board, edge, idx);
+      if (!live) return null;
+      const cursor = graphBoardPointFromClient(graphBoardViewport(board), clientX, clientY);
+      const p1 = isFrom ? cursor : live.p1;
+      const p2 = isFrom ? live.p2 : cursor;
+      const bez = resolveEdgeBezierPoints(p1, p2);
+      applyGraphEdgeGeometry(svg, idx, p1, p2, bez, true);
+      circle.setAttribute('cx', String(cursor.x));
+      circle.setAttribute('cy', String(cursor.y));
+      return null;
+    }
+    highlighted = snap.port;
     highlighted.classList.add('snap-target');
-    const portEl = ps[snapIdx];
-    const portIdx = portEl.dataset.port != null ? parseInt(portEl.dataset.port, 10) : snapIdx;
-    const side = portEl.dataset.side;
     clearEdgeBezierUi(edge);
     edge.ui = edge.ui || {};
-    if (side) {
-      if (isFrom) { edge.ui.fromSide = side; edge.ui.fromPort = portIdx; }
-      else { edge.ui.toSide = side; edge.ui.toPort = portIdx; }
+    edge.ui.sideLocked = true;
+    if (isFrom) {
+      edge.from = snap.ref;
+      edge.ui.fromSide = snap.side;
+      edge.ui.fromPort = snap.portIndex;
+    } else {
+      edge.to = snap.ref;
+      edge.ui.toSide = snap.side;
+      edge.ui.toPort = snap.portIndex;
     }
-    const live = graphEdgeEndpoints(board, edge);
+    const live = graphEdgeEndpoints(board, edge, idx);
     if (!live) return null;
-    const bez = resolveEdgeBezierPoints(live.p1, live.p2, edge.ui);
+    const bez = resolveEdgeBezierPoints(live.p1, live.p2, graphEdgeCurveUi(edge, live));
     applyGraphEdgeGeometry(svg, idx, live.p1, live.p2, bez, true);
     const tip = isFrom ? live.p1 : live.p2;
     circle.setAttribute('cx', String(tip.x));
     circle.setAttribute('cy', String(tip.y));
-    return { portIdx, side };
+    return snap;
   };
   const onMove = (e) => {
     if (!dragging) return;
@@ -24185,28 +26172,31 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
     if (!dragging) return;
     dragging = false;
     state.teamGraphBoardDragging = false;
-    clearHighlight();
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
     const painted = paintLive(e.clientX, e.clientY);
+    clearHighlight();
     const def2 = state.teamDefinition;
     const edge2 = (def2?.edges || [])[idx];
     if (!edge2 || !painted) {
+      restoreOriginal();
+      state.graphHistory.past.pop();
+      updateGraphHistoryButtons();
       scheduleGraphBoardEdgeRedraw(board, svg, def2);
       return;
     }
-    edge2.ui = edge2.ui || {};
-    const portKey = isFrom ? 'fromPort' : 'toPort';
-    const sideKey = isFrom ? 'fromSide' : 'toSide';
-    const prevSide = edge2.ui[sideKey];
-    edge2.ui[portKey] = painted.portIdx;
-    if (painted.side) edge2.ui[sideKey] = painted.side;
-    if (painted.side && prevSide && painted.side !== prevSide) edge2.ui.sideLocked = true;
-    else if (painted.side && !prevSide) edge2.ui.sideLocked = true;
-    clearEdgeBezierUi(edge2);
-    // Re-pick unlocked siblings / heal through-node locks so an A⇄B twin doesn't
-    // keep looking like the pre-drag curve.
-    applySmartSidesToEdges(def2, board);
+    const duplicate = (def2.edges || []).some(
+      (candidate, edgeIndex) =>
+        edgeIndex !== idx && candidate.from === edge2.from && candidate.to === edge2.to,
+    );
+    if (duplicate) {
+      restoreOriginal();
+      state.graphHistory.past.pop();
+      updateGraphHistoryButtons();
+      window.alert('That connection already exists.');
+      scheduleGraphBoardEdgeRedraw(board, svg, def2);
+      return;
+    }
     setTeamSavedStatus(false);
     scheduleGraphBoardEdgeRedraw(board, svg, def2);
   };
@@ -24215,11 +26205,11 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
     e.preventDefault();
     e.stopPropagation();
     selectGraphEdges([idx], { skipEdges: true });
+    originalEdge = structuredClone(edge);
     pushGraphHistory(def);
     state.teamGraphBoardDragging = true;
     dragging = true;
     svg.querySelectorAll('path.graph-edge-preview').forEach((p) => p.remove());
-    hideSiblingEdgesForDrag(svg, def, idx);
     clearEdgeBezierUi(edge);
     paintLive(e.clientX, e.clientY);
     window.addEventListener('mousemove', onMove);
@@ -24227,7 +26217,6 @@ function wireEdgeEndpointHandle(svg, board, def, edge, idx, which) {
   };
   circle.addEventListener('mousedown', beginDrag);
   svg.appendChild(circle);
-  return beginDrag;
 }
 function ensureGraphEdgeMarkers(svg) {
   if (svg.querySelector('#graph-edge-arrow')) return;
@@ -24258,8 +26247,32 @@ function syncGraphBoardSvgSize(board, svg) {
   svg.style.width = w + 'px';
   svg.style.height = h + 'px';
 }
+const graphGeometryFrames = new WeakMap();
+function updateGraphBoardEdgeGeometry(board, svg, def) {
+  (def.edges || []).forEach((edge, idx) => {
+    const endpoints = graphEdgeEndpoints(board, edge, idx);
+    if (!endpoints) return;
+    const bez = resolveEdgeBezierPoints(endpoints.p1, endpoints.p2, graphEdgeCurveUi(edge, endpoints));
+    const selected = (state.teamSelectedEdgeIdxs || []).includes(idx) || state.teamSelectedEdgeIdx === idx;
+    applyGraphEdgeGeometry(svg, idx, endpoints.p1, endpoints.p2, bez, selected);
+  });
+}
+function scheduleGraphBoardGeometryUpdate(board, svg, def) {
+  if (!board || !svg || !def || graphGeometryFrames.has(board)) return;
+  const frame = requestAnimationFrame(() => {
+    graphGeometryFrames.delete(board);
+    if (!board.isConnected || !svg.isConnected) return;
+    updateGraphBoardEdgeGeometry(board, svg, def);
+  });
+  graphGeometryFrames.set(board, frame);
+}
 function redrawGraphBoardEdges(board, svg, def, opts) {
   opts = opts || {};
+  const pendingGeometry = graphGeometryFrames.get(board);
+  if (pendingGeometry != null) {
+    cancelAnimationFrame(pendingGeometry);
+    graphGeometryFrames.delete(board);
+  }
   if (!opts.skipBoardSync) syncGraphBoardSize(board, def);
   else positionGraphBoardNodes(board, def);
   while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -24273,18 +26286,23 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
     const fromCard = cards.get(String(edge.from).trim());
     const toCard = cards.get(String(edge.to).trim());
     if (!fromCard || !toCard) return;
-    const p1 = graphBoardPortPoint(fromCard, 'out', edge.ui?.fromPort, edge.ui?.fromSide);
-    const p2 = graphBoardPortPoint(toCard, 'in', edge.ui?.toPort, edge.ui?.toSide);
-    const bez = resolveEdgeBezierPoints(p1, p2, edge.ui);
+    const endpoints = graphEdgeEndpoints(board, edge, idx);
+    if (!endpoints) return;
+    const { p1, p2 } = endpoints;
+    const bez = resolveEdgeBezierPoints(p1, p2, graphEdgeCurveUi(edge, endpoints));
     const d = bez.path;
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.setAttribute('d', d);
     hit.classList.add('graph-edge-hit');
     hit.dataset.edgeIdx = String(idx);
+    hit.dataset.edgeFrom = String(edge.from);
+    hit.dataset.edgeTo = String(edge.to);
     const vis = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     vis.setAttribute('d', d);
     vis.classList.add('graph-edge-visible');
     vis.dataset.edgeIdx = String(idx);
+    vis.dataset.edgeFrom = String(edge.from);
+    vis.dataset.edgeTo = String(edge.to);
     const undirected = isUndirectedTeamGraphEdge(edge);
     if (undirected) vis.classList.add('undirected');
     else vis.setAttribute('marker-end', 'url(#' + ((state.teamSelectedEdgeIdxs || []).includes(idx) || state.teamSelectedEdgeIdx === idx ? 'graph-edge-arrow-selected' : 'graph-edge-arrow') + ')');
@@ -24318,7 +26336,6 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
             delete edge.ui.fromSide;
             delete edge.ui.toSide;
             clearEdgeBezierUi(edge);
-            applySmartSidesToEdges(def, board);
             setTeamSavedStatus(false);
             scheduleGraphBoardEdgeRedraw(board, svg, def);
           },
@@ -24330,7 +26347,7 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
     if (edge.condition) {
       const raw = String(edge.condition);
       const display = formatGraphEdgeConditionLabel(raw);
-      const mid = resolveEdgeBezierPoints(p1, p2, edge.ui);
+      const mid = resolveEdgeBezierPoints(p1, p2, graphEdgeCurveUi(edge, endpoints));
       const t = 0.5;
       const mx = (1 - t) * (1 - t) * (1 - t) * p1.x
         + 3 * (1 - t) * (1 - t) * t * mid.c1.x
@@ -24372,35 +26389,32 @@ function redrawGraphBoardEdges(board, svg, def, opts) {
       }
     }
     if (teamGraphEditable(def) && state.teamSelectedEdgeIdx === idx) {
-      // Endpoint handles only — no bezier guide dashes (those looked like a second edge).
-      const beginFrom = wireEdgeEndpointHandle(svg, board, def, edge, idx, 'from');
-      const beginTo = wireEdgeEndpointHandle(svg, board, def, edge, idx, 'to');
-      hit.addEventListener('mousedown', (e) => {
-        if (e.button !== 0 || !teamGraphEditable(def)) return;
-        const ep = graphEdgeEndpoints(board, edge);
-        if (!ep) return;
-        const viewport = graphBoardViewport(board);
-        const pt = graphBoardPointFromClient(viewport, e.clientX, e.clientY);
-        const d1 = Math.hypot(pt.x - ep.p1.x, pt.y - ep.p1.y);
-        const d2 = Math.hypot(pt.x - ep.p2.x, pt.y - ep.p2.y);
-        const begin = d1 <= d2 ? beginFrom : beginTo;
-        if (typeof begin === 'function') begin(e);
-      });
+      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'from');
+      wireEdgeEndpointHandle(svg, board, def, edge, idx, 'to');
     }
   });
   syncGraphBoardSvgSize(board, svg);
 }
 function scheduleGraphBoardEdgeRedraw(board, svg, def, after) {
+  if (!board || !svg || !def) return;
+  let job = board._graphRedrawJob;
+  if (job) {
+    job.def = def;
+    if (after) job.after.push(after);
+    return;
+  }
+  job = { def, after: after ? [after] : [] };
+  board._graphRedrawJob = job;
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!board.isConnected || !svg.isConnected) return;
-      try {
-        redrawGraphBoardEdges(board, svg, def);
-      } catch (err) {
-        console.error('[actoviq-gui] graph edge redraw failed', err);
-      }
-      if (after) after();
-    });
+    if (board._graphRedrawJob !== job) return;
+    board._graphRedrawJob = null;
+    if (!board.isConnected || !svg.isConnected) return;
+    try {
+      redrawGraphBoardEdges(board, svg, job.def);
+    } catch (err) {
+      console.error('[actoviq-gui] graph edge redraw failed', err);
+    }
+    for (const callback of job.after) callback();
   });
 }
 function observeGraphBoardResize(board, svg, def) {
@@ -24439,9 +26453,11 @@ function wireGraphNodeDrag(card, node, onMoved) {
     }
     const b = board();
     positionGraphBoardNodes(b, def);
+    const groupsLayer = b?.querySelector('.graph-groups-layer');
+    if (b && groupsLayer) positionGraphUiGroups(b, groupsLayer, def);
     const s = svg();
     if (b && s) {
-      redrawGraphBoardEdges(b, s, def, { skipBoardSync: true });
+      scheduleGraphBoardGeometryUpdate(b, s, def);
     }
   };
   const onUp = () => {
@@ -24458,7 +26474,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
     const b = board();
     const s = svg();
     if (moved && b && s && state.teamDefinition) {
-      applySmartSidesToEdges(state.teamDefinition, b);
+      for (const ref of dragRefs) clearEdgeBezierUiForNodeRef(state.teamDefinition, ref);
       syncGraphBoardSize(b, state.teamDefinition, { expandOnly: true });
       redrawGraphBoardEdges(b, s, state.teamDefinition, { skipBoardSync: true });
       setTeamSavedStatus(false);
@@ -24468,6 +26484,7 @@ function wireGraphNodeDrag(card, node, onMoved) {
   };
   card.addEventListener('mousedown', (e) => {
     if (!teamGraphEditable(state.teamDefinition)) return;
+    if (state.graphControlMode === 'hand' || state.graphSpaceHeld) return;
     if (e.target.closest('.graph-port')) return;
     if (e.button !== 0) return;
     e.preventDefault();
@@ -24499,25 +26516,38 @@ function wireGraphNodeDrag(card, node, onMoved) {
     window.addEventListener('mouseup', onUp);
   });
 }
-function renderGraphUiGroups(board, groupsLayer, def, editable) {
-  groupsLayer.textContent = '';
+function positionGraphUiGroup(board, element, group, def) {
   const origin = graphBoardOrigin(board);
   const pad = 18;
+  const bounds = computeGroupBounds(
+    def.nodes || [],
+    group.memberRefs || [],
+    (node) => graphRefOf(node),
+    (node) => graphNodeBoardSize(node),
+  );
+  if (!bounds) {
+    element.style.display = 'none';
+    return;
+  }
+  element.style.display = '';
+  element.style.left = (bounds.x - origin.x - pad) + 'px';
+  element.style.top = (bounds.y - origin.y - pad) + 'px';
+  element.style.width = (bounds.w + pad * 2) + 'px';
+  element.style.height = (bounds.h + pad * 2) + 'px';
+}
+function positionGraphUiGroups(board, groupsLayer, def) {
+  groupsLayer.querySelectorAll('.graph-group').forEach((element) => {
+    const group = findGraphUiGroup(def, element.dataset.groupId);
+    if (group) positionGraphUiGroup(board, element, group, def);
+  });
+}
+function renderGraphUiGroups(board, groupsLayer, def, editable) {
+  groupsLayer.textContent = '';
   for (const group of def.uiGroups || []) {
-    const bounds = computeGroupBounds(
-      def.nodes || [],
-      group.memberRefs || [],
-      (n) => graphRefOf(n),
-      (n) => graphNodeBoardSize(n),
-    );
-    if (!bounds) continue;
     const elGroup = document.createElement('div');
     elGroup.className = 'graph-group' + (group.kind ? ' ' + group.kind : '') + (state.teamSelectedGroupId === group.id ? ' selected' : '');
     elGroup.dataset.groupId = group.id;
-    elGroup.style.left = (bounds.x - origin.x - pad) + 'px';
-    elGroup.style.top = (bounds.y - origin.y - pad) + 'px';
-    elGroup.style.width = (bounds.w + pad * 2) + 'px';
-    elGroup.style.height = (bounds.h + pad * 2) + 'px';
+    positionGraphUiGroup(board, elGroup, group, def);
     const bar = document.createElement('div');
     bar.className = 'graph-group-bar';
     bar.textContent = group.label || group.kind || group.id;
@@ -24574,9 +26604,9 @@ function wireGraphGroupBarDrag(bar, group, def, board) {
     }
     positionGraphBoardNodes(board, def);
     const groupsLayer = board.querySelector('.graph-groups-layer');
-    if (groupsLayer) renderGraphUiGroups(board, groupsLayer, def, true);
+    if (groupsLayer) positionGraphUiGroups(board, groupsLayer, def);
     const s = svg();
-    if (s) redrawGraphBoardEdges(board, s, def, { skipBoardSync: true });
+    if (s) scheduleGraphBoardGeometryUpdate(board, s, def);
   };
   const onUp = () => {
     if (!dragging) return;
@@ -24589,7 +26619,6 @@ function wireGraphGroupBarDrag(bar, group, def, board) {
       updateGraphHistoryButtons();
     }
     if (moved) {
-      applySmartSidesToEdges(def, board);
       syncGraphBoardSize(board, def, { expandOnly: true });
       const groupsLayer = board.querySelector('.graph-groups-layer');
       if (groupsLayer) renderGraphUiGroups(board, groupsLayer, def, true);
@@ -24601,6 +26630,7 @@ function wireGraphGroupBarDrag(bar, group, def, board) {
   };
   bar.addEventListener('mousedown', (e) => {
     if (!teamGraphEditable(def) || e.button !== 0) return;
+    if (state.graphControlMode === 'hand' || state.graphSpaceHeld) return;
     e.preventDefault();
     e.stopPropagation();
     selectGraphGroup(group.id);
@@ -24783,24 +26813,38 @@ function wireGraphBoardConnect(board, svg, def, name) {
     preview.classList.add('graph-edge-preview');
     svg.appendChild(preview);
     const origin = graphBoardPortPoint(fromNodeEl, 'out', fromPort, fromSide);
+    let highlighted = null;
+    const targetAt = (clientX, clientY) =>
+      closestGraphPort(board, '.graph-port-in', clientX, clientY, (ref) => ref !== fromRef);
+    const clearHighlight = () => {
+      if (highlighted) highlighted.classList.remove('snap-target');
+      highlighted = null;
+    };
     const move = (ev) => {
       const viewport = graphBoardViewport(board);
-      const pt = graphBoardPointFromClient(viewport, ev.clientX, ev.clientY);
+      const target = targetAt(ev.clientX, ev.clientY);
+      clearHighlight();
+      if (target) {
+        highlighted = target.port;
+        highlighted.classList.add('snap-target');
+      }
+      const pt = target
+        ? graphBoardPortPoint(target.card, 'in', target.portIndex, target.side)
+        : graphBoardPointFromClient(viewport, ev.clientX, ev.clientY);
       preview.setAttribute('d', graphEdgeBezierPath(origin.x, origin.y, pt.x, pt.y));
     };
     const cleanup = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', onUp);
+      clearHighlight();
       preview.remove();
       state.teamGraphBoardDragging = false;
     };
     const onUp = (ev) => {
+      const target = targetAt(ev.clientX, ev.clientY);
       cleanup();
-      // elementFromPoint resolves the drop target reliably even when the cursor
-      // released over an edge-hit path or outside the board (window mouseup).
-      const dropEl = document.elementFromPoint(ev.clientX, ev.clientY);
-      const inPort = dropEl?.closest('.graph-port-in');
-      const toRef = inPort?.closest('.graph-node')?.dataset.graphRef;
+      const inPort = target?.port;
+      const toRef = target?.ref;
       if (!toRef || toRef === fromRef) return;
       const toNode = (def.nodes || []).find((n) => graphRefOf(n) === toRef);
       if (toNode?.kind === 'task') {
@@ -24815,14 +26859,9 @@ function wireGraphBoardConnect(board, svg, def, name) {
       const toDefault = graphSnapDefault(toNode);
       const toPort = inPort?.dataset.port != null ? parseInt(inPort.dataset.port, 10) : toDefault;
       const toSide = inPort?.dataset.side;
-      const ui = {};
-      if (fromPort !== fromDefault) ui.fromPort = fromPort;
-      if (toPort !== toDefault) ui.toPort = toPort;
-      if (fromSide) ui.fromSide = fromSide;
-      if (toSide) ui.toSide = toSide;
+      const ui = { fromPort, toPort, fromSide, toSide, sideLocked: true };
       pushGraphHistory(def);
-      def.edges.push({ from: fromRef, to: toRef, ...(Object.keys(ui).length ? { ui } : {}) });
-      applySmartSidesToEdges(def, board);
+      def.edges.push({ from: fromRef, to: toRef, ui });
       setTeamSavedStatus(false);
       renderTeamGraph(def, name);
       openTeamEdgeEditor(def.edges.length - 1);
@@ -24935,7 +26974,6 @@ function renderGraphModeCanvas(g, def, name) {
       layoutBtn.addEventListener('click', () => {
         pushGraphHistory(def);
         applyGraphAutoLayout(def);
-        applySmartSidesToEdges(def);
         setTeamSavedStatus(false);
         state.teamGraphFitView = true;
         renderTeamGraph(def, name);
@@ -25003,7 +27041,6 @@ function renderGraphModeCanvas(g, def, name) {
   board.append(groupsLayer, layer, svg);
   syncGraphBoardSize(board, def);
   renderGraphUiGroups(board, groupsLayer, def, editable);
-  applySmartSidesToEdges(def, board);
   const stage = document.createElement('div');
   stage.className = 'graph-board-stage';
   stage.appendChild(board);
@@ -25012,7 +27049,8 @@ function renderGraphModeCanvas(g, def, name) {
   viewport.appendChild(stage);
   canvas.appendChild(viewport);
   g.append(toolbar, canvas);
-  const freshViewport = !graphViewportStates.has(viewport);
+  const freshViewport = bindGraphViewportState(viewport, def);
+  reconcileGraphViewportOrigin(viewport, board);
   wireGraphBoardViewport(viewport, stage, board);
   scheduleGraphBoardEdgeRedraw(board, svg, def, () => {
     const tryFit = () => {
@@ -26877,11 +28915,8 @@ function addRouterRouteFromDraft() {
 
 function openRouterEditor(loaded) {
   const profile = loaded?.profile || null;
-  const isBuiltIn = loaded?.source === 'built-in';
-  editingRouterProfileName = profile && !isBuiltIn ? profile.name : null;
-  el('routerEditorTitle').textContent = profile
-    ? (isBuiltIn ? 'Customize built-in profile' : 'Edit router profile')
-    : 'New router profile';
+  editingRouterProfileName = profile ? profile.name : null;
+  el('routerEditorTitle').textContent = profile ? 'Edit router profile' : 'New router profile';
   setField('routerCfgName', profile ? profile.name : '');
   el('routerCfgName').disabled = Boolean(editingRouterProfileName);
   setField('routerCfgTarget', loaded?.source === 'personal' ? 'personal' : 'project');
@@ -27264,7 +29299,7 @@ let assistantScope = 'global';
 let assistantScopeHydratedFor = '';
 function canUseProjectAssistantScope() {
   return state.activeRegion === 'project'
-    && (state.projectView === 'detail' || state.projectView === 'conversation');
+    && (state.projectView === 'detail' || state.projectView === 'conversation' || state.projectView === 'chats');
 }
 function preferredAssistantScope() {
   return canUseProjectAssistantScope() ? 'project' : 'global';
@@ -27387,6 +29422,7 @@ function syncManagerVisibility(view) {
   applyAssistantScopeUi();
 }
 const managerToolNodes = new Map();
+const managerSessionsById = new Map();
 let managerCurrentAssistant = null;
 function managerScrollTranscript() {
   const t = el('managerTranscript');
@@ -27545,6 +29581,178 @@ function hydrateManagerTranscript(items, force) {
   if (lastUser) managerUpdateHeaderTitle(lastUser.text);
   managerTranscriptHydrated = true;
 }
+function managerProposalDiffLines(diff) {
+  const lines = [];
+  const add = (label, values) => {
+    if (Array.isArray(values) && values.length) lines.push(label + ': ' + values.join(', '));
+  };
+  add('+ nodes', diff?.addedNodes);
+  add('- nodes', diff?.removedNodes);
+  add('~ nodes', diff?.changedNodes);
+  add('+ edges', diff?.addedEdges);
+  add('- edges', diff?.removedEdges);
+  add('~ edges', diff?.changedEdges);
+  return lines;
+}
+async function previewManagerTeamProposal(proposal) {
+  try {
+    const res = await api('/api/team/proposals/' + encodeURIComponent(proposal.id));
+    if (!res.ok) throw new Error(await res.text());
+    const payload = await res.json();
+    const fresh = payload.proposal;
+    if (fresh.projectPath && !sameWorkspacePath(fresh.projectPath, state.snapshot?.workDir || '')) {
+      await switchProject(fresh.projectPath, 'detail');
+    }
+    await switchRegion('team');
+    state.teamProposalPreviewId = fresh.id;
+    state.teamSelected = fresh.teamName;
+    state.teamDefinitionSource = 'proposal';
+    state.teamDefinition = structuredClone(fresh.draft);
+    state.teamDefinitionCache[fresh.teamName] = structuredClone(fresh.draft);
+    state.teamSelectedNode = firstTeamNode(state.teamDefinition);
+    state.teamSelectedEdgeIdx = null;
+    state.teamGraphFitView = true;
+    renderTeamGraph(state.teamDefinition, fresh.teamName);
+    setTeamSavedStatus(true);
+    showTeamGraphProblems(fresh.problems || null);
+  } catch (error) {
+    managerAddMsg('error', 'Preview failed: ' + (error.message || error));
+  }
+}
+function managerAddTeamProposal(proposal) {
+  const t = el('managerTranscript');
+  if (!t || !proposal?.id) return;
+  const existing = t.querySelector('[data-proposal-id="' + CSS.escape(proposal.id) + '"]');
+  if (existing) existing.remove();
+  const card = document.createElement('article');
+  card.className = 'manager-proposal-card';
+  card.dataset.proposalId = proposal.id;
+  const header = document.createElement('header');
+  const title = document.createElement('strong');
+  title.textContent = 'Team proposal · ' + (proposal.teamName || 'unnamed');
+  const status = document.createElement('span');
+  status.className = 'muted';
+  status.textContent = proposal.status || 'pending';
+  header.append(title, status);
+  card.appendChild(header);
+  if (proposal.explanation) {
+    const explanation = document.createElement('p');
+    explanation.textContent = proposal.explanation;
+    card.appendChild(explanation);
+  }
+  const lines = managerProposalDiffLines(proposal.diff);
+  if (lines.length) {
+    const list = document.createElement('ul');
+    for (const line of lines) {
+      const row = document.createElement('li');
+      row.textContent = line;
+      list.appendChild(row);
+    }
+    card.appendChild(list);
+  }
+  if (Array.isArray(proposal.problems) && proposal.problems.length) {
+    const problems = document.createElement('div');
+    problems.className = 'proposal-problems';
+    problems.textContent = proposal.problems.join(' · ');
+    card.appendChild(problems);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'manager-proposal-actions';
+  const preview = document.createElement('button');
+  preview.type = 'button';
+  preview.className = 'pill-btn';
+  preview.textContent = 'Preview';
+  preview.disabled = proposal.status !== 'pending';
+  preview.addEventListener('click', () => { void previewManagerTeamProposal(proposal); });
+  const apply = document.createElement('button');
+  apply.type = 'button';
+  apply.className = 'pill-btn primary';
+  apply.textContent = 'Apply';
+  apply.disabled = proposal.status !== 'pending' || Boolean(proposal.problems?.length);
+  apply.addEventListener('click', async () => {
+    if (!window.confirm('Apply Team proposal "' + proposal.teamName + '"?\\n\\nThis writes the validated Team definition to ' + proposal.projectPath + '.')) return;
+    apply.disabled = true;
+    try {
+      const res = await api('/api/team/proposals/' + encodeURIComponent(proposal.id) + '/apply', {
+        method: 'POST',
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || ('HTTP ' + res.status));
+      status.textContent = 'applied';
+      preview.disabled = true;
+      apply.disabled = true;
+      reject.disabled = true;
+      if (payload.openCanvas?.projectPath && !sameWorkspacePath(payload.openCanvas.projectPath, state.snapshot?.workDir || '')) {
+        await switchProject(payload.openCanvas.projectPath, 'detail');
+      }
+      state.teamProposalPreviewId = null;
+      delete state.teamDefinitionCache[payload.openCanvas?.teamName || proposal.teamName];
+      await switchRegion('team');
+      await refreshTeamsSnapshot();
+      await selectTeam(payload.openCanvas?.teamName || proposal.teamName, { force: true });
+    } catch (error) {
+      apply.disabled = false;
+      managerAddMsg('error', 'Apply failed: ' + (error.message || error));
+    }
+  });
+  const reject = document.createElement('button');
+  reject.type = 'button';
+  reject.className = 'pill-btn';
+  reject.textContent = 'Reject';
+  reject.disabled = proposal.status !== 'pending';
+  reject.addEventListener('click', async () => {
+    try {
+      const res = await api('/api/team/proposals/' + encodeURIComponent(proposal.id) + '/reject', {
+        method: 'POST',
+      });
+      if (!res.ok) throw new Error(await res.text());
+      status.textContent = 'rejected';
+      preview.disabled = true;
+      apply.disabled = true;
+      reject.disabled = true;
+      if (state.teamProposalPreviewId === proposal.id) state.teamProposalPreviewId = null;
+    } catch (error) {
+      managerAddMsg('error', 'Reject failed: ' + (error.message || error));
+    }
+  });
+  actions.append(preview, apply, reject);
+  card.appendChild(actions);
+  t.appendChild(card);
+  managerScrollTranscript();
+}
+function renderManagerSessionOptions(items, activeId) {
+  const select = el('managerSessionSelect');
+  if (!select) return;
+  managerSessionsById.clear();
+  select.textContent = '';
+  for (const item of items || []) {
+    managerSessionsById.set(item.locator.sessionId, item);
+    const option = document.createElement('option');
+    option.value = item.locator.sessionId;
+    option.textContent = (item.pinned ? '★ ' : '') + (item.title || item.locator.sessionId);
+    select.appendChild(option);
+  }
+  select.value = activeId || '';
+}
+async function managerSessionAction(action, extra) {
+  const selectedId = el('managerSessionSelect')?.value || '';
+  const selected = managerSessionsById.get(selectedId);
+  const payload = {
+    action,
+    ...(selected ? { locator: selected.locator } : {}),
+    ...(extra || {}),
+  };
+  const res = await api('/api/session-center/action', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  managerTranscriptHydrated = false;
+  await refreshManagerState(true);
+  return data;
+}
 async function refreshManagerState(forceHydrate = false) {
   if (!managerShellVisible()) return;
   applyAssistantScopeUi();
@@ -27553,6 +29761,10 @@ async function refreshManagerState(forceHydrate = false) {
     if (!res.ok) return;
     const data = await res.json();
     if (Array.isArray(data.transcript)) hydrateManagerTranscript(data.transcript, forceHydrate);
+    renderManagerSessionOptions(data.assistantSessions || [], data.activeSessionId);
+    if (forceHydrate || !managerTranscriptHydrated) {
+      for (const proposal of data.proposals || []) managerAddTeamProposal(proposal);
+    }
     const meta = el('managerPanelMeta');
     if (meta) {
       if (assistantScope === 'global') {
@@ -27629,6 +29841,9 @@ async function managerStream(path, payload) {
         else if (event.type === 'tool.result') {
           managerUpdateToolActivity(event);
           setManagerThinking(true, 'Thinking…');
+        }
+        else if (event.type === 'team.proposal' && event.proposal) {
+          managerAddTeamProposal(event.proposal);
         }
         else if (event.type === 'status' && event.message) {
           setManagerThinking(true, String(event.message).replace(/^manager\\s*·\\s*/i, '') || 'Working…');
@@ -27783,6 +29998,43 @@ function wireManagerPanel() {
   });
   el('managerScopeGlobal')?.addEventListener('click', () => setAssistantScope('global'));
   el('managerScopeProject')?.addEventListener('click', () => setAssistantScope('project'));
+  el('managerSessionSelect')?.addEventListener('change', async () => {
+    try {
+      await managerSessionAction('open');
+    } catch (error) {
+      managerAddMsg('error', 'Open Session failed: ' + (error.message || error));
+    }
+  });
+  el('managerSessionNew')?.addEventListener('click', async () => {
+    try {
+      await managerSessionAction('create', {
+        type: assistantScope === 'global' ? 'assistant-global' : 'assistant-project',
+        ...(assistantScope === 'project' ? { projectPath: state.snapshot?.workDir } : {}),
+      });
+    } catch (error) {
+      managerAddMsg('error', 'New Session failed: ' + (error.message || error));
+    }
+  });
+  el('managerSessionRename')?.addEventListener('click', async () => {
+    const selected = managerSessionsById.get(el('managerSessionSelect')?.value || '');
+    if (!selected) return;
+    const title = window.prompt('Rename Assistant Session', selected.title || '');
+    if (!title?.trim()) return;
+    try {
+      await managerSessionAction('rename', { title: title.trim() });
+    } catch (error) {
+      managerAddMsg('error', 'Rename failed: ' + (error.message || error));
+    }
+  });
+  el('managerSessionArchive')?.addEventListener('click', async () => {
+    const selected = managerSessionsById.get(el('managerSessionSelect')?.value || '');
+    if (!selected || !window.confirm('Archive "' + selected.title + '"?')) return;
+    try {
+      await managerSessionAction('archive');
+    } catch (error) {
+      managerAddMsg('error', 'Archive failed: ' + (error.message || error));
+    }
+  });
   el('managerUpdateQuick')?.addEventListener('click', () => el('managerUpdateBtn')?.click());
   el('managerSettingsQuick')?.addEventListener('click', () => openManagerConfigForm());
   el('managerUpdateBtn')?.addEventListener('click', async () => {
@@ -27883,6 +30135,84 @@ async function refreshDataRootSettings() {
     // Keep the state snapshot value.
   }
 }
+function renderApplicationUpdate(update) {
+  if (!update) return;
+  const title = el('settingsUpdateTitle');
+  const status = el('settingsUpdateStatus');
+  const check = el('settingsUpdateCheck');
+  const upgrade = el('settingsUpdateUpgrade');
+  const current = update.currentVersion ? 'v' + update.currentVersion : 'unknown version';
+  const latest = update.latestVersion && update.latestVersion !== update.currentVersion
+    ? ' · latest v' + update.latestVersion
+    : '';
+  if (title) title.textContent = 'Actoviq ' + current + latest;
+  const messages = {
+    idle: 'Ready to check GitHub Releases for a newer stable version.',
+    checking: 'Checking for updates...',
+    available: 'A newer version is ready to download.',
+    'not-available': 'You are running the latest published version.',
+    downloading: 'Downloading update' + (Number.isFinite(update.percent) ? ' · ' + Math.round(update.percent) + '%' : '') + '...',
+    downloaded: 'Download complete. Actoviq will restart to install it.',
+    installing: 'Installing update and restarting Actoviq...',
+    error: update.error || 'The update could not be completed.',
+    unsupported: update.reason || 'Automatic updates are unavailable for this build.',
+  };
+  if (status) status.textContent = messages[update.state] || update.reason || '';
+  const busy = ['checking', 'downloading', 'downloaded', 'installing'].includes(update.state);
+  if (check) check.disabled = !update.supported || busy;
+  if (upgrade) {
+    upgrade.disabled = !update.supported || update.state !== 'available';
+    upgrade.textContent = update.state === 'downloading'
+      ? 'Downloading...'
+      : update.state === 'downloaded' || update.state === 'installing'
+        ? 'Restarting...'
+        : 'Upgrade';
+  }
+}
+async function refreshApplicationUpdate() {
+  try {
+    const res = await api('/api/app-update');
+    if (res.ok) renderApplicationUpdate(await res.json());
+  } catch {
+    // The app may be restarting after a successful install.
+  }
+}
+async function checkApplicationUpdate() {
+  renderApplicationUpdate({
+    supported: true,
+    state: 'checking',
+    currentVersion: '',
+  });
+  const res = await api('/api/app-update/check', { method: 'POST' });
+  const payload = await res.json();
+  renderApplicationUpdate(payload);
+}
+async function upgradeApplication() {
+  const current = await api('/api/app-update').then(res => res.json());
+  if (current.state !== 'available') {
+    renderApplicationUpdate(current);
+    return;
+  }
+  if (!window.confirm(
+    'Upgrade Actoviq from v' + current.currentVersion + ' to v' + current.latestVersion + '?\\n\\n' +
+    'The update will download, close the app, install, and restart automatically.',
+  )) return;
+  renderApplicationUpdate({ ...current, state: 'downloading', percent: 0 });
+  const poll = setInterval(() => { void refreshApplicationUpdate(); }, 700);
+  try {
+    const res = await api('/api/app-update/upgrade', { method: 'POST' });
+    const payload = await res.json();
+    renderApplicationUpdate(res.ok ? payload : (payload.update || {
+      ...current,
+      state: 'error',
+      error: payload.error || 'Upgrade failed',
+    }));
+  } catch {
+    // A successful install closes the local server before the browser receives another poll.
+  } finally {
+    setTimeout(() => clearInterval(poll), 10_000);
+  }
+}
 async function changeDataRootFromSettings() {
   const targetRoot = await pickFolderViaApi();
   if (!targetRoot) return;
@@ -27940,6 +30270,7 @@ async function openSettings(tab = 'general') {
   el('settingsPath').textContent = settings.configPath ? 'Saved locally: ' + settings.configPath : 'Settings path unavailable';
   renderDataRootStatus(settings.dataRoot);
   void refreshDataRootSettings();
+  void refreshApplicationUpdate();
   const mode = preferences.workMode === 'daily' ? 'daily' : 'coding';
   setChecked('settingsWorkModeCoding', mode === 'coding');
   setChecked('settingsWorkModeDaily', mode === 'daily');
@@ -27953,6 +30284,29 @@ async function openSettings(tab = 'general') {
   setChecked('settingsDefaultPermission', true);
   setChecked('settingsAutoAudit', state.snapshot?.permissionMode === 'acceptEdits');
   setChecked('settingsFullAccess', state.snapshot?.permissionMode === 'bypassPermissions');
+  const sandbox = settings.sandbox;
+  if (el('settingsSandboxTitle')) {
+    el('settingsSandboxTitle').textContent = sandbox
+      ? (sandbox.policy?.enforcement || 'best-effort') + ' · ' + (sandbox.capability?.adapter || 'unknown adapter')
+      : 'Sandbox unavailable';
+  }
+  if (el('settingsSandboxStatus')) {
+    el('settingsSandboxStatus').textContent = sandbox?.capability?.degraded
+      ? 'Degraded: ' + (sandbox.capability.reason || 'platform isolation is incomplete')
+      : 'Filesystem, network, and process controls are available for this platform policy.';
+  }
+  const policy = settings.policy;
+  if (el('settingsPolicyTitle')) {
+    el('settingsPolicyTitle').textContent = policy?.sources?.length
+      ? 'Effective sources: ' + policy.sources.join(' > ')
+      : 'No managed policy loaded';
+  }
+  if (el('settingsPolicyStatus')) {
+    const locked = policy?.lockedSettings || [];
+    el('settingsPolicyStatus').textContent = locked.length
+      ? 'Locked settings: ' + locked.join(', ')
+      : 'No settings are locked by a higher authority.';
+  }
   setField('settingsMinModel', settings.minModel || '');
   setField('settingsMediumModel', settings.mediumModel || '');
   setField('settingsMaxModel', settings.maxModel || '');
@@ -28146,9 +30500,46 @@ input.addEventListener('input', () => {
   state.slashIndex = 0;
   renderSlashMenu();
 });
-el('fileUploadBtn').addEventListener('click', () => el('fileInput').click());
+el('fileUploadBtn').addEventListener('click', (event) => {
+  event.stopPropagation();
+  openAddContextMenu();
+});
+el('addContextMenu').addEventListener('click', (event) => event.stopPropagation());
+el('addContextMenu').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.addContextView !== 'root') renderAddContextRoot();
+    else {
+      closeAddContextMenu();
+      el('fileUploadBtn').focus();
+    }
+    return;
+  }
+  if (event.key === 'ArrowLeft' && state.addContextView !== 'root') {
+    event.preventDefault();
+    event.stopPropagation();
+    renderAddContextRoot();
+    el('addContextMenu').querySelector('.add-context-row')?.focus();
+    return;
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const options = [...el('addContextMenu').querySelectorAll('button:not(:disabled)')];
+  const current = options.indexOf(document.activeElement);
+  const next = event.key === 'ArrowDown'
+    ? (current + 1) % options.length
+    : (current <= 0 ? options.length - 1 : current - 1);
+  if (options[next]) {
+    event.preventDefault();
+    options[next].focus();
+  }
+});
 el('fileInput').addEventListener('change', async (event) => {
   await addFiles(event.target.files);
+  event.target.value = '';
+});
+el('folderInput').addEventListener('change', async (event) => {
+  await addFiles(event.target.files, 20);
   event.target.value = '';
 });
 el('composer').addEventListener('dragover', (event) => {
@@ -28198,11 +30589,63 @@ el('composerMetaBranch')?.addEventListener('click', () => { openGitSurface().cat
 el('conversationMenu').addEventListener('click', () => { openSurface('sessions').catch(console.error); });
 el('openLocationBtn').addEventListener('click', openLocation);
 el('overviewNewWorkspaceBtn').addEventListener('click', addWorkspace);
+el('overviewChatsBtn').addEventListener('click', () => switchProjectView('chats'));
 bindOverviewToolbar();
 el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
 el('detailNewConversationBtn').addEventListener('click', () => createNewSession().catch(console.error));
+el('detailChatsBtn').addEventListener('click', () => {
+  switchProjectView('chats');
+  const projectSelect = el('sessionCenterProject');
+  if (projectSelect) projectSelect.value = state.snapshot?.projectPath || state.snapshot?.workDir || '';
+  void refreshSessionCenter();
+});
+el('detailWorkPathSelect')?.addEventListener('change', (event) => {
+  const next = event.target.value;
+  if (next && !sameWorkspacePath(next, state.snapshot?.workDir || '')) {
+    void switchProject(next, 'detail');
+  }
+});
+el('detailAddWorkPathBtn')?.addEventListener('click', () => {
+  void addProjectWorkPathFromPicker().catch(error => flashStatus(error.message || String(error)));
+});
+el('detailRemoveWorkPathBtn')?.addEventListener('click', () => {
+  void removeActiveProjectWorkPath().catch(error => flashStatus(error.message || String(error)));
+});
 el('detailOpenLocationBtn').addEventListener('click', openLocation);
 el('detailConversationsBtn').addEventListener('click', toggleDetailConversationDrawer);
+el('sessionCenterBack').addEventListener('click', () => switchProjectView('overview'));
+el('sessionCenterNew').addEventListener('click', async () => {
+  const projectPath = el('sessionCenterProject')?.value || state.snapshot?.workDir;
+  if (!projectPath) return;
+  try {
+    await sessionCenterAction('create', null, { type: 'user', projectPath });
+    await loadState();
+    switchProjectView('conversation');
+  } catch (error) {
+    flashStatus('New chat failed: ' + (error.message || error));
+  }
+});
+for (const id of ['sessionCenterProject', 'sessionCenterType', 'sessionCenterStatus', 'sessionCenterArchived']) {
+  el(id)?.addEventListener('change', () => {
+    sessionCenterState.page = 1;
+    void refreshSessionCenter();
+  });
+}
+el('sessionCenterSearch')?.addEventListener('input', () => {
+  if (sessionCenterState.timer) clearTimeout(sessionCenterState.timer);
+  sessionCenterState.timer = setTimeout(() => {
+    sessionCenterState.page = 1;
+    void refreshSessionCenter();
+  }, 220);
+});
+el('sessionCenterPrev')?.addEventListener('click', () => {
+  sessionCenterState.page = Math.max(1, sessionCenterState.page - 1);
+  void refreshSessionCenter();
+});
+el('sessionCenterNext')?.addEventListener('click', () => {
+  sessionCenterState.page = Math.min(sessionCenterState.totalPages, sessionCenterState.page + 1);
+  void refreshSessionCenter();
+});
 document.addEventListener('keydown', (event) => {
   const sidebar = el('projectDetailSidebar');
   if (event.key !== 'Escape' || !sidebar?.classList.contains('mobile-open')) return;
@@ -28221,6 +30664,12 @@ el('settingsOpenAgents').addEventListener('click', () => { closeSettings(); open
 el('settingsOpenPlugins').addEventListener('click', () => { closeSettings(); openSurface('plugins').catch(console.error); });
 el('settingsDataRootChoose').addEventListener('click', () => { changeDataRootFromSettings().catch(console.error); });
 el('settingsDataRootOpen').addEventListener('click', () => { api('/api/settings/data-root/open', { method: 'POST' }).catch(console.error); });
+el('settingsUpdateCheck')?.addEventListener('click', () => { checkApplicationUpdate().catch(error => {
+  renderApplicationUpdate({ supported: true, state: 'error', currentVersion: '', error: error.message || String(error) });
+}); });
+el('settingsUpdateUpgrade')?.addEventListener('click', () => { upgradeApplication().catch(error => {
+  renderApplicationUpdate({ supported: true, state: 'error', currentVersion: '', error: error.message || String(error) });
+}); });
 el('externalCliAuthRefresh').addEventListener('click', () => { refreshExternalCliAuth().catch(console.error); });
 el('externalCliHistoryRefresh').addEventListener('click', () => { loadExternalCliHistory().catch(console.error); });
 el('externalCliHistoryMore').addEventListener('click', () => { loadExternalCliHistory(true).catch(error => { el('externalCliHistoryStatus').textContent = String(error); }); });
@@ -28341,6 +30790,12 @@ document.addEventListener('click', (event) => {
     && !event.target.closest('#permissionPickerMenu')) {
     closePermissionPicker();
   }
+  const contextMenu = el('addContextMenu');
+  if (contextMenu && !contextMenu.classList.contains('hidden')
+    && !event.target.closest('#fileUploadBtn')
+    && !event.target.closest('#addContextMenu')) {
+    closeAddContextMenu();
+  }
   const addMenu = el('tabbarAddMenu');
   if (addMenu) addMenu.classList.add('hidden');
 });
@@ -28366,6 +30821,7 @@ document.addEventListener('keydown', (event) => {
       else closeModelPicker();
     }
     closePermissionPicker();
+    closeAddContextMenu();
     if (state.auxView) showAuxLauncher();
     else if (state.auxFocused) toggleAuxFocus();
   }
@@ -28431,6 +30887,10 @@ document.addEventListener('keyup', (event) => {
     const vp = el('teamGraph')?.querySelector('.graph-board-viewport');
     applyGraphControlModeCursor(vp);
   }
+});
+window.addEventListener('blur', () => {
+  state.graphSpaceHeld = false;
+  applyGraphControlModeCursor(el('teamGraph')?.querySelector('.graph-board-viewport'));
 });
 document.addEventListener('click', (event) => {
   if (!event.target.closest || !event.target.closest('.graph-ctx-menu')) closeGraphContextMenu();

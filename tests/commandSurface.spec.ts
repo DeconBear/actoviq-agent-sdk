@@ -40,6 +40,12 @@ describe('filterInteractiveCommands', () => {
       'bridge help',
     ]);
     expect(filterInteractiveCommands('/model ')).toEqual(['model router', 'model config']);
+    expect(filterInteractiveCommands('/plan ')).toEqual([
+      'plan view',
+      'plan approve',
+      'plan revise',
+      'plan off',
+    ]);
     expect(filterInteractiveCommands('/team ')).toEqual(['team ask', 'team list', 'team attach', 'team off', 'team status', 'team clone']);
     expect(filterInteractiveCommands('/manager ')).toEqual([
       'manager chat',
@@ -47,6 +53,10 @@ describe('filterInteractiveCommands', () => {
       'manager status',
       'manager config',
       'manager schedule',
+      'manager sessions',
+      'manager new',
+      'manager resume',
+      'manager team',
     ]);
   });
 

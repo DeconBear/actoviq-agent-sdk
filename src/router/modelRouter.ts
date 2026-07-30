@@ -160,34 +160,12 @@ export async function resolveRoutedRun(
   return { model: routed.model, modelApi: routed.modelApi, label: decision.label, decision };
 }
 
-// ── Built-in profiles ────────────────────────────────────────────────
-
-/**
- * Built-in Leader/Dispatch profiles, available everywhere `/model router` lists
- * or loads — even with no profile files on disk. A user file of the same name in
- * `.actoviq/routers/` or `~/.actoviq/routers/` shadows the built-in.
- */
-export const BUILT_IN_ROUTER_PROFILES: Record<string, RouterProfile> = {
-  dispatch: {
-    name: 'dispatch',
-    description:
-      'Leader/Dispatch starter: a fast leader routes each turn to a quick / general / deep specialist. Copy to .actoviq/routers/dispatch.json and edit the models for your provider.',
-    routerModel: { model: 'claude-haiku-4-5-20251001' },
-    routes: [
-      { role: 'quick', model: 'claude-haiku-4-5-20251001', when: 'short, simple, or factual requests; quick edits and lookups', description: 'Fastest and cheapest — low-effort turns.' },
-      { role: 'general', model: 'claude-sonnet-4-6', when: 'everyday coding, refactors, and explanations', description: 'Balanced default for most work.' },
-      { role: 'deep', model: 'claude-opus-4-8', when: 'hard reasoning, architecture, tricky debugging, or large multi-file changes', description: 'Most capable — when correctness or planning matters most.' },
-    ],
-    fallback: { model: 'claude-sonnet-4-6' },
-  },
-};
-
 // ── Persistence (.actoviq/routers + ~/.actoviq/routers) ──────────────
 
 export interface LoadedRouterProfile {
   name: string;
   profile: RouterProfile;
-  source: 'project' | 'personal' | 'built-in';
+  source: 'project' | 'personal';
   filePath: string;
 }
 
@@ -225,10 +203,6 @@ export function loadRouterProfile(name: string, projectDir?: string, homeDir?: s
       }
     }
   }
-  const builtIn = BUILT_IN_ROUTER_PROFILES[name];
-  if (builtIn) {
-    return { name, profile: resolveProfileEnv(builtIn), source: 'built-in', filePath: '(built-in)' };
-  }
   return null;
 }
 
@@ -252,12 +226,6 @@ export function listRouterProfiles(projectDir?: string, homeDir?: string): Loade
         } catch { /* skip invalid */ }
       }
     } catch { /* skip inaccessible */ }
-  }
-  // Append built-in profiles that a user file hasn't shadowed.
-  for (const [name, profile] of Object.entries(BUILT_IN_ROUTER_PROFILES)) {
-    if (seen.has(name)) continue;
-    seen.add(name);
-    out.push({ name, profile: resolveProfileEnv(profile), source: 'built-in', filePath: '(built-in)' });
   }
   return out;
 }

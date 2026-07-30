@@ -19,6 +19,10 @@ export interface GraphEdgeBezierUi {
 
 const MIN_CONTROL_TENSION = 36;
 const DEFAULT_TENSION_MAX = 96;
+const AUTO_LAYOUT_START_X = 80;
+const AUTO_LAYOUT_START_Y = 48;
+const AUTO_LAYOUT_COLUMN_GAP = 84;
+const AUTO_LAYOUT_ROW_GAP = 112;
 
 /** Default S-curve tension — capped so auto curves stay gentle on long edges. */
 export function defaultEdgeTension(p1: GraphPoint, p2: GraphPoint): number {
@@ -61,6 +65,28 @@ export function defaultEdgeBezierOffsets(p1: GraphPoint, p2: GraphPoint): Requir
   }
   const sx = dx >= 0 ? 1 : -1;
   return { c1: { dx: sx * tension, dy: dy * 0.06 }, c2: { dx: -sx * tension, dy: -dy * 0.06 } };
+}
+
+/** Curve handles leave and enter cards through the selected side normals. */
+export function defaultEdgeBezierOffsetsForSides(
+  p1: GraphPoint,
+  p2: GraphPoint,
+  fromSide: GraphSide,
+  toSide: GraphSide,
+): Required<GraphEdgeBezierUi> {
+  const tension = defaultEdgeTension(p1, p2);
+  const normal = (side: GraphSide): GraphPoint => {
+    if (side === 'n') return { x: 0, y: -1 };
+    if (side === 's') return { x: 0, y: 1 };
+    if (side === 'w') return { x: -1, y: 0 };
+    return { x: 1, y: 0 };
+  };
+  const from = normal(fromSide);
+  const to = normal(toSide);
+  return {
+    c1: { dx: from.x * tension, dy: from.y * tension },
+    c2: { dx: to.x * tension, dy: to.y * tension },
+  };
 }
 
 export function resolveEdgeBezierPoints(
@@ -165,35 +191,120 @@ export function pickShortestSides(
   const toSides = opts?.toSides ?? (['n', 'e', 's', 'w'] as GraphSide[]);
   const fromPortCount = Math.max(1, opts?.fromPortCount ?? 3);
   const toPortCount = Math.max(1, opts?.toPortCount ?? 3);
-  const fromPorts = opts?.fromPort != null
-    ? [Math.min(Math.max(0, opts.fromPort), fromPortCount - 1)]
-    : Array.from({ length: fromPortCount }, (_, i) => i);
-  const toPorts = opts?.toPort != null
-    ? [Math.min(Math.max(0, opts.toPort), toPortCount - 1)]
-    : Array.from({ length: toPortCount }, (_, i) => i);
-  let best: { fromSide: GraphSide; toSide: GraphSide; fromPort: number; toPort: number } | null = null;
-  let bestDist = Infinity;
-  for (const fs of fromSides) {
-    for (const ts of toSides) {
-      for (const fp of fromPorts) {
-        for (const tp of toPorts) {
-          const a = sideAnchor(fromRect, fs, fp, fromPortCount);
-          const b = sideAnchor(toRect, ts, tp, toPortCount);
-          const d = Math.hypot(b.x - a.x, b.y - a.y);
-          if (d < bestDist) {
-            bestDist = d;
-            best = { fromSide: fs, toSide: ts, fromPort: fp, toPort: tp };
-          }
-        }
+  const portIndices = (requested: number | undefined, count: number): number[] => {
+    if (requested != null) return [Math.min(Math.max(0, requested), count - 1)];
+    return Array.from({ length: count }, (_, index) => index);
+  };
+  const fromPorts = portIndices(opts?.fromPort, fromPortCount);
+  const toPorts = portIndices(opts?.toPort, toPortCount);
+  const fromCandidates: Array<{ side: GraphSide; port: number; anchor: GraphPoint }> = [];
+  const toCandidates: Array<{ side: GraphSide; port: number; anchor: GraphPoint }> = [];
+  for (const side of fromSides) {
+    for (const port of fromPorts) {
+      fromCandidates.push({ side, port, anchor: sideAnchor(fromRect, side, port, fromPortCount) });
+    }
+  }
+  for (const side of toSides) {
+    for (const port of toPorts) {
+      toCandidates.push({ side, port, anchor: sideAnchor(toRect, side, port, toPortCount) });
+    }
+  }
+  let best = {
+    fromSide: fromSides[0] ?? 's',
+    toSide: toSides[0] ?? 'n',
+    fromPort: fromPorts[0] ?? 0,
+    toPort: toPorts[0] ?? 0,
+    distanceSquared: Infinity,
+  };
+  for (const from of fromCandidates) {
+    for (const to of toCandidates) {
+      const dx = to.anchor.x - from.anchor.x;
+      const dy = to.anchor.y - from.anchor.y;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared < best.distanceSquared) {
+        best = {
+          fromSide: from.side,
+          toSide: to.side,
+          fromPort: from.port,
+          toPort: to.port,
+          distanceSquared,
+        };
       }
     }
   }
-  return best ?? {
-    fromSide: 's',
-    toSide: 'n',
-    fromPort: Math.floor(fromPortCount / 2),
-    toPort: Math.floor(toPortCount / 2),
+  return {
+    fromSide: best.fromSide,
+    toSide: best.toSide,
+    fromPort: best.fromPort,
+    toPort: best.toPort,
   };
+}
+
+export interface GraphAutoEdgeRoute {
+  fromSide: GraphSide;
+  toSide: GraphSide;
+  fromPort: number;
+  toPort: number;
+  curve: Required<GraphEdgeBezierUi>;
+}
+
+/** Spread sibling routes over the available snap points, including both ends. */
+export function spreadGraphPortIndex(lane: number, laneCount: number, portCount: number): number {
+  const ports = Math.max(1, portCount);
+  if (laneCount <= 1 || ports <= 1) return Math.floor(ports / 2);
+  const safeLane = Math.min(Math.max(0, lane), laneCount - 1);
+  return Math.round((safeLane * (ports - 1)) / (laneCount - 1));
+}
+
+/**
+ * Semantic automatic routing:
+ * - regular edges use the shortest anchor pair;
+ * - loop/back edges reserve an outer same-side corridor;
+ * - self-loops use two distinct anchors and a visible outward arc.
+ */
+export function pickAutoEdgeRoute(
+  fromRect: GraphRect,
+  toRect: GraphRect,
+  opts?: {
+    loop?: boolean;
+    selfLoop?: boolean;
+    fromPortCount?: number;
+    toPortCount?: number;
+  },
+): GraphAutoEdgeRoute {
+  const fromPortCount = Math.max(1, opts?.fromPortCount ?? 3);
+  const toPortCount = Math.max(1, opts?.toPortCount ?? 3);
+  const selfLoop = opts?.selfLoop === true;
+  if (!opts?.loop && !selfLoop) {
+    const picked = pickShortestSides(fromRect, toRect, { fromPortCount, toPortCount });
+    const p1 = sideAnchor(fromRect, picked.fromSide, picked.fromPort, fromPortCount);
+    const p2 = sideAnchor(toRect, picked.toSide, picked.toPort, toPortCount);
+    return {
+      ...picked,
+      curve: defaultEdgeBezierOffsetsForSides(p1, p2, picked.fromSide, picked.toSide),
+    };
+  }
+
+  const fromCenter = { x: fromRect.x + fromRect.w / 2, y: fromRect.y + fromRect.h / 2 };
+  const toCenter = { x: toRect.x + toRect.w / 2, y: toRect.y + toRect.h / 2 };
+  const vertical = selfLoop || Math.abs(toCenter.y - fromCenter.y) >= Math.abs(toCenter.x - fromCenter.x);
+  const side: GraphSide = vertical ? 'e' : 's';
+  const fromPort = selfLoop ? 0 : Math.floor(fromPortCount / 2);
+  const toPort = selfLoop ? toPortCount - 1 : Math.floor(toPortCount / 2);
+  const distance = vertical
+    ? Math.abs(toCenter.y - fromCenter.y)
+    : Math.abs(toCenter.x - fromCenter.x);
+  const detour = Math.min(220, Math.max(84, distance * 0.42));
+  const curve = vertical
+    ? {
+        c1: { dx: detour, dy: selfLoop ? -48 : 0 },
+        c2: { dx: detour, dy: selfLoop ? 48 : 0 },
+      }
+    : {
+        c1: { dx: 0, dy: detour },
+        c2: { dx: 0, dy: detour },
+      };
+  return { fromSide: side, toSide: side, fromPort, toPort, curve };
 }
 
 /**
@@ -275,18 +386,24 @@ export function getTeamGraphBezierClientScript(): string {
   return [
     'const MIN_CONTROL_TENSION = 36;',
     'const DEFAULT_TENSION_MAX = 96;',
+    'const AUTO_LAYOUT_START_X = 80;',
+    'const AUTO_LAYOUT_START_Y = 48;',
+    'const AUTO_LAYOUT_COLUMN_GAP = 84;',
+    'const AUTO_LAYOUT_ROW_GAP = 112;',
     defaultEdgeTension.toString(),
     sanitizeEdgeBezierUi.toString(),
     defaultEdgeBezierOffsets.toString(),
+    defaultEdgeBezierOffsetsForSides.toString(),
     resolveEdgeBezierPoints.toString(),
     writeEdgeBezierUi.toString(),
     clearEdgeBezierUi.toString(),
     clearEdgeBezierUiForNodeRef.toString(),
     sideAnchor.toString(),
     pickShortestSides.toString(),
-    edgeChordCrossesNodeInterior.toString(),
-    migrateLegacyEdgeSides.toString(),
+    spreadGraphPortIndex.toString(),
+    pickAutoEdgeRoute.toString(),
     computeGroupBounds.toString(),
+    computeTeamGraphAutoLayout.toString(),
   ].join('\n');
 }
 
@@ -321,4 +438,47 @@ export function computeTeamGraphAutoLayoutLanes(
   return [taskRow, memberRow, leaderRow, returnRow]
     .map(sortRow)
     .filter((row) => row.length > 0);
+}
+
+/**
+ * Compact, centered positions for the semantic layout lanes.
+ *
+ * The calculation uses actual card sizes and treats the spacing constants as
+ * gaps between cards. This keeps wide rows readable without forcing the whole
+ * canvas to zoom out because a "gap" was accidentally used as a column pitch.
+ */
+export function computeTeamGraphAutoLayout(
+  def: Pick<TeamDefinition, 'nodes' | 'edges'>,
+): GraphPoint[] {
+  const nodes = def.nodes ?? [];
+  const lanes = computeTeamGraphAutoLayoutLanes(def);
+  const positions = nodes.map(() => ({ x: AUTO_LAYOUT_START_X, y: AUTO_LAYOUT_START_Y }));
+  const sizeOf = (index: number): { w: number; h: number } => {
+    const kind = nodes[index]?.kind;
+    return kind === 'task' || kind === 'return'
+      ? { w: 112, h: 48 }
+      : { w: 168, h: 72 };
+  };
+  const rowWidth = (indices: number[]): number =>
+    indices.reduce(
+      (width, index, column) =>
+        width + sizeOf(index).w + (column > 0 ? AUTO_LAYOUT_COLUMN_GAP : 0),
+      0,
+    );
+  const layoutWidth = Math.max(0, ...lanes.map(rowWidth));
+  let y = AUTO_LAYOUT_START_Y;
+
+  for (const indices of lanes) {
+    let x = AUTO_LAYOUT_START_X + (layoutWidth - rowWidth(indices)) / 2;
+    let rowHeight = 0;
+    for (const index of indices) {
+      const size = sizeOf(index);
+      positions[index] = { x, y };
+      x += size.w + AUTO_LAYOUT_COLUMN_GAP;
+      rowHeight = Math.max(rowHeight, size.h);
+    }
+    y += rowHeight + AUTO_LAYOUT_ROW_GAP;
+  }
+
+  return positions;
 }

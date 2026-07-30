@@ -9,7 +9,6 @@ import {
   classifyRoute,
   listRouterProfiles,
   loadRouterProfile,
-  BUILT_IN_ROUTER_PROFILES,
 } from '../src/router/modelRouter.js';
 import type { RouterProfile, RouterRoute } from '../src/types.js';
 
@@ -119,7 +118,7 @@ describe('leader/dispatch enrichment', () => {
   });
 });
 
-describe('built-in dispatch profile', () => {
+describe('user-created router profiles', () => {
   const tempDirs: string[] = [];
   const tempHome = (): string => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'actoviq-router-'));
@@ -130,28 +129,15 @@ describe('built-in dispatch profile', () => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('ships a well-formed dispatch profile (leader + role/when specialists)', () => {
-    const profile = BUILT_IN_ROUTER_PROFILES.dispatch!;
-    expect(profile.routerModel.model).toBeTruthy();
-    expect(profile.routes.length).toBeGreaterThanOrEqual(2);
-    expect(profile.routes.every((r) => Boolean(r.role) && Boolean(r.when) && Boolean(r.model))).toBe(true);
+  it('starts with an empty list when no router files exist', () => {
+    expect(listRouterProfiles(undefined, tempHome())).toEqual([]);
   });
 
-  it('is listed even with no router files on disk', () => {
-    const listed = listRouterProfiles(undefined, tempHome());
-    const dispatch = listed.find((p) => p.name === 'dispatch');
-    expect(dispatch).toBeDefined();
-    expect(dispatch!.source).toBe('built-in');
+  it('does not load an example profile when no file exists', () => {
+    expect(loadRouterProfile('dispatch', undefined, tempHome())).toBeNull();
   });
 
-  it('loads by name without a file on disk', () => {
-    const loaded = loadRouterProfile('dispatch', undefined, tempHome());
-    expect(loaded).not.toBeNull();
-    expect(loaded!.source).toBe('built-in');
-    expect(loaded!.profile.routes.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('is shadowed by a user profile of the same name (not duplicated)', () => {
+  it('lists and loads a personal profile without adding examples', () => {
     const home = tempHome();
     const dir = path.join(home, '.actoviq', 'routers');
     mkdirSync(dir, { recursive: true });
@@ -168,6 +154,7 @@ describe('built-in dispatch profile', () => {
     const dispatchEntries = listRouterProfiles(undefined, home).filter((p) => p.name === 'dispatch');
     expect(dispatchEntries).toHaveLength(1);
     expect(dispatchEntries[0]!.source).toBe('personal');
+    expect(listRouterProfiles(undefined, home)).toHaveLength(1);
   });
 });
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { app, BrowserWindow, dialog, Menu, nativeImage, shell } from 'electron';
+import electronUpdater from 'electron-updater';
 
 import {
   parseActoviqGuiArgs,
@@ -17,10 +18,16 @@ import {
   persistActoviqSettingsStore,
 } from '../config/actoviqSettingsStore.js';
 import { resolveActoviqHome } from '../config/actoviqHome.js';
+import {
+  createAppUpdateController,
+  createUnsupportedAppUpdateController,
+  type AppUpdateController,
+} from '../update/appUpdateService.js';
 
 let guiServer: ActoviqGuiServer | null = null;
 let cleanupInProgress = false;
 let quittingAfterCleanup = false;
+const { autoUpdater } = electronUpdater;
 
 if (process.platform === 'win32') {
   // Set before 'ready'. Use a stable id distinct from electron.exe's default grouping.
@@ -119,6 +126,46 @@ async function ensureActoviqHomeInit(args: { homeDir?: string; configPath?: stri
   }
 }
 
+function createDesktopAppUpdater(): AppUpdateController {
+  const currentVersion = app.getVersion();
+  if (!app.isPackaged) {
+    return createUnsupportedAppUpdateController(
+      currentVersion,
+      'Development builds are not replaced automatically. Install a packaged Actoviq release to use Upgrade.',
+    );
+  }
+  if (process.arch !== 'x64') {
+    return createUnsupportedAppUpdateController(
+      currentVersion,
+      `Automatic updates are not published for ${process.arch} yet. Download the matching installer from the release page.`,
+    );
+  }
+  if (process.platform !== 'win32' && process.platform !== 'linux') {
+    return createUnsupportedAppUpdateController(
+      currentVersion,
+      'Automatic updates currently support Windows x64 and Linux x64 packaged builds.',
+    );
+  }
+  if (process.platform === 'linux' && !process.env.APPIMAGE) {
+    return createUnsupportedAppUpdateController(
+      currentVersion,
+      'Linux automatic updates require running the installed AppImage.',
+    );
+  }
+  return createAppUpdateController({
+    updater: autoUpdater,
+    currentVersion,
+    installDownloaded: async () => {
+      if (guiServer) {
+        await guiServer.close();
+        guiServer = null;
+      }
+      quittingAfterCleanup = true;
+      autoUpdater.quitAndInstall(true, true);
+    },
+  });
+}
+
 async function createWindow(): Promise<void> {
   const args = parseActoviqGuiArgs(getUserArgs());
   if (args.version) {
@@ -149,7 +196,10 @@ async function createWindow(): Promise<void> {
   }
 
   await ensureActoviqHomeInit(args);
-  guiServer = await startActoviqGuiServer(args);
+  guiServer = await startActoviqGuiServer({
+    ...args,
+    appUpdater: createDesktopAppUpdater(),
+  });
   installApplicationMenu();
   const { iconPath, iconImage } = loadWindowIcon();
   const hasIcon = Boolean(iconPath && iconImage && !iconImage.isEmpty());

@@ -49,6 +49,38 @@ describe('pickShortestSides', () => {
     expect(pick.fromPort).toBeGreaterThanOrEqual(0);
     expect(pick.fromPort).toBeLessThan(5);
   });
+
+  it('preserves explicitly selected ports while choosing the shortest sides', () => {
+    const from = { x: 0, y: 0, w: 160, h: 70 };
+    const to = { x: 260, y: 140, w: 160, h: 70 };
+    const pick = pickShortestSides(from, to, {
+      fromPort: 0,
+      toPort: 2,
+      fromPortCount: 3,
+      toPortCount: 3,
+    });
+    expect(pick).toEqual({
+      fromSide: 'e',
+      toSide: 'w',
+      fromPort: 0,
+      toPort: 2,
+    });
+  });
+
+  it('uses the true shortest anchor pair for diagonal nodes', () => {
+    const from = { x: 0, y: 0, w: 160, h: 70 };
+    const to = { x: 140, y: 130, w: 160, h: 70 };
+    const pick = pickShortestSides(from, to, {
+      fromPortCount: 3,
+      toPortCount: 3,
+    });
+    expect(pick).toEqual({
+      fromSide: 'e',
+      toSide: 'n',
+      fromPort: 2,
+      toPort: 0,
+    });
+  });
 });
 
 describe('computeGroupBounds', () => {

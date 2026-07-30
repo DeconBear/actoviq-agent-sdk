@@ -7,6 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { saveRouterProfile } from '../src/router/modelRouter.js';
 import { saveWorkflow } from '../src/workflow/workflowPersistence.js';
 
 const tempDirs: string[] = [];
@@ -119,6 +120,11 @@ describe('GUI runtime mutation gate', () => {
         'export const meta = { name: "lease-test", description: "gate test" };',
         'await agent("hold this workflow");',
       ].join('\n'), { projectDir: workDir });
+      await saveRouterProfile({
+        name: 'configured',
+        routerModel: { model: 'test-model' },
+        routes: [{ model: 'test-model', when: 'always' }],
+      }, { projectDir: workDir });
       const initial = await api<{ session: { id: string } }>(server, '/api/state');
       const workflowResponse = await fetch(new URL('api/send', server.url), {
         method: 'POST',
@@ -141,9 +147,22 @@ describe('GUI runtime mutation gate', () => {
           }),
         },
         { path: '/api/router/profile/delete', init: jsonRequest({ name: 'during-run' }) },
+        { path: '/api/router/activate', init: jsonRequest({ name: 'configured' }) },
         { path: '/api/session/delete', init: jsonRequest({ id: initial.body.session.id }) },
         { path: '/api/session/archive', init: jsonRequest({ id: initial.body.session.id }) },
         { path: '/api/session/unarchive', init: jsonRequest({ id: initial.body.session.id }) },
+        {
+          path: '/api/session-center/action',
+          init: jsonRequest({
+            action: 'archive',
+            locator: {
+              scope: 'project',
+              projectPath: workDir,
+              sessionId: initial.body.session.id,
+              archived: false,
+            },
+          }),
+        },
         { path: '/api/hooks', init: jsonRequest({}, 'PUT') },
         { path: '/api/manager/config', init: jsonRequest({ model: 'test-model' }) },
         {
@@ -161,6 +180,7 @@ describe('GUI runtime mutation gate', () => {
           path: '/api/customize/plugins/test',
           init: jsonRequest({ id: 'playwright' }),
         },
+        { path: '/api/app-update/upgrade', init: jsonRequest({}) },
         { path: '/api/project/open', init: jsonRequest({ path: workDir }) },
         { path: '/api/mcp/add', init: jsonRequest({ name: 'gate-test', command: 'node' }) },
       ];
