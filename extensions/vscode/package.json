@@ -1,0 +1,77 @@
+{
+  "name": "actoviq",
+  "displayName": "Actoviq",
+  "description": "Thin VS Code/Cursor client for the Actoviq app-server.",
+  "version": "0.1.0",
+  "publisher": "actoviq",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": [
+    "onView:actoviq.sessions",
+    "onCommand:actoviq.openSession",
+    "onChatParticipant:actoviq.chat"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "actoviq.openSession", "title": "Actoviq: Open Session" },
+      { "command": "actoviq.selectSession", "title": "Actoviq: Select Session" },
+      { "command": "actoviq.newSession", "title": "Actoviq: New Session" },
+      { "command": "actoviq.refreshSessions", "title": "Actoviq: Refresh Sessions" },
+      { "command": "actoviq.reviewDiff", "title": "Actoviq: Review Session Diff" },
+      { "command": "actoviq.applyDiff", "title": "Actoviq: Apply Session Diff" },
+      { "command": "actoviq.restoreCheckpoint", "title": "Actoviq: Restore Checkpoint" },
+      { "command": "actoviq.setGoal", "title": "Actoviq: Set Goal" },
+      { "command": "actoviq.rememberApproval", "title": "Actoviq: Remember Approval" }
+    ],
+    "chatParticipants": [
+      {
+        "id": "actoviq.chat",
+        "name": "actoviq",
+        "fullName": "Actoviq",
+        "description": "Work with the current Actoviq Session."
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "actoviq", "title": "Actoviq", "icon": "media/actoviq.svg" }
+      ]
+    },
+    "views": {
+      "actoviq": [
+        { "id": "actoviq.sessions", "name": "Sessions" },
+        { "id": "actoviq.approvals", "name": "Approvals" }
+      ]
+    },
+    "configuration": {
+      "title": "Actoviq",
+      "properties": {
+        "actoviq.appServer.command": {
+          "type": "string",
+          "default": "actoviq-app-server",
+          "description": "App-server executable."
+        },
+        "actoviq.appServer.args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional app-server arguments."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "package": "npm run build && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.2"
+  }
+}
