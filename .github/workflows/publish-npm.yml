@@ -85,7 +85,7 @@ jobs:
           echo "Publishing with npm trusted publishing (OIDC)."
           echo "Expected npm trusted publisher configuration:"
           echo "  Owner/Org: DeconBear"
-          echo "  Repository: actoviq-agent-sdk"
+          echo "  Repository: hadamard"
           echo "  Workflow: publish-npm.yml"
           echo "  Environment: leave empty unless you explicitly use one"
 

@@ -18,6 +18,7 @@ CLAUDE.md
 vendor/hadamard-runtime/runtime.bundle.br
 vendor/hadamard-runtime/runtime.bundle.mjs
 vendor/hadamard-runtime/SYNC_SUMMARY.json
+vendor/actoviq-runtime/
 bench/dashboard.html
 bench/task-explorer.html
 bench/results/

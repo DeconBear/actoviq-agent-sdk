@@ -17,18 +17,21 @@ function ensureRuntimeEntry() {
     console.error('');
     console.error('The bridge SDK requires a third-party agent runtime bundle.');
     console.error('For example, if you have Claude Code installed, link its bundle:');
-    console.error(`  npx actoviq-link-runtime /path/to/claude-code`);
+    console.error(`  npx hadamard-link-runtime /path/to/claude-code`);
     console.error('');
-    console.error('Or set the ACTOVIQ_RUNTIME_BUNDLE environment variable:');
-    console.error(`  $env:ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # PowerShell`);
-    console.error(`  export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # Bash`);
+    console.error('Or set the HADAMARD_RUNTIME_BUNDLE environment variable:');
+    console.error(`  $env:HADAMARD_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # PowerShell`);
+    console.error(`  export HADAMARD_RUNTIME_BUNDLE="/path/to/runtime-bundle"  # Bash`);
     process.exit(1);
   }
 
-  // Support ACTOVIQ_RUNTIME_BUNDLE override
-  const bundlePath = process.env.ACTOVIQ_RUNTIME_BUNDLE || compressedBundlePath;
+  // Support HADAMARD_RUNTIME_BUNDLE, with legacy ACTOVIQ_RUNTIME_BUNDLE fallback.
+  const bundlePath =
+    process.env.HADAMARD_RUNTIME_BUNDLE ||
+    process.env.ACTOVIQ_RUNTIME_BUNDLE ||
+    compressedBundlePath;
 
-  const cacheDir = path.join(os.tmpdir(), 'actoviq-runtime-cache');
+  const cacheDir = path.join(os.tmpdir(), 'hadamard-runtime-cache');
   const entryPath = path.join(cacheDir, `${bundleHash}.mjs`);
 
   if (!existsSync(entryPath)) {
@@ -50,5 +53,4 @@ function ensureRuntimeEntry() {
   return entryPath;
 }
 
-const entryPath = ensureRuntimeEntry();
-await import(pathToFileURL(entryPath).href);
+await import(pathToFileURL(ensureRuntimeEntry()).href);

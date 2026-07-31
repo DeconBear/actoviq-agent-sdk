@@ -16,6 +16,7 @@ export {
   listHadamardHomeTopLevelEntries,
   migrateHadamardHomeData,
   migrateLegacyActoviqHomeIfNeeded,
+  migrateLegacyProjectActoviqDirIfNeeded,
   resolveHadamardHome,
   summarizeHadamardHome,
   writeHadamardHomePointer,

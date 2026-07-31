@@ -7,6 +7,7 @@ import {
   getHadamardHomePointerPath,
   listHadamardHomeTopLevelEntries,
   migrateHadamardHomeData,
+  migrateLegacyProjectActoviqDirIfNeeded,
   resolveHadamardHome,
   summarizeHadamardHome,
   writeHadamardHomePointer,
@@ -83,5 +84,29 @@ describe('hadamardHome', () => {
     await writeFile(path.join(targetRoot, 'existing.txt'), 'x', 'utf8');
 
     await expect(migrateHadamardHomeData({ sourceRoot, targetRoot })).rejects.toThrow('must be empty');
+  });
+
+  it('renames project-local .actoviq to .hadamard when the new dir is missing', async () => {
+    const workDir = await tempRoot('hadamard-project-legacy-');
+    const legacy = path.join(workDir, '.actoviq');
+    await mkdir(path.join(legacy, 'teams'), { recursive: true });
+    await writeFile(path.join(legacy, 'teams', 'demo.json'), '{"name":"demo"}\n', 'utf8');
+
+    const result = await migrateLegacyProjectActoviqDirIfNeeded(workDir);
+    expect(result?.targetRoot).toBe(path.join(workDir, '.hadamard'));
+    await expect(readFile(path.join(workDir, '.hadamard', 'teams', 'demo.json'), 'utf8')).resolves.toContain('demo');
+    await expect(rm(path.join(workDir, '.actoviq'), { recursive: true, force: true })).resolves.toBeUndefined();
+  });
+
+  it('leaves project-local .actoviq alone when .hadamard already exists', async () => {
+    const workDir = await tempRoot('hadamard-project-both-');
+    await mkdir(path.join(workDir, '.actoviq'), { recursive: true });
+    await mkdir(path.join(workDir, '.hadamard'), { recursive: true });
+    await writeFile(path.join(workDir, '.actoviq', 'legacy.txt'), 'old', 'utf8');
+    await writeFile(path.join(workDir, '.hadamard', 'current.txt'), 'new', 'utf8');
+
+    expect(await migrateLegacyProjectActoviqDirIfNeeded(workDir)).toBeUndefined();
+    await expect(readFile(path.join(workDir, '.actoviq', 'legacy.txt'), 'utf8')).resolves.toBe('old');
+    await expect(readFile(path.join(workDir, '.hadamard', 'current.txt'), 'utf8')).resolves.toBe('new');
   });
 });

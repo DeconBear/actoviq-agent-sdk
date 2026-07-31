@@ -81,6 +81,23 @@ export async function migrateLegacyActoviqHomeIfNeeded(
   });
 }
 
+/**
+ * Rename a project-local `.actoviq/` directory to `.hadamard/` when the new
+ * name is missing. Leaves `.actoviq` alone if `.hadamard` already exists.
+ */
+export async function migrateLegacyProjectActoviqDirIfNeeded(
+  workDir: string,
+): Promise<{ sourceRoot: string; targetRoot: string } | undefined> {
+  const resolved = path.resolve(workDir);
+  const sourceRoot = path.join(resolved, '.actoviq');
+  const targetRoot = path.join(resolved, '.hadamard');
+  if (!existsSync(sourceRoot)) return undefined;
+  if (existsSync(targetRoot)) return undefined;
+  await cp(sourceRoot, targetRoot, { recursive: true, errorOnExist: true, force: false });
+  await rm(sourceRoot, { recursive: true, force: true });
+  return { sourceRoot, targetRoot };
+}
+
 export function getHadamardHomePointerPath(osHomeDir: string = os.homedir()): string {
   return path.join(defaultHadamardHome(osHomeDir), DATA_ROOT_POINTER);
 }

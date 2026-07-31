@@ -11,6 +11,8 @@
 
 **Hadamard**（`0.4.x`）是 TypeScript agent SDK 与 agent-team 平台，含 TUI、GUI、Bridge 与多 agent 协作。未来的 **1.0** 线将稳定 package subpath 契约；该表面**尚未发布**。
 
+> **包名说明：** npm 发布名仍为 [`actoviq-agent-sdk`](https://www.npmjs.com/package/actoviq-agent-sdk)。产品、仓库、CLI 与配置路径统一为 **Hadamard**（`hadamard-*`、`~/.hadamard`、`.hadamard/`）。
+
 > **说明：** 桌面端 **Agent graph** 编排 UI（可视化团队 / 图编辑器）**仍在持续迭代与优化中**，交互与行为可能变化。生产工作流请优先使用 `/team`、已保存的 team 定义，以及 SDK 的 `createTeam()` / graph runtime。详见 `CHANGELOG.md`。
 
 受 Claude Code、Codex、Deepagents 等项目启发。Hadamard 保持独立，拥有自己的公开 API 与文档。

@@ -44,9 +44,9 @@ const blogSidebar = [
 ];
 
 export default defineConfig({
-  title: 'Actoviq Agent SDK',
-  description: 'Actoviq 1.0 SDK docs for provider-neutral, durable, multi-agent runtimes.',
-  base: '/actoviq-agent-sdk/',
+  title: 'Hadamard Agent SDK',
+  description: 'Hadamard 1.0 SDK docs for provider-neutral, durable, multi-agent runtimes.',
+  base: '/hadamard/',
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: {

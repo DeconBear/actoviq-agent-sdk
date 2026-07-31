@@ -7,7 +7,11 @@ import type {
   ResolvedRuntimeConfig,
 } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
-import { migrateLegacyActoviqHomeIfNeeded, resolveHadamardHome } from './hadamardHome.js';
+import {
+  migrateLegacyActoviqHomeIfNeeded,
+  migrateLegacyProjectActoviqDirIfNeeded,
+  resolveHadamardHome,
+} from './hadamardHome.js';
 import {
   resolveHadamardModelReference,
   selectDefaultHadamardModel,
@@ -78,6 +82,7 @@ export async function resolveRuntimeConfig(
   }
   const homeDir = resolveHadamardHome(options.homeDir);
   const workDir = path.resolve(options.workDir ?? process.cwd());
+  await migrateLegacyProjectActoviqDirIfNeeded(workDir).catch(() => undefined);
   const loadedConfig = getLoadedJsonConfig();
   const effectivePolicy = resolvePolicy(await loadPolicyDocuments({
     homeDir,

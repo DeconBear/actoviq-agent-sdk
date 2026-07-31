@@ -11,6 +11,8 @@ Documentation site: https://deconbear.github.io/hadamard/
 
 **Hadamard** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**.
 
+> **Package name:** the published npm package remains [`actoviq-agent-sdk`](https://www.npmjs.com/package/actoviq-agent-sdk). Product, repo, CLI, and config paths use **Hadamard** (`hadamard-*`, `~/.hadamard`, `.hadamard/`).
+
 > **Note:** The desktop **Agent graph** orchestration UI (visual team / graph editor) is **still under active iteration and optimization** — expect UX and API changes. Prefer `/team`, saved team definitions, and the SDK `createTeam()` / graph runtime for production workflows today. See `CHANGELOG.md`.
 
 Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Hadamard remains independent with its own public surface and documentation.

@@ -162,6 +162,7 @@ import {
   getHadamardHomePointerPath,
   listHadamardHomeTopLevelEntries,
   migrateHadamardHomeData,
+  migrateLegacyProjectActoviqDirIfNeeded,
   resolveHadamardHome,
   externalSkillPreferencesToRuntimeOptions,
   readHadamardExternalSkillPreferences,
@@ -2319,6 +2320,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   // Only persist an explicitly requested startup workspace (CLI `hadamard-gui <dir>`
   // or tests). Packaged / bare launches use process.cwd() as a transient runtime
   // root and must not pollute Projects with the install or source tree.
+  await migrateLegacyProjectActoviqDirIfNeeded(workDir).catch(() => undefined);
   if (explicitStartupWorkDir) {
     try {
       const bootHome = (await resolveHadamardSettingsStore({
@@ -2771,6 +2773,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       throw new Error('Cannot switch projects while a run is active. Stop the run, then open the workspace again.');
     }
     const resolved = await resolveWorkspaceDirectory(nextWorkDir);
+    await migrateLegacyProjectActoviqDirIfNeeded(resolved).catch(() => undefined);
     const previousWorkDir = workDir;
     const previousProjectPrimaryPath = projectPrimaryPath;
     const previousSystemPrompt = systemPrompt;
