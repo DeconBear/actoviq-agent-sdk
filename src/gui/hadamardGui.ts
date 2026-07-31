@@ -1367,6 +1367,8 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
 
   // Only remembered + current workspaces — never scan every ~/.hadamard/projects/*
   // hash (bench pollution made project open O(all historical dirs)).
+  // Do not invent a project from process.cwd() / install dir: first launch should
+  // show an empty Projects list until the user opens or creates one.
   const registry = await readWorkspaceRegistry(homeDir);
   const currentProject = findWorkspaceProject(registry, current);
   if (currentProject) {
@@ -1378,8 +1380,6 @@ async function listKnownProjects(homeDir: string, currentWorkDir: string) {
       workspaceWorkPaths(currentProject),
       current,
     );
-  } else {
-    addProject(current, 0);
   }
   await Promise.all(registry.map(async (entry) => {
     if (!(await pathExists(entry.path))) return;
@@ -1983,6 +1983,7 @@ async function listenWithFallback(
 }
 
 export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): Promise<HadamardGuiServer> {
+  const explicitStartupWorkDir = options.workDir !== undefined && String(options.workDir).trim() !== '';
   let workDir = path.resolve(options.workDir ?? process.cwd());
   const host = options.host ?? '127.0.0.1';
   const normalizedHost = host.trim().toLowerCase().replace(/^\[|\]$/gu, '');
@@ -2315,17 +2316,20 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     return hydrateCredentiallessSession(loaded);
   };
 
-  // Remember the startup workspace so it stays in the project list even with
-  // zero chats (listKnownProjects previously only inferred from session files).
-  try {
-    const bootHome = (await resolveHadamardSettingsStore({
-      configPath: options.configPath,
-      homeDir: currentHomeInput(),
-    }).catch(() => undefined))?.homeDir
-      ?? resolveGuiHomeDir();
-    await rememberWorkspace(workDir, bootHome);
-  } catch {
-    // Registry write is best-effort.
+  // Only persist an explicitly requested startup workspace (CLI `hadamard-gui <dir>`
+  // or tests). Packaged / bare launches use process.cwd() as a transient runtime
+  // root and must not pollute Projects with the install or source tree.
+  if (explicitStartupWorkDir) {
+    try {
+      const bootHome = (await resolveHadamardSettingsStore({
+        configPath: options.configPath,
+        homeDir: currentHomeInput(),
+      }).catch(() => undefined))?.homeDir
+        ?? resolveGuiHomeDir();
+      await rememberWorkspace(workDir, bootHome);
+    } catch {
+      // Registry write is best-effort.
+    }
   }
 
   // Fire SessionStart hooks (best-effort, fire-and-forget) on the initial session.
@@ -2842,9 +2846,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     }).catch(() => undefined))?.homeDir
       ?? resolveGuiHomeDir();
     invalidateHeavyState();
-    // Remember + scheduler/rail are not required to render the opened project UI.
+    // Persist before returning state so Projects includes the opened folder.
+    await rememberWorkspace(workDir, storeHome).catch(() => undefined);
     void Promise.all([
-      rememberWorkspace(workDir, storeHome).catch(() => undefined),
       resyncAutomationScheduler().catch(() => undefined),
       syncRailReminders().catch(() => undefined),
     ]);
