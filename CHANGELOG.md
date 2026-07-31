@@ -6,6 +6,27 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ## Unreleased
 
+## v0.4.10 - 2026-07-31
+
+### Product / docs
+
+- Rebrand the product, repository, CLIs, GUI, and config paths from **Actoviq** to **Hadamard** (`hadamard-*`, `~/.hadamard`, project-local `.hadamard/`). The published npm package name remains **`actoviq-agent-sdk`**.
+- Migrate legacy `~/.actoviq` and project-local `.actoviq/` into the new Hadamard paths on first use.
+- Point GitHub Pages / VitePress at `/hadamard/` with Hadamard branding; clarify package-vs-product naming in README.
+
+### GUI
+
+- Do not auto-register the process cwd / install / source tree as a Project on bare GUI launch. First open shows an empty Projects list until the user opens or creates one.
+
+### Sandbox / CI
+
+- Harden OS sandbox adapters: honor `enforcement: 'off'`, keep host tool PATH roots readable, and use allow-default write isolation on macOS seatbelt so CI (including macOS) stays usable.
+
+### Notes
+
+- This release stays on the **0.4.x** line. **1.0.0 is not published yet.**
+- GitHub repository: https://github.com/DeconBear/hadamard — docs: https://deconbear.github.io/hadamard/
+
 ## v0.4.9 - 2026-07-30
 
 ### Platform
