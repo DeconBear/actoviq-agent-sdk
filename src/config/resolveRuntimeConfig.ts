@@ -192,6 +192,10 @@ export async function resolveRuntimeConfig(
   if (typedHookConfig.issues.length > 0) {
     throw new ConfigurationError(typedHookConfig.issues.join(' '));
   }
+  const rawCompact = loadedConfig?.raw?.compact;
+  const settingsCompact = rawCompact && typeof rawCompact === 'object' && !Array.isArray(rawCompact)
+    ? rawCompact as Partial<import('../types.js').HadamardCompactConfig>
+    : undefined;
 
   return {
     homeDir,
@@ -227,6 +231,7 @@ export async function resolveRuntimeConfig(
     metadata: { ...(options.metadata ?? {}) },
     compact: {
       ...DEFAULT_COMPACT_CONFIG,
+      ...(settingsCompact ?? {}),
       ...(options.compact ?? {}),
     },
     provider,

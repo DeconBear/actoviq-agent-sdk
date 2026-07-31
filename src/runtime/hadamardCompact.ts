@@ -357,43 +357,120 @@ function extractTextFromToolResultContent(content: unknown): string {
     .join('\n');
 }
 
+/**
+ * Merge config-level compactInstructions with per-call summaryInstructions.
+ * Per-call instructions take precedence and are appended after config-level.
+ */
+function mergeCompactInstructions(
+  configInstructions: string | undefined,
+  perCallInstructions: string | undefined,
+): string | undefined {
+  const parts: string[] = [];
+  if (configInstructions?.trim()) parts.push(configInstructions.trim());
+  if (perCallInstructions?.trim()) parts.push(perCallInstructions.trim());
+  return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
 function buildCompactSummaryPrompt(
   notes: string,
   preservedMessagesCount: number,
   summaryInstructions?: string,
+  promptMode: 'hybrid' | 'structured' | 'free' = 'hybrid',
 ): string {
   const customInstructions = summaryInstructions?.trim()
-    ? `\nAdditional instructions:\n${summaryInstructions.trim()}\n`
+    ? `\nUser guidance for this summary (follow these priorities):\n${summaryInstructions.trim()}\n`
     : '';
 
-  return [
+  const preamble = [
     'CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.',
     'You already have all the context you need in the conversation above.',
     'Tool calls will be REJECTED — you will fail the task.',
     '',
-    'Your task is to create a detailed summary of the earlier portion of this engineering conversation. The summary will replace those messages, so it must capture every technical detail, decision, and piece of state needed to continue the work without losing context.',
-    `The most recent ${preservedMessagesCount} messages will be kept verbatim after your summary; summarize only the earlier conversation shown below.`,
-    '',
-    'Before writing the summary, wrap a brief private analysis in <analysis> tags: walk through the conversation chronologically and check you have identified the user requests, your actions, file changes, errors, and open work. The analysis is a scratchpad and will be discarded.',
-    '',
-    'Then write the summary inside <summary> tags with these sections:',
-    '1. Primary Request and Intent: every explicit user request and the underlying goal, in detail.',
-    '2. Key Technical Concepts: technologies, frameworks, and architectural decisions in play.',
-    '3. Files and Code Sections: specific files examined, created, or modified; include the important code snippets or content fragments and why they matter.',
-    '4. Errors and Fixes: every error hit, how it was fixed, and any user feedback on the fix.',
-    '5. Problem Solving: problems solved so far and any ongoing troubleshooting state.',
-    '6. All User Messages: a list of every non-tool user message, so no instruction or feedback is lost.',
-    '7. Pending Tasks: work the user explicitly asked for that is not finished yet.',
-    '8. Current Work: precisely what was being worked on immediately before this summary, with file names and code where applicable.',
-    '9. Optional Next Step: the single next step that directly continues the most recent explicit request, with a supporting quote from the recent conversation; omit it if the last task was completed and nothing was queued.',
-    customInstructions.trim(),
+  ];
+
+  const conversationBlock = [
     '',
     '<conversation_to_summarize>',
     notes,
     '</conversation_to_summarize>',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ];
+
+  if (promptMode === 'free') {
+    // Codex-style: free-form handoff summary, minimal structural constraints.
+    return [
+      ...preamble,
+      'You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary',
+      'for another LLM that will resume the task.',
+      '',
+      `The most recent ${preservedMessagesCount} messages will be kept verbatim after your summary; summarize only the earlier conversation shown below.`,
+      '',
+      'Include:',
+      '- Current progress and key decisions made',
+      '- Important context, constraints, or user preferences',
+      '- What remains to be done (clear next steps)',
+      '- Any critical data, examples, or references needed to continue',
+      '- ALL user messages (non-tool) so no instruction or feedback is lost',
+      '',
+      'Be concise, structured, and focused on helping the next LLM seamlessly',
+      'continue the work. Wrap the summary in <summary> tags.',
+      customInstructions.trim(),
+      ...conversationBlock,
+    ].filter(Boolean).join('\n');
+  }
+
+  if (promptMode === 'structured') {
+    // Legacy 9-section fixed format — best for weaker models that need rigid scaffolding.
+    return [
+      ...preamble,
+      'Your task is to create a detailed summary of the earlier portion of this engineering conversation. The summary will replace those messages, so it must capture every technical detail, decision, and piece of state needed to continue the work without losing context.',
+      `The most recent ${preservedMessagesCount} messages will be kept verbatim after your summary; summarize only the earlier conversation shown below.`,
+      '',
+      'Before writing the summary, wrap a brief private analysis in <analysis> tags: walk through the conversation chronologically and check you have identified the user requests, your actions, file changes, errors, and open work. The analysis is a scratchpad and will be discarded.',
+      '',
+      'Then write the summary inside <summary> tags with these sections:',
+      '1. Primary Request and Intent: every explicit user request and the underlying goal, in detail.',
+      '2. Key Technical Concepts: technologies, frameworks, and architectural decisions in play.',
+      '3. Files and Code Sections: specific files examined, created, or modified; include the important code snippets or content fragments and why they matter.',
+      '4. Errors and Fixes: every error hit, how it was fixed, and any user feedback on the fix.',
+      '5. Problem Solving: problems solved so far and any ongoing troubleshooting state.',
+      '6. All User Messages: a list of every non-tool user message, so no instruction or feedback is lost.',
+      '7. Pending Tasks: work the user explicitly asked for that is not finished yet.',
+      '8. Current Work: precisely what was being worked on immediately before this summary, with file names and code where applicable.',
+      '9. Optional Next Step: the single next step that directly continues the most recent explicit request, with a supporting quote from the recent conversation; omit it if the last task was completed and nothing was queued.',
+      customInstructions.trim(),
+      ...conversationBlock,
+    ].filter(Boolean).join('\n');
+  }
+
+  // Hybrid mode (default): adaptive sections + mandatory user-message preservation.
+  return [
+    ...preamble,
+    'You are compacting a long-running engineering conversation. Your summary will REPLACE the earlier messages, so it must preserve all information needed to continue seamlessly.',
+    `The most recent ${preservedMessagesCount} messages will be kept verbatim after your summary; summarize only the earlier conversation shown below.`,
+    '',
+    'Before writing the summary, wrap a brief private analysis in <analysis> tags: identify user requests, key actions, file changes, errors, and open work. The analysis is a scratchpad and will be discarded.',
+    '',
+    'Then write the summary inside <summary> tags. Adapt the structure to the conversation content:',
+    '',
+    'MANDATORY (always include):',
+    '- All User Messages: list every non-tool user message verbatim or near-verbatim, so no instruction or feedback is lost.',
+    '- Current State: what was being worked on immediately before this summary, with file names and code where applicable.',
+    '- Pending Work: explicit user requests that remain unfinished, with clear next steps.',
+    '',
+    'ADAPTIVE (include when relevant, omit when not):',
+    '- Key decisions and their rationale',
+    '- Files modified/created with important code fragments',
+    '- Errors encountered and how they were resolved',
+    '- Technical concepts, frameworks, and architectural patterns in play',
+    '- User preferences and constraints discovered during the session',
+    '',
+    'Principles:',
+    '- Be dense and concise; prefer bullet points over prose.',
+    '- Do NOT pad sections with irrelevant content — skip what does not apply.',
+    '- Preserve exact file paths, function names, and error messages.',
+    customInstructions.trim(),
+    ...conversationBlock,
+  ].filter(Boolean).join('\n');
 }
 
 /**
@@ -732,7 +809,8 @@ export async function compactHadamardSession(
       const rewritePrompt = buildCompactSummaryPrompt(
         serializeMessagesForSummary(retryMessagesToSummarize),
         messagesToKeep.length,
-        options.summaryInstructions,
+        mergeCompactInstructions(context.compactConfig.compactInstructions, options.summaryInstructions),
+        context.compactConfig.compactPromptMode ?? 'hybrid',
       );
 
       const request: ModelRequest = {
@@ -893,6 +971,11 @@ export interface HadamardLoopCompactContext {
    * appear sufficient. Only `compactConfig.enabled === false` still disables.
    */
   force?: boolean;
+  /**
+   * Per-call summary instructions merged with config-level compactInstructions.
+   * Allows the ReAct loop caller to inject task-specific guidance.
+   */
+  summaryInstructions?: string;
 }
 
 export interface HadamardLoopCompactOutcome {
@@ -1015,6 +1098,8 @@ export async function compactHadamardConversationIfNeeded(
       const rewritePrompt = buildCompactSummaryPrompt(
         serializeMessagesForSummary(retryMessagesToSummarize),
         messagesToKeep.length,
+        mergeCompactInstructions(config.compactInstructions, context.summaryInstructions),
+        config.compactPromptMode ?? 'hybrid',
       );
       response = await context.modelApi.createMessage({
         model: context.model,

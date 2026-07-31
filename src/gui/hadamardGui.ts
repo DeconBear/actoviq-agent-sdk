@@ -4826,9 +4826,11 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       case 'compact': {
         if (!sdk) return [{ type: 'error', message: 'Compaction requires a configured Hadamard provider credential.' }];
         const result = await session.compact({ force: true, summaryInstructions: args || undefined });
-        return result.compacted
-          ? [{ type: 'notice', message: `compacted: ${result.messagesRemoved ?? '?'} messages summarized` }]
-          : [{ type: 'error', message: result.error ?? `compact skipped: ${result.reason}` }];
+        if (!result.compacted) {
+          return [{ type: 'error', message: result.error ?? `compact skipped: ${result.reason}` }];
+        }
+        const mode = sdk.config.compact?.compactPromptMode ?? 'hybrid';
+        return [{ type: 'notice', message: `compacted: ${result.messagesRemoved ?? '?'} messages summarized (mode: ${mode})` }];
       }
       case 'dream': {
         if (!sdk) return [{ type: 'error', message: 'Dream requires a configured Hadamard provider credential.' }];

@@ -4339,8 +4339,9 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
               ]);
               return;
             }
+            const mode = sdk.config.compact?.compactPromptMode ?? 'hybrid';
             appendStatic([
-              `${A.green}✓ compacted${A.reset}${A.dim} · ${result.messagesRemoved ?? '?'} messages summarized${A.reset}`,
+              `${A.green}\u2713 compacted${A.reset}${A.dim} \u00b7 ${result.messagesRemoved ?? '?'} messages summarized \u00b7 mode: ${mode}${A.reset}`,
               '',
             ]);
           } catch (error) {

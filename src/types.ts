@@ -861,6 +861,20 @@ export interface HadamardCompactConfig {
   contextWindowTokens?: number;
   /** Explicit in-loop compact trigger in estimated tokens. Overrides the derived threshold. */
   loopAutoCompactThresholdTokens?: number;
+  /**
+   * Persistent user guidance injected into every compact summary prompt.
+   * Use this to steer what the summarizer prioritises, e.g.
+   * "Focus on architecture decisions; ignore formatting discussions."
+   * Merged with per-call summaryInstructions (per-call takes precedence).
+   */
+  compactInstructions?: string;
+  /**
+   * Controls how prescriptive the compact summary prompt is.
+   * - 'hybrid' (default): adaptive sections + mandatory user-message list.
+   * - 'structured': fixed 9-section format (best for weaker models).
+   * - 'free': Codex-style free-form handoff (best for strong models).
+   */
+  compactPromptMode?: 'hybrid' | 'structured' | 'free';
 }
 
 export type HadamardWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
