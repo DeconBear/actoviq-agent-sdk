@@ -11,8 +11,8 @@
 | `agentClient.ts:591-597` | 4 个共享 Map 无锁 | **高** — 异步交错可导致 TOCTOU |
 | `agentClient.ts`（3820 行） | 上帝类，12 个 API 接口 | **高** — 难以隔离测试和重构 |
 | `conversationEngine.ts` → `agentClient.ts` | ReAct 循环依赖客户端的压缩、权限、钩子 | **中** |
-| `actoviqAgents.ts` → `agentClient.ts` | Task 工具回调闭包了客户端方法 | **中** |
-| `actoviqCompact.ts` ↔ `conversationEngine.ts` | 压缩引用了引擎的 tool_use_id 配对逻辑 | **中** |
+| `hadamardAgents.ts` → `agentClient.ts` | Task 工具回调闭包了客户端方法 | **中** |
+| `hadamardCompact.ts` ↔ `conversationEngine.ts` | 压缩引用了引擎的 tool_use_id 配对逻辑 | **中** |
 
 ### 松耦合（良好模式）
 
@@ -30,7 +30,7 @@
 四个 Map 在并发子代理操作间共享，无同步机制。`cancel()` 已有过一次 TOCTOU 修复。
 
 ### 2. 上帝类反模式
-`ActoviqAgentClient` 直接拥有所有职责。建议提取 `SubagentOrchestrator`、`ContextAugmentor`。
+`HadamardAgentClient` 直接拥有所有职责。建议提取 `SubagentOrchestrator`、`ContextAugmentor`。
 
 ### 3. `tool_use_id` 配对不变量
 `tool_use_id` 必须在 assistant 和 user 消息之间匹配。压缩可能意外分离这对。`extendPreserveToIncludeReferencedToolUses()` 防护。
@@ -48,7 +48,7 @@
 清理步骤独立运行，错误收集为 `AggregateError`。
 
 ### 8. 不稳定测试
-`tests/actoviq-dream.spec.ts` 有不稳定测试（ENOENT on project-memory.md）。
+`tests/hadamard-dream.spec.ts` 有不稳定测试（ENOENT on project-memory.md）。
 
 ### 9. 管道错误静默丢弃项
 Pipeline 阶段错误将该项丢弃为 null——需在结果中收集和报告错误。

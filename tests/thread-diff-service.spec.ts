@@ -29,7 +29,7 @@ async function repository(name: string) {
 
 describe('ThreadDiffService', () => {
   it('computes structured file hunks and applies them to a clean target', async () => {
-    const source = await repository('actoviq-review-source-');
+    const source = await repository('hadamard-review-source-');
     const base = (await execFile('git', ['-C', source, 'rev-parse', 'HEAD'])).stdout.trim();
     await writeFile(path.join(source, 'file.txt'), 'base\nchanged\n');
     const service = new ThreadDiffService();
@@ -43,7 +43,7 @@ describe('ThreadDiffService', () => {
       expect.objectContaining({ path: 'file.txt', additions: 1, status: 'modified' }),
     ]);
 
-    const target = await repository('actoviq-review-target-');
+    const target = await repository('hadamard-review-target-');
     const applied = await service.apply(diff, target);
     expect(applied).toMatchObject({ applied: true, conflict: false });
     expect((await readFile(path.join(target, 'file.txt'), 'utf8')).replace(/\r\n/g, '\n')).toBe(

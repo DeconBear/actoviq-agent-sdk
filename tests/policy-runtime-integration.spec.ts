@@ -16,12 +16,12 @@ afterEach(async () => {
 
 describe('managed policy runtime integration', () => {
   it('applies project settings and deny rules before caller overrides', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-policy-runtime-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-policy-runtime-'));
     dirs.push(dir);
     const workDir = path.join(dir, 'workspace');
-    await mkdir(path.join(workDir, '.actoviq'), { recursive: true });
+    await mkdir(path.join(workDir, '.hadamard'), { recursive: true });
     await writeFile(
-      path.join(workDir, '.actoviq', 'policy.json'),
+      path.join(workDir, '.hadamard', 'policy.json'),
       JSON.stringify({
         version: 1,
         revision: 1,

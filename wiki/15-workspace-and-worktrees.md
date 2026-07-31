@@ -6,7 +6,7 @@ The workspace module manages isolated working directories for agents — temp
 directories, directory copies, and git worktrees. Worktrees are the primary
 isolation mechanism for parallel subagents.
 
-Location: `src/workspace/actoviqWorkspace.ts`
+Location: `src/workspace/hadamardWorkspace.ts`
 
 ### Worktree Types
 
@@ -18,10 +18,10 @@ Location: `src/workspace/actoviqWorkspace.ts`
 
 ## Module Design
 
-### `ActoviqWorkspace` — The Abstractions
+### `HadamardWorkspace` — The Abstractions
 
 ```typescript
-class ActoviqWorkspace {
+class HadamardWorkspace {
   readonly id: string;
   readonly kind: 'directory' | 'temp' | 'git-worktree';
   readonly path: string;
@@ -38,10 +38,10 @@ class ActoviqWorkspace {
 
 ```typescript
 // Fixed directory
-createWorkspace({ path, copyFrom?, ensureExists? }) → ActoviqWorkspace
+createWorkspace({ path, copyFrom?, ensureExists? }) → HadamardWorkspace
 
 // Temporary directory (auto-cleaned via disposer)
-createTempWorkspace({ parentDir?, prefix?, copyFrom? }) → ActoviqWorkspace
+createTempWorkspace({ parentDir?, prefix?, copyFrom? }) → HadamardWorkspace
 
 // Git worktree (auto-cleaned if no changes)
 createGitWorktreeWorkspace({
@@ -52,18 +52,18 @@ createGitWorktreeWorkspace({
   ref?,               // Git ref (default HEAD)
   detach?,            // Detached HEAD
   force?,             // Force remove existing
-}) → ActoviqWorkspace
+}) → HadamardWorkspace
 ```
 
 ### Git Worktree Creation
 
 ```typescript
-async function createGitWorktreeWorkspace(options): Promise<ActoviqWorkspace> {
+async function createGitWorktreeWorkspace(options): Promise<HadamardWorkspace> {
   // 1. Resolve repository root (git rev-parse --show-toplevel)
   // 2. Generate target path (if not provided)
   // 3. Build git worktree add command
   // 4. Execute: git -C <repo> worktree add [--force] [--detach] [-b <branch>] <path> [<ref>]
-  // 5. Return ActoviqWorkspace with disposer:
+  // 5. Return HadamardWorkspace with disposer:
   //    - Try: git worktree remove --force <path>
   //    - Fallback: rm -rf <path> (with safety checks)
 }
@@ -81,7 +81,7 @@ Before recursive deletion, the module verifies the target is NOT:
 function assertSafeRecursiveRemovalTarget(target: string, protectedPaths: string[]): void {
   const unsafe = [path.parse(target).root, os.homedir(), process.cwd(), ...protectedPaths];
   if (unsafe.some(u => isSamePath(target, u))) {
-    throw new ActoviqSdkError(`Refusing to recursively remove unsafe path: ${target}`);
+    throw new HadamardSdkError(`Refusing to recursively remove unsafe path: ${target}`);
   }
 }
 ```
@@ -94,7 +94,7 @@ and branch for manual review or merge.
 
 ```typescript
 // In agentClient.ts:
-private async finalizeDelegatedWorkspace(workspace?: ActoviqWorkspace): Promise<boolean> {
+private async finalizeDelegatedWorkspace(workspace?: HadamardWorkspace): Promise<boolean> {
   if (!workspace) return false;
   if (workspace.kind !== 'git-worktree') { await workspace.dispose(); return false; }
 
@@ -136,12 +136,12 @@ When a subagent uses `isolation: 'worktree'`:
 ### Worktree Path Generation
 
 ```typescript
-// Default: under repo/.actoviq/worktrees/<name>/
+// Default: under repo/.hadamard/worktrees/<name>/
 const targetPath = options.path
-  ?? path.resolve(repositoryRoot, '.actoviq', 'worktrees', options.name ?? randomId());
+  ?? path.resolve(repositoryRoot, '.hadamard', 'worktrees', options.name ?? randomId());
 
-// Branch: actoviq-agent-<random8>
-const branch = options.branch ?? `actoviq-agent-${randomUUID().slice(0, 8)}`;
+// Branch: hadamard-agent-<random8>
+const branch = options.branch ?? `hadamard-agent-${randomUUID().slice(0, 8)}`;
 ```
 
 ### Non-Git VCS Support (Planned)

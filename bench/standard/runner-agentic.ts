@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createAgentSdk, loadDefaultActoviqSettings, createActoviqCoreTools, createTeamTool } from '../../src/index.js';
+import { createAgentSdk, loadDefaultHadamardSettings, createHadamardCoreTools, createTeamTool } from '../../src/index.js';
 import type { AgentConfig, BenchmarkTask, RunMetrics, ToolCallRecord } from './types.js';
 import { buildAgenticPrompt } from './prompt.js';
 import { TEAM_DEF } from './runner-hadamard.js';
@@ -43,20 +43,20 @@ export async function runAgenticAgent(
   task: BenchmarkTask,
   agent: AgentConfig,
 ): Promise<{ answer: string; metrics: RunMetrics }> {
-  await loadDefaultActoviqSettings().catch(() => {});
+  await loadDefaultHadamardSettings().catch(() => {});
 
   const fixtureDir = path.join(process.cwd(), 'bench', 'fixtures', 'agentic', task.fixture ?? '');
   if (!task.fixture || !fs.existsSync(fixtureDir)) {
     throw new Error(`Fixture not found for ${task.id}: ${fixtureDir}`);
   }
 
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'actoviq-bench-'));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'hadamard-bench-'));
   const start = Date.now();
   try {
     fs.cpSync(fixtureDir, ws, { recursive: true });
     const before = snapshotFiles(ws);
 
-    const tools = createActoviqCoreTools({ cwd: ws });
+    const tools = createHadamardCoreTools({ cwd: ws });
     if (agent.hasTeamTool) tools.push(createTeamTool(TEAM_DEF));
 
     const sdk = await createAgentSdk({ workDir: ws, tools, permissionMode: 'bypassPermissions' });

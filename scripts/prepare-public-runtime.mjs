@@ -9,7 +9,7 @@ import process from 'node:process';
 const execFileAsync = promisify(execFile);
 
 const projectRoot = process.cwd();
-const vendorRoot = path.join(projectRoot, 'vendor', 'actoviq-runtime');
+const vendorRoot = path.join(projectRoot, 'vendor', 'hadamard-runtime');
 const publicBundlePath = path.join(vendorRoot, 'runtime.bundle.br');
 const cliWrapperPath = path.join(vendorRoot, 'cli.js');
 const summaryPath = path.join(vendorRoot, 'SYNC_SUMMARY.json');
@@ -31,7 +31,7 @@ const compressedBundlePath = path.join(moduleDir, 'runtime.bundle.br');
 const bundleHash = '${bundleHash}';
 
 function ensureRuntimeEntry() {
-  const cacheDir = path.join(os.tmpdir(), 'actoviq-runtime-cache');
+  const cacheDir = path.join(os.tmpdir(), 'hadamard-runtime-cache');
   const entryPath = path.join(cacheDir, \`\${bundleHash}.mjs\`);
 
   if (!existsSync(entryPath)) {
@@ -63,7 +63,7 @@ async function main() {
 
   const tempBundlePath = path.join(
     process.env.TEMP ?? process.env.TMP ?? projectRoot,
-    'actoviq-runtime-public.min.mjs',
+    'hadamard-runtime-public.min.mjs',
   );
 
   await execFileAsync(
@@ -94,7 +94,7 @@ async function main() {
   await rm(path.join(vendorRoot, 'shims'), { recursive: true, force: true });
 
   const summary = {
-    upstreamRootName: 'actoviq-runtime-upstream',
+    upstreamRootName: 'hadamard-runtime-upstream',
     upstreamRootSource: 'sanitized-sync',
     generatedAt: new Date().toISOString(),
     runtimeBundleHash: bundleHash,

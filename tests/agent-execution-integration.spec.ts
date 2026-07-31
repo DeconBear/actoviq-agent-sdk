@@ -5,10 +5,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  ACTOVIQ_AGENT_PATH_KEY,
-  ACTOVIQ_EXECUTION_ID_KEY,
-  ACTOVIQ_PARENT_EXECUTION_ID_KEY,
-  ACTOVIQ_ROOT_EXECUTION_ID_KEY,
+  HADAMARD_AGENT_PATH_KEY,
+  HADAMARD_EXECUTION_ID_KEY,
+  HADAMARD_PARENT_EXECUTION_ID_KEY,
+  HADAMARD_ROOT_EXECUTION_ID_KEY,
   AgentExecutionStore,
   SessionStore,
   clearLoadedJsonConfig,
@@ -21,9 +21,9 @@ import {
 } from '../src/index.js';
 import type { Message, MessageStreamEvent } from '../src/provider/types.js';
 import type {
-  ActoviqBackgroundTaskManager,
-  ReserveActoviqBackgroundTaskInputResult,
-} from '../src/runtime/actoviqBackgroundTasks.js';
+  HadamardBackgroundTaskManager,
+  ReserveHadamardBackgroundTaskInputResult,
+} from '../src/runtime/hadamardBackgroundTasks.js';
 
 const tempDirs: string[] = [];
 let messageId = 0;
@@ -153,7 +153,7 @@ function requestText(request: ModelRequest): string {
 
 describe('Hadamard Agent execution integration', () => {
   it('persists a foreground Task as a root/child graph with an independent child conversation', async () => {
-    const fixture = await createFixture('actoviq-agent-execution-foreground-');
+    const fixture = await createFixture('hadamard-agent-execution-foreground-');
     const childPrompt = 'Inspect execution persistence and report one concise finding.';
     const childReply = 'Child review complete: execution state is persisted.';
     const modelApi = new ScriptedModelApi(
@@ -300,7 +300,7 @@ describe('Hadamard Agent execution integration', () => {
   });
 
   it('projects TodoWrite output into the current and future execution plan', async () => {
-    const fixture = await createFixture('actoviq-agent-execution-plan-');
+    const fixture = await createFixture('hadamard-agent-execution-plan-');
     const modelApi = new ScriptedModelApi((request, index) => {
       if (index === 0) {
         return makeMessage(
@@ -393,7 +393,7 @@ describe('Hadamard Agent execution integration', () => {
   });
 
   it('keeps one stable execution node when a completed background agent is resumed', async () => {
-    const fixture = await createFixture('actoviq-agent-execution-resume-');
+    const fixture = await createFixture('hadamard-agent-execution-resume-');
     const firstPrompt = 'Inspect the first background execution state.';
     const followUpPrompt = 'Re-check the same execution state after the follow-up.';
     const modelApi = new ScriptedModelApi(request => {
@@ -461,9 +461,9 @@ describe('Hadamard Agent execution integration', () => {
           iteration: 1,
           toolUseId: 'toolu_execution_resume',
           metadata: {
-            [ACTOVIQ_EXECUTION_ID_KEY]: parent.id,
-            [ACTOVIQ_ROOT_EXECUTION_ID_KEY]: parent.id,
-            [ACTOVIQ_AGENT_PATH_KEY]: '/root',
+            [HADAMARD_EXECUTION_ID_KEY]: parent.id,
+            [HADAMARD_ROOT_EXECUTION_ID_KEY]: parent.id,
+            [HADAMARD_AGENT_PATH_KEY]: '/root',
           },
           permissionMode: 'bypassPermissions',
         },
@@ -522,7 +522,7 @@ describe('Hadamard Agent execution integration', () => {
   });
 
   it('serializes concurrent cross-client resumes of one completed background agent', async () => {
-    const fixture = await createFixture('actoviq-agent-execution-concurrent-resume-');
+    const fixture = await createFixture('hadamard-agent-execution-concurrent-resume-');
     const initialPrompt = 'Complete the initial background review.';
     const followUpB = 'Continue the background review from client B.';
     const followUpC = 'Continue the background review from client C.';
@@ -609,11 +609,11 @@ describe('Hadamard Agent execution integration', () => {
       let reservationCount = 0;
       for (const sdk of [sdkB, sdkC]) {
         const manager = (
-          sdk as unknown as { backgroundTaskManager: ActoviqBackgroundTaskManager }
+          sdk as unknown as { backgroundTaskManager: HadamardBackgroundTaskManager }
         ).backgroundTaskManager;
         const reserveInput = manager.reserveInput.bind(manager);
         vi.spyOn(manager, 'reserveInput').mockImplementation(
-          async (...args): Promise<ReserveActoviqBackgroundTaskInputResult> => {
+          async (...args): Promise<ReserveHadamardBackgroundTaskInputResult> => {
             const reservation = await reserveInput(...args);
             reservationCount += 1;
             if (reservationCount === 2) {
@@ -642,9 +642,9 @@ describe('Hadamard Agent execution integration', () => {
         iteration: 1,
         toolUseId,
         metadata: {
-          [ACTOVIQ_EXECUTION_ID_KEY]: parent.id,
-          [ACTOVIQ_ROOT_EXECUTION_ID_KEY]: parent.id,
-          [ACTOVIQ_AGENT_PATH_KEY]: '/root',
+          [HADAMARD_EXECUTION_ID_KEY]: parent.id,
+          [HADAMARD_ROOT_EXECUTION_ID_KEY]: parent.id,
+          [HADAMARD_AGENT_PATH_KEY]: '/root',
         },
         permissionMode: 'bypassPermissions' as const,
       });
@@ -723,7 +723,7 @@ describe('Hadamard Agent execution integration', () => {
   }, 15_000);
 
   it('forks a child agent conversation into a clean, independent execution root', async () => {
-    const fixture = await createFixture('actoviq-agent-execution-fork-');
+    const fixture = await createFixture('hadamard-agent-execution-fork-');
     const modelApi = new ScriptedModelApi((request, index) => {
       expect(request.system).toContain('fork isolation reviewer');
       return makeMessage([{
@@ -757,13 +757,13 @@ describe('Hadamard Agent execution integration', () => {
         kind: 'agent',
         parentSessionId: parent.id,
         metadata: {
-          [ACTOVIQ_EXECUTION_ID_KEY]: originalExecutionId,
-          [ACTOVIQ_ROOT_EXECUTION_ID_KEY]: parent.id,
-          [ACTOVIQ_PARENT_EXECUTION_ID_KEY]: parent.id,
-          [ACTOVIQ_AGENT_PATH_KEY]: '/root/fork-reviewer',
-          __actoviqParentSessionId: parent.id,
-          __actoviqBackgroundParentRunId: 'source-parent-run',
-          __actoviqBackgroundParentSessionId: parent.id,
+          [HADAMARD_EXECUTION_ID_KEY]: originalExecutionId,
+          [HADAMARD_ROOT_EXECUTION_ID_KEY]: parent.id,
+          [HADAMARD_PARENT_EXECUTION_ID_KEY]: parent.id,
+          [HADAMARD_AGENT_PATH_KEY]: '/root/fork-reviewer',
+          __hadamardParentSessionId: parent.id,
+          __hadamardBackgroundParentRunId: 'source-parent-run',
+          __hadamardBackgroundParentSessionId: parent.id,
         },
       });
       await originalChild.send('Run the original child turn.');
@@ -780,13 +780,13 @@ describe('Hadamard Agent execution integration', () => {
       expect(forked.id).not.toBe(originalChild.id);
       expect(forkedBeforeRun.parentSessionId).toBeUndefined();
       for (const key of [
-        ACTOVIQ_EXECUTION_ID_KEY,
-        ACTOVIQ_ROOT_EXECUTION_ID_KEY,
-        ACTOVIQ_PARENT_EXECUTION_ID_KEY,
-        ACTOVIQ_AGENT_PATH_KEY,
-        '__actoviqParentSessionId',
-        '__actoviqBackgroundParentRunId',
-        '__actoviqBackgroundParentSessionId',
+        HADAMARD_EXECUTION_ID_KEY,
+        HADAMARD_ROOT_EXECUTION_ID_KEY,
+        HADAMARD_PARENT_EXECUTION_ID_KEY,
+        HADAMARD_AGENT_PATH_KEY,
+        '__hadamardParentSessionId',
+        '__hadamardBackgroundParentRunId',
+        '__hadamardBackgroundParentSessionId',
       ]) {
         expect(forkedBeforeRun.metadata).not.toHaveProperty(key);
       }

@@ -97,19 +97,19 @@ function sanitizeForkMetadata(
 ): Record<string, unknown> {
   const next = { ...metadata };
   for (const key of [
-    '__actoviqExecutionId',
-    '__actoviqRootExecutionId',
-    '__actoviqParentExecutionId',
-    '__actoviqParentSessionId',
-    '__actoviqAgentPath',
-    '__actoviqBackgroundParentRunId',
-    '__actoviqBackgroundParentSessionId',
+    '__hadamardExecutionId',
+    '__hadamardRootExecutionId',
+    '__hadamardParentExecutionId',
+    '__hadamardParentSessionId',
+    '__hadamardAgentPath',
+    '__hadamardBackgroundParentRunId',
+    '__hadamardBackgroundParentSessionId',
   ]) delete next[key];
   if (source.kind === 'worktree') {
     if (source.originalWorkDir) {
-      next.__actoviqWorkDir = source.originalWorkDir;
+      next.__hadamardWorkDir = source.originalWorkDir;
     } else {
-      delete next.__actoviqWorkDir;
+      delete next.__hadamardWorkDir;
     }
   }
   return next;

@@ -34,7 +34,7 @@ export class TaskWorktreeCoordinator {
     this.storageRoot = path.resolve(options.storageRoot);
     this.worktreesRoot = path.resolve(
       options.worktreesRoot
-        ?? path.join(path.dirname(this.repoRoot), '.actoviq-worktrees', path.basename(this.repoRoot)),
+        ?? path.join(path.dirname(this.repoRoot), '.hadamard-worktrees', path.basename(this.repoRoot)),
     );
   }
 
@@ -51,7 +51,7 @@ export class TaskWorktreeCoordinator {
     }
     const safeId = assertSafeStorageSegment('sessionId', sessionId);
     const worktreePath = path.join(this.worktreesRoot, safeId);
-    const branch = options.branch?.trim() || `actoviq/${safeId}`;
+    const branch = options.branch?.trim() || `hadamard/${safeId}`;
     const baseRef = options.baseRef?.trim() || 'HEAD';
     const baseCommit = (await this.git(['-C', this.repoRoot, 'rev-parse', baseRef])).stdout.trim();
     await mkdir(path.dirname(worktreePath), { recursive: true });

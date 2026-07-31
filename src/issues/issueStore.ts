@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { nowIso } from '../runtime/helpers.js';
 
 export const ISSUE_STATUSES = [
@@ -122,8 +122,8 @@ export function resolveIssueStorePath(
   mode: IssueStorageMode = 'home',
 ): string {
   return mode === 'workspace'
-    ? path.join(path.resolve(workDir), '.actoviq', 'issues.json')
-    : path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'issues.json');
+    ? path.join(path.resolve(workDir), '.hadamard', 'issues.json')
+    : path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'issues.json');
 }
 
 export async function readIssueStore(

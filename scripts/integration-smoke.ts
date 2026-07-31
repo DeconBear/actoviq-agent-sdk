@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
-import { createAgentSdk, loadDefaultActoviqSettings, tool } from 'actoviq-agent-sdk';
+import { createAgentSdk, loadDefaultHadamardSettings, tool } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 const sdk = await createAgentSdk();
 
 const addNumbers = tool(

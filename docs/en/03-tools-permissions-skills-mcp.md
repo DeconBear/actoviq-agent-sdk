@@ -12,8 +12,8 @@ This chapter is where the Hadamard SDK starts to feel like a full agent system.
 The Hadamard SDK can combine several tool sources in one run:
 
 1. custom local tools created with `tool(...)`
-2. file tools from `createActoviqFileTools(...)`
-3. computer-use tools from `createActoviqComputerUseToolkit(...)`
+2. file tools from `createHadamardFileTools(...)`
+3. computer-use tools from `createHadamardComputerUseToolkit(...)`
 4. the clean `Task` delegation tool when named agents are registered
 5. MCP tools from local, `stdio`, or `streamable_http` servers
 
@@ -42,7 +42,7 @@ Each tool record includes:
 
 Repository example:
 
-- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
+- [examples/hadamard-agent-helpers.ts](../../examples/hadamard-agent-helpers.ts)
 
 ## 4. Clean skills
 
@@ -117,7 +117,7 @@ await sdk.maybeAutoDream({
 
 Repository example:
 
-- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+- [examples/hadamard-dream.ts](../../examples/hadamard-dream.ts)
 
 ## 6. Clean slash-command replacements
 
@@ -238,11 +238,11 @@ const sdk = await createAgentSdk({
 
 Repository examples:
 
-- [examples/actoviq-file-tools.ts](../../examples/actoviq-file-tools.ts)
-- [examples/actoviq-computer-use.ts](../../examples/actoviq-computer-use.ts)
-- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
-- [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
+- [examples/hadamard-file-tools.ts](../../examples/hadamard-file-tools.ts)
+- [examples/hadamard-computer-use.ts](../../examples/hadamard-computer-use.ts)
+- [examples/hadamard-dream.ts](../../examples/hadamard-dream.ts)
+- [examples/hadamard-skills.ts](../../examples/hadamard-skills.ts)
+- [examples/hadamard-agent-helpers.ts](../../examples/hadamard-agent-helpers.ts)
 
 Next chapter:
 

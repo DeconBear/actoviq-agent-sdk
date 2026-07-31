@@ -1,5 +1,5 @@
 {
-  "name": "actoviq-pty-spike",
+  "name": "hadamard-pty-spike",
   "version": "0.0.0",
   "private": true,
   "description": "Phase 0 de-risk smoke: node-pty N-API load + xterm render under CSP, run headlessly in Electron. Self-contained (installs its own Electron).",

@@ -14,13 +14,13 @@ import {
 } from '../src/index.js';
 import type { Message, MessageParam, MessageStreamEvent } from '../src/provider/types.js';
 import {
-  compactActoviqConversationIfNeeded,
-  compactActoviqSession,
-  formatActoviqCompactSummary,
-} from '../src/runtime/actoviqCompact.js';
-import { createDefaultActoviqSessionMemoryRuntimeState } from '../src/memory/actoviqSessionMemoryState.js';
+  compactHadamardConversationIfNeeded,
+  compactHadamardSession,
+  formatHadamardCompactSummary,
+} from '../src/runtime/hadamardCompact.js';
+import { createDefaultHadamardSessionMemoryRuntimeState } from '../src/memory/hadamardSessionMemoryState.js';
 import { createTodoWriteTool } from '../src/tools/todo/TodoWriteTool.js';
-import type { ActoviqCompactConfig, StoredSession } from '../src/types.js';
+import type { HadamardCompactConfig, StoredSession } from '../src/types.js';
 
 const tempDirs: string[] = [];
 let messageCounter = 0;
@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 async function createSessionDirectory(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-loop-compact-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-loop-compact-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -109,7 +109,7 @@ class MockModelApi implements ModelApi {
   }
 }
 
-function baseCompactConfig(overrides: Partial<ActoviqCompactConfig> = {}): ActoviqCompactConfig {
+function baseCompactConfig(overrides: Partial<HadamardCompactConfig> = {}): HadamardCompactConfig {
   return {
     enabled: true,
     autoCompactThresholdTokens: 20_000,
@@ -126,11 +126,11 @@ function isLoopCompactRequest(request: ModelRequest): boolean {
   return (
     typeof request.metadata === 'object' &&
     request.metadata !== null &&
-    (request.metadata as Record<string, unknown>).actoviq_internal_task === 'loop_compact'
+    (request.metadata as Record<string, unknown>).hadamard_internal_task === 'loop_compact'
   );
 }
 
-describe('compactActoviqConversationIfNeeded', () => {
+describe('compactHadamardConversationIfNeeded', () => {
   it('returns the conversation unchanged below the threshold', async () => {
     const modelApi = new MockModelApi({});
     const messages: MessageParam[] = [
@@ -138,7 +138,7 @@ describe('compactActoviqConversationIfNeeded', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'short answer' }] },
     ];
 
-    const outcome = await compactActoviqConversationIfNeeded(messages, {
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
       model: 'test-model',
       modelApi,
       compactConfig: baseCompactConfig({ loopAutoCompactThresholdTokens: 5_000 }),
@@ -164,7 +164,7 @@ describe('compactActoviqConversationIfNeeded', () => {
       { role: 'user', content: 'latest question' },
     ];
 
-    const outcome = await compactActoviqConversationIfNeeded(messages, {
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
       model: 'test-model',
       modelApi,
       compactConfig: baseCompactConfig({ loopAutoCompactThresholdTokens: 100 }),
@@ -213,7 +213,7 @@ describe('compactActoviqConversationIfNeeded', () => {
       },
     ];
 
-    const outcome = await compactActoviqConversationIfNeeded(messages, {
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
       model: 'test-model',
       modelApi,
       compactConfig: baseCompactConfig({
@@ -257,7 +257,7 @@ describe('compactActoviqConversationIfNeeded', () => {
       { role: 'user', content: 'next' },
     ];
 
-    const outcome = await compactActoviqConversationIfNeeded(messages, {
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
       model: 'test-model',
       modelApi,
       compactConfig: baseCompactConfig({
@@ -302,7 +302,7 @@ describe('compactActoviqConversationIfNeeded', () => {
       { role: 'user', content: 'continue please' },
     ];
 
-    const outcome = await compactActoviqConversationIfNeeded(messages, {
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
       model: 'test-model',
       modelApi,
       compactConfig: baseCompactConfig({
@@ -365,14 +365,14 @@ describe('compactActoviqConversationIfNeeded', () => {
     };
 
     for (let i = 0; i < 3; i += 1) {
-      const outcome = await compactActoviqConversationIfNeeded(messages, context);
+      const outcome = await compactHadamardConversationIfNeeded(messages, context);
       expect(outcome.compacted).toBe(false);
       expect(outcome.messages).toEqual(messages);
     }
     expect(attempts).toBe(3);
 
     // Circuit breaker open: no further provider calls.
-    const finalOutcome = await compactActoviqConversationIfNeeded(messages, context);
+    const finalOutcome = await compactHadamardConversationIfNeeded(messages, context);
     expect(finalOutcome.compacted).toBe(false);
     expect(attempts).toBe(3);
   });
@@ -726,7 +726,7 @@ describe('TodoWrite state tracking', () => {
   });
 });
 
-describe('compactActoviqSession prefix stability', () => {
+describe('compactHadamardSession prefix stability', () => {
   function makeStoredSession(messages: MessageParam[]): StoredSession {
     return {
       version: 1,
@@ -775,7 +775,7 @@ describe('compactActoviqSession prefix stability', () => {
     ];
     const session = makeStoredSession(messages);
 
-    const { session: next, result } = await compactActoviqSession(
+    const { session: next, result } = await compactHadamardSession(
       session,
       { trigger: 'auto' },
       {
@@ -789,7 +789,7 @@ describe('compactActoviqSession prefix stability', () => {
           microcompactKeepRecentToolResults: 1,
           microcompactMinContentChars: 20,
         }),
-        runtimeState: createDefaultActoviqSessionMemoryRuntimeState(),
+        runtimeState: createDefaultHadamardSessionMemoryRuntimeState(),
       },
     );
 
@@ -815,7 +815,7 @@ describe('compactActoviqSession prefix stability', () => {
     ];
     const session = makeStoredSession(messages);
 
-    const { session: next, result } = await compactActoviqSession(
+    const { session: next, result } = await compactHadamardSession(
       session,
       { trigger: 'auto', preserveRecentMessages: 2 },
       {
@@ -829,7 +829,7 @@ describe('compactActoviqSession prefix stability', () => {
           microcompactMinContentChars: 20,
           preserveRecentMessages: 2,
         }),
-        runtimeState: createDefaultActoviqSessionMemoryRuntimeState(),
+        runtimeState: createDefaultHadamardSessionMemoryRuntimeState(),
       },
     );
 
@@ -840,7 +840,7 @@ describe('compactActoviqSession prefix stability', () => {
   });
 });
 
-describe('formatActoviqCompactSummary', () => {
+describe('formatHadamardCompactSummary', () => {
   it('strips the analysis scratchpad and unwraps summary tags', () => {
     const raw = [
       '<analysis>',
@@ -852,7 +852,7 @@ describe('formatActoviqCompactSummary', () => {
       '</summary>',
     ].join('\n');
 
-    const formatted = formatActoviqCompactSummary(raw);
+    const formatted = formatHadamardCompactSummary(raw);
     expect(formatted).not.toContain('<analysis>');
     expect(formatted).not.toContain('chronologically');
     expect(formatted).not.toContain('<summary>');
@@ -860,11 +860,11 @@ describe('formatActoviqCompactSummary', () => {
   });
 
   it('returns plain text untouched when no tags are present', () => {
-    expect(formatActoviqCompactSummary('Just a plain summary.')).toBe('Just a plain summary.');
+    expect(formatHadamardCompactSummary('Just a plain summary.')).toBe('Just a plain summary.');
   });
 
   it('drops stray summary tags when the closing tag is missing', () => {
-    const formatted = formatActoviqCompactSummary('<summary>Partial output without closing tag');
+    const formatted = formatHadamardCompactSummary('<summary>Partial output without closing tag');
     expect(formatted).toBe('Partial output without closing tag');
   });
 });

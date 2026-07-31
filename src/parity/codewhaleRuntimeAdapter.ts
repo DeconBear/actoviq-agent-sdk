@@ -1,8 +1,8 @@
-import { ActoviqBridgeProcessError } from '../errors.js';
+import { HadamardBridgeProcessError } from '../errors.js';
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgeRunOptions,
-  ActoviqBridgeToolsOption,
+  HadamardBridgeJsonEvent,
+  HadamardBridgeRunOptions,
+  HadamardBridgeToolsOption,
 } from '../types.js';
 
 /** Read-only CodeWhale tools that are safe to expose without headless approval. */
@@ -28,23 +28,23 @@ const CODEWHALE_FAILED_STATUSES = new Set([
 export interface CodewhaleRuntimeNormalizer {
   /** Stable redacted label used only to correlate the persisted native session. */
   readonly correlationHint: string | undefined;
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[];
+  translate(raw: Record<string, unknown>): HadamardBridgeJsonEvent[];
 }
 
 /**
  * Build argv for CodeWhale's non-interactive exec protocol.
  *
- * CodeWhale 0.8.65 cannot express Actoviq's `acceptEdits` boundary: `--auto`
+ * CodeWhale 0.8.65 cannot express Hadamard's `acceptEdits` boundary: `--auto`
  * can elevate a sandbox denial to danger-full-access. That mode therefore
  * fails closed instead of silently widening permissions.
  */
 export function buildCodewhaleArgs(
   prompt: string,
-  options: ActoviqBridgeRunOptions,
+  options: HadamardBridgeRunOptions,
 ): string[] {
   const permissionMode = options.permissionMode ?? 'default';
   if (permissionMode === 'acceptEdits') {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'acceptEdits is not supported safely by CodeWhale headless exec; use default/plan for read-only access or explicitly select bypassPermissions.',
     );
   }
@@ -57,7 +57,7 @@ export function buildCodewhaleArgs(
     && permissionMode !== 'dontAsk'
     && permissionMode !== 'bypassPermissions'
   ) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       `Unsupported CodeWhale permission mode: ${String(permissionMode)}`,
     );
   }
@@ -93,7 +93,7 @@ export function buildCodewhaleArgs(
       || options.maxTurns < 1
       || options.maxTurns > 0xffff_ffff
     ) {
-      throw new ActoviqBridgeProcessError(
+      throw new HadamardBridgeProcessError(
         'CodeWhale maxTurns must be a positive safe integer.',
       );
     }
@@ -125,7 +125,7 @@ export function buildCodewhaleArgs(
 }
 
 function codewhaleModelSelection(
-  options: ActoviqBridgeRunOptions,
+  options: HadamardBridgeRunOptions,
 ): { provider?: string; model?: string } {
   const model = options.model?.trim();
   const separator = model?.indexOf('/') ?? -1;
@@ -146,7 +146,7 @@ function codewhaleModelSelection(
 function validateProvider(value: string): string {
   const provider = value.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'CodeWhale provider must contain only letters, numbers, dots, underscores, or hyphens.',
     );
   }
@@ -158,7 +158,7 @@ export function createCodewhaleNormalizer(): CodewhaleRuntimeNormalizer {
 }
 
 function requestedAllowedTools(
-  tools: ActoviqBridgeToolsOption | undefined,
+  tools: HadamardBridgeToolsOption | undefined,
   allowedTools: string[] | undefined,
 ): string[] | undefined {
   if (tools === 'none') {
@@ -179,7 +179,7 @@ function normalizeToolNames(values: readonly string[]): string[] {
   for (const value of values) {
     const tool = value.trim();
     if (!tool || tool.includes(',') || /[\u0000-\u001f\u007f]/u.test(tool)) {
-      throw new ActoviqBridgeProcessError(
+      throw new HadamardBridgeProcessError(
         'CodeWhale tool names must be non-empty values without commas or control characters.',
       );
     }
@@ -196,7 +196,7 @@ function validateModel(value: string): string {
     || model.startsWith('-')
     || /[\u0000-\u001f\u007f]/u.test(model)
   ) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'CodeWhale model must be a non-option value without control characters.',
     );
   }
@@ -210,7 +210,7 @@ function validateCodewhaleSessionId(value: string): string {
     || sessionId.length > 256
     || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/u.test(sessionId)
   ) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'CodeWhale session id must be a non-option identifier containing only letters, numbers, underscores, and hyphens.',
     );
   }
@@ -242,7 +242,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     return this.sessionCorrelationHint;
   }
 
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  translate(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (this.terminal) {
       return [];
     }
@@ -265,7 +265,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     }
   }
 
-  private translateContent(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  private translateContent(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (typeof raw.content !== 'string' || raw.content.length === 0) {
       return [];
     }
@@ -280,7 +280,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     })];
   }
 
-  private translateToolUse(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  private translateToolUse(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (typeof raw.id !== 'string' || typeof raw.name !== 'string') {
       return [];
     }
@@ -298,7 +298,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     })];
   }
 
-  private translateToolResult(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  private translateToolResult(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (typeof raw.id !== 'string' || typeof raw.output !== 'string') {
       return [];
     }
@@ -316,7 +316,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     })];
   }
 
-  private translateMetadata(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  private translateMetadata(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (!isRecord(raw.meta)) {
       return [];
     }
@@ -333,7 +333,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     return this.emitInit();
   }
 
-  private translateDone(): ActoviqBridgeJsonEvent[] {
+  private translateDone(): HadamardBridgeJsonEvent[] {
     this.terminal = true;
     const failed = this.status != null
       && CODEWHALE_FAILED_STATUSES.has(this.status.toLowerCase());
@@ -355,7 +355,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     return events;
   }
 
-  private translateError(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  private translateError(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     if (typeof raw.error !== 'string') {
       return [];
     }
@@ -366,7 +366,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     ];
   }
 
-  private emitInit(): ActoviqBridgeJsonEvent[] {
+  private emitInit(): HadamardBridgeJsonEvent[] {
     if (this.initEmitted) {
       return [];
     }
@@ -391,7 +391,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
     isError: boolean,
     result: string,
     stopReason: string,
-  ): ActoviqBridgeJsonEvent {
+  ): HadamardBridgeJsonEvent {
     const event = bridgeEvent('result', {
       subtype: isError ? 'error' : 'success',
       session_id: '',
@@ -412,7 +412,7 @@ class CodewhaleNormalizer implements CodewhaleRuntimeNormalizer {
 function bridgeEvent(
   type: string,
   fields: Record<string, unknown>,
-): ActoviqBridgeJsonEvent {
+): HadamardBridgeJsonEvent {
   return { type, ...fields };
 }
 

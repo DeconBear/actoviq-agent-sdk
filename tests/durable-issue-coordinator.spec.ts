@@ -51,7 +51,7 @@ describe('DurableIssueCoordinator', () => {
   });
 
   it('resumes a queued issue from SQLite after coordinator restart', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-durable-issue-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-durable-issue-'));
     roots.push(root);
     const filename = path.join(root, 'issues.sqlite');
     const firstStorage = await SqliteStorageV2.open({ filename });

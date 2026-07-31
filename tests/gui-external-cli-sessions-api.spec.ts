@@ -26,12 +26,12 @@ vi.mock('../src/parity/externalCliSessions.js', async importOriginal => {
     return [
       {
         ...summary,
-        path: 'actoviq-crush-session:v1:'
+        path: 'hadamard-crush-session:v1:'
           + Buffer.from(nativeSessionId).toString('base64url'),
       },
       {
         ...summary,
-        path: 'actoviq-crush-session:v2:'
+        path: 'hadamard-crush-session:v2:'
           + Buffer.from(`${managedProfileId}:${nativeSessionId}`).toString('base64url'),
       },
     ];
@@ -61,7 +61,7 @@ vi.mock('../src/parity/externalCliSessions.js', async importOriginal => {
       sessionPath: string,
       options: Parameters<typeof actual.readExternalCliSession>[1] = {},
     ) => {
-      if (!historyGate.enabled || !sessionPath.startsWith('actoviq-crush-session:')) {
+      if (!historyGate.enabled || !sessionPath.startsWith('hadamard-crush-session:')) {
         return actual.readExternalCliSession(sessionPath, options);
       }
       const found = crushSessions().find(session => session.path === sessionPath);
@@ -75,7 +75,7 @@ vi.mock('../src/parity/externalCliSessions.js', async importOriginal => {
   };
 });
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import { writeBridgeConfigs } from '../src/parity/bridgeConfigs.js';
 
 const tempDirs: string[] = [];
@@ -89,21 +89,21 @@ afterEach(async () => {
 
 describe('GUI external CLI history API', () => {
   it('passes all six managed runtime filters through the history gate', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-history-gates-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-history-gates-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    await mkdir(path.join(homeDir, '.actoviq'), { recursive: true });
+    await mkdir(path.join(homeDir, '.hadamard'), { recursive: true });
     await mkdir(workDir, { recursive: true });
-    await writeFile(path.join(homeDir, '.actoviq', 'settings.json'), JSON.stringify({
+    await writeFile(path.join(homeDir, '.hadamard', 'settings.json'), JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_MODEL: 'test-model',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_MODEL: 'test-model',
       },
     }), 'utf8');
     historyGate.enabled = true;
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       homeDir,
       workDir,
       host: '127.0.0.1',
@@ -114,7 +114,7 @@ describe('GUI external CLI history API', () => {
         '/api/external-cli/sessions?runtime=' + encodeURIComponent(runtime),
         server.url,
       ), {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       });
       return {
         status: response.status,
@@ -180,17 +180,17 @@ describe('GUI external CLI history API', () => {
   });
 
   it('binds same-id Crush history detail and resume to the exact auth profile', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-crush-binding-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-crush-binding-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    await mkdir(path.join(homeDir, '.actoviq'), { recursive: true });
+    await mkdir(path.join(homeDir, '.hadamard'), { recursive: true });
     await mkdir(workDir, { recursive: true });
-    await writeFile(path.join(homeDir, '.actoviq', 'settings.json'), JSON.stringify({
+    await writeFile(path.join(homeDir, '.hadamard', 'settings.json'), JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_MODEL: 'test-model',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_MODEL: 'test-model',
       },
     }), 'utf8');
     writeBridgeConfigs({
@@ -221,7 +221,7 @@ describe('GUI external CLI history API', () => {
       ],
     }, homeDir);
     historyGate.enabled = true;
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       homeDir,
       workDir,
       host: '127.0.0.1',
@@ -234,7 +234,7 @@ describe('GUI external CLI history API', () => {
       const response = await fetch(new URL(requestPath, server.url), {
         ...init,
         headers: {
-          'x-actoviq-token': server.token,
+          'x-hadamard-token': server.token,
           ...(init.body ? { 'content-type': 'application/json' } : {}),
           ...init.headers,
         },
@@ -275,7 +275,7 @@ describe('GUI external CLI history API', () => {
   });
 
   it('lists and reads native sessions without exposing filesystem paths', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-external-history-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-external-history-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
@@ -290,12 +290,12 @@ describe('GUI external CLI history API', () => {
     );
     await mkdir(path.dirname(sessionPath), { recursive: true });
     await mkdir(workDir, { recursive: true });
-    await mkdir(path.join(homeDir, '.actoviq'), { recursive: true });
-    await writeFile(path.join(homeDir, '.actoviq', 'settings.json'), JSON.stringify({
+    await mkdir(path.join(homeDir, '.hadamard'), { recursive: true });
+    await writeFile(path.join(homeDir, '.hadamard', 'settings.json'), JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_MODEL: 'test-model',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_MODEL: 'test-model',
       },
     }), 'utf8');
     writeBridgeConfigs({
@@ -347,7 +347,7 @@ describe('GUI external CLI history API', () => {
       }),
     ].join('\n'), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       homeDir,
       workDir,
       host: '127.0.0.1',
@@ -355,7 +355,7 @@ describe('GUI external CLI history API', () => {
     });
     const request = async (requestPath: string) => {
       const response = await fetch(new URL(requestPath, server.url), {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       });
       return { status: response.status, body: await response.json() as Record<string, any> };
     };

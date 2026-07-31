@@ -15,13 +15,13 @@ afterEach(async () => {
 
 describe('PluginPackageStore', () => {
   it('installs, enables, pins, and removes verified local packages', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-store-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-store-'));
     dirs.push(dir);
     const source = path.join(dir, 'source');
     const entry = Buffer.from('export const value = 1;\n');
     await mkdir(source);
     await writeFile(path.join(source, 'index.js'), entry);
-    await writeFile(path.join(source, 'actoviq-plugin.json'), JSON.stringify({
+    await writeFile(path.join(source, 'hadamard-plugin.json'), JSON.stringify({
       schemaVersion: 1,
       id: 'demo',
       name: 'Demo',
@@ -42,12 +42,12 @@ describe('PluginPackageStore', () => {
   });
 
   it('rejects package symlinks and replaces same-version installs when entry bits change', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-store-safe-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-store-safe-'));
     dirs.push(dir);
     const source = path.join(dir, 'source');
     await mkdir(source);
     await writeFile(path.join(source, 'index.js'), 'export const value = 1;\n');
-    await writeFile(path.join(source, 'actoviq-plugin.json'), JSON.stringify({
+    await writeFile(path.join(source, 'hadamard-plugin.json'), JSON.stringify({
       schemaVersion: 1,
       id: 'safe',
       name: 'Safe',
@@ -65,7 +65,7 @@ describe('PluginPackageStore', () => {
 
     const linkedSource = path.join(dir, 'linked');
     await mkdir(linkedSource);
-    await writeFile(path.join(linkedSource, 'actoviq-plugin.json'), JSON.stringify({
+    await writeFile(path.join(linkedSource, 'hadamard-plugin.json'), JSON.stringify({
       schemaVersion: 1,
       id: 'linked',
       name: 'Linked',

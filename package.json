@@ -4,11 +4,11 @@
   "description": "Agent team platform — multi-agent, multi-runtime, model team collaboration with TUI, GUI, and MCP.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DeconBear/actoviq-agent-sdk.git"
+    "url": "git+https://github.com/DeconBear/hadamard.git"
   },
-  "homepage": "https://github.com/DeconBear/actoviq-agent-sdk#readme",
+  "homepage": "https://github.com/DeconBear/hadamard#readme",
   "bugs": {
-    "url": "https://github.com/DeconBear/actoviq-agent-sdk/issues"
+    "url": "https://github.com/DeconBear/hadamard/issues"
   },
   "type": "module",
   "license": "MIT",
@@ -16,17 +16,17 @@
     "access": "public"
   },
   "build": {
-    "appId": "com.actoviq.desktop",
-    "productName": "Actoviq",
-    "copyright": "Copyright Actoviq",
-    "artifactName": "Actoviq-${version}-${os}-${arch}.${ext}",
+    "appId": "com.hadamard.desktop",
+    "productName": "Hadamard",
+    "copyright": "Copyright Hadamard",
+    "artifactName": "Hadamard-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist_electron"
     },
     "extraMetadata": {
       "main": "dist/src/gui/electronMain.js"
     },
-    "icon": "assets/actoviq-icon.png",
+    "icon": "assets/hadamard-icon.png",
     "files": [
       "dist/**/*",
       "assets/**/*",
@@ -41,14 +41,14 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/node-pty/**",
-      "assets/actoviq-icon.ico",
-      "assets/actoviq-icon.png"
+      "assets/hadamard-icon.ico",
+      "assets/hadamard-icon.png"
     ],
     "npmRebuild": false,
     "publish": {
       "provider": "github",
       "owner": "DeconBear",
-      "repo": "actoviq-agent-sdk",
+      "repo": "hadamard",
       "releaseType": "release"
     },
     "win": {
@@ -64,7 +64,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Actoviq"
+      "shortcutName": "Hadamard"
     },
     "mac": {
       "target": [
@@ -81,18 +81,18 @@
         "AppImage"
       ],
       "category": "Development",
-      "maintainer": "Actoviq"
+      "maintainer": "Hadamard"
     }
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "actoviq-react": "./bin/actoviq-react.js",
-    "actoviq-tui": "./bin/actoviq-tui.js",
-    "actoviq-gui": "./bin/actoviq-gui.js",
-    "actoviq-app-server": "./bin/actoviq-app-server.js",
-    "actoviq-interactive-agent": "./bin/actoviq-interactive-agent.js",
-    "actoviq-link-runtime": "./bin/actoviq-link-runtime.js"
+    "hadamard-react": "./bin/hadamard-react.js",
+    "hadamard-tui": "./bin/hadamard-tui.js",
+    "hadamard-gui": "./bin/hadamard-gui.js",
+    "hadamard-app-server": "./bin/hadamard-app-server.js",
+    "hadamard-interactive-agent": "./bin/hadamard-interactive-agent.js",
+    "hadamard-link-runtime": "./bin/hadamard-link-runtime.js"
   },
   "exports": {
     ".": {
@@ -159,7 +159,7 @@
     "README-zh.md",
     "CHANGELOG.md",
     "SECURITY.md",
-    "vendor/actoviq-runtime/cli.js"
+    "vendor/hadamard-runtime/cli.js"
   ],
   "engines": {
     "node": "^22.13.0 || ^24.0.0"
@@ -176,7 +176,7 @@
     "prepare:gui-launcher": "node scripts/prepare-gui-launcher.mjs",
     "make:ico": "python scripts/make-ico.py",
     "generate:icon": "node scripts/generate-gui-icon.mjs && npm run make:ico",
-    "sync:actoviq-runtime": "node scripts/sync-actoviq-runtime-upstream.mjs",
+    "sync:hadamard-runtime": "node scripts/sync-hadamard-runtime-upstream.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist:win": "npm run prepare:xterm && npm run build && electron-builder --win --x64 && electron-builder --win --arm64",
     "dist:mac": "npm run prepare:xterm && npm run build && electron-builder --mac --x64 && electron-builder --mac --arm64",
@@ -199,40 +199,40 @@
     "bench:runtime": "tsx bench/runtime/run.ts --mode full --output tmp/runtime-benchmark-full.json",
     "bench:runtime:compare": "tsx bench/runtime/compare.ts",
     "smoke": "npm run build && tsx scripts/integration-smoke.ts",
-    "example:actoviq-quickstart": "npm run build && tsx examples/actoviq-quickstart.ts",
-    "example:actoviq-session": "npm run build && tsx examples/actoviq-session.ts",
-    "example:actoviq-stream-loop": "npm run build && tsx examples/actoviq-stream-loop.ts",
-    "example:actoviq-file-tools": "npm run build && tsx examples/actoviq-file-tools.ts",
-    "example:actoviq-agent-helpers": "npm run build && tsx examples/actoviq-agent-helpers.ts",
-    "example:actoviq-platform": "npm run build && tsx examples/actoviq-platform.ts",
-    "example:actoviq-parallel": "npm run build && tsx examples/actoviq-parallel.ts",
-    "example:actoviq-session-manager": "npm run build && tsx examples/actoviq-session-manager.ts",
-    "example:actoviq-checkpoint": "npm run build && tsx examples/actoviq-checkpoint.ts",
-    "example:actoviq-workflow": "npm run build && tsx examples/actoviq-workflow.ts",
-    "example:actoviq-workflow-annotated": "npm run build && tsx examples/actoviq-workflow-annotated.ts",
-    "example:actoviq-workflow-agent-orchestration": "npm run build && tsx examples/actoviq-workflow-agent-orchestration.ts",
-    "example:actoviq-scheduling": "npm run build && tsx examples/actoviq-scheduling.ts",
-    "example:actoviq-react-loop": "npm run build && tsx examples/actoviq-react-loop.ts",
-    "example:actoviq-computer-use": "npm run build && tsx examples/actoviq-computer-use.ts",
-    "example:actoviq-browser-use": "npm run build && tsx examples/actoviq-browser-use.ts",
-    "example:actoviq-memory": "npm run build && tsx examples/actoviq-memory.ts",
-    "example:actoviq-dream": "npm run build && tsx examples/actoviq-dream.ts",
-    "example:actoviq-skills": "npm run build && tsx examples/actoviq-skills.ts",
-    "example:actoviq-session-memory": "npm run build && tsx examples/actoviq-session-memory.ts",
-    "example:actoviq-swarm": "npm run build && tsx examples/actoviq-swarm.ts",
+    "example:hadamard-quickstart": "npm run build && tsx examples/hadamard-quickstart.ts",
+    "example:hadamard-session": "npm run build && tsx examples/hadamard-session.ts",
+    "example:hadamard-stream-loop": "npm run build && tsx examples/hadamard-stream-loop.ts",
+    "example:hadamard-file-tools": "npm run build && tsx examples/hadamard-file-tools.ts",
+    "example:hadamard-agent-helpers": "npm run build && tsx examples/hadamard-agent-helpers.ts",
+    "example:hadamard-platform": "npm run build && tsx examples/hadamard-platform.ts",
+    "example:hadamard-parallel": "npm run build && tsx examples/hadamard-parallel.ts",
+    "example:hadamard-session-manager": "npm run build && tsx examples/hadamard-session-manager.ts",
+    "example:hadamard-checkpoint": "npm run build && tsx examples/hadamard-checkpoint.ts",
+    "example:hadamard-workflow": "npm run build && tsx examples/hadamard-workflow.ts",
+    "example:hadamard-workflow-annotated": "npm run build && tsx examples/hadamard-workflow-annotated.ts",
+    "example:hadamard-workflow-agent-orchestration": "npm run build && tsx examples/hadamard-workflow-agent-orchestration.ts",
+    "example:hadamard-scheduling": "npm run build && tsx examples/hadamard-scheduling.ts",
+    "example:hadamard-react-loop": "npm run build && tsx examples/hadamard-react-loop.ts",
+    "example:hadamard-computer-use": "npm run build && tsx examples/hadamard-computer-use.ts",
+    "example:hadamard-browser-use": "npm run build && tsx examples/hadamard-browser-use.ts",
+    "example:hadamard-memory": "npm run build && tsx examples/hadamard-memory.ts",
+    "example:hadamard-dream": "npm run build && tsx examples/hadamard-dream.ts",
+    "example:hadamard-skills": "npm run build && tsx examples/hadamard-skills.ts",
+    "example:hadamard-session-memory": "npm run build && tsx examples/hadamard-session-memory.ts",
+    "example:hadamard-swarm": "npm run build && tsx examples/hadamard-swarm.ts",
     "example:bridge-introspection": "npm run build && tsx examples/bridge-introspection.ts",
     "example:bridge-interactive-agent": "npm run build && tsx examples/bridge-interactive-agent.ts",
-    "example:actoviq-workspaces": "npm run build && tsx examples/actoviq-workspaces.ts",
+    "example:hadamard-workspaces": "npm run build && tsx examples/hadamard-workspaces.ts",
     "example:bridge-sessions": "npm run build && tsx examples/bridge-sessions.ts",
     "example:bridge-session-messages": "npm run build && tsx examples/bridge-session-messages.ts",
-    "example:actoviq-buddy": "npm run build && tsx examples/actoviq-buddy.ts",
+    "example:hadamard-buddy": "npm run build && tsx examples/hadamard-buddy.ts",
     "example:bridge-sdk": "npm run build && tsx examples/bridge-sdk.ts",
     "example:profiles": "tsx examples/profiles/all-profiles.ts"
   },
   "keywords": [
     "agent",
     "sdk",
-    "actoviq",
+    "hadamard",
     "mcp",
     "runtime"
   ],

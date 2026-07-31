@@ -4,7 +4,7 @@
 
 Provider 层在统一的 `ModelApi` 接口后抽象模型 API。两个实现分别处理 Anthropic 和 OpenAI 的通信协议，提供自动协议转换。
 
-位置：`src/runtime/actoviqModelApi.ts`, `src/provider/openai-model-api.ts`
+位置：`src/runtime/hadamardModelApi.ts`, `src/provider/openai-model-api.ts`
 
 ### `ModelApi` 接口
 
@@ -22,7 +22,7 @@ resolveRuntimeConfig() → config.provider
     │
     ▼
 provider === 'openai' → new OpenaiModelApi(config)
-otherwise             → new ActoviqModelApi(config)
+otherwise             → new HadamardModelApi(config)
 ```
 
 ### OpenAI 协议转换
@@ -42,7 +42,7 @@ otherwise             → new ActoviqModelApi(config)
 |---|---|---|
 | DeepSeek (Anthropic 端点) | 拒绝工具上的 `type: "custom"` | 发送前去除工具定义中的 `type` 字段 |
 | 非 Anthropic 提供者 | 不支持 `context_management` | 跳过请求中的 `context_management` |
-| OpenAI 兼容 | 不同错误响应格式 | 标准化为 `ActoviqProviderApiError` |
+| OpenAI 兼容 | 不同错误响应格式 | 标准化为 `HadamardProviderApiError` |
 
 ### `robustJsonParse()`
 

@@ -171,30 +171,30 @@ async function isolatedWorkflowChildMain(): Promise<void> {
 
     const contextObject = Object.create(null) as Record<string, unknown>;
     Object.defineProperties(contextObject, {
-      __actoviqInputJson: {
+      __hadamardInputJson: {
         value: safeJsonStringify(params.input),
         configurable: true,
         writable: false,
       },
-      __actoviqCapabilityNamesJson: {
+      __hadamardCapabilityNamesJson: {
         value: safeJsonStringify(params.capabilities),
         configurable: true,
         writable: false,
       },
-      __actoviqHostCapabilityCall: {
+      __hadamardHostCapabilityCall: {
         value: callCapability,
         configurable: true,
         writable: false,
       },
     });
     const context = vm.createContext(contextObject, {
-      name: 'actoviq-local-isolated-workflow',
+      name: 'hadamard-local-isolated-workflow',
       codeGeneration: { strings: false, wasm: false },
     });
     const nativeWorkflowContext = new vm.Script([
       '(() => {',
-      '  const __hostCall = globalThis.__actoviqHostCapabilityCall;',
-      '  const __capabilityNames = JSON.parse(globalThis.__actoviqCapabilityNamesJson);',
+      '  const __hostCall = globalThis.__hadamardHostCapabilityCall;',
+      '  const __capabilityNames = JSON.parse(globalThis.__hadamardCapabilityNamesJson);',
       '  const __capabilities = Object.create(null);',
       '  for (const __name of __capabilityNames) {',
       '    Object.defineProperty(__capabilities, __name, {',
@@ -209,28 +209,28 @@ async function isolatedWorkflowChildMain(): Promise<void> {
       '    });',
       '  }',
       '  return Object.freeze({',
-      '    input: JSON.parse(globalThis.__actoviqInputJson),',
+      '    input: JSON.parse(globalThis.__hadamardInputJson),',
       '    capabilities: Object.freeze(__capabilities),',
       '  });',
       '})()',
     ].join('\n'), {
       filename: 'isolated-workflow-context.js',
     }).runInContext(context, { timeout: params.vmTimeoutMs });
-    delete contextObject.__actoviqInputJson;
-    delete contextObject.__actoviqCapabilityNamesJson;
-    delete contextObject.__actoviqHostCapabilityCall;
-    Object.defineProperty(contextObject, '__actoviqContext', {
+    delete contextObject.__hadamardInputJson;
+    delete contextObject.__hadamardCapabilityNamesJson;
+    delete contextObject.__hadamardHostCapabilityCall;
+    Object.defineProperty(contextObject, '__hadamardContext', {
       value: nativeWorkflowContext,
       configurable: false,
       writable: false,
     });
     const program = new vm.Script([
       '"use strict";',
-      `const __actoviqProgram = (${params.source});`,
-      'if (typeof __actoviqProgram !== "function") {',
+      `const __hadamardProgram = (${params.source});`,
+      'if (typeof __hadamardProgram !== "function") {',
       '  throw new TypeError("Workflow source must evaluate to a function.");',
       '}',
-      'Promise.resolve(__actoviqProgram(globalThis.__actoviqContext));',
+      'Promise.resolve(__hadamardProgram(globalThis.__hadamardContext));',
     ].join('\n'), {
       filename: 'isolated-workflow.js',
     });
@@ -239,18 +239,18 @@ async function isolatedWorkflowChildMain(): Promise<void> {
     }) as PromiseLike<unknown>;
     const rawResult = await pendingResult;
 
-    Object.defineProperty(contextObject, '__actoviqResult', {
+    Object.defineProperty(contextObject, '__hadamardResult', {
       value: rawResult,
       configurable: true,
     });
     let serialized: unknown;
     try {
       serialized = new vm.Script(
-        'JSON.stringify(globalThis.__actoviqResult)',
+        'JSON.stringify(globalThis.__hadamardResult)',
         { filename: 'isolated-workflow-output.js' },
       ).runInContext(context, { timeout: params.vmTimeoutMs });
     } finally {
-      delete contextObject.__actoviqResult;
+      delete contextObject.__hadamardResult;
     }
     if (typeof serialized !== 'string') {
       throw protocolError(

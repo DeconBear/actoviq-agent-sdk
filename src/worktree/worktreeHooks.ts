@@ -3,7 +3,7 @@
  * Hooks receive JSON on stdin and output the result directory path on stdout.
  */
 import { spawn } from 'node:child_process';
-import type { ActoviqHooks } from '../types.js';
+import type { HadamardHooks } from '../types.js';
 
 export interface WorktreeCreateHookInput {
   name: string;
@@ -102,16 +102,16 @@ export async function executeWorktreeRemoveHook(
 }
 
 /**
- * Resolve worktree hooks from ActoviqHooks configuration.
+ * Resolve worktree hooks from HadamardHooks configuration.
  * Returns the hook commands if configured.
  */
 export function resolveWorktreeHooks(
-  hooks?: ActoviqHooks,
+  hooks?: HadamardHooks,
 ): { create?: string; remove?: string } {
   const metadata = (hooks as any)?.metadata as Record<string, unknown> | undefined;
   return {
-    create: (metadata?.worktreeCreateHook as string) ?? process.env.ACTOVIQ_WORKTREE_CREATE_HOOK ?? undefined,
-    remove: (metadata?.worktreeRemoveHook as string) ?? process.env.ACTOVIQ_WORKTREE_REMOVE_HOOK ?? undefined,
+    create: (metadata?.worktreeCreateHook as string) ?? process.env.HADAMARD_WORKTREE_CREATE_HOOK ?? undefined,
+    remove: (metadata?.worktreeRemoveHook as string) ?? process.env.HADAMARD_WORKTREE_REMOVE_HOOK ?? undefined,
   };
 }
 
@@ -119,7 +119,7 @@ export function resolveWorktreeHooks(
  * Check if hooks are configured (meaning .worktreeinclude should be skipped
  * since the hook is responsible for file setup).
  */
-export function hasWorktreeHooks(hooks?: ActoviqHooks): boolean {
+export function hasWorktreeHooks(hooks?: HadamardHooks): boolean {
   const resolved = resolveWorktreeHooks(hooks);
   return !!(resolved.create || resolved.remove);
 }

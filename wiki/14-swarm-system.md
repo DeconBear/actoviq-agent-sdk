@@ -7,7 +7,7 @@ mailbox communication pattern. Unlike subagents (fire-and-forget or
 fire-and-wait), Swarm teammates persist across interactions and exchange
 messages asynchronously.
 
-Location: `src/swarm/actoviqSwarm.ts`
+Location: `src/swarm/hadamardSwarm.ts`
 
 ### Swarm vs Subagents
 
@@ -25,28 +25,28 @@ Location: `src/swarm/actoviqSwarm.ts`
 
 | File | Role |
 |---|---|
-| `swarm/actoviqSwarm.ts` | Swarm API, Team, TeammateHandle |
+| `swarm/hadamardSwarm.ts` | Swarm API, Team, TeammateHandle |
 | `storage/mailboxStore.ts` | Mailbox persistence (JSON files) |
 | `storage/teammateStore.ts` | Teammate persistence (JSON files) |
 
 ### Core Concepts
 
 ```
-ActoviqSwarmApi
+HadamardSwarmApi
     │
-    ├── createTeam(name, config) → ActoviqSwarmTeam
+    ├── createTeam(name, config) → HadamardSwarmTeam
     │       │
-    │       ├── teammates: ActoviqSwarmTeammateHandle[]
+    │       ├── teammates: HadamardSwarmTeammateHandle[]
     │       │   ├── Each has own session + model
     │       │   ├── send(message) → void (to mailbox)
     │       │   └── receive() → message[] (from mailbox)
     │       │
-    │       ├── lead: ActoviqSwarmTeammateHandle
+    │       ├── lead: HadamardSwarmTeammateHandle
     │       │   └── Supervises, coordinates, resolves conflicts
     │       │
     │       └── mailbox: shared message queue
     │
-    └── listTeams() → ActoviqSwarmTeam[]
+    └── listTeams() → HadamardSwarmTeam[]
 ```
 
 ### Mailbox Pattern
@@ -69,32 +69,32 @@ Teammate A                    Mailbox                    Teammate B
 
 ## Code Details
 
-### `ActoviqSwarmApi`
+### `HadamardSwarmApi`
 
 ```typescript
-class ActoviqSwarmApi {
+class HadamardSwarmApi {
   constructor(
     private readonly store: MailboxStore,
     private readonly teammateStore: TeammateStore,
     private readonly createSession: (options) => Promise<AgentSession>,
   ) {}
 
-  async createTeam(name: string, config: SwarmTeamConfig): Promise<ActoviqSwarmTeam> {
+  async createTeam(name: string, config: SwarmTeamConfig): Promise<HadamardSwarmTeam> {
     // Create sessions for each teammate
     // Initialize mailbox
     // Return team handle
   }
 
-  async listTeams(): Promise<ActoviqSwarmTeamSummary[]> {
+  async listTeams(): Promise<HadamardSwarmTeamSummary[]> {
     // Scan teammateStore
   }
 }
 ```
 
-### `ActoviqSwarmTeammateHandle`
+### `HadamardSwarmTeammateHandle`
 
 ```typescript
-class ActoviqSwarmTeammateHandle {
+class HadamardSwarmTeammateHandle {
   constructor(
     readonly name: string,
     readonly session: AgentSession,

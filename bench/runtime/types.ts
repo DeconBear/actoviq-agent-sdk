@@ -55,7 +55,7 @@ export interface RuntimeBenchmarkEnvironment {
 
 export interface RuntimeBenchmarkReport {
   readonly schemaVersion: 1;
-  readonly suite: 'actoviq-runtime';
+  readonly suite: 'hadamard-runtime';
   readonly mode: RuntimeBenchmarkMode;
   readonly generatedAt: string;
   readonly configurationFingerprint: string;
@@ -95,7 +95,7 @@ export interface BenchmarkAcknowledgement {
 
 export interface RuntimeBenchmarkComparison {
   readonly schemaVersion: 1;
-  readonly suite: 'actoviq-runtime-comparison';
+  readonly suite: 'hadamard-runtime-comparison';
   readonly thresholdPercent: number;
   readonly status: 'passed' | 'failed' | 'acknowledged';
   readonly comparedMetricCount: number;

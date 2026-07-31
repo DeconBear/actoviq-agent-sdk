@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 
-import { browseDirectory } from '../src/gui/actoviqGui.js';
+import { browseDirectory } from '../src/gui/hadamardGui.js';
 
 describe('GUI workspace browse API', () => {
   it('lists the home directory when given a valid path', async () => {
@@ -21,7 +21,7 @@ describe('GUI workspace browse API', () => {
 
   it('rejects missing directories', async () => {
     await expect(
-      browseDirectory(path.join(os.tmpdir(), 'actoviq-missing-folder-' + process.pid)),
+      browseDirectory(path.join(os.tmpdir(), 'hadamard-missing-folder-' + process.pid)),
     ).rejects.toThrow(/Folder not found/);
   });
 });

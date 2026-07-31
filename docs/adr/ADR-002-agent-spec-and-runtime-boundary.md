@@ -6,9 +6,9 @@
 
 ## 上下文
 
-旧 `ActoviqAgentClient` 同时拥有配置解析、provider、MCP、session、memory、skills、buddy、dream、team、GUI 适配和 conversation loop。构造一个最小 text agent 也可能触达与任务无关的目录和服务，难以形成可复用的 agent 定义、可测试的 runtime 状态机和受控的资源生命周期。
+旧 `HadamardAgentClient` 同时拥有配置解析、provider、MCP、session、memory、skills、buddy、dream、team、GUI 适配和 conversation loop。构造一个最小 text agent 也可能触达与任务无关的目录和服务，难以形成可复用的 agent 定义、可测试的 runtime 状态机和受控的资源生命周期。
 
-参考实现把“agent 的声明”与“runner 的执行”区分开。Actoviq 也需要让 chat、coding、research、workflow、supervisor 和 background profile 共享同一执行内核，而不是每种产品形态各建一套 SDK。
+参考实现把“agent 的声明”与“runner 的执行”区分开。Hadamard 也需要让 chat、coding、research、workflow、supervisor 和 background profile 共享同一执行内核，而不是每种产品形态各建一套 SDK。
 
 ## 决定
 
@@ -49,7 +49,7 @@ Runtime 构造不执行 service factory。只有 profile/middleware 或带 `sess
 
 拒绝。会让多 agent 团队线性增加连接、文件句柄和缓存，也无法统一 cancel、budget 与 trace。
 
-### 继续扩展 ActoviqAgentClient
+### 继续扩展 HadamardAgentClient
 
 拒绝作为新架构方向。它继续作为 compat façade，但不再承载新 core contract。
 
@@ -63,9 +63,9 @@ Runtime 构造不执行 service factory。只有 profile/middleware 或带 `sess
 
 ## 兼容影响
 
-- 旧代码仍可调用 `createAgentSdk()`；当前它仍创建旧 `ActoviqAgentClient`，并非已经透明代理到 `AgentRuntime`。
+- 旧代码仍可调用 `createAgentSdk()`；当前它仍创建旧 `HadamardAgentClient`，并非已经透明代理到 `AgentRuntime`。
 - 新代码从 `actoviq-agent-sdk/runtime` 构造 `AgentRuntime`，从 `core` 定义 agent。
-- 旧 `ActoviqAgentDefinition` 与新 `AgentSpec` 尚无公开的一键转换器；迁移时应显式重建 spec，并对 tools/permissions/session 行为做验收。
+- 旧 `HadamardAgentDefinition` 与新 `AgentSpec` 尚无公开的一键转换器；迁移时应显式重建 spec，并对 tools/permissions/session 行为做验收。
 - `RunResult.output/items/usage` 与旧 `AgentRunResult.text/message/messages/requests/toolCalls` 形状不同，调用方需要显式映射。
 
 ## Runtime 成本

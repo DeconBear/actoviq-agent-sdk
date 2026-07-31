@@ -20,7 +20,7 @@ export interface LoadedJsonConfigData {
   raw: Record<string, unknown> | null;
 }
 
-export type ActoviqSettingsData = LoadedJsonConfigData;
+export type HadamardSettingsData = LoadedJsonConfigData;
 
 export interface ToolExecutionContext {
   signal?: AbortSignal;
@@ -32,15 +32,15 @@ export interface ToolExecutionContext {
   metadata: Record<string, unknown>;
   prompt: string;
   iteration: number;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
-  hooks?: ActoviqHooks;
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
+  hooks?: HadamardHooks;
   modelApi?: ModelApi;
   model?: string;
   provider?: string;
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   /** Internal per-turn file journal supplied by the Hadamard runtime. */
   fileChangeJournal?: {
     record(change: {
@@ -62,38 +62,38 @@ export interface ToolExecutionContext {
   };
 }
 
-export type ActoviqPermissionMode =
+export type HadamardPermissionMode =
   | 'default'
   | 'acceptEdits'
   | 'bypassPermissions'
   | 'plan'
   | 'auto';
 
-export type ActoviqModelTier = 'min' | 'medium' | 'max';
-export type ActoviqEffort = 'low' | 'medium' | 'high' | 'max';
-export type ActoviqRunEffort = ActoviqEffort | 'auto';
+export type HadamardModelTier = 'min' | 'medium' | 'max';
+export type HadamardEffort = 'low' | 'medium' | 'high' | 'max';
+export type HadamardRunEffort = HadamardEffort | 'auto';
 
-export interface ActoviqModelTierConfig {
+export interface HadamardModelTierConfig {
   min?: string;
   medium?: string;
   max?: string;
 }
 
-export type ActoviqPermissionBehavior = 'allow' | 'deny' | 'ask';
+export type HadamardPermissionBehavior = 'allow' | 'deny' | 'ask';
 
-export interface ActoviqPermissionRule {
+export interface HadamardPermissionRule {
   toolName: string;
-  behavior: ActoviqPermissionBehavior;
+  behavior: HadamardPermissionBehavior;
   matcher?: string;
   source?: string;
 }
 
-export interface ActoviqSessionPermissionState {
-  mode?: ActoviqPermissionMode;
-  permissions: ActoviqPermissionRule[];
+export interface HadamardSessionPermissionState {
+  mode?: HadamardPermissionMode;
+  permissions: HadamardPermissionRule[];
 }
 
-export interface ActoviqPermissionDecision {
+export interface HadamardPermissionDecision {
   toolName: string;
   publicName: string;
   behavior: 'allow' | 'deny';
@@ -105,13 +105,13 @@ export interface ActoviqPermissionDecision {
   updatedInput?: unknown;
 }
 
-export type ActoviqClassifierOutcome =
+export type HadamardClassifierOutcome =
   | {
       behavior: 'allow' | 'deny' | 'ask';
       reason: string;
     };
 
-export interface ActoviqToolClassifierContext {
+export interface HadamardToolClassifierContext {
   runId: string;
   sessionId?: string;
   workDir: string;
@@ -122,19 +122,19 @@ export interface ActoviqToolClassifierContext {
   iteration: number;
 }
 
-export type ActoviqToolClassifier = (
-  context: ActoviqToolClassifierContext,
-) => Promise<ActoviqClassifierOutcome | void> | ActoviqClassifierOutcome | void;
+export type HadamardToolClassifier = (
+  context: HadamardToolClassifierContext,
+) => Promise<HadamardClassifierOutcome | void> | HadamardClassifierOutcome | void;
 
-export interface ActoviqToolApprovalContext extends ActoviqToolClassifierContext {
-  mode: ActoviqPermissionMode;
+export interface HadamardToolApprovalContext extends HadamardToolClassifierContext {
+  mode: HadamardPermissionMode;
   proposedBehavior: 'ask';
   reason: string;
   source: 'rule' | 'classifier';
   matchedRule?: string;
 }
 
-export type ActoviqToolApprovalOutcome =
+export type HadamardToolApprovalOutcome =
   | {
       behavior: 'allow' | 'deny';
       reason?: string;
@@ -142,14 +142,14 @@ export type ActoviqToolApprovalOutcome =
       updatedInput?: unknown;
     };
 
-export type ActoviqToolApprover = (
-  context: ActoviqToolApprovalContext,
+export type HadamardToolApprover = (
+  context: HadamardToolApprovalContext,
 ) =>
-  | Promise<ActoviqToolApprovalOutcome | void>
-  | ActoviqToolApprovalOutcome
+  | Promise<HadamardToolApprovalOutcome | void>
+  | HadamardToolApprovalOutcome
   | void;
 
-export interface ActoviqCanUseToolContext {
+export interface HadamardCanUseToolContext {
   runId: string;
   sessionId?: string;
   workDir: string;
@@ -160,13 +160,13 @@ export interface ActoviqCanUseToolContext {
   iteration: number;
 }
 
-export type ActoviqCanUseToolResult =
+export type HadamardCanUseToolResult =
   | { behavior: 'allow' | 'deny' | 'ask'; reason?: string }
   | void;
 
-export type ActoviqCanUseTool = (
-  context: ActoviqCanUseToolContext,
-) => Promise<ActoviqCanUseToolResult> | ActoviqCanUseToolResult;
+export type HadamardCanUseTool = (
+  context: HadamardCanUseToolContext,
+) => Promise<HadamardCanUseToolResult> | HadamardCanUseToolResult;
 
 // ── Tool Progress ─────────────────────────────────────────────────
 
@@ -195,7 +195,7 @@ export type ValidationResult =
 export interface ToolPromptOptions {
   tools: string[];
   workDir: string;
-  permissionMode?: ActoviqPermissionMode;
+  permissionMode?: HadamardPermissionMode;
 }
 
 // ── Tool Definition ───────────────────────────────────────────────
@@ -213,7 +213,7 @@ export interface CreateToolOptions<Input = any, Output = any> {
   requiresUserInteraction?: () => boolean;
   isConcurrencySafe?: () => boolean;
   checkPermissions?: (
-    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+    context: { mode: HadamardPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
   /** Alternative names for backwards compatibility when a tool is renamed. */
   aliases?: string[];
@@ -257,7 +257,7 @@ export interface AgentToolDefinition<Input = any, Output = any> {
   requiresUserInteraction?: () => boolean;
   isConcurrencySafe?: () => boolean;
   checkPermissions?: (
-    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+    context: { mode: HadamardPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
   aliases?: string[];
   userFacingName?: (input?: Input) => string;
@@ -315,7 +315,7 @@ export interface ModelRequest {
   context_management?: Record<string, unknown>;
   stop_sequences?: string[];
   extra_tool_schemas?: Record<string, unknown>[];
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   signal?: AbortSignal;
 }
 
@@ -350,7 +350,7 @@ export interface ResolvedToolAdapter {
   /** Per-tool result size cap in chars before artifacting to disk. */
   maxResultSizeChars?: number;
   checkPermissions?: (
-    context: { mode: ActoviqPermissionMode; runId: string; sessionId?: string },
+    context: { mode: HadamardPermissionMode; runId: string; sessionId?: string },
   ) => Promise<'allow' | 'deny' | 'ask' | void> | 'allow' | 'deny' | 'ask' | void;
 }
 
@@ -361,8 +361,8 @@ export interface ResolvedRuntimeConfig {
   authToken?: string;
   baseURL?: string;
   model: string;
-  modelTier?: ActoviqModelTier;
-  modelTiers: ActoviqModelTierConfig;
+  modelTier?: HadamardModelTier;
+  modelTiers: HadamardModelTierConfig;
   maxTokens: number;
   temperature?: number;
   /** Whole-run wall-clock deadline, including model/tool iterations. */
@@ -389,9 +389,9 @@ export interface ResolvedRuntimeConfig {
   promptCachingEnabled: boolean;
   userId?: string;
   metadata: Record<string, unknown>;
-  compact: ActoviqCompactConfig;
+  compact: HadamardCompactConfig;
   provider: 'anthropic' | 'openai';
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   sandbox: import('./sandbox/types.js').SandboxPolicy;
   sandboxCapabilities: import('./sandbox/types.js').SandboxCapabilityReport;
   languageServers: import('./codeIntel/types.js').LanguageServerDefinition[];
@@ -401,7 +401,7 @@ export interface ResolvedRuntimeConfig {
   effectivePolicy: import('./policy/types.js').ResolvedPolicy;
 }
 
-export interface ActoviqSessionStartHookContext {
+export interface HadamardSessionStartHookContext {
   runId: string;
   input: string | MessageParam['content'];
   promptText: string;
@@ -411,18 +411,18 @@ export interface ActoviqSessionStartHookContext {
   options: AgentRunOptions;
 }
 
-export interface ActoviqSessionStartHookResult {
+export interface HadamardSessionStartHookResult {
   messages?: MessageParam[];
   systemPromptParts?: string[];
   metadata?: Record<string, unknown>;
 }
 
-export type ActoviqSessionStartHook =
+export type HadamardSessionStartHook =
   | ((
-      context: ActoviqSessionStartHookContext,
-    ) => Promise<ActoviqSessionStartHookResult | void> | ActoviqSessionStartHookResult | void);
+      context: HadamardSessionStartHookContext,
+    ) => Promise<HadamardSessionStartHookResult | void> | HadamardSessionStartHookResult | void);
 
-export interface ActoviqPostRunHookContext {
+export interface HadamardPostRunHookContext {
   runId: string;
   input: string | MessageParam['content'];
   promptText: string;
@@ -433,17 +433,17 @@ export interface ActoviqPostRunHookContext {
   result: AgentRunResult;
 }
 
-export interface ActoviqPostRunHookResult {
+export interface HadamardPostRunHookResult {
   sessionMetadata?: Record<string, unknown>;
   tags?: string[];
 }
 
-export type ActoviqPostRunHook =
+export type HadamardPostRunHook =
   | ((
-      context: ActoviqPostRunHookContext,
-    ) => Promise<ActoviqPostRunHookResult | void> | ActoviqPostRunHookResult | void);
+      context: HadamardPostRunHookContext,
+    ) => Promise<HadamardPostRunHookResult | void> | HadamardPostRunHookResult | void);
 
-export interface ActoviqPostSamplingHookContext {
+export interface HadamardPostSamplingHookContext {
   runId: string;
   sessionId?: string;
   workDir: string;
@@ -456,12 +456,12 @@ export interface ActoviqPostSamplingHookContext {
   messages: MessageParam[];
 }
 
-export type ActoviqPostSamplingHook =
+export type HadamardPostSamplingHook =
   | ((
-      context: ActoviqPostSamplingHookContext,
+      context: HadamardPostSamplingHookContext,
     ) => Promise<void> | void);
 
-export interface ActoviqStopHookContext {
+export interface HadamardStopHookContext {
   runId: string;
   sessionId?: string;
   messages: MessageParam[];
@@ -471,40 +471,40 @@ export interface ActoviqStopHookContext {
   signal?: AbortSignal;
 }
 
-export interface ActoviqHookBlockingError {
+export interface HadamardHookBlockingError {
   command?: string;
   reason: string;
 }
 
-export interface ActoviqStopHookResult {
+export interface HadamardStopHookResult {
   preventContinuation?: boolean;
   stopReason?: string;
-  blockingErrors?: Array<string | ActoviqHookBlockingError>;
-  nonBlockingErrors?: Array<string | ActoviqHookBlockingError>;
+  blockingErrors?: Array<string | HadamardHookBlockingError>;
+  nonBlockingErrors?: Array<string | HadamardHookBlockingError>;
 }
 
-export type ActoviqStopHook = (
-  context: ActoviqStopHookContext,
-) => Promise<ActoviqStopHookResult | void> | ActoviqStopHookResult | void;
+export type HadamardStopHook = (
+  context: HadamardStopHookContext,
+) => Promise<HadamardStopHookResult | void> | HadamardStopHookResult | void;
 
-export interface ActoviqHooks {
-  sessionStart?: ActoviqSessionStartHook[];
-  postSampling?: ActoviqPostSamplingHook[];
-  postRun?: ActoviqPostRunHook[];
-  stopHooks?: ActoviqStopHook[];
+export interface HadamardHooks {
+  sessionStart?: HadamardSessionStartHook[];
+  postSampling?: HadamardPostSamplingHook[];
+  postRun?: HadamardPostRunHook[];
+  stopHooks?: HadamardStopHook[];
 }
 
-export interface ActoviqAgentDefinition {
+export interface HadamardAgentDefinition {
   name: string;
   description: string;
   systemPrompt?: string;
   model?: string;
-  effort?: ActoviqRunEffort;
-  permissionMode?: ActoviqPermissionMode;
+  effort?: HadamardRunEffort;
+  permissionMode?: HadamardPermissionMode;
   maxToolIterations?: number;
   maxTurns?: number;
   metadata?: Record<string, unknown>;
-  hooks?: ActoviqHooks;
+  hooks?: HadamardHooks;
   tools?: AgentToolDefinition[];
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -524,12 +524,12 @@ export interface ActoviqAgentDefinition {
   sourcePath?: string;
 }
 
-export interface ActoviqAgentDefinitionSummary {
+export interface HadamardAgentDefinitionSummary {
   name: string;
   description: string;
   model?: string;
-  effort?: ActoviqRunEffort;
-  permissionMode?: ActoviqPermissionMode;
+  effort?: HadamardRunEffort;
+  permissionMode?: HadamardPermissionMode;
   maxToolIterations?: number;
   maxTurns?: number;
   toolNames: string[];
@@ -551,17 +551,17 @@ export interface ActoviqAgentDefinitionSummary {
   hasHooks: boolean;
 }
 
-export type ActoviqSkillSource = 'bundled' | 'user' | 'project' | 'custom';
+export type HadamardSkillSource = 'bundled' | 'user' | 'project' | 'custom';
 
-export type ActoviqSkillLoadedFrom =
+export type HadamardSkillLoadedFrom =
   | 'bundled'
   | 'skills'
   | 'commands'
   | 'custom';
 
-export type ActoviqSkillContextMode = 'inline' | 'fork';
+export type HadamardSkillContextMode = 'inline' | 'fork';
 
-export interface ActoviqSkillPromptContext {
+export interface HadamardSkillPromptContext {
   args: string;
   workDir: string;
   homeDir: string;
@@ -569,42 +569,42 @@ export interface ActoviqSkillPromptContext {
   userId?: string;
 }
 
-export interface ActoviqSkillPromptBuildResult {
+export interface HadamardSkillPromptBuildResult {
   content: string | MessageParam['content'];
   systemPromptParts?: string[];
   metadata?: Record<string, unknown>;
 }
 
-export type ActoviqSkillPromptBuilder = (
+export type HadamardSkillPromptBuilder = (
   args: string,
-  context: ActoviqSkillPromptContext,
+  context: HadamardSkillPromptContext,
 ) =>
-  | Promise<string | MessageParam['content'] | ActoviqSkillPromptBuildResult>
+  | Promise<string | MessageParam['content'] | HadamardSkillPromptBuildResult>
   | string
   | MessageParam['content']
-  | ActoviqSkillPromptBuildResult;
+  | HadamardSkillPromptBuildResult;
 
-export interface ActoviqSkillDefinition {
+export interface HadamardSkillDefinition {
   name: string;
   description: string;
   whenToUse?: string;
   argumentHint?: string;
   argNames?: string[];
   prompt?: string;
-  buildPrompt?: ActoviqSkillPromptBuilder;
+  buildPrompt?: HadamardSkillPromptBuilder;
   model?: string;
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   /** Optional version string from frontmatter (display/telemetry only). */
   version?: string;
   /** Friendly display label from frontmatter `name:`; the invocation name still comes from the directory. */
   displayName?: string;
   disableModelInvocation?: boolean;
   userInvocable?: boolean;
-  source?: ActoviqSkillSource;
-  loadedFrom?: ActoviqSkillLoadedFrom;
-  context?: ActoviqSkillContextMode;
+  source?: HadamardSkillSource;
+  loadedFrom?: HadamardSkillLoadedFrom;
+  context?: HadamardSkillContextMode;
   agent?: string;
-  hooks?: ActoviqHooks;
+  hooks?: HadamardHooks;
   metadata?: Record<string, unknown>;
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
@@ -615,19 +615,19 @@ export interface ActoviqSkillDefinition {
   skillRoot?: string;
 }
 
-export interface ActoviqSkillDefinitionSummary {
+export interface HadamardSkillDefinitionSummary {
   name: string;
   description: string;
   whenToUse?: string;
   argumentHint?: string;
   argNames: string[];
   model?: string;
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   version?: string;
   displayName?: string;
-  source: ActoviqSkillSource;
-  loadedFrom: ActoviqSkillLoadedFrom;
-  context: ActoviqSkillContextMode;
+  source: HadamardSkillSource;
+  loadedFrom: HadamardSkillLoadedFrom;
+  context: HadamardSkillContextMode;
   agent?: string;
   allowedTools: string[];
   metadataKeys: string[];
@@ -644,7 +644,7 @@ export interface ActoviqSkillDefinitionSummary {
  * sources are eligible by default; project-level sources remain disabled until
  * their source id is explicitly trusted.
  */
-export interface ActoviqExternalSkillsOptions {
+export interface HadamardExternalSkillsOptions {
   /** Limit discovery to these catalog source ids. Omit to use every external source. */
   enabledSourceIds?: string[];
   /** Exclude catalog sources without modifying their native runtime directories. */
@@ -661,18 +661,18 @@ export interface ActoviqExternalSkillsOptions {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
 }
 
-export type ActoviqCleanToolCategory =
+export type HadamardCleanToolCategory =
   | 'file'
   | 'task'
   | 'computer'
   | 'mcp'
   | 'custom';
 
-export interface ActoviqCleanToolMetadata {
+export interface HadamardCleanToolMetadata {
   name: string;
   description: string;
   provider: 'local' | 'mcp';
-  category: ActoviqCleanToolCategory;
+  category: HadamardCleanToolCategory;
   server?: string;
   strict: boolean;
   readOnly: boolean;
@@ -680,17 +680,17 @@ export interface ActoviqCleanToolMetadata {
   examples?: Array<Record<string, unknown>>;
 }
 
-export interface ActoviqCleanToolCatalog {
-  tools: ActoviqCleanToolMetadata[];
-  byCategory: Record<ActoviqCleanToolCategory, ActoviqCleanToolMetadata[]>;
+export interface HadamardCleanToolCatalog {
+  tools: HadamardCleanToolMetadata[];
+  byCategory: Record<HadamardCleanToolCategory, HadamardCleanToolMetadata[]>;
 }
 
-export interface ActoviqCleanToolLookupOptions {
+export interface HadamardCleanToolLookupOptions {
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
 }
 
-export type ActoviqCleanSlashCommandName =
+export type HadamardCleanSlashCommandName =
   | 'context'
   | 'compact'
   | 'memory'
@@ -699,8 +699,8 @@ export type ActoviqCleanSlashCommandName =
   | 'skills'
   | 'agents';
 
-export interface ActoviqCleanSlashCommandMetadata {
-  name: ActoviqCleanSlashCommandName;
+export interface HadamardCleanSlashCommandMetadata {
+  name: HadamardCleanSlashCommandName;
   helper:
     | 'context.overview'
     | 'context.compact'
@@ -712,56 +712,56 @@ export interface ActoviqCleanSlashCommandMetadata {
   description: string;
 }
 
-export interface ActoviqCleanContextOverviewOptions {
+export interface HadamardCleanContextOverviewOptions {
   sessionId?: string;
   includeMemory?: boolean;
   includeCompactState?: boolean;
   includeTools?: boolean;
   includeSkills?: boolean;
   includeAgents?: boolean;
-  toolLookup?: ActoviqCleanToolLookupOptions;
+  toolLookup?: HadamardCleanToolLookupOptions;
 }
 
-export interface ActoviqCleanContextOverview {
+export interface HadamardCleanContextOverview {
   sessionId?: string;
-  tools: ActoviqCleanToolMetadata[];
-  skills: ActoviqSkillDefinitionSummary[];
-  agents: ActoviqAgentDefinitionSummary[];
-  memoryState?: ActoviqMemoryState;
-  compactState?: ActoviqCompactState;
+  tools: HadamardCleanToolMetadata[];
+  skills: HadamardSkillDefinitionSummary[];
+  agents: HadamardAgentDefinitionSummary[];
+  memoryState?: HadamardMemoryState;
+  compactState?: HadamardCompactState;
 }
 
-export interface ActoviqRunSlashCommandOptions {
+export interface HadamardRunSlashCommandOptions {
   sessionId?: string;
   args?: string;
   compact?: AgentSessionCompactOptions;
-  dream?: ActoviqDreamRunOptions;
-  memory?: Omit<ActoviqMemoryStateOptions, 'projectPath' | 'sessionId'>;
-  overview?: ActoviqCleanContextOverviewOptions;
-  toolLookup?: ActoviqCleanToolLookupOptions;
+  dream?: HadamardDreamRunOptions;
+  memory?: Omit<HadamardMemoryStateOptions, 'projectPath' | 'sessionId'>;
+  overview?: HadamardCleanContextOverviewOptions;
+  toolLookup?: HadamardCleanToolLookupOptions;
 }
 
-export interface ActoviqRunSlashCommandResult {
-  name: ActoviqCleanSlashCommandName;
+export interface HadamardRunSlashCommandResult {
+  name: HadamardCleanSlashCommandName;
   text: string;
   data:
-    | ActoviqCleanContextOverview
-    | ActoviqSessionCompactResult
-    | ActoviqMemoryState
-    | ActoviqDreamRunResult
-    | ActoviqCleanToolMetadata[]
-    | ActoviqSkillDefinitionSummary[]
-    | ActoviqAgentDefinitionSummary[];
+    | HadamardCleanContextOverview
+    | HadamardSessionCompactResult
+    | HadamardMemoryState
+    | HadamardDreamRunResult
+    | HadamardCleanToolMetadata[]
+    | HadamardSkillDefinitionSummary[]
+    | HadamardAgentDefinitionSummary[];
 }
 
-export interface ActoviqInvokedSkillRecord {
+export interface HadamardInvokedSkillRecord {
   name: string;
   args?: string;
   content: string;
   invokedAt: string;
-  source: ActoviqSkillSource;
-  loadedFrom: ActoviqSkillLoadedFrom;
-  context: ActoviqSkillContextMode;
+  source: HadamardSkillSource;
+  loadedFrom: HadamardSkillLoadedFrom;
+  context: HadamardSkillContextMode;
   model?: string;
   agent?: string;
   skillRoot?: string;
@@ -795,29 +795,29 @@ export interface CreateAgentSdkOptions {
   metadata?: Record<string, unknown>;
   tools?: AgentToolDefinition[];
   mcpServers?: AgentMcpServerDefinition[];
-  agents?: ActoviqAgentDefinition[];
+  agents?: HadamardAgentDefinition[];
   agentDirectories?: string[];
   loadDefaultAgentDirectories?: boolean;
   disableDefaultAgents?: boolean;
   maxSubagentDepth?: number;
   maxSubagentFanout?: number;
-  skills?: ActoviqSkillDefinition[];
+  skills?: HadamardSkillDefinition[];
   skillDirectories?: string[];
   /** Reuse user-configured Claude Code, Codex, Cursor, cc-switch, and shared-agent skills. */
-  externalSkills?: boolean | ActoviqExternalSkillsOptions;
+  externalSkills?: boolean | HadamardExternalSkillsOptions;
   disableDefaultSkills?: boolean;
   loadDefaultSkillDirectories?: boolean;
-  hooks?: ActoviqHooks;
-  compact?: Partial<ActoviqCompactConfig>;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
-  computerUse?: boolean | CreateActoviqComputerUseOptions;
+  hooks?: HadamardHooks;
+  compact?: Partial<HadamardCompactConfig>;
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
+  computerUse?: boolean | CreateHadamardComputerUseOptions;
   /** Opt-in Playwright browser automation tools (browser-use style snapshot/index actions). */
-  browserUse?: boolean | CreateActoviqBrowserUseOptions;
+  browserUse?: boolean | CreateHadamardBrowserUseOptions;
   provider?: 'anthropic' | 'openai';
-  effort?: ActoviqEffort;
+  effort?: HadamardEffort;
   modelApi?: ModelApi;
   sessionManager?: SessionManagerConfig;
   sandbox?: import('./sandbox/policyResolver.js').SandboxPolicyInput;
@@ -830,7 +830,7 @@ export interface CreateAgentSdkOptions {
   policyDocuments?: import('./policy/types.js').PolicyDocument[];
 }
 
-export interface ActoviqCompactConfig {
+export interface HadamardCompactConfig {
   enabled: boolean;
   autoCompactThresholdTokens: number;
   preserveRecentMessages: number;
@@ -863,11 +863,11 @@ export interface ActoviqCompactConfig {
   loopAutoCompactThresholdTokens?: number;
 }
 
-export type ActoviqWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
+export type HadamardWorkspaceKind = 'directory' | 'temp' | 'git-worktree';
 
-export interface ActoviqWorkspaceInfo {
+export interface HadamardWorkspaceInfo {
   id: string;
-  kind: ActoviqWorkspaceKind;
+  kind: HadamardWorkspaceKind;
   path: string;
   metadata: Record<string, string>;
 }
@@ -910,13 +910,13 @@ export interface AgentRunOptions {
   toolChoice?: ToolChoice;
   userId?: string;
   metadata?: Record<string, unknown>;
-  effort?: ActoviqRunEffort;
-  hooks?: ActoviqHooks;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
-  canUseTool?: ActoviqCanUseTool;
+  effort?: HadamardRunEffort;
+  hooks?: HadamardHooks;
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
+  canUseTool?: HadamardCanUseTool;
   signal?: AbortSignal;
   /**
    * Mid-run steering: called between tool iterations to collect user messages
@@ -943,8 +943,8 @@ export interface SessionCreateOptions {
   title?: string;
   systemPrompt?: string;
   model?: string;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
   tags?: string[];
   metadata?: Record<string, unknown>;
   initialMessages?: MessageParam[];
@@ -973,8 +973,8 @@ export interface SessionResumeOptions {
   metadata?: Record<string, unknown>;
   /** A full model ID or configured min/medium/max tier. */
   model?: string;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
 }
 
 export interface AgentRequestSummary {
@@ -1026,7 +1026,7 @@ export interface AgentRunResult {
   text: string;
   message: Message;
   messages: MessageParam[];
-  surfacedMemories?: ActoviqSurfacedMemory[];
+  surfacedMemories?: HadamardSurfacedMemory[];
   stopReason: StopReason | null;
   incompleteReason?: string;
   maxToolIterationsExceeded?: boolean;
@@ -1037,12 +1037,12 @@ export interface AgentRunResult {
   startedAt: string;
   completedAt: string;
   sessionHookMetadata?: Record<string, unknown>;
-  delegatedAgents?: ActoviqDelegatedAgentRecord[];
-  invokedSkills?: ActoviqInvokedSkillRecord[];
-  reactiveCompact?: ActoviqSessionCompactResult;
+  delegatedAgents?: HadamardDelegatedAgentRecord[];
+  invokedSkills?: HadamardInvokedSkillRecord[];
+  reactiveCompact?: HadamardSessionCompactResult;
   /** Mid-run conversation compactions performed inside the tool loop. */
   loopCompactions?: AgentLoopCompactionRecord[];
-  permissionDecisions?: ActoviqPermissionDecision[];
+  permissionDecisions?: HadamardPermissionDecision[];
 }
 
 export interface AgentLoopCompactionRecord {
@@ -1056,13 +1056,13 @@ export interface AgentLoopCompactionRecord {
   summary?: string;
 }
 
-export interface ActoviqDreamConfig {
+export interface HadamardDreamConfig {
   minHours: number;
   minSessions: number;
   scanIntervalMs: number;
 }
 
-export interface ActoviqDreamPaths {
+export interface HadamardDreamPaths {
   memoryDir: string;
   teamMemoryDir: string;
   memoryEntrypoint: string;
@@ -1071,11 +1071,11 @@ export interface ActoviqDreamPaths {
   lockPath: string;
 }
 
-export interface ActoviqDreamState {
+export interface HadamardDreamState {
   enabled: boolean;
   autoMemoryEnabled: boolean;
-  config: ActoviqDreamConfig;
-  paths: ActoviqDreamPaths;
+  config: HadamardDreamConfig;
+  paths: HadamardDreamPaths;
   currentSessionId?: string;
   lastConsolidatedAtMs: number;
   lastConsolidatedAt?: string;
@@ -1086,7 +1086,7 @@ export interface ActoviqDreamState {
   blockedReason?: 'disabled' | 'time_gate' | 'session_gate' | 'locked' | 'scan_throttled';
 }
 
-export interface ActoviqDreamRunOptions {
+export interface HadamardDreamRunOptions {
   force?: boolean;
   background?: boolean;
   currentSessionId?: string;
@@ -1096,19 +1096,19 @@ export interface ActoviqDreamRunOptions {
   signal?: AbortSignal;
 }
 
-export interface ActoviqDreamRunResult {
+export interface HadamardDreamRunResult {
   success: boolean;
   skipped: boolean;
   trigger: 'manual' | 'auto';
   reason?: string;
-  state: ActoviqDreamState;
+  state: HadamardDreamState;
   touchedSessions: string[];
   touchedFiles: string[];
   result?: AgentRunResult;
-  task?: ActoviqBackgroundTaskRecord;
+  task?: HadamardBackgroundTaskRecord;
 }
 
-export type ActoviqCompactTrigger = 'auto' | 'manual' | 'reactive';
+export type HadamardCompactTrigger = 'auto' | 'manual' | 'reactive';
 
 export interface AgentSessionCompactOptions {
   force?: boolean;
@@ -1119,9 +1119,9 @@ export interface AgentSessionCompactOptions {
   signal?: AbortSignal;
 }
 
-export interface ActoviqSessionCompactResult {
+export interface HadamardSessionCompactResult {
   compacted: boolean;
-  trigger: ActoviqCompactTrigger;
+  trigger: HadamardCompactTrigger;
   reason:
     | 'disabled'
     | 'threshold_not_met'
@@ -1138,10 +1138,10 @@ export interface ActoviqSessionCompactResult {
   microcompactCount: number;
   consecutiveFailures?: number;
   error?: string;
-  state: ActoviqSessionMemoryRuntimeState;
+  state: HadamardSessionMemoryRuntimeState;
 }
 
-export interface ActoviqTaskToolInput {
+export interface HadamardTaskToolInput {
   description?: string;
   prompt?: string;
   task?: string;
@@ -1155,7 +1155,7 @@ export interface ActoviqTaskToolInput {
   cwd?: string;
 }
 
-export interface ActoviqTaskToolSyncResult {
+export interface HadamardTaskToolSyncResult {
   status: 'completed';
   subagentType: string;
   runId: string;
@@ -1169,7 +1169,7 @@ export interface ActoviqTaskToolSyncResult {
   worktreeBranch?: string;
 }
 
-export interface ActoviqTaskToolAsyncResult {
+export interface HadamardTaskToolAsyncResult {
   status: 'async_launched';
   taskId: string;
   subagentType: string;
@@ -1182,11 +1182,11 @@ export interface ActoviqTaskToolAsyncResult {
   worktreeBranch?: string;
 }
 
-export type ActoviqTaskToolResult =
-  | ActoviqTaskToolSyncResult
-  | ActoviqTaskToolAsyncResult;
+export type HadamardTaskToolResult =
+  | HadamardTaskToolSyncResult
+  | HadamardTaskToolAsyncResult;
 
-export interface ActoviqDelegatedAgentRecord {
+export interface HadamardDelegatedAgentRecord {
   name: string;
   count: number;
   lastInvokedAt: string;
@@ -1204,19 +1204,19 @@ export interface ActoviqDelegatedAgentRecord {
   totalToolErrorCount?: number;
 }
 
-export interface ActoviqAgentContinuityState {
+export interface HadamardAgentContinuityState {
   currentAgent?: string;
-  delegatedAgents: ActoviqDelegatedAgentRecord[];
+  delegatedAgents: HadamardDelegatedAgentRecord[];
 }
 
-export type ActoviqBackgroundTaskStatus =
+export type HadamardBackgroundTaskStatus =
   | 'queued'
   | 'running'
   | 'completed'
   | 'failed'
   | 'cancelled';
 
-export interface ActoviqBackgroundTaskQueuedInput {
+export interface HadamardBackgroundTaskQueuedInput {
   /** Stable collaboration tool-use id; also provides replay idempotency. */
   id: string;
   text: string;
@@ -1224,9 +1224,9 @@ export interface ActoviqBackgroundTaskQueuedInput {
   edgeCallId: string;
 }
 
-export interface ActoviqBackgroundTaskRecord {
+export interface HadamardBackgroundTaskRecord {
   id: string;
-  status: ActoviqBackgroundTaskStatus;
+  status: HadamardBackgroundTaskStatus;
   /** Process that owns the live worker; used to avoid cross-process false recovery. */
   ownerPid?: number;
   /** Stable manager instance that launched the worker. */
@@ -1234,7 +1234,7 @@ export interface ActoviqBackgroundTaskRecord {
   /** Lease heartbeat used to distinguish a live owner from PID reuse. */
   ownerHeartbeatAt?: string;
   /** Durable cross-process follow-ups waiting for the worker's next input boundary. */
-  queuedInputs?: ActoviqBackgroundTaskQueuedInput[];
+  queuedInputs?: HadamardBackgroundTaskQueuedInput[];
   /** Bounded replay guard retained after queued inputs are drained. */
   seenInputIds?: string[];
   description: string;
@@ -1270,7 +1270,7 @@ export interface ActoviqBackgroundTaskRecord {
   error?: string;
 }
 
-export interface ActoviqMailboxMessage {
+export interface HadamardMailboxMessage {
   id: string;
   teamName: string;
   to: string;
@@ -1281,7 +1281,7 @@ export interface ActoviqMailboxMessage {
   metadata?: Record<string, unknown>;
 }
 
-export interface ActoviqTeammateRecord {
+export interface HadamardTeammateRecord {
   id: string;
   teamName: string;
   name: string;
@@ -1294,7 +1294,7 @@ export interface ActoviqTeammateRecord {
   lineage?: string[];
   taskId?: string;
   lastTaskDescription?: string;
-  lastTaskStatus?: ActoviqBackgroundTaskStatus;
+  lastTaskStatus?: HadamardBackgroundTaskStatus;
   lastRunId?: string;
   lastCompletedAt?: string;
   lastActiveAt?: string;
@@ -1310,43 +1310,43 @@ export interface ActoviqTeammateRecord {
   updatedAt: string;
 }
 
-export interface CreateActoviqTeammateOptions {
+export interface CreateHadamardTeammateOptions {
   name: string;
   agent: string;
   prompt: string;
 }
 
-export interface CreateActoviqSwarmOptions {
+export interface CreateHadamardSwarmOptions {
   name: string;
   leader?: string;
   continuous?: boolean;
 }
 
-export interface ActoviqSwarmRunResult {
-  teammate: ActoviqTeammateRecord;
-  task?: ActoviqBackgroundTaskRecord;
+export interface HadamardSwarmRunResult {
+  teammate: HadamardTeammateRecord;
+  task?: HadamardBackgroundTaskRecord;
   result?: AgentRunResult;
   source?: 'prompt' | 'mailbox' | 'background';
   mailboxMessagesProcessed?: number;
 }
 
-export interface ActoviqSwarmRuntimeContext {
-  hooks?: ActoviqHooks;
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
+export interface HadamardSwarmRuntimeContext {
+  hooks?: HadamardHooks;
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
 }
 
-export interface ActoviqTeammateTranscript {
-  teammate: ActoviqTeammateRecord;
+export interface HadamardTeammateTranscript {
+  teammate: HadamardTeammateRecord;
   sessionId: string;
   messages: MessageParam[];
-  leaderInbox: ActoviqMailboxMessage[];
-  teammateInbox: ActoviqMailboxMessage[];
+  leaderInbox: HadamardMailboxMessage[];
+  teammateInbox: HadamardMailboxMessage[];
 }
 
-export interface ActoviqComputerUseExecutor {
+export interface HadamardComputerUseExecutor {
   openUrl(url: string, signal?: AbortSignal): Promise<void> | void;
   focusWindow?(title: string, signal?: AbortSignal): Promise<void> | void;
   typeText(text: string, signal?: AbortSignal): Promise<void> | void;
@@ -1356,14 +1356,14 @@ export interface ActoviqComputerUseExecutor {
   takeScreenshot(outputPath: string, signal?: AbortSignal): Promise<string> | string;
 }
 
-export interface CreateActoviqComputerUseOptions {
+export interface CreateHadamardComputerUseOptions {
   prefix?: string;
-  executor?: ActoviqComputerUseExecutor;
+  executor?: HadamardComputerUseExecutor;
   asMcpServer?: boolean;
   serverName?: string;
 }
 
-export interface CreateActoviqBrowserUseOptions {
+export interface CreateHadamardBrowserUseOptions {
   prefix?: string;
   asMcpServer?: boolean;
   serverName?: string;
@@ -1398,7 +1398,7 @@ export interface CreateActoviqBrowserUseOptions {
   };
 }
 
-export interface WaitForActoviqBackgroundTaskOptions {
+export interface WaitForHadamardBackgroundTaskOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
@@ -1489,7 +1489,7 @@ export type AgentEvent =
       type: 'tool.permission';
       runId: string;
       iteration: number;
-      decision: ActoviqPermissionDecision;
+      decision: HadamardPermissionDecision;
       timestamp: string;
     }
   | {
@@ -1511,8 +1511,8 @@ export type AgentEvent =
       type: 'session.compacted';
       runId: string;
       sessionId: string;
-      trigger: ActoviqCompactTrigger;
-      result: ActoviqSessionCompactResult;
+      trigger: HadamardCompactTrigger;
+      result: HadamardSessionCompactResult;
       timestamp: string;
     }
   | {
@@ -1544,7 +1544,7 @@ export type AgentEvent =
       type: 'hook.lifecycle';
       runId: string;
       sessionId?: string;
-      lifecycleEvent: import('./hooks/hookTypes.js').ActoviqLifecycleEvent;
+      lifecycleEvent: import('./hooks/hookTypes.js').HadamardLifecycleEvent;
       outputs: import('./hooks/hookTypes.js').TypedHookOutput[];
       timestamp: string;
     }
@@ -1824,21 +1824,21 @@ export interface SessionCheckpointSummary {
 }
 
 
-export interface ActoviqMemorySettings {
+export interface HadamardMemorySettings {
   autoCompactEnabled?: boolean;
   autoMemoryEnabled?: boolean;
   autoDreamEnabled?: boolean;
   autoMemoryDirectory?: string;
 }
 
-export interface UpdateActoviqMemorySettingsInput {
+export interface UpdateHadamardMemorySettingsInput {
   autoCompactEnabled?: boolean;
   autoMemoryEnabled?: boolean;
   autoDreamEnabled?: boolean;
   autoMemoryDirectory?: string | null;
 }
 
-export interface ActoviqMemoryPaths {
+export interface HadamardMemoryPaths {
   configPath: string;
   homeDir: string;
   projectPath: string;
@@ -1853,7 +1853,7 @@ export interface ActoviqMemoryPaths {
   sessionMemoryPath?: string;
 }
 
-export interface ActoviqSessionMemoryState {
+export interface HadamardSessionMemoryState {
   exists: boolean;
   path?: string;
   content?: string;
@@ -1863,19 +1863,19 @@ export interface ActoviqSessionMemoryState {
   wasTruncated?: boolean;
 }
 
-export interface ActoviqSessionMemoryConfig {
+export interface HadamardSessionMemoryConfig {
   minimumMessageTokensToInit: number;
   minimumTokensBetweenUpdate: number;
   toolCallsBetweenUpdates: number;
 }
 
-export interface ActoviqSessionMemoryCompactConfig {
+export interface HadamardSessionMemoryCompactConfig {
   minTokens: number;
   minTextBlockMessages: number;
   maxTokens: number;
 }
 
-export interface ActoviqSessionMemoryProgress {
+export interface HadamardSessionMemoryProgress {
   currentTokenCount?: number;
   tokensAtLastExtraction?: number;
   tokensSinceLastExtraction?: number;
@@ -1889,7 +1889,7 @@ export interface ActoviqSessionMemoryProgress {
   shouldExtract?: boolean;
 }
 
-export interface ActoviqSessionMemoryRuntimeState {
+export interface HadamardSessionMemoryRuntimeState {
   initialized: boolean;
   tokensAtLastExtraction: number;
   lastMessageCountAtExtraction: number;
@@ -1908,9 +1908,9 @@ export interface AgentSessionMemoryExtractionOptions {
   signal?: AbortSignal;
 }
 
-export interface AgentSessionDreamOptions extends ActoviqDreamRunOptions {}
+export interface AgentSessionDreamOptions extends HadamardDreamRunOptions {}
 
-export interface ActoviqSessionMemoryExtractionResult {
+export interface HadamardSessionMemoryExtractionResult {
   success: boolean;
   skipped: boolean;
   updated: boolean;
@@ -1920,29 +1920,29 @@ export interface ActoviqSessionMemoryExtractionResult {
   memoryPath?: string;
   summary?: string;
   usage?: Usage;
-  state: ActoviqSessionMemoryRuntimeState;
+  state: HadamardSessionMemoryRuntimeState;
 }
 
-export interface ActoviqMemoryOptions {
+export interface HadamardMemoryOptions {
   configPath?: string;
   homeDir?: string;
   projectPath?: string;
   sessionId?: string;
 }
 
-export interface ActoviqMemoryPromptOptions extends ActoviqMemoryOptions {
+export interface HadamardMemoryPromptOptions extends HadamardMemoryOptions {
   extraGuidelines?: string[];
   skipIndex?: boolean;
 }
 
-export interface ActoviqMemoryStateOptions extends ActoviqMemoryPromptOptions {
+export interface HadamardMemoryStateOptions extends HadamardMemoryPromptOptions {
   includeCombinedPrompt?: boolean;
   includeSessionMemory?: boolean;
   includeSessionTemplate?: boolean;
   includeSessionPrompt?: boolean;
 }
 
-export interface ActoviqCompactStateOptions extends ActoviqMemoryStateOptions {
+export interface HadamardCompactStateOptions extends HadamardMemoryStateOptions {
   includeBoundaries?: boolean;
   includeSummaryMessage?: boolean;
   currentTokenCount?: number;
@@ -1951,33 +1951,33 @@ export interface ActoviqCompactStateOptions extends ActoviqMemoryStateOptions {
   hasToolCallsInLastTurn?: boolean;
   messageCountSinceLastExtraction?: number;
   toolCallsSinceLastUpdate?: number;
-  runtimeState?: ActoviqSessionMemoryRuntimeState;
+  runtimeState?: HadamardSessionMemoryRuntimeState;
 }
 
-export interface ActoviqMemoryState {
-  settings: ActoviqMemorySettings;
+export interface HadamardMemoryState {
+  settings: HadamardMemorySettings;
   enabled: {
     autoCompact: boolean;
     autoMemory: boolean;
     autoDream: boolean;
   };
-  paths: ActoviqMemoryPaths;
+  paths: HadamardMemoryPaths;
   combinedPrompt?: string;
-  sessionMemory?: ActoviqSessionMemoryState;
+  sessionMemory?: HadamardSessionMemoryState;
   sessionTemplate?: string;
   sessionPrompt?: string;
 }
 
-export interface ActoviqCompactState extends ActoviqMemoryState {
-  sessionMemoryConfig: ActoviqSessionMemoryConfig;
-  sessionMemoryCompactConfig: ActoviqSessionMemoryCompactConfig;
-  progress?: ActoviqSessionMemoryProgress;
-  runtimeState?: ActoviqSessionMemoryRuntimeState;
-  agentContinuity?: ActoviqAgentContinuityState;
-  invokedSkills?: ActoviqInvokedSkillRecord[];
+export interface HadamardCompactState extends HadamardMemoryState {
+  sessionMemoryConfig: HadamardSessionMemoryConfig;
+  sessionMemoryCompactConfig: HadamardSessionMemoryCompactConfig;
+  progress?: HadamardSessionMemoryProgress;
+  runtimeState?: HadamardSessionMemoryRuntimeState;
+  agentContinuity?: HadamardAgentContinuityState;
+  invokedSkills?: HadamardInvokedSkillRecord[];
   transcriptPath?: string;
-  boundaries?: ActoviqTranscriptBoundary[];
-  latestBoundary?: ActoviqTranscriptBoundary;
+  boundaries?: HadamardTranscriptBoundary[];
+  latestBoundary?: HadamardTranscriptBoundary;
   compactCount: number;
   microcompactCount: number;
   consecutiveCompactFailures?: number;
@@ -1986,13 +1986,13 @@ export interface ActoviqCompactState extends ActoviqMemoryState {
   hasCompacted: boolean;
   pendingPostCompaction?: boolean;
   lastSummarizedMessageUuid?: string;
-  latestPreservedSegment?: ActoviqPreservedSegment;
+  latestPreservedSegment?: HadamardPreservedSegment;
   latestBoundarySummary?: string;
   canUseSessionMemoryCompaction: boolean;
   summaryMessage?: string;
 }
 
-export interface ActoviqMemoryFileHeader {
+export interface HadamardMemoryFileHeader {
   filename: string;
   filePath: string;
   mtimeMs: number;
@@ -2001,7 +2001,7 @@ export interface ActoviqMemoryFileHeader {
   scope: 'private' | 'team';
 }
 
-export interface ActoviqRelevantMemory {
+export interface HadamardRelevantMemory {
   filename: string;
   path: string;
   mtimeMs: number;
@@ -2011,7 +2011,7 @@ export interface ActoviqRelevantMemory {
   score?: number;
 }
 
-export interface ActoviqSurfacedMemory {
+export interface HadamardSurfacedMemory {
   path: string;
   content: string;
   mtimeMs: number;
@@ -2021,19 +2021,19 @@ export interface ActoviqSurfacedMemory {
   freshnessText?: string;
 }
 
-export interface ActoviqRelevantMemoryLookupOptions extends ActoviqMemoryOptions {
+export interface HadamardRelevantMemoryLookupOptions extends HadamardMemoryOptions {
   recentTools?: string[];
   alreadySurfacedPaths?: Iterable<string>;
   limit?: number;
 }
 
-export interface ActoviqPreservedSegment {
+export interface HadamardPreservedSegment {
   headUuid: string;
   anchorUuid: string;
   tailUuid: string;
 }
 
-export interface ActoviqCompactBoundaryMetadata {
+export interface HadamardCompactBoundaryMetadata {
   trigger?: string;
   preTokens?: number;
   userContext?: string;
@@ -2042,10 +2042,10 @@ export interface ActoviqCompactBoundaryMetadata {
   droppedMessages?: number;
   retryCount?: number;
   continuationDepth?: number;
-  preservedSegment?: ActoviqPreservedSegment;
+  preservedSegment?: HadamardPreservedSegment;
 }
 
-export interface ActoviqMicrocompactBoundaryMetadata {
+export interface HadamardMicrocompactBoundaryMetadata {
   trigger?: string;
   preTokens?: number;
   tokensSaved?: number;
@@ -2053,26 +2053,26 @@ export interface ActoviqMicrocompactBoundaryMetadata {
   clearedAttachmentUUIDs?: string[];
 }
 
-export interface ActoviqTranscriptBoundary {
+export interface HadamardTranscriptBoundary {
   kind: 'compact' | 'microcompact';
   uuid: string;
   timestamp: string;
   sessionId: string;
   logicalParentUuid?: string | null;
-  metadata?: ActoviqCompactBoundaryMetadata | ActoviqMicrocompactBoundaryMetadata;
+  metadata?: HadamardCompactBoundaryMetadata | HadamardMicrocompactBoundaryMetadata;
   raw: Record<string, unknown>;
 }
 
-export const ACTOVIQ_BUDDY_RARITIES = [
+export const HADAMARD_BUDDY_RARITIES = [
   'common',
   'uncommon',
   'rare',
   'epic',
   'legendary',
 ] as const;
-export type ActoviqBuddyRarity = (typeof ACTOVIQ_BUDDY_RARITIES)[number];
+export type HadamardBuddyRarity = (typeof HADAMARD_BUDDY_RARITIES)[number];
 
-export const ACTOVIQ_BUDDY_SPECIES = [
+export const HADAMARD_BUDDY_SPECIES = [
   'duck',
   'goose',
   'blob',
@@ -2092,12 +2092,12 @@ export const ACTOVIQ_BUDDY_SPECIES = [
   'mushroom',
   'chonk',
 ] as const;
-export type ActoviqBuddySpecies = (typeof ACTOVIQ_BUDDY_SPECIES)[number];
+export type HadamardBuddySpecies = (typeof HADAMARD_BUDDY_SPECIES)[number];
 
-export const ACTOVIQ_BUDDY_EYES = ['o_o', '^_^', '-_-', '@_@', '>_<', 'x_x'] as const;
-export type ActoviqBuddyEye = (typeof ACTOVIQ_BUDDY_EYES)[number];
+export const HADAMARD_BUDDY_EYES = ['o_o', '^_^', '-_-', '@_@', '>_<', 'x_x'] as const;
+export type HadamardBuddyEye = (typeof HADAMARD_BUDDY_EYES)[number];
 
-export const ACTOVIQ_BUDDY_HATS = [
+export const HADAMARD_BUDDY_HATS = [
   'none',
   'crown',
   'tophat',
@@ -2107,81 +2107,81 @@ export const ACTOVIQ_BUDDY_HATS = [
   'beanie',
   'tinyduck',
 ] as const;
-export type ActoviqBuddyHat = (typeof ACTOVIQ_BUDDY_HATS)[number];
+export type HadamardBuddyHat = (typeof HADAMARD_BUDDY_HATS)[number];
 
-export const ACTOVIQ_BUDDY_STAT_NAMES = [
+export const HADAMARD_BUDDY_STAT_NAMES = [
   'DEBUGGING',
   'PATIENCE',
   'CHAOS',
   'WISDOM',
   'SNARK',
 ] as const;
-export type ActoviqBuddyStatName = (typeof ACTOVIQ_BUDDY_STAT_NAMES)[number];
+export type HadamardBuddyStatName = (typeof HADAMARD_BUDDY_STAT_NAMES)[number];
 
-export interface ActoviqBuddyBones {
-  rarity: ActoviqBuddyRarity;
-  species: ActoviqBuddySpecies;
-  eye: ActoviqBuddyEye;
-  hat: ActoviqBuddyHat;
+export interface HadamardBuddyBones {
+  rarity: HadamardBuddyRarity;
+  species: HadamardBuddySpecies;
+  eye: HadamardBuddyEye;
+  hat: HadamardBuddyHat;
   shiny: boolean;
-  stats: Record<ActoviqBuddyStatName, number>;
+  stats: Record<HadamardBuddyStatName, number>;
 }
 
-export interface ActoviqBuddySoul {
+export interface HadamardBuddySoul {
   name: string;
   personality: string;
 }
 
-export interface StoredActoviqBuddy extends ActoviqBuddySoul {
+export interface StoredHadamardBuddy extends HadamardBuddySoul {
   hatchedAt: number;
 }
 
-export interface ActoviqBuddyCompanion extends ActoviqBuddyBones, ActoviqBuddySoul {
+export interface HadamardBuddyCompanion extends HadamardBuddyBones, HadamardBuddySoul {
   hatchedAt: number;
 }
 
-export interface ActoviqBuddyRoll {
-  bones: ActoviqBuddyBones;
+export interface HadamardBuddyRoll {
+  bones: HadamardBuddyBones;
   inspirationSeed: number;
 }
 
-export interface ActoviqBuddyState {
+export interface HadamardBuddyState {
   configPath: string;
   userId: string;
   muted: boolean;
-  buddy?: ActoviqBuddyCompanion;
+  buddy?: HadamardBuddyCompanion;
 }
 
-export interface ActoviqBuddyReaction {
-  buddy: ActoviqBuddyCompanion;
+export interface HadamardBuddyReaction {
+  buddy: HadamardBuddyCompanion;
   reaction: string;
   petAt: number;
 }
 
-export interface ActoviqBuddyIntroAttachment {
+export interface HadamardBuddyIntroAttachment {
   type: 'companion_intro';
   name: string;
-  species: ActoviqBuddySpecies;
+  species: HadamardBuddySpecies;
 }
 
-export interface ActoviqBuddyPromptContext {
-  buddy: ActoviqBuddyCompanion;
-  attachment: ActoviqBuddyIntroAttachment;
+export interface HadamardBuddyPromptContext {
+  buddy: HadamardBuddyCompanion;
+  attachment: HadamardBuddyIntroAttachment;
   text: string;
 }
 
-export interface ActoviqBuddyOptions {
+export interface HadamardBuddyOptions {
   configPath?: string;
   homeDir?: string;
   userId?: string;
 }
 
-export interface HatchActoviqBuddyOptions extends ActoviqBuddyOptions {
+export interface HatchHadamardBuddyOptions extends HadamardBuddyOptions {
   name: string;
   personality: string;
 }
 
-export interface ActoviqBuddyPromptContextOptions extends ActoviqBuddyOptions {
+export interface HadamardBuddyPromptContextOptions extends HadamardBuddyOptions {
   announcedNames?: string[];
 }
 
@@ -2303,14 +2303,14 @@ export interface ScheduledAutomationTaskInput {
 //  Bridge SDK types — restored from f6d619a
 // ═══════════════════════════════════════════════════════════════════════
 
-export type ActoviqBridgePermissionMode =
+export type HadamardBridgePermissionMode =
   | 'acceptEdits'
   | 'bypassPermissions'
   | 'default'
   | 'dontAsk'
   | 'plan';
 
-export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
+export type HadamardBridgeToolsOption = 'default' | 'none' | string[];
 
 /**
  * Which agent CLI directCli mode drives. `claude` (default) uses Claude Code's
@@ -2320,7 +2320,7 @@ export type ActoviqBridgeToolsOption = 'default' | 'none' | string[];
 export type RuntimeProviderId = 'claude' | 'pi' | 'codex' | 'codewhale' | 'reasonix' | 'crush';
 
 /** Authentication source for an externally launched agent CLI. */
-export type ActoviqBridgeAuthSource = 'native' | 'apiKey';
+export type HadamardBridgeAuthSource = 'native' | 'apiKey';
 
 /** Result of `detectBridgeProviders()` — one entry per known provider. */
 export interface BridgeProviderDetection {
@@ -2334,14 +2334,14 @@ export interface BridgeProviderDetection {
   version?: string;
 }
 
-export interface ActoviqBridgeJsonEvent extends Record<string, unknown> {
+export interface HadamardBridgeJsonEvent extends Record<string, unknown> {
   type: string;
   subtype?: string;
   session_id?: string;
   uuid?: string;
 }
 
-export interface CreateActoviqBridgeSdkOptions {
+export interface CreateHadamardBridgeSdkOptions {
   executable?: string;
   cliPath?: string;
   /**
@@ -2360,12 +2360,12 @@ export interface CreateActoviqBridgeSdkOptions {
    */
   directCliProvider?: RuntimeProviderId;
   /**
-   * `native` reuses the CLI's own login/configuration without mapping Actoviq
+   * `native` reuses the CLI's own login/configuration without mapping Hadamard
    * API settings into provider credential variables. `apiKey` injects the
    * explicit key below into this child process only. Direct CLI mode defaults
    * to `native`; the vendored bridge keeps its legacy settings mapping.
    */
-  authSource?: ActoviqBridgeAuthSource;
+  authSource?: HadamardBridgeAuthSource;
   /** Explicit per-child credential used only when authSource is `apiKey`. */
   apiKey?: string;
   /** Optional per-child provider endpoint used only when authSource is `apiKey`. */
@@ -2374,7 +2374,7 @@ export interface CreateActoviqBridgeSdkOptions {
   credentialProvider?: string;
   /**
    * Stable, non-secret identity for a managed external CLI configuration.
-   * Actoviq-owned session profiles use it across process restarts without
+   * Hadamard-owned session profiles use it across process restarts without
    * including the credential itself in a filesystem path or hash.
    */
   profileName?: string;
@@ -2385,7 +2385,7 @@ export interface CreateActoviqBridgeSdkOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   systemPrompt?: string;
   appendSystemPrompt?: string;
-  permissionMode?: ActoviqBridgePermissionMode;
+  permissionMode?: HadamardBridgePermissionMode;
   /** Trust and load project-local runtime resources when the selected CLI supports it (Pi). */
   trustProjectResources?: boolean;
   dangerouslySkipPermissions?: boolean;
@@ -2393,7 +2393,7 @@ export interface CreateActoviqBridgeSdkOptions {
   maxBudgetUsd?: number;
   agent?: string;
   agents?: Record<string, unknown>;
-  tools?: ActoviqBridgeToolsOption;
+  tools?: HadamardBridgeToolsOption;
   allowedTools?: string[];
   disallowedTools?: string[];
   addDirs?: string[];
@@ -2413,7 +2413,7 @@ export interface CreateActoviqBridgeSdkOptions {
   cliArgs?: string[];
 }
 
-export interface ActoviqBridgeRunOptions extends CreateActoviqBridgeSdkOptions {
+export interface HadamardBridgeRunOptions extends CreateHadamardBridgeSdkOptions {
   sessionId?: string;
   resume?: string | true;
   continueMostRecent?: boolean;
@@ -2422,20 +2422,20 @@ export interface ActoviqBridgeRunOptions extends CreateActoviqBridgeSdkOptions {
   signal?: AbortSignal;
 }
 
-export interface ActoviqBridgeSessionCreateOptions
+export interface HadamardBridgeSessionCreateOptions
   extends Omit<
-    ActoviqBridgeRunOptions,
+    HadamardBridgeRunOptions,
     'continueMostRecent' | 'forkSession' | 'name' | 'resume' | 'sessionId' | 'signal'
   > {
   sessionId?: string;
   title?: string;
 }
 
-export type ActoviqBridgeAgentRunOptions = Omit<ActoviqBridgeRunOptions, 'agent'>;
-export type ActoviqBridgeAgentSessionOptions = Omit<ActoviqBridgeSessionCreateOptions, 'agent'>;
-export type ActoviqBridgeSkillRunOptions = Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>;
+export type HadamardBridgeAgentRunOptions = Omit<HadamardBridgeRunOptions, 'agent'>;
+export type HadamardBridgeAgentSessionOptions = Omit<HadamardBridgeSessionCreateOptions, 'agent'>;
+export type HadamardBridgeSkillRunOptions = Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>;
 
-export interface ActoviqBridgeRunResult {
+export interface HadamardBridgeRunResult {
   text: string;
   sessionId: string;
   isError: boolean;
@@ -2446,38 +2446,38 @@ export interface ActoviqBridgeRunResult {
   numTurns?: number;
   exitCode: number | null;
   stderr: string;
-  initEvent?: ActoviqBridgeJsonEvent;
-  resultEvent: ActoviqBridgeJsonEvent;
-  assistantMessages: ActoviqBridgeJsonEvent[];
-  events: ActoviqBridgeJsonEvent[];
+  initEvent?: HadamardBridgeJsonEvent;
+  resultEvent: HadamardBridgeJsonEvent;
+  assistantMessages: HadamardBridgeJsonEvent[];
+  events: HadamardBridgeJsonEvent[];
 }
 
-export interface ActoviqRuntimeMcpServer {
+export interface HadamardRuntimeMcpServer {
   name: string;
   status?: string;
 }
 
-export interface ActoviqRuntimePluginInfo {
+export interface HadamardRuntimePluginInfo {
   name: string;
   path?: string;
   source?: string;
 }
 
-export interface ActoviqRuntimeInfo {
+export interface HadamardRuntimeInfo {
   sessionId: string;
   cwd?: string;
   model?: string;
   permissionMode?: string;
   tools: string[];
-  mcpServers: ActoviqRuntimeMcpServer[];
+  mcpServers: HadamardRuntimeMcpServer[];
   slashCommands: string[];
   agents: string[];
   skills: string[];
-  plugins: ActoviqRuntimePluginInfo[];
-  rawInitEvent: ActoviqBridgeJsonEvent;
+  plugins: HadamardRuntimePluginInfo[];
+  rawInitEvent: HadamardBridgeJsonEvent;
 }
 
-export interface ActoviqAgentSummary {
+export interface HadamardAgentSummary {
   name: string;
   sourceGroup: string;
   active: boolean;
@@ -2487,150 +2487,150 @@ export interface ActoviqAgentSummary {
   shadowedBy?: string;
 }
 
-export interface ActoviqAgentMetadata extends ActoviqAgentSummary {
+export interface HadamardAgentMetadata extends HadamardAgentSummary {
   contextSource?: string;
   tokens?: string;
 }
 
-export interface ActoviqToolMetadata {
+export interface HadamardToolMetadata {
   name: string;
   kind: 'builtin' | 'mcp';
   server?: string;
   tokens?: string;
 }
 
-export interface ActoviqSkillMetadata {
+export interface HadamardSkillMetadata {
   name: string;
   slashCommand: string;
   source?: string;
   tokens?: string;
 }
 
-export interface ActoviqSlashCommandMetadata {
+export interface HadamardSlashCommandMetadata {
   name: string;
   kind: 'builtin' | 'skill';
   skillName?: string;
 }
 
-export interface ActoviqRuntimeCatalog {
-  runtime: ActoviqRuntimeInfo;
-  agents: ActoviqAgentMetadata[];
-  tools: ActoviqToolMetadata[];
-  skills: ActoviqSkillMetadata[];
-  slashCommands: ActoviqSlashCommandMetadata[];
-  context?: ActoviqContextUsage;
+export interface HadamardRuntimeCatalog {
+  runtime: HadamardRuntimeInfo;
+  agents: HadamardAgentMetadata[];
+  tools: HadamardToolMetadata[];
+  skills: HadamardSkillMetadata[];
+  slashCommands: HadamardSlashCommandMetadata[];
+  context?: HadamardContextUsage;
 }
 
-export interface ActoviqContextCategory {
+export interface HadamardContextCategory {
   name: string;
   tokens: string;
   percentage: string;
 }
 
-export interface ActoviqContextSkillUsage {
+export interface HadamardContextSkillUsage {
   name: string;
   source?: string;
   tokens: string;
 }
 
-export interface ActoviqContextAgentUsage {
+export interface HadamardContextAgentUsage {
   agentType: string;
   source?: string;
   tokens: string;
 }
 
-export interface ActoviqContextMcpToolUsage {
+export interface HadamardContextMcpToolUsage {
   tool: string;
   server: string;
   tokens: string;
 }
 
-export interface ActoviqContextUsage {
+export interface HadamardContextUsage {
   markdown: string;
   model?: string;
   tokensUsed?: string;
   tokenLimit?: string;
   percentage?: number;
-  categories: ActoviqContextCategory[];
-  skills: ActoviqContextSkillUsage[];
-  agents: ActoviqContextAgentUsage[];
-  mcpTools: ActoviqContextMcpToolUsage[];
-  rawResult: ActoviqBridgeRunResult;
+  categories: HadamardContextCategory[];
+  skills: HadamardContextSkillUsage[];
+  agents: HadamardContextAgentUsage[];
+  mcpTools: HadamardContextMcpToolUsage[];
+  rawResult: HadamardBridgeRunResult;
 }
 
-export interface ActoviqBridgeCapabilityLookupOptions
-  extends Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> {
+export interface HadamardBridgeCapabilityLookupOptions
+  extends Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'> {
   includeContext?: boolean;
 }
 
-export type ActoviqCleanBridgeParityStatus =
+export type HadamardCleanBridgeParityStatus =
   | 'exact'
   | 'mapped'
   | 'simulated'
   | 'unsupported';
 
-export interface ActoviqCleanBridgeParityMatrixEntry {
-  option: keyof ActoviqBridgeRunOptions | keyof CreateActoviqBridgeSdkOptions;
-  status: ActoviqCleanBridgeParityStatus;
+export interface HadamardCleanBridgeParityMatrixEntry {
+  option: keyof HadamardBridgeRunOptions | keyof CreateHadamardBridgeSdkOptions;
+  status: HadamardCleanBridgeParityStatus;
   cleanTarget?: string;
   notes: string;
 }
 
-export interface ActoviqCleanBridgeUnsupportedOption {
+export interface HadamardCleanBridgeUnsupportedOption {
   option: string;
   value: unknown;
   reason: string;
 }
 
-export interface ActoviqCleanBridgeCompatibilityReport {
+export interface HadamardCleanBridgeCompatibilityReport {
   mapped: Array<{
     option: string;
     cleanTarget: string;
-    status: Exclude<ActoviqCleanBridgeParityStatus, 'unsupported'>;
+    status: Exclude<HadamardCleanBridgeParityStatus, 'unsupported'>;
     note?: string;
   }>;
-  unsupported: ActoviqCleanBridgeUnsupportedOption[];
+  unsupported: HadamardCleanBridgeUnsupportedOption[];
 }
 
-export type ActoviqCleanBridgeUnsupportedOptionPolicy = 'metadata' | 'warn' | 'throw';
+export type HadamardCleanBridgeUnsupportedOptionPolicy = 'metadata' | 'warn' | 'throw';
 
-export interface CreateActoviqCleanBridgeSdkOptions extends CreateAgentSdkOptions {
-  bridgeDefaults?: CreateActoviqBridgeSdkOptions;
-  unsupportedOptionPolicy?: ActoviqCleanBridgeUnsupportedOptionPolicy;
+export interface CreateHadamardCleanBridgeSdkOptions extends CreateAgentSdkOptions {
+  bridgeDefaults?: CreateHadamardBridgeSdkOptions;
+  unsupportedOptionPolicy?: HadamardCleanBridgeUnsupportedOptionPolicy;
 }
 
-export type ActoviqBridgeToolProvider = 'runtime' | 'server' | 'mcp' | 'unknown';
+export type HadamardBridgeToolProvider = 'runtime' | 'server' | 'mcp' | 'unknown';
 
-export interface ActoviqBridgeToolRequest {
+export interface HadamardBridgeToolRequest {
   id?: string;
   name: string;
-  provider: ActoviqBridgeToolProvider;
+  provider: HadamardBridgeToolProvider;
   blockType: string;
   input?: unknown;
 }
 
-export interface ActoviqBridgeToolResultSummary {
+export interface HadamardBridgeToolResultSummary {
   toolUseId: string;
   isError: boolean;
   blockType: string;
   content?: unknown;
 }
 
-export interface ActoviqBridgeTaskInvocation {
+export interface HadamardBridgeTaskInvocation {
   id?: string;
   name: string;
-  provider: ActoviqBridgeToolProvider;
+  provider: HadamardBridgeToolProvider;
   description?: string;
   prompt?: string;
   subagentType?: string;
   input: Record<string, unknown>;
 }
 
-export interface ActoviqBridgeEventAnalysis {
+export interface HadamardBridgeEventAnalysis {
   textDeltas: string[];
-  toolRequests: ActoviqBridgeToolRequest[];
-  toolResults: ActoviqBridgeToolResultSummary[];
-  taskInvocations: ActoviqBridgeTaskInvocation[];
+  toolRequests: HadamardBridgeToolRequest[];
+  toolResults: HadamardBridgeToolResultSummary[];
+  taskInvocations: HadamardBridgeTaskInvocation[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3056,11 +3056,11 @@ export interface TeamAskOptions {
   /** Receives progress events as the team deliberates. */
   onEvent?: (event: TeamEvent) => void;
   /** Permission policy inherited by every member runtime. Defaults to `default`, never bypass. */
-  permissionMode?: ActoviqPermissionMode;
-  permissions?: ActoviqPermissionRule[];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
-  hooks?: ActoviqHooks;
+  permissionMode?: HadamardPermissionMode;
+  permissions?: HadamardPermissionRule[];
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
+  hooks?: HadamardHooks;
   /**
    * Internal recursion guard for `type: 'team'` graph nodes: the chain of team
    * refs currently being executed. The top-level call omits this; each team node

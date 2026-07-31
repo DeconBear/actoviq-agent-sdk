@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AppServer } from '../src/app-server/index.js';
-import type { ActoviqAgentClient } from '../src/runtime/agentClient.js';
+import type { HadamardAgentClient } from '../src/runtime/agentClient.js';
 
 describe('AppServer approvals, diffs, and checkpoints', () => {
   it('requires explicit confirmation before mutating restore or diff operations', async () => {
@@ -19,7 +19,7 @@ describe('AppServer approvals, diffs, and checkpoints', () => {
         list: vi.fn(async () => [{ id: 'approval-1', tool: 'Write', behavior: 'allow' }]),
         remember: vi.fn(async () => undefined),
       },
-    } as unknown as ActoviqAgentClient;
+    } as unknown as HadamardAgentClient;
     const server = new AppServer(sdk);
 
     expect((await server.handle(request('diff/apply', { sessionId: 'session-1' }))).error?.message)
@@ -53,7 +53,7 @@ describe('AppServer approvals, diffs, and checkpoints', () => {
         list: vi.fn(async () => [{ id: 'approval-1', tool: 'Write', behavior: 'allow' }]),
         remember,
       },
-    } as unknown as ActoviqAgentClient;
+    } as unknown as HadamardAgentClient;
     const server = new AppServer(sdk);
 
     const listed = await server.handle(request('approval/list'));
@@ -76,7 +76,7 @@ describe('AppServer approvals, diffs, and checkpoints', () => {
     const remember = vi.fn(async () => undefined);
     const sdk = {
       approvalPolicy: { list: vi.fn(async () => []), remember },
-    } as unknown as ActoviqAgentClient;
+    } as unknown as HadamardAgentClient;
     const server = new AppServer(sdk);
     const response = await server.handle(request('approval/remember', {
       confirm: true,

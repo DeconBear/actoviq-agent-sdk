@@ -17,7 +17,7 @@ afterEach(async () => {
 
 describe('automatic Session worktrees', () => {
   it('creates and resumes a Session-owned worktree and exposes its diff', async () => {
-    const base = await mkdtemp(path.join(os.tmpdir(), 'actoviq-auto-worktree-'));
+    const base = await mkdtemp(path.join(os.tmpdir(), 'hadamard-auto-worktree-'));
     dirs.push(base);
     const repo = path.join(base, 'repo');
     await execFile('git', ['init', repo]);

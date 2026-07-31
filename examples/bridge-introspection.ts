@@ -1,14 +1,14 @@
 import path from 'node:path';
 
-import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk, loadDefaultHadamardSettings } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 
-const sdk = await createActoviqBridgeSdk({
-  ...(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH
+const sdk = await createHadamardBridgeSdk({
+  ...(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH
     ? {
         executable: process.execPath,
-        cliPath: path.resolve(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH),
+        cliPath: path.resolve(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH),
       }
     : {}),
   workDir: process.cwd(),

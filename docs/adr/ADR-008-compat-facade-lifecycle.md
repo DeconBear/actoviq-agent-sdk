@@ -6,7 +6,7 @@
 
 ## 上下文
 
-Package root 当前暴露大量平台内部 symbol，真实用户可能依赖 `createAgentSdk`、`ActoviqAgentClient`、旧 ModelApi/session/event/team/workflow/Bridge 形状。一次性切换到 core/runtime/provider v2 会造成高风险破坏，但如果继续向 root 添加新 symbol，又无法冻结 1.0 contract。
+Package root 当前暴露大量平台内部 symbol，真实用户可能依赖 `createAgentSdk`、`HadamardAgentClient`、旧 ModelApi/session/event/team/workflow/Bridge 形状。一次性切换到 core/runtime/provider v2 会造成高风险破坏，但如果继续向 root 添加新 symbol，又无法冻结 1.0 contract。
 
 需要一条可观测、可回滚、至少跨一个稳定 major 的迁移路径。
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 import { createAskUserQuestionTool } from '../src/tools/askUserQuestion/AskUserQuestionTool.js';
 
 describe('AskUserQuestion interactive approval', () => {
@@ -11,7 +11,7 @@ describe('AskUserQuestion interactive approval', () => {
   });
 
   it('passes updatedInput from the approver through the permission decision', async () => {
-    const decision = await decideActoviqToolPermission({
+    const decision = await decideHadamardToolPermission({
       mode: 'bypassPermissions',
       rules: [],
       approver: async () => ({

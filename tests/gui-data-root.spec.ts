@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
-import { getActoviqHomePointerPath } from '../src/index.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
+import { getHadamardHomePointerPath } from '../src/index.js';
 
 const tempDirs: string[] = [];
 
@@ -20,14 +20,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const res = await fetch(`${server.url}${requestPath}`, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -35,23 +35,23 @@ async function api<T>(
 }
 
 describe('GUI data root settings', () => {
-  it('reports and migrates the Actoviq data root after explicit confirmation', async () => {
-    const root = await tempRoot('actoviq-gui-data-root-');
+  it('reports and migrates the Hadamard data root after explicit confirmation', async () => {
+    const root = await tempRoot('hadamard-gui-data-root-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const sourceRoot = path.join(homeDir, '.actoviq');
-    const targetRoot = path.join(root, 'actoviq-data');
+    const sourceRoot = path.join(homeDir, '.hadamard');
+    const targetRoot = path.join(root, 'hadamard-data');
     await mkdir(workDir, { recursive: true });
     await mkdir(sourceRoot, { recursive: true });
     await writeFile(path.join(sourceRoot, 'settings.json'), JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
     await writeFile(path.join(sourceRoot, 'mcp.json'), JSON.stringify({ servers: [{ name: 'demo', command: 'npx' }] }), 'utf8');
 
     const port = 44000 + Math.floor(Math.random() * 10000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -70,7 +70,7 @@ describe('GUI data root settings', () => {
       );
       expect(before.status).toBe(200);
       expect(before.body.root).toBe(sourceRoot);
-      expect(before.body.pointerPath).toBe(getActoviqHomePointerPath(homeDir));
+      expect(before.body.pointerPath).toBe(getHadamardHomePointerPath(homeDir));
       expect(before.body.summary.entries).toBeGreaterThanOrEqual(2);
       expect(before.body.contents).toEqual(expect.arrayContaining(['mcp.json', 'settings.json']));
 
@@ -99,9 +99,9 @@ describe('GUI data root settings', () => {
       expect(migrated.body.state.settings.dataRoot.root).toBe(path.resolve(targetRoot));
       expect(migrated.body.state.settings.configPath).toBe(path.join(path.resolve(targetRoot), 'settings.json'));
 
-      await expect(readFile(path.join(targetRoot, 'settings.json'), 'utf8')).resolves.toContain('ACTOVIQ_MODEL');
+      await expect(readFile(path.join(targetRoot, 'settings.json'), 'utf8')).resolves.toContain('HADAMARD_MODEL');
       await expect(readFile(path.join(targetRoot, 'mcp.json'), 'utf8')).resolves.toContain('demo');
-      const pointer = JSON.parse(await readFile(getActoviqHomePointerPath(homeDir), 'utf8')) as { root: string };
+      const pointer = JSON.parse(await readFile(getHadamardHomePointerPath(homeDir), 'utf8')) as { root: string };
       expect(pointer.root).toBe(path.resolve(targetRoot));
 
       const after = await api<{ root: string }>(server, 'api/settings/data-root');

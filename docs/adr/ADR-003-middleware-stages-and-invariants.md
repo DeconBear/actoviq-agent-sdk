@@ -81,7 +81,7 @@ handler 接收 `(context, next)`。通用 pipeline 中不调用 `next()` 是显�
 - 旧 hooks 不会自动变成新 middleware；迁移需要为每个 hook 选择明确 stage，并验证 timeout 和错误语义。
 - 新 pipeline 的同 priority 冲突会在构建时失败，旧系统中依赖隐式注册顺序的扩展必须分配唯一 priority。
 - Middleware 可以改变 model response/final output，调用方必须更新 snapshot/contract tests。
-- Root `ActoviqHooks` 继续存在于 compat API；新代码使用 runtime subpath 的 middleware contract。
+- Root `HadamardHooks` 继续存在于 compat API；新代码使用 runtime subpath 的 middleware contract。
 
 ## Runtime 成本
 

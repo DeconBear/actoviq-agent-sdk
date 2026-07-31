@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 async function createSessionDirectory(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-goal-ctx-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-goal-ctx-'));
   tempDirs.push(dir);
   return dir;
 }

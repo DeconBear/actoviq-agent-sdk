@@ -625,8 +625,8 @@ describe('editor artifact → engine (end to end)', () => {
     const os = await import('node:os');
     const { saveTeamDefinition, loadTeamDefinition } = await import('../src/team/teamDefinitions.js');
 
-    const tmpDir = path.join(os.tmpdir(), `actoviq-graph-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    fs.mkdirSync(path.join(tmpDir, '.actoviq', 'teams'), { recursive: true });
+    const tmpDir = path.join(os.tmpdir(), `hadamard-graph-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    fs.mkdirSync(path.join(tmpDir, '.hadamard', 'teams'), { recursive: true });
     try {
       // What the GUI graph editor produces: nodes + edges + entry + condition
       // + allowedTools + a communication edge.

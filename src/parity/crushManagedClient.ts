@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgePermissionMode,
+  HadamardBridgeJsonEvent,
+  HadamardBridgePermissionMode,
 } from '../types.js';
 import {
   findExecutableOnPath,
@@ -91,7 +91,7 @@ export interface RunCrushManagedOptions {
   apiKey?: string;
   /** Optional provider base URL applied through Crush's local server API. */
   baseURL?: string;
-  permissionMode?: ActoviqBridgePermissionMode;
+  permissionMode?: HadamardBridgePermissionMode;
   /** Child-process environment only. Values are redacted from events and stderr. */
   env?: Record<string, string>;
   /** Set false when `env` is already a complete, credential-sanitized environment. */
@@ -155,7 +155,7 @@ interface EventStreamResult {
  */
 export async function runCrushManaged(
   options: RunCrushManagedOptions,
-  onEvent: (event: ActoviqBridgeJsonEvent) => void | Promise<void>,
+  onEvent: (event: HadamardBridgeJsonEvent) => void | Promise<void>,
 ): Promise<CrushManagedRunResult> {
   validateRunOptions(options);
   throwIfAborted(options.signal);
@@ -180,7 +180,7 @@ export async function runCrushManaged(
   let streamIsError = false;
   let childSpawnError: Error | undefined;
 
-  const emit = async (event: ActoviqBridgeJsonEvent): Promise<void> => {
+  const emit = async (event: HadamardBridgeJsonEvent): Promise<void> => {
     await onEvent(redactEvent(event, secrets));
   };
 
@@ -248,7 +248,7 @@ export async function runCrushManaged(
         socketPath: transport.socketPath,
         method: 'POST',
         path: `/v1/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
-        body: JSON.stringify({ title: 'Actoviq managed run' }),
+        body: JSON.stringify({ title: 'Hadamard managed run' }),
         signal: options.signal,
       }, [200])).id, 'Crush session id');
 
@@ -369,14 +369,14 @@ export async function runCrushManaged(
 /** Creates the private local-only transport used by production runs. */
 export async function createPrivateCrushTransport(): Promise<CrushLocalTransport> {
   if (process.platform === 'win32') {
-    const name = `actoviq-crush-${randomUUID()}`;
+    const name = `hadamard-crush-${randomUUID()}`;
     return {
       serverHost: `npipe:////./pipe/${name}`,
       socketPath: `\\\\.\\pipe\\${name}`,
     };
   }
 
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'actoviq-crush-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hadamard-crush-'));
   await chmod(directory, 0o700);
   const socketPath = path.join(directory, 'server.sock');
   if (Buffer.byteLength(socketPath, 'utf8') > UNIX_SOCKET_PATH_LIMIT) {
@@ -416,7 +416,7 @@ export function assertCrushLocalTransport(transport: CrushLocalTransport): void 
 
 /** Deterministic, fail-closed mapping used when no UI permission handler is supplied. */
 export function decideCrushPermission(
-  mode: ActoviqBridgePermissionMode,
+  mode: HadamardBridgePermissionMode,
   request: Pick<CrushPermissionRequest, 'tool_name'>,
 ): CrushPermissionDecision {
   if (mode === 'bypassPermissions') return 'allow';
@@ -726,10 +726,10 @@ async function consumeCrushEventStream(options: {
   response: CrushHttpResponse;
   httpRequest: CrushHttpRequest;
   socketPath: string;
-  permissionMode: ActoviqBridgePermissionMode;
+  permissionMode: HadamardBridgePermissionMode;
   permissionHandler?: RunCrushManagedOptions['permissionHandler'];
   scope: EventScope;
-  emit: (event: ActoviqBridgeJsonEvent) => Promise<void>;
+  emit: (event: HadamardBridgeJsonEvent) => Promise<void>;
   signal: AbortSignal;
 }): Promise<EventStreamResult> {
   const state: MessageState = {
@@ -839,7 +839,7 @@ async function normalizeMessage(
   message: JsonRecord,
   scope: EventScope,
   state: MessageState,
-  emit: (event: ActoviqBridgeJsonEvent) => Promise<void>,
+  emit: (event: HadamardBridgeJsonEvent) => Promise<void>,
 ): Promise<void> {
   const role = stringValue(message.role);
   if (role !== 'assistant' && role !== 'tool') return;
@@ -1180,10 +1180,10 @@ function secretValues(
 }
 
 function redactEvent(
-  event: ActoviqBridgeJsonEvent,
+  event: HadamardBridgeJsonEvent,
   secrets: readonly string[],
-): ActoviqBridgeJsonEvent {
-  return sanitizeValue(event, secrets) as ActoviqBridgeJsonEvent;
+): HadamardBridgeJsonEvent {
+  return sanitizeValue(event, secrets) as HadamardBridgeJsonEvent;
 }
 
 function sanitizeValue(value: unknown, secrets: readonly string[]): unknown {

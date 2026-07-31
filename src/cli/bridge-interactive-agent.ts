@@ -5,14 +5,14 @@ import { createInterface } from 'node:readline/promises';
 import process from 'node:process';
 
 import {
-  analyzeActoviqBridgeEvents,
-  createActoviqBridgeSdk,
+  analyzeHadamardBridgeEvents,
+  createHadamardBridgeSdk,
   detectBridgeProviders,
-  getActoviqBridgeTextDelta,
-  loadDefaultActoviqSettings,
+  getHadamardBridgeTextDelta,
+  loadDefaultHadamardSettings,
   loadJsonConfigFile,
-  persistActoviqSettingsStore,
-  resolveActoviqSettingsStore,
+  persistHadamardSettingsStore,
+  resolveHadamardSettingsStore,
 } from 'actoviq-agent-sdk';
 
 const WORKSPACE_PATH = process.cwd();
@@ -51,11 +51,11 @@ async function main(): Promise<void> {
     await ensureFileExists(JSON_CONFIG_PATH);
     await loadJsonConfigFile(JSON_CONFIG_PATH);
   } catch {
-    await loadDefaultActoviqSettings();
-    configSource = '~/.actoviq/settings.json';
+    await loadDefaultHadamardSettings();
+    configSource = '~/.hadamard/settings.json';
   }
 
-  let sdk = await createActoviqBridgeSdk({
+  let sdk = await createHadamardBridgeSdk({
     workDir: WORKSPACE_PATH,
     tools: 'default',
     maxTurns: 32,
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 
   async function recreateBridgeSdk(): Promise<void> {
     await sdk.close().catch(() => undefined);
-    sdk = await createActoviqBridgeSdk({
+    sdk = await createHadamardBridgeSdk({
       workDir: WORKSPACE_PATH,
       tools: 'default',
       maxTurns: 32,
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
     terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   });
 
-  console.log('Actoviq Bridge — interactive agent');
+  console.log('Hadamard Bridge — interactive agent');
   console.log(`Workspace: ${WORKSPACE_PATH}`);
   console.log(`Config:    ${configSource}`);
   console.log('');
@@ -136,26 +136,26 @@ async function main(): Promise<void> {
     if (idx < 1 || idx > 3) return;
 
     const provider = results[idx - 1]!;
-    const store = await resolveActoviqSettingsStore();
+    const store = await resolveHadamardSettingsStore();
     const raw: Record<string, unknown> = structuredClone(store.raw);
     const bridge: Record<string, unknown> = (raw.bridge as Record<string, unknown>) ?? {};
     bridge.defaultProvider = provider.id;
     raw.bridge = bridge;
-    await persistActoviqSettingsStore(store.configPath, raw);
+    await persistHadamardSettingsStore(store.configPath, raw);
     await loadJsonConfigFile(store.configPath);
 
     const pathOverride = await rl.question(
       `Executable path for ${provider.id} (Enter to use auto-detection)> `,
     );
     if (pathOverride.trim()) {
-      const store2 = await resolveActoviqSettingsStore();
+      const store2 = await resolveHadamardSettingsStore();
       const raw2: Record<string, unknown> = structuredClone(store2.raw);
       const bridge2: Record<string, unknown> = (raw2.bridge as Record<string, unknown>) ?? {};
       const providers: Record<string, unknown> = (bridge2.providers as Record<string, unknown>) ?? {};
       providers[provider.id] = { ...(providers[provider.id] as Record<string, unknown> ?? {}), path: pathOverride.trim() };
       bridge2.providers = providers;
       raw2.bridge = bridge2;
-      await persistActoviqSettingsStore(store2.configPath, raw2);
+      await persistHadamardSettingsStore(store2.configPath, raw2);
       await loadJsonConfigFile(store2.configPath);
     }
 
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
 
       for await (const event of stream) {
         bufferedEvents.push(event);
-        const delta = getActoviqBridgeTextDelta(event);
+        const delta = getHadamardBridgeTextDelta(event);
         if (delta) {
           if (!printedText) {
             process.stdout.write('\nAgent> ');
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
       }
 
       const result = await stream.result;
-      const analysis = analyzeActoviqBridgeEvents(bufferedEvents);
+      const analysis = analyzeHadamardBridgeEvents(bufferedEvents);
 
       if (printedText) {
         process.stdout.write('\n');

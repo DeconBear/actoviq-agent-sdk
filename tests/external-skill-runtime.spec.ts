@@ -5,15 +5,15 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  actoviqExternalSkillPreferencesPath,
-  clearActoviqPreferredExternalSkill,
+  hadamardExternalSkillPreferencesPath,
+  clearHadamardPreferredExternalSkill,
   createAgentSdk,
   externalSkillPreferencesToRuntimeOptions,
-  loadActoviqExternalSkillDefinitions,
-  readActoviqExternalSkillPreferences,
-  setActoviqExternalSkillDisabled,
-  setActoviqPreferredExternalSkill,
-  writeActoviqExternalSkillPreferences,
+  loadHadamardExternalSkillDefinitions,
+  readHadamardExternalSkillPreferences,
+  setHadamardExternalSkillDisabled,
+  setHadamardPreferredExternalSkill,
+  writeHadamardExternalSkillPreferences,
   type ModelApi,
 } from '../src/index.js';
 
@@ -45,7 +45,7 @@ async function writeSkill(
     'allowed-tools: [Read, Write, Bash(git status)]',
     '---',
     '',
-    `Run ${name} from \${ACTOVIQ_SKILL_DIR}.`,
+    `Run ${name} from \${HADAMARD_SKILL_DIR}.`,
     'Task: $ARGUMENTS',
   ].join('\n'), 'utf8');
   return filePath;
@@ -62,10 +62,10 @@ const unusedModelApi: ModelApi = {
 
 describe('external skill runtime loading', () => {
   it('reuses every supported user CLI source while leaving project sources untrusted', async () => {
-    const root = await createTempDir('actoviq-external-runtime-');
+    const root = await createTempDir('hadamard-external-runtime-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    const actoviqHomeDir = path.join(root, 'actoviq');
+    const hadamardHomeDir = path.join(root, 'hadamard');
     const files = await Promise.all([
       writeSkill(path.join(osHomeDir, '.claude', 'skills'), 'claude-dir', 'claude-user'),
       writeSkill(path.join(osHomeDir, '.codex', 'skills'), 'codex-dir', 'codex-user'),
@@ -77,8 +77,8 @@ describe('external skill runtime loading', () => {
     ]);
     const before = await Promise.all(files.map(file => readFile(file, 'utf8')));
 
-    const result = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const result = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: { osHomeDir, env: {} },
     });
@@ -93,9 +93,9 @@ describe('external skill runtime loading', () => {
     ]);
     expect(result.definitions.every(skill => skill.allowedTools == null)).toBe(true);
     expect(result.definitions.find(skill => skill.name === 'claude-user')?.metadata).toMatchObject({
-      __actoviqExternalSkillProvider: 'claude-code',
-      __actoviqExternalSkillSourceId: 'claude-code:user',
-      __actoviqExternalSkillReadOnly: true,
+      __hadamardExternalSkillProvider: 'claude-code',
+      __hadamardExternalSkillSourceId: 'claude-code:user',
+      __hadamardExternalSkillReadOnly: true,
     });
     expect(result.skippedUntrustedSourceIds).toContain('claude-code:project');
     expect(await Promise.all(files.map(file => readFile(file, 'utf8')))).toEqual(before);
@@ -103,7 +103,7 @@ describe('external skill runtime loading', () => {
     const sdk = await createAgentSdk({
       model: 'test-model',
       modelApi: unusedModelApi,
-      homeDir: actoviqHomeDir,
+      homeDir: hadamardHomeDir,
       workDir,
       sessionDirectory: path.join(root, 'sessions'),
       externalSkills: { osHomeDir, env: {} },
@@ -121,14 +121,14 @@ describe('external skill runtime loading', () => {
     }
   });
 
-  it('gates Actoviq project skills and commands behind their explicit project source trust', async () => {
-    const root = await createTempDir('actoviq-project-skill-trust-');
+  it('gates Hadamard project skills and commands behind their explicit project source trust', async () => {
+    const root = await createTempDir('hadamard-project-skill-trust-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    const actoviqHomeDir = path.join(root, 'actoviq');
-    await writeSkill(path.join(actoviqHomeDir, 'skills'), 'user-check', 'user-check');
-    await writeSkill(path.join(workDir, '.actoviq', 'skills'), 'project-check', 'project-check');
-    const commandFile = path.join(workDir, '.actoviq', 'commands', 'release.md');
+    const hadamardHomeDir = path.join(root, 'hadamard');
+    await writeSkill(path.join(hadamardHomeDir, 'skills'), 'user-check', 'user-check');
+    await writeSkill(path.join(workDir, '.hadamard', 'skills'), 'project-check', 'project-check');
+    const commandFile = path.join(workDir, '.hadamard', 'commands', 'release.md');
     await mkdir(path.dirname(commandFile), { recursive: true });
     await writeFile(commandFile, [
       '---',
@@ -139,8 +139,8 @@ describe('external skill runtime loading', () => {
       'Release $ARGUMENTS.',
     ].join('\n'), 'utf8');
 
-    const unresolved = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const unresolved = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: { osHomeDir, env: {} },
     });
@@ -152,17 +152,17 @@ describe('external skill runtime loading', () => {
     expect(unresolved.definitions.find(skill => skill.name === 'user-check')?.allowedTools)
       .toEqual(['Read', 'Write', 'Bash(git status)']);
     expect(unresolved.skippedUntrustedSourceIds).toEqual(expect.arrayContaining([
-      'actoviq:project',
-      'actoviq:project-commands',
+      'hadamard:project',
+      'hadamard:project-commands',
     ]));
 
     const trustedOptions = {
       osHomeDir,
       env: {},
-      trustedProjectSourceIds: ['actoviq:project', 'actoviq:project-commands'],
+      trustedProjectSourceIds: ['hadamard:project', 'hadamard:project-commands'],
     };
-    const trusted = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const trusted = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: trustedOptions,
     });
@@ -180,7 +180,7 @@ describe('external skill runtime loading', () => {
     const untrustedSdk = await createAgentSdk({
       model: 'test-model',
       modelApi: unusedModelApi,
-      homeDir: actoviqHomeDir,
+      homeDir: hadamardHomeDir,
       workDir,
       sessionDirectory: path.join(root, 'sessions-untrusted'),
       externalSkills: { osHomeDir, env: {} },
@@ -195,7 +195,7 @@ describe('external skill runtime loading', () => {
     const trustedSdk = await createAgentSdk({
       model: 'test-model',
       modelApi: unusedModelApi,
-      homeDir: actoviqHomeDir,
+      homeDir: hadamardHomeDir,
       workDir,
       sessionDirectory: path.join(root, 'sessions-trusted'),
       externalSkills: trustedOptions,
@@ -208,16 +208,16 @@ describe('external skill runtime loading', () => {
     }
   });
 
-  it('honors the chosen Actoviq or external variant in the final SDK definition map', async () => {
-    const root = await createTempDir('actoviq-external-final-conflict-');
+  it('honors the chosen Hadamard or external variant in the final SDK definition map', async () => {
+    const root = await createTempDir('hadamard-external-final-conflict-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    const actoviqHomeDir = path.join(root, '.actoviq');
-    await writeSkill(path.join(actoviqHomeDir, 'skills'), 'shared-actoviq', 'shared', 'Actoviq variant');
+    const hadamardHomeDir = path.join(root, '.hadamard');
+    await writeSkill(path.join(hadamardHomeDir, 'skills'), 'shared-hadamard', 'shared', 'Hadamard variant');
     await writeSkill(path.join(osHomeDir, '.codex', 'skills'), 'shared-codex', 'shared', 'Codex variant');
 
-    const unresolved = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const unresolved = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: { osHomeDir, env: {} },
     });
@@ -225,12 +225,12 @@ describe('external skill runtime loading', () => {
     expect(variants).toHaveLength(2);
     expect(unresolved.skippedConflicts).toContainEqual(expect.objectContaining({ name: 'shared' }));
 
-    for (const provider of ['actoviq', 'codex'] as const) {
+    for (const provider of ['hadamard', 'codex'] as const) {
       const selected = variants.find(skill => skill.provider === provider)!;
       const sdk = await createAgentSdk({
         model: 'test-model',
         modelApi: unusedModelApi,
-        homeDir: actoviqHomeDir,
+        homeDir: hadamardHomeDir,
         workDir,
         sessionDirectory: path.join(root, `sessions-${provider}`),
         externalSkills: {
@@ -240,10 +240,10 @@ describe('external skill runtime loading', () => {
         },
       });
       try {
-        expect(sdk.getSkillDefinition('shared')?.metadata?.__actoviqExternalSkillId)
+        expect(sdk.getSkillDefinition('shared')?.metadata?.__hadamardExternalSkillId)
           .toBe(selected.id);
         expect(sdk.skills.getMetadata('shared')?.description)
-          .toBe(provider === 'actoviq' ? 'Actoviq variant' : 'Codex variant');
+          .toBe(provider === 'hadamard' ? 'Hadamard variant' : 'Codex variant');
       } finally {
         await sdk.close();
       }
@@ -251,16 +251,16 @@ describe('external skill runtime loading', () => {
   });
 
   it('fails closed on conflicts and only loads trusted project or preferred variants', async () => {
-    const root = await createTempDir('actoviq-external-conflict-');
+    const root = await createTempDir('hadamard-external-conflict-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    const actoviqHomeDir = path.join(root, 'actoviq');
+    const hadamardHomeDir = path.join(root, 'hadamard');
     await writeSkill(path.join(osHomeDir, '.claude', 'skills'), 'shared', 'shared', 'Claude variant');
     await writeSkill(path.join(osHomeDir, '.codex', 'skills'), 'shared', 'shared', 'Codex variant');
     await writeSkill(path.join(workDir, '.codex', 'skills'), 'project', 'project-only');
 
-    const unresolved = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const unresolved = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: { osHomeDir, env: {} },
     });
@@ -274,8 +274,8 @@ describe('external skill runtime loading', () => {
       skill.name === 'shared' && skill.description === 'Codex variant',
     );
     expect(preferred).toBeDefined();
-    const resolved = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const resolved = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: {
         osHomeDir,
@@ -288,15 +288,15 @@ describe('external skill runtime loading', () => {
       .toBe('Codex variant');
     expect(resolved.definitions.find(skill => skill.name === 'project-only')).toMatchObject({
       source: 'project',
-      metadata: expect.objectContaining({ __actoviqExternalSkillSourceId: 'codex:project' }),
+      metadata: expect.objectContaining({ __hadamardExternalSkillSourceId: 'codex:project' }),
     });
   });
 
   it('disables one catalog skill id without disabling its source siblings or changing native files', async () => {
-    const root = await createTempDir('actoviq-external-disabled-skill-');
+    const root = await createTempDir('hadamard-external-disabled-skill-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
-    const actoviqHomeDir = path.join(root, 'actoviq');
+    const hadamardHomeDir = path.join(root, 'hadamard');
     const firstFile = await writeSkill(
       path.join(osHomeDir, '.codex', 'skills'),
       'first-dir',
@@ -309,8 +309,8 @@ describe('external skill runtime loading', () => {
     );
     const before = await Promise.all([firstFile, secondFile].map(file => readFile(file, 'utf8')));
 
-    const discovered = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const discovered = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: { osHomeDir, env: {} },
     });
@@ -319,8 +319,8 @@ describe('external skill runtime loading', () => {
     expect(first?.id).toMatch(/^skill:/u);
     expect(second?.id).toMatch(/^skill:/u);
 
-    const filtered = await loadActoviqExternalSkillDefinitions({
-      actoviqHomeDir,
+    const filtered = await loadHadamardExternalSkillDefinitions({
+      hadamardHomeDir,
       workDir,
       externalSkills: {
         osHomeDir,
@@ -338,14 +338,14 @@ describe('external skill runtime loading', () => {
 });
 
 describe('external skill preferences', () => {
-  it('stores normalized trust and conflict choices per workspace under Actoviq home', async () => {
-    const root = await createTempDir('actoviq-external-preferences-');
-    const actoviqHomeDir = path.join(root, 'actoviq');
+  it('stores normalized trust and conflict choices per workspace under Hadamard home', async () => {
+    const root = await createTempDir('hadamard-external-preferences-');
+    const hadamardHomeDir = path.join(root, 'hadamard');
     const firstWorkDir = path.join(root, 'one');
     const secondWorkDir = path.join(root, 'two');
 
-    const written = await writeActoviqExternalSkillPreferences(
-      { actoviqHomeDir, workDir: firstWorkDir },
+    const written = await writeHadamardExternalSkillPreferences(
+      { hadamardHomeDir, workDir: firstWorkDir },
       {
         disabledSourceIds: ['cursor:user', 'cursor:user', ''],
         disabledSkillIds: [' skill:two ', 'skill:one', 'skill:one'],
@@ -360,9 +360,9 @@ describe('external skill preferences', () => {
       trustedProjectSourceIds: ['codex:project'],
       preferredSkillIds: { shared: 'skill:abc' },
     });
-    expect(await readActoviqExternalSkillPreferences({ actoviqHomeDir, workDir: firstWorkDir }))
+    expect(await readHadamardExternalSkillPreferences({ hadamardHomeDir, workDir: firstWorkDir }))
       .toEqual(written);
-    expect(await readActoviqExternalSkillPreferences({ actoviqHomeDir, workDir: secondWorkDir }))
+    expect(await readHadamardExternalSkillPreferences({ hadamardHomeDir, workDir: secondWorkDir }))
       .toEqual({
         disabledSourceIds: [],
         disabledSkillIds: [],
@@ -370,34 +370,34 @@ describe('external skill preferences', () => {
         preferredSkillIds: {},
       });
     expect(externalSkillPreferencesToRuntimeOptions(written)).toEqual(written);
-    expect(actoviqExternalSkillPreferencesPath(actoviqHomeDir)).toBe(
-      path.join(actoviqHomeDir, 'skill-preferences.json'),
+    expect(hadamardExternalSkillPreferencesPath(hadamardHomeDir)).toBe(
+      path.join(hadamardHomeDir, 'skill-preferences.json'),
     );
   });
 
   it('updates one workspace skill choice and can clear a preferred conflict variant', async () => {
-    const root = await createTempDir('actoviq-external-preference-updates-');
+    const root = await createTempDir('hadamard-external-preference-updates-');
     const location = {
-      actoviqHomeDir: path.join(root, 'actoviq'),
+      hadamardHomeDir: path.join(root, 'hadamard'),
       workDir: path.join(root, 'workspace'),
     };
     const otherLocation = { ...location, workDir: path.join(root, 'other-workspace') };
 
-    await setActoviqExternalSkillDisabled(location, ' skill:first ', true);
-    await setActoviqExternalSkillDisabled(location, 'skill:second', true);
-    await setActoviqExternalSkillDisabled(location, 'skill:first', false);
-    await setActoviqPreferredExternalSkill(location, ' shared ', ' skill:preferred ');
+    await setHadamardExternalSkillDisabled(location, ' skill:first ', true);
+    await setHadamardExternalSkillDisabled(location, 'skill:second', true);
+    await setHadamardExternalSkillDisabled(location, 'skill:first', false);
+    await setHadamardPreferredExternalSkill(location, ' shared ', ' skill:preferred ');
 
-    expect(await readActoviqExternalSkillPreferences(location)).toEqual({
+    expect(await readHadamardExternalSkillPreferences(location)).toEqual({
       disabledSourceIds: [],
       disabledSkillIds: ['skill:second'],
       trustedProjectSourceIds: [],
       preferredSkillIds: { shared: 'skill:preferred' },
     });
 
-    await clearActoviqPreferredExternalSkill(location, 'shared');
-    expect((await readActoviqExternalSkillPreferences(location)).preferredSkillIds).toEqual({});
-    expect(await readActoviqExternalSkillPreferences(otherLocation)).toEqual({
+    await clearHadamardPreferredExternalSkill(location, 'shared');
+    expect((await readHadamardExternalSkillPreferences(location)).preferredSkillIds).toEqual({});
+    expect(await readHadamardExternalSkillPreferences(otherLocation)).toEqual({
       disabledSourceIds: [],
       disabledSkillIds: [],
       trustedProjectSourceIds: [],

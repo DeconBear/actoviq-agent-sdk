@@ -2,15 +2,15 @@
  * Team definitions from disk — load/save team configurations.
  *
  * Search path:
- *   1. .actoviq/teams/<name>.json  (project)
- *   2. ~/.actoviq/teams/<name>.json (personal)
+ *   1. .hadamard/teams/<name>.json  (project)
+ *   2. ~/.hadamard/teams/<name>.json (personal)
  *
  * apiKey values starting with $ are resolved from environment variables at load time.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
 import {
   canonicalizeTeamDefinition,
@@ -54,8 +54,8 @@ export interface LoadedTeamDefinition {
 
 /**
  * Built-in team presets, available everywhere `/team` lists or loads — even
- * with no team files on disk. A user file of the same name in `.actoviq/teams/`
- * or `~/.actoviq/teams/` shadows the built-in. Built-ins are never overwritten
+ * with no team files on disk. A user file of the same name in `.hadamard/teams/`
+ * or `~/.hadamard/teams/` shadows the built-in. Built-ins are never overwritten
  * by save; clone to a new name to customize.
  *
  * Members use `model: ''` meaning "the session's current model" — call
@@ -158,10 +158,10 @@ export function instantiateTeamDefinition(definition: TeamDefinition, model: str
 
 function resolveTeamDirs(projectDir?: string, homeDir?: string): string[] {
   const dirs: string[] = [];
-  const home = resolveActoviqHome(homeDir);
+  const home = resolveHadamardHome(homeDir);
 
   if (projectDir) {
-    dirs.push(path.join(projectDir, '.actoviq', 'teams'));
+    dirs.push(path.join(projectDir, '.hadamard', 'teams'));
   }
   dirs.push(path.join(home, 'teams'));
   return dirs;

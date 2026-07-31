@@ -8,7 +8,7 @@ skill prompts, and environment information. This is the "context injection
 pipeline."
 
 Location: `src/runtime/agentClient.ts:2105` (`prepareRunAugmentations`),
-`src/runtime/actoviqCompact.ts`
+`src/runtime/hadamardCompact.ts`
 
 ### Design Principles
 
@@ -59,7 +59,7 @@ collectPendingTaskNotifications(sessionId)
 
 ### Compaction System
 
-Location: `src/runtime/actoviqCompact.ts`, `src/runtime/conversationEngine.ts`
+Location: `src/runtime/hadamardCompact.ts`, `src/runtime/conversationEngine.ts`
 
 **Prefix-stable policy (Hadamard + Claude Code alignment):** do **not** rewrite
 historical `tool_result` content between turns. Sliding-window “clear old tool
@@ -84,7 +84,7 @@ Context size check (before each model request)
     │
     ├── < threshold → append-only history (no rewrite)
     │
-    └── ≥ threshold → compactActoviqConversationIfNeeded()
+    └── ≥ threshold → compactHadamardConversationIfNeeded()
         │
         ├── Full summary compact only
         │   • Optionally preprocess cleared tool text as summary *input*
@@ -95,7 +95,7 @@ Context size check (before each model request)
         └── Circuit breaker: 3 consecutive failures → stop compacting
 ```
 
-Session-level `compactActoviqSession` (used by `createAgentSdk` / `actoviq-react`
+Session-level `compactHadamardSession` (used by `createAgentSdk` / `hadamard-react`
 after turns) follows the same rule: below threshold → unchanged session; above
 threshold → full summary only.
 
@@ -104,16 +104,16 @@ threshold → full summary only.
 Compaction metadata is stored in `StoredSession.metadata`:
 ```typescript
 metadata: {
-  __actoviqCompactState: {
+  __hadamardCompactState: {
     compactCount: number;
     microcompactCount: number;
     consecutiveFailures: number;
     lastCompactedAt: string;
-    lastTrigger: ActoviqCompactTrigger;
+    lastTrigger: HadamardCompactTrigger;
   },
-  __actoviqCompactHistory: [/* per-compaction entries */],
-  __actoviqRecentFiles: ['/path/to/file.ts', ...],   // max 5
-  __actoviqRecentSkills: ['skill-name', ...],         // max 5
+  __hadamardCompactHistory: [/* per-compaction entries */],
+  __hadamardRecentFiles: ['/path/to/file.ts', ...],   // max 5
+  __hadamardRecentSkills: ['skill-name', ...],         // max 5
 }
 ```
 
@@ -150,11 +150,11 @@ private async prepareRunAugmentations(
     memory: memoryContext,
     buddy: this.buddy.getActiveBuddy(),
     workDir: this.config.workDir,
-    todoSnapshot: getActoviqTodoSnapshot(),
+    todoSnapshot: getHadamardTodoSnapshot(),
   });
 
   // 4. Model resolution
-  const model = resolveActoviqModelReference(
+  const model = resolveHadamardModelReference(
     options.model ?? session?.model ?? this.config.model,
     this.config.modelTiers,
   );
@@ -188,15 +188,15 @@ function formatTaskNotification(task: BackgroundTaskRecord): string {
 }
 ```
 
-### `compactActoviqConversationIfNeeded()`
+### `compactHadamardConversationIfNeeded()`
 
 ```typescript
-export async function compactActoviqConversationIfNeeded(
+export async function compactHadamardConversationIfNeeded(
   messages: MessageParam[],
-  context: ActoviqCompactExecutionContext,
+  context: HadamardCompactExecutionContext,
 ): Promise<{ messages: MessageParam[]; compacted: boolean; error?: string }> {
   // 1. Estimate current token count
-  const estimatedTokens = estimateActoviqConversationTokens(messages);
+  const estimatedTokens = estimateHadamardConversationTokens(messages);
 
   // 2. Check threshold
   if (estimatedTokens < context.compactConfig.autoCompactThresholdTokens) {
@@ -230,6 +230,6 @@ export async function compactActoviqConversationIfNeeded(
 ### Tool Result Artifacting
 
 When a tool result exceeds `toolResultArtifactMaxChars` (default 80K), it's
-written to a file under `~/.actoviq/projects/<hash>/artifacts/` and replaced
+written to a file under `~/.hadamard/projects/<hash>/artifacts/` and replaced
 with a placeholder in the conversation. The model can reference the artifact
 path if needed.

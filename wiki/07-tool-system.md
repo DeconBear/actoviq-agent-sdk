@@ -22,18 +22,18 @@ JSON Schema with `additionalProperties: false`.
 | File | Role |
 |---|---|
 | `runtime/tools.ts` | `tool()` factory, `assertPublicToolName`, `toInputJsonSchema`, adapter creation |
-| `tools/actoviqCoreTools.ts` | All 22+ core tools assembled |
-| `tools/actoviqFileTools.ts` | Read, Write, Edit, Glob, Grep |
-| `tools/actoviqWebTools.ts` | WebFetch, WebSearch |
-| `tools/actoviqTaskTools.ts` | TaskCreate, TaskUpdate, TaskList, TaskGet, TaskOutput, TaskStop |
-| `tools/actoviqShellTools.ts` | PowerShell |
-| `tools/actoviqNotebookEdit.ts` | NotebookEdit |
-| `tools/actoviqMiscTools.ts` | Config, ToolSearch, Skill |
+| `tools/hadamardCoreTools.ts` | All 22+ core tools assembled |
+| `tools/hadamardFileTools.ts` | Read, Write, Edit, Glob, Grep |
+| `tools/hadamardWebTools.ts` | WebFetch, WebSearch |
+| `tools/hadamardTaskTools.ts` | TaskCreate, TaskUpdate, TaskList, TaskGet, TaskOutput, TaskStop |
+| `tools/hadamardShellTools.ts` | PowerShell |
+| `tools/hadamardNotebookEdit.ts` | NotebookEdit |
+| `tools/hadamardMiscTools.ts` | Config, ToolSearch, Skill |
 | `tools/bash/BashTool.ts` | Bash execution |
 | `tools/todo/TodoWriteTool.ts` | Todo tracking |
 | `tools/askUserQuestion/AskUserQuestionTool.ts` | Interactive questions |
-| `runtime/actoviqAgents.ts` | Agent, Task, SendMessage (dynamic tools) |
-| `runtime/actoviqToolCatalog.ts` | Tool metadata resolution and catalog |
+| `runtime/hadamardAgents.ts` | Agent, Task, SendMessage (dynamic tools) |
+| `runtime/hadamardToolCatalog.ts` | Tool metadata resolution and catalog |
 
 ### Tool Categories
 
@@ -84,7 +84,7 @@ Model calls tool with input
     │
     ▼
 2. Permission check
-    decideActoviqToolPermission({ mode, rules, toolName, ... })
+    decideHadamardToolPermission({ mode, rules, toolName, ... })
     → deny → ToolExecutionError (blocked)
     → allow → continue
     │
@@ -172,9 +172,9 @@ function toInputJsonSchema(schema: z.ZodType, toolName: string): Record<string, 
 }
 ```
 
-### `createActoviqCoreTools()`
+### `createHadamardCoreTools()`
 
-Location: `src/tools/actoviqCoreTools.ts`
+Location: `src/tools/hadamardCoreTools.ts`
 
 Assembles all 22+ tools into a single array. Accepts options for:
 - `cwd`: working directory for Bash/PowerShell
@@ -183,26 +183,26 @@ Assembles all 22+ tools into a single array. Accepts options for:
 - `mcpServers`: MCP server list for ToolSearch
 
 ```typescript
-export function createActoviqCoreTools(
-  options: ActoviqCoreToolsOptions = {},
+export function createHadamardCoreTools(
+  options: HadamardCoreToolsOptions = {},
 ): AgentToolDefinition[] {
   return [
     // File tools
-    ...createActoviqFileTools({ cwd: options.cwd }),
+    ...createHadamardFileTools({ cwd: options.cwd }),
     // Shell tools
     createBashTool({ cwd: options.cwd }),
     createPowerShellTool({ cwd: options.cwd }),
     // Task tools
-    ...createActoviqTaskTools(),
+    ...createHadamardTaskTools(),
     // Interaction
     createTodoWriteTool(),
     createAskUserQuestionTool(),
     // Meta
-    ...createActoviqMiscTools(options),
+    ...createHadamardMiscTools(options),
     // Web
-    ...createActoviqWebTools(),
+    ...createHadamardWebTools(),
     // Agent delegation
-    ...(hasAgents ? createActoviqTaskTools({ agents: options.agents }) : []),
+    ...(hasAgents ? createHadamardTaskTools({ agents: options.agents }) : []),
   ];
 }
 ```
@@ -214,7 +214,7 @@ Location: `src/runtime/agentClient.ts:3756`
 ```typescript
 function collectToolPrompts(
   tools: AgentToolDefinition[],
-  context: { workDir: string; permissionMode?: ActoviqPermissionMode },
+  context: { workDir: string; permissionMode?: HadamardPermissionMode },
 ): Promise<string[]> {
   // Call each tool's optional prompt() function
   // Collect non-empty prompt strings

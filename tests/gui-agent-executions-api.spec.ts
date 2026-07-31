@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
-import { getActoviqProjectSessionDirectory } from '../src/config/projectSessionDirectory.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
+import { getHadamardProjectSessionDirectory } from '../src/config/projectSessionDirectory.js';
 import { AgentExecutionStore } from '../src/storage/agentExecutionStore.js';
 import { SessionStore } from '../src/storage/sessionStore.js';
 import type {
@@ -26,14 +26,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const url = new URL(requestPath.replace(/^\/+/u, ''), server.url);
   const response = await fetch(url, {
     ...init,
-    headers: { 'x-actoviq-token': server.token, ...init.headers },
+    headers: { 'x-hadamard-token': server.token, ...init.headers },
   });
   return {
     status: response.status,
@@ -227,24 +227,24 @@ function expectNoInternalEventState(value: unknown): void {
 
 describe('GUI agent execution API', () => {
   it('isolates project execution views and keeps agent sessions out of chat lists', async () => {
-    const root = await tempRoot('actoviq-gui-agent-executions-');
+    const root = await tempRoot('hadamard-gui-agent-executions-');
     const homeDir = path.join(root, 'home');
     const workA = path.join(root, 'project-a');
     const workB = path.join(root, 'project-b');
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await Promise.all([
       mkdir(workA, { recursive: true }),
       mkdir(workB, { recursive: true }),
       mkdir(path.dirname(configPath), { recursive: true }),
     ]);
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const projectRootA = getActoviqProjectSessionDirectory(workA, homeDir);
-    const projectRootB = getActoviqProjectSessionDirectory(workB, homeDir);
+    const projectRootA = getHadamardProjectSessionDirectory(workA, homeDir);
+    const projectRootB = getHadamardProjectSessionDirectory(workB, homeDir);
     await seedActiveExecution(new AgentExecutionStore(projectRootA), workA);
     await seedCompletedExecution(new AgentExecutionStore(projectRootB), workB);
 
@@ -254,7 +254,7 @@ describe('GUI agent execution API', () => {
       title: 'Visible main chat',
       model: 'test-model',
       kind: 'main',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'Keep this main chat visible.' }],
     });
     await sessionStore.create({
@@ -263,7 +263,7 @@ describe('GUI agent execution API', () => {
       model: 'test-model',
       kind: 'agent',
       parentSessionId: 'main-session',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'This belongs in the Agent view.' }],
     });
     await sessionStore.create({
@@ -271,7 +271,7 @@ describe('GUI agent execution API', () => {
       title: 'Earlier project conversation',
       model: 'test-model',
       kind: 'main',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'Keep this conversation in the Agent monitor.' }],
     });
     await sessionStore.create({
@@ -279,7 +279,7 @@ describe('GUI agent execution API', () => {
       title: 'Manager',
       model: 'test-model',
       kind: 'manager',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'Keep this manager conversation in its dedicated panel.' }],
     });
     await sessionStore.create({
@@ -287,11 +287,11 @@ describe('GUI agent execution API', () => {
       title: 'Archived project conversation',
       model: 'test-model',
       kind: 'main',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'Do not show this archived conversation.' }],
     });
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       configPath,
@@ -459,29 +459,29 @@ describe('GUI agent execution API', () => {
   });
 
   it('keeps paths with colliding legacy slugs isolated at list and detail level', async () => {
-    const root = await tempRoot('actoviq-gui-agent-collision-');
+    const root = await tempRoot('hadamard-gui-agent-collision-');
     const homeDir = path.join(root, 'home');
     const workA = path.join(root, 'a-b');
     const workB = path.join(root, 'a_b');
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await Promise.all([
       mkdir(workA, { recursive: true }),
       mkdir(workB, { recursive: true }),
       mkdir(path.dirname(configPath), { recursive: true }),
     ]);
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const projectRootA = getActoviqProjectSessionDirectory(workA, homeDir);
-    const projectRootB = getActoviqProjectSessionDirectory(workB, homeDir);
+    const projectRootA = getHadamardProjectSessionDirectory(workA, homeDir);
+    const projectRootB = getHadamardProjectSessionDirectory(workB, homeDir);
     expect(projectRootA).not.toBe(projectRootB);
     await seedActiveExecution(new AgentExecutionStore(projectRootA), workA);
     await seedCompletedExecution(new AgentExecutionStore(projectRootB), workB);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       configPath,

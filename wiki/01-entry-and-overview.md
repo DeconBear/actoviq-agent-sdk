@@ -19,9 +19,9 @@ tool, and storage layer:
                     └──────┬──────────┬────────┘
                            │          │
               ┌────────────▼──┐  ┌───▼──────────────────┐
-              │ Hadamard SDK  │  │ actoviq-bridge-sdk    │
+              │ Hadamard SDK  │  │ hadamard-bridge-sdk    │
               │               │  │                       │
-              │ createAgentSdk│  │ createActoviqBridgeSdk│
+              │ createAgentSdk│  │ createHadamardBridgeSdk│
               │ In-process    │  │ Child process (bun)    │
               │ ReAct loop    │  │ Black-box runtime      │
               └───────────────┘  └───────────────────────┘
@@ -31,7 +31,7 @@ tool, and storage layer:
 (`conversationEngine.ts`) runs directly in Node.js. All TypeScript source is
 modifiable. Zero runtime dependencies beyond `zod` and `glob`.
 
-**actoviq-bridge-sdk** (`createActoviqBridgeSdk()`): Spawns a `bun` child
+**hadamard-bridge-sdk** (`createHadamardBridgeSdk()`): Spawns a `bun` child
 process running a pre-compiled runtime bundle. Used as a reference
 implementation and fallback. The ReAct loop inside the bundle is not modifiable.
 With `directCli: true` it instead spawns the local `claude` on PATH directly
@@ -54,8 +54,8 @@ isolation (`ANTHROPIC_*` env) applies to both modes.
 
 ```
 CreateAgentSdkOptions  (programmatic)
-    → process.env      (ACTOVIQ_*)
-    → settings.json    (~/.actoviq/settings.json → env block)
+    → process.env      (HADAMARD_*)
+    → settings.json    (~/.hadamard/settings.json → env block)
     → Hard defaults    (provider=anthropic, maxTokens=32000, ...)
 ```
 
@@ -69,18 +69,18 @@ No auto-detection of provider or baseURL.
 
 | Category | Key Exports |
 |---|---|
-| **Entry** | `createAgentSdk`, `createActoviqBridgeSdk` |
-| **Config** | `resolveRuntimeConfig`, `loadJsonConfigFile`, `loadDefaultActoviqSettings` |
-| **Runtime** | `ActoviqAgentClient`, `AgentSession`, `AgentRunStream` |
-| **Tools** | `tool()`, `createActoviqCoreTools`, `createActoviqFileTools`, `createBashTool` |
-| **Subagents** | `ActoviqAgentsApi`, `ActoviqBackgroundTaskManager`, `loadActoviqAgentDefinitions` |
+| **Entry** | `createAgentSdk`, `createHadamardBridgeSdk` |
+| **Config** | `resolveRuntimeConfig`, `loadJsonConfigFile`, `loadDefaultHadamardSettings` |
+| **Runtime** | `HadamardAgentClient`, `AgentSession`, `AgentRunStream` |
+| **Tools** | `tool()`, `createHadamardCoreTools`, `createHadamardFileTools`, `createBashTool` |
+| **Subagents** | `HadamardAgentsApi`, `HadamardBackgroundTaskManager`, `loadHadamardAgentDefinitions` |
 | **Workflows** | `WorkflowEngine`, `WorkflowBuilder`, `WorkflowApi` |
-| **Swarm** | `ActoviqSwarmApi`, `ActoviqSwarmTeam`, `ActoviqSwarmTeammateHandle` |
-| **Memory** | `ActoviqMemoryApi`, `ActoviqDreamApi` |
+| **Swarm** | `HadamardSwarmApi`, `HadamardSwarmTeam`, `HadamardSwarmTeammateHandle` |
+| **Memory** | `HadamardMemoryApi`, `HadamardDreamApi` |
 | **Storage** | `SessionStore`, `MailboxStore`, `TeammateStore` |
-| **Workspace** | `ActoviqWorkspace`, `createGitWorktreeWorkspace` |
-| **Bridge** | `ActoviqBridgeSdkClient`, `ActoviqCleanBridgeSdkClient` |
-| **Errors** | `ActoviqSdkError`, `ConfigurationError`, `SessionNotFoundError`, etc. |
+| **Workspace** | `HadamardWorkspace`, `createGitWorktreeWorkspace` |
+| **Bridge** | `HadamardBridgeSdkClient`, `HadamardCleanBridgeSdkClient` |
+| **Errors** | `HadamardSdkError`, `ConfigurationError`, `SessionNotFoundError`, etc. |
 
 ### Module Dependency Map
 
@@ -93,7 +93,7 @@ src/index.ts (public surface)
     │   ├── agentClient   (central orchestrator)
     │   ├── conversationEngine (ReAct loop)
     │   ├── agentSession  (session wrapper)
-    │   ├── actoviqAgents (subagent system)
+    │   ├── hadamardAgents (subagent system)
     │   └── ...
     ├── tools/*           (independent — pure function + Zod)
     ├── storage/*         (independent — JSON file I/O)
@@ -128,12 +128,12 @@ Location: `src/runtime/agentClient.ts:3593`
 ```typescript
 export async function createAgentSdk(
   options: CreateAgentSdkOptions = {},
-): Promise<ActoviqAgentClient> {
+): Promise<HadamardAgentClient> {
   const config = await resolveRuntimeConfig(options);
   const store = new SessionStore(config.sessionDirectory);
   const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
   // ... resolve tools, MCP, agents, skills, hooks ...
-  return ActoviqAgentClient.create(config, store, /* ... */);
+  return HadamardAgentClient.create(config, store, /* ... */);
 }
 ```
 
@@ -145,26 +145,26 @@ Key initialization steps:
 5. Load agent definitions (programmatic + Markdown files)
 6. Load skill definitions (bundled + project + user)
 7. Create McpConnectionManager
-8. Instantiate `ActoviqAgentClient`
+8. Instantiate `HadamardAgentClient`
 
-### `ActoviqAgentClient` — Surface Area
+### `HadamardAgentClient` — Surface Area
 
 Location: `src/runtime/agentClient.ts:575` (~3820 lines)
 
 ```
-ActoviqAgentClient
+HadamardAgentClient
 ├── Public API (readonly properties)
 │   ├── sessions: AgentSessionsApi      create/resume/list/fork/delete
-│   ├── agents: ActoviqAgentsApi         list/get/run/launch background
-│   ├── skills: ActoviqSkillsApi         list/get/run/stream
-│   ├── tools: ActoviqToolsApi           getTool/listToolMetadata
-│   ├── tasks: ActoviqBackgroundTasksApi list/get/wait/cancel
-│   ├── buddy: ActoviqBuddyApi           roll personality
-│   ├── memory: ActoviqMemoryApi         read/write memories
-│   ├── dream: ActoviqDreamApi           trigger consolidation
-│   ├── swarm: ActoviqSwarmApi           create/manage swarms
-│   ├── context: ActoviqContextApi       overview
-│   ├── slashCommands: ActoviqSlashCommandsApi
+│   ├── agents: HadamardAgentsApi         list/get/run/launch background
+│   ├── skills: HadamardSkillsApi         list/get/run/stream
+│   ├── tools: HadamardToolsApi           getTool/listToolMetadata
+│   ├── tasks: HadamardBackgroundTasksApi list/get/wait/cancel
+│   ├── buddy: HadamardBuddyApi           roll personality
+│   ├── memory: HadamardMemoryApi         read/write memories
+│   ├── dream: HadamardDreamApi           trigger consolidation
+│   ├── swarm: HadamardSwarmApi           create/manage swarms
+│   ├── context: HadamardContextApi       overview
+│   ├── slashCommands: HadamardSlashCommandsApi
 │   └── workflow: WorkflowApi            DAG engine
 │
 ├── Public methods

@@ -67,7 +67,7 @@ Key-based redaction 不是内容检测：secret 如果放在普通字段或自�
 
 ## 兼容影响
 
-- 新 runtime stream 产出 `RunEvent`；旧 `ActoviqAgentClient.stream()` 仍产出 `AgentEvent`。
+- 新 runtime stream 产出 `RunEvent`；旧 `HadamardAgentClient.stream()` 仍产出 `AgentEvent`。
 - CLI/TUI/GUI/legacy Bridge 仍可接收旧 `AgentEvent`，但都通过公开的 `LegacySurfaceEventPipeline` 执行 `AgentEvent → RunEvent → shared semantics`；native Bridge 使用 `AgentRuntimeBridgeAdapter` 直接消费新 runtime stream。该迁移统一的是事件语义和 redaction/trace/sequence 边界，不声称旧产品执行引擎已全部替换。
 - 消费者必须忽略未知 additive data 字段；未知 schemaVersion 应停止或进入明确兼容路径。
 - Sink 看到的是 redacted clone，不能依赖 secret 原值。

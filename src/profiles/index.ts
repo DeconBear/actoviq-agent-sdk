@@ -402,7 +402,7 @@ export function buildProfile<TContext = unknown, TOutput = string>(
 
   const metadata: JsonObject = {
     ...(options.metadata ? cloneJsonValue(options.metadata) : {}),
-    actoviqProfile: profileMetadata(config),
+    hadamardProfile: profileMetadata(config),
   };
   const spec: AgentSpec<TContext, TOutput> = {
     id,

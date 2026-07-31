@@ -42,7 +42,7 @@ describe('runtime benchmark regression comparison', () => {
 function reportWithTiming(p50: number, p95: number): RuntimeBenchmarkReport {
   return {
     schemaVersion: 1,
-    suite: 'actoviq-runtime',
+    suite: 'hadamard-runtime',
     mode: 'smoke',
     generatedAt: '2026-01-01T00:00:00.000Z',
     configurationFingerprint: '0'.repeat(64),

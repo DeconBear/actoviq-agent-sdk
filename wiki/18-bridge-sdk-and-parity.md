@@ -12,8 +12,8 @@ Location: `src/parity/*`
 
 | Wrapper | Entry | Purpose |
 |---|---|---|
-| `actoviqBridgeSdk` | `createActoviqBridgeSdk()` | Direct bridge: spawns the runtime in **bundle mode** (`bun vendor/actoviq-runtime/cli.js`) or **directCli mode** (the local `claude` on PATH; no bundle/Bun) |
-| `actoviqCleanBridgeCompatSdk` | `createActoviqCleanBridgeSdk()` | Compatibility bridge: Hadamard-like API over bridge runtime |
+| `hadamardBridgeSdk` | `createHadamardBridgeSdk()` | Direct bridge: spawns the runtime in **bundle mode** (`bun vendor/hadamard-runtime/cli.js`) or **directCli mode** (the local `claude` on PATH; no bundle/Bun) |
+| `hadamardCleanBridgeCompatSdk` | `createHadamardCleanBridgeSdk()` | Compatibility bridge: Hadamard-like API over bridge runtime |
 
 ## Module Design
 
@@ -21,25 +21,25 @@ Location: `src/parity/*`
 
 | File | Role |
 |---|---|
-| `parity/actoviqBridgeSdk.ts` | Main bridge SDK client |
-| `parity/actoviqCleanBridgeCompatSdk.ts` | Compatibility wrapper with Hadamard API shape |
-| `parity/actoviqBridgeEvents.ts` | Bridge event parsing & extraction |
-| `parity/actoviqTranscripts.ts` | Session transcript reading |
+| `parity/hadamardBridgeSdk.ts` | Main bridge SDK client |
+| `parity/hadamardCleanBridgeCompatSdk.ts` | Compatibility wrapper with Hadamard API shape |
+| `parity/hadamardBridgeEvents.ts` | Bridge event parsing & extraction |
+| `parity/hadamardTranscripts.ts` | Session transcript reading |
 
 ### Bridge SDK Flow
 
 ```
-createActoviqBridgeSdk()
+createHadamardBridgeSdk()
     │
     ├── directCli: false (default) ── bundle mode
-    │     ├── Verify runtime bundle exists (vendor/actoviq-runtime/cli.js)
+    │     ├── Verify runtime bundle exists (vendor/hadamard-runtime/cli.js)
     │     └── Verify bun is installed
     │
     ├── directCli: true ── directCli mode
     │     └── Resolve local `claude` on PATH (or options.executable); no bundle/Bun
     │
-    └── ActoviqBridgeSdkClient (directCli flag selects the spawn form)
-        ├── createSession() → ActoviqBridgeSession
+    └── HadamardBridgeSdkClient (directCli flag selects the spawn form)
+        ├── createSession() → HadamardBridgeSession
         ├── run(prompt) → spawn child process
         │   ├── bundle:    `bun cli.js -p <prompt> --output-format stream-json …`
         │   ├── directCli: `claude -p <prompt> --output-format stream-json …`
@@ -49,17 +49,17 @@ createActoviqBridgeSdk()
         └── close()
 ```
 
-### `actoviqCleanBridgeCompatSdk`
+### `hadamardCleanBridgeCompatSdk`
 
 Wraps the bridge runtime behind an API surface that mirrors Hadamard SDK:
 
 ```typescript
-class ActoviqCleanBridgeSdkClient {
-  // Same shape as ActoviqAgentClient's public API:
-  readonly sessions: ActoviqCleanBridgeSessionsApi;
-  readonly agents: ActoviqCleanBridgeAgentsApi;
-  readonly skills: ActoviqCleanBridgeSkillsApi;
-  readonly tools: ActoviqCleanBridgeToolsApi;
+class HadamardCleanBridgeSdkClient {
+  // Same shape as HadamardAgentClient's public API:
+  readonly sessions: HadamardCleanBridgeSessionsApi;
+  readonly agents: HadamardCleanBridgeAgentsApi;
+  readonly skills: HadamardCleanBridgeSkillsApi;
+  readonly tools: HadamardCleanBridgeToolsApi;
   // ...
 
   async run(prompt: string): Promise<AgentRunResult> {
@@ -70,21 +70,21 @@ class ActoviqCleanBridgeSdkClient {
 
 ### Event Extraction
 
-`src/parity/actoviqBridgeEvents.ts` provides parsers for bridge runtime output:
+`src/parity/hadamardBridgeEvents.ts` provides parsers for bridge runtime output:
 
 ```typescript
-function extractActoviqBridgeToolRequests(output: string): ToolRequest[] { /* ... */ }
-function extractActoviqBridgeToolResults(output: string): ToolResult[] { /* ... */ }
-function extractActoviqBridgeTaskInvocations(output: string): TaskInvocation[] { /* ... */ }
-function getActoviqBridgeTextDelta(output: string): string { /* ... */ }
-function analyzeActoviqBridgeEvents(output: string): BridgeEventAnalysis { /* ... */ }
+function extractHadamardBridgeToolRequests(output: string): ToolRequest[] { /* ... */ }
+function extractHadamardBridgeToolResults(output: string): ToolResult[] { /* ... */ }
+function extractHadamardBridgeTaskInvocations(output: string): TaskInvocation[] { /* ... */ }
+function getHadamardBridgeTextDelta(output: string): string { /* ... */ }
+function analyzeHadamardBridgeEvents(output: string): BridgeEventAnalysis { /* ... */ }
 ```
 
 ## Code Details
 
 ### Execution Modes: Bundle vs directCli
 
-`createActoviqBridgeSdk()` spawns the runtime in one of two modes, selected by
+`createHadamardBridgeSdk()` spawns the runtime in one of two modes, selected by
 the `directCli` option. Bundle mode speaks Claude Code's `stream-json` protocol;
 directCli mode supports multiple providers (`directCliProvider`), each with its
 own wire protocol but the same env-injection seam, so provider isolation works
@@ -92,7 +92,7 @@ identically.
 
 | Mode | `directCli` | Spawned process | Needs |
 |---|---|---|---|
-| Bundle (default) | `false` | `bun vendor/actoviq-runtime/cli.js -p …` | Bun + `runtime.bundle.br` (linked via `actoviq-link-runtime`) |
+| Bundle (default) | `false` | `bun vendor/hadamard-runtime/cli.js -p …` | Bun + `runtime.bundle.br` (linked via `hadamard-link-runtime`) |
 | directCli | `true` | `claude -p …` (resolved on PATH, or `executable`) | A local `claude` on PATH — no bundle, no Bun |
 
 directCli mode mirrors multica's "shell out by name": the bridge finds `claude`
@@ -102,18 +102,18 @@ no `runtime.bundle.br` and therefore cannot be linked.
 
 ```typescript
 // directCli mode — reuse the locally installed claude directly
-const sdk = await createActoviqBridgeSdk({ directCli: true, workDir });
+const sdk = await createHadamardBridgeSdk({ directCli: true, workDir });
 // spawns: claude -p "<prompt>" --output-format stream-json --verbose ...
 //   executable defaults to `claude` on PATH; cliPath is unused for a plain
 //   binary, but a node+script pair still prepends cliPath.
 
 // bundle mode (default) — the vendored runtime
-const sdk2 = await createActoviqBridgeSdk({ workDir });
-// spawns: bun vendor/actoviq-runtime/cli.js -p "<prompt>" --output-format ...
+const sdk2 = await createHadamardBridgeSdk({ workDir });
+// spawns: bun vendor/hadamard-runtime/cli.js -p "<prompt>" --output-format ...
 ```
 
 **Provider isolation (both modes):** before spawning, `buildChildEnvironment`
-maps `~/.actoviq/settings.json` → `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`
+maps `~/.hadamard/settings.json` → `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`
 / `ANTHROPIC_MODEL` and injects them into the child, overriding the child's own
 `~/.claude/settings.json`. So the interactive `claude` can stay on Claude
 official while the bridge's child runs on DeepSeek (or any Anthropic-compatible
@@ -137,8 +137,8 @@ already switches on.
 | `crush` | `crush` | `crush run [--model] [--session] <prompt>` | plain text (PlainTextNormalizer) |
 
 ```typescript
-const piSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'pi', workDir });
-const codexSdk = await createActoviqBridgeSdk({ directCli: true, directCliProvider: 'codex', workDir });
+const piSdk = await createHadamardBridgeSdk({ directCli: true, directCliProvider: 'pi', workDir });
+const codexSdk = await createHadamardBridgeSdk({ directCli: true, directCliProvider: 'codex', workDir });
 ```
 
 - **Credentials differ:** claude → `ANTHROPIC_*`; pi/codex → their own
@@ -156,7 +156,7 @@ that runtime — `startRun` branches on `bridgeMode`, swapping only the event so
 (`session.stream` vs `adaptBridgeRun(rt.session.stream)`) while reusing the whole
 run loop (status spinner, streamed transcript, tool cards, Esc interrupt, steering
 queue, history). `/bridge off` returns to the in-process SDK. Each provider keeps a
-persistent `ActoviqBridgeSession`: the first turn seeds it (`--session-id <uuid>`),
+persistent `HadamardBridgeSession`: the first turn seeds it (`--session-id <uuid>`),
 later turns resume it (`--resume <uuid>` for claude/pi, `--continue` for crush/codewhale),
 so the runtime remembers prior turns. One `{client, session}` per provider is held in
 a map, so switching providers preserves each runtime's context, and bridge turns are
@@ -164,7 +164,7 @@ appended to the Hadamard session store so the conversation survives switching
 bridge↔hadamard and a later `/resume`. (codex/reasonix remain one-shot — their CLIs
 expose no exec-mode resume.)
 
-**Named bridge configs** (`/bridge config`, persisted to `~/.actoviq/bridge-configs.json`):
+**Named bridge configs** (`/bridge config`, persisted to `~/.hadamard/bridge-configs.json`):
 each config bundles {name, provider, apiKey, baseURL, model}. `/bridge` lists saved
 configs; selecting one activates the runtime and injects the config's credentials each
 turn via the per-run `env` option (`buildConfigEnv` → `buildChildEnvironment(provider,
@@ -177,7 +177,7 @@ run/switch/model/setup/off/help.
 ### Compatibility Matrix
 
 ```typescript
-function getActoviqCleanBridgeParityMatrix(): ParityMatrix {
+function getHadamardCleanBridgeParityMatrix(): ParityMatrix {
   // Maps Hadamard SDK features to bridge equivalents
   // Tracks: supported, partial, unsupported, not-applicable
 }
@@ -197,8 +197,8 @@ function getActoviqCleanBridgeParityMatrix(): ParityMatrix {
 
 ### Why Two Bridge Wrappers Exist
 
-1. **`actoviqBridgeSdk`**: Direct, low-level bridge access. Used when you want
+1. **`hadamardBridgeSdk`**: Direct, low-level bridge access. Used when you want
    the bridge runtime exactly as-is.
-2. **`actoviqCleanBridgeCompatSdk`**: Hadamard-shaped API over the bridge.
+2. **`hadamardCleanBridgeCompatSdk`**: Hadamard-shaped API over the bridge.
    Enables swapping Hadamard SDK ↔ bridge runtime without changing calling
    code. Used for A/B testing and parity verification.

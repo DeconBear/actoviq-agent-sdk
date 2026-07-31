@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import { addBridgeConfig, readBridgeConfigs } from '../src/parity/bridgeConfigs.js';
 
 const tempDirs: string[] = [];
@@ -20,14 +20,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const res = await fetch(`${server.url}${requestPath}`, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -36,7 +36,7 @@ async function api<T>(
 
 describe('GUI agent profile API', () => {
   it('creates, lists, and deletes agent profiles', async () => {
-    const root = await tempRoot('actoviq-gui-agent-profiles-');
+    const root = await tempRoot('hadamard-gui-agent-profiles-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -48,7 +48,7 @@ describe('GUI agent profile API', () => {
       models: [{ name: 'claude-sonnet' }],
     }, homeDir);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -110,7 +110,7 @@ describe('GUI agent profile API', () => {
   });
 
   it('exposes selectable agents and activates by agent name', async () => {
-    const root = await tempRoot('actoviq-gui-agent-activate-');
+    const root = await tempRoot('hadamard-gui-agent-activate-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -122,7 +122,7 @@ describe('GUI agent profile API', () => {
       models: [{ name: 'deepseek-v4-pro' }, { name: 'deepseek-v4-flash' }],
     }, homeDir);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -166,7 +166,7 @@ describe('GUI agent profile API', () => {
   });
 
   it('keeps runtime and model selection scoped to the active chat', async () => {
-    const root = await tempRoot('actoviq-gui-agent-session-scope-');
+    const root = await tempRoot('hadamard-gui-agent-session-scope-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     const configPath = path.join(homeDir, 'settings.json');
@@ -174,10 +174,10 @@ describe('GUI agent profile API', () => {
     await mkdir(homeDir, { recursive: true });
     await writeFile(configPath, JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_BASE_URL: 'http://127.0.0.1:1/v1',
-        ACTOVIQ_MODEL: 'model-default',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_BASE_URL: 'http://127.0.0.1:1/v1',
+        HADAMARD_MODEL: 'model-default',
       },
     }), 'utf8');
     addBridgeConfig({
@@ -190,7 +190,7 @@ describe('GUI agent profile API', () => {
       models: [{ name: 'model-alpha' }, { name: 'model-alpha-v2' }],
     }, homeDir);
 
-    let server = await startActoviqGuiServer({
+    let server = await startHadamardGuiServer({
       workDir,
       homeDir,
       configPath,
@@ -234,7 +234,7 @@ describe('GUI agent profile API', () => {
         models: [{ name: 'model-alpha' }, { name: 'model-alpha-v2' }],
       }, homeDir);
       await server.close();
-      server = await startActoviqGuiServer({
+      server = await startHadamardGuiServer({
         workDir,
         homeDir,
         configPath,

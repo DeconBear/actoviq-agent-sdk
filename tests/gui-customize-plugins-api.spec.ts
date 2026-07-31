@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { resolveActoviqHome } from '../src/config/actoviqHome.js';
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { resolveHadamardHome } from '../src/config/hadamardHome.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 
 const tempDirs: string[] = [];
 
@@ -14,13 +14,13 @@ afterEach(async () => {
 });
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T; text: string }> {
   const response = await fetch(new URL(requestPath.replace(/^\/+/, ''), server.url), {
     ...init,
-    headers: { 'x-actoviq-token': server.token, ...init.headers },
+    headers: { 'x-hadamard-token': server.token, ...init.headers },
   });
   const text = await response.text();
   return { status: response.status, body: JSON.parse(text) as T, text };
@@ -28,11 +28,11 @@ async function api<T>(
 
 describe('GUI Customize plugins API', () => {
   it('installs and configures managed plugins without returning secrets to the renderer', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-plugins-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-plugins-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -106,7 +106,7 @@ describe('GUI Customize plugins API', () => {
         .not.toHaveProperty('apiKey');
 
       const settings = await readFile(
-        path.join(resolveActoviqHome(homeDir), 'settings.json'),
+        path.join(resolveHadamardHome(homeDir), 'settings.json'),
         'utf8',
       );
       expect(settings).toContain(secret);

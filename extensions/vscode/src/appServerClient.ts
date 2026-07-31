@@ -37,8 +37,8 @@ export class AppServerClient implements vscode.Disposable {
 
   private ensureStarted(): void {
     if (this.child) return;
-    const config = vscode.workspace.getConfiguration('actoviq.appServer');
-    const command = config.get<string>('command', 'actoviq-app-server');
+    const config = vscode.workspace.getConfiguration('hadamard.appServer');
+    const command = config.get<string>('command', 'hadamard-app-server');
     const args = config.get<string[]>('args', []);
     const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this.child = spawn(command, [...args, ...(workspace ? [workspace] : [])], {

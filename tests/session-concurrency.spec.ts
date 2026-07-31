@@ -145,7 +145,7 @@ class ControlledModelApi implements ModelApi {
 }
 
 async function createSessionDirectory(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-concurrency-'));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-concurrency-'));
   tempDirs.push(directory);
   return directory;
 }

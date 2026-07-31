@@ -9,7 +9,7 @@ import {
   ENTER_PLAN_MODE_TOOL_NAME,
   EXIT_PLAN_MODE_TOOL_NAME,
 } from '../src/tools/planMode/PlanModeTools.js';
-import type { ActoviqPermissionMode } from '../src/types.js';
+import type { HadamardPermissionMode } from '../src/types.js';
 
 const tempDirs: string[] = [];
 
@@ -19,9 +19,9 @@ afterEach(async () => {
 
 describe('plan mode tools', () => {
   it('enters read-only planning and persists the proposed plan for approval', async () => {
-    const planDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plan-mode-'));
+    const planDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plan-mode-'));
     tempDirs.push(planDir);
-    const modes: ActoviqPermissionMode[] = [];
+    const modes: HadamardPermissionMode[] = [];
     const tools = createPlanModeTools('C:\\workspace', {
       planDir,
       onPlanModeChange: mode => { modes.push(mode); },

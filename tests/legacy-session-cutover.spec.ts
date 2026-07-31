@@ -53,7 +53,7 @@ class CutoverProvider implements ModelProvider {
 
 describe('JSON-v1 runtime cutover', () => {
   it('migrates legacy content and immediately continues the session with Runtime v2', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-cutover-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-cutover-'));
     roots.push(root);
     const source = path.join(root, 'legacy');
     await mkdir(path.join(source, 'sessions'), { recursive: true });
@@ -136,7 +136,7 @@ describe('JSON-v1 runtime cutover', () => {
   });
 
   it('reads databases produced by the early preview and excludes old run records', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-cutover-preview-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-cutover-preview-'));
     roots.push(root);
     const storage = await SqliteStorageV2.open({ filename: path.join(root, 'state.sqlite') });
     await storage.sessions.create({ tenantId: 'tenant-a', sessionId: 'preview' });
@@ -154,7 +154,7 @@ describe('JSON-v1 runtime cutover', () => {
   });
 
   it('rejects an invalid legacy message before backup or target writes', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-cutover-invalid-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-cutover-invalid-'));
     roots.push(root);
     const source = path.join(root, 'legacy');
     await mkdir(path.join(source, 'sessions'), { recursive: true });

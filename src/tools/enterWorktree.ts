@@ -27,7 +27,7 @@ export function createEnterWorktreeTool(getWorktreeService: () => WorktreeServic
       description:
         'Creates an isolated git worktree and switches the agent\'s working directory into it. ' +
         'Pass a path to switch into an existing worktree. ' +
-        'From within a worktree, only the path form is available and the target must be under .actoviq/worktrees/.',
+        'From within a worktree, only the path form is available and the target must be under .hadamard/worktrees/.',
       inputSchema: enterWorktreeSchema,
       isConcurrencySafe: () => false,
       prompt: async () => {

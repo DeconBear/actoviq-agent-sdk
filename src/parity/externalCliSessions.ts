@@ -7,8 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { resolveActoviqHome } from '../config/actoviqHome.js';
-import { ActoviqSdkError } from '../errors.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
+import { HadamardSdkError } from '../errors.js';
 import {
   isCrushSessionReference,
   listCrushSessionHistory,
@@ -69,8 +69,8 @@ export interface ExternalCliSession {
 export interface ExternalCliSessionOptions {
   /** Used only to derive the default Claude, Codex, Pi, CodeWhale, and Reasonix session roots. */
   homeDir?: string;
-  /** Direct Actoviq data root used for isolated managed-profile history. */
-  actoviqHomeDir?: string;
+  /** Direct Hadamard data root used for isolated managed-profile history. */
+  hadamardHomeDir?: string;
   claudeRoot?: string;
   codexRoot?: string;
   piRoot?: string;
@@ -207,14 +207,14 @@ export function namedExternalCliManagedProfileId(
 
 function sessionManagedProfileId(
   summary: Pick<ExternalCliSessionSummary, 'runtime' | 'path'>,
-  options: Pick<ExternalCliSessionOptions, 'actoviqHomeDir' | 'homeDir'>,
+  options: Pick<ExternalCliSessionOptions, 'hadamardHomeDir' | 'homeDir'>,
 ): string | undefined {
   if (summary.runtime === 'crush') {
     return parseCrushSessionReferenceDetails(summary.path)?.managedProfileId;
   }
   if (!ISOLATED_MANAGED_PROFILE_RUNTIMES.has(summary.runtime)) return undefined;
   const runtimeRoot = path.resolve(
-    resolveManagedActoviqHome(options),
+    resolveManagedHadamardHome(options),
     'external-cli-profiles',
     summary.runtime,
   );
@@ -239,7 +239,7 @@ function sessionManagedProfileId(
 export function externalCliSessionMatchesConfig(
   summary: Pick<ExternalCliSessionSummary, 'runtime' | 'path'>,
   config: ExternalCliSessionConfigIdentity,
-  options: Pick<ExternalCliSessionOptions, 'actoviqHomeDir' | 'homeDir'> = {},
+  options: Pick<ExternalCliSessionOptions, 'hadamardHomeDir' | 'homeDir'> = {},
 ): boolean {
   if (summary.runtime !== config.runtime) return false;
   if (!ISOLATED_MANAGED_PROFILE_RUNTIMES.has(summary.runtime)) return true;
@@ -599,9 +599,9 @@ async function getConfiguredRoots(options: ExternalCliSessionOptions): Promise<R
 }
 
 async function managedExternalCliProfileRoots(
-  options: Pick<ExternalCliSessionOptions, 'actoviqHomeDir' | 'homeDir'>,
+  options: Pick<ExternalCliSessionOptions, 'hadamardHomeDir' | 'homeDir'>,
 ): Promise<RootSpec[]> {
-  const profilesRoot = path.join(resolveManagedActoviqHome(options), 'external-cli-profiles');
+  const profilesRoot = path.join(resolveManagedHadamardHome(options), 'external-cli-profiles');
   const roots: RootSpec[] = [];
   for (const runtime of ['pi', 'codewhale', 'reasonix'] as const) {
     const runtimeRoot = path.join(profilesRoot, runtime);
@@ -629,10 +629,10 @@ async function managedExternalCliProfileRoots(
 }
 
 async function managedCrushHistoryProfiles(
-  options: Pick<ExternalCliSessionOptions, 'actoviqHomeDir' | 'homeDir'>,
+  options: Pick<ExternalCliSessionOptions, 'hadamardHomeDir' | 'homeDir'>,
 ): Promise<ManagedCrushHistoryProfile[]> {
   const requestedRuntimeRoot = path.join(
-    resolveManagedActoviqHome(options),
+    resolveManagedHadamardHome(options),
     'external-cli-profiles',
     'crush',
   );
@@ -669,12 +669,12 @@ async function managedCrushHistoryProfiles(
   return profiles;
 }
 
-function resolveManagedActoviqHome(
-  options: Pick<ExternalCliSessionOptions, 'actoviqHomeDir' | 'homeDir'>,
+function resolveManagedHadamardHome(
+  options: Pick<ExternalCliSessionOptions, 'hadamardHomeDir' | 'homeDir'>,
 ): string {
-  return options.actoviqHomeDir?.trim()
-    ? resolveActoviqHome(options.actoviqHomeDir, { inputKind: 'dataRoot' })
-    : resolveActoviqHome(options.homeDir);
+  return options.hadamardHomeDir?.trim()
+    ? resolveHadamardHome(options.hadamardHomeDir, { inputKind: 'dataRoot' })
+    : resolveHadamardHome(options.homeDir);
 }
 
 async function resolveDirectory(directory: string): Promise<string | undefined> {
@@ -816,8 +816,8 @@ function isPathInside(root: string, candidate: string): boolean {
     !path.isAbsolute(relative);
 }
 
-function unsafeSessionPath(filePath: string): ActoviqSdkError {
-  return new ActoviqSdkError(
+function unsafeSessionPath(filePath: string): HadamardSdkError {
+  return new HadamardSdkError(
     `External CLI session path is outside the allowed roots: ${filePath}`,
     'EXTERNAL_CLI_SESSION_PATH_UNSAFE',
   );

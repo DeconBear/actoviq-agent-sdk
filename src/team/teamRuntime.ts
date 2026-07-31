@@ -62,13 +62,13 @@ export const TEAM_READ_ONLY_EXPERT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'WebFet
 
 /** Read-only tool set for expert/reviewer agents (no write/edit/bash/delegation). */
 export async function buildReadOnlyExpertTools(cwd: string): Promise<AgentToolDefinition[]> {
-  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
-  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
+  const { createHadamardFileTools } = await import('../tools/hadamardFileTools.js');
+  const { createHadamardWebTools } = await import('../tools/hadamardWebTools.js');
   const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
   const READ_ONLY_FILE_TOOLS = new Set(['Read', 'Glob', 'Grep']);
   return [
-    ...createActoviqFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
-    ...createActoviqWebTools().filter((t) => t.name === 'WebFetch'),
+    ...createHadamardFileTools({ cwd }).filter((t) => READ_ONLY_FILE_TOOLS.has(t.name)),
+    ...createHadamardWebTools().filter((t) => t.name === 'WebFetch'),
     createTavilySearchTool(),
   ];
 }

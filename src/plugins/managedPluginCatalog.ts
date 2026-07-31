@@ -220,7 +220,7 @@ const PLUGIN_SPECS: Record<ManagedPluginId, ManagedPluginSpec> = {
   'kimi-webbridge': {
     fields: {
       daemonUrl: { kind: 'string', default: 'http://127.0.0.1:10086' },
-      sessionName: { kind: 'string', default: 'actoviq' },
+      sessionName: { kind: 'string', default: 'hadamard' },
       timeoutMs: { kind: 'number', default: 30_000 },
       autoStart: { kind: 'boolean', default: true },
     },

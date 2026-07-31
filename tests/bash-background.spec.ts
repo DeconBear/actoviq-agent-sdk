@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createBashTool } from '../src/tools/bash/BashTool.js';
-import type { ActoviqBackgroundTaskRecord, ToolExecutionContext } from '../src/types.js';
+import type { HadamardBackgroundTaskRecord, ToolExecutionContext } from '../src/types.js';
 
 describe('Bash background tasks', () => {
   it('registers run_in_background commands with the runtime task manager', async () => {
@@ -14,7 +14,7 @@ describe('Bash background tasks', () => {
       agentName?: string;
       outputFile?: string | ((taskId: string) => string);
     } | undefined;
-    const task: ActoviqBackgroundTaskRecord = {
+    const task: HadamardBackgroundTaskRecord = {
       id: 'task_bash_1',
       status: 'queued',
       description: 'List files',
@@ -63,7 +63,7 @@ describe('Bash background tasks', () => {
       backgroundTaskId: 'task_bash_1',
     });
     expect(String((result as { outputFile?: unknown }).outputFile)).toContain(
-      '.actoviq-artifacts',
+      '.hadamard-artifacts',
     );
   });
 });

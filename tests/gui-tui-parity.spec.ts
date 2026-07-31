@@ -4,25 +4,25 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { TUI_SLASH_COMMANDS, filterSlashCommands } from '../src/tui/actoviqTui.js';
+import { TUI_SLASH_COMMANDS, filterSlashCommands } from '../src/tui/hadamardTui.js';
 import {
-  ACTOVIQ_INTERACTIVE_COMMANDS,
+  HADAMARD_INTERACTIVE_COMMANDS,
   SUBCOMMANDS,
   filterInteractiveCommands,
 } from '../src/ui/commandSurface.js';
 import {
-  createActoviqGuiClientScript,
-  createActoviqGuiHtml,
-  createActoviqGuiStyles,
-} from '../src/gui/actoviqGui.js';
+  createHadamardGuiClientScript,
+  createHadamardGuiHtml,
+  createHadamardGuiStyles,
+} from '../src/gui/hadamardGui.js';
 
 describe('TUI and GUI parity', () => {
   it('keeps the TUI slash command surface on the shared command registry', () => {
-    expect(TUI_SLASH_COMMANDS).toBe(ACTOVIQ_INTERACTIVE_COMMANDS);
+    expect(TUI_SLASH_COMMANDS).toBe(HADAMARD_INTERACTIVE_COMMANDS);
     expect(filterSlashCommands('/wo')).toEqual(filterInteractiveCommands('/wo'));
     expect(filterSlashCommands('/agents r')).toEqual(['agents runs']);
     expect(SUBCOMMANDS.agents).toEqual(['list', 'runs', 'show', 'open']);
-    expect(Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS)).toEqual([
+    expect(Object.keys(HADAMARD_INTERACTIVE_COMMANDS)).toEqual([
       'help',
       'clear',
       'init',
@@ -69,11 +69,11 @@ describe('TUI and GUI parity', () => {
   });
 
   it('renders GUI shell controls for the interactive surface', () => {
-    const html = createActoviqGuiHtml();
-    const css = createActoviqGuiStyles();
-    const js = createActoviqGuiClientScript();
-    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
-    const tui = readFileSync(join(import.meta.dirname, '..', 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const html = createHadamardGuiHtml();
+    const css = createHadamardGuiStyles();
+    const js = createHadamardGuiClientScript();
+    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
+    const tui = readFileSync(join(import.meta.dirname, '..', 'src', 'tui', 'hadamardTui.ts'), 'utf8');
 
     expect(html).not.toContain('id="commands"');
     expect(html).not.toContain('class="command-section"');
@@ -443,9 +443,9 @@ describe('TUI and GUI parity', () => {
   it('keeps /issues available on all three surfaces (project issue workflow)', () => {
     const root = join(import.meta.dirname, '..');
     expect(SUBCOMMANDS.issues).toEqual(['list', 'show', 'create', 'start', 'review', 'done', 'block']);
-    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
-    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     for (const source of [repl, tui, gui]) {
       expect(source).toContain('/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]');
       expect(source).toContain('createProjectIssue');
@@ -462,9 +462,9 @@ describe('TUI and GUI parity', () => {
     expect(SUBCOMMANDS.manager).toContain('chat');
     expect(SUBCOMMANDS.manager).toContain('update');
     // Each surface must both parse the chat subcommand and show it in usage.
-    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
-    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     for (const source of [repl, tui, gui]) {
       expect(source).toContain('/manager chat <message>');
     }
@@ -475,10 +475,10 @@ describe('TUI and GUI parity', () => {
 
   it('controls External CLI background work and native history from the TUI', () => {
     const root = join(import.meta.dirname, '..');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
-    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
-    const html = createActoviqGuiHtml();
-    const js = createActoviqGuiClientScript();
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
+    const html = createHadamardGuiHtml();
+    const js = createHadamardGuiClientScript();
     const managedRuntimes = [
       'claude',
       'codex',
@@ -505,8 +505,8 @@ describe('TUI and GUI parity', () => {
     expect(tui).toContain('new ExternalCliRuntimeManager()');
     expect(tui).toContain('listExternalCliSessions({');
     expect(tui).toContain('readExternalCliSession(summary.path');
-    expect(tui).toContain("const RUNTIME_METADATA_KEY = '__actoviqRuntime'");
-    expect(tui).toContain("const EXTERNAL_SESSIONS_METADATA_KEY = '__actoviqExternalSessions'");
+    expect(tui).toContain("const RUNTIME_METADATA_KEY = '__hadamardRuntime'");
+    expect(tui).toContain("const EXTERNAL_SESSIONS_METADATA_KEY = '__hadamardExternalSessions'");
     expect(tui).toContain("targetSession.id + '\\u0000' + externalSessionBindingKey");
     expect(tui).toContain('await client.resumeSession(boundNativeSessionId');
     expect(tui).toContain('await rememberExternalNativeSession(externalConfig, externalBridge.session.id)');
@@ -573,7 +573,7 @@ describe('TUI and GUI parity', () => {
     const conflictStart = tui.indexOf('function findConflictingExternalCliRun');
     const conflictEnd = tui.indexOf('function externalCliDisplayText', conflictStart);
     const conflictSource = tui.slice(conflictStart, conflictEnd);
-    expect(conflictSource).toContain('run.actoviqSessionId !== targetSession.id');
+    expect(conflictSource).toContain('run.hadamardSessionId !== targetSession.id');
     expect(conflictSource).toContain('!sameWorkspace(run.cwd, targetWorkDir)');
     expect(conflictSource).toContain("run.status !== 'queued' && run.status !== 'running'");
     expect(conflictSource).toContain('label?.configName === config.name');
@@ -605,7 +605,7 @@ describe('TUI and GUI parity', () => {
       "config.runtime === 'claude' ? 'Claude Code' : 'Codex'",
     );
 
-    const splitHistoryRoots = /homeDir: pointerHomeDir\(\),\r?\n\s+actoviqHomeDir: resolveGuiHomeDir\(\),/gu;
+    const splitHistoryRoots = /homeDir: pointerHomeDir\(\),\r?\n\s+hadamardHomeDir: resolveGuiHomeDir\(\),/gu;
     expect(gui.match(splitHistoryRoots)).toHaveLength(5);
 
     const guiHistoryStart = js.indexOf('async function loadExternalCliHistory');
@@ -626,9 +626,9 @@ describe('TUI and GUI parity', () => {
   it('keeps /team clone available on all three surfaces (plan Phase 1)', () => {
     const root = join(import.meta.dirname, '..');
     expect(SUBCOMMANDS.team).toContain('clone');
-    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
-    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     for (const source of [repl, tui, gui]) {
       expect(source).toContain('cloneTeamDefinition');
       expect(source).toContain("startsWith('clone ')");
@@ -637,16 +637,16 @@ describe('TUI and GUI parity', () => {
 
   it('keeps manager config knobs (model/readScope/mirror) on all three surfaces (plan M0/M3)', () => {
     const root = join(import.meta.dirname, '..');
-    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
+    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
     for (const source of [repl, tui]) {
       expect(source).toContain("startsWith('config set ')");
       expect(source).toContain('writeManagerConfig');
       expect(source).toContain('read-only regardless of model');
     }
-    const html = createActoviqGuiHtml();
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
+    const html = createHadamardGuiHtml();
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
     expect(html).toContain('id="managerConfigForm"');
     expect(html).toContain('id="managerCfgScope"');
     expect(html).toContain('id="managerCfgMirror"');
@@ -668,9 +668,9 @@ describe('TUI and GUI parity', () => {
   });
 
   it('renders the Team Run tree + graph editor surfaces in the GUI (plan Phase 4/5)', () => {
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
-    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
+    const gui = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     // Phase 5: TeamEvent-driven run tree (hidden with no team run) + edge lines.
     expect(js).toContain('renderTeamRunTree');
     expect(js).toContain("event.type === 'team.edge.triggered'");
@@ -717,14 +717,14 @@ describe('TUI and GUI parity', () => {
 
   it('keeps Team Run tree formatting on all three surfaces (plan Phase 5)', () => {
     const root = join(import.meta.dirname, '..');
-    const repl = readFileSync(join(root, 'src', 'cli', 'actoviq-react.ts'), 'utf8');
-    const tui = readFileSync(join(root, 'src', 'tui', 'actoviqTui.ts'), 'utf8');
-    const gui = readFileSync(join(root, 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
+    const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
+    const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     for (const source of [repl, tui]) {
       expect(source).toContain('formatTeamRunTreeLines');
       expect(source).toContain('applyTeamRunEvent');
     }
-    const js = createActoviqGuiClientScript();
+    const js = createHadamardGuiClientScript();
     expect(js).toContain('renderTeamRunTree');
     expect(js).toContain("event.type === 'team.edge.triggered'");
     expect(gui).toContain('forwardTeamEvent');
@@ -732,21 +732,21 @@ describe('TUI and GUI parity', () => {
   });
 
   it('emits syntactically valid GUI client script (template-literal regex escapes)', () => {
-    const js = createActoviqGuiClientScript();
-    const file = join(tmpdir(), `actoviq-gui-client-${process.pid}.js`);
+    const js = createHadamardGuiClientScript();
+    const file = join(tmpdir(), `hadamard-gui-client-${process.pid}.js`);
     writeFileSync(file, js);
     expect(() => execSync(`node --check ${JSON.stringify(file)}`)).not.toThrow();
   });
 
   it('client script can auto-layout squads missing agent ui positions', () => {
-    const js = createActoviqGuiClientScript();
+    const js = createHadamardGuiClientScript();
     expect(js).toContain('function graphNodeRef(');
     expect(js.indexOf('function graphNodeRef(')).toBeLessThan(js.indexOf('function computeTeamGraphAutoLayoutLanes('));
   });
 
   it('ships GUI taskbar icon assets for Electron', () => {
     const root = join(import.meta.dirname, '..');
-    expect(existsSync(join(root, 'assets', 'actoviq-icon.png'))).toBe(true);
-    expect(existsSync(join(root, 'assets', 'actoviq-icon.ico'))).toBe(true);
+    expect(existsSync(join(root, 'assets', 'hadamard-icon.png'))).toBe(true);
+    expect(existsSync(join(root, 'assets', 'hadamard-icon.ico'))).toBe(true);
   });
 });

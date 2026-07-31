@@ -15,7 +15,7 @@ afterEach(async () => {
 
 describe('sandbox process lifecycle', () => {
   it('terminates a process tree at the configured timeout', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-process-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sandbox-process-'));
     tempDirs.push(root);
     await mkdir(root, { recursive: true });
     // Isolation is orthogonal: this assertion covers process-tree kill + the
@@ -39,7 +39,7 @@ describe('sandbox process lifecycle', () => {
   });
 
   it('never claims a required sandbox when the platform adapter is degraded', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-required-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sandbox-required-'));
     tempDirs.push(root);
     const executor = new SandboxExecutor(resolveSandboxPolicy(root, {
       enforcement: 'required',

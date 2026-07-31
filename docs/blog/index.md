@@ -5,7 +5,7 @@ title: Blog
 # Blog — Agent Design Notes & Research
 
 Thoughts on agent design, research outcomes, and experimental records from
-building the **Actoviq Agent SDK**. Less "how to use the API," more "what we
+building the **Hadamard Agent SDK**. Less "how to use the API," more "what we
 tried, what we measured, and what we concluded."
 
 ## Posts

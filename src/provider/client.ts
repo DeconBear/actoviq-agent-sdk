@@ -12,10 +12,10 @@ import type {
   ToolChoice,
   Usage,
 } from './types.js';
-import { ActoviqProviderApiError } from '../errors.js';
+import { HadamardProviderApiError } from '../errors.js';
 import { robustJsonParse } from './json-parse.js';
 
-export interface ActoviqProviderClientOptions {
+export interface HadamardProviderClientOptions {
   apiKey?: string | null;
   authToken?: string | null;
   baseURL?: string | null;
@@ -24,7 +24,7 @@ export interface ActoviqProviderClientOptions {
   fetch?: typeof fetch;
 }
 
-export interface ActoviqCreateMessageRequest {
+export interface HadamardCreateMessageRequest {
   model: string;
   messages: MessageParam[];
   max_tokens: number;
@@ -38,7 +38,7 @@ export interface ActoviqCreateMessageRequest {
   output_config?: Record<string, unknown>;
 }
 
-export interface ActoviqRequestOptions {
+export interface HadamardRequestOptions {
   signal?: AbortSignal;
   betas?: string[];
 }
@@ -304,7 +304,7 @@ class MessageAccumulator {
 
     // Debug: log when tool input appears to have been fallback-wrapped
     if (
-      process.env.ACTOVIQ_DEBUG_JSON &&
+      process.env.HADAMARD_DEBUG_JSON &&
       isRecord(block.input) &&
       'raw' in block.input &&
       Object.keys(block.input).length === 1
@@ -317,7 +317,7 @@ class MessageAccumulator {
   }
 }
 
-class ActoviqProviderMessageStream implements AsyncIterable<MessageStreamEvent> {
+class HadamardProviderMessageStream implements AsyncIterable<MessageStreamEvent> {
   private started = false;
   private finished = false;
   private readonly accumulator = new MessageAccumulator();
@@ -481,11 +481,11 @@ function isMessageDeltaEvent(event: MessageStreamEvent): event is MessageDeltaEv
   return event.type === 'message_delta';
 }
 
-export default class ActoviqProviderClient {
+export default class HadamardProviderClient {
   readonly messages = {
-    create: (body: ActoviqCreateMessageRequest, options?: ActoviqRequestOptions) =>
+    create: (body: HadamardCreateMessageRequest, options?: HadamardRequestOptions) =>
       this.createMessage(body, options),
-    stream: (body: ActoviqCreateMessageRequest, options?: ActoviqRequestOptions) =>
+    stream: (body: HadamardCreateMessageRequest, options?: HadamardRequestOptions) =>
       this.streamMessage(body, options),
   };
 
@@ -496,7 +496,7 @@ export default class ActoviqProviderClient {
   private readonly authToken?: string | null;
   private readonly baseURL?: string | null;
 
-  constructor(options: ActoviqProviderClientOptions = {}) {
+  constructor(options: HadamardProviderClientOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch;
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeout;
@@ -506,8 +506,8 @@ export default class ActoviqProviderClient {
   }
 
   async createMessage(
-    body: ActoviqCreateMessageRequest,
-    options?: ActoviqRequestOptions,
+    body: HadamardCreateMessageRequest,
+    options?: HadamardRequestOptions,
   ): Promise<Message> {
     const response = await this.sendRequest(
       {
@@ -520,10 +520,10 @@ export default class ActoviqProviderClient {
   }
 
   streamMessage(
-    body: ActoviqCreateMessageRequest,
-    options?: ActoviqRequestOptions,
-  ): ActoviqProviderMessageStream {
-    return new ActoviqProviderMessageStream(
+    body: HadamardCreateMessageRequest,
+    options?: HadamardRequestOptions,
+  ): HadamardProviderMessageStream {
+    return new HadamardProviderMessageStream(
       this.sendRequest(
         {
           ...body,
@@ -536,7 +536,7 @@ export default class ActoviqProviderClient {
 
   private async sendRequest(
     body: Record<string, unknown>,
-    options?: ActoviqRequestOptions,
+    options?: HadamardRequestOptions,
   ): Promise<Response> {
     let lastError: unknown;
 
@@ -557,7 +557,7 @@ export default class ActoviqProviderClient {
 
         const payload = await safeReadJson(response.clone());
         const fallbackText = payload ? undefined : await safeReadText(response.clone());
-        const error = new ActoviqProviderApiError(
+        const error = new HadamardProviderApiError(
           createErrorMessage(response.status, payload, fallbackText),
           {
             status: response.status,
@@ -651,7 +651,7 @@ export function computeRetryDelayMs(attempt: number, retryAfterMs?: number): num
 }
 
 function shouldRetryError(error: unknown): boolean {
-  if (error instanceof ActoviqProviderApiError) {
+  if (error instanceof HadamardProviderApiError) {
     return false;
   }
   if (!(error instanceof Error) || error.name === 'AbortError') {
@@ -682,7 +682,7 @@ function normalizeTransportError(error: unknown, url: string): unknown {
   if (!(error instanceof Error) || !isTransientTransportError(error)) {
     return error;
   }
-  return new ActoviqProviderApiError(
+  return new HadamardProviderApiError(
     `Provider transport error after retries: ${error.message} [url: ${url}]`,
     {
       status: 0,

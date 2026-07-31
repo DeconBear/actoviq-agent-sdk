@@ -80,6 +80,6 @@ describe('runtime benchmark harness', () => {
     ));
     const schema = JSON.parse(await readFile(filename, 'utf8')) as Record<string, unknown>;
     expect(schema.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
-    expect(schema.$id).toBe('https://actoviq.dev/schemas/runtime-benchmark-report-v1.json');
+    expect(schema.$id).toBe('https://hadamard.dev/schemas/runtime-benchmark-report-v1.json');
   });
 });

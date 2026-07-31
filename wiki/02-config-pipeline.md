@@ -9,8 +9,8 @@ No auto-detection — every value has a known source.
 
 ```
 1. CreateAgentSdkOptions     (programmatic, highest priority)
-2. process.env               (ACTOVIQ_* variables)
-3. ~/.actoviq/settings.json  (→ env block)
+2. process.env               (HADAMARD_* variables)
+3. ~/.hadamard/settings.json  (→ env block)
 4. Hard defaults             (lowest priority)
 ```
 
@@ -31,10 +31,10 @@ Location: `src/config/resolveRuntimeConfig.ts:61`
 |---|---|
 | `resolveRuntimeConfig.ts` | Main resolution function |
 | `loadJsonConfigFile.ts` | Load + validate arbitrary JSON config |
-| `loadDefaultActoviqSettings.ts` | Load `~/.actoviq/settings.json` |
+| `loadDefaultHadamardSettings.ts` | Load `~/.hadamard/settings.json` |
 | `modelTiers.ts` | `min`/`medium`/`max` alias resolution |
 | `projectSessionDirectory.ts` | Workspace → session directory mapping |
-| `anthropicEnvMapping.ts` | Actoviq env → Anthropic SDK env mapping |
+| `anthropicEnvMapping.ts` | Hadamard env → Anthropic SDK env mapping |
 
 ### Model Tier Resolution
 
@@ -44,13 +44,13 @@ Users can use tier aliases (`min`, `medium`, `max`) instead of concrete model
 IDs. Resolution:
 
 ```typescript
-const ACTOVIQ_MODEL_TIERS = ['min', 'medium', 'max'] as const;
+const HADAMARD_MODEL_TIERS = ['min', 'medium', 'max'] as const;
 
-function resolveActoviqModelReference(
+function resolveHadamardModelReference(
   model: string,
-  tiers: ActoviqModelTierConfig,
+  tiers: HadamardModelTierConfig,
 ): string {
-  if (isActoviqModelTier(model)) {
+  if (isHadamardModelTier(model)) {
     const resolved = tiers[model];
     if (!resolved) throw new ConfigurationError(`No model configured for tier "${model}"`);
     return resolved;
@@ -60,9 +60,9 @@ function resolveActoviqModelReference(
 ```
 
 Tier mappings come from:
-- `ACTOVIQ_DEFAULT_MIN_MODEL` env var
-- `ACTOVIQ_DEFAULT_MEDIUM_MODEL` env var
-- `ACTOVIQ_DEFAULT_MAX_MODEL` env var
+- `HADAMARD_DEFAULT_MIN_MODEL` env var
+- `HADAMARD_DEFAULT_MEDIUM_MODEL` env var
+- `HADAMARD_DEFAULT_MAX_MODEL` env var
 
 ### Session Directory
 
@@ -71,14 +71,14 @@ Tier mappings come from:
 Sessions are scoped to workspace via path encoding:
 
 ```typescript
-function encodeActoviqProjectPath(workDir: string): string {
+function encodeHadamardProjectPath(workDir: string): string {
   // Replace all non-alphanumeric chars with hyphens
   // Windows: E:\repo\demo → E--repo-demo
   // Unix:    /home/repo/demo → -home-repo-demo
 }
 ```
 
-Result: `~/.actoviq/projects/<encoded-path>/sessions/`
+Result: `~/.hadamard/projects/<encoded-path>/sessions/`
 
 ### Config Consumers
 
@@ -87,7 +87,7 @@ or files directly. The config object is passed through the call chain:
 
 ```
 resolveRuntimeConfig()
-    → ActoviqAgentClient constructor
+    → HadamardAgentClient constructor
         → executeConversation(options.config)
             → Tool execution context
             → ModelApi requests
@@ -109,13 +109,13 @@ export async function resolveRuntimeConfig(
 
   // Auth: apiKey > authToken > error
   const apiKey = options.apiKey ??
-    getRuntimeConfigValue('ACTOVIQ_API_KEY', ...envSources);
+    getRuntimeConfigValue('HADAMARD_API_KEY', ...envSources);
   const authToken = options.authToken ??
-    getRuntimeConfigValue('ACTOVIQ_AUTH_TOKEN', ...envSources);
+    getRuntimeConfigValue('HADAMARD_AUTH_TOKEN', ...envSources);
 
   // Provider resolution
   const provider = options.provider ??
-    (getRuntimeConfigValue('ACTOVIQ_PROVIDER', ...envSources) as any) ??
+    (getRuntimeConfigValue('HADAMARD_PROVIDER', ...envSources) as any) ??
     'anthropic';
 
   // Model resolution (with tier support)
@@ -138,7 +138,7 @@ Location: `src/config/loadJsonConfigFile.ts`
 ```typescript
 export async function loadJsonConfigFile(
   filePath: string,
-): Promise<ActoviqJsonSettings & { exists: boolean; path: string }> {
+): Promise<HadamardJsonSettings & { exists: boolean; path: string }> {
   // Read file → JSON.parse → validate shape
   // Stores result in module-level singleton
   // Subsequent resolveRuntimeConfig() calls pick it up via getLoadedJsonConfig()
@@ -182,13 +182,13 @@ const DEFAULT_COMPACT_CONFIG = {
 
 - Anthropic protocol with no model configured → throws `ConfigurationError`
 - OpenAI protocol with no model configured → defaults to `gpt-4o`
-- DeepSeek provider → sets `ACTOVIQ_IS_DEEPSEEK` flag for tool stripping
+- DeepSeek provider → sets `HADAMARD_IS_DEEPSEEK` flag for tool stripping
 
 ### Edge Cases
 
-1. **Missing settings.json on first run**: `loadDefaultActoviqSettings()` returns
+1. **Missing settings.json on first run**: `loadDefaultHadamardSettings()` returns
    an empty config (no error). The CLI warns only for non-ENOENT failures.
 2. **Explicit config path with bad file**: `loadJsonConfigFile()` throws.
-   `actoviq-react.ts` exits with code 2 — refuses to silently fall back.
-3. **Model tier without env var**: `resolveActoviqModelReference()` throws
+   `hadamard-react.ts` exits with code 2 — refuses to silently fall back.
+3. **Model tier without env var**: `resolveHadamardModelReference()` throws
    `ConfigurationError`.

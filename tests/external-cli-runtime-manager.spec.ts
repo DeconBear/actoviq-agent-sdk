@@ -7,17 +7,17 @@ import {
   type ExternalCliSessionLike,
 } from '../src/parity/externalCliRuntimeManager.js';
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgeRunOptions,
-  ActoviqBridgeRunResult,
-  ActoviqBridgeSessionCreateOptions,
-  CreateActoviqBridgeSdkOptions,
+  HadamardBridgeJsonEvent,
+  HadamardBridgeRunOptions,
+  HadamardBridgeRunResult,
+  HadamardBridgeSessionCreateOptions,
+  CreateHadamardBridgeSdkOptions,
 } from '../src/types.js';
 
 function runResult(
   sessionId: string,
-  overrides: Partial<ActoviqBridgeRunResult> = {},
-): ActoviqBridgeRunResult {
+  overrides: Partial<HadamardBridgeRunResult> = {},
+): HadamardBridgeRunResult {
   return {
     text: 'ok',
     sessionId,
@@ -32,31 +32,31 @@ function runResult(
 }
 
 class StaticRunStream implements ExternalCliRunStreamLike {
-  readonly result: Promise<ActoviqBridgeRunResult>;
+  readonly result: Promise<HadamardBridgeRunResult>;
 
   constructor(
-    private readonly eventList: ActoviqBridgeJsonEvent[],
-    result: ActoviqBridgeRunResult,
+    private readonly eventList: HadamardBridgeJsonEvent[],
+    result: HadamardBridgeRunResult,
   ) {
     this.result = Promise.resolve(result);
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ActoviqBridgeJsonEvent> {
+  async *[Symbol.asyncIterator](): AsyncIterator<HadamardBridgeJsonEvent> {
     for (const event of this.eventList) yield event;
   }
 }
 
 class ControlledRunStream implements ExternalCliRunStreamLike {
-  readonly result: Promise<ActoviqBridgeRunResult>;
-  private readonly queue: ActoviqBridgeJsonEvent[] = [];
+  readonly result: Promise<HadamardBridgeRunResult>;
+  private readonly queue: HadamardBridgeJsonEvent[] = [];
   private readonly waiters: Array<() => void> = [];
-  private readonly resolveResult: (value: ActoviqBridgeRunResult) => void;
+  private readonly resolveResult: (value: HadamardBridgeRunResult) => void;
   private readonly rejectResult: (reason?: unknown) => void;
   private done = false;
   private failure: unknown;
 
   constructor() {
-    let resolveResult!: (value: ActoviqBridgeRunResult) => void;
+    let resolveResult!: (value: HadamardBridgeRunResult) => void;
     let rejectResult!: (reason?: unknown) => void;
     this.result = new Promise((resolve, reject) => {
       resolveResult = resolve;
@@ -66,12 +66,12 @@ class ControlledRunStream implements ExternalCliRunStreamLike {
     this.rejectResult = rejectResult;
   }
 
-  emit(event: ActoviqBridgeJsonEvent): void {
+  emit(event: HadamardBridgeJsonEvent): void {
     this.queue.push(event);
     this.wake();
   }
 
-  finish(result: ActoviqBridgeRunResult): void {
+  finish(result: HadamardBridgeRunResult): void {
     this.done = true;
     this.resolveResult(result);
     this.wake();
@@ -85,7 +85,7 @@ class ControlledRunStream implements ExternalCliRunStreamLike {
     this.wake();
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ActoviqBridgeJsonEvent> {
+  async *[Symbol.asyncIterator](): AsyncIterator<HadamardBridgeJsonEvent> {
     while (true) {
       const event = this.queue.shift();
       if (event) {
@@ -106,13 +106,13 @@ class ControlledRunStream implements ExternalCliRunStreamLike {
 type StreamFactory = (
   session: FakeSession,
   prompt: string,
-  options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>,
+  options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>,
 ) => ExternalCliRunStreamLike;
 
 class FakeSession implements ExternalCliSessionLike {
   readonly streamCalls: Array<{
     prompt: string;
-    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>;
+    options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>;
   }> = [];
 
   constructor(
@@ -122,7 +122,7 @@ class FakeSession implements ExternalCliSessionLike {
 
   stream(
     prompt: string,
-    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+    options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): ExternalCliRunStreamLike {
     this.streamCalls.push({ prompt, options });
     return this.streamFactory(this, prompt, options);
@@ -130,10 +130,10 @@ class FakeSession implements ExternalCliSessionLike {
 }
 
 class FakeClient implements ExternalCliClientLike {
-  readonly createSessionCalls: ActoviqBridgeSessionCreateOptions[] = [];
+  readonly createSessionCalls: HadamardBridgeSessionCreateOptions[] = [];
   readonly resumeSessionCalls: Array<{
     sessionId: string;
-    options: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'>;
+    options: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'>;
   }> = [];
   readonly sessions: FakeSession[] = [];
   closeCount = 0;
@@ -141,7 +141,7 @@ class FakeClient implements ExternalCliClientLike {
   constructor(private readonly streamFactory: StreamFactory) {}
 
   async createSession(
-    options: ActoviqBridgeSessionCreateOptions = {},
+    options: HadamardBridgeSessionCreateOptions = {},
   ): Promise<ExternalCliSessionLike> {
     this.createSessionCalls.push(options);
     const session = new FakeSession(`native-${this.sessions.length + 1}`, this.streamFactory);
@@ -151,7 +151,7 @@ class FakeClient implements ExternalCliClientLike {
 
   async resumeSession(
     sessionId: string,
-    options: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'> = {},
+    options: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'> = {},
   ): Promise<ExternalCliSessionLike> {
     this.resumeSessionCalls.push({ sessionId, options });
     const session = new FakeSession(sessionId, this.streamFactory);
@@ -165,16 +165,16 @@ class FakeClient implements ExternalCliClientLike {
 }
 
 interface FakeFactory {
-  options: CreateActoviqBridgeSdkOptions[];
+  options: CreateHadamardBridgeSdkOptions[];
   clients: FakeClient[];
-  create: (options: CreateActoviqBridgeSdkOptions) => Promise<ExternalCliClientLike>;
+  create: (options: CreateHadamardBridgeSdkOptions) => Promise<ExternalCliClientLike>;
 }
 
 function fakeFactory(
   streamFactory: StreamFactory = session =>
     new StaticRunStream([{ type: 'assistant', text: 'ok' }], runResult(session.id)),
 ): FakeFactory {
-  const options: CreateActoviqBridgeSdkOptions[] = [];
+  const options: CreateHadamardBridgeSdkOptions[] = [];
   const clients: FakeClient[] = [];
   return {
     options,
@@ -234,7 +234,7 @@ describe('ExternalCliRuntimeManager', () => {
       runIdFactory: () => `run-${++nextRunId}`,
     });
     const baseOptions = {
-      actoviqSessionId: 'retained-runs',
+      hadamardSessionId: 'retained-runs',
       configId: 'codex-native',
       cwd: process.cwd(),
     };
@@ -273,7 +273,7 @@ describe('ExternalCliRuntimeManager', () => {
     });
     const manager = createManager(factory, { maxRetainedRuns: 1 });
     const queueOptions = {
-      actoviqSessionId: 'protected-active',
+      hadamardSessionId: 'protected-active',
       configId: 'claude-native',
       cwd: process.cwd(),
       background: true,
@@ -286,7 +286,7 @@ describe('ExternalCliRuntimeManager', () => {
 
     const updates = [];
     for await (const update of manager.stream({
-      actoviqSessionId: 'evicted-stream',
+      hadamardSessionId: 'evicted-stream',
       configId: 'codex-native',
       cwd: process.cwd(),
       prompt: 'instant stream',
@@ -306,19 +306,19 @@ describe('ExternalCliRuntimeManager', () => {
     expect(manager.get(queued.runId)?.status).toBe('queued');
   });
 
-  it('reuses a client and native session for the same Actoviq session, config, and cwd', async () => {
+  it('reuses a client and native session for the same Hadamard session, config, and cwd', async () => {
     const factory = fakeFactory();
     const manager = createManager(factory);
     const cwd = process.cwd();
 
     const first = await manager.start({
-      actoviqSessionId: 'actoviq-1',
+      hadamardSessionId: 'hadamard-1',
       configId: 'codex-native',
       cwd,
       prompt: 'first',
     });
     const second = await manager.start({
-      actoviqSessionId: 'actoviq-1',
+      hadamardSessionId: 'hadamard-1',
       configId: 'codex-native',
       cwd: path.join(cwd, '.'),
       prompt: 'second',
@@ -340,7 +340,7 @@ describe('ExternalCliRuntimeManager', () => {
     const manager = createManager(factory);
 
     const run = await manager.start({
-      actoviqSessionId: 'actoviq-2',
+      hadamardSessionId: 'hadamard-2',
       configId: 'claude-native',
       cwd: process.cwd(),
       prompt: 'resume me',
@@ -361,7 +361,7 @@ describe('ExternalCliRuntimeManager', () => {
     const manager = createManager(factory, { eventCapacity: 2, logCapacity: 3 });
 
     const queued = await manager.start({
-      actoviqSessionId: 'actoviq-3',
+      hadamardSessionId: 'hadamard-3',
       configId: 'codex-background',
       cwd: process.cwd(),
       prompt: 'background work',
@@ -410,7 +410,7 @@ describe('ExternalCliRuntimeManager', () => {
     });
 
     const run = await manager.start({
-      actoviqSessionId: 'actoviq-byte-bounds',
+      hadamardSessionId: 'hadamard-byte-bounds',
       configId: 'codex-byte-bounds',
       cwd: process.cwd(),
       prompt: 'large tool output',
@@ -440,7 +440,7 @@ describe('ExternalCliRuntimeManager', () => {
     const updates = [];
 
     for await (const update of manager.stream({
-      actoviqSessionId: 'actoviq-stream',
+      hadamardSessionId: 'hadamard-stream',
       configId: 'claude-stream',
       cwd: process.cwd(),
       prompt: 'stream this',
@@ -467,7 +467,7 @@ describe('ExternalCliRuntimeManager', () => {
     });
     const manager = createManager(factory);
     const run = await manager.start({
-      actoviqSessionId: 'actoviq-4',
+      hadamardSessionId: 'hadamard-4',
       configId: 'claude-abort',
       cwd: process.cwd(),
       prompt: 'keep running',
@@ -495,13 +495,13 @@ describe('ExternalCliRuntimeManager', () => {
     });
     const manager = createManager(factory);
     await manager.start({
-      actoviqSessionId: 'close-a',
+      hadamardSessionId: 'close-a',
       configId: 'config-a',
       cwd: process.cwd(),
       prompt: 'finish first',
     });
     const active = await manager.start({
-      actoviqSessionId: 'close-b',
+      hadamardSessionId: 'close-b',
       configId: 'config-b',
       cwd: process.cwd(),
       prompt: 'stay active',
@@ -516,7 +516,7 @@ describe('ExternalCliRuntimeManager', () => {
     expect(factory.clients.every(client => client.closeCount === 1)).toBe(true);
     await expect(
       manager.start({
-        actoviqSessionId: 'closed',
+        hadamardSessionId: 'closed',
         configId: 'closed',
         cwd: process.cwd(),
         prompt: 'no',
@@ -546,7 +546,7 @@ describe('ExternalCliRuntimeManager', () => {
     const manager = createManager(factory);
 
     const run = await manager.start({
-      actoviqSessionId: 'actoviq-secret',
+      hadamardSessionId: 'hadamard-secret',
       configId: 'claude-api-key',
       cwd: process.cwd(),
       prompt: 'secret prompt',
@@ -574,7 +574,7 @@ describe('ExternalCliRuntimeManager', () => {
     const manager = createManager(factory);
 
     const run = await manager.start({
-      actoviqSessionId: 'failed',
+      hadamardSessionId: 'failed',
       configId: 'failed',
       cwd: process.cwd(),
       prompt: 'fail',
@@ -606,7 +606,7 @@ describe('ExternalCliRuntimeManager', () => {
     });
     const manager = createManager(factory);
     const options = {
-      actoviqSessionId: 'no-provisional-id',
+      hadamardSessionId: 'no-provisional-id',
       configId: 'claude-native',
       cwd: process.cwd(),
     };

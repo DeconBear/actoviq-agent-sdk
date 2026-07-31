@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
-import { resolveActoviqHome } from '../src/config/actoviqHome.js';
-import { readActoviqExternalSkillPreferences } from '../src/runtime/externalSkillPreferences.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
+import { resolveHadamardHome } from '../src/config/hadamardHome.js';
+import { readHadamardExternalSkillPreferences } from '../src/runtime/externalSkillPreferences.js';
 
 const tempDirs: string[] = [];
 
@@ -15,20 +15,20 @@ afterEach(async () => {
 });
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const response = await fetch(new URL(requestPath.replace(/^\/+/, ''), server.url), {
     ...init,
-    headers: { 'x-actoviq-token': server.token, ...init.headers },
+    headers: { 'x-hadamard-token': server.token, ...init.headers },
   });
   return { status: response.status, body: await response.json() as T };
 }
 
 describe('GUI Customize skills API', () => {
   it('trusts, loads, and disables a project runtime skill without editing its source', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-customize-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-customize-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
@@ -62,7 +62,7 @@ describe('GUI Customize skills API', () => {
       writeFile(siblingSkillFile, siblingSkillText, 'utf8'),
     ]);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -130,7 +130,7 @@ describe('GUI Customize skills API', () => {
       expect(disabled.body.activeSkillIds).not.toContain(siblingSkill!.id);
       expect(await readFile(skillFile, 'utf8')).toBe(skillText);
       expect(await readFile(siblingSkillFile, 'utf8')).toBe(siblingSkillText);
-      expect((await readActoviqExternalSkillPreferences({ actoviqHomeDir: resolveActoviqHome(homeDir), workDir })).disabledSourceIds)
+      expect((await readHadamardExternalSkillPreferences({ hadamardHomeDir: resolveHadamardHome(homeDir), workDir })).disabledSourceIds)
         .toContain('codex:project');
 
       const revoked = await api<Snapshot>(server, '/api/customize/skills', {
@@ -147,13 +147,13 @@ describe('GUI Customize skills API', () => {
     }
   });
 
-  it('requires independently revocable trust for Actoviq project skills and commands', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-customize-native-trust-'));
+  it('requires independently revocable trust for Hadamard project skills and commands', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-customize-native-trust-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const skillFile = path.join(workDir, '.actoviq', 'skills', 'project-audit', 'SKILL.md');
-    const commandFile = path.join(workDir, '.actoviq', 'commands', 'release.md');
+    const skillFile = path.join(workDir, '.hadamard', 'skills', 'project-audit', 'SKILL.md');
+    const commandFile = path.join(workDir, '.hadamard', 'commands', 'release.md');
     await Promise.all([
       mkdir(path.dirname(skillFile), { recursive: true }),
       mkdir(path.dirname(commandFile), { recursive: true }),
@@ -163,7 +163,7 @@ describe('GUI Customize skills API', () => {
       writeFile(commandFile, ['---', 'description: Release this project', '---', '', 'Release.'].join('\n'), 'utf8'),
     ]);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -183,8 +183,8 @@ describe('GUI Customize skills API', () => {
       const projectSkill = initial.body.catalog.skills.find(skill => skill.name === 'project-audit')!;
       const projectCommand = initial.body.catalog.skills.find(skill => skill.name === 'release')!;
       expect(initial.body.catalog.sources).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: 'actoviq:project', status: 'needs-trust' }),
-        expect.objectContaining({ id: 'actoviq:project-commands', status: 'needs-trust' }),
+        expect.objectContaining({ id: 'hadamard:project', status: 'needs-trust' }),
+        expect.objectContaining({ id: 'hadamard:project-commands', status: 'needs-trust' }),
       ]));
       expect(initial.body.activeSkillIds).not.toEqual(expect.arrayContaining([
         projectSkill.id,
@@ -194,7 +194,7 @@ describe('GUI Customize skills API', () => {
       const trustedSkill = await api<Snapshot>(server, '/api/customize/skills', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'source', sourceId: 'actoviq:project', enabled: true, trust: true }),
+        body: JSON.stringify({ action: 'source', sourceId: 'hadamard:project', enabled: true, trust: true }),
       });
       expect(trustedSkill.body.activeSkillIds).toContain(projectSkill.id);
       expect(trustedSkill.body.activeSkillIds).not.toContain(projectCommand.id);
@@ -202,7 +202,7 @@ describe('GUI Customize skills API', () => {
       const trustedCommand = await api<Snapshot>(server, '/api/customize/skills', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'source', sourceId: 'actoviq:project-commands', enabled: true, trust: true }),
+        body: JSON.stringify({ action: 'source', sourceId: 'hadamard:project-commands', enabled: true, trust: true }),
       });
       expect(trustedCommand.body.activeSkillIds).toEqual(expect.arrayContaining([
         projectSkill.id,
@@ -212,10 +212,10 @@ describe('GUI Customize skills API', () => {
       const revoked = await api<Snapshot>(server, '/api/customize/skills', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'source', sourceId: 'actoviq:project-commands', enabled: false, trust: false }),
+        body: JSON.stringify({ action: 'source', sourceId: 'hadamard:project-commands', enabled: false, trust: false }),
       });
-      expect(revoked.body.preferences.trustedProjectSourceIds).not.toContain('actoviq:project-commands');
-      expect(revoked.body.preferences.disabledSourceIds).toContain('actoviq:project-commands');
+      expect(revoked.body.preferences.trustedProjectSourceIds).not.toContain('hadamard:project-commands');
+      expect(revoked.body.preferences.disabledSourceIds).toContain('hadamard:project-commands');
       expect(revoked.body.activeSkillIds).toContain(projectSkill.id);
       expect(revoked.body.activeSkillIds).not.toContain(projectCommand.id);
     } finally {
@@ -224,7 +224,7 @@ describe('GUI Customize skills API', () => {
   });
 
   it('sets and clears a preferred conflict variant without changing either runtime source', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-customize-conflict-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-customize-conflict-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
@@ -235,7 +235,7 @@ describe('GUI Customize skills API', () => {
     await Promise.all([mkdir(path.dirname(codexFile), { recursive: true }), mkdir(path.dirname(claudeFile), { recursive: true })]);
     await Promise.all([writeFile(codexFile, codexText, 'utf8'), writeFile(claudeFile, claudeText, 'utf8')]);
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',

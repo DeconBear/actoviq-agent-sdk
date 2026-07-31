@@ -10,7 +10,7 @@ as JSON on disk.
 
 - **Stateless between calls**: load → run → save. Crash recovery is inherent.
 - **Human-readable**: JSON files can be inspected, edited, backed up.
-- **Workspace-scoped**: `~/.actoviq/projects/<hash>/sessions/<id>.json`
+- **Workspace-scoped**: `~/.hadamard/projects/<hash>/sessions/<id>.json`
 - **No database dependency**: works on any filesystem, portable.
 
 ## Module Design
@@ -22,7 +22,7 @@ as JSON on disk.
 | `storage/sessionStore.ts` | JSON file CRUD + checkpoints + atomic writes |
 | `runtime/agentSession.ts` | In-memory wrapper with run/stream/compact/dream API |
 | `runtime/sessionManager.ts` | Idle timeout, auto-prune, stats |
-| `runtime/actoviqSessionPermissions.ts` | Permission state persistence in metadata |
+| `runtime/hadamardSessionPermissions.ts` | Permission state persistence in metadata |
 
 ### `AgentSession` — The Wrapper
 
@@ -69,7 +69,7 @@ AgentSession
 
 ### `AgentSessionBindings` Pattern
 
-`AgentSession` doesn't call `ActoviqAgentClient` directly. Instead, it receives
+`AgentSession` doesn't call `HadamardAgentClient` directly. Instead, it receives
 a `bindings` object with callback functions. This avoids circular dependencies
 and makes `AgentSession` testable with mock bindings.
 
@@ -185,7 +185,7 @@ Same pattern applied to `listCheckpoints()`.
 
 Checkpoints are full session snapshots stored under:
 ```
-~/.actoviq/projects/<hash>/sessions/.checkpoints/<sessionId>/<checkpointId>.json
+~/.hadamard/projects/<hash>/sessions/.checkpoints/<sessionId>/<checkpointId>.json
 ```
 
 Each checkpoint contains the complete `StoredSession` at the time of creation.

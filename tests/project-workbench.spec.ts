@@ -74,7 +74,7 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('reads workspace files and rejects path escape', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-files-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-files-'));
     const file = path.join(root, 'hello.txt');
     await writeFile(file, 'hello world', 'utf8');
     const ok = await readWorkspaceFile(file, root);
@@ -87,7 +87,7 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('marks binary files without returning text', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-bin-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-bin-'));
     const file = path.join(root, 'blob.bin');
     await writeFile(file, Buffer.from([0, 1, 2, 3, 4, 255, 0, 9]));
     const result = await readWorkspaceFile(file, root);
@@ -96,7 +96,7 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('writes text files only within the workspace', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-write-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-write-'));
     const file = path.join(root, 'hello.txt');
     await writeFile(file, 'before', 'utf8');
 
@@ -115,8 +115,8 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('reads declaration files as editable text', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-dts-'));
-    const file = path.join(root, 'actoviqSettingsStore.d.ts');
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-dts-'));
+    const file = path.join(root, 'hadamardSettingsStore.d.ts');
     await writeFile(file, 'export declare const x: number;\n', 'utf8');
     const ok = await readWorkspaceFile(file, root);
     expect(ok.binary).toBeUndefined();
@@ -124,7 +124,7 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('refuses writes to binary workspace files', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-write-bin-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-write-bin-'));
     const file = path.join(root, 'blob.bin');
     await writeFile(file, Buffer.from([0, 1, 2, 3, 4, 255, 0, 9]));
 
@@ -132,7 +132,7 @@ describe('projectWorkbench helpers', () => {
   });
 
   it('gui source wires the five project tabs and workbench CSS', async () => {
-    const src = await readFile(new URL('../src/gui/actoviqGui.ts', import.meta.url), 'utf8');
+    const src = await readFile(new URL('../src/gui/hadamardGui.ts', import.meta.url), 'utf8');
     expect(src).toContain("['git', 'Git']");
     expect(src).toContain("['terminal', 'Terminal']");
     expect(src).toContain("['files', 'Files']");

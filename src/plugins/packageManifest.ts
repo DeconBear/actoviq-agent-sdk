@@ -12,7 +12,7 @@ export interface PluginPackageManifest {
   integrity?: string;
   capabilities: string[];
   permissions?: string[];
-  actoviq?: string;
+  hadamard?: string;
 }
 
 export function parsePluginPackageManifest(value: unknown): PluginPackageManifest {
@@ -60,7 +60,7 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
     ...(Array.isArray(value.permissions)
       ? { permissions: value.permissions.filter((item): item is string => typeof item === 'string') }
       : {}),
-    ...(typeof value.actoviq === 'string' ? { actoviq: value.actoviq } : {}),
+    ...(typeof value.hadamard === 'string' ? { hadamard: value.hadamard } : {}),
   };
 }
 

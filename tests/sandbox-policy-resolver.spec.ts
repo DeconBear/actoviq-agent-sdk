@@ -7,7 +7,7 @@ import { resolveSandboxPolicy } from '../src/sandbox/policyResolver.js';
 
 describe('sandbox policy resolver', () => {
   it('allows explicit enforcement off while allowUserDisable remains true', () => {
-    const root = path.join(os.tmpdir(), 'actoviq-sandbox-policy-off');
+    const root = path.join(os.tmpdir(), 'hadamard-sandbox-policy-off');
     const resolved = resolveSandboxPolicy(root, {
       enforcement: 'off',
       process: { timeoutMs: 250 },
@@ -18,7 +18,7 @@ describe('sandbox policy resolver', () => {
   });
 
   it('does not clear allowUserDisable when a partial overlay omits the flag', () => {
-    const root = path.join(os.tmpdir(), 'actoviq-sandbox-policy-partial');
+    const root = path.join(os.tmpdir(), 'hadamard-sandbox-policy-partial');
     const resolved = resolveSandboxPolicy(root, {
       process: { timeoutMs: 100 },
     });
@@ -27,7 +27,7 @@ describe('sandbox policy resolver', () => {
   });
 
   it('refuses to weaken enforcement after allowUserDisable is locked false', () => {
-    const root = path.join(os.tmpdir(), 'actoviq-sandbox-policy-locked');
+    const root = path.join(os.tmpdir(), 'hadamard-sandbox-policy-locked');
     const resolved = resolveSandboxPolicy(
       root,
       { allowUserDisable: false, enforcement: 'required' },

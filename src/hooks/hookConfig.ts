@@ -1,10 +1,10 @@
 import type {
-  ActoviqLifecycleEvent,
+  HadamardLifecycleEvent,
   TypedHookDefinition,
   TypedHookHandler,
 } from './hookTypes.js';
 
-const EVENTS = new Set<ActoviqLifecycleEvent>([
+const EVENTS = new Set<HadamardLifecycleEvent>([
   'SessionStart', 'SessionEnd', 'TurnStart', 'TurnEnd',
   'ModelRequest', 'ModelResponse', 'PreToolUse', 'PostToolUse',
   'PermissionDecision', 'Compact', 'Stop', 'WorktreeCreate', 'WorktreeRemove',
@@ -27,7 +27,7 @@ export function parseTypedHooks(value: unknown): {
       issues.push(`typedHooks[${index}].id is required.`);
       return;
     }
-    if (typeof item.event !== 'string' || !EVENTS.has(item.event as ActoviqLifecycleEvent)) {
+    if (typeof item.event !== 'string' || !EVENTS.has(item.event as HadamardLifecycleEvent)) {
       issues.push(`typedHooks[${index}].event is invalid.`);
       return;
     }
@@ -38,7 +38,7 @@ export function parseTypedHooks(value: unknown): {
     }
     hooks.push({
       id: item.id,
-      event: item.event as ActoviqLifecycleEvent,
+      event: item.event as HadamardLifecycleEvent,
       handler,
       ...(typeof item.matcher === 'string' ? { matcher: item.matcher } : {}),
       ...(typeof item.timeoutMs === 'number' && item.timeoutMs > 0 ? { timeoutMs: item.timeoutMs } : {}),

@@ -25,7 +25,7 @@ async function fixture(): Promise<{
   source: string;
   storage: SqliteStorageV2;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-storage-v2-migration-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-storage-v2-migration-'));
   tempDirectories.push(root);
   const source = path.join(root, 'legacy');
   await mkdir(path.join(source, 'sessions'), { recursive: true });
@@ -107,7 +107,7 @@ describe('JsonV1Migrator', () => {
     });
     expect(loaded.session).toMatchObject({ revision: 1, lastSequence: 2 });
     expect(loaded.session.metadata).toMatchObject({
-      sourceFormat: 'actoviq-json-v1',
+      sourceFormat: 'hadamard-json-v1',
       legacy: { title: 'Legacy alpha', revision: 7 },
     });
     expect(loaded.items.map((item) => item.kind)).toEqual(['text', 'legacy_run']);

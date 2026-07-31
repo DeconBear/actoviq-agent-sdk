@@ -1,39 +1,39 @@
 import type {
-  ActoviqExternalSkillsOptions,
-  ActoviqSkillDefinition,
+  HadamardExternalSkillsOptions,
+  HadamardSkillDefinition,
 } from '../types.js';
-import { loadActoviqSkillDefinitionFile } from './actoviqSkills.js';
+import { loadHadamardSkillDefinitionFile } from './hadamardSkills.js';
 import {
-  discoverActoviqSkillCatalog,
-  type ActoviqSkillCatalog,
-  type ActoviqSkillCatalogEntry,
-  type ActoviqSkillCatalogOrigin,
+  discoverHadamardSkillCatalog,
+  type HadamardSkillCatalog,
+  type HadamardSkillCatalogEntry,
+  type HadamardSkillCatalogOrigin,
 } from './externalSkillCatalog.js';
 
-export interface ActoviqExternalSkillConflictSkip {
+export interface HadamardExternalSkillConflictSkip {
   name: string;
   skillIds: string[];
 }
 
-export interface ActoviqExternalSkillLoadError {
+export interface HadamardExternalSkillLoadError {
   skillId: string;
   name: string;
   sourceId: string;
   message: string;
 }
 
-export interface ActoviqExternalSkillRuntimeResult {
-  catalog: ActoviqSkillCatalog;
-  definitions: ActoviqSkillDefinition[];
+export interface HadamardExternalSkillRuntimeResult {
+  catalog: HadamardSkillCatalog;
+  definitions: HadamardSkillDefinition[];
   loadedSkillIds: string[];
-  skippedConflicts: ActoviqExternalSkillConflictSkip[];
+  skippedConflicts: HadamardExternalSkillConflictSkip[];
   skippedUntrustedSourceIds: string[];
-  loadErrors: ActoviqExternalSkillLoadError[];
+  loadErrors: HadamardExternalSkillLoadError[];
 }
 
 interface EligibleExternalSkill {
-  entry: ActoviqSkillCatalogEntry;
-  origin: ActoviqSkillCatalogOrigin & {
+  entry: HadamardSkillCatalogEntry;
+  origin: HadamardSkillCatalogOrigin & {
     skillFile: string;
     skillRoot: string;
   };
@@ -44,11 +44,11 @@ interface EligibleExternalSkill {
  * native runtime directories. Distinct-content name conflicts are fail-closed:
  * no variant loads unless the caller chooses a catalog id explicitly.
  */
-export async function loadActoviqExternalSkillDefinitions(options: {
-  actoviqHomeDir: string;
+export async function loadHadamardExternalSkillDefinitions(options: {
+  hadamardHomeDir: string;
   workDir: string;
-  externalSkills?: boolean | ActoviqExternalSkillsOptions;
-}): Promise<ActoviqExternalSkillRuntimeResult> {
+  externalSkills?: boolean | HadamardExternalSkillsOptions;
+}): Promise<HadamardExternalSkillRuntimeResult> {
   const runtimeOptions = normalizeRuntimeOptions(options.externalSkills);
   const trustedProjectSourceIds = new Set(runtimeOptions.trustedProjectSourceIds ?? []);
   const disabledSourceIds = new Set(runtimeOptions.disabledSourceIds ?? []);
@@ -56,12 +56,12 @@ export async function loadActoviqExternalSkillDefinitions(options: {
   const enabledSourceIds = runtimeOptions.enabledSourceIds
     ? new Set(runtimeOptions.enabledSourceIds)
     : undefined;
-  const catalog = await discoverActoviqSkillCatalog({
-    actoviqHomeDir: options.actoviqHomeDir,
+  const catalog = await discoverHadamardSkillCatalog({
+    hadamardHomeDir: options.hadamardHomeDir,
     workDir: options.workDir,
     osHomeDir: runtimeOptions.osHomeDir,
     env: runtimeOptions.env,
-    includeBundledActoviq: false,
+    includeBundledHadamard: false,
     trustedProjectSourceIds: [...trustedProjectSourceIds],
   });
   const sources = new Map(catalog.sources.map(source => [source.id, source]));
@@ -105,7 +105,7 @@ export async function loadActoviqExternalSkillDefinitions(options: {
   }
 
   const selected: EligibleExternalSkill[] = [];
-  const skippedConflicts: ActoviqExternalSkillConflictSkip[] = [];
+  const skippedConflicts: HadamardExternalSkillConflictSkip[] = [];
   for (const [name, variants] of byName) {
     if (variants.length === 1) {
       selected.push(variants[0]!);
@@ -127,32 +127,32 @@ export async function loadActoviqExternalSkillDefinitions(options: {
 
   selected.sort((left, right) => left.entry.name.localeCompare(right.entry.name));
   skippedConflicts.sort((left, right) => left.name.localeCompare(right.name));
-  const definitions: ActoviqSkillDefinition[] = [];
+  const definitions: HadamardSkillDefinition[] = [];
   const loadedSkillIds: string[] = [];
-  const loadErrors: ActoviqExternalSkillLoadError[] = [];
+  const loadErrors: HadamardExternalSkillLoadError[] = [];
   for (const candidate of selected) {
     try {
-      const definition = await loadActoviqSkillDefinitionFile({
+      const definition = await loadHadamardSkillDefinitionFile({
         skillFile: candidate.origin.skillFile,
         skillRoot: candidate.origin.skillRoot,
         name: candidate.entry.name,
         source: candidate.origin.scope === 'project' ? 'project' : 'user',
         loadedFrom: candidate.origin.loadedFrom === 'commands' ? 'commands' : 'skills',
-        includeDeclaredAllowedTools: candidate.origin.provider === 'actoviq',
+        includeDeclaredAllowedTools: candidate.origin.provider === 'hadamard',
       });
       definitions.push({
         ...definition,
         description: candidate.entry.description,
         version: candidate.entry.version ?? definition.version,
-        allowedTools: candidate.origin.provider === 'actoviq'
+        allowedTools: candidate.origin.provider === 'hadamard'
           ? definition.allowedTools
           : undefined,
         metadata: {
           ...(definition.metadata ?? {}),
-          __actoviqExternalSkillId: candidate.entry.id,
-          __actoviqExternalSkillProvider: candidate.origin.provider,
-          __actoviqExternalSkillSourceId: candidate.origin.sourceId,
-          __actoviqExternalSkillReadOnly: candidate.origin.readOnly,
+          __hadamardExternalSkillId: candidate.entry.id,
+          __hadamardExternalSkillProvider: candidate.origin.provider,
+          __hadamardExternalSkillSourceId: candidate.origin.sourceId,
+          __hadamardExternalSkillReadOnly: candidate.origin.readOnly,
         },
       });
       loadedSkillIds.push(candidate.entry.id);
@@ -177,7 +177,7 @@ export async function loadActoviqExternalSkillDefinitions(options: {
 }
 
 function normalizeRuntimeOptions(
-  options: boolean | ActoviqExternalSkillsOptions | undefined,
-): ActoviqExternalSkillsOptions {
+  options: boolean | HadamardExternalSkillsOptions | undefined,
+): HadamardExternalSkillsOptions {
   return options && typeof options === 'object' ? options : {};
 }

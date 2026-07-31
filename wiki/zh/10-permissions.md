@@ -4,7 +4,7 @@
 
 权限系统决定工具调用是被允许、拒绝还是需要用户批准。它评估一个按优先级排序的规则链、安全检查、模式默认值和交互式审批器。
 
-位置：`src/runtime/actoviqPermissions.ts`
+位置：`src/runtime/hadamardPermissions.ts`
 
 ### 权限模式
 
@@ -18,7 +18,7 @@
 ### 决策管道（14 步）
 
 ```
-decideActoviqToolPermission(input)
+decideHadamardToolPermission(input)
     ├── 1. 检查 deny 规则（通配符匹配）
     ├── 2. 安全检查（路径遍历、受保护目录）
     ├── 3. 工具自身的 checkPermissions 回调
@@ -40,7 +40,7 @@ decideActoviqToolPermission(input)
 规则使用通配符模式（glob 风格 `*` 匹配）：
 
 ```typescript
-interface ActoviqPermissionRule {
+interface HadamardPermissionRule {
   toolName: string;      // 通配符模式（如 "Bash*", "*Edit*"）
   behavior: 'allow' | 'deny' | 'ask';
   matcher?: string;      // 可选：匹配 JSON.stringify(input)
@@ -58,7 +58,7 @@ const FILE_EDIT_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
 ### 审批器解析
 
 ```typescript
-async function resolveActoviqAskPermission(input, baseDecision) {
+async function resolveHadamardAskPermission(input, baseDecision) {
   if (!input.approver) {
     return { ...baseDecision, behavior: 'deny' };
   }

@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 async function createStore(): Promise<SessionStore> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sdk-mgr-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sdk-mgr-'));
   tempDirs.push(dir);
   return new SessionStore(dir);
 }

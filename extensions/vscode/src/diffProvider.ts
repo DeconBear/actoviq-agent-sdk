@@ -18,5 +18,5 @@ export async function applySessionDiff(client: AppServerClient, sessionId: strin
   );
   if (confirmed !== 'Apply') return;
   await client.request('diff/apply', { sessionId, confirm: true });
-  void vscode.window.showInformationMessage('Actoviq Session diff applied.');
+  void vscode.window.showInformationMessage('Hadamard Session diff applied.');
 }

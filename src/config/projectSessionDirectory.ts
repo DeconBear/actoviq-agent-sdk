@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { copyFile, cp, mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { resolveActoviqHome } from './actoviqHome.js';
+import { resolveHadamardHome } from './hadamardHome.js';
 import { assertSafeStorageSegment } from '../storage/pathSafety.js';
 
 const MAX_PROJECT_KEY_LENGTH = 200;
@@ -56,7 +56,7 @@ interface StoredTaskFile extends StoredJsonFile {
   worktreePath?: string;
 }
 
-export interface ActoviqProjectDataMigrationSummary {
+export interface HadamardProjectDataMigrationSummary {
   sessions: number;
   archivedSessions: number;
   agentExecutions: number;
@@ -81,7 +81,7 @@ function pathBelongsToProject(candidate: string, projectRoot: string): boolean {
     (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function encodeLegacyActoviqProjectPath(workDir: string): string {
+function encodeLegacyHadamardProjectPath(workDir: string): string {
   const resolved = path.resolve(workDir).normalize('NFC');
   const sanitized = resolved.replace(/[^a-zA-Z0-9]/g, '-');
   if (sanitized.length <= MAX_PROJECT_KEY_LENGTH) {
@@ -91,7 +91,7 @@ function encodeLegacyActoviqProjectPath(workDir: string): string {
   return `${sanitized.slice(0, MAX_PROJECT_KEY_LENGTH)}-${hash}`;
 }
 
-export function encodeActoviqProjectPath(workDir: string): string {
+export function encodeHadamardProjectPath(workDir: string): string {
   const normalized = normalizeProjectPath(workDir);
   const readablePrefix = normalized
     .replace(/[^a-zA-Z0-9]/g, '-')
@@ -103,18 +103,18 @@ export function encodeActoviqProjectPath(workDir: string): string {
   return `${readablePrefix}${PROJECT_KEY_SEPARATOR}${hash}`;
 }
 
-export function getActoviqProjectSessionDirectory(
+export function getHadamardProjectSessionDirectory(
   workDir: string,
   homeDir: string,
 ): string {
-  return path.join(resolveActoviqHome(homeDir), 'projects', encodeActoviqProjectPath(workDir));
+  return path.join(resolveHadamardHome(homeDir), 'projects', encodeHadamardProjectPath(workDir));
 }
 
 function legacyProjectDirectory(workDir: string, homeDir: string): string {
   return path.join(
-    resolveActoviqHome(homeDir),
+    resolveHadamardHome(homeDir),
     'projects',
-    encodeLegacyActoviqProjectPath(workDir),
+    encodeLegacyHadamardProjectPath(workDir),
   );
 }
 
@@ -142,7 +142,7 @@ function jsonStorageId(fileName: string): string | undefined {
 
 function sessionWorkDirs(value: Record<string, unknown>): string[] {
   const metadataWorkDir = isRecord(value.metadata)
-    ? nonEmptyString(value.metadata.__actoviqWorkDir)
+    ? nonEmptyString(value.metadata.__hadamardWorkDir)
     : undefined;
   return [
     metadataWorkDir,
@@ -202,10 +202,10 @@ function asSessionFile(entry: StoredJsonFile): StoredSessionFile {
     sessionId: nonEmptyString(entry.value.id) ?? entry.storageId,
     parentSessionId: nonEmptyString(entry.value.parentSessionId),
     metadataWorkDir: metadata
-      ? nonEmptyString(metadata.__actoviqWorkDir)
+      ? nonEmptyString(metadata.__hadamardWorkDir)
       : undefined,
     worktreePath: metadata
-      ? nonEmptyString(metadata.__actoviqAgentWorktreePath)
+      ? nonEmptyString(metadata.__hadamardAgentWorktreePath)
       : undefined,
     workDirs: sessionWorkDirs(entry.value),
   };
@@ -437,7 +437,7 @@ async function registeredLegacyProjectPaths(
     : legacyKey;
   try {
     const raw = JSON.parse(
-      await readFile(path.join(resolveActoviqHome(homeDir), 'workspaces.json'), 'utf8'),
+      await readFile(path.join(resolveHadamardHome(homeDir), 'workspaces.json'), 'utf8'),
     ) as unknown;
     const entries = Array.isArray(raw)
       ? raw
@@ -448,7 +448,7 @@ async function registeredLegacyProjectPaths(
       if (!isRecord(entry)) return [];
       const workDir = nonEmptyString(entry.path);
       const candidateLegacyKey = workDir
-        ? encodeLegacyActoviqProjectPath(workDir)
+        ? encodeLegacyHadamardProjectPath(workDir)
         : undefined;
       if (
         !workDir ||
@@ -585,11 +585,11 @@ async function listRetainedUnassignedArtifacts(
  * left intact so ambiguous or unreadable records remain recoverable. Project
  * singleton artifacts are reported as retained-unassigned instead of guessed.
  */
-export async function migrateLegacyActoviqProjectData(options: {
+export async function migrateLegacyHadamardProjectData(options: {
   homeDir: string;
   workDir: string;
   targetDirectory: string;
-}): Promise<ActoviqProjectDataMigrationSummary> {
+}): Promise<HadamardProjectDataMigrationSummary> {
   const targetDirectory = path.resolve(options.targetDirectory);
   const legacyDirectory = legacyProjectDirectory(options.workDir, options.homeDir);
   const sessionSources = [
@@ -718,7 +718,7 @@ export async function migrateLegacyActoviqProjectData(options: {
       : 0;
 
   const globalSessionsDirectory = path.join(
-    resolveActoviqHome(options.homeDir),
+    resolveHadamardHome(options.homeDir),
     'actoviq-agent-sdk',
     'sessions',
   );
@@ -753,12 +753,12 @@ export async function migrateLegacyActoviqProjectData(options: {
   };
 }
 
-export async function migrateLegacyActoviqProjectSessions(options: {
+export async function migrateLegacyHadamardProjectSessions(options: {
   homeDir: string;
   workDir: string;
   targetDirectory: string;
 }): Promise<number> {
-  const summary = await migrateLegacyActoviqProjectData(options);
+  const summary = await migrateLegacyHadamardProjectData(options);
   return summary.sessions + summary.archivedSessions + summary.globalSessions;
 }
 

@@ -19,7 +19,7 @@ describe('guiSyntaxHighlight', () => {
     expect(detectEditorLanguage('main.go')).toBe('go');
     expect(detectEditorLanguage('README.md')).toBe('markdown');
     expect(detectEditorLanguage('notes.markdown')).toBe('markdown');
-    expect(detectEditorLanguage('actoviqSettingsStore.d.ts')).toBe('typescript');
+    expect(detectEditorLanguage('hadamardSettingsStore.d.ts')).toBe('typescript');
     expect(detectEditorLanguage('weird.bin')).toBe('plaintext');
   });
 

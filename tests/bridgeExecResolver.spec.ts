@@ -24,7 +24,7 @@ describe('resolveExecutableInvocation', () => {
   it.runIf(process.platform === 'win32')(
     'unwraps npm cmd shims without sending user input through cmd.exe',
     async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-shim-'));
+      const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-shim-'));
       tempRoots.push(root);
       const packageBin = path.join(root, 'node_modules', 'fake-cli', 'cli.js');
       await mkdir(path.dirname(packageBin), { recursive: true });
@@ -47,7 +47,7 @@ describe('resolveExecutableInvocation', () => {
   it.runIf(process.platform === 'win32')(
     'rejects an unparseable batch wrapper instead of shelling user input',
     async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-shim-'));
+      const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-shim-'));
       tempRoots.push(root);
       const shim = path.join(root, 'unsafe.cmd');
       await writeFile(shim, '@ECHO off\r\necho %*\r\n', 'utf8');

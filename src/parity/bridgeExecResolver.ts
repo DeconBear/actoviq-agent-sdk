@@ -1,7 +1,7 @@
 /**
  * Executable resolution primitives shared by the bridge SDK and its provider
  * layer. Kept in a leaf module so `bridgeProviders.ts` can resolve a provider
- * binary on PATH without importing the full `actoviqBridgeSdk.ts` (which would
+ * binary on PATH without importing the full `hadamardBridgeSdk.ts` (which would
  * create a circular import).
  */
 

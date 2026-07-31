@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('RemoteWorkerClient reconnect', () => {
   it('reuses an idempotent durable job across client instances', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-remote-reconnect-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-remote-reconnect-'));
     dirs.push(dir);
     const first = new RemoteWorkerClient(new RemoteJobStore(dir));
     const submitted = await first.submit({

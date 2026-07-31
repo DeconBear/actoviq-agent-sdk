@@ -1,9 +1,0 @@
-{
-  "env": {
-    "ACTOVIQ_AUTH_TOKEN": "your-token",
-    "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-    "ACTOVIQ_DEFAULT_MIN_MODEL": "your-small-model",
-    "ACTOVIQ_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
-    "ACTOVIQ_DEFAULT_MAX_MODEL": "your-large-model"
-  }
-}

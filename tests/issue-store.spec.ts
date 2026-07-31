@@ -32,7 +32,7 @@ async function tempRoot(prefix: string): Promise<string> {
 
 describe('issueStore', () => {
   it('creates issues with incrementing numbers and persists normalized fields', async () => {
-    const root = await tempRoot('actoviq-issues-');
+    const root = await tempRoot('hadamard-issues-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -62,7 +62,7 @@ describe('issueStore', () => {
   });
 
   it('updates fields and appends comments', async () => {
-    const root = await tempRoot('actoviq-issues-update-');
+    const root = await tempRoot('hadamard-issues-update-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -87,7 +87,7 @@ describe('issueStore', () => {
   });
 
   it('guards lifecycle transitions and records status-change comments', async () => {
-    const root = await tempRoot('actoviq-issues-transition-');
+    const root = await tempRoot('hadamard-issues-transition-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -111,7 +111,7 @@ describe('issueStore', () => {
   });
 
   it('migrates between home and workspace stores while deduping by issue number', async () => {
-    const root = await tempRoot('actoviq-issues-migrate-');
+    const root = await tempRoot('hadamard-issues-migrate-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
@@ -139,7 +139,7 @@ describe('issueStore', () => {
   });
 
   it('keeps the newest duplicate fields and merges linked sessions during migration', async () => {
-    const root = await tempRoot('actoviq-issues-migrate-newest-');
+    const root = await tempRoot('hadamard-issues-migrate-newest-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });

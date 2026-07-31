@@ -136,7 +136,7 @@ describe('transcript helpers', () => {
   it('ships client bundle and styles', () => {
     const script = getTranscriptClientScript();
     const styles = getTranscriptStyles();
-    expect(script).toContain('__ActoviqTranscript');
+    expect(script).toContain('__HadamardTranscript');
     expect(script).toContain('tool-bash-body');
     expect(script).toContain('awaiting-answer');
     expect(styles).toContain('.thinking-card');

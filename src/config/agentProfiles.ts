@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import path from 'node:path';
 
 import type {
-  ActoviqModelTierConfig,
+  HadamardModelTierConfig,
   ModelApi,
-  ActoviqPermissionMode,
-  ActoviqRunEffort,
+  HadamardPermissionMode,
+  HadamardRunEffort,
 } from '../types.js';
 import { buildRouteModelApi } from '../router/modelRouter.js';
 import {
@@ -17,11 +17,11 @@ import {
   type ModelModality,
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
-import { resolveActoviqHome } from './actoviqHome.js';
+import { resolveHadamardHome } from './hadamardHome.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
 import {
-  isActoviqModelTier,
-  resolveActoviqModelReference,
+  isHadamardModelTier,
+  resolveHadamardModelReference,
 } from './modelTiers.js';
 
 export interface AgentProfile {
@@ -30,9 +30,9 @@ export interface AgentProfile {
   bridgeConfig: string;
   model: string;
   systemPromptAppend?: string;
-  permissionMode?: ActoviqPermissionMode;
+  permissionMode?: HadamardPermissionMode;
   /** Preferred effort for this agent; omit to keep session/default effort. */
-  effort?: ActoviqRunEffort;
+  effort?: HadamardRunEffort;
   /** Optional sampling override for this agent. */
   maxTokens?: number;
   /** Optional sampling override for this agent (0–2). */
@@ -56,32 +56,32 @@ export interface ResolvedAgentProfileRun extends AgentProfileValidationResult {
 }
 
 const VALID_PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const VALID_PERMISSION_MODES = new Set<ActoviqPermissionMode>([
+const VALID_PERMISSION_MODES = new Set<HadamardPermissionMode>([
   'default',
   'acceptEdits',
   'bypassPermissions',
   'plan',
   'auto',
 ]);
-const VALID_EFFORTS = new Set<ActoviqRunEffort>(['auto', 'low', 'medium', 'high', 'max']);
+const VALID_EFFORTS = new Set<HadamardRunEffort>(['auto', 'low', 'medium', 'high', 'max']);
 
 export function getAgentProfilesPath(homeDir?: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'agent-configs.json');
+  return path.join(resolveHadamardHome(homeDir), 'agent-configs.json');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function parsePermissionMode(value: unknown): ActoviqPermissionMode | undefined {
-  return typeof value === 'string' && VALID_PERMISSION_MODES.has(value as ActoviqPermissionMode)
-    ? (value as ActoviqPermissionMode)
+function parsePermissionMode(value: unknown): HadamardPermissionMode | undefined {
+  return typeof value === 'string' && VALID_PERMISSION_MODES.has(value as HadamardPermissionMode)
+    ? (value as HadamardPermissionMode)
     : undefined;
 }
 
-function parseEffort(value: unknown): ActoviqRunEffort | undefined {
-  return typeof value === 'string' && VALID_EFFORTS.has(value as ActoviqRunEffort)
-    ? (value as ActoviqRunEffort)
+function parseEffort(value: unknown): HadamardRunEffort | undefined {
+  return typeof value === 'string' && VALID_EFFORTS.has(value as HadamardRunEffort)
+    ? (value as HadamardRunEffort)
     : undefined;
 }
 
@@ -295,9 +295,9 @@ export interface SelectableAgent {
   /** `profile` = saved Agent Profile; `config` = auto preset from a provider config model. */
   source: 'profile' | 'config';
   description?: string;
-  permissionMode?: ActoviqPermissionMode;
+  permissionMode?: HadamardPermissionMode;
   systemPromptAppend?: string;
-  effort?: ActoviqRunEffort;
+  effort?: HadamardRunEffort;
   maxTokens?: number;
   temperature?: number;
   /** True when this entry was synthesized and is not stored in agent-configs.json. */
@@ -306,7 +306,7 @@ export interface SelectableAgent {
 
 /** Sampling / effort overrides to pass into `session.stream` / `AgentRunOptions`. */
 export function agentProfileRunOverrides(profile: Pick<AgentProfile, 'effort' | 'maxTokens' | 'temperature'> | null | undefined): {
-  effort?: ActoviqRunEffort;
+  effort?: HadamardRunEffort;
   maxTokens?: number;
   temperature?: number;
 } {
@@ -374,9 +374,9 @@ export function listSelectableAgents(homeDir?: string): SelectableAgent[] {
     covered.add(`${profile.bridgeConfig}\0${profile.model}`);
     // Tier aliases also cover their resolved id so we don't emit a duplicate
     // auto preset for the expanded model (which would steal exact matches).
-    if (isActoviqModelTier(profile.model)) {
+    if (isHadamardModelTier(profile.model)) {
       try {
-        const resolved = resolveActoviqModelReference(profile.model, tiers).model;
+        const resolved = resolveHadamardModelReference(profile.model, tiers).model;
         covered.add(`${profile.bridgeConfig}\0${resolved}`);
       } catch {
         // Unconfigured tier — leave coverage as the alias only.
@@ -431,11 +431,11 @@ export function findSelectableAgent(
   return listSelectableAgents(homeDir).find(agent => agent.name === needle);
 }
 
-function readModelTiersForMatch(homeDir?: string): ActoviqModelTierConfig {
+function readModelTiersForMatch(homeDir?: string): HadamardModelTierConfig {
   const fromLoaded = getLoadedJsonConfig()?.env ?? {};
   let fromHome: Record<string, string> = {};
   try {
-    const settingsPath = path.join(resolveActoviqHome(homeDir), 'settings.json');
+    const settingsPath = path.join(resolveHadamardHome(homeDir), 'settings.json');
     if (existsSync(settingsPath)) {
       const parsed = JSON.parse(readFileSync(settingsPath, 'utf8')) as unknown;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -461,9 +461,9 @@ function readModelTiersForMatch(homeDir?: string): ActoviqModelTierConfig {
     return undefined;
   };
   return {
-    min: pick('ACTOVIQ_DEFAULT_MIN_MODEL'),
-    medium: pick('ACTOVIQ_DEFAULT_MEDIUM_MODEL'),
-    max: pick('ACTOVIQ_DEFAULT_MAX_MODEL'),
+    min: pick('HADAMARD_DEFAULT_MIN_MODEL'),
+    medium: pick('HADAMARD_DEFAULT_MEDIUM_MODEL'),
+    max: pick('HADAMARD_DEFAULT_MAX_MODEL'),
   };
 }
 
@@ -471,13 +471,13 @@ function readModelTiersForMatch(homeDir?: string): ActoviqModelTierConfig {
 function selectableModelsEquivalent(
   left: string,
   right: string,
-  tiers: ActoviqModelTierConfig,
+  tiers: HadamardModelTierConfig,
 ): boolean {
   if (left === right) return true;
-  if (!isActoviqModelTier(left) && !isActoviqModelTier(right)) return false;
+  if (!isHadamardModelTier(left) && !isHadamardModelTier(right)) return false;
   try {
-    return resolveActoviqModelReference(left, tiers).model
-      === resolveActoviqModelReference(right, tiers).model;
+    return resolveHadamardModelReference(left, tiers).model
+      === resolveHadamardModelReference(right, tiers).model;
   } catch {
     return false;
   }

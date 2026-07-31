@@ -13,7 +13,7 @@ import {
 } from './bridgeExecResolver.js';
 import { terminateBridgeProcessTree } from './bridgeProviders.js';
 
-const CRUSH_SESSION_REFERENCE_NAMESPACE = 'actoviq-crush-session:';
+const CRUSH_SESSION_REFERENCE_NAMESPACE = 'hadamard-crush-session:';
 const CRUSH_SESSION_REFERENCE_V1_PREFIX = `${CRUSH_SESSION_REFERENCE_NAMESPACE}v1:`;
 const CRUSH_SESSION_REFERENCE_V2_PREFIX = `${CRUSH_SESSION_REFERENCE_NAMESPACE}v2:`;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -56,7 +56,7 @@ export interface CrushSessionHistoryOptions {
   offset?: number;
   limit?: number;
   commandRunner?: CrushHistoryCommandRunner;
-  /** Stable Actoviq-managed profile identity encoded into virtual references. */
+  /** Stable Hadamard-managed profile identity encoded into virtual references. */
   managedProfileId?: string;
 }
 

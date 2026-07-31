@@ -37,7 +37,7 @@ process.stdin.on('data', chunk => {
 
 describe('CodeIntelligenceService', () => {
   it('provides symbol, definition, reference, and diagnostic queries', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-code-intel-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-code-intel-'));
     tempDirs.push(root);
     const file = path.join(root, 'target.ts');
     await mkdir(root, { recursive: true });
@@ -71,7 +71,7 @@ describe('CodeIntelligenceService', () => {
   });
 
   it('rejects workspace path escapes before opening documents', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-code-intel-escape-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-code-intel-escape-'));
     tempDirs.push(root);
     const service = new CodeIntelligenceService({
       workDir: root,

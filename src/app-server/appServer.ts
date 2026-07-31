@@ -1,4 +1,4 @@
-import type { ActoviqAgentClient } from '../runtime/agentClient.js';
+import type { HadamardAgentClient } from '../runtime/agentClient.js';
 import type { AgentSession } from '../runtime/agentSession.js';
 import { GoalService } from '../goal/goalService.js';
 import type { StoredApproval } from '../policy/approvalPolicy.js';
@@ -11,7 +11,7 @@ const MAX_LIVE_SESSIONS = 32;
 export class AppServer {
   private readonly liveSessions = new Map<string, AgentSession>();
 
-  constructor(private readonly sdk: ActoviqAgentClient) {}
+  constructor(private readonly sdk: HadamardAgentClient) {}
 
   async handle(request: AppServerRequest, emit?: AppServerEmit): Promise<AppServerResponse> {
     try {

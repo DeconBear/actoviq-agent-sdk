@@ -5,20 +5,20 @@ import { Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 import {
-  createActoviqGuiClientScript,
-  createActoviqGuiHtml,
-  createActoviqGuiStyles,
-} from '../src/gui/actoviqGui.js';
+  createHadamardGuiClientScript,
+  createHadamardGuiHtml,
+  createHadamardGuiStyles,
+} from '../src/gui/hadamardGui.js';
 
 describe('GUI Project Agent execution view', () => {
   it('emits syntactically valid browser JavaScript', () => {
-    expect(() => new Script(createActoviqGuiClientScript())).not.toThrow();
+    expect(() => new Script(createHadamardGuiClientScript())).not.toThrow();
   });
 
   it('ships a dedicated project tab with a persistent execution-tree contract', () => {
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
-    const html = createActoviqGuiHtml();
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
+    const html = createHadamardGuiHtml();
 
     expect(js).toContain("['agents', 'Agent monitor']");
     expect(js).toContain("'/api/agent-executions?path='");
@@ -91,7 +91,7 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('keeps the project Agent workspace usable at tablet and narrow widths', () => {
-    const css = createActoviqGuiStyles();
+    const css = createHadamardGuiStyles();
     const tabletStart = css.indexOf('@media (max-width: 1120px)');
     const tablet = css.slice(tabletStart, css.indexOf('.context-menu', tabletStart));
     const compactStart = css.lastIndexOf('@media (max-width: 860px)');
@@ -112,7 +112,7 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('guards polling and response commits to the visible project Agent tab', () => {
-    const js = createActoviqGuiClientScript();
+    const js = createHadamardGuiClientScript();
 
     expect(js).toContain('const AGENT_EXECUTION_POLL_MS = 2000');
     expect(js).toContain('const AGENT_EXECUTION_IDLE_POLL_MS = 5000');
@@ -148,9 +148,9 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('provides configured routers and cascading config/agent model controls', () => {
-    const html = createActoviqGuiHtml();
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
+    const html = createHadamardGuiHtml();
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
 
     expect(html).toContain('id="modelPickerBtn"');
     expect(html).toContain('aria-haspopup="listbox"');
@@ -191,9 +191,9 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('provides a functional add-context catalog from the composer plus button', () => {
-    const html = createActoviqGuiHtml();
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
+    const html = createHadamardGuiHtml();
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
 
     expect(html).toContain('id="fileUploadBtn"');
     expect(html).toContain('aria-label="Add context"');
@@ -209,7 +209,7 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain("api('/api/session-center/reference'");
     expect(js).toContain('payload.activeSkillIds');
     expect(js).toContain('invoke the registered Skill tool');
-    expect(js).toContain('<actoviq-context type="');
+    expect(js).toContain('<hadamard-context type="');
     expect(js).toContain("event.key === 'ArrowLeft'");
     expect(css).toContain('.add-context-menu');
     expect(css).toContain('.add-context-row');
@@ -217,7 +217,7 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('does not let stale state requests overwrite a newer mutation', () => {
-    const js = createActoviqGuiClientScript();
+    const js = createHadamardGuiClientScript();
 
     expect(js).toContain('let stateSnapshotLoadSequence = 0');
     expect(js).toContain('const requestSequence = ++stateSnapshotLoadSequence');
@@ -227,10 +227,10 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('provides a two-section Customize workspace for plugin and skill management', () => {
-    const html = createActoviqGuiHtml();
-    const js = createActoviqGuiClientScript();
-    const css = createActoviqGuiStyles();
-    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const html = createHadamardGuiHtml();
+    const js = createHadamardGuiClientScript();
+    const css = createHadamardGuiStyles();
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
 
     expect(html).toContain('<h1>Customize</h1>');
     expect(html).toContain('id="pluginsViewPluginsBtn"');
@@ -272,8 +272,8 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('reconnects foreground runs with sequenced replay and lightweight polling', () => {
-    const js = createActoviqGuiClientScript();
-    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const js = createHadamardGuiClientScript();
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
 
     expect(js).toContain("api('/api/runs')");
     expect(js).toContain("api('/api/rail-live')");
@@ -292,7 +292,7 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('serializes cached child-session switches before enabling sends', () => {
-    const js = createActoviqGuiClientScript();
+    const js = createHadamardGuiClientScript();
     const start = js.indexOf('function setSessionResumePending(pending)');
     const end = js.indexOf('function refreshProjectDetailSidebar()', start);
     const resume = js.slice(start, end);
@@ -328,7 +328,7 @@ describe('GUI Project Agent execution view', () => {
   });
 
   it('waits for server-side resume mutations before returning reconciliation state', () => {
-    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'actoviqGui.ts'), 'utf8');
+    const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     const activeRoute = source.slice(
       source.indexOf("url.pathname === '/api/session/active'"),
       source.indexOf("url.pathname === '/api/agent-executions'"),

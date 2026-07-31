@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 async function fixture(maxFileBytes?: number) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-file-checkpoint-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-file-checkpoint-'));
   tempDirs.push(root);
   const workspaceRoot = path.join(root, 'workspace');
   await mkdir(workspaceRoot, { recursive: true });

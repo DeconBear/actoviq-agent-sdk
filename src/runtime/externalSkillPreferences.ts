@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ActoviqExternalSkillsOptions } from '../types.js';
+import type { HadamardExternalSkillsOptions } from '../types.js';
 import { isRecord } from './helpers.js';
 
-export interface ActoviqExternalSkillPreferences {
+export interface HadamardExternalSkillPreferences {
   enabledSourceIds?: string[];
   disabledSourceIds: string[];
   disabledSkillIds: string[];
@@ -14,44 +14,44 @@ export interface ActoviqExternalSkillPreferences {
 
 interface StoredExternalSkillPreferences {
   version: 1;
-  workspaces: Record<string, ActoviqExternalSkillPreferences>;
+  workspaces: Record<string, HadamardExternalSkillPreferences>;
 }
 
-export interface ActoviqExternalSkillPreferenceLocation {
-  actoviqHomeDir: string;
+export interface HadamardExternalSkillPreferenceLocation {
+  hadamardHomeDir: string;
   workDir: string;
 }
 
 const PREFERENCES_FILE = 'skill-preferences.json';
 
 /** Project-scoped trust prevents approving a native project skill globally. */
-export async function readActoviqExternalSkillPreferences(
-  location: ActoviqExternalSkillPreferenceLocation,
-): Promise<ActoviqExternalSkillPreferences> {
-  const stored = await readStore(location.actoviqHomeDir);
+export async function readHadamardExternalSkillPreferences(
+  location: HadamardExternalSkillPreferenceLocation,
+): Promise<HadamardExternalSkillPreferences> {
+  const stored = await readStore(location.hadamardHomeDir);
   return normalizePreferences(stored.workspaces[workspaceKey(location.workDir)]);
 }
 
-/** Writes only Actoviq-owned state; native CLI skill directories stay read-only. */
-export async function writeActoviqExternalSkillPreferences(
-  location: ActoviqExternalSkillPreferenceLocation,
-  preferences: Partial<ActoviqExternalSkillPreferences>,
-): Promise<ActoviqExternalSkillPreferences> {
-  const stored = await readStore(location.actoviqHomeDir);
+/** Writes only Hadamard-owned state; native CLI skill directories stay read-only. */
+export async function writeHadamardExternalSkillPreferences(
+  location: HadamardExternalSkillPreferenceLocation,
+  preferences: Partial<HadamardExternalSkillPreferences>,
+): Promise<HadamardExternalSkillPreferences> {
+  const stored = await readStore(location.hadamardHomeDir);
   const normalized = normalizePreferences(preferences);
   stored.workspaces[workspaceKey(location.workDir)] = normalized;
-  const filePath = actoviqExternalSkillPreferencesPath(location.actoviqHomeDir);
+  const filePath = hadamardExternalSkillPreferencesPath(location.hadamardHomeDir);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
   return normalized;
 }
 
 /** Disable one catalog variant without changing its source or native files. */
-export async function setActoviqExternalSkillDisabled(
-  location: ActoviqExternalSkillPreferenceLocation,
+export async function setHadamardExternalSkillDisabled(
+  location: HadamardExternalSkillPreferenceLocation,
   skillId: string,
   disabled: boolean,
-): Promise<ActoviqExternalSkillPreferences> {
+): Promise<HadamardExternalSkillPreferences> {
   const normalizedSkillId = normalizeRequiredValue(skillId, 'skillId');
   return updateWorkspacePreferences(location, current => {
     const disabledSkillIds = new Set(current.disabledSkillIds);
@@ -62,11 +62,11 @@ export async function setActoviqExternalSkillDisabled(
 }
 
 /** Select one catalog variant for an invocation-name conflict. */
-export async function setActoviqPreferredExternalSkill(
-  location: ActoviqExternalSkillPreferenceLocation,
+export async function setHadamardPreferredExternalSkill(
+  location: HadamardExternalSkillPreferenceLocation,
   invocationName: string,
   skillId: string,
-): Promise<ActoviqExternalSkillPreferences> {
+): Promise<HadamardExternalSkillPreferences> {
   const name = normalizeRequiredValue(invocationName, 'invocationName');
   const normalizedSkillId = normalizeRequiredValue(skillId, 'skillId');
   return updateWorkspacePreferences(location, current => ({
@@ -76,10 +76,10 @@ export async function setActoviqPreferredExternalSkill(
 }
 
 /** Clear a previous conflict choice so resolution returns to fail-closed mode. */
-export async function clearActoviqPreferredExternalSkill(
-  location: ActoviqExternalSkillPreferenceLocation,
+export async function clearHadamardPreferredExternalSkill(
+  location: HadamardExternalSkillPreferenceLocation,
   invocationName: string,
-): Promise<ActoviqExternalSkillPreferences> {
+): Promise<HadamardExternalSkillPreferences> {
   const name = normalizeRequiredValue(invocationName, 'invocationName');
   return updateWorkspacePreferences(location, current => {
     const preferredSkillIds = { ...current.preferredSkillIds };
@@ -88,13 +88,13 @@ export async function clearActoviqPreferredExternalSkill(
   });
 }
 
-export function actoviqExternalSkillPreferencesPath(actoviqHomeDir: string): string {
-  return path.join(path.resolve(actoviqHomeDir), PREFERENCES_FILE);
+export function hadamardExternalSkillPreferencesPath(hadamardHomeDir: string): string {
+  return path.join(path.resolve(hadamardHomeDir), PREFERENCES_FILE);
 }
 
 export function externalSkillPreferencesToRuntimeOptions(
-  preferences: ActoviqExternalSkillPreferences,
-): ActoviqExternalSkillsOptions {
+  preferences: HadamardExternalSkillPreferences,
+): HadamardExternalSkillsOptions {
   return {
     ...(preferences.enabledSourceIds
       ? { enabledSourceIds: [...preferences.enabledSourceIds] }
@@ -106,13 +106,13 @@ export function externalSkillPreferencesToRuntimeOptions(
   };
 }
 
-async function readStore(actoviqHomeDir: string): Promise<StoredExternalSkillPreferences> {
+async function readStore(hadamardHomeDir: string): Promise<StoredExternalSkillPreferences> {
   try {
     const parsed = JSON.parse(
-      await readFile(actoviqExternalSkillPreferencesPath(actoviqHomeDir), 'utf8'),
+      await readFile(hadamardExternalSkillPreferencesPath(hadamardHomeDir), 'utf8'),
     ) as unknown;
     if (!isRecord(parsed) || !isRecord(parsed.workspaces)) return emptyStore();
-    const workspaces: Record<string, ActoviqExternalSkillPreferences> = {};
+    const workspaces: Record<string, HadamardExternalSkillPreferences> = {};
     for (const [key, value] of Object.entries(parsed.workspaces)) {
       if (!isRecord(value)) continue;
       workspaces[key] = normalizePreferences(value);
@@ -127,7 +127,7 @@ function emptyStore(): StoredExternalSkillPreferences {
   return { version: 1, workspaces: {} };
 }
 
-function normalizePreferences(value: unknown): ActoviqExternalSkillPreferences {
+function normalizePreferences(value: unknown): HadamardExternalSkillPreferences {
   const record = isRecord(value) ? value : {};
   const enabledSourceIds = normalizeStringArray(record.enabledSourceIds);
   return {
@@ -140,16 +140,16 @@ function normalizePreferences(value: unknown): ActoviqExternalSkillPreferences {
 }
 
 async function updateWorkspacePreferences(
-  location: ActoviqExternalSkillPreferenceLocation,
+  location: HadamardExternalSkillPreferenceLocation,
   update: (
-    current: ActoviqExternalSkillPreferences,
-  ) => Partial<ActoviqExternalSkillPreferences>,
-): Promise<ActoviqExternalSkillPreferences> {
-  const stored = await readStore(location.actoviqHomeDir);
+    current: HadamardExternalSkillPreferences,
+  ) => Partial<HadamardExternalSkillPreferences>,
+): Promise<HadamardExternalSkillPreferences> {
+  const stored = await readStore(location.hadamardHomeDir);
   const key = workspaceKey(location.workDir);
   const normalized = normalizePreferences(update(normalizePreferences(stored.workspaces[key])));
   stored.workspaces[key] = normalized;
-  const filePath = actoviqExternalSkillPreferencesPath(location.actoviqHomeDir);
+  const filePath = hadamardExternalSkillPreferencesPath(location.hadamardHomeDir);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
   return normalized;

@@ -324,7 +324,7 @@ export async function writeGeneratedArtifact(
 ): Promise<{ absolutePath: string; relativePath: string }> {
   const folder = kind === 'mesh' ? 'meshes' : `${kind}s`;
   const relative = outputPath?.trim()
-    || path.join('.actoviq', 'generated', folder, filename);
+    || path.join('.hadamard', 'generated', folder, filename);
   const absolute = path.resolve(cwd, relative);
   await mkdir(path.dirname(absolute), { recursive: true });
   await writeFile(absolute, data);

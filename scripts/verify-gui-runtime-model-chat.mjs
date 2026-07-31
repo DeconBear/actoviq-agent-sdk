@@ -10,7 +10,7 @@ import { _electron as electron } from 'playwright';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARTIFACTS = path.join(ROOT, 'output', 'playwright', 'gui-runtime-model-chat');
-const TMP = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-e2e-'));
+const TMP = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-e2e-'));
 const HOME = path.join(TMP, 'home');
 const WORK = path.join(TMP, 'work');
 const CONFIG = path.join(HOME, 'settings.json');
@@ -123,7 +123,7 @@ async function shot(page, name) {
 async function apiState(page) {
   return page.evaluate(async () => {
     const response = await fetch('/api/state', {
-      headers: { 'x-actoviq-token': window.__ACTOVIQ_TOKEN__ },
+      headers: { 'x-hadamard-token': window.__HADAMARD_TOKEN__ },
     });
     if (!response.ok) throw new Error(`state request failed: ${response.status}`);
     return response.json();
@@ -215,16 +215,16 @@ try {
   ];
   await Promise.all([
     writeFile(CONFIG, JSON.stringify({ env: {
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_BASE_URL: baseURL,
-      ACTOVIQ_MODEL: 'model-default',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_BASE_URL: baseURL,
+      HADAMARD_MODEL: 'model-default',
     } }, null, 2), 'utf8'),
     writeFile(path.join(HOME, 'bridge-configs.json'), JSON.stringify({ configs: bridgeConfigs }, null, 2), 'utf8'),
     writeFile(path.join(HOME, 'agent-configs.json'), JSON.stringify({ version: 1, profiles }, null, 2), 'utf8'),
   ]);
 
-  const env = { ...process.env, ACTOVIQ_HOME: HOME, NODE_ENV: 'test' };
+  const env = { ...process.env, HADAMARD_HOME: HOME, NODE_ENV: 'test' };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({
     executablePath: electronExecutable(),

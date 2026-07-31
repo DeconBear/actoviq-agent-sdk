@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ActoviqBackgroundTaskRecord } from '../types.js';
+import type { HadamardBackgroundTaskRecord } from '../types.js';
 import { createId } from '../runtime/helpers.js';
 import { joinUnderStorageRoot, safeStorageFileName } from './pathSafety.js';
 import { writeJsonAtomic } from './atomicJsonWrite.js';
@@ -19,9 +19,9 @@ export class BackgroundTaskStore {
 
   constructor(private readonly rootDirectory: string) {}
 
-  async create(task: Omit<ActoviqBackgroundTaskRecord, 'id'>): Promise<ActoviqBackgroundTaskRecord> {
+  async create(task: Omit<HadamardBackgroundTaskRecord, 'id'>): Promise<HadamardBackgroundTaskRecord> {
     await this.ensureReady();
-    const record: ActoviqBackgroundTaskRecord = {
+    const record: HadamardBackgroundTaskRecord = {
       ...task,
       id: createId(),
     };
@@ -29,7 +29,7 @@ export class BackgroundTaskStore {
     return record;
   }
 
-  async save(task: ActoviqBackgroundTaskRecord): Promise<void> {
+  async save(task: HadamardBackgroundTaskRecord): Promise<void> {
     await this.enqueue(task.id, () =>
       this.withTaskLock(task.id, () => writeJsonAtomic(this.taskPath(task.id), task)),
     );
@@ -38,9 +38,9 @@ export class BackgroundTaskStore {
   async mutate(
     taskId: string,
     updater: (
-      current: ActoviqBackgroundTaskRecord,
-    ) => ActoviqBackgroundTaskRecord,
-  ): Promise<ActoviqBackgroundTaskRecord | undefined> {
+      current: HadamardBackgroundTaskRecord,
+    ) => HadamardBackgroundTaskRecord,
+  ): Promise<HadamardBackgroundTaskRecord | undefined> {
     return this.enqueue(taskId, () =>
       this.withTaskLock(taskId, async () => {
         const current = await this.load(taskId);
@@ -56,11 +56,11 @@ export class BackgroundTaskStore {
     );
   }
 
-  async load(taskId: string): Promise<ActoviqBackgroundTaskRecord | undefined> {
+  async load(taskId: string): Promise<HadamardBackgroundTaskRecord | undefined> {
     await this.ensureReady();
     try {
       const raw = await readFile(this.taskPath(taskId), 'utf8');
-      return JSON.parse(raw) as ActoviqBackgroundTaskRecord;
+      return JSON.parse(raw) as HadamardBackgroundTaskRecord;
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
       if (nodeError.code === 'ENOENT') {
@@ -70,17 +70,17 @@ export class BackgroundTaskStore {
     }
   }
 
-  async list(): Promise<ActoviqBackgroundTaskRecord[]> {
+  async list(): Promise<HadamardBackgroundTaskRecord[]> {
     await this.ensureReady();
     const files = await readdir(this.tasksDirectory());
-    const tasks: ActoviqBackgroundTaskRecord[] = [];
+    const tasks: HadamardBackgroundTaskRecord[] = [];
 
     for (const file of files) {
       if (!file.endsWith('.json')) {
         continue;
       }
       const raw = await readFile(path.join(this.tasksDirectory(), file), 'utf8');
-      tasks.push(JSON.parse(raw) as ActoviqBackgroundTaskRecord);
+      tasks.push(JSON.parse(raw) as HadamardBackgroundTaskRecord);
     }
 
     return tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));

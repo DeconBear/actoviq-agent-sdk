@@ -14,8 +14,8 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { tool } from '../../runtime/tools.js';
-import { resolveActoviqHome } from '../../config/actoviqHome.js';
-import type { AgentToolDefinition, ActoviqPermissionMode } from '../../types.js';
+import { resolveHadamardHome } from '../../config/hadamardHome.js';
+import type { AgentToolDefinition, HadamardPermissionMode } from '../../types.js';
 
 export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode';
 export const EXIT_PLAN_MODE_TOOL_NAME = 'ExitPlanMode';
@@ -26,14 +26,14 @@ Use this tool ONLY when you have finished researching and are ready to present a
 
 export interface PlanModeToolContext {
   /** Called when the agent requests entering/exiting plan mode. */
-  onPlanModeChange?: (mode: ActoviqPermissionMode) => void | Promise<void>;
+  onPlanModeChange?: (mode: HadamardPermissionMode) => void | Promise<void>;
   /** Per-project plan directory (plan file is written here). */
   planDir?: string;
 }
 
 function resolvePlanDir(workDir: string): string {
   const projectKey = workDir.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40) || 'default';
-  return path.join(resolveActoviqHome(), 'projects', projectKey);
+  return path.join(resolveHadamardHome(), 'projects', projectKey);
 }
 
 export function planFilePath(workDir: string): string {

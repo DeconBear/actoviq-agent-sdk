@@ -19,7 +19,7 @@ export interface TeamProposeResult {
   rawText?: string;
 }
 
-const GRAPH_CONTRACT = `You design Actoviq Team Graph definitions as JSON only.
+const GRAPH_CONTRACT = `You design Hadamard Team Graph definitions as JSON only.
 Hard contract:
 - Exactly 1 Task (kind:"task", id typically "task") — Dispatch entry that injects the run prompt.
 - Exactly 1 Caller Exit (kind:"return") — void or payload returnMode.
@@ -32,7 +32,7 @@ Do not wrap in markdown fences.`;
 
 export function buildTeamProposeSystemPrompt(squadType: TeamProposeSquadType): string {
   if (squadType === 'workflow') {
-    return `You design Actoviq workflow squad trees as JSON only.
+    return `You design Hadamard workflow squad trees as JSON only.
 Return { "explanation": string, "definition": { name, squadType:"workflow", mode:"graph", members:[], workflowTree } }.
 workflowTree nodes: { id, type:"agent"|..., label, prompt?, children? }.
 No markdown fences.`;

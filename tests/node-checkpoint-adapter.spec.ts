@@ -77,7 +77,7 @@ function zeroUsage() {
 
 describe('SqliteRunCheckpointAdapter', () => {
   it('survives runtime/storage restart at approval and resumes a side effect exactly once', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-checkpoint-e2e-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-checkpoint-e2e-'));
     roots.push(root);
     const filename = path.join(root, 'runtime.sqlite');
     const provider = new ApprovalProvider();

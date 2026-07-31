@@ -14,7 +14,7 @@ import {
 
 describe('contextRailStore', () => {
   it('normalizes and persists rail items per workspace', async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-rail-home-'));
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-rail-home-'));
     const workDir = path.join(homeDir, 'proj');
     const todo = createContextRailItem('todo', 'Ship feature');
     const reminder = createContextRailItem('reminder', 'Standup', {

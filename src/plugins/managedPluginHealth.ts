@@ -100,7 +100,7 @@ export async function probeManagedPlugin(
       };
     }
     const result = await runTavilySearch({
-      query: 'Actoviq connection check',
+      query: 'Hadamard connection check',
       depth: 'basic',
       topic: 'general',
       max_results: 1,
@@ -125,7 +125,7 @@ export async function probeManagedPlugin(
       };
     }
     const result = await runExaSearch({
-      query: 'Actoviq connection check',
+      query: 'Hadamard connection check',
       type: 'fast',
       num_results: 1,
       include_text: false,

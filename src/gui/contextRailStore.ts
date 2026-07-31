@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { isRecord } from '../runtime/helpers.js';
 
 export type ContextRailItemKind = 'todo' | 'reminder';
@@ -34,7 +34,7 @@ export interface ContextRailNotification {
 export const EMPTY_CONTEXT_RAIL_STORE: ContextRailStore = { items: [] };
 
 export function contextRailStorePath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'rail-items.json');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'rail-items.json');
 }
 
 function normalizeItem(raw: unknown): ContextRailItem | null {

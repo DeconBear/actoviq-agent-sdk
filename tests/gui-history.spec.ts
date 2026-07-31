@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
-import { getActoviqProjectSessionDirectory, SessionStore } from '../src/index.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
+import { getHadamardProjectSessionDirectory, SessionStore } from '../src/index.js';
 
 const tempDirs: string[] = [];
 
@@ -15,16 +15,16 @@ afterEach(async () => {
 
 describe('GUI session history', () => {
   it('replays stored user/assistant/tool messages through the history endpoint', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-history-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-history-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
 
-    const store = new SessionStore(getActoviqProjectSessionDirectory(workDir, homeDir));
+    const store = new SessionStore(getHadamardProjectSessionDirectory(workDir, homeDir));
     await store.create({
       id: 'chat-1',
-      metadata: { __actoviqWorkDir: workDir },
+      metadata: { __hadamardWorkDir: workDir },
       initialMessages: [
         { role: 'user', content: 'hello there' },
         {
@@ -39,16 +39,16 @@ describe('GUI session history', () => {
       ],
     });
 
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
     const port = 47000 + Math.floor(Math.random() * 9000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -59,7 +59,7 @@ describe('GUI session history', () => {
 
     try {
       const payload = await fetch(`${server.url}api/session/messages`, {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       }).then((res) => res.json()) as {
         messages: Array<{ type: string; text?: string; name?: string; ok?: boolean }>;
       };

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://actoviq.dev/schemas/runtime-benchmark-report-v1.json",
-  "title": "Actoviq runtime benchmark report",
+  "$id": "https://hadamard.dev/schemas/runtime-benchmark-report-v1.json",
+  "title": "Hadamard runtime benchmark report",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "suite": { "const": "actoviq-runtime" },
+    "suite": { "const": "hadamard-runtime" },
     "mode": { "enum": ["smoke", "full"] },
     "generatedAt": { "type": "string", "format": "date-time" },
     "configurationFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },

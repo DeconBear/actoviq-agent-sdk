@@ -1,6 +1,6 @@
 // JSON escapes valid in JSON strings: \" \\ \/ \b \f \n \r \t \uXXXX
 // Any other backslash-char sequence is invalid JSON, commonly seen with
-// Windows paths (e.g. C:\Users, D:\project\.actoviq) where models fail
+// Windows paths (e.g. C:\Users, D:\project\.hadamard) where models fail
 // to double-escape backslashes.
 const INVALID_JSON_ESCAPE = /\\(?!["\\/bfnrtu])/g;
 
@@ -21,7 +21,7 @@ export function robustJsonParse(
     }
     return { raw };
   } catch (e1) {
-    if (process.env.ACTOVIQ_DEBUG_JSON) {
+    if (process.env.HADAMARD_DEBUG_JSON) {
       console.error(`[json-parse] attempt 1 FAILED:`, (e1 as Error).message.slice(0, 120));
     }
     // Attempt 2: fix invalid backslash escapes (Windows paths)
@@ -61,7 +61,7 @@ export function robustJsonParse(
     }
   }
   // Last resort: wrap raw string so the model can see what went wrong
-  if (process.env.ACTOVIQ_DEBUG_JSON) {
+  if (process.env.HADAMARD_DEBUG_JSON) {
     console.error(`[robustJsonParse] FAILED for ${toolName ?? '?'}: len=${raw.length} start=${raw.slice(0, 80)}`);
   }
   return { raw };

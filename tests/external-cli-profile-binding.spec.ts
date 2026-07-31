@@ -26,10 +26,10 @@ function summary(
 
 describe('external CLI history profile binding', () => {
   it('binds file-backed managed history to one named API-key profile', () => {
-    const actoviqHomeDir = path.resolve('tmp', 'profile-binding-home');
+    const hadamardHomeDir = path.resolve('tmp', 'profile-binding-home');
     const profileA = namedExternalCliManagedProfileId('pi', 'profile-a');
     const managedA = summary('pi', path.join(
-      actoviqHomeDir,
+      hadamardHomeDir,
       'external-cli-profiles',
       'pi',
       profileA,
@@ -42,22 +42,22 @@ describe('external CLI history profile binding', () => {
       runtime: 'pi',
       authSource: 'apiKey',
       profileName: 'profile-a',
-    }, { actoviqHomeDir })).toBe(true);
+    }, { hadamardHomeDir })).toBe(true);
     expect(externalCliSessionMatchesConfig(managedA, {
       runtime: 'pi',
       authSource: 'apiKey',
       profileName: 'profile-b',
-    }, { actoviqHomeDir })).toBe(false);
+    }, { hadamardHomeDir })).toBe(false);
     expect(externalCliSessionMatchesConfig(managedA, {
       runtime: 'pi',
       authSource: 'native',
       profileName: 'native-profile',
-    }, { actoviqHomeDir })).toBe(false);
+    }, { hadamardHomeDir })).toBe(false);
     expect(externalCliSessionMatchesConfig(native, {
       runtime: 'pi',
       authSource: 'native',
       profileName: 'native-profile',
-    }, { actoviqHomeDir })).toBe(true);
+    }, { hadamardHomeDir })).toBe(true);
   });
 
   it('disambiguates identical Crush session ids by native or exact managed source', () => {

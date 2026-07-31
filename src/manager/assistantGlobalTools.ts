@@ -1,5 +1,5 @@
 ﻿/**
- * Global Assistant tools — cross-project overview + Actoviq app configuration.
+ * Global Assistant tools — cross-project overview + Hadamard app configuration.
  *
  * Hard constraints (enforced here, not only by prompt):
  *   - No Write/Edit/Bash against user source trees.
@@ -11,7 +11,7 @@ import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import {
   deleteAgentProfile,
   listAgentProfiles,
@@ -19,7 +19,7 @@ import {
   upsertAgentProfile,
   type AgentProfile,
 } from '../config/agentProfiles.js';
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import {
   listProjectIssues,
   type IssueStorageMode,
@@ -71,7 +71,7 @@ export interface AssistantGlobalConfig {
 export const DEFAULT_ASSISTANT_CONFIG: AssistantGlobalConfig = {};
 
 export function assistantConfigPath(homeDir?: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'assistant.json');
+  return path.join(resolveHadamardHome(homeDir), 'assistant.json');
 }
 
 export async function readAssistantConfig(homeDir?: string): Promise<AssistantGlobalConfig> {
@@ -233,10 +233,10 @@ async function assertKnownProject(
 
 export function buildAssistantGlobalSystemPrompt(currentWorkDir: string): string {
   return [
-    'You are the Actoviq desktop Assistant in Global scope.',
+    'You are the Hadamard desktop Assistant in Global scope.',
     `The GUI is currently focused on workspace: ${currentWorkDir}.`,
     '',
-    'Your job: help the user understand and operate Actoviq itself — projects, settings, provider configs, plugins, automation, and MCP — without modifying project source code.',
+    'Your job: help the user understand and operate Hadamard itself — projects, settings, provider configs, plugins, automation, and MCP — without modifying project source code.',
     '',
     'Hard rules:',
     '- You have no Write/Edit/Bash tools for source trees. Do not invent workarounds.',
@@ -255,7 +255,7 @@ export async function createAssistantGlobalTools(
   const ListProjects = tool(
     {
       name: 'ListProjects',
-      description: 'List remembered Actoviq workspaces with brief note, status, and issue counts.',
+      description: 'List remembered Hadamard workspaces with brief note, status, and issue counts.',
       inputSchema: z.strictObject({}),
       isReadOnly: () => true,
     },
@@ -303,7 +303,7 @@ export async function createAssistantGlobalTools(
           review: issues.filter(issue => issue.status === 'in_review').length,
           closed: issues.filter(issue => issue.status === 'done' || issue.status === 'cancelled').length,
         },
-        sessionDirectory: getActoviqProjectSessionDirectory(projectPath, host.homeDir),
+        sessionDirectory: getHadamardProjectSessionDirectory(projectPath, host.homeDir),
       };
     },
   );
@@ -758,7 +758,7 @@ export async function createAssistantGlobalTools(
   const AddMcpServerTool = tool(
     {
       name: 'AddMcpServer',
-      description: 'Add an MCP server to ~/.actoviq/mcp.json.',
+      description: 'Add an MCP server to ~/.hadamard/mcp.json.',
       inputSchema: z.strictObject({
         name: z.string(),
         type: z.enum(['stdio', 'http']),

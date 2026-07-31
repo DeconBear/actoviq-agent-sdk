@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('MemoryProposalService', () => {
   it('requires review, records provenance, and detects base conflicts', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-memory-proposal-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-memory-proposal-'));
     dirs.push(dir);
     const target = path.join(dir, 'MEMORY.md');
     await writeFile(target, '# Memory\n');

@@ -8,42 +8,42 @@ import { z } from 'zod';
 
 import type { MessageParam } from '../provider/types.js';
 
-import { createActoviqBuddyApi, type ActoviqBuddyApi } from '../buddy/actoviqBuddy.js';
+import { createHadamardBuddyApi, type HadamardBuddyApi } from '../buddy/hadamardBuddy.js';
 import {
-  createActoviqComputerUseMcpServer,
-  createActoviqComputerUseTools,
-} from '../computer/actoviqComputerUse.js';
+  createHadamardComputerUseMcpServer,
+  createHadamardComputerUseTools,
+} from '../computer/hadamardComputerUse.js';
 import {
-  createActoviqBrowserUseMcpServer,
-  createActoviqBrowserTools,
-} from '../browser/actoviqBrowserTools.js';
+  createHadamardBrowserUseMcpServer,
+  createHadamardBrowserTools,
+} from '../browser/hadamardBrowserTools.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
-import { resolveActoviqModelReference } from '../config/modelTiers.js';
+import { resolveHadamardModelReference } from '../config/modelTiers.js';
 import { recordCompatUsage } from '../compat/diagnostics.js';
 import {
-  mergeActoviqHooks,
-  normalizeActoviqHookMessages,
-  resolveActoviqPostRunHooks,
-  resolveActoviqSessionStartHooks,
-} from '../hooks/actoviqHooks.js';
-import { createActoviqMemoryApi, type ActoviqMemoryApi } from '../memory/actoviqMemory.js';
-import { appendMessagesToTranscript } from '../memory/actoviqTranscriptLogger.js';
+  mergeHadamardHooks,
+  normalizeHadamardHookMessages,
+  resolveHadamardPostRunHooks,
+  resolveHadamardSessionStartHooks,
+} from '../hooks/hadamardHooks.js';
+import { createHadamardMemoryApi, type HadamardMemoryApi } from '../memory/hadamardMemory.js';
+import { appendMessagesToTranscript } from '../memory/hadamardTranscriptLogger.js';
 import {
-  createActoviqDreamApi,
-  ensureActoviqDreamLayout,
-  isActoviqDreamEligibleSession,
-  rollbackActoviqConsolidationLock,
-  type ActoviqDreamApi,
-  type PreparedActoviqDreamExecution,
-} from '../memory/actoviqDream.js';
+  createHadamardDreamApi,
+  ensureHadamardDreamLayout,
+  isHadamardDreamEligibleSession,
+  rollbackHadamardConsolidationLock,
+  type HadamardDreamApi,
+  type PreparedHadamardDreamExecution,
+} from '../memory/hadamardDream.js';
 import {
-  ACTOVIQ_SESSION_MEMORY_STATE_KEY,
-  evaluateActoviqSessionMemoryProgress,
-  filterActoviqMessagesForSessionMemory,
-  parseActoviqSessionMemoryRuntimeState,
-  sanitizeActoviqSessionMemoryOutput,
-  serializeActoviqSessionMemoryRuntimeState,
-} from '../memory/actoviqSessionMemoryState.js';
+  HADAMARD_SESSION_MEMORY_STATE_KEY,
+  evaluateHadamardSessionMemoryProgress,
+  filterHadamardMessagesForSessionMemory,
+  parseHadamardSessionMemoryRuntimeState,
+  sanitizeHadamardSessionMemoryOutput,
+  serializeHadamardSessionMemoryRuntimeState,
+} from '../memory/hadamardSessionMemoryState.js';
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { RunAbortedError } from '../errors.js';
 import { AgentExecutionStore } from '../storage/agentExecutionStore.js';
@@ -80,17 +80,17 @@ import {
 import { HookRunner } from '../hooks/hookRunner.js';
 import { createPromptHookHandler } from '../hooks/handlers/promptHook.js';
 import type {
-  ActoviqAgentDefinition,
-  ActoviqAgentDefinitionSummary,
-  ActoviqBackgroundTaskRecord,
-  ActoviqBackgroundTaskQueuedInput,
-  ActoviqAgentContinuityState,
-  ActoviqCompactStateOptions,
-  ActoviqDreamRunResult,
-  ActoviqDreamState,
-  ActoviqDelegatedAgentRecord,
-  ActoviqHooks,
-  ActoviqSessionCompactResult,
+  HadamardAgentDefinition,
+  HadamardAgentDefinitionSummary,
+  HadamardBackgroundTaskRecord,
+  HadamardBackgroundTaskQueuedInput,
+  HadamardAgentContinuityState,
+  HadamardCompactStateOptions,
+  HadamardDreamRunResult,
+  HadamardDreamState,
+  HadamardDelegatedAgentRecord,
+  HadamardHooks,
+  HadamardSessionCompactResult,
   AgentEvent,
   AgentMcpServerDefinition,
   AgentRunOptions,
@@ -98,26 +98,26 @@ import type {
   AgentSessionCompactOptions,
   AgentSessionMemoryExtractionOptions,
   AgentToolDefinition,
-  ActoviqCompactState,
-  ActoviqSessionMemoryExtractionResult,
-  ActoviqSessionMemoryRuntimeState,
-  ActoviqSkillDefinition,
-  ActoviqSkillDefinitionSummary,
-  ActoviqInvokedSkillRecord,
-  ActoviqSurfacedMemory,
-  ActoviqPermissionMode,
-  ActoviqToolApprover,
-  ActoviqToolClassifier,
+  HadamardCompactState,
+  HadamardSessionMemoryExtractionResult,
+  HadamardSessionMemoryRuntimeState,
+  HadamardSkillDefinition,
+  HadamardSkillDefinitionSummary,
+  HadamardInvokedSkillRecord,
+  HadamardSurfacedMemory,
+  HadamardPermissionMode,
+  HadamardToolApprover,
+  HadamardToolClassifier,
   CreateAgentSdkOptions,
-  CreateActoviqComputerUseOptions,
-  CreateActoviqBrowserUseOptions,
+  CreateHadamardComputerUseOptions,
+  CreateHadamardBrowserUseOptions,
   SessionCreateOptions,
   SessionResumeOptions,
   SessionSummary,
   StoredSession,
 } from '../types.js';
-import { ActoviqSwarmApi } from '../swarm/actoviqSwarm.js';
-import { createActoviqFileTools } from '../tools/actoviqFileTools.js';
+import { HadamardSwarmApi } from '../swarm/hadamardSwarm.js';
+import { createHadamardFileTools } from '../tools/hadamardFileTools.js';
 import { BASH_TOOL_NAME, createBashTool } from '../tools/bash/BashTool.js';
 import {
   buildGoalPrompt,
@@ -126,62 +126,62 @@ import {
   StoredSessionGoalPort,
 } from '../goal/index.js';
 import {
-  ActoviqWorkspace,
+  HadamardWorkspace,
   createGitWorktreeWorkspace,
-} from '../workspace/actoviqWorkspace.js';
+} from '../workspace/hadamardWorkspace.js';
 import {
-  ACTOVIQ_RUN_STATE_KEY,
-  type ActoviqAgentDelegationContext,
-  ActoviqAgentsApi,
-  createActoviqRunToolState,
-  createActoviqTaskTool,
-  summarizeActoviqAgentDefinition,
-} from './actoviqAgents.js';
-import { getDefaultActoviqAgents } from './defaultActoviqAgents.js';
-import { loadActoviqAgentDefinitions } from './actoviqAgentDefinitions.js';
+  HADAMARD_RUN_STATE_KEY,
+  type HadamardAgentDelegationContext,
+  HadamardAgentsApi,
+  createHadamardRunToolState,
+  createHadamardTaskTool,
+  summarizeHadamardAgentDefinition,
+} from './hadamardAgents.js';
+import { getDefaultHadamardAgents } from './defaultHadamardAgents.js';
+import { loadHadamardAgentDefinitions } from './hadamardAgentDefinitions.js';
 import {
-  ActoviqSkillsApi,
-  getDefaultActoviqBundledSkills,
-  loadActoviqSkillDefinitions,
-  resolveActoviqSkillPrompt,
+  HadamardSkillsApi,
+  getDefaultHadamardBundledSkills,
+  loadHadamardSkillDefinitions,
+  resolveHadamardSkillPrompt,
   skillPathsMatch,
-  summarizeActoviqSkillDefinition,
-} from './actoviqSkills.js';
-import { loadActoviqExternalSkillDefinitions } from './externalSkillRuntime.js';
+  summarizeHadamardSkillDefinition,
+} from './hadamardSkills.js';
+import { loadHadamardExternalSkillDefinitions } from './externalSkillRuntime.js';
 import {
-  ActoviqBackgroundTaskManager,
-  ActoviqBackgroundTasksApi,
-} from './actoviqBackgroundTasks.js';
+  HadamardBackgroundTaskManager,
+  HadamardBackgroundTasksApi,
+} from './hadamardBackgroundTasks.js';
 import {
-  ActoviqContextApi,
-  ActoviqSlashCommandsApi,
-} from './actoviqSlashCommands.js';
+  HadamardContextApi,
+  HadamardSlashCommandsApi,
+} from './hadamardSlashCommands.js';
 import {
-  compactActoviqSession,
-  getPersistedActoviqCompactHistory,
-  getPersistedActoviqCompactState,
-  isActoviqPromptTooLongError,
-  recordActoviqLoopCompactionsOnSession,
+  compactHadamardSession,
+  getPersistedHadamardCompactHistory,
+  getPersistedHadamardCompactState,
+  isHadamardPromptTooLongError,
+  recordHadamardLoopCompactionsOnSession,
   trackRecentFile,
   trackRecentSkill,
-} from './actoviqCompact.js';
+} from './hadamardCompact.js';
 import {
-  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
-  getPersistedActoviqSessionPermissionState,
-  serializeActoviqSessionPermissionState,
-} from './actoviqSessionPermissions.js';
+  HADAMARD_SESSION_PERMISSION_STATE_KEY,
+  getPersistedHadamardSessionPermissionState,
+  serializeHadamardSessionPermissionState,
+} from './hadamardSessionPermissions.js';
 
 const RECENT_FILE_TOOL_NAMES = new Set(['Read', 'Write', 'Edit', 'NotebookEdit']);
 import {
-  ActoviqToolsApi,
-  buildActoviqCleanToolCatalog,
-  resolveActoviqCleanToolMetadata,
-} from './actoviqToolCatalog.js';
+  HadamardToolsApi,
+  buildHadamardCleanToolCatalog,
+  resolveHadamardCleanToolMetadata,
+} from './hadamardToolCatalog.js';
 import { WorkflowApi } from '../workflow/workflowBuilder.js';
 import { SessionManager } from './sessionManager.js';
 import { parallel, race } from './parallel.js';
-import { getActoviqCompactBoundarySummary } from '../memory/actoviqMemory.js';
-import { createActoviqModelApi } from './actoviqModelApi.js';
+import { getHadamardCompactBoundarySummary } from '../memory/hadamardMemory.js';
+import { createHadamardModelApi } from './hadamardModelApi.js';
 import { createOpenaiModelApi } from '../provider/openai-model-api.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { SessionTurnCoordinator } from './sessionTurnCoordinator.js';
@@ -196,34 +196,34 @@ import {
 } from './messageUtils.js';
 import { AgentSession } from './agentSession.js';
 import {
-  ACTOVIQ_EXECUTION_ID_KEY,
-  ACTOVIQ_PARENT_EXECUTION_ID_KEY,
-  ACTOVIQ_ROOT_EXECUTION_ID_KEY,
-  ACTOVIQ_AGENT_PATH_KEY,
-  ActoviqAgentExecutionsApi,
+  HADAMARD_EXECUTION_ID_KEY,
+  HADAMARD_PARENT_EXECUTION_ID_KEY,
+  HADAMARD_ROOT_EXECUTION_ID_KEY,
+  HADAMARD_AGENT_PATH_KEY,
+  HadamardAgentExecutionsApi,
   createChildAgentExecutionIdentity,
   resolveAgentExecutionIdentity,
   serializeAgentExecutionIdentity,
   type AgentExecutionEdgeInput,
   type AgentExecutionIdentity,
-} from './actoviqAgentExecutions.js';
+} from './hadamardAgentExecutions.js';
 
 function withoutExecutionIdentityMetadata(
   metadata: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!metadata) return undefined;
   const sanitized = { ...metadata };
-  delete sanitized[ACTOVIQ_EXECUTION_ID_KEY];
-  delete sanitized[ACTOVIQ_ROOT_EXECUTION_ID_KEY];
-  delete sanitized[ACTOVIQ_PARENT_EXECUTION_ID_KEY];
-  delete sanitized[ACTOVIQ_AGENT_PATH_KEY];
-  delete sanitized.__actoviqParentSessionId;
+  delete sanitized[HADAMARD_EXECUTION_ID_KEY];
+  delete sanitized[HADAMARD_ROOT_EXECUTION_ID_KEY];
+  delete sanitized[HADAMARD_PARENT_EXECUTION_ID_KEY];
+  delete sanitized[HADAMARD_AGENT_PATH_KEY];
+  delete sanitized.__hadamardParentSessionId;
   return sanitized;
 }
 
-const RELEVANT_MEMORY_SESSION_STATE_KEY = '__actoviqRelevantMemoryState';
-const AGENT_CONTINUITY_STATE_KEY = '__actoviqAgentContinuityState';
-const INVOKED_SKILLS_STATE_KEY = '__actoviqInvokedSkills';
+const RELEVANT_MEMORY_SESSION_STATE_KEY = '__hadamardRelevantMemoryState';
+const AGENT_CONTINUITY_STATE_KEY = '__hadamardAgentContinuityState';
+const INVOKED_SKILLS_STATE_KEY = '__hadamardInvokedSkills';
 const RELEVANT_MEMORY_MAX_SESSION_BYTES = 60 * 1024;
 const DEFAULT_SESSION_MEMORY_MAX_TOKENS = 4_096;
 const DEFAULT_DREAM_MAX_TOKENS = 4_096;
@@ -267,31 +267,31 @@ interface SessionMemoryExtractionContext {
 }
 
 interface PreparedRunAugmentations {
-  hooks?: ActoviqHooks;
+  hooks?: HadamardHooks;
   prefixedMessages: MessageParam[];
-  surfacedMemories: ActoviqSurfacedMemory[];
-  invokedSkills: ActoviqInvokedSkillRecord[];
+  surfacedMemories: HadamardSurfacedMemory[];
+  invokedSkills: HadamardInvokedSkillRecord[];
   systemPromptParts: string[];
   metadata: Record<string, unknown>;
 }
 
 interface InternalAgentRunOptions extends AgentRunOptions {
-  __actoviqUseDefaultTools?: boolean;
-  __actoviqUseDefaultMcpServers?: boolean;
-  __actoviqSkillContext?: 'inline' | 'fork';
-  __actoviqMaxToolIterations?: number;
-  __actoviqAllowedTools?: string[];
-  __actoviqDisallowedTools?: string[];
-  __actoviqPreloadedSkills?: string[];
-  __actoviqWorkDir?: string;
-  __actoviqPersistedWorkDir?: string;
-  __actoviqInitialPrompt?: string;
+  __hadamardUseDefaultTools?: boolean;
+  __hadamardUseDefaultMcpServers?: boolean;
+  __hadamardSkillContext?: 'inline' | 'fork';
+  __hadamardMaxToolIterations?: number;
+  __hadamardAllowedTools?: string[];
+  __hadamardDisallowedTools?: string[];
+  __hadamardPreloadedSkills?: string[];
+  __hadamardWorkDir?: string;
+  __hadamardPersistedWorkDir?: string;
+  __hadamardInitialPrompt?: string;
 }
 
 interface PreparedSkillExecution {
   options: InternalAgentRunOptions;
   prompt: MessageParam['content'];
-  record: ActoviqInvokedSkillRecord;
+  record: HadamardInvokedSkillRecord;
 }
 
 interface SessionRunExecutionOutcome {
@@ -301,14 +301,14 @@ interface SessionRunExecutionOutcome {
 }
 
 interface SessionRuntimeOverrides {
-  hooks?: ActoviqHooks;
+  hooks?: HadamardHooks;
   permissionMode?: AgentRunOptions['permissionMode'];
   permissions?: AgentRunOptions['permissions'];
-  classifier?: ActoviqToolClassifier;
-  approver?: ActoviqToolApprover;
+  classifier?: HadamardToolClassifier;
+  approver?: HadamardToolApprover;
 }
 
-function cloneHooks(hooks?: ActoviqHooks): ActoviqHooks | undefined {
+function cloneHooks(hooks?: HadamardHooks): HadamardHooks | undefined {
   if (!hooks) {
     return undefined;
   }
@@ -325,7 +325,7 @@ function clonePermissionRules(
   return permissions ? permissions.map(rule => ({ ...rule })) : undefined;
 }
 
-function isHooksEmpty(hooks?: ActoviqHooks): boolean {
+function isHooksEmpty(hooks?: HadamardHooks): boolean {
   return (
     !hooks ||
     ((hooks.sessionStart?.length ?? 0) === 0 &&
@@ -334,7 +334,7 @@ function isHooksEmpty(hooks?: ActoviqHooks): boolean {
   );
 }
 
-function cloneAgentDefinition(definition: ActoviqAgentDefinition): ActoviqAgentDefinition {
+function cloneAgentDefinition(definition: HadamardAgentDefinition): HadamardAgentDefinition {
   return {
     ...definition,
     metadata: definition.metadata ? deepClone(definition.metadata) : undefined,
@@ -351,7 +351,7 @@ function cloneAgentDefinition(definition: ActoviqAgentDefinition): ActoviqAgentD
   };
 }
 
-function cloneSkillDefinition(definition: ActoviqSkillDefinition): ActoviqSkillDefinition {
+function cloneSkillDefinition(definition: HadamardSkillDefinition): HadamardSkillDefinition {
   return {
     ...definition,
     argNames: definition.argNames ? [...definition.argNames] : undefined,
@@ -442,13 +442,13 @@ function getRelevantMemorySessionState(metadata: Record<string, unknown> | undef
 
 function getAgentContinuityState(
   metadata: Record<string, unknown> | undefined,
-): ActoviqAgentContinuityState {
+): HadamardAgentContinuityState {
   const raw = metadata?.[AGENT_CONTINUITY_STATE_KEY];
   if (!raw || typeof raw !== 'object') {
     return {
       currentAgent:
-        typeof metadata?.__actoviqAgentDefinition === 'string'
-          ? metadata.__actoviqAgentDefinition
+        typeof metadata?.__hadamardAgentDefinition === 'string'
+          ? metadata.__hadamardAgentDefinition
           : undefined,
       delegatedAgents: [],
     };
@@ -459,11 +459,11 @@ function getAgentContinuityState(
     currentAgent:
       typeof state.currentAgent === 'string'
         ? state.currentAgent
-        : typeof metadata?.__actoviqAgentDefinition === 'string'
-          ? metadata.__actoviqAgentDefinition
+        : typeof metadata?.__hadamardAgentDefinition === 'string'
+          ? metadata.__hadamardAgentDefinition
           : undefined,
     delegatedAgents: Array.isArray(state.delegatedAgents)
-      ? state.delegatedAgents.flatMap((entry): ActoviqDelegatedAgentRecord[] => {
+      ? state.delegatedAgents.flatMap((entry): HadamardDelegatedAgentRecord[] => {
           if (!entry || typeof entry !== 'object') {
             return [];
           }
@@ -522,9 +522,9 @@ function readStringArray(value: unknown): string[] | undefined {
 }
 
 function mergeDelegatedAgents(
-  existing: ActoviqDelegatedAgentRecord[],
+  existing: HadamardDelegatedAgentRecord[],
   pending: PendingDelegationRecord[],
-): ActoviqDelegatedAgentRecord[] {
+): HadamardDelegatedAgentRecord[] {
   const merged = new Map(existing.map(record => [record.name, { ...record }]));
 
   for (const record of pending) {
@@ -591,13 +591,13 @@ function sumOptional(current: number | undefined, next: number | undefined): num
 
 function getInvokedSkillState(
   metadata: Record<string, unknown> | undefined,
-): ActoviqInvokedSkillRecord[] {
+): HadamardInvokedSkillRecord[] {
   const raw = metadata?.[INVOKED_SKILLS_STATE_KEY];
   if (!Array.isArray(raw)) {
     return [];
   }
 
-  return raw.flatMap((entry): ActoviqInvokedSkillRecord[] => {
+  return raw.flatMap((entry): HadamardInvokedSkillRecord[] => {
     if (!entry || typeof entry !== 'object') {
       return [];
     }
@@ -636,10 +636,10 @@ function getInvokedSkillState(
 }
 
 function mergeInvokedSkills(
-  existing: readonly ActoviqInvokedSkillRecord[],
-  pending: readonly ActoviqInvokedSkillRecord[],
-): ActoviqInvokedSkillRecord[] {
-  const merged = new Map<string, ActoviqInvokedSkillRecord>();
+  existing: readonly HadamardInvokedSkillRecord[],
+  pending: readonly HadamardInvokedSkillRecord[],
+): HadamardInvokedSkillRecord[] {
+  const merged = new Map<string, HadamardInvokedSkillRecord>();
   for (const record of existing) {
     merged.set(record.name, { ...record });
   }
@@ -652,19 +652,19 @@ function mergeInvokedSkills(
   );
 }
 
-export class ActoviqAgentClient {
+export class HadamardAgentClient {
   readonly sessions: AgentSessionsApi;
-  readonly agents: ActoviqAgentsApi;
-  readonly skills: ActoviqSkillsApi<AgentSession>;
-  readonly tools: ActoviqToolsApi;
-  readonly tasks: ActoviqBackgroundTasksApi;
-  readonly buddy: ActoviqBuddyApi;
-  readonly memory: ActoviqMemoryApi;
+  readonly agents: HadamardAgentsApi;
+  readonly skills: HadamardSkillsApi<AgentSession>;
+  readonly tools: HadamardToolsApi;
+  readonly tasks: HadamardBackgroundTasksApi;
+  readonly buddy: HadamardBuddyApi;
+  readonly memory: HadamardMemoryApi;
   readonly memoryProposals: MemoryProposalService;
-  readonly dream: ActoviqDreamApi;
-  readonly swarm: ActoviqSwarmApi;
-  readonly context: ActoviqContextApi;
-  readonly slashCommands: ActoviqSlashCommandsApi;
+  readonly dream: HadamardDreamApi;
+  readonly swarm: HadamardSwarmApi;
+  readonly context: HadamardContextApi;
+  readonly slashCommands: HadamardSlashCommandsApi;
   readonly workflow: WorkflowApi;
   /** File/conversation checkpoints recorded for Session turns. */
   readonly checkpoints: FileCheckpointService;
@@ -677,11 +677,11 @@ export class ActoviqAgentClient {
   readonly auditLog: AuditLog;
   readonly codeIntelligence?: CodeIntelligenceService;
   /** Persistent, project-scoped root/child Agent execution graph. */
-  readonly executions: ActoviqAgentExecutionsApi;
+  readonly executions: HadamardAgentExecutionsApi;
   private readonly sessionManager: SessionManager;
   private readonly sessionTurnCoordinator = new SessionTurnCoordinator();
-  private readonly agentDefinitions: Map<string, ActoviqAgentDefinition>;
-  private readonly skillDefinitions: Map<string, ActoviqSkillDefinition>;
+  private readonly agentDefinitions: Map<string, HadamardAgentDefinition>;
+  private readonly skillDefinitions: Map<string, HadamardSkillDefinition>;
   /** Names of `paths:`-conditional skills activated by touching matching files. */
   private readonly activatedConditionalSkills = new Set<string>();
   private readonly pendingDelegations = new Map<string, PendingDelegationRecord[]>();
@@ -690,11 +690,11 @@ export class ActoviqAgentClient {
     Array<{ taskId: string; text: string }>
   >();
   private readonly sessionRuntimeOverrides = new Map<string, SessionRuntimeOverrides>();
-  private readonly backgroundTaskManager: ActoviqBackgroundTaskManager;
+  private readonly backgroundTaskManager: HadamardBackgroundTaskManager;
   private readonly defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'];
   private readonly defaultPermissions?: CreateAgentSdkOptions['permissions'];
-  private readonly defaultClassifier?: ActoviqToolClassifier;
-  private readonly defaultApprover?: ActoviqToolApprover;
+  private readonly defaultClassifier?: HadamardToolClassifier;
+  private readonly defaultApprover?: HadamardToolApprover;
   private readonly fileChangeJournal: FileChangeJournal;
   private readonly sandboxExecutor: SandboxExecutor;
   private readonly typedHookRunner?: HookRunner;
@@ -717,13 +717,13 @@ export class ActoviqAgentClient {
     private readonly mcpManager: McpConnectionManager,
     private readonly defaultTools: AgentToolDefinition[],
     private readonly defaultMcpServers: AgentMcpServerDefinition[],
-    private readonly hooks?: ActoviqHooks,
-    agentDefinitions: ActoviqAgentDefinition[] = [],
-    skillDefinitions: ActoviqSkillDefinition[] = [],
+    private readonly hooks?: HadamardHooks,
+    agentDefinitions: HadamardAgentDefinition[] = [],
+    skillDefinitions: HadamardSkillDefinition[] = [],
     defaultPermissionMode?: CreateAgentSdkOptions['permissionMode'],
     defaultPermissions?: CreateAgentSdkOptions['permissions'],
-    defaultClassifier?: ActoviqToolClassifier,
-    defaultApprover?: ActoviqToolApprover,
+    defaultClassifier?: HadamardToolClassifier,
+    defaultApprover?: HadamardToolApprover,
     sessionManagerConfig?: CreateAgentSdkOptions['sessionManager'],
     private readonly maxSubagentDepth = 1,
     private readonly maxSubagentFanout = 8,
@@ -738,7 +738,7 @@ export class ActoviqAgentClient {
       path.join(this.config.homeDir, 'policy', 'approvals.json'),
     );
     this.auditLog = new AuditLog(path.join(this.config.homeDir, 'policy', 'audit.ndjson'));
-    this.executions = new ActoviqAgentExecutionsApi(executionStore);
+    this.executions = new HadamardAgentExecutionsApi(executionStore);
     this.checkpoints = new FileCheckpointService({
       storageRoot: path.join(this.config.sessionDirectory, 'file-checkpoints'),
       workspaceRoot: this.config.workDir,
@@ -768,7 +768,7 @@ export class ActoviqAgentClient {
             model: this.config.model,
             max_tokens: 512,
             system:
-              'Evaluate an Actoviq lifecycle hook. Reply with JSON only: ' +
+              'Evaluate an Hadamard lifecycle hook. Reply with JSON only: ' +
               '{"behavior":"continue|block","feedback":"short reason"}.',
             messages: [{
               role: 'user',
@@ -815,9 +815,9 @@ export class ActoviqAgentClient {
     this.skillDefinitions = new Map(
       skillDefinitions.map(definition => [definition.name, cloneSkillDefinition(definition)]),
     );
-    this.backgroundTaskManager = new ActoviqBackgroundTaskManager(this.backgroundTaskStore);
-    this.tasks = new ActoviqBackgroundTasksApi(this.backgroundTaskManager);
-    this.agents = new ActoviqAgentsApi({
+    this.backgroundTaskManager = new HadamardBackgroundTaskManager(this.backgroundTaskStore);
+    this.tasks = new HadamardBackgroundTasksApi(this.backgroundTaskManager);
+    this.agents = new HadamardAgentsApi({
       listDefinitions: () => this.listAgentDefinitions(),
       getDefinition: (agent) => this.getAgentDefinition(agent),
       runDefinition: (agent, prompt, options) => this.runWithAgent(agent, prompt, options),
@@ -825,7 +825,7 @@ export class ActoviqAgentClient {
         this.launchBackgroundAgentTask(agent, prompt, options, runOptions),
       createDefinitionSession: (agent, options) => this.createAgentSession(agent, options),
     });
-    this.skills = new ActoviqSkillsApi({
+    this.skills = new HadamardSkillsApi({
       listDefinitions: () => this.listSkillDefinitions(),
       getDefinition: (skillName) => this.getSkillDefinition(skillName),
       runDefinition: (skillName, args, options) => this.runSkill(skillName, args, options),
@@ -835,16 +835,16 @@ export class ActoviqAgentClient {
       streamDefinitionOnSession: (session, skillName, args, options) =>
         this.streamSkillOnSession(session, skillName, args, options),
     });
-    this.tools = new ActoviqToolsApi((options) => this.listToolMetadata(options));
+    this.tools = new HadamardToolsApi((options) => this.listToolMetadata(options));
     this.defaultPermissionMode = defaultPermissionMode;
     this.defaultPermissions = defaultPermissions ? [...defaultPermissions] : undefined;
     this.defaultClassifier = defaultClassifier;
     this.defaultApprover = defaultApprover;
-    this.buddy = createActoviqBuddyApi({
+    this.buddy = createHadamardBuddyApi({
       homeDir: this.config.homeDir,
       userId: this.config.userId,
     });
-    this.memory = createActoviqMemoryApi({
+    this.memory = createHadamardMemoryApi({
       homeDir: this.config.homeDir,
       projectPath: this.config.workDir,
     });
@@ -859,7 +859,7 @@ export class ActoviqAgentClient {
     })) {
       this.replaceDefaultTool(proposalTool);
     }
-    this.dream = createActoviqDreamApi(
+    this.dream = createHadamardDreamApi(
       this.memory,
       {
         listSessions: async () => {
@@ -879,7 +879,7 @@ export class ActoviqAgentClient {
         sessionDirectory: this.config.sessionDirectory,
       },
     );
-    this.context = new ActoviqContextApi({
+    this.context = new HadamardContextApi({
       getOverview: (options) => this.getContextOverview(options),
       compactSession: (sessionId, options) => this.compactSessionById(sessionId, options),
       getMemoryState: (sessionId, options) => this.getMemoryStateForSession(sessionId, options),
@@ -891,9 +891,9 @@ export class ActoviqAgentClient {
       getSkillMetadata: () => this.listSkillDefinitions(),
       getAgentMetadata: () => this.listAgentDefinitions(),
     });
-    this.slashCommands = new ActoviqSlashCommandsApi(this.context);
+    this.slashCommands = new HadamardSlashCommandsApi(this.context);
     this.workflow = new WorkflowApi(this);
-    this.swarm = new ActoviqSwarmApi(
+    this.swarm = new HadamardSwarmApi(
       {
         createAgentSession: (agent, options) => this.createAgentSession(agent, options),
         launchBackgroundOnSession: (session, agent, prompt, options) =>
@@ -931,9 +931,9 @@ export class ActoviqAgentClient {
   }
 
   async listToolMetadata(
-    options?: import('../types.js').ActoviqCleanToolLookupOptions,
-  ): Promise<import('../types.js').ActoviqCleanToolMetadata[]> {
-    return resolveActoviqCleanToolMetadata({
+    options?: import('../types.js').HadamardCleanToolLookupOptions,
+  ): Promise<import('../types.js').HadamardCleanToolMetadata[]> {
+    return resolveHadamardCleanToolMetadata({
       mcpManager: this.mcpManager,
       defaultTools: this.defaultTools,
       defaultMcpServers: this.defaultMcpServers,
@@ -943,8 +943,8 @@ export class ActoviqAgentClient {
 
   async getToolMetadata(
     name: string,
-    options?: import('../types.js').ActoviqCleanToolLookupOptions,
-  ): Promise<import('../types.js').ActoviqCleanToolMetadata | undefined> {
+    options?: import('../types.js').HadamardCleanToolLookupOptions,
+  ): Promise<import('../types.js').HadamardCleanToolMetadata | undefined> {
     return (await this.listToolMetadata(options)).find(tool => tool.name === name);
   }
 
@@ -954,14 +954,14 @@ export class ActoviqAgentClient {
   }
 
   async getToolCatalog(
-    options?: import('../types.js').ActoviqCleanToolLookupOptions,
-  ): Promise<import('../types.js').ActoviqCleanToolCatalog> {
-    return buildActoviqCleanToolCatalog(await this.listToolMetadata(options));
+    options?: import('../types.js').HadamardCleanToolLookupOptions,
+  ): Promise<import('../types.js').HadamardCleanToolCatalog> {
+    return buildHadamardCleanToolCatalog(await this.listToolMetadata(options));
   }
 
   async getContextOverview(
-    options: import('../types.js').ActoviqCleanContextOverviewOptions = {},
-  ): Promise<import('../types.js').ActoviqCleanContextOverview> {
+    options: import('../types.js').HadamardCleanContextOverviewOptions = {},
+  ): Promise<import('../types.js').HadamardCleanContextOverview> {
     const sessionId = options.sessionId;
     return {
       sessionId,
@@ -984,7 +984,7 @@ export class ActoviqAgentClient {
     };
   }
 
-  static async create(options: CreateAgentSdkOptions = {}): Promise<ActoviqAgentClient> {
+  static async create(options: CreateAgentSdkOptions = {}): Promise<HadamardAgentClient> {
     const config = await resolveRuntimeConfig(options);
     const store = new SessionStore(config.sessionDirectory);
     const executionStore = new AgentExecutionStore(config.sessionDirectory);
@@ -995,7 +995,7 @@ export class ActoviqAgentClient {
       options.modelApi ??
       (config.provider === 'openai'
         ? createOpenaiModelApi(config)
-        : createActoviqModelApi(config));
+        : createHadamardModelApi(config));
     const mcpManager = new McpConnectionManager({
       name: config.clientName,
       version: config.clientVersion,
@@ -1003,14 +1003,14 @@ export class ActoviqAgentClient {
       requestTimeoutMs: config.mcpTimeoutMs,
     });
     const externalSkills = options.externalSkills
-      ? (await loadActoviqExternalSkillDefinitions({
-          actoviqHomeDir: config.homeDir,
+      ? (await loadHadamardExternalSkillDefinitions({
+          hadamardHomeDir: config.homeDir,
           workDir: config.workDir,
           externalSkills: options.externalSkills,
         })).definitions
       : [];
     const externalSkillCatalogEnabled = Boolean(options.externalSkills);
-    const loadedSkills = await loadActoviqSkillDefinitions({
+    const loadedSkills = await loadHadamardSkillDefinitions({
       homeDir: config.homeDir,
       workDir: config.workDir,
       skillDirectories: options.skillDirectories,
@@ -1019,48 +1019,48 @@ export class ActoviqAgentClient {
         ? false
         : options.loadDefaultSkillDirectories,
     });
-    const actoviqCatalogSkills = externalSkills.filter(definition =>
-      definition.metadata?.__actoviqExternalSkillProvider === 'actoviq');
+    const hadamardCatalogSkills = externalSkills.filter(definition =>
+      definition.metadata?.__hadamardExternalSkillProvider === 'hadamard');
     const reusedRuntimeSkills = externalSkills.filter(definition =>
-      definition.metadata?.__actoviqExternalSkillProvider !== 'actoviq');
+      definition.metadata?.__hadamardExternalSkillProvider !== 'hadamard');
     const skillDefinitions = externalSkillCatalogEnabled
       ? [
           ...reusedRuntimeSkills,
-          ...(options.disableDefaultSkills ? [] : getDefaultActoviqBundledSkills()),
-          ...actoviqCatalogSkills,
+          ...(options.disableDefaultSkills ? [] : getDefaultHadamardBundledSkills()),
+          ...hadamardCatalogSkills,
           ...loadedSkills,
           ...(options.skills ?? []),
         ]
       : [...loadedSkills, ...(options.skills ?? [])];
-    const loadedAgents = await loadActoviqAgentDefinitions({
+    const loadedAgents = await loadHadamardAgentDefinitions({
       homeDir: config.homeDir,
       workDir: config.workDir,
       agentDirectories: options.agentDirectories,
       loadDefaultAgentDirectories: options.loadDefaultAgentDirectories,
     });
     const agentDefinitions = mergeAgentDefinitions(
-      options.disableDefaultAgents === true ? [] : getDefaultActoviqAgents(),
+      options.disableDefaultAgents === true ? [] : getDefaultHadamardAgents(),
       loadedAgents,
       options.agents ?? [],
     );
     const defaultTools = [...(options.tools ?? [])];
     const defaultMcpServers = [...(options.mcpServers ?? [])];
     if (options.computerUse) {
-      const computerUseOptions: CreateActoviqComputerUseOptions =
+      const computerUseOptions: CreateHadamardComputerUseOptions =
         typeof options.computerUse === 'object' ? options.computerUse : {};
       if (computerUseOptions.asMcpServer) {
-        defaultMcpServers.push(createActoviqComputerUseMcpServer(computerUseOptions));
+        defaultMcpServers.push(createHadamardComputerUseMcpServer(computerUseOptions));
       } else {
-        defaultTools.push(...createActoviqComputerUseTools(computerUseOptions));
+        defaultTools.push(...createHadamardComputerUseTools(computerUseOptions));
       }
     }
     if (options.browserUse) {
-      const browserUseOptions: CreateActoviqBrowserUseOptions =
+      const browserUseOptions: CreateHadamardBrowserUseOptions =
         typeof options.browserUse === 'object' ? options.browserUse : {};
       if (browserUseOptions.asMcpServer) {
-        defaultMcpServers.push(createActoviqBrowserUseMcpServer(browserUseOptions));
+        defaultMcpServers.push(createHadamardBrowserUseMcpServer(browserUseOptions));
       } else {
-        defaultTools.push(...createActoviqBrowserTools(browserUseOptions));
+        defaultTools.push(...createHadamardBrowserTools(browserUseOptions));
       }
     }
     let taskWorktreeCoordinator: TaskWorktreeCoordinator | undefined;
@@ -1075,7 +1075,7 @@ export class ActoviqAgentClient {
         storageRoot: path.join(config.sessionDirectory, 'task-worktrees'),
       });
     }
-    const client = new ActoviqAgentClient(
+    const client = new HadamardAgentClient(
       config,
       store,
       executionStore,
@@ -1224,11 +1224,11 @@ export class ActoviqAgentClient {
       originalWorkDir: options.originalWorkDir,
       metadata: {
         ...(options.metadata ?? {}),
-        __actoviqWorkDir: this.config.workDir,
+        __hadamardWorkDir: this.config.workDir,
         ...(options.permissionMode || options.permissions
           ? {
-              [ACTOVIQ_SESSION_PERMISSION_STATE_KEY]:
-                serializeActoviqSessionPermissionState({
+              [HADAMARD_SESSION_PERMISSION_STATE_KEY]:
+                serializeHadamardSessionPermissionState({
                   mode: options.permissionMode,
                   permissions: clonePermissionRules(options.permissions) ?? [],
                 }),
@@ -1248,8 +1248,8 @@ export class ActoviqAgentClient {
           originalWorkDir: locator.repoRoot,
           metadata: {
             ...current.metadata,
-            __actoviqWorkDir: locator.worktreePath,
-            __actoviqWorktreeBaseCommit: locator.baseCommit,
+            __hadamardWorkDir: locator.worktreePath,
+            __hadamardWorktreeBaseCommit: locator.baseCommit,
           },
         }));
       } catch (error) {
@@ -1310,8 +1310,8 @@ export class ActoviqAgentClient {
     const worktreePath = locator?.worktreePath ?? stored.worktreePath;
     const repoRoot = locator?.repoRoot ?? stored.originalWorkDir;
     const baseCommit = locator?.baseCommit
-      ?? (typeof stored.metadata.__actoviqWorktreeBaseCommit === 'string'
-        ? stored.metadata.__actoviqWorktreeBaseCommit
+      ?? (typeof stored.metadata.__hadamardWorktreeBaseCommit === 'string'
+        ? stored.metadata.__hadamardWorktreeBaseCommit
         : undefined);
     if (!worktreePath || !repoRoot || !baseCommit) {
       throw new Error(`Session "${sessionId}" does not own an automatic worktree.`);
@@ -1354,9 +1354,9 @@ export class ActoviqAgentClient {
     }
     if (options.permissionMode !== undefined || options.permissions !== undefined) {
       const currentPermissionState =
-        getPersistedActoviqSessionPermissionState(stored.metadata);
-      stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
-        serializeActoviqSessionPermissionState({
+        getPersistedHadamardSessionPermissionState(stored.metadata);
+      stored.metadata[HADAMARD_SESSION_PERMISSION_STATE_KEY] =
+        serializeHadamardSessionPermissionState({
           mode: options.permissionMode ?? currentPermissionState.mode,
           permissions:
             options.permissions !== undefined
@@ -1384,22 +1384,22 @@ export class ActoviqAgentClient {
 
   resolveModel(model?: string): string {
     return model
-      ? resolveActoviqModelReference(model, this.config.modelTiers).model
+      ? resolveHadamardModelReference(model, this.config.modelTiers).model
       : this.config.model;
   }
 
   async compactSessionById(
     sessionId: string,
     options: AgentSessionCompactOptions = {},
-  ): Promise<ActoviqSessionCompactResult> {
+  ): Promise<HadamardSessionCompactResult> {
     const session = await this.resumeSession(sessionId);
     return this.compactSessionForSession(session, options);
   }
 
   async getMemoryStateForSession(
     sessionId?: string,
-    options: Omit<import('../types.js').ActoviqMemoryStateOptions, 'projectPath' | 'sessionId'> = {},
-  ): Promise<import('../types.js').ActoviqMemoryState> {
+    options: Omit<import('../types.js').HadamardMemoryStateOptions, 'projectPath' | 'sessionId'> = {},
+  ): Promise<import('../types.js').HadamardMemoryState> {
     return this.memory.state({
       ...options,
       projectPath: this.config.workDir,
@@ -1407,17 +1407,17 @@ export class ActoviqAgentClient {
     });
   }
 
-  async dreamState(currentSessionId?: string): Promise<ActoviqDreamState> {
+  async dreamState(currentSessionId?: string): Promise<HadamardDreamState> {
     return this.dream.state({ currentSessionId });
   }
 
-  async runDream(options: import('../types.js').ActoviqDreamRunOptions = {}): Promise<ActoviqDreamRunResult> {
+  async runDream(options: import('../types.js').HadamardDreamRunOptions = {}): Promise<HadamardDreamRunResult> {
     return this.dream.run(options);
   }
 
   async maybeAutoDream(
-    options: import('../types.js').ActoviqDreamRunOptions = {},
-  ): Promise<ActoviqDreamRunResult> {
+    options: import('../types.js').HadamardDreamRunOptions = {},
+  ): Promise<HadamardDreamRunResult> {
     return this.dream.maybeAutoDream(options);
   }
 
@@ -1463,11 +1463,11 @@ export class ActoviqAgentClient {
     }
   }
 
-  listAgentDefinitions(): ActoviqAgentDefinitionSummary[] {
-    return [...this.agentDefinitions.values()].map(summarizeActoviqAgentDefinition);
+  listAgentDefinitions(): HadamardAgentDefinitionSummary[] {
+    return [...this.agentDefinitions.values()].map(summarizeHadamardAgentDefinition);
   }
 
-  getAgentDefinition(agent: string): ActoviqAgentDefinition | undefined {
+  getAgentDefinition(agent: string): HadamardAgentDefinition | undefined {
     const definition = this.agentDefinitions.get(agent);
     return definition ? cloneAgentDefinition(definition) : undefined;
   }
@@ -1495,19 +1495,19 @@ export class ActoviqAgentClient {
       metadata: {
         ...(definition.metadata ?? {}),
         ...(options.metadata ?? {}),
-        __actoviqAgentDefinition: definition.name,
-        __actoviqAgentMemory: definition.memory,
-        __actoviqAgentSource: definition.source,
+        __hadamardAgentDefinition: definition.name,
+        __hadamardAgentMemory: definition.memory,
+        __hadamardAgentSource: definition.source,
         [AGENT_CONTINUITY_STATE_KEY]: {
           currentAgent: definition.name,
           delegatedAgents: [],
-        } satisfies ActoviqAgentContinuityState,
+        } satisfies HadamardAgentContinuityState,
       },
     });
   }
 
-  listSkillDefinitions(): ActoviqSkillDefinitionSummary[] {
-    return [...this.skillDefinitions.values()].map(summarizeActoviqSkillDefinition);
+  listSkillDefinitions(): HadamardSkillDefinitionSummary[] {
+    return [...this.skillDefinitions.values()].map(summarizeHadamardSkillDefinition);
   }
 
   /**
@@ -1555,7 +1555,7 @@ export class ActoviqAgentClient {
     }
   }
 
-  getSkillDefinition(skillName: string): ActoviqSkillDefinition | undefined {
+  getSkillDefinition(skillName: string): HadamardSkillDefinition | undefined {
     const definition = this.skillDefinitions.get(skillName);
     return definition ? cloneSkillDefinition(definition) : undefined;
   }
@@ -1567,7 +1567,7 @@ export class ActoviqAgentClient {
   ): Promise<AgentRunResult> {
     const execution = await this.prepareSkillExecution(skillName, args, options);
     const result =
-      execution.options.__actoviqSkillContext === 'fork'
+      execution.options.__hadamardSkillContext === 'fork'
         ? await this.runForkedSkillExecution(skillName, execution, options)
         : await this.run(execution.prompt, execution.options);
 
@@ -1583,7 +1583,7 @@ export class ActoviqAgentClient {
     return new AgentRunStream(async controller => {
       const execution = await this.prepareSkillExecution(skillName, args, options);
       const result =
-        execution.options.__actoviqSkillContext === 'fork'
+        execution.options.__hadamardSkillContext === 'fork'
           ? await this.runForkedSkillExecution(skillName, execution, options)
           : await this.forwardStreamResult(
               this.stream(execution.prompt, execution.options),
@@ -1595,7 +1595,7 @@ export class ActoviqAgentClient {
   }
 
   createTaskTool(options: { name?: string; description?: string } = {}): AgentToolDefinition {
-    return createActoviqTaskTool({
+    return createHadamardTaskTool({
       ...options,
       listAgentDefinitions: () => this.listAgentDefinitions(),
       getAgentDefinition: (agent) => this.getAgentDefinition(agent),
@@ -1680,16 +1680,16 @@ export class ActoviqAgentClient {
           parentRunId: context.runId,
           parentSessionId: context.sessionId,
           parentExecutionId:
-            typeof context.metadata?.[ACTOVIQ_EXECUTION_ID_KEY] === 'string'
-              ? context.metadata[ACTOVIQ_EXECUTION_ID_KEY]
+            typeof context.metadata?.[HADAMARD_EXECUTION_ID_KEY] === 'string'
+              ? context.metadata[HADAMARD_EXECUTION_ID_KEY]
               : undefined,
           rootExecutionId:
-            typeof context.metadata?.[ACTOVIQ_ROOT_EXECUTION_ID_KEY] === 'string'
-              ? context.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY]
+            typeof context.metadata?.[HADAMARD_ROOT_EXECUTION_ID_KEY] === 'string'
+              ? context.metadata[HADAMARD_ROOT_EXECUTION_ID_KEY]
               : undefined,
           parentAgentPath:
-            typeof context.metadata?.[ACTOVIQ_AGENT_PATH_KEY] === 'string'
-              ? context.metadata[ACTOVIQ_AGENT_PATH_KEY]
+            typeof context.metadata?.[HADAMARD_AGENT_PATH_KEY] === 'string'
+              ? context.metadata[HADAMARD_AGENT_PATH_KEY]
               : undefined,
           runOptions: {
             permissionMode: context.permissionMode,
@@ -1766,7 +1766,7 @@ export class ActoviqAgentClient {
             `No skill named "${skill}" is registered.${available ? ` Available skills: ${available}.` : ''}`,
           );
         }
-        const resolved = await resolveActoviqSkillPrompt(definition, args ?? '', {
+        const resolved = await resolveHadamardSkillPrompt(definition, args ?? '', {
           args: args ?? '',
           workDir: this.config.workDir,
           homeDir: this.config.homeDir,
@@ -1908,7 +1908,7 @@ export class ActoviqAgentClient {
     sessionId?: string,
   ): Promise<PreparedSkillExecution> {
     const definition = this.requireSkillDefinition(skillName);
-    const resolved = await resolveActoviqSkillPrompt(definition, args, {
+    const resolved = await resolveHadamardSkillPrompt(definition, args, {
       args,
       workDir: this.config.workDir,
       homeDir: this.config.homeDir,
@@ -1961,7 +1961,7 @@ export class ActoviqAgentClient {
       model: execution.options.model ?? this.config.model,
       systemPrompt: execution.options.systemPrompt ?? this.config.systemPrompt,
       metadata: {
-        __actoviqSkillFork: definition.name,
+        __hadamardSkillFork: definition.name,
         ...(options.metadata ?? {}),
       },
     });
@@ -2015,7 +2015,7 @@ export class ActoviqAgentClient {
     };
   }
 
-  private setSessionRuntimeHooks(sessionId: string, hooks?: ActoviqHooks): void {
+  private setSessionRuntimeHooks(sessionId: string, hooks?: HadamardHooks): void {
     const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
     const next: SessionRuntimeOverrides = {
       ...current,
@@ -2058,14 +2058,14 @@ export class ActoviqAgentClient {
     context: {
       mode?: AgentRunOptions['permissionMode'];
       permissions?: AgentRunOptions['permissions'];
-      classifier?: ActoviqToolClassifier;
-      approver?: ActoviqToolApprover;
+      classifier?: HadamardToolClassifier;
+      approver?: HadamardToolApprover;
     },
   ): Promise<StoredSession> {
     const sessionId = session.id;
     const current = this.sessionRuntimeOverrides.get(sessionId) ?? {};
     const stored = session.snapshot();
-    const persisted = getPersistedActoviqSessionPermissionState(stored.metadata);
+    const persisted = getPersistedHadamardSessionPermissionState(stored.metadata);
     const next: SessionRuntimeOverrides = {
       ...current,
       permissionMode: context.mode ?? current.permissionMode ?? persisted.mode,
@@ -2089,8 +2089,8 @@ export class ActoviqAgentClient {
       this.sessionRuntimeOverrides.set(sessionId, next);
     }
 
-    stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY] =
-      serializeActoviqSessionPermissionState({
+    stored.metadata[HADAMARD_SESSION_PERMISSION_STATE_KEY] =
+      serializeHadamardSessionPermissionState({
         mode: next.permissionMode,
         permissions: clonePermissionRules(next.permissions) ?? [],
       });
@@ -2120,7 +2120,7 @@ export class ActoviqAgentClient {
     }
 
     const stored = session.snapshot();
-    delete stored.metadata[ACTOVIQ_SESSION_PERMISSION_STATE_KEY];
+    delete stored.metadata[HADAMARD_SESSION_PERMISSION_STATE_KEY];
     stored.updatedAt = nowIso();
     await this.store.save(stored);
     return stored;
@@ -2137,7 +2137,7 @@ export class ActoviqAgentClient {
 
     return {
       ...options,
-      hooks: mergeActoviqHooks(overrides.hooks, options.hooks),
+      hooks: mergeHadamardHooks(overrides.hooks, options.hooks),
       permissionMode: options.permissionMode ?? overrides.permissionMode,
       permissions: options.permissions ?? overrides.permissions,
       classifier: options.classifier ?? overrides.classifier,
@@ -2147,7 +2147,7 @@ export class ActoviqAgentClient {
 
   private hydrateSession(stored: StoredSession): AgentSession {
     const persistedPermissionState =
-      getPersistedActoviqSessionPermissionState(stored.metadata);
+      getPersistedHadamardSessionPermissionState(stored.metadata);
     if (
       persistedPermissionState.mode ||
       persistedPermissionState.permissions.length > 0
@@ -2229,7 +2229,7 @@ export class ActoviqAgentClient {
     options: AgentRunOptions = {},
   ): Promise<AgentRunResult> {
     const execution = await this.prepareSkillExecution(skillName, args, options, session.id);
-    const forked = execution.options.__actoviqSkillContext === 'fork';
+    const forked = execution.options.__hadamardSkillContext === 'fork';
     const result = forked
       ? await this.runForkedSkillExecution(skillName, execution, options)
       : await this.runOnSession(session, execution.prompt, execution.options);
@@ -2249,7 +2249,7 @@ export class ActoviqAgentClient {
   ): AgentRunStream {
     return new AgentRunStream(async controller => {
       const execution = await this.prepareSkillExecution(skillName, args, options, session.id);
-      const forked = execution.options.__actoviqSkillContext === 'fork';
+      const forked = execution.options.__hadamardSkillContext === 'fork';
       const result = forked
         ? await this.runForkedSkillExecution(skillName, execution, options)
         : await this.forwardStreamResult(
@@ -2342,8 +2342,8 @@ export class ActoviqAgentClient {
             const initialSnapshot = await this.store.load(session.id);
             session.replace(initialSnapshot);
             const rootExecutionId =
-              typeof initialSnapshot.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY] === 'string'
-                ? initialSnapshot.metadata[ACTOVIQ_ROOT_EXECUTION_ID_KEY]
+              typeof initialSnapshot.metadata[HADAMARD_ROOT_EXECUTION_ID_KEY] === 'string'
+                ? initialSnapshot.metadata[HADAMARD_ROOT_EXECUTION_ID_KEY]
                 : session.id;
             unsubscribeExecution = this.executions.subscribe(
               rootExecutionId,
@@ -2452,16 +2452,16 @@ export class ActoviqAgentClient {
       ...(augmentations?.metadata ?? {}),
       ...(options.metadata ?? {}),
       ...serializeAgentExecutionIdentity(executionIdentity),
-      [ACTOVIQ_RUN_STATE_KEY]: createActoviqRunToolState(),
+      [HADAMARD_RUN_STATE_KEY]: createHadamardRunToolState(),
     };
 
     const mergedTools = filterAgentTools(
       mergeUniqueByName(
-      options.__actoviqUseDefaultTools === false ? [] : this.defaultTools,
+      options.__hadamardUseDefaultTools === false ? [] : this.defaultTools,
       options.tools ?? [],
       ),
-      options.__actoviqAllowedTools,
-      options.__actoviqDisallowedTools,
+      options.__hadamardAllowedTools,
+      options.__hadamardDisallowedTools,
     );
 
     // Goal runtime contract: when a session exists, expose the active goal to
@@ -2488,8 +2488,8 @@ export class ActoviqAgentClient {
       );
       goalTools = filterAgentTools(
         toolsWithGoal,
-        options.__actoviqAllowedTools,
-        options.__actoviqDisallowedTools,
+        options.__hadamardAllowedTools,
+        options.__hadamardDisallowedTools,
       );
     }
 
@@ -2510,14 +2510,14 @@ export class ActoviqAgentClient {
 
     const sandboxExecutor = this.sandboxExecutorForWorkDir(workDir);
     const runtimeConfig =
-      options.__actoviqMaxToolIterations || workDir !== this.config.workDir
+      options.__hadamardMaxToolIterations || workDir !== this.config.workDir
         ? {
             ...this.config,
             workDir,
             sandbox: sandboxExecutor.policy,
             sandboxCapabilities: sandboxExecutor.capability,
-            ...(options.__actoviqMaxToolIterations
-              ? { maxToolIterations: options.__actoviqMaxToolIterations }
+            ...(options.__hadamardMaxToolIterations
+              ? { maxToolIterations: options.__hadamardMaxToolIterations }
               : {}),
           }
         : this.config;
@@ -2587,7 +2587,7 @@ export class ActoviqAgentClient {
           systemPrompt,
           tools: goalTools,
           mcpServers: mergeUniqueByName(
-            options.__actoviqUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
+            options.__hadamardUseDefaultMcpServers === false ? [] : this.defaultMcpServers,
             options.mcpServers ?? [],
           ),
           model,
@@ -2639,7 +2639,7 @@ export class ActoviqAgentClient {
                   updatedAt: nowIso(),
                   metadata: {
                     ...current.metadata,
-                    __actoviqWorkDir: workDir,
+                    __hadamardWorkDir: workDir,
                     ...(options.metadata ?? {}),
                     ...serializeAgentExecutionIdentity(executionIdentity),
                   },
@@ -2715,7 +2715,7 @@ export class ActoviqAgentClient {
           console.warn(`[Checkpoint] Failed to seal ${runId}: ${asError(checkpointError).message}`);
         });
       }
-      if (!isActoviqPromptTooLongError(error) || !deferPromptTooLongSettlement) {
+      if (!isHadamardPromptTooLongError(error) || !deferPromptTooLongSettlement) {
         const interrupted = options.signal?.aborted || error instanceof RunAbortedError;
         await this.executions.settleTurn(executionIdentity, runId, {
           outcome: interrupted ? 'interrupted' : 'errored',
@@ -2746,7 +2746,7 @@ export class ActoviqAgentClient {
       args.options,
       currentSnapshot,
     );
-    let lastReactiveCompact: ActoviqSessionCompactResult | undefined;
+    let lastReactiveCompact: HadamardSessionCompactResult | undefined;
     let attempts = 0;
     let initialInputCheckpointed = false;
 
@@ -2777,7 +2777,7 @@ export class ActoviqAgentClient {
           augmentations: currentAugmentations,
         };
       } catch (error) {
-        if (!isActoviqPromptTooLongError(error)) {
+        if (!isHadamardPromptTooLongError(error)) {
           throw error;
         }
         currentSnapshot = args.session.snapshot();
@@ -2787,7 +2787,7 @@ export class ActoviqAgentClient {
         }
 
         let reactiveCompact:
-          | { snapshot: StoredSession; result: ActoviqSessionCompactResult }
+          | { snapshot: StoredSession; result: HadamardSessionCompactResult }
           | undefined;
         try {
           reactiveCompact = await this.tryReactiveCompactSession(
@@ -2867,7 +2867,7 @@ export class ActoviqAgentClient {
       : [];
     const [userRules, projectRules] = await Promise.all([
       new RuleStore(path.join(this.config.homeDir, 'rules.json')).list(),
-      new RuleStore(path.join(this.resolveRunWorkDir(options), '.actoviq', 'rules.json')).list(),
+      new RuleStore(path.join(this.resolveRunWorkDir(options), '.hadamard', 'rules.json')).list(),
     ]);
     const rulePrompt = resolveContextRules([...userRules, ...projectRules], touchedPaths).prompt;
     const promptParts = [basePrompt, memoryPrompt, buddyPrompt, rulePrompt, ...extraSystemPromptParts].filter(
@@ -2897,21 +2897,21 @@ export class ActoviqAgentClient {
           content: text,
         }))
       : [];
-    const initialPromptMessages = internalOptions.__actoviqInitialPrompt
+    const initialPromptMessages = internalOptions.__hadamardInitialPrompt
       ? [{
           role: 'user' as const,
-          content: internalOptions.__actoviqInitialPrompt,
+          content: internalOptions.__hadamardInitialPrompt,
         }]
       : [];
     const agentMemoryMessages = session
       ? await this.prepareAgentMemoryMessages(session, internalOptions)
       : [];
     const preloadedSkillMessages = await this.preparePreloadedAgentSkillMessages(
-      internalOptions.__actoviqPreloadedSkills,
+      internalOptions.__hadamardPreloadedSkills,
       session?.id,
       this.resolveRunWorkDir(internalOptions),
     );
-    const hooks = mergeActoviqHooks(this.hooks, options.hooks);
+    const hooks = mergeHadamardHooks(this.hooks, options.hooks);
     const prefixedMessages = [
       ...notificationMessages,
       ...initialPromptMessages,
@@ -2923,7 +2923,7 @@ export class ActoviqAgentClient {
     const systemPromptParts: string[] = [];
     const metadata: Record<string, unknown> = {};
 
-    for (const hook of resolveActoviqSessionStartHooks(hooks)) {
+    for (const hook of resolveHadamardSessionStartHooks(hooks)) {
       const result = await withDeadline(
         'sessionStart hook',
         this.config.hookTimeoutMs,
@@ -2941,7 +2941,7 @@ export class ActoviqAgentClient {
       if (!result) {
         continue;
       }
-      prefixedMessages.push(...normalizeActoviqHookMessages(result.messages));
+      prefixedMessages.push(...normalizeHadamardHookMessages(result.messages));
       if (result.systemPromptParts?.length) {
         systemPromptParts.push(...result.systemPromptParts.filter(Boolean));
       }
@@ -2978,7 +2978,7 @@ export class ActoviqAgentClient {
         });
         continue;
       }
-      const resolved = await resolveActoviqSkillPrompt(definition, '', {
+      const resolved = await resolveHadamardSkillPrompt(definition, '', {
         args: '',
         workDir,
         homeDir: this.config.homeDir,
@@ -3001,8 +3001,8 @@ export class ActoviqAgentClient {
     session: StoredSession,
     options: InternalAgentRunOptions,
   ): Promise<MessageParam[]> {
-    const scope = session.metadata.__actoviqAgentMemory;
-    const agentName = session.metadata.__actoviqAgentDefinition;
+    const scope = session.metadata.__hadamardAgentMemory;
+    const agentName = session.metadata.__hadamardAgentDefinition;
     if (
       (scope !== 'user' && scope !== 'project' && scope !== 'local') ||
       typeof agentName !== 'string'
@@ -3014,8 +3014,8 @@ export class ActoviqAgentClient {
       scope === 'user'
         ? path.join(this.config.homeDir, 'agent-memory', agentName)
         : scope === 'project'
-          ? path.join(workDir, '.actoviq', 'agent-memory', agentName)
-          : path.join(workDir, '.actoviq', 'agent-memory-local', agentName);
+          ? path.join(workDir, '.hadamard', 'agent-memory', agentName)
+          : path.join(workDir, '.hadamard', 'agent-memory-local', agentName);
     const memoryPath = path.join(root, 'MEMORY.md');
     await mkdir(root, { recursive: true });
     let content = '';
@@ -3043,11 +3043,11 @@ export class ActoviqAgentClient {
     session?: StoredSession,
   ): Promise<{ sessionMetadata?: Record<string, unknown>; tags?: string[] }> {
     const promptText = typeof input === 'string' ? input : extractTextFromContent(input);
-    const hooks = mergeActoviqHooks(this.hooks, options.hooks);
+    const hooks = mergeHadamardHooks(this.hooks, options.hooks);
     const sessionMetadata: Record<string, unknown> = {};
     const tags = new Set<string>();
 
-    for (const hook of resolveActoviqPostRunHooks(hooks)) {
+    for (const hook of resolveHadamardPostRunHooks(hooks)) {
       const output = await withDeadline(
         'postRun hook',
         this.config.hookTimeoutMs,
@@ -3090,7 +3090,7 @@ export class ActoviqAgentClient {
 
   private updatePendingDelegation(
     key: string,
-    task: ActoviqBackgroundTaskRecord,
+    task: HadamardBackgroundTaskRecord,
   ): void {
     const records = this.pendingDelegations.get(key);
     const record = records?.find(candidate => candidate.taskId === task.id);
@@ -3127,7 +3127,7 @@ export class ActoviqAgentClient {
     session?: StoredSession,
   ): Promise<{
     prefixedMessages: MessageParam[];
-    surfacedMemories: ActoviqSurfacedMemory[];
+    surfacedMemories: HadamardSurfacedMemory[];
   }> {
     const promptText = typeof input === 'string' ? input : extractTextFromContent(input);
     if (!promptText.trim()) {
@@ -3168,7 +3168,7 @@ export class ActoviqAgentClient {
 
   private prepareInvokedSkillContext(session?: StoredSession): {
     prefixedMessages: MessageParam[];
-    invokedSkills: ActoviqInvokedSkillRecord[];
+    invokedSkills: HadamardInvokedSkillRecord[];
   } {
     const invokedSkills = getInvokedSkillState(session?.metadata);
     if (!session || invokedSkills.length === 0) {
@@ -3178,7 +3178,7 @@ export class ActoviqAgentClient {
       };
     }
 
-    const compactState = getPersistedActoviqCompactState(session.metadata);
+    const compactState = getPersistedHadamardCompactState(session.metadata);
     if (compactState.compactCount + compactState.microcompactCount === 0) {
       return {
         prefixedMessages: [],
@@ -3192,22 +3192,22 @@ export class ActoviqAgentClient {
     };
   }
 
-  private getSessionMemoryRuntimeState(session?: StoredSession): ActoviqSessionMemoryRuntimeState {
-    return parseActoviqSessionMemoryRuntimeState(session?.metadata);
+  private getSessionMemoryRuntimeState(session?: StoredSession): HadamardSessionMemoryRuntimeState {
+    return parseHadamardSessionMemoryRuntimeState(session?.metadata);
   }
 
   private async getCompactStateForSession(
     session: AgentSession,
-    options: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
-  ): Promise<ActoviqCompactState> {
+    options: Omit<HadamardCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
+  ): Promise<HadamardCompactState> {
     const snapshot = session.snapshot();
     const runtimeState = this.getSessionMemoryRuntimeState(snapshot);
     const agentContinuity = getAgentContinuityState(snapshot.metadata);
     const invokedSkills = getInvokedSkillState(snapshot.metadata);
-    const persistedCompactState = getPersistedActoviqCompactState(snapshot.metadata);
-    const persistedCompactHistory = getPersistedActoviqCompactHistory(snapshot.metadata);
-    const filteredMessages = filterActoviqMessagesForSessionMemory(snapshot.messages);
-    const progress = evaluateActoviqSessionMemoryProgress(
+    const persistedCompactState = getPersistedHadamardCompactState(snapshot.metadata);
+    const persistedCompactHistory = getPersistedHadamardCompactHistory(snapshot.metadata);
+    const filteredMessages = filterHadamardMessagesForSessionMemory(snapshot.messages);
+    const progress = evaluateHadamardSessionMemoryProgress(
       filteredMessages,
       runtimeState,
       this.memory.getSessionMemoryConfig(),
@@ -3269,14 +3269,14 @@ export class ActoviqAgentClient {
       latestBoundarySummary:
         compactState.latestBoundarySummary ??
         (latestBoundary?.kind === 'compact'
-          ? getActoviqCompactBoundarySummary(latestBoundary.metadata)
+          ? getHadamardCompactBoundarySummary(latestBoundary.metadata)
           : undefined),
       agentContinuity,
       invokedSkills,
     };
   }
 
-  private async getAgentContinuityForSession(session: AgentSession): Promise<ActoviqAgentContinuityState> {
+  private async getAgentContinuityForSession(session: AgentSession): Promise<HadamardAgentContinuityState> {
     return getAgentContinuityState(session.snapshot().metadata);
   }
 
@@ -3286,8 +3286,8 @@ export class ActoviqAgentClient {
     options: InternalAgentRunOptions,
     runId: string,
     emit?: (event: import('../types.js').AgentEvent) => void,
-  ): Promise<{ snapshot: StoredSession; result: ActoviqSessionCompactResult } | undefined> {
-    const reactive = await compactActoviqSession(
+  ): Promise<{ snapshot: StoredSession; result: HadamardSessionCompactResult } | undefined> {
+    const reactive = await compactHadamardSession(
       snapshot,
       {
         force: true,
@@ -3328,8 +3328,8 @@ export class ActoviqAgentClient {
   }
 
   private delegatedExecutionContext(
-    definition: ActoviqAgentDefinition,
-    delegation: ActoviqAgentDelegationContext,
+    definition: HadamardAgentDefinition,
+    delegation: HadamardAgentDelegationContext,
     runOptions: AgentRunOptions,
     workDir: string,
     sessionId: string,
@@ -3352,12 +3352,12 @@ export class ActoviqAgentClient {
       parentSessionId: null,
       canonicalPath: delegation.parentAgentPath ?? '/root',
       agentName:
-        typeof runOptions.metadata?.__actoviqAgentDefinition === 'string'
-          ? runOptions.metadata.__actoviqAgentDefinition
+        typeof runOptions.metadata?.__hadamardAgentDefinition === 'string'
+          ? runOptions.metadata.__hadamardAgentDefinition
           : 'Hadamard',
       nickname:
-        typeof runOptions.metadata?.__actoviqAgentName === 'string'
-          ? runOptions.metadata.__actoviqAgentName
+        typeof runOptions.metadata?.__hadamardAgentName === 'string'
+          ? runOptions.metadata.__hadamardAgentName
           : null,
       role: null,
       kind: parentExecutionId === rootExecutionId ? 'root' : 'subagent',
@@ -3388,8 +3388,8 @@ export class ActoviqAgentClient {
 
   private existingAgentExecutionContext(
     session: AgentSession | StoredSession,
-    definition: ActoviqAgentDefinition,
-    delegation: ActoviqAgentDelegationContext,
+    definition: HadamardAgentDefinition,
+    delegation: HadamardAgentDelegationContext,
     runOptions: AgentRunOptions,
     workDir: string,
     fallback: { parentRunId: string; parentSessionId?: string },
@@ -3504,7 +3504,7 @@ export class ActoviqAgentClient {
     agent: string,
     prompt: string,
     runOptions: AgentRunOptions = {},
-    delegation: ActoviqAgentDelegationContext = { description: prompt },
+    delegation: HadamardAgentDelegationContext = { description: prompt },
   ): Promise<{
     result: AgentRunResult;
     sessionId: string;
@@ -3533,10 +3533,10 @@ export class ActoviqAgentClient {
         parentSessionId: execution.child.parentSessionId ?? undefined,
         title: `${delegation.name ?? definition.name}: ${truncateText(delegation.description, 80)}`,
         metadata: {
-          __actoviqAgentName: delegation.name,
-          __actoviqAgentWorkDir: prepared.workDir,
-          __actoviqAgentWorktreePath: prepared.workspace?.path,
-          __actoviqAgentWorktreeBranch: prepared.workspace?.metadata.branch,
+          __hadamardAgentName: delegation.name,
+          __hadamardAgentWorkDir: prepared.workDir,
+          __hadamardAgentWorktreePath: prepared.workspace?.path,
+          __hadamardAgentWorktreeBranch: prepared.workspace?.metadata.branch,
           ...serializeAgentExecutionIdentity(execution.child),
         },
       });
@@ -3582,14 +3582,14 @@ export class ActoviqAgentClient {
       candidate.sessionId === address ||
       candidate.agentName === address,
     );
-    let messageInput: ActoviqBackgroundTaskQueuedInput | undefined;
+    let messageInput: HadamardBackgroundTaskQueuedInput | undefined;
     let messageTask = task;
     if (task?.sessionId) {
       const session = await this.store.load(task.sessionId);
       const definition = this.requireAgentDefinition(task.subagentType);
       const workDir =
-        typeof session.metadata.__actoviqAgentWorkDir === 'string'
-          ? session.metadata.__actoviqAgentWorkDir
+        typeof session.metadata.__hadamardAgentWorkDir === 'string'
+          ? session.metadata.__hadamardAgentWorkDir
           : task.workDir;
       const execution = this.existingAgentExecutionContext(
         session,
@@ -3612,7 +3612,7 @@ export class ActoviqAgentClient {
         },
         'message',
       );
-      const input: ActoviqBackgroundTaskQueuedInput = {
+      const input: HadamardBackgroundTaskQueuedInput = {
         id: context.callId,
         text: message,
         rootExecutionId: execution.edge.source.rootExecutionId,
@@ -3670,13 +3670,13 @@ export class ActoviqAgentClient {
       throw new Error(`No addressable agent found for "${address}".`);
     }
     const agentName =
-      typeof session.metadata.__actoviqAgentDefinition === 'string'
-        ? session.metadata.__actoviqAgentDefinition
+      typeof session.metadata.__hadamardAgentDefinition === 'string'
+        ? session.metadata.__hadamardAgentDefinition
         : task?.subagentType;
     if (!agentName) {
       throw new Error(`Session "${sessionId}" is not an agent session.`);
     }
-    let resumed: ActoviqBackgroundTaskRecord;
+    let resumed: HadamardBackgroundTaskRecord;
     try {
       resumed = await this.launchBackgroundOnSession(
         session,
@@ -3697,8 +3697,8 @@ export class ActoviqAgentClient {
           rootExecutionId: context.rootExecutionId,
           parentAgentPath: context.parentAgentPath,
           cwd:
-            typeof session.metadata.__actoviqAgentWorkDir === 'string'
-              ? session.metadata.__actoviqAgentWorkDir
+            typeof session.metadata.__hadamardAgentWorkDir === 'string'
+              ? session.metadata.__hadamardAgentWorkDir
               : undefined,
         },
         messageTask?.id,
@@ -3724,24 +3724,24 @@ export class ActoviqAgentClient {
   }
 
   private async prepareDelegatedWorkspace(
-    definition: ActoviqAgentDefinition,
+    definition: HadamardAgentDefinition,
     delegation: {
       name?: string;
       isolation?: 'worktree';
       cwd?: string;
     },
-  ): Promise<{ workDir: string; workspace?: ActoviqWorkspace }> {
+  ): Promise<{ workDir: string; workspace?: HadamardWorkspace }> {
     if (delegation.cwd) {
       return { workDir: path.resolve(delegation.cwd) };
     }
     if ((delegation.isolation ?? definition.isolation) !== 'worktree') {
       return { workDir: path.resolve(definition.cwd ?? this.config.workDir) };
     }
-    const branch = `actoviq-agent-${createId().slice(0, 8)}`;
+    const branch = `hadamard-agent-${createId().slice(0, 8)}`;
     const workspace = await createGitWorktreeWorkspace({
       repositoryPath: this.config.workDir,
       name: delegation.name
-        ? `actoviq-${sanitizeWorkspaceName(delegation.name)}-${createId().slice(0, 6)}`
+        ? `hadamard-${sanitizeWorkspaceName(delegation.name)}-${createId().slice(0, 6)}`
         : undefined,
       branch,
       metadata: {
@@ -3765,7 +3765,7 @@ export class ActoviqAgentClient {
         ...(executionIdentity ? serializeAgentExecutionIdentity(executionIdentity) : {}),
       },
       tools: [
-        ...createActoviqFileTools({ cwd: workDir }),
+        ...createHadamardFileTools({ cwd: workDir }),
         ...(runOptions.tools ?? []),
       ],
       drainQueuedInputs: async () => [
@@ -3778,7 +3778,7 @@ export class ActoviqAgentClient {
   }
 
   private async finalizeDelegatedWorkspace(
-    workspace?: ActoviqWorkspace,
+    workspace?: HadamardWorkspace,
   ): Promise<boolean> {
     if (!workspace) {
       return false;
@@ -3820,7 +3820,7 @@ export class ActoviqAgentClient {
     return notifications;
   }
 
-  private enqueueTaskNotification(task: ActoviqBackgroundTaskRecord): void {
+  private enqueueTaskNotification(task: HadamardBackgroundTaskRecord): void {
     const notificationKey = task.parentSessionId ?? task.parentRunId;
     if (!notificationKey || task.notificationDeliveredAt) {
       return;
@@ -3862,8 +3862,8 @@ export class ActoviqAgentClient {
       parentSessionId?: string;
     },
     runOptions: AgentRunOptions = {},
-    delegation: ActoviqAgentDelegationContext = { description: prompt },
-  ): Promise<ActoviqBackgroundTaskRecord> {
+    delegation: HadamardAgentDelegationContext = { description: prompt },
+  ): Promise<HadamardBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
     const prepared = await this.prepareDelegatedWorkspace(definition, delegation);
     const childSessionId = createId();
@@ -3883,12 +3883,12 @@ export class ActoviqAgentClient {
         parentSessionId: execution.child.parentSessionId ?? undefined,
         title: `${delegation.name ?? definition.name}: ${truncateText(delegation.description, 80)}`,
         metadata: {
-          __actoviqBackgroundParentRunId: options.parentRunId,
-          __actoviqBackgroundParentSessionId: options.parentSessionId,
-          __actoviqAgentName: delegation.name,
-          __actoviqAgentWorkDir: prepared.workDir,
-          __actoviqAgentWorktreePath: prepared.workspace?.path,
-          __actoviqAgentWorktreeBranch: prepared.workspace?.metadata.branch,
+          __hadamardBackgroundParentRunId: options.parentRunId,
+          __hadamardBackgroundParentSessionId: options.parentSessionId,
+          __hadamardAgentName: delegation.name,
+          __hadamardAgentWorkDir: prepared.workDir,
+          __hadamardAgentWorktreePath: prepared.workspace?.path,
+          __hadamardAgentWorktreeBranch: prepared.workspace?.metadata.branch,
           ...serializeAgentExecutionIdentity(execution.child),
         },
       });
@@ -3974,11 +3974,11 @@ export class ActoviqAgentClient {
       parentSessionId?: string;
     },
     runOptions: AgentRunOptions = {},
-    delegation: ActoviqAgentDelegationContext = { description: prompt },
+    delegation: HadamardAgentDelegationContext = { description: prompt },
     resumedFromTaskId?: string,
-    deliveredMessageInputs: ActoviqBackgroundTaskQueuedInput[] = [],
+    deliveredMessageInputs: HadamardBackgroundTaskQueuedInput[] = [],
     inheritedSeenInputIds: string[] = [],
-  ): Promise<ActoviqBackgroundTaskRecord> {
+  ): Promise<HadamardBackgroundTaskRecord> {
     const definition = this.requireAgentDefinition(agent);
     const workDir = delegation.cwd ?? this.config.workDir;
     const execution = this.existingAgentExecutionContext(
@@ -4082,11 +4082,11 @@ export class ActoviqAgentClient {
 
   private async resumeLateSubagentInputs(args: {
     session: AgentSession;
-    definition: ActoviqAgentDefinition;
+    definition: HadamardAgentDefinition;
     options: { parentRunId: string; parentSessionId?: string };
     runOptions: AgentRunOptions;
-    delegation: ActoviqAgentDelegationContext;
-    settledTask: ActoviqBackgroundTaskRecord;
+    delegation: HadamardAgentDelegationContext;
+    settledTask: HadamardBackgroundTaskRecord;
   }): Promise<void> {
     const queued = await this.backgroundTaskManager.drainInputs(args.settledTask.id);
     if (queued.length === 0) return;
@@ -4161,11 +4161,11 @@ export class ActoviqAgentClient {
     prompt: string;
     signal: AbortSignal;
     runOptions: AgentRunOptions;
-    workspace?: ActoviqWorkspace;
+    workspace?: HadamardWorkspace;
     updateProgress: (
       progress: Partial<
         Pick<
-          ActoviqBackgroundTaskRecord,
+          HadamardBackgroundTaskRecord,
           | 'partialText'
           | 'toolCallCount'
           | 'toolErrorCount'
@@ -4176,7 +4176,7 @@ export class ActoviqAgentClient {
           | 'queuedMessageCount'
         >
       >,
-    ) => Promise<ActoviqBackgroundTaskRecord>;
+    ) => Promise<HadamardBackgroundTaskRecord>;
   }): Promise<{
     runId: string;
     sessionId: string;
@@ -4256,7 +4256,7 @@ export class ActoviqAgentClient {
   }
 
   private async reconcileInterruptedAgentExecutions(
-    tasks: ActoviqBackgroundTaskRecord[],
+    tasks: HadamardBackgroundTaskRecord[],
   ): Promise<void> {
     for (const task of tasks) {
       if (!task.sessionId || !task.executionId || !task.executionNodeId) continue;
@@ -4264,8 +4264,8 @@ export class ActoviqAgentClient {
         const session = await this.resumeSession(task.sessionId);
         const snapshot = session.snapshot();
         const workDir =
-          typeof snapshot.metadata.__actoviqAgentWorkDir === 'string'
-            ? snapshot.metadata.__actoviqAgentWorkDir
+          typeof snapshot.metadata.__hadamardAgentWorkDir === 'string'
+            ? snapshot.metadata.__hadamardAgentWorkDir
             : task.workDir;
         const identity = resolveAgentExecutionIdentity({
           runId: task.runId ?? `background:${task.id}`,
@@ -4292,9 +4292,9 @@ export class ActoviqAgentClient {
   private async compactSessionForSession(
     session: AgentSession,
     options: AgentSessionCompactOptions = {},
-  ): Promise<ActoviqSessionCompactResult> {
+  ): Promise<HadamardSessionCompactResult> {
     const snapshot = session.snapshot();
-    const { session: compactedSession, result } = await compactActoviqSession(
+    const { session: compactedSession, result } = await compactHadamardSession(
       snapshot,
       {
         ...options,
@@ -4321,9 +4321,9 @@ export class ActoviqAgentClient {
   }
 
   private async runDreamExecution(
-    request: PreparedActoviqDreamExecution,
-  ): Promise<ActoviqDreamRunResult> {
-    await ensureActoviqDreamLayout(request.paths);
+    request: PreparedHadamardDreamExecution,
+  ): Promise<HadamardDreamRunResult> {
+    await ensureHadamardDreamLayout(request.paths);
 
     try {
       const result = await executeConversation({
@@ -4331,19 +4331,19 @@ export class ActoviqAgentClient {
         input: request.prompt,
         sessionId: request.currentSessionId,
         systemPrompt: await this.buildDreamSystemPrompt(),
-        tools: createActoviqFileTools({ cwd: this.config.workDir }),
+        tools: createHadamardFileTools({ cwd: this.config.workDir }),
         mcpServers: [],
         model: this.resolveModel(request.model),
         maxTokens: request.maxTokens ?? DEFAULT_DREAM_MAX_TOKENS,
         userId: this.config.userId,
         metadata: {
           ...this.config.metadata,
-          actoviq_internal_task: 'dream',
-          actoviq_internal_trigger: request.trigger,
+          hadamard_internal_task: 'dream',
+          hadamard_internal_trigger: request.trigger,
         },
         signal: request.signal,
         permissionMode: 'acceptEdits',
-        classifier: createActoviqDreamClassifier(request.paths),
+        classifier: createHadamardDreamClassifier(request.paths),
         streaming: false,
         modelApi: this.modelApi,
         config: this.config,
@@ -4356,18 +4356,18 @@ export class ActoviqAgentClient {
         trigger: request.trigger,
         state: request.state,
         touchedSessions: [...request.touchedSessions],
-        touchedFiles: extractActoviqDreamTouchedFiles(result),
+        touchedFiles: extractHadamardDreamTouchedFiles(result),
         result,
       };
     } catch (error) {
-      await rollbackActoviqConsolidationLock(request.paths, request.priorMtime);
+      await rollbackHadamardConsolidationLock(request.paths, request.priorMtime);
       throw error;
     }
   }
 
   private async launchBackgroundDreamTask(
-    request: PreparedActoviqDreamExecution,
-  ): Promise<ActoviqBackgroundTaskRecord> {
+    request: PreparedHadamardDreamExecution,
+  ): Promise<HadamardBackgroundTaskRecord> {
     return this.backgroundTaskManager.launch({
       subagentType: 'dream',
       description: 'Dream: Memory Consolidation',
@@ -4411,12 +4411,12 @@ export class ActoviqAgentClient {
   private async applySessionMemoryState(
     session: AgentSession,
     stored: StoredSession,
-    state: ActoviqSessionMemoryRuntimeState,
+    state: HadamardSessionMemoryRuntimeState,
   ): Promise<void> {
-    const previous = JSON.stringify(stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY] ?? null);
-    stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY] =
-      serializeActoviqSessionMemoryRuntimeState(state);
-    const nextValue = JSON.stringify(stored.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY]);
+    const previous = JSON.stringify(stored.metadata[HADAMARD_SESSION_MEMORY_STATE_KEY] ?? null);
+    stored.metadata[HADAMARD_SESSION_MEMORY_STATE_KEY] =
+      serializeHadamardSessionMemoryRuntimeState(state);
+    const nextValue = JSON.stringify(stored.metadata[HADAMARD_SESSION_MEMORY_STATE_KEY]);
     if (previous === nextValue) {
       return;
     }
@@ -4428,7 +4428,7 @@ export class ActoviqAgentClient {
   private async performSessionMemoryExtraction(
     stored: StoredSession,
     context: SessionMemoryExtractionContext & { force?: boolean },
-  ): Promise<ActoviqSessionMemoryExtractionResult> {
+  ): Promise<HadamardSessionMemoryExtractionResult> {
     if (!stored.id) {
       return {
         success: false,
@@ -4445,7 +4445,7 @@ export class ActoviqAgentClient {
       sessionId: stored.id,
     });
     const currentState = this.getSessionMemoryRuntimeState(stored);
-    const filteredMessages = filterActoviqMessagesForSessionMemory(stored.messages);
+    const filteredMessages = filterHadamardMessagesForSessionMemory(stored.messages);
 
     if (!memoryState.enabled.autoCompact) {
       return {
@@ -4471,12 +4471,12 @@ export class ActoviqAgentClient {
       };
     }
 
-    const progress = evaluateActoviqSessionMemoryProgress(
+    const progress = evaluateHadamardSessionMemoryProgress(
       filteredMessages,
       currentState,
       this.memory.getSessionMemoryConfig(),
     );
-    const nextState: ActoviqSessionMemoryRuntimeState = {
+    const nextState: HadamardSessionMemoryRuntimeState = {
       ...currentState,
       initialized: progress.initialized,
     };
@@ -4514,7 +4514,7 @@ export class ActoviqAgentClient {
         system: this.buildSessionMemorySystemPrompt(context.systemPrompt),
         metadata: {
           user_id: this.config.userId ?? null,
-          actoviq_internal_task: 'session_memory',
+          hadamard_internal_task: 'session_memory',
         },
         messages: [
           ...filteredMessages,
@@ -4525,7 +4525,7 @@ export class ActoviqAgentClient {
         ],
         signal: context.signal,
       });
-      const extractedSummary = sanitizeActoviqSessionMemoryOutput(
+      const extractedSummary = sanitizeHadamardSessionMemoryOutput(
         extractTextFromContent(response.content),
         ensured.content,
       );
@@ -4534,7 +4534,7 @@ export class ActoviqAgentClient {
         sessionId: stored.id,
       });
       const extractedAt = nowIso();
-      const updatedState: ActoviqSessionMemoryRuntimeState = {
+      const updatedState: HadamardSessionMemoryRuntimeState = {
         ...nextState,
         initialized: true,
         tokensAtLastExtraction: progress.currentTokenCount ?? 0,
@@ -4582,7 +4582,7 @@ export class ActoviqAgentClient {
   private async extractSessionMemoryForSession(
     session: AgentSession,
     options: AgentSessionMemoryExtractionOptions = {},
-  ): Promise<ActoviqSessionMemoryExtractionResult> {
+  ): Promise<HadamardSessionMemoryExtractionResult> {
     const stored = session.snapshot();
     const extraction = await this.performSessionMemoryExtraction(stored, {
       force: options.force ?? true,
@@ -4602,7 +4602,7 @@ export class ActoviqAgentClient {
     input: string | MessageParam['content'],
     result: AgentRunResult,
     options: InternalAgentRunOptions,
-    surfacedMemories: readonly ActoviqSurfacedMemory[] = [],
+    surfacedMemories: readonly HadamardSurfacedMemory[] = [],
     hookOutcome: { sessionMetadata?: Record<string, unknown>; tags?: string[] } = {},
   ): Promise<void> {
     const workDir = this.resolveRunWorkDir(options);
@@ -4614,18 +4614,18 @@ export class ActoviqAgentClient {
     next.lastRunAt = result.completedAt;
     next.metadata = {
       ...next.metadata,
-      __actoviqWorkDir: workDir,
+      __hadamardWorkDir: workDir,
       ...(options.metadata ?? {}),
       ...(hookOutcome.sessionMetadata ?? {}),
     };
     if (result.loopCompactions?.length) {
-      recordActoviqLoopCompactionsOnSession(next, result.loopCompactions);
+      recordHadamardLoopCompactionsOnSession(next, result.loopCompactions);
     }
     const runtimeState = this.getSessionMemoryRuntimeState(next);
     if (runtimeState.pendingPostCompaction) {
       runtimeState.pendingPostCompaction = false;
-      next.metadata[ACTOVIQ_SESSION_MEMORY_STATE_KEY] =
-        serializeActoviqSessionMemoryRuntimeState(runtimeState);
+      next.metadata[HADAMARD_SESSION_MEMORY_STATE_KEY] =
+        serializeHadamardSessionMemoryRuntimeState(runtimeState);
     }
     if (hookOutcome.tags?.length) {
       next.tags = [...new Set([...next.tags, ...hookOutcome.tags])];
@@ -4640,7 +4640,7 @@ export class ActoviqAgentClient {
       next.metadata[AGENT_CONTINUITY_STATE_KEY] = {
         currentAgent: continuityState.currentAgent,
         delegatedAgents,
-      } satisfies ActoviqAgentContinuityState;
+      } satisfies HadamardAgentContinuityState;
       if (pendingDelegations.length > 0) {
         result.delegatedAgents = delegatedAgents;
       }
@@ -4743,7 +4743,7 @@ export class ActoviqAgentClient {
     });
     await this.applySessionMemoryState(session, next, extraction.state);
 
-    const compacted = await compactActoviqSession(next, { trigger: 'auto' }, {
+    const compacted = await compactHadamardSession(next, { trigger: 'auto' }, {
       workDir,
       systemPrompt: next.systemPrompt ?? this.config.systemPrompt,
       model: this.resolveModel(options.model ?? next.model),
@@ -4757,7 +4757,7 @@ export class ActoviqAgentClient {
       session.replace(compacted.session);
     }
 
-    if (isActoviqDreamEligibleSession(next)) {
+    if (isHadamardDreamEligibleSession(next)) {
       try {
         await this.dream.maybeAutoDream({
           currentSessionId: session.id,
@@ -4770,7 +4770,7 @@ export class ActoviqAgentClient {
     }
   }
 
-  private requireAgentDefinition(agent: string): ActoviqAgentDefinition {
+  private requireAgentDefinition(agent: string): HadamardAgentDefinition {
     const definition = this.agentDefinitions.get(agent);
     if (!definition) {
       throw new Error(`No agent definition named "${agent}" is registered.`);
@@ -4778,7 +4778,7 @@ export class ActoviqAgentClient {
     return cloneAgentDefinition(definition);
   }
 
-  private requireSkillDefinition(skillName: string): ActoviqSkillDefinition {
+  private requireSkillDefinition(skillName: string): HadamardSkillDefinition {
     const definition = this.skillDefinitions.get(skillName);
     if (!definition) {
       throw new Error(`No skill definition named "${skillName}" is registered.`);
@@ -4789,13 +4789,13 @@ export class ActoviqAgentClient {
   private resolveRunWorkDir(options: AgentRunOptions): string {
     const internal = options as InternalAgentRunOptions;
     if (options.inheritWorktree === false) {
-      return internal.__actoviqWorkDir ?? options.workDir ?? this.config.workDir;
+      return internal.__hadamardWorkDir ?? options.workDir ?? this.config.workDir;
     }
     return (
-      internal.__actoviqWorkDir ??
+      internal.__hadamardWorkDir ??
       options.sessionWorkDir ??
       options.workDir ??
-      internal.__actoviqPersistedWorkDir ??
+      internal.__hadamardPersistedWorkDir ??
       this.config.workDir
     );
   }
@@ -4818,8 +4818,8 @@ export class ActoviqAgentClient {
   }
 
   private resolvePermissionClassifier(
-    fallback?: ActoviqToolClassifier,
-  ): ActoviqToolClassifier {
+    fallback?: HadamardToolClassifier,
+  ): HadamardToolClassifier {
     return async context => {
       const input = isRecord(context.input) ? context.input : {};
       const targetPath = [input.file_path, input.path, input.notebook_path, input.cwd]
@@ -4840,17 +4840,17 @@ export class ActoviqAgentClient {
     options: AgentRunOptions,
   ): InternalAgentRunOptions {
     const persistedWorkDir =
-      typeof session.metadata.__actoviqWorkDir === 'string' &&
-      session.metadata.__actoviqWorkDir.trim().length > 0
-        ? session.metadata.__actoviqWorkDir
+      typeof session.metadata.__hadamardWorkDir === 'string' &&
+      session.metadata.__hadamardWorkDir.trim().length > 0
+        ? session.metadata.__hadamardWorkDir
         : undefined;
     const sessionOptions: InternalAgentRunOptions = {
       ...options,
-      __actoviqPersistedWorkDir: persistedWorkDir,
+      __hadamardPersistedWorkDir: persistedWorkDir,
     };
     const agentName =
-      typeof session.metadata.__actoviqAgentDefinition === 'string'
-        ? session.metadata.__actoviqAgentDefinition
+      typeof session.metadata.__hadamardAgentDefinition === 'string'
+        ? session.metadata.__hadamardAgentDefinition
         : undefined;
     if (!agentName) {
       return sessionOptions;
@@ -4859,7 +4859,7 @@ export class ActoviqAgentClient {
   }
 
   private mergeAgentRunOptions(
-    definition: ActoviqAgentDefinition,
+    definition: HadamardAgentDefinition,
     options: AgentRunOptions,
   ): InternalAgentRunOptions {
     const availableMcpServers = new Set([
@@ -4886,32 +4886,32 @@ export class ActoviqAgentClient {
       metadata: {
         ...(definition.metadata ?? {}),
         ...(options.metadata ?? {}),
-        __actoviqAgentDefinition: definition.name,
+        __hadamardAgentDefinition: definition.name,
       },
-      hooks: mergeActoviqHooks(definition.hooks, options.hooks),
+      hooks: mergeHadamardHooks(definition.hooks, options.hooks),
       tools: [...(definition.tools ?? []), ...(options.tools ?? [])],
       mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
-      __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
-      __actoviqUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
-      __actoviqMaxToolIterations:
+      __hadamardUseDefaultTools: definition.inheritDefaultTools !== false,
+      __hadamardUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+      __hadamardMaxToolIterations:
         definition.maxToolIterations ?? definition.maxTurns,
-      __actoviqAllowedTools: definition.allowedTools
+      __hadamardAllowedTools: definition.allowedTools
         ? [...definition.allowedTools]
         : undefined,
-      __actoviqDisallowedTools: [
+      __hadamardDisallowedTools: [
         ...(definition.disallowedTools ?? []),
         ...nestedAgentDenylist,
       ],
-      __actoviqPreloadedSkills: definition.skills
+      __hadamardPreloadedSkills: definition.skills
         ? [...definition.skills]
         : undefined,
-      __actoviqWorkDir: options.workDir ?? definition.cwd,
-      __actoviqInitialPrompt: definition.initialPrompt,
+      __hadamardWorkDir: options.workDir ?? definition.cwd,
+      __hadamardInitialPrompt: definition.initialPrompt,
     };
   }
 
   private mergeSkillRunOptions(
-    definition: ActoviqSkillDefinition,
+    definition: HadamardSkillDefinition,
     options: AgentRunOptions,
   ): InternalAgentRunOptions {
     const allowedToolPermissions =
@@ -4928,27 +4928,27 @@ export class ActoviqAgentClient {
       metadata: {
         ...(definition.metadata ?? {}),
         ...(options.metadata ?? {}),
-        __actoviqSkillDefinition: definition.name,
+        __hadamardSkillDefinition: definition.name,
       },
-      hooks: mergeActoviqHooks(definition.hooks, options.hooks),
+      hooks: mergeHadamardHooks(definition.hooks, options.hooks),
       tools: [...(definition.tools ?? []), ...(options.tools ?? [])],
       mcpServers: [...(definition.mcpServers ?? []), ...(options.mcpServers ?? [])],
       permissions:
         allowedToolPermissions.length > 0
           ? [...(options.permissions ?? []), ...allowedToolPermissions]
           : options.permissions,
-      __actoviqUseDefaultTools: definition.inheritDefaultTools !== false,
-      __actoviqUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
-      __actoviqSkillContext: definition.context ?? 'inline',
+      __hadamardUseDefaultTools: definition.inheritDefaultTools !== false,
+      __hadamardUseDefaultMcpServers: definition.inheritDefaultMcpServers !== false,
+      __hadamardSkillContext: definition.context ?? 'inline',
     };
   }
 }
 
 export async function createAgentSdk(
   options: CreateAgentSdkOptions = {},
-): Promise<ActoviqAgentClient> {
+): Promise<HadamardAgentClient> {
   recordCompatUsage('createAgentSdk');
-  return ActoviqAgentClient.create(options);
+  return HadamardAgentClient.create(options);
 }
 
 function resolveTaskId(input: { task_id?: string; taskId?: string }): string | undefined {
@@ -4957,7 +4957,7 @@ function resolveTaskId(input: { task_id?: string; taskId?: string }): string | u
     .find((value): value is string => Boolean(value));
 }
 
-function serializeBackgroundTaskOutput(task: ActoviqBackgroundTaskRecord): string {
+function serializeBackgroundTaskOutput(task: HadamardBackgroundTaskRecord): string {
   return [
     `Task id: ${task.id}`,
     `Status: ${task.status}`,
@@ -5000,9 +5000,9 @@ function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortS
 }
 
 function mergeAgentDefinitions(
-  ...groups: ReadonlyArray<readonly ActoviqAgentDefinition[]>
-): ActoviqAgentDefinition[] {
-  const merged = new Map<string, ActoviqAgentDefinition>();
+  ...groups: ReadonlyArray<readonly HadamardAgentDefinition[]>
+): HadamardAgentDefinition[] {
+  const merged = new Map<string, HadamardAgentDefinition>();
   for (const group of groups) {
     for (const definition of group) {
       merged.set(definition.name, cloneAgentDefinition(definition));
@@ -5027,7 +5027,7 @@ function filterAgentTools(
   });
 }
 
-function formatTaskNotification(task: ActoviqBackgroundTaskRecord): string {
+function formatTaskNotification(task: HadamardBackgroundTaskRecord): string {
   const result =
     task.status === 'completed'
       ? task.text ?? task.partialText ?? ''
@@ -5125,7 +5125,7 @@ function mergeUniqueByName<T extends { name: string }>(defaults: T[], overrides:
 
 async function collectToolPrompts(
   tools: AgentToolDefinition[],
-  context: { workDir: string; permissionMode?: ActoviqPermissionMode },
+  context: { workDir: string; permissionMode?: HadamardPermissionMode },
 ): Promise<string[]> {
   const parts: string[] = [];
   const toolNames = tools.map((t) => t.name);
@@ -5147,16 +5147,16 @@ async function collectToolPrompts(
   return parts;
 }
 
-function createActoviqDreamClassifier(paths: {
+function createHadamardDreamClassifier(paths: {
   memoryDir: string;
   teamMemoryDir: string;
   transcriptDir: string;
-}): ActoviqToolClassifier {
+}): HadamardToolClassifier {
   const readRoots = [paths.memoryDir, paths.teamMemoryDir, paths.transcriptDir].map(normalizePathForCompare);
   const writeRoots = [paths.memoryDir, paths.teamMemoryDir].map(normalizePathForCompare);
 
   return ({ publicName, input }) => {
-    const targetPath = extractActoviqDreamTargetPath(publicName, input);
+    const targetPath = extractHadamardDreamTargetPath(publicName, input);
     if (!targetPath) {
       return {
         behavior: 'deny',
@@ -5198,7 +5198,7 @@ function createActoviqDreamClassifier(paths: {
   };
 }
 
-function extractActoviqDreamTargetPath(publicName: string, input: unknown): string | undefined {
+function extractHadamardDreamTargetPath(publicName: string, input: unknown): string | undefined {
   if (!isRecord(input)) {
     return undefined;
   }
@@ -5216,7 +5216,7 @@ function extractActoviqDreamTargetPath(publicName: string, input: unknown): stri
   }
 }
 
-function extractActoviqDreamTouchedFiles(result: AgentRunResult): string[] {
+function extractHadamardDreamTouchedFiles(result: AgentRunResult): string[] {
   const touched = new Set<string>();
   for (const call of result.toolCalls) {
     if (call.publicName !== 'Write' && call.publicName !== 'Edit') {

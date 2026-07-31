@@ -6,8 +6,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
-import { getActoviqProjectSessionDirectory, SessionStore } from '../src/index.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
+import { getHadamardProjectSessionDirectory, SessionStore } from '../src/index.js';
 import { AgentExecutionStore } from '../src/storage/agentExecutionStore.js';
 import { BackgroundTaskStore } from '../src/storage/backgroundTaskStore.js';
 
@@ -31,18 +31,18 @@ async function createWorkspace(root: string, name: string): Promise<string> {
 
 describe('GUI session cleanup', () => {
   it('closes promptly when a renderer connection is still open', async () => {
-    const root = await tempDir('actoviq-gui-close-');
+    const root = await tempDir('hadamard-gui-close-');
     const homeDir = path.join(root, 'home');
     const workDir = await createWorkspace(root, 'work');
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -69,43 +69,43 @@ describe('GUI session cleanup', () => {
   });
 
   it('auto-cleans empty sessions when state is recomputed, keeping non-empty ones', async () => {
-    const root = await tempDir('actoviq-gui-acln-');
+    const root = await tempDir('hadamard-gui-acln-');
     const homeDir = path.join(root, 'home');
     const workA = await createWorkspace(root, 'work-a');
 
     // Pre-seed: one empty session + one non-empty session.
-    const projectRoot = getActoviqProjectSessionDirectory(workA, homeDir);
+    const projectRoot = getHadamardProjectSessionDirectory(workA, homeDir);
     const store = new SessionStore(projectRoot);
-    await store.create({ id: 'empty-a', metadata: { __actoviqWorkDir: workA } });
+    await store.create({ id: 'empty-a', metadata: { __hadamardWorkDir: workA } });
     await store.create({
       id: 'keep-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'keep me' }],
     });
     const unsafeHistoricalFile = path.join(projectRoot, 'sessions', '...json');
     await writeFile(unsafeHistoricalFile, JSON.stringify({
       id: 'unsafe-historical',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       messages: [],
     }), 'utf8');
 
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
     const port = 45000 + Math.floor(Math.random() * 10000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       host: '127.0.0.1',
       port,
       configPath,
     });
-    const authHeaders = { 'x-actoviq-token': server.token };
+    const authHeaders = { 'x-hadamard-token': server.token };
     try {
       // The first /api/state call recomputes the heavy cache → auto-cleans
       // empty sessions (except the active one, which is the server's own fresh
@@ -135,41 +135,41 @@ describe('GUI session cleanup', () => {
   });
 
   it('keeps agent and active runtime sessions and hides archived legacy agents', async () => {
-    const root = await tempDir('actoviq-gui-agent-cleanup-');
+    const root = await tempDir('hadamard-gui-agent-cleanup-');
     const homeDir = path.join(root, 'home');
     const workA = await createWorkspace(root, 'work-a');
-    const projectRoot = getActoviqProjectSessionDirectory(workA, homeDir);
+    const projectRoot = getHadamardProjectSessionDirectory(workA, homeDir);
     const store = new SessionStore(projectRoot);
 
     await store.create({
       id: 'parent-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
       initialMessages: [{ role: 'user', content: 'parent conversation' }],
     });
     await store.create({
       id: 'agent-a',
       kind: 'agent',
       parentSessionId: 'parent-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
     await store.create({
       id: 'legacy-agent-a',
       metadata: {
-        __actoviqWorkDir: workA,
-        __actoviqAgentDefinition: 'legacy-reviewer',
+        __hadamardWorkDir: workA,
+        __hadamardAgentDefinition: 'legacy-reviewer',
       },
     });
     await store.create({
       id: 'execution-ref-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
     await store.create({
       id: 'background-ref-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
     await store.create({
       id: 'unreferenced-a',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
 
     const at = new Date(Date.UTC(2026, 6, 17, 0, 0, 0)).toISOString();
@@ -204,28 +204,28 @@ describe('GUI session cleanup', () => {
         ...archivedBase,
         id: 'archived-main',
         title: 'Archived main',
-        metadata: { __actoviqWorkDir: workA },
+        metadata: { __hadamardWorkDir: workA },
       }), 'utf8'),
       writeFile(path.join(archiveDir, 'archived-legacy-agent.json'), JSON.stringify({
         ...archivedBase,
         id: 'archived-legacy-agent',
         title: 'Archived legacy agent',
         metadata: {
-          __actoviqWorkDir: workA,
-          __actoviqAgentDefinition: 'legacy-reviewer',
+          __hadamardWorkDir: workA,
+          __hadamardAgentDefinition: 'legacy-reviewer',
         },
       }), 'utf8'),
     ]);
 
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       host: '127.0.0.1',
@@ -246,7 +246,7 @@ describe('GUI session cleanup', () => {
       });
 
       const state = await fetch(`${server.url}api/state`, {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       }).then(res => res.json()) as {
         sessions: Array<{ id: string }>;
         archivedSessions: Array<{ id: string }>;
@@ -267,25 +267,25 @@ describe('GUI session cleanup', () => {
   });
 
   it('fails closed when runtime protection state cannot be read', async () => {
-    const root = await tempDir('actoviq-gui-cleanup-fail-closed-');
+    const root = await tempDir('hadamard-gui-cleanup-fail-closed-');
     const homeDir = path.join(root, 'home');
     const workA = await createWorkspace(root, 'work-a');
-    const projectRoot = getActoviqProjectSessionDirectory(workA, homeDir);
+    const projectRoot = getHadamardProjectSessionDirectory(workA, homeDir);
     const store = new SessionStore(projectRoot);
     await store.create({
       id: 'must-survive',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
 
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       host: '127.0.0.1',
@@ -296,7 +296,7 @@ describe('GUI session cleanup', () => {
       await mkdir(path.join(projectRoot, 'tasks'), { recursive: true });
       await writeFile(path.join(projectRoot, 'tasks', 'corrupt.json'), '{', 'utf8');
       await fetch(`${server.url}api/state`, {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       });
       await expect(store.load('must-survive')).resolves.toBeDefined();
     } finally {
@@ -305,25 +305,25 @@ describe('GUI session cleanup', () => {
   });
 
   it('fails closed when Agent execution state is unreadable', async () => {
-    const root = await tempDir('actoviq-gui-execution-cleanup-fail-closed-');
+    const root = await tempDir('hadamard-gui-execution-cleanup-fail-closed-');
     const homeDir = path.join(root, 'home');
     const workA = await createWorkspace(root, 'work-a');
-    const projectRoot = getActoviqProjectSessionDirectory(workA, homeDir);
+    const projectRoot = getHadamardProjectSessionDirectory(workA, homeDir);
     const store = new SessionStore(projectRoot);
     await store.create({
       id: 'execution-protected',
-      metadata: { __actoviqWorkDir: workA },
+      metadata: { __hadamardWorkDir: workA },
     });
 
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: workA,
       homeDir,
       host: '127.0.0.1',
@@ -338,7 +338,7 @@ describe('GUI session cleanup', () => {
         'utf8',
       );
       await fetch(`${server.url}api/state`, {
-        headers: { 'x-actoviq-token': server.token },
+        headers: { 'x-hadamard-token': server.token },
       });
       await expect(store.load('execution-protected')).resolves.toBeDefined();
     } finally {

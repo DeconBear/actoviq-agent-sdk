@@ -7,31 +7,31 @@ import { app, BrowserWindow, dialog, Menu, nativeImage, shell } from 'electron';
 import electronUpdater from 'electron-updater';
 
 import {
-  parseActoviqGuiArgs,
-  startActoviqGuiServer,
-  type ActoviqGuiServer,
-} from './actoviqGui.js';
+  parseHadamardGuiArgs,
+  startHadamardGuiServer,
+  type HadamardGuiServer,
+} from './hadamardGui.js';
 import { resolveGuiIconPath } from './guiAssets.js';
 import { readPackageVersion } from '../cli/version.js';
 import {
-  getDefaultActoviqSettingsPath,
-  persistActoviqSettingsStore,
-} from '../config/actoviqSettingsStore.js';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+  getDefaultHadamardSettingsPath,
+  persistHadamardSettingsStore,
+} from '../config/hadamardSettingsStore.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import {
   createAppUpdateController,
   createUnsupportedAppUpdateController,
   type AppUpdateController,
 } from '../update/appUpdateService.js';
 
-let guiServer: ActoviqGuiServer | null = null;
+let guiServer: HadamardGuiServer | null = null;
 let cleanupInProgress = false;
 let quittingAfterCleanup = false;
 const { autoUpdater } = electronUpdater;
 
 if (process.platform === 'win32') {
   // Set before 'ready'. Use a stable id distinct from electron.exe's default grouping.
-  app.setAppUserModelId('com.actoviq.desktop');
+  app.setAppUserModelId('com.hadamard.desktop');
 }
 
 function executeInFocusedWindow(script: string): void {
@@ -76,7 +76,7 @@ function installApplicationMenu(): void {
     {
       label: '帮助',
       submenu: [
-        { label: 'Actoviq GUI', click: () => executeInFocusedWindow("const input=document.getElementById('promptInput');if(input){input.value='/help';document.getElementById('composer')?.requestSubmit();}") },
+        { label: 'Hadamard GUI', click: () => executeInFocusedWindow("const input=document.getElementById('promptInput');if(input){input.value='/help';document.getElementById('composer')?.requestSubmit();}") },
       ],
     },
   ];
@@ -98,29 +98,29 @@ function getUserArgs(): string[] {
 function loadWindowIcon(): { iconPath?: string; iconImage?: Electron.NativeImage } {
   const iconPath = resolveGuiIconPath();
   if (!iconPath || !existsSync(iconPath)) {
-    process.stderr.write('[actoviq-gui] warning: app icon not found — run npm run generate:icon\n');
+    process.stderr.write('[hadamard-gui] warning: app icon not found — run npm run generate:icon\n');
     return {};
   }
   const iconImage = nativeImage.createFromPath(iconPath);
   if (iconImage.isEmpty()) {
-    process.stderr.write(`[actoviq-gui] warning: could not decode icon at ${iconPath}\n`);
+    process.stderr.write(`[hadamard-gui] warning: could not decode icon at ${iconPath}\n`);
     return { iconPath };
   }
   return { iconPath, iconImage };
 }
 
 /**
- * First-launch init: ensure the Actoviq data root and a minimal `settings.json` exist
+ * First-launch init: ensure the Hadamard data root and a minimal `settings.json` exist
  * so the app boots (and the dir is present even if the user hasn't configured
  * a key yet). Idempotent — never overwrites an existing settings file, so a
- * user who already has an npm-installed `~/.actoviq` is left untouched.
+ * user who already has an npm-installed `~/.hadamard` is left untouched.
  */
-async function ensureActoviqHomeInit(args: { homeDir?: string; configPath?: string }): Promise<void> {
-  const homeDir = resolveActoviqHome(args.homeDir);
-  const configPath = args.configPath ?? getDefaultActoviqSettingsPath(homeDir);
+async function ensureHadamardHomeInit(args: { homeDir?: string; configPath?: string }): Promise<void> {
+  const homeDir = resolveHadamardHome(args.homeDir);
+  const configPath = args.configPath ?? getDefaultHadamardSettingsPath(homeDir);
   if (existsSync(configPath)) return;
   try {
-    await persistActoviqSettingsStore(configPath, {});
+    await persistHadamardSettingsStore(configPath, {});
   } catch {
     // best-effort — a failed init must not block app start.
   }
@@ -131,7 +131,7 @@ function createDesktopAppUpdater(): AppUpdateController {
   if (!app.isPackaged) {
     return createUnsupportedAppUpdateController(
       currentVersion,
-      'Development builds are not replaced automatically. Install a packaged Actoviq release to use Upgrade.',
+      'Development builds are not replaced automatically. Install a packaged Hadamard release to use Upgrade.',
     );
   }
   if (process.arch !== 'x64') {
@@ -167,7 +167,7 @@ function createDesktopAppUpdater(): AppUpdateController {
 }
 
 async function createWindow(): Promise<void> {
-  const args = parseActoviqGuiArgs(getUserArgs());
+  const args = parseHadamardGuiArgs(getUserArgs());
   if (args.version) {
     process.stdout.write(`${readPackageVersion(import.meta.url)}\n`);
     app.quit();
@@ -175,14 +175,14 @@ async function createWindow(): Promise<void> {
   }
   if (args.help) {
     process.stdout.write([
-      'actoviq-gui - Clean SDK Electron desktop UI',
+      'hadamard-gui - Clean SDK Electron desktop UI',
       '',
-      'Usage: actoviq-gui [work-dir] [options]',
+      'Usage: hadamard-gui [work-dir] [options]',
       '',
       'Options:',
       '  --host <host>              Internal host to bind (default: 127.0.0.1)',
       '  --port <port>              Internal port to bind (default: 4174)',
-      '  --config <path>            Load a specific Actoviq settings JSON file',
+      '  --config <path>            Load a specific Hadamard settings JSON file',
       '  --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)',
       '  --model <model>            Override the configured model',
       '  --resume <session-id>      Resume a stored Clean SDK session',
@@ -195,8 +195,8 @@ async function createWindow(): Promise<void> {
     return;
   }
 
-  await ensureActoviqHomeInit(args);
-  guiServer = await startActoviqGuiServer({
+  await ensureHadamardHomeInit(args);
+  guiServer = await startHadamardGuiServer({
     ...args,
     appUpdater: createDesktopAppUpdater(),
   });
@@ -208,7 +208,7 @@ async function createWindow(): Promise<void> {
     height: 860,
     minWidth: 860,
     minHeight: 620,
-    title: 'Actoviq',
+    title: 'Hadamard',
     backgroundColor: '#f3f3f3',
     show: false,
     ...(hasIcon ? { icon: iconPath } : {}),
@@ -263,8 +263,8 @@ app.on('before-quit', (event) => {
       `Managed runtime cleanup failed: ${error instanceof Error ? error.message : String(error)}. ` +
       'An E2B sandbox or Playwright session may still be active; check it manually before ' +
       'assuming billing has stopped.';
-    process.stderr.write(`[actoviq-gui] ERROR: ${message}\n`);
-    dialog.showErrorBox('Actoviq cleanup failed', message);
+    process.stderr.write(`[hadamard-gui] ERROR: ${message}\n`);
+    dialog.showErrorBox('Hadamard cleanup failed', message);
     app.exit(1);
   });
 });

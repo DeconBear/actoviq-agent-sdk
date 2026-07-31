@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('SessionGraph', () => {
   it('assigns stable legacy message ids and builds parent/child trees', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-graph-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-graph-'));
     dirs.push(dir);
     const store = new SessionStore(dir);
     const parent = await store.create({

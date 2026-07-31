@@ -29,7 +29,7 @@ npm run package:check
 
 ```bash
 npm run smoke
-npm run example:actoviq-quickstart
+npm run example:hadamard-quickstart
 ```
 
 ## 2. 常见问题
@@ -38,10 +38,10 @@ npm run example:actoviq-quickstart
 
 优先检查：
 
-1. `~/.actoviq/settings.json`
+1. `~/.hadamard/settings.json`
 2. 你是否先调用了 `loadJsonConfigFile(...)`
-3. `ACTOVIQ_AUTH_TOKEN`
-4. `ACTOVIQ_BASE_URL`
+3. `HADAMARD_AUTH_TOKEN`
+4. `HADAMARD_BASE_URL`
 
 ### 找不到 session
 
@@ -50,7 +50,7 @@ npm run example:actoviq-quickstart
 1. `session.id` 是否正确
 2. `sessionDirectory` 是否被改过
 3. 你是不是在另一个目录或另一个 `homeDir` 下创建了 session
-4. 默认目录是否在 `~/.actoviq/projects/<workspace-key>`，而不是旧版全局目录
+4. 默认目录是否在 `~/.hadamard/projects/<workspace-key>`，而不是旧版全局目录
 5. Runtime v2 是否注册了 `RuntimeServices.sessions`；只传 `sessionId` 不会自动创建存储
 
 ### 找不到工具
@@ -100,20 +100,20 @@ npm run example:actoviq-quickstart
 Hadamard SDK 本身不需要 Bridge。只有接外部 CLI 时才检查：
 
 1. 对应 CLI 是否在 `PATH`
-2. 是否设置 `ACTOVIQ_<PROVIDER>_PATH`
-3. bundle 是否已通过 `npx actoviq-link-runtime` 链接
+2. 是否设置 `HADAMARD_<PROVIDER>_PATH`
+3. bundle 是否已通过 `npx hadamard-link-runtime` 链接
 4. 详细排查见 [Bridge Runtime 附录](./bridge-runtime.md)
 
 ## 3. 常用示例命令
 
 ```bash
-npm run example:actoviq-quickstart
-npm run example:actoviq-session
-npm run example:actoviq-stream-loop
-npm run example:actoviq-skills
-npm run example:actoviq-memory
-npm run example:actoviq-dream
-npm run example:actoviq-swarm
+npm run example:hadamard-quickstart
+npm run example:hadamard-session
+npm run example:hadamard-stream-loop
+npm run example:hadamard-skills
+npm run example:hadamard-memory
+npm run example:hadamard-dream
+npm run example:hadamard-swarm
 npm run example:profiles
 ```
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import { transitionProjectIssue } from '../src/issues/issueStore.js';
 
 const tempDirs: string[] = [];
@@ -20,14 +20,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const res = await fetch(`${server.url}${requestPath}`, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -35,14 +35,14 @@ async function api<T>(
 }
 
 async function apiRaw(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<Response> {
   return fetch(`${server.url}${requestPath}`, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -50,20 +50,20 @@ async function apiRaw(
 
 describe('GUI issues API', () => {
   it('creates, transitions, comments, edits, and migrates project issues', async () => {
-    const root = await tempRoot('actoviq-gui-issues-');
+    const root = await tempRoot('hadamard-gui-issues-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(workDir, { recursive: true });
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
     const port = 48000 + Math.floor(Math.random() * 8000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',
@@ -148,7 +148,7 @@ describe('GUI issues API', () => {
       expect(migrated.status).toBe(200);
       expect(migrated.body.storage).toBe('workspace');
       expect(migrated.body.issues).toHaveLength(1);
-      await expect(readFile(path.join(workDir, '.actoviq', 'issues.json'), 'utf8')).resolves.toContain('Polish project detail issues UI');
+      await expect(readFile(path.join(workDir, '.hadamard', 'issues.json'), 'utf8')).resolves.toContain('Polish project detail issues UI');
 
       const deleted = await api<{ issues: unknown[] }>(server, 'api/issues/delete', {
         method: 'POST',
@@ -163,20 +163,20 @@ describe('GUI issues API', () => {
   });
 
   it('streams a dispatch error without starting an issue that is already in progress', async () => {
-    const root = await tempRoot('actoviq-gui-issue-start-');
+    const root = await tempRoot('hadamard-gui-issue-start-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(workDir, { recursive: true });
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
     const port = 48000 + Math.floor(Math.random() * 8000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       host: '127.0.0.1',

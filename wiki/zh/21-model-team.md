@@ -111,14 +111,14 @@ const tool = createTeamTool(definition);
 ### 定价与费用追踪
 
 - 内置 `src/team/pricing.ts`：20+ 模型定价
-- 用户覆盖：`~/.actoviq/pricing.json`
+- 用户覆盖：`~/.hadamard/pricing.json`
 - 费用追踪：每模型 input/output tokens + estimatedCost
 
 ### 团队定义持久化
 
 ```bash
-~/.actoviq/teams/security-auditors.json   # 个人
-.actoviq/teams/security-auditors.json     # 项目
+~/.hadamard/teams/security-auditors.json   # 个人
+.hadamard/teams/security-auditors.json     # 项目
 ```
 
 项目覆盖个人。通过 `loadTeamDefinition()` / `saveTeamDefinition()` 操作。

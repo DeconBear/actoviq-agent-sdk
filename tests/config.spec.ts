@@ -7,13 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   clearLoadedJsonConfig,
-  encodeActoviqProjectPath,
-  getActoviqProjectSessionDirectory,
-  loadDefaultActoviqSettings,
+  encodeHadamardProjectPath,
+  getHadamardProjectSessionDirectory,
+  loadDefaultHadamardSettings,
   loadJsonConfigFile,
   resolveRuntimeConfig,
 } from '../src/index.js';
-import { migrateLegacyActoviqProjectData } from '../src/config/projectSessionDirectory.js';
+import { migrateLegacyHadamardProjectData } from '../src/config/projectSessionDirectory.js';
 
 const tempDirs: string[] = [];
 
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 async function createTempHome(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sdk-config-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sdk-config-'));
   tempDirs.push(dir);
   await mkdir(dir, { recursive: true });
   return dir;
@@ -39,9 +39,9 @@ describe('config loading', () => {
       JSON.stringify(
         {
           env: {
-            ACTOVIQ_AUTH_TOKEN: 'test-token',
-            ACTOVIQ_BASE_URL: 'https://example.test/actoviq',
-            ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'demo-model',
+            HADAMARD_AUTH_TOKEN: 'test-token',
+            HADAMARD_BASE_URL: 'https://example.test/hadamard',
+            HADAMARD_DEFAULT_MEDIUM_MODEL: 'demo-model',
           },
         },
         null,
@@ -53,8 +53,8 @@ describe('config loading', () => {
     const settings = await loadJsonConfigFile(settingsPath);
 
     expect(settings.exists).toBe(true);
-    expect(settings.env.ACTOVIQ_AUTH_TOKEN).toBe('test-token');
-    expect(settings.env.ACTOVIQ_DEFAULT_MEDIUM_MODEL).toBe('demo-model');
+    expect(settings.env.HADAMARD_AUTH_TOKEN).toBe('test-token');
+    expect(settings.env.HADAMARD_DEFAULT_MEDIUM_MODEL).toBe('demo-model');
     expect(settings.path).toBe(settingsPath);
   });
 
@@ -67,9 +67,9 @@ describe('config loading', () => {
       JSON.stringify(
         {
           env: {
-            ACTOVIQ_AUTH_TOKEN: 'settings-token',
-            ACTOVIQ_BASE_URL: 'https://example.test/actoviq',
-            ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'settings-model',
+            HADAMARD_AUTH_TOKEN: 'settings-token',
+            HADAMARD_BASE_URL: 'https://example.test/hadamard',
+            HADAMARD_DEFAULT_MEDIUM_MODEL: 'settings-model',
           },
         },
         null,
@@ -87,12 +87,12 @@ describe('config loading', () => {
     });
 
     expect(config.authToken).toBe('settings-token');
-    expect(config.baseURL).toBe('https://example.test/actoviq');
+    expect(config.baseURL).toBe('https://example.test/hadamard');
     expect(config.model).toBe('explicit-model');
     expect(config.workDir).toBe(path.resolve('E:/demo'));
     expect(config.loadedConfigPath).toBe(settingsPath);
     expect(config.sessionDirectory).toBe(
-      getActoviqProjectSessionDirectory('E:/demo', homeDir),
+      getHadamardProjectSessionDirectory('E:/demo', homeDir),
     );
   });
 
@@ -107,30 +107,30 @@ describe('config loading', () => {
     });
 
     expect(config.sessionDirectory).toBe(
-      path.join(homeDir, '.actoviq', 'projects', encodeActoviqProjectPath(workDir)),
+      path.join(homeDir, '.hadamard', 'projects', encodeHadamardProjectPath(workDir)),
     );
     // A canonical readable prefix keeps paths recognizable while the hash
     // prevents distinct paths with the same sanitized form from sharing.
     const samplePath = process.platform === 'win32' ? 'E:\\repo\\demo' : '/home/repo/demo';
     const sampleExpected = process.platform === 'win32' ? 'e--repo-demo' : '-home-repo-demo';
-    expect(encodeActoviqProjectPath(samplePath)).toMatch(
+    expect(encodeHadamardProjectPath(samplePath)).toMatch(
       new RegExp(`^${sampleExpected}--[0-9a-f]{24}$`),
     );
 
     const collidingReadablePath = path.join(homeDir, 'workspace', 'a-b');
     const collidingLegacyPath = path.join(homeDir, 'workspace', 'a_b');
     expect(
-      encodeActoviqProjectPath(collidingReadablePath).replace(/--[0-9a-f]{24}$/u, ''),
+      encodeHadamardProjectPath(collidingReadablePath).replace(/--[0-9a-f]{24}$/u, ''),
     ).toBe(
-      encodeActoviqProjectPath(collidingLegacyPath).replace(/--[0-9a-f]{24}$/u, ''),
+      encodeHadamardProjectPath(collidingLegacyPath).replace(/--[0-9a-f]{24}$/u, ''),
     );
-    expect(encodeActoviqProjectPath(collidingReadablePath)).not.toBe(
-      encodeActoviqProjectPath(collidingLegacyPath),
+    expect(encodeHadamardProjectPath(collidingReadablePath)).not.toBe(
+      encodeHadamardProjectPath(collidingLegacyPath),
     );
-    expect(encodeActoviqProjectPath('x'.repeat(1_000)).length).toBeLessThanOrEqual(200);
+    expect(encodeHadamardProjectPath('x'.repeat(1_000)).length).toBeLessThanOrEqual(200);
     if (process.platform === 'win32') {
-      expect(encodeActoviqProjectPath('E:\\Repo\\Demo')).toBe(
-        encodeActoviqProjectPath('e:\\repo\\demo'),
+      expect(encodeHadamardProjectPath('E:\\Repo\\Demo')).toBe(
+        encodeHadamardProjectPath('e:\\repo\\demo'),
       );
     }
   });
@@ -140,20 +140,20 @@ describe('config loading', () => {
     const workDir = path.join(homeDir, 'workspace');
     const legacySessions = path.join(
       homeDir,
-      '.actoviq',
+      '.hadamard',
       'actoviq-agent-sdk',
       'sessions',
     );
     await mkdir(legacySessions, { recursive: true });
     await writeFile(
       path.join(legacySessions, 'matching.json'),
-      JSON.stringify({ id: 'matching', metadata: { __actoviqWorkDir: workDir } }),
+      JSON.stringify({ id: 'matching', metadata: { __hadamardWorkDir: workDir } }),
     );
     await writeFile(
       path.join(legacySessions, 'other.json'),
       JSON.stringify({
         id: 'other',
-        metadata: { __actoviqWorkDir: path.join(homeDir, 'other') },
+        metadata: { __hadamardWorkDir: path.join(homeDir, 'other') },
       }),
     );
 
@@ -178,10 +178,10 @@ describe('config loading', () => {
     const homeDir = await createTempHome();
     const workDir = path.join(homeDir, 'workspace', 'a-b');
     const otherWorkDir = path.join(homeDir, 'workspace', 'a_b');
-    const projectKey = encodeActoviqProjectPath(workDir);
+    const projectKey = encodeHadamardProjectPath(workDir);
     const legacyKey = projectKey.replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
-    const targetRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
+    const targetRoot = getHadamardProjectSessionDirectory(workDir, homeDir);
     const legacySessions = path.join(legacyRoot, 'sessions');
     const legacyArchive = path.join(legacyRoot, 'archive');
     const legacyExecutions = path.join(legacyRoot, 'agent-executions');
@@ -202,7 +202,7 @@ describe('config loading', () => {
         path.join(legacySessions, 'matching.json'),
         JSON.stringify({
           id: 'matching',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -234,7 +234,7 @@ describe('config loading', () => {
         path.join(legacySessions, 'other.json'),
         JSON.stringify({
           id: 'other',
-          metadata: { __actoviqWorkDir: otherWorkDir },
+          metadata: { __hadamardWorkDir: otherWorkDir },
         }),
       ),
       writeFile(
@@ -245,7 +245,7 @@ describe('config loading', () => {
         path.join(legacySessions, '...json'),
         JSON.stringify({
           id: 'unsafe-storage-id',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -253,7 +253,7 @@ describe('config loading', () => {
         JSON.stringify({
           id: 'explicit-other-child',
           parentSessionId: 'matching',
-          metadata: { __actoviqWorkDir: otherWorkDir },
+          metadata: { __hadamardWorkDir: otherWorkDir },
         }),
       ),
       writeFile(
@@ -263,7 +263,7 @@ describe('config loading', () => {
           parentSessionId: 'matching',
           originalWorkDir: workDir,
           metadata: {
-            __actoviqWorkDir: path.join(workDir, '.worktrees', 'child'),
+            __hadamardWorkDir: path.join(workDir, '.worktrees', 'child'),
           },
         }),
       ),
@@ -271,7 +271,7 @@ describe('config loading', () => {
         path.join(legacySessions, 'conflicting-target.json'),
         JSON.stringify({
           id: 'conflicting-target',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -282,14 +282,14 @@ describe('config loading', () => {
         path.join(targetRoot, 'sessions', 'conflicting-target.json'),
         JSON.stringify({
           id: 'conflicting-target',
-          metadata: { __actoviqWorkDir: otherWorkDir },
+          metadata: { __hadamardWorkDir: otherWorkDir },
         }),
       ),
       writeFile(
         path.join(legacySessions, 'existing-owner.json'),
         JSON.stringify({
           id: 'existing-owner',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -300,7 +300,7 @@ describe('config loading', () => {
         path.join(targetRoot, 'sessions', 'existing-owner.json'),
         JSON.stringify({
           id: 'existing-owner',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -311,7 +311,7 @@ describe('config loading', () => {
         path.join(legacyArchive, 'archived.json'),
         JSON.stringify({
           id: 'archived',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -370,7 +370,7 @@ describe('config loading', () => {
       ),
     ]);
 
-    const summary = await migrateLegacyActoviqProjectData({
+    const summary = await migrateLegacyHadamardProjectData({
       homeDir,
       workDir,
       targetDirectory: targetRoot,
@@ -478,16 +478,16 @@ describe('config loading', () => {
     ).resolves.toContain('"in_progress"');
 
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: targetRoot,
       }),
     ).resolves.toMatchObject({ total: 0 });
 
-    const otherTargetRoot = getActoviqProjectSessionDirectory(otherWorkDir, homeDir);
+    const otherTargetRoot = getHadamardProjectSessionDirectory(otherWorkDir, homeDir);
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir: otherWorkDir,
         targetDirectory: otherTargetRoot,
@@ -526,9 +526,9 @@ describe('config loading', () => {
   it('copies singleton project artifacts only when legacy ownership is unambiguous', async () => {
     const homeDir = await createTempHome();
     const workDir = path.join(homeDir, 'workspace', 'unique-owner');
-    const legacyKey = encodeActoviqProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
-    const targetRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+    const legacyKey = encodeHadamardProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
+    const targetRoot = getHadamardProjectSessionDirectory(workDir, homeDir);
     await Promise.all([
       mkdir(path.join(legacyRoot, 'sessions'), { recursive: true }),
       mkdir(path.join(legacyRoot, 'mailboxes'), { recursive: true }),
@@ -538,7 +538,7 @@ describe('config loading', () => {
         path.join(legacyRoot, 'sessions', 'owned.json'),
         JSON.stringify({
           id: 'owned',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -550,7 +550,7 @@ describe('config loading', () => {
     ]);
 
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: targetRoot,
@@ -574,12 +574,12 @@ describe('config loading', () => {
     const workDir = path.join(homeDir, 'workspace', 'worktree-owner');
     const temporaryWorktree = path.join(
       os.tmpdir(),
-      'actoviq-worktree-migration',
+      'hadamard-worktree-migration',
       path.basename(homeDir),
     );
-    const legacyKey = encodeActoviqProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
-    const targetRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+    const legacyKey = encodeHadamardProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
+    const targetRoot = getHadamardProjectSessionDirectory(workDir, homeDir);
     await Promise.all([
       mkdir(path.join(legacyRoot, 'sessions'), { recursive: true }),
       mkdir(path.join(legacyRoot, 'agent-executions'), { recursive: true }),
@@ -590,7 +590,7 @@ describe('config loading', () => {
         path.join(legacyRoot, 'sessions', 'root-session.json'),
         JSON.stringify({
           id: 'root-session',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -600,9 +600,9 @@ describe('config loading', () => {
           kind: 'agent',
           parentSessionId: 'root-session',
           metadata: {
-            __actoviqWorkDir: temporaryWorktree,
-            __actoviqAgentWorktreePath: temporaryWorktree,
-            __actoviqAgentDefinition: 'reviewer',
+            __hadamardWorkDir: temporaryWorktree,
+            __hadamardAgentWorktreePath: temporaryWorktree,
+            __hadamardAgentDefinition: 'reviewer',
           },
         }),
       ),
@@ -636,7 +636,7 @@ describe('config loading', () => {
     ]);
 
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: targetRoot,
@@ -672,16 +672,16 @@ describe('config loading', () => {
     const homeDir = await createTempHome();
     const workDir = path.join(homeDir, 'Workspace', 'a-b');
     const otherWorkDir = path.join(homeDir, 'workspace', 'a_b');
-    const legacyKey = encodeActoviqProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
-    const targetRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+    const legacyKey = encodeHadamardProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
+    const targetRoot = getHadamardProjectSessionDirectory(workDir, homeDir);
     await mkdir(path.join(legacyRoot, 'sessions'), { recursive: true });
     await Promise.all([
       writeFile(
         path.join(legacyRoot, 'sessions', 'owned.json'),
         JSON.stringify({
           id: 'owned',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
@@ -689,7 +689,7 @@ describe('config loading', () => {
         JSON.stringify({ status: 'in_progress' }),
       ),
       writeFile(
-        path.join(homeDir, '.actoviq', 'workspaces.json'),
+        path.join(homeDir, '.hadamard', 'workspaces.json'),
         JSON.stringify({
           workspaces: [
             { path: workDir },
@@ -700,7 +700,7 @@ describe('config loading', () => {
     ]);
 
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: targetRoot,
@@ -719,8 +719,8 @@ describe('config loading', () => {
     const homeDir = await createTempHome();
     const workDir = path.join(homeDir, 'workspace', 'same-id');
     const otherWorkDir = path.join(homeDir, 'workspace', 'same_id');
-    const legacyKey = encodeActoviqProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
+    const legacyKey = encodeHadamardProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
     const sessionsDir = path.join(legacyRoot, 'sessions');
     const executionsDir = path.join(legacyRoot, 'agent-executions');
     const tasksDir = path.join(legacyRoot, 'tasks');
@@ -734,14 +734,14 @@ describe('config loading', () => {
         path.join(sessionsDir, 'parent-a.json'),
         JSON.stringify({
           id: 'shared-parent',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(
         path.join(sessionsDir, 'parent-b.json'),
         JSON.stringify({
           id: 'shared-parent',
-          metadata: { __actoviqWorkDir: otherWorkDir },
+          metadata: { __hadamardWorkDir: otherWorkDir },
         }),
       ),
       writeFile(
@@ -773,8 +773,8 @@ describe('config loading', () => {
     ]);
 
     for (const candidate of [workDir, otherWorkDir]) {
-      const targetRoot = getActoviqProjectSessionDirectory(candidate, homeDir);
-      await migrateLegacyActoviqProjectData({
+      const targetRoot = getHadamardProjectSessionDirectory(candidate, homeDir);
+      await migrateLegacyHadamardProjectData({
         homeDir,
         workDir: candidate,
         targetDirectory: targetRoot,
@@ -798,8 +798,8 @@ describe('config loading', () => {
     const homeDir = await createTempHome();
     const workDir = path.join(homeDir, 'workspace', 'explicit-owner');
     const otherWorkDir = path.join(homeDir, 'workspace', 'explicit_owner');
-    const legacyKey = encodeActoviqProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
-    const legacyRoot = path.join(homeDir, '.actoviq', 'projects', legacyKey);
+    const legacyKey = encodeHadamardProjectPath(workDir).replace(/--[0-9a-f]{24}$/u, '');
+    const legacyRoot = path.join(homeDir, '.hadamard', 'projects', legacyKey);
     const sessionsDir = path.join(legacyRoot, 'sessions');
     const executionsDir = path.join(legacyRoot, 'agent-executions');
     const tasksDir = path.join(legacyRoot, 'tasks');
@@ -813,7 +813,7 @@ describe('config loading', () => {
         path.join(sessionsDir, 'owned.json'),
         JSON.stringify({
           id: 'shared-session',
-          metadata: { __actoviqWorkDir: workDir },
+          metadata: { __hadamardWorkDir: workDir },
         }),
       ),
       writeFile(path.join(sessionsDir, 'unreadable.json'), '{'),
@@ -843,9 +843,9 @@ describe('config loading', () => {
       ),
     ]);
 
-    const targetRoot = getActoviqProjectSessionDirectory(workDir, homeDir);
+    const targetRoot = getHadamardProjectSessionDirectory(workDir, homeDir);
     await expect(
-      migrateLegacyActoviqProjectData({
+      migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: targetRoot,
@@ -895,10 +895,10 @@ describe('config loading', () => {
       settingsPath,
       JSON.stringify({
         env: {
-          ACTOVIQ_AUTH_TOKEN: 'settings-token',
-          ACTOVIQ_DEFAULT_MIN_MODEL: 'small-model',
-          ACTOVIQ_DEFAULT_MEDIUM_MODEL: 'balanced-model',
-          ACTOVIQ_DEFAULT_MAX_MODEL: 'large-model',
+          HADAMARD_AUTH_TOKEN: 'settings-token',
+          HADAMARD_DEFAULT_MIN_MODEL: 'small-model',
+          HADAMARD_DEFAULT_MEDIUM_MODEL: 'balanced-model',
+          HADAMARD_DEFAULT_MAX_MODEL: 'large-model',
         },
       }),
       'utf8',
@@ -952,16 +952,16 @@ describe('config loading', () => {
   it('resolves runtime config from process environment variables', async () => {
     const homeDir = await createTempHome();
     const previous = {
-      token: process.env.ACTOVIQ_AUTH_TOKEN,
-      provider: process.env.ACTOVIQ_PROVIDER,
-      model: process.env.ACTOVIQ_MODEL,
-      baseURL: process.env.ACTOVIQ_BASE_URL,
+      token: process.env.HADAMARD_AUTH_TOKEN,
+      provider: process.env.HADAMARD_PROVIDER,
+      model: process.env.HADAMARD_MODEL,
+      baseURL: process.env.HADAMARD_BASE_URL,
     };
 
-    process.env.ACTOVIQ_AUTH_TOKEN = 'env-token';
-    process.env.ACTOVIQ_PROVIDER = 'openai';
-    process.env.ACTOVIQ_MODEL = 'env-model';
-    process.env.ACTOVIQ_BASE_URL = 'https://example.test/env';
+    process.env.HADAMARD_AUTH_TOKEN = 'env-token';
+    process.env.HADAMARD_PROVIDER = 'openai';
+    process.env.HADAMARD_MODEL = 'env-model';
+    process.env.HADAMARD_BASE_URL = 'https://example.test/env';
 
     try {
       const config = await resolveRuntimeConfig({ homeDir });
@@ -971,30 +971,30 @@ describe('config loading', () => {
       expect(config.model).toBe('env-model');
       expect(config.baseURL).toBe('https://example.test/env');
     } finally {
-      if (previous.token === undefined) delete process.env.ACTOVIQ_AUTH_TOKEN;
-      else process.env.ACTOVIQ_AUTH_TOKEN = previous.token;
-      if (previous.provider === undefined) delete process.env.ACTOVIQ_PROVIDER;
-      else process.env.ACTOVIQ_PROVIDER = previous.provider;
-      if (previous.model === undefined) delete process.env.ACTOVIQ_MODEL;
-      else process.env.ACTOVIQ_MODEL = previous.model;
-      if (previous.baseURL === undefined) delete process.env.ACTOVIQ_BASE_URL;
-      else process.env.ACTOVIQ_BASE_URL = previous.baseURL;
+      if (previous.token === undefined) delete process.env.HADAMARD_AUTH_TOKEN;
+      else process.env.HADAMARD_AUTH_TOKEN = previous.token;
+      if (previous.provider === undefined) delete process.env.HADAMARD_PROVIDER;
+      else process.env.HADAMARD_PROVIDER = previous.provider;
+      if (previous.model === undefined) delete process.env.HADAMARD_MODEL;
+      else process.env.HADAMARD_MODEL = previous.model;
+      if (previous.baseURL === undefined) delete process.env.HADAMARD_BASE_URL;
+      else process.env.HADAMARD_BASE_URL = previous.baseURL;
     }
   });
 
-  it('loads the default Actoviq settings from ~/.actoviq/settings.json only', async () => {
+  it('loads the default Hadamard settings from ~/.hadamard/settings.json only', async () => {
     const homeDir = await createTempHome();
-    const actoviqDir = path.join(homeDir, '.actoviq');
-    const settingsPath = path.join(actoviqDir, 'settings.json');
+    const hadamardDir = path.join(homeDir, '.hadamard');
+    const settingsPath = path.join(hadamardDir, 'settings.json');
 
-    await mkdir(actoviqDir, { recursive: true });
+    await mkdir(hadamardDir, { recursive: true });
     await writeFile(
       settingsPath,
       JSON.stringify(
         {
           env: {
-            ACTOVIQ_AUTH_TOKEN: 'bridge-token',
-            ACTOVIQ_BASE_URL: 'https://example.test/runtime',
+            HADAMARD_AUTH_TOKEN: 'bridge-token',
+            HADAMARD_BASE_URL: 'https://example.test/runtime',
           },
         },
         null,
@@ -1003,9 +1003,9 @@ describe('config loading', () => {
       'utf8',
     );
 
-    const settings = await loadDefaultActoviqSettings({ homeDir });
+    const settings = await loadDefaultHadamardSettings({ homeDir });
 
     expect(settings.path).toBe(settingsPath);
-    expect(settings.env.ACTOVIQ_AUTH_TOKEN).toBe('bridge-token');
+    expect(settings.env.HADAMARD_AUTH_TOKEN).toBe('bridge-token');
   });
 });

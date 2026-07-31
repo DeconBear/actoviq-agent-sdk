@@ -31,7 +31,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionGraph
     );
     item.description = `${session.status ?? 'active'} · ${session.messages?.length ?? 0}`;
     item.command = {
-      command: 'actoviq.openSession',
+      command: 'hadamard.openSession',
       title: 'Open Session',
       arguments: [session.id],
     };

@@ -76,18 +76,18 @@ describe('GitHub plugin', () => {
       _args: string[],
       _options: { env: NodeJS.ProcessEnv },
     ) => ({
-      stdout: '{"name":"actoviq","private":true}\n',
+      stdout: '{"name":"hadamard","private":true}\n',
       stderr: '',
     }));
     const plugin = createGitHubPlugin({ execFile, env: {} });
 
-    const result = await plugin.readApi('repos/acme/actoviq');
+    const result = await plugin.readApi('repos/acme/hadamard');
 
-    expect(result).toEqual({ name: 'actoviq', private: true });
+    expect(result).toEqual({ name: 'hadamard', private: true });
     expect(plugin.actions.readApi.isDestructive).toBe(false);
     expect(execFile.mock.calls[0]?.[1]).toEqual([
       'api',
-      'repos/acme/actoviq',
+      'repos/acme/hadamard',
       '--hostname',
       'github.com',
       '--method',
@@ -104,7 +104,7 @@ describe('GitHub plugin', () => {
     const plugin = createGitHubPlugin({ execFile, env: {} });
 
     const result = await plugin.actions.writeApi.execute({
-      endpoint: 'repos/acme/actoviq/issues',
+      endpoint: 'repos/acme/hadamard/issues',
       method: 'POST',
       fields: {
         title: 'Fix plugin',
@@ -117,7 +117,7 @@ describe('GitHub plugin', () => {
     expect(plugin.actions.deleteApi.isDestructive).toBe(true);
     expect(execFile.mock.calls[0]?.[1]).toEqual([
       'api',
-      'repos/acme/actoviq/issues',
+      'repos/acme/hadamard/issues',
       '--hostname',
       'github.com',
       '--method',
@@ -141,7 +141,7 @@ describe('GitHub plugin', () => {
       q: '@C:\\private\\query.txt',
     });
     await plugin.writeApi({
-      endpoint: 'repos/acme/actoviq/issues',
+      endpoint: 'repos/acme/hadamard/issues',
       method: 'POST',
       fields: {
         body: '@C:\\private\\body.txt',
@@ -160,7 +160,7 @@ describe('GitHub plugin', () => {
     ]);
     expect(execFile.mock.calls[1]?.[1]).toEqual([
       'api',
-      'repos/acme/actoviq/issues',
+      'repos/acme/hadamard/issues',
       '--hostname',
       'github.com',
       '--method',

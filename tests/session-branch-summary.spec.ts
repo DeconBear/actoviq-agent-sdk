@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('summarizeSessionBranch', () => {
   it('returns branch identity and transcript preview', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-branch-summary-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-branch-summary-'));
     dirs.push(dir);
     const store = new SessionStore(dir);
     const session = await store.create({

@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('AuditLog', () => {
   it('redacts nested secrets before durable append', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-audit-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-audit-'));
     dirs.push(dir);
     const log = new AuditLog(path.join(dir, 'audit.ndjson'));
     await log.append({

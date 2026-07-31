@@ -17,7 +17,7 @@ const keys = loadBenchKeys();
 
 export const MINIMAX_KEY = process.env.MINIMAX_API_KEY || keys.MINIMAX_API_KEY || '';
 export const TAVILY_KEY  = process.env.TAVILY_API_KEY  || keys.TAVILY_API_KEY  || '';
-export const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || keys.DEEPSEEK_API_KEY || process.env.ACTOVIQ_AUTH_TOKEN || '';
+export const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY || keys.DEEPSEEK_API_KEY || process.env.HADAMARD_AUTH_TOKEN || '';
 
 // Model configurations (max context/output per official docs)
 export const MODELS = {

@@ -1,0 +1,10 @@
+{
+  "name": "Test subagent",
+  "mode": "graph",
+  "version": 3,
+  "orchestration": "graph",
+  "squadType": "subagent",
+  "members": [],
+  "nodes": [],
+  "edges": []
+}

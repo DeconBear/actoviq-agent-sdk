@@ -12,11 +12,11 @@ import {
 } from '../../src/providers-v2/legacy.js';
 import { ModelRegistry } from '../../src/providers-v2/registry.js';
 import { AsyncQueue } from '../../src/runtime/asyncQueue.js';
-import { prepareActoviqProviderRequestMessages } from '../../src/runtime/actoviqApiMicrocompact.js';
+import { prepareHadamardProviderRequestMessages } from '../../src/runtime/hadamardApiMicrocompact.js';
 import { RuntimeServices } from '../../src/runtime-v2/services.js';
 import { RunTreeController } from '../../src/orchestration/scope.js';
 import { SqliteStorageV2 } from '../../src/storage-v2/sqliteStorage.js';
-import type { ActoviqCompactConfig } from '../../src/types.js';
+import type { HadamardCompactConfig } from '../../src/types.js';
 
 import { invariant, measureCpu, metric } from './benchmark.js';
 import { createFakeMcpClient, DeterministicModelProvider } from './fakes.js';
@@ -493,7 +493,7 @@ export async function benchmarkCompaction(
     beforeCpu.push(before.cpuMs);
     beforeBytes.push(before.value);
 
-    const transformed = measureCpu(() => prepareActoviqProviderRequestMessages(
+    const transformed = measureCpu(() => prepareHadamardProviderRequestMessages(
       messages,
       COMPACTION_CONFIG,
       { localToolResultMicrocompact: true, force: true },
@@ -733,7 +733,7 @@ function deterministicChecksum(itemCount: number): number {
   return (itemCount * (itemCount - 1)) / 2;
 }
 
-const COMPACTION_CONFIG: ActoviqCompactConfig = {
+const COMPACTION_CONFIG: HadamardCompactConfig = {
   enabled: true,
   autoCompactThresholdTokens: 1,
   preserveRecentMessages: 2,

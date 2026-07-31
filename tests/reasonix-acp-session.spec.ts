@@ -79,7 +79,7 @@ describe('Reasonix ACP session state machine', () => {
       method: 'initialize',
       params: {
         protocolVersion: 1,
-        clientInfo: { name: 'actoviq-agent-sdk', title: 'Actoviq' },
+        clientInfo: { name: 'actoviq-agent-sdk', title: 'Hadamard' },
         clientCapabilities: {},
       },
     });

@@ -1,19 +1,19 @@
-# Actoviq Agent SDK
+# Hadamard Agent SDK
 
-[![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
-[![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
+[![CI](https://github.com/DeconBear/hadamard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/hadamard/actions/workflows/ci.yml)
+[![Publish npm Package](https://github.com/DeconBear/hadamard/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/hadamard/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
-[![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/actoviq-agent-sdk/)
+[![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/hadamard/)
 
 [English](./README.md) | [Chinese](./README-zh.md)
 
-Documentation site: https://deconbear.github.io/actoviq-agent-sdk/
+Documentation site: https://deconbear.github.io/hadamard/
 
-**Actoviq** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**.
+**Hadamard** (`0.4.x`) is a TypeScript agent SDK and agent-team platform with TUI, GUI, Bridge, and multi-agent collaboration. A future **1.0** line will stabilize package subpath contracts; that surface is **not published yet**.
 
 > **Note:** The desktop **Agent graph** orchestration UI (visual team / graph editor) is **still under active iteration and optimization** — expect UX and API changes. Prefer `/team`, saved team definitions, and the SDK `createTeam()` / graph runtime for production workflows today. See `CHANGELOG.md`.
 
-Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Actoviq remains independent with its own public surface and documentation.
+Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Hadamard remains independent with its own public surface and documentation.
 
 ## Vision
 
@@ -24,11 +24,11 @@ Inspired by Claude Code, Codex, Deepagents, and the broader agent ecosystem. Act
 ## Highlights
 
 - **Model Team** — `panel-analysis` (parallel investigation + convergence) and `reviewer` (verifiable-issues-only auditor). Runtime-owned member pooling, streamed `TeamEvent`s, per-member provider config, and inherited permission/retry boundaries.
-- **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.actoviq/routers/`.
+- **Model Router / Leader-Dispatch** — a leader classifies each turn and dispatches it to the best specialist route (any model/provider), runs normally, and the executor may itself convene a team. Profiles in `~/.hadamard/routers/`.
 - **Dynamic Workflows** — JS script-based orchestration with explicit trust levels: trusted compatibility execution, isolated local-process execution, or a host-supplied remote/container sandbox for adversarial inputs.
 - **Bridge (named runtime configs)** — choose `Direct API` for provider-level reuse, or `External CLI` to launch installed Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush; reuse each CLI's native login/config, stream normalized tool and assistant events, stop background work, and browse/resume supported native conversations. An explicit key override is injected only into the child and is not written to the CLI's credential store; Pi, CodeWhale, Reasonix, and Crush keep isolated per-config session profiles so that key-mode history survives restarts without reading the native login store.
-- **Desktop GUI (`actoviq-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened. Global **Assistant** FAB (Global/Project scope). The visual **Agent graph** orchestration UI is shipping in-progress and continues to be iterated (not a stable product surface yet).
-- **TUI (`actoviq-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
+- **Desktop GUI (`hadamard-gui`)** — Electron chat UI: streamed transcript, conversation history, command palette, settings, per-tool permission prompts. Security-hardened. Global **Assistant** FAB (Global/Project scope). The visual **Agent graph** orchestration UI is shipping in-progress and continues to be iterated (not a stable product surface yet).
+- **TUI (`hadamard-tui`)** — Terminal UI with 25+ slash commands, Claude Code-style UX: `/team`, `/bridge`, `/plan`, `/hooks`, `/mcp`, `/review`, `/context`, `/cost`, `/doctor`, and more. Live status spinner, scrollback transcript, todo panel, permission dialogs with project/user scope, sub-command autocomplete.
 - **Plan mode + hooks** — `EnterPlanMode`/`ExitPlanMode` tools with plan file; user-configurable `PreToolUse`/`PostToolUse`/`SessionStart` hooks from `settings.json`.
 - **Worktree Tools** — `EnterWorktree`/`ExitWorktree` with stack-based cwd, `.worktreeinclude`, PR checkout.
 - **TavilySearch** — AI-optimized web search, pure TypeScript.
@@ -64,7 +64,7 @@ npm install actoviq-agent-sdk zod
 For local examples, place your config at:
 
 ```text
-~/.actoviq/settings.json
+~/.hadamard/settings.json
 ```
 
 You can also preload a custom JSON file with `loadJsonConfigFile(...)`.
@@ -101,8 +101,8 @@ Existing 0.x applications may keep importing `createAgentSdk` from the package r
 Run the repository examples with:
 
 ```bash
-npm run example:actoviq-quickstart
-npm run example:actoviq-agent-helpers
+npm run example:hadamard-quickstart
+npm run example:hadamard-agent-helpers
 npm run example:profiles
 ```
 
@@ -111,7 +111,7 @@ npm run example:profiles
 After installing the package, you can start an interactive scrollback-mode REPL directly from the terminal:
 
 ```bash
-npx actoviq-react [work-dir]
+npx hadamard-react [work-dir]
 ```
 
 This launches a readline-based interactive agent with:
@@ -120,17 +120,17 @@ This launches a readline-based interactive agent with:
 - Command history via ↑↓ arrow keys
 - Ctrl+C to abort the current request, press twice to exit
 
-**Note:** `actoviq-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging. For the full terminal UI, use `actoviq-tui` below.
+**Note:** `hadamard-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging. For the full terminal UI, use `hadamard-tui` below.
 
 ## Terminal UI (TUI)
 
-`actoviq-tui` is the full terminal UI, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
+`hadamard-tui` is the full terminal UI, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
 
 ```bash
-npx actoviq-tui [work-dir] [options]
+npx hadamard-tui [work-dir] [options]
 
 # Options
-#   --config <path>            Load a specific Actoviq settings JSON file
+#   --config <path>            Load a specific Hadamard settings JSON file
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
 #   --model <model>            Override the configured model
 #   --resume <session-id>      Resume a stored Hadamard SDK session
@@ -151,25 +151,25 @@ Features:
 - **Bridge configs** — `/bridge config` manages named API or External CLI profiles for all six managed CLIs. `/bridge status`, `/bridge background`, `/bridge runs`, `/bridge stop`, `/bridge history`, and `/bridge resume` expose the same runtime lifecycle in the TUI and GUI; native history/resume remains subject to each installed CLI's protocol/version support.
 - **Diagnostics + inspection** — `/doctor` checks config health; `/context` inspects the context window; `/cost`/`/usage` track token + spend (per-config breakdown); `/review` reviews the git diff; `/stats` shows session stats.
 - **Context management built in** — the Hadamard SDK auto-compacts long sessions mid-run (full summary compact) and reactively recovers when a provider rejects an oversized prompt; notices surface as ∿ context compacted. History stays **append-only** between turns so automatic prefix caches (e.g. DeepSeek Context Caching) stay hot; Anthropic hosts still get explicit cache_control breakpoints. Oversized tool outputs are artifacted at write time rather than rewriting earlier messages.
-- **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.actoviq/mcp.json`.
+- **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.hadamard/mcp.json`.
 - **Image attachments** — `@<path>.png` tokens expand into image content blocks (in-process, read as base64).
 
-Both CLIs share the same Hadamard SDK runtime defaults (Actoviq settings from `~/.actoviq/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and run against any Anthropic-compatible or OpenAI-compatible provider.
+Both CLIs share the same Hadamard SDK runtime defaults (Hadamard settings from `~/.hadamard/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and run against any Anthropic-compatible or OpenAI-compatible provider.
 
-By default, Hadamard SDK sessions are scoped to the current workspace under `~/.actoviq/projects/<workspace-key>`. Explicit `sessionDirectory` settings still take precedence.
+By default, Hadamard SDK sessions are scoped to the current workspace under `~/.hadamard/projects/<workspace-key>`. Explicit `sessionDirectory` settings still take precedence.
 
-Model tiers are provider-neutral aliases. Configure them with `ACTOVIQ_DEFAULT_MIN_MODEL`, `ACTOVIQ_DEFAULT_MEDIUM_MODEL`, and `ACTOVIQ_DEFAULT_MAX_MODEL`, then use `min`, `medium`, or `max` anywhere a model can be selected.
+Model tiers are provider-neutral aliases. Configure them with `HADAMARD_DEFAULT_MIN_MODEL`, `HADAMARD_DEFAULT_MEDIUM_MODEL`, and `HADAMARD_DEFAULT_MAX_MODEL`, then use `min`, `medium`, or `max` anywhere a model can be selected.
 
-## Desktop GUI (`actoviq-gui`)
+## Desktop GUI (`hadamard-gui`)
 
 A local Electron desktop chat UI for the Hadamard SDK.
 
 ```bash
-npx actoviq-gui [work-dir] [options]
+npx hadamard-gui [work-dir] [options]
 
 # Options
 #   --port <port>              Internal port to bind (default: 4174, auto-fallback if busy)
-#   --config <path>            Load a specific Actoviq settings JSON file
+#   --config <path>            Load a specific Hadamard settings JSON file
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
 #   --model <model>            Override the configured model
 #   --resume <session-id>      Resume a stored session
@@ -185,21 +185,21 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 - **Project Documents + Issues** — each Project detail page has `Document` and `Issues` tabs. Issues use the guarded `backlog → todo → in_progress → in_review/blocked → done` lifecycle, support priorities, labels, acceptance criteria, comments, and links back to their worker sessions.
 - **Agent graph orchestration UI** — visual team/graph editor lives in the GUI **Agent** region; **it is still being iterated and optimized** and should not be treated as a finished product surface. Prefer saved teams + `/team` / SDK APIs for stable workflows.
 - **Agent Profiles for issue dispatch** — Settings → Models & routing can bind a named profile to a saved bridge config and model. `/issues start <id> [agent-profile]` asks the Project Manager for a worker brief, starts a linked session without changing the globally active runtime, and requires the worker to report through `IssueReport`.
-- **Movable data root** — Settings → General can copy the complete Actoviq data root to an empty directory, validate it, write the bootstrap pointer, rebuild the SDK/session store, and retain the previous directory for manual cleanup.
+- **Movable data root** — Settings → General can copy the complete Hadamard data root to an empty directory, validate it, write the bootstrap pointer, rebuild the SDK/session store, and retain the previous directory for manual cleanup.
 
 **Security model:** the internal API is reachable only from loopback (Host + Origin allowlist, which defeats DNS-rebinding / CSRF) and requires a per-process token; the page ships a strict Content-Security-Policy. Electron runs with `sandbox`, `contextIsolation`, and no `nodeIntegration`.
 
-Actoviq resolves its data root in this order: an explicit SDK `homeDir`, `ACTOVIQ_HOME`, `~/.actoviq/data-root.json`, then `~/.actoviq`. Project issues default to `<data-root>/projects/<workspace-key>/issues.json`; a project can instead use the protected workspace file `.actoviq/issues.json`.
+Hadamard resolves its data root in this order: an explicit SDK `homeDir`, `HADAMARD_HOME`, `~/.hadamard/data-root.json`, then `~/.hadamard`. Project issues default to `<data-root>/projects/<workspace-key>/issues.json`; a project can instead use the protected workspace file `.hadamard/issues.json`.
 
 > `electron` and `bun` are **optional** dependencies — installed only if you use the GUI / bridge runtime. The core SDK does not require them.
 >
-> **Bridge env overrides:** `ACTOVIQ_CLAUDE_PATH`, `ACTOVIQ_PI_PATH`, … (one per provider) to point the bridge at a specific runtime binary when it's not on `PATH`. See `docs/en/05-bridge-runtime.md`.
+> **Bridge env overrides:** `HADAMARD_CLAUDE_PATH`, `HADAMARD_PI_PATH`, … (one per provider) to point the bridge at a specific runtime binary when it's not on `PATH`. See `docs/en/05-bridge-runtime.md`.
 
 ## Developer notes
 
 - **Build before launching the CLIs/GUI:** `npm run build` (clean + `tsc`). Type-check only with `npm run typecheck`; run the suite with `npm test -- --run`.
 - **Team behavior is centralized:** extend teams through `src/team/teamRuntime.ts` (`runMemberAgent` / `buildMemberIdentities` / `preflightMember`) rather than duplicating per-mode logic. Observe a run via `team.ask(prompt, signal, { onEvent })` and inspect `result.memberStatuses` / `result.incompleteReason`.
-- **Router profiles are leader/dispatch configs:** a `RouterProfile` is a leader (`routerModel`) + a roster of specialist `routes` (each with `when` and optional `role` / `description`). `BUILT_IN_ROUTER_PROFILES` ships a ready-made `dispatch` profile; a user file of the same name in `.actoviq/routers/` shadows it.
+- **Router profiles are leader/dispatch configs:** a `RouterProfile` is a leader (`routerModel`) + a roster of specialist `routes` (each with `when` and optional `role` / `description`). `BUILT_IN_ROUTER_PROFILES` ships a ready-made `dispatch` profile; a user file of the same name in `.hadamard/routers/` shadows it.
 - **`CLAUDE.md` is intentionally git-ignored** in this repo — keep contributor-facing docs here in the README (or under `docs/`), not in `CLAUDE.md`.
 
 ## Tutorials
@@ -207,13 +207,13 @@ Actoviq resolves its data root in this order: an explicit SDK `homeDir`, `ACTOVI
 - English tutorial: [docs/en/README.md](./docs/en/README.md)
 - Chinese tutorial: [docs/zh/README.md](./docs/zh/README.md)
 - GitHub Pages docs site:
-  - https://deconbear.github.io/actoviq-agent-sdk/
+  - https://deconbear.github.io/hadamard/
 
 Start with these examples:
 
-- [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
-- [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
-- [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+- [examples/hadamard-quickstart.ts](./examples/hadamard-quickstart.ts)
+- [examples/hadamard-workflow.ts](./examples/hadamard-workflow.ts)
+- [examples/hadamard-agent-helpers.ts](./examples/hadamard-agent-helpers.ts)
 - [examples/profiles/all-profiles.ts](./examples/profiles/all-profiles.ts)
 
 Architecture and operations:

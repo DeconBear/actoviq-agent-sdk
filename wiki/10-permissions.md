@@ -6,7 +6,7 @@ The permissions system decides whether a tool call is allowed, denied, or
 requires user approval. It evaluates a priority-ordered chain of rules,
 safety checks, mode defaults, and interactive approvers.
 
-Location: `src/runtime/actoviqPermissions.ts`
+Location: `src/runtime/hadamardPermissions.ts`
 
 ### Permission Modes
 
@@ -22,7 +22,7 @@ Location: `src/runtime/actoviqPermissions.ts`
 ### Decision Pipeline
 
 ```
-decideActoviqToolPermission(input)
+decideHadamardToolPermission(input)
     │
     ├── 1. Check deny rules (wildcard match against toolName + input)
     │       → match found → DENY
@@ -76,7 +76,7 @@ decideActoviqToolPermission(input)
 Rules use wildcard patterns (glob-style `*` matching):
 
 ```typescript
-interface ActoviqPermissionRule {
+interface HadamardPermissionRule {
   toolName: string;      // Wildcard pattern (e.g., "Bash*", "*Edit*")
   behavior: 'allow' | 'deny' | 'ask';
   matcher?: string;      // Optional: match against JSON.stringify(input)
@@ -104,12 +104,12 @@ edits are pre-approved in accept-edits mode.
 
 ## Code Details
 
-### `decideActoviqToolPermission()` Core Logic
+### `decideHadamardToolPermission()` Core Logic
 
 ```typescript
-export async function decideActoviqToolPermission(
+export async function decideHadamardToolPermission(
   input: PermissionInput,
-): Promise<ActoviqPermissionDecision> {
+): Promise<HadamardPermissionDecision> {
   // 1. Deny rules take priority
   const denyRule = input.rules.find(r =>
     r.behavior === 'deny' && matchesRule(r, input.publicName, input.toolInput));
@@ -127,7 +127,7 @@ export async function decideActoviqToolPermission(
     const result = await input.adapter.checkPermissions({ mode, runId, sessionId });
     if (result === 'deny') return decision(input, 'deny', '...', 'mode');
     if (result === 'allow') return decision(input, 'allow', '...', 'mode');
-    if (result === 'ask') return resolveActoviqAskPermission(input, baseDecision);
+    if (result === 'ask') return resolveHadamardAskPermission(input, baseDecision);
   }
 
   // 4-14. Continue through remaining checks...
@@ -138,7 +138,7 @@ export async function decideActoviqToolPermission(
 ### `Decision` Object
 
 ```typescript
-interface ActoviqPermissionDecision {
+interface HadamardPermissionDecision {
   toolName: string;
   publicName: string;
   behavior: 'allow' | 'deny';
@@ -152,10 +152,10 @@ interface ActoviqPermissionDecision {
 ### Approver Resolution
 
 ```typescript
-async function resolveActoviqAskPermission(
+async function resolveHadamardAskPermission(
   input: PermissionInput,
-  baseDecision: ActoviqPermissionDecision,
-): Promise<ActoviqPermissionDecision> {
+  baseDecision: HadamardPermissionDecision,
+): Promise<HadamardPermissionDecision> {
   if (!input.approver) {
     return { ...baseDecision, behavior: 'deny',
       reason: 'Approval required but no approver available.' };
@@ -189,7 +189,7 @@ Permission rules can be set per-session and are persisted in
 
 ```typescript
 metadata: {
-  __actoviqSessionPermissions: {
+  __hadamardSessionPermissions: {
     mode: 'default',
     rules: [
       { toolName: 'Bash*', behavior: 'ask', source: 'session' },

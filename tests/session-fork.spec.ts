@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('SessionForkService', () => {
   it('forks at an arbitrary stable message without mutating the source', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-fork-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-fork-'));
     dirs.push(dir);
     const store = new SessionStore(dir);
     const source = await store.create({
@@ -41,7 +41,7 @@ describe('SessionForkService', () => {
   });
 
   it('demotes worktree Sessions so forks do not inherit the parent worktree cwd', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-fork-wt-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-fork-wt-'));
     dirs.push(dir);
     const store = new SessionStore(dir);
     const source = await store.create({
@@ -49,7 +49,7 @@ describe('SessionForkService', () => {
       model: 'test',
       kind: 'worktree',
       originalWorkDir: path.join(dir, 'repo'),
-      metadata: { __actoviqWorkDir: path.join(dir, 'worktree-a') },
+      metadata: { __hadamardWorkDir: path.join(dir, 'worktree-a') },
       initialMessages: [
         { role: 'user', content: 'one' },
         { role: 'assistant', content: 'two' },
@@ -66,6 +66,6 @@ describe('SessionForkService', () => {
 
     expect(fork.kind).toBe('main');
     expect(fork.worktreePath).toBeUndefined();
-    expect(fork.metadata.__actoviqWorkDir).toBe(path.join(dir, 'repo'));
+    expect(fork.metadata.__hadamardWorkDir).toBe(path.join(dir, 'repo'));
   });
 });

@@ -2,10 +2,10 @@
 /**
  * Standard Bridge SDK Agent Runner
  *
- * Uses createActoviqBridgeSdk() which spawns a bun child process
- * running the actoviq-runtime CLI.
+ * Uses createHadamardBridgeSdk() which spawns a bun child process
+ * running the hadamard-runtime CLI.
  */
-import { createActoviqBridgeSdk } from '../../src/index.js';
+import { createHadamardBridgeSdk } from '../../src/index.js';
 import type { AgentConfig, BenchmarkTask, RunMetrics } from './types.js';
 import { buildBenchmarkPrompt } from './prompt.js';
 
@@ -15,7 +15,7 @@ export async function runBridgeAgent(
 ): Promise<{ answer: string; metrics: RunMetrics }> {
   const start = Date.now();
 
-  const sdk = await createActoviqBridgeSdk({
+  const sdk = await createHadamardBridgeSdk({
     workDir: process.cwd(),
     permissionMode: 'bypassPermissions',
     model: agent.model,

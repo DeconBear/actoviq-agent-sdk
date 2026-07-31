@@ -7,13 +7,13 @@
  * verifiable issues — flagging a "trap" or inventing a bug costs precision.
  */
 import { resolveRuntimeConfig } from '../../src/config/resolveRuntimeConfig.js';
-import { createActoviqModelApi } from '../../src/runtime/actoviqModelApi.js';
+import { createHadamardModelApi } from '../../src/runtime/hadamardModelApi.js';
 import { robustJsonParse } from '../../src/provider/json-parse.js';
 import type { ReviewManifest, ReviewScore } from './review-types.js';
 
 export async function scoreReview(report: string, manifest: ReviewManifest): Promise<ReviewScore> {
   const config = await resolveRuntimeConfig({ workDir: process.cwd(), model: 'deepseek-v4-pro' });
-  const api = createActoviqModelApi(config);
+  const api = createHadamardModelApi(config);
 
   const bugList = manifest.bugs.map((b) => `- ${b.id} @ ${b.location}: ${b.description}`).join('\n');
   const trapList =

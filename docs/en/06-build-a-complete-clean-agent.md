@@ -26,9 +26,9 @@ Create `agent.settings.json`:
 
 ```json
 {
-  "ACTOVIQ_BASE_URL": "https://your-model-endpoint.example.com/v1",
-  "ACTOVIQ_AUTH_TOKEN": "your-token",
-  "ACTOVIQ_MODEL": "your-model-name"
+  "HADAMARD_BASE_URL": "https://your-model-endpoint.example.com/v1",
+  "HADAMARD_AUTH_TOKEN": "your-token",
+  "HADAMARD_MODEL": "your-model-name"
 }
 ```
 
@@ -47,7 +47,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { z } from 'zod';
 import {
   createAgentSdk,
-  createActoviqFileTools,
+  createHadamardFileTools,
   loadJsonConfigFile,
   skill,
   tool,
@@ -81,7 +81,7 @@ const releaseCheck = skill({
 
 const sdk = await createAgentSdk({
   workDir: WORK_DIR,
-  tools: [...createActoviqFileTools({ cwd: WORK_DIR }), addNumbers],
+  tools: [...createHadamardFileTools({ cwd: WORK_DIR }), addNumbers],
   skills: [releaseCheck],
 });
 
@@ -168,7 +168,7 @@ After the first version works, expand in this order:
 
 Useful repository examples:
 
-1. [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
-2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
-4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+1. [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
+2. [examples/hadamard-skills.ts](../../examples/hadamard-skills.ts)
+3. [examples/hadamard-agent-helpers.ts](../../examples/hadamard-agent-helpers.ts)
+4. [examples/hadamard-swarm.ts](../../examples/hadamard-swarm.ts)

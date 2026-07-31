@@ -8,11 +8,11 @@ function unpackAsarPath(candidate: string): string {
   return candidate;
 }
 
-/** Candidate repo/package roots for assets/actoviq-icon.* resolution. */
+/** Candidate repo/package roots for assets/hadamard-icon.* resolution. */
 export function resolveGuiAssetRoots(): string[] {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const roots = new Set<string>();
-  if (process.env.ACTOVIQ_GUI_ROOT) roots.add(path.resolve(process.env.ACTOVIQ_GUI_ROOT));
+  if (process.env.HADAMARD_GUI_ROOT) roots.add(path.resolve(process.env.HADAMARD_GUI_ROOT));
   // dist/src/gui → repo root
   roots.add(path.resolve(moduleDir, '..', '..', '..'));
   // src/gui (tsx dev)
@@ -21,15 +21,15 @@ export function resolveGuiAssetRoots(): string[] {
   return [...roots];
 }
 
-/** Absolute path to actoviq-icon.ico (Windows) or .png fallback. */
+/** Absolute path to hadamard-icon.ico (Windows) or .png fallback. */
 export function resolveGuiIconPath(): string | undefined {
   for (const root of resolveGuiAssetRoots()) {
     if (process.platform === 'win32') {
-      for (const candidate of [path.join(root, 'assets', 'actoviq-icon.ico'), unpackAsarPath(path.join(root, 'assets', 'actoviq-icon.ico'))]) {
+      for (const candidate of [path.join(root, 'assets', 'hadamard-icon.ico'), unpackAsarPath(path.join(root, 'assets', 'hadamard-icon.ico'))]) {
         if (existsSync(candidate)) return path.resolve(candidate);
       }
     }
-    for (const candidate of [path.join(root, 'assets', 'actoviq-icon.png'), unpackAsarPath(path.join(root, 'assets', 'actoviq-icon.png'))]) {
+    for (const candidate of [path.join(root, 'assets', 'hadamard-icon.png'), unpackAsarPath(path.join(root, 'assets', 'hadamard-icon.png'))]) {
       if (existsSync(candidate)) return path.resolve(candidate);
     }
   }

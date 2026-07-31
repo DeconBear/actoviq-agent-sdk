@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest Actoviq Agent SDK 1.x minor release. The legacy root compatibility façade remains supported throughout 1.x. Node.js 22.5+ and Node.js 24 are the supported runtime lines.
+Security fixes are provided for the latest Hadamard Agent SDK 1.x minor release. The legacy root compatibility façade remains supported throughout 1.x. Node.js 22.5+ and Node.js 24 are the supported runtime lines.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use the repository's [private vulnerability reporting form](https://github.com/DeconBear/actoviq-agent-sdk/security/advisories/new). Include:
+Do not open a public issue for a suspected vulnerability. Use the repository's [private vulnerability reporting form](https://github.com/DeconBear/hadamard/security/advisories/new). Include:
 
 - affected version/commit, Node version, and operating system;
 - the smallest reproducible scenario and required configuration;

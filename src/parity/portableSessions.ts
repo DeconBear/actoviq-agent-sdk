@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import { joinUnderStorageRoot, safeStorageFileName } from '../storage/pathSafety.js';
 
 export interface ListSessionsOptions {
@@ -36,7 +36,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function getPortableConfigDir(): string {
-  return process.env.ACTOVIQ_CONFIG_DIR ?? resolveActoviqHome();
+  return process.env.HADAMARD_CONFIG_DIR ?? resolveHadamardHome();
 }
 
 function getProjectsRootDir(): string {

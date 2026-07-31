@@ -9,7 +9,7 @@
  * the same service; they never mutate goal state directly.
  *
  * Legacy sessions store a minimal `{ objective, status, setAt }` object under
- * `__actoviqGoal`; `goalStore` normalizes that into v1 on first read.
+ * `__hadamardGoal`; `goalStore` normalizes that into v1 on first read.
  */
 
 /** Lifecycle states for a Goal. */

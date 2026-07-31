@@ -1,4 +1,4 @@
-export type ActoviqLifecycleEvent =
+export type HadamardLifecycleEvent =
   | 'SessionStart'
   | 'SessionEnd'
   | 'TurnStart'
@@ -20,7 +20,7 @@ export type TypedHookHandler =
 
 export interface TypedHookDefinition {
   id: string;
-  event: ActoviqLifecycleEvent;
+  event: HadamardLifecycleEvent;
   matcher?: string;
   handler: TypedHookHandler;
   timeoutMs?: number;
@@ -29,7 +29,7 @@ export interface TypedHookDefinition {
 }
 
 export interface TypedHookInput {
-  event: ActoviqLifecycleEvent;
+  event: HadamardLifecycleEvent;
   runId: string;
   sessionId?: string;
   cwd: string;
@@ -40,7 +40,7 @@ export interface TypedHookInput {
 
 export interface TypedHookOutput {
   hookId: string;
-  event: ActoviqLifecycleEvent;
+  event: HadamardLifecycleEvent;
   behavior: 'continue' | 'block';
   feedback?: string;
   data?: Record<string, unknown>;

@@ -20,10 +20,10 @@ async function makeTempDir(prefix: string): Promise<string> {
 
 describe('loadProjectContext', () => {
   it('does not fabricate project context for a dir with no CLAUDE.md', () => {
-    const missing = path.join(os.tmpdir(), 'nonexistent-actoviq-ctx-12345');
+    const missing = path.join(os.tmpdir(), 'nonexistent-hadamard-ctx-12345');
     const result = loadProjectContext(missing);
     // No source should reference the (missing) working directory.
-    expect(result.sources.find(s => s.includes('nonexistent-actoviq-ctx-12345'))).toBeUndefined();
+    expect(result.sources.find(s => s.includes('nonexistent-hadamard-ctx-12345'))).toBeUndefined();
   });
 
   it('loads a project CLAUDE.md from the working directory', async () => {

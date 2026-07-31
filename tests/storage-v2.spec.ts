@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 async function createStorage(filename = 'storage.sqlite'): Promise<SqliteStorageV2> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-storage-v2-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-storage-v2-'));
   tempDirectories.push(root);
   const storage = await SqliteStorageV2.open({ filename: path.join(root, filename) });
   openStores.push(storage);
@@ -34,7 +34,7 @@ async function createStorage(filename = 'storage.sqlite'): Promise<SqliteStorage
 async function createInstrumentedStorage(
   beforeRun: (sql: string) => void = () => undefined,
 ): Promise<{ storage: SqliteStorageV2; rawDriver: SqliteDriver }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-storage-v2-instrumented-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-storage-v2-instrumented-'));
   tempDirectories.push(root);
   let rawDriver!: SqliteDriver;
   const storage = await SqliteStorageV2.open({
@@ -132,7 +132,7 @@ describe('SqliteSessionStore', () => {
   });
 
   it('allows exactly one cross-connection writer for the same revision', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-storage-v2-shared-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-storage-v2-shared-'));
     tempDirectories.push(root);
     const filename = path.join(root, 'shared.sqlite');
     const first = await SqliteStorageV2.open({ filename });

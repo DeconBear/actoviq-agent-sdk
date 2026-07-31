@@ -20,7 +20,7 @@ import type {
   WorkflowBudget,
   AgentToolDefinition,
 } from '../types.js';
-import type { ActoviqAgentClient } from '../runtime/agentClient.js';
+import type { HadamardAgentClient } from '../runtime/agentClient.js';
 import { ConfigurationError, RunAbortedError } from '../errors.js';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -103,7 +103,7 @@ function tryParseStructuredOutput(text: string): { parsed: unknown; json: string
 // ═══════════════════════════════════════════════════════════════════
 
 export interface WorkflowRuntimeOptions {
-  sdk: ActoviqAgentClient;
+  sdk: HadamardAgentClient;
   /** Required for the in-process node:vm compatibility executor. */
   trust?: 'trusted' | 'untrusted';
   /** Wall-clock and synchronous CPU deadline. Default: 60 seconds. */
@@ -210,7 +210,7 @@ class HostBridge {
   private totalAgents = 0;
   private readonly maxTotal = 1000;
   private signal?: AbortSignal;
-  private sdk: ActoviqAgentClient;
+  private sdk: HadamardAgentClient;
   private cache: Map<string, WorkflowCacheEntry>;
   private resumeCompleted: Set<string>;
   private agentRecords: WorkflowAgentCallRecord[];

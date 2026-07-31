@@ -29,7 +29,7 @@ executeConversation(options)
     │   ├── 4. 提取 tool_use 块 → 如果没有 → 返回结果（循环结束）
     │   ├── 5. 执行工具（最多 10 个并发）
     │   │   a. 输入验证（Zod）
-    │   │   b. 权限检查（decideActoviqToolPermission）
+    │   │   b. 权限检查（decideHadamardToolPermission）
     │   │   c. 执行（adapter.execute）
     │   │   d. 追踪连续失败
     │   ├── 6. 推送 tool_result 块（tool_use_id 必须匹配）

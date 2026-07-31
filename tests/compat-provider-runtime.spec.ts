@@ -19,7 +19,7 @@ afterEach(async () => {
 
 describe('compat façade with Provider v2', () => {
   it('runs the existing createAgentSdk API through the new provider adapter without output drift', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-compat-v2-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-compat-v2-'));
     roots.push(root);
     const transport: ProviderTransport = {
       async request(request: ProviderTransportRequest) {

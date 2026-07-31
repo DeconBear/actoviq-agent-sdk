@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 
 const tempDirs: string[] = [];
 
@@ -20,14 +20,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const res = await fetch(`${server.url}${requestPath}`, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -36,7 +36,7 @@ async function api<T>(
 
 describe('GUI workspace open', () => {
   it('opens quoted and file:// workspace paths', async () => {
-    const root = await tempRoot('actoviq-gui-workspace-open-');
+    const root = await tempRoot('hadamard-gui-workspace-open-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     const other = path.join(root, 'other-project');
@@ -45,14 +45,14 @@ describe('GUI workspace open', () => {
     await mkdir(homeDir, { recursive: true });
     await writeFile(path.join(homeDir, 'settings.json'), JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_BASE_URL: 'http://127.0.0.1:1/v1',
-        ACTOVIQ_MODEL: 'model-default',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_BASE_URL: 'http://127.0.0.1:1/v1',
+        HADAMARD_MODEL: 'model-default',
       },
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       configPath: path.join(homeDir, 'settings.json'),
@@ -100,7 +100,7 @@ describe('GUI workspace open', () => {
   }, 30_000);
 
   it('keeps additional work paths under one project and one session root', async () => {
-    const root = await tempRoot('actoviq-gui-multi-work-path-');
+    const root = await tempRoot('hadamard-gui-multi-work-path-');
     const homeDir = path.join(root, 'home');
     const primary = path.join(root, 'product');
     const docs = path.join(root, 'product-docs');
@@ -112,14 +112,14 @@ describe('GUI workspace open', () => {
     const configPath = path.join(homeDir, 'settings.json');
     await writeFile(configPath, JSON.stringify({
       env: {
-        ACTOVIQ_PROVIDER: 'openai',
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_BASE_URL: 'http://127.0.0.1:1/v1',
-        ACTOVIQ_MODEL: 'model-default',
+        HADAMARD_PROVIDER: 'openai',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_BASE_URL: 'http://127.0.0.1:1/v1',
+        HADAMARD_MODEL: 'model-default',
       },
     }), 'utf8');
 
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir: primary,
       homeDir,
       configPath,

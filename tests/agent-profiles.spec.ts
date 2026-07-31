@@ -33,7 +33,7 @@ async function tempRoot(prefix: string): Promise<string> {
 
 describe('agentProfiles', () => {
   it('persists profiles against saved bridge configs', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-');
+    const home = await tempRoot('hadamard-agent-profiles-');
     addBridgeConfig({
       name: 'claude-main',
       runtime: 'claude',
@@ -67,7 +67,7 @@ describe('agentProfiles', () => {
   });
 
   it('rejects profiles whose bridge config is missing', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-missing-');
+    const home = await tempRoot('hadamard-agent-profiles-missing-');
 
     expect(() => upsertAgentProfile({
       name: 'worker',
@@ -77,7 +77,7 @@ describe('agentProfiles', () => {
   });
 
   it('warns but saves when a model is not registered on the bridge config', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-warn-');
+    const home = await tempRoot('hadamard-agent-profiles-warn-');
     addBridgeConfig({
       name: 'openai-main',
       runtime: 'codex',
@@ -97,7 +97,7 @@ describe('agentProfiles', () => {
   });
 
   it('resolves pure Hadamard profiles without building a separate model API', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-resolve-');
+    const home = await tempRoot('hadamard-agent-profiles-resolve-');
     addBridgeConfig({
       name: 'sdk-default',
       runtime: 'hadamard',
@@ -120,7 +120,7 @@ describe('agentProfiles', () => {
   });
 
   it('resolves External CLI profiles without requiring Direct API credentials', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-cli-');
+    const home = await tempRoot('hadamard-agent-profiles-cli-');
     addBridgeConfig({
       name: 'pi-native',
       runtime: 'pi',
@@ -144,7 +144,7 @@ describe('agentProfiles', () => {
   });
 
   it('deletes profiles', async () => {
-    const home = await tempRoot('actoviq-agent-profiles-delete-');
+    const home = await tempRoot('hadamard-agent-profiles-delete-');
     addBridgeConfig({
       name: 'sdk-default',
       runtime: 'hadamard',
@@ -160,7 +160,7 @@ describe('agentProfiles', () => {
   });
 
   it('lists saved profiles plus auto presets from config models', async () => {
-    const home = await tempRoot('actoviq-selectable-agents-');
+    const home = await tempRoot('hadamard-selectable-agents-');
     addBridgeConfig({
       name: 'deepseek',
       runtime: 'claude',
@@ -218,9 +218,9 @@ describe('agentProfiles', () => {
   });
 
   it('matches tier aliases against resolved model ids from buildRouteModelApi', async () => {
-    const home = await tempRoot('actoviq-selectable-tier-match-');
-    const prevMin = process.env.ACTOVIQ_DEFAULT_MIN_MODEL;
-    process.env.ACTOVIQ_DEFAULT_MIN_MODEL = 'deepseek-v4-flash';
+    const home = await tempRoot('hadamard-selectable-tier-match-');
+    const prevMin = process.env.HADAMARD_DEFAULT_MIN_MODEL;
+    process.env.HADAMARD_DEFAULT_MIN_MODEL = 'deepseek-v4-flash';
     try {
       addBridgeConfig({
         name: 'deepseek',
@@ -260,8 +260,8 @@ describe('agentProfiles', () => {
       expect(matchSelectableAgent('deepseek', 'deepseek-v4-pro', home)?.name).not.toBe('flash-tier');
       expect(matchSelectableAgent('deepseek', 'missing-model', home)).toBeUndefined();
     } finally {
-      if (prevMin === undefined) delete process.env.ACTOVIQ_DEFAULT_MIN_MODEL;
-      else process.env.ACTOVIQ_DEFAULT_MIN_MODEL = prevMin;
+      if (prevMin === undefined) delete process.env.HADAMARD_DEFAULT_MIN_MODEL;
+      else process.env.HADAMARD_DEFAULT_MIN_MODEL = prevMin;
     }
   });
 });

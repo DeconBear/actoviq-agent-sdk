@@ -46,7 +46,7 @@ Executor produces, Reviewer provides free-text advisory feedback, Executor has f
 - **Global AgentPool**: shared concurrency cap across workflows, teams, swarms
 - **Team Tool**: wraps team as agent-callable tool with `interruptBehavior: 'block'`
 - **Cost tracking**: per-model tokens + estimatedCost via built-in pricing table
-- **Team definitions on disk**: `~/.actoviq/teams/` and `.actoviq/teams/`
+- **Team definitions on disk**: `~/.hadamard/teams/` and `.hadamard/teams/`
 - **TUI/REPL**: `/team list`, `/team ask <name> <prompt>`
 - **GUI Agent graph editor**: visual team/graph orchestration UI — **still under active iteration and optimization**; prefer saved definitions + `/team` / SDK APIs for production workflows
 

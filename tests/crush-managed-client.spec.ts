@@ -12,7 +12,7 @@ import {
   type CrushHttpResponse,
   type CrushSpawnFn,
 } from '../src/parity/crushManagedClient.js';
-import type { ActoviqBridgeJsonEvent } from '../src/types.js';
+import type { HadamardBridgeJsonEvent } from '../src/types.js';
 
 class FakeChild extends EventEmitter {
   pid = undefined;
@@ -31,8 +31,8 @@ class FakeChild extends EventEmitter {
 
 function localTransport() {
   return {
-    serverHost: 'npipe:////./pipe/actoviq-crush-test',
-    socketPath: '\\\\.\\pipe\\actoviq-crush-test',
+    serverHost: 'npipe:////./pipe/hadamard-crush-test',
+    socketPath: '\\\\.\\pipe\\hadamard-crush-test',
   };
 }
 
@@ -88,7 +88,7 @@ describe('Crush managed client', () => {
       options: SpawnOptions;
     }> = [];
     const httpCalls: CrushHttpRequestOptions[] = [];
-    const events: ActoviqBridgeJsonEvent[] = [];
+    const events: HadamardBridgeJsonEvent[] = [];
     let runId = '';
 
     const eventBody: AsyncIterable<string | Uint8Array> = {
@@ -233,7 +233,7 @@ describe('Crush managed client', () => {
     expect(spawnCalls[0]?.args).toEqual([
       'server',
       '--host',
-      'npipe:////./pipe/actoviq-crush-test',
+      'npipe:////./pipe/hadamard-crush-test',
     ]);
     expect(spawnCalls[0]?.args).not.toContain('--prompt-stays-in-json');
     expect(spawnCalls[0]?.options.shell).toBe(false);

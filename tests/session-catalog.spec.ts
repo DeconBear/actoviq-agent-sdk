@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { getActoviqProjectSessionDirectory } from '../src/config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../src/config/projectSessionDirectory.js';
 import {
   SessionCatalog,
   type SessionCatalogLocator,
@@ -34,7 +34,7 @@ async function seed(
   updatedAt: string,
   pinned = false,
 ) {
-  const root = getActoviqProjectSessionDirectory(projectPath, homeDir);
+  const root = getHadamardProjectSessionDirectory(projectPath, homeDir);
   const store = new SessionStore(root);
   await store.create({
     id,
@@ -42,9 +42,9 @@ async function seed(
     model: 'test-model',
     kind,
     metadata: {
-      __actoviqWorkDir: projectPath,
-      __actoviqKind: kind,
-      ...(pinned ? { __actoviqPinned: true } : {}),
+      __hadamardWorkDir: projectPath,
+      __hadamardKind: kind,
+      ...(pinned ? { __hadamardPinned: true } : {}),
     },
   });
   await store.mutate(id, session => ({ ...session, updatedAt }));
@@ -96,7 +96,7 @@ describe('SessionCatalog query', () => {
 
   it('returns a bounded read-only conversation reference without injected reminders', async () => {
     await seed(projectA, 'reference', 'main', 'Reference chat', '2026-07-01T00:00:00.000Z');
-    const store = new SessionStore(getActoviqProjectSessionDirectory(projectA, homeDir));
+    const store = new SessionStore(getHadamardProjectSessionDirectory(projectA, homeDir));
     await store.mutate('reference', session => ({
       ...session,
       messages: [
@@ -141,10 +141,10 @@ describe('SessionCatalog actions', () => {
     });
     expect(pinned.pinned).toBe(true);
     const stored = await new SessionStore(
-      getActoviqProjectSessionDirectory(projectA, homeDir),
+      getHadamardProjectSessionDirectory(projectA, homeDir),
     ).load(created.locator.sessionId);
     expect(stored.revision).toBeGreaterThanOrEqual(3);
-    expect(stored.metadata.__actoviqPinned).toBe(true);
+    expect(stored.metadata.__hadamardPinned).toBe(true);
   });
 
   it('archives, restores, then permanently deletes only from archive', async () => {

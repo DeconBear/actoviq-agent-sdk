@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { discoverActoviqSkillCatalog } from '../src/index.js';
+import { discoverHadamardSkillCatalog } from '../src/index.js';
 
 const tempDirs: string[] = [];
 
@@ -40,16 +40,16 @@ function tomlLiteral(value: string): string {
   return `'${value.replace(/'/gu, "''")}'`;
 }
 
-describe('discoverActoviqSkillCatalog', () => {
+describe('discoverHadamardSkillCatalog', () => {
   it('discovers every supported user and project source with safe ownership state', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-sources-');
+    const root = await createTempDir('hadamard-skill-catalog-sources-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
-    const actoviqHomeDir = path.join(root, 'actoviq-data');
+    const hadamardHomeDir = path.join(root, 'hadamard-data');
     const roots = [
-      ['actoviq:user', path.join(actoviqHomeDir, 'skills'), false, 'user'],
-      ['actoviq:project', path.join(workDir, '.actoviq', 'skills'), false, 'project'],
-      ['actoviq:project-commands', path.join(workDir, '.actoviq', 'commands'), false, 'project'],
+      ['hadamard:user', path.join(hadamardHomeDir, 'skills'), false, 'user'],
+      ['hadamard:project', path.join(workDir, '.hadamard', 'skills'), false, 'project'],
+      ['hadamard:project-commands', path.join(workDir, '.hadamard', 'commands'), false, 'project'],
       ['agents:user', path.join(osHomeDir, '.agents', 'skills'), true, 'user'],
       ['agents:project', path.join(workDir, '.agents', 'skills'), true, 'project'],
       ['claude-code:user', path.join(osHomeDir, '.claude', 'skills'), true, 'user'],
@@ -71,12 +71,12 @@ describe('discoverActoviqSkillCatalog', () => {
       simpleSkill('must-not-appear'),
     );
 
-    const catalog = await discoverActoviqSkillCatalog({
+    const catalog = await discoverHadamardSkillCatalog({
       osHomeDir,
-      actoviqHomeDir,
+      hadamardHomeDir,
       workDir,
       env: {},
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
     });
 
     expect(catalog.sources).toHaveLength(roots.length);
@@ -101,7 +101,7 @@ describe('discoverActoviqSkillCatalog', () => {
   });
 
   it('honors native CLI home overrides and parses common frontmatter forms without writing files', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-frontmatter-');
+    const root = await createTempDir('hadamard-skill-catalog-frontmatter-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const claudeConfigDir = path.join(root, 'custom-claude');
@@ -156,12 +156,12 @@ description: |
     );
     const before = await readFile(quotedFile, 'utf8');
 
-    const catalog = await discoverActoviqSkillCatalog({
+    const catalog = await discoverHadamardSkillCatalog({
       osHomeDir,
       workDir,
-      actoviqHomeDir: path.join(root, 'actoviq-data'),
+      hadamardHomeDir: path.join(root, 'hadamard-data'),
       env: { CLAUDE_CONFIG_DIR: claudeConfigDir, CODEX_HOME: codexHome },
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
     });
 
     expect(catalog.skills.map(skill => skill.name)).not.toContain('default-claude-must-not-appear');
@@ -186,7 +186,7 @@ description: |
   });
 
   it('discovers skills only from enabled installed Claude Code plugins with stable ids', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-claude-plugins-');
+    const root = await createTempDir('hadamard-skill-catalog-claude-plugins-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const claudeConfigDir = path.join(osHomeDir, '.claude');
@@ -226,12 +226,12 @@ description: |
     const options = {
       osHomeDir,
       workDir,
-      actoviqHomeDir: path.join(root, 'actoviq-data'),
+      hadamardHomeDir: path.join(root, 'hadamard-data'),
       env: {},
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
       includeMissingSources: false,
     } as const;
-    const firstCatalog = await discoverActoviqSkillCatalog(options);
+    const firstCatalog = await discoverHadamardSkillCatalog(options);
 
     expect(firstCatalog.sources).toEqual([expect.objectContaining({
       id: 'claude-code:plugin:review-tools@team',
@@ -257,14 +257,14 @@ description: |
       `---\nname: review\ndescription: updated review description\n---\n\nUpdated content.\n`,
       'utf8',
     );
-    const updatedSkill = (await discoverActoviqSkillCatalog(options)).skills[0]!;
+    const updatedSkill = (await discoverHadamardSkillCatalog(options)).skills[0]!;
     expect(updatedSkill.id).toBe(firstSkill.id);
     expect(updatedSkill.contentHash).not.toBe(firstSkill.contentHash);
     expect(updatedSkill.description).toBe('updated review description');
   });
 
   it('resolves Claude project and local plugin settings to the installation for the active workspace', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-claude-scopes-');
+    const root = await createTempDir('hadamard-skill-catalog-claude-scopes-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const otherWorkDir = path.join(root, 'other-project');
@@ -321,12 +321,12 @@ description: |
       }), 'utf8'),
     ]);
 
-    const catalog = await discoverActoviqSkillCatalog({
+    const catalog = await discoverHadamardSkillCatalog({
       osHomeDir,
       workDir,
-      actoviqHomeDir: path.join(root, 'actoviq-data'),
+      hadamardHomeDir: path.join(root, 'hadamard-data'),
       env: {},
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
       includeMissingSources: false,
     });
 
@@ -357,7 +357,7 @@ description: |
   });
 
   it('discovers only enabled Codex plugin skills from exact marketplace or unambiguous cache roots', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-codex-plugins-');
+    const root = await createTempDir('hadamard-skill-catalog-codex-plugins-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const codexHome = path.join(osHomeDir, '.codex');
@@ -429,12 +429,12 @@ enabled = true
 enabled = false
 `, 'utf8');
 
-    const catalog = await discoverActoviqSkillCatalog({
+    const catalog = await discoverHadamardSkillCatalog({
       osHomeDir,
       workDir,
-      actoviqHomeDir: path.join(root, 'actoviq-data'),
+      hadamardHomeDir: path.join(root, 'hadamard-data'),
       env: {},
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
       includeMissingSources: false,
     });
 
@@ -460,7 +460,7 @@ enabled = false
   });
 
   it('deduplicates canonical paths and equal content while reporting distinct-content conflicts', async () => {
-    const root = await createTempDir('actoviq-skill-catalog-dedupe-');
+    const root = await createTempDir('hadamard-skill-catalog-dedupe-');
     const osHomeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const sharedConfigDir = path.join(osHomeDir, '.agents');
@@ -474,12 +474,12 @@ enabled = false
       `---\nname: shared\ndescription: different content\n---\n`,
     );
 
-    const catalog = await discoverActoviqSkillCatalog({
+    const catalog = await discoverHadamardSkillCatalog({
       osHomeDir,
       workDir,
-      actoviqHomeDir: path.join(root, 'actoviq-data'),
+      hadamardHomeDir: path.join(root, 'hadamard-data'),
       env: { CLAUDE_CONFIG_DIR: sharedConfigDir, CODEX_HOME: codexHome },
-      includeBundledActoviq: false,
+      includeBundledHadamard: false,
     });
 
     const variants = catalog.skills.filter(skill => skill.name === 'shared');

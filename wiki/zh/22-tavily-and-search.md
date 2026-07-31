@@ -45,7 +45,7 @@ WebSearch 执行顺序:
   4. DuckDuckGo HTML
 ```
 
-`createActoviqCoreTools()` 在检测到 Tavily key 时自动加载。
+`createHadamardCoreTools()` 在检测到 Tavily key 时自动加载。
 
 ## /tavily 技能
 

@@ -4,20 +4,22 @@
   loadJsonConfigFile,
 } from './config/loadJsonConfigFile.js';
 export {
-  resolveActoviqSettingsStore,
-  persistActoviqSettingsStore,
-  getDefaultActoviqSettingsPath,
-} from './config/actoviqSettingsStore.js';
-export { mapActoviqEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
+  resolveHadamardSettingsStore,
+  persistHadamardSettingsStore,
+  getDefaultHadamardSettingsPath,
+} from './config/hadamardSettingsStore.js';
+export { mapHadamardEnvToAnthropicEnv } from './config/anthropicEnvMapping.js';
 export {
-  defaultActoviqHome,
-  getActoviqHomePointerPath,
-  listActoviqHomeTopLevelEntries,
-  migrateActoviqHomeData,
-  resolveActoviqHome,
-  summarizeActoviqHome,
-  writeActoviqHomePointer,
-} from './config/actoviqHome.js';
+  defaultHadamardHome,
+  defaultLegacyActoviqHome,
+  getHadamardHomePointerPath,
+  listHadamardHomeTopLevelEntries,
+  migrateHadamardHomeData,
+  migrateLegacyActoviqHomeIfNeeded,
+  resolveHadamardHome,
+  summarizeHadamardHome,
+  writeHadamardHomePointer,
+} from './config/hadamardHome.js';
 export {
   deleteAgentProfile,
   findAgentProfile,
@@ -45,56 +47,56 @@ export type {
 export * from './issues/issueStore.js';
 export * from './issues/issueExecution.js';
 export {
-  ActoviqBuddyApi,
-  createActoviqBuddyApi,
-  getActoviqBuddyIntroText,
-  rollActoviqBuddy,
-  rollActoviqBuddyWithSeed,
-} from './buddy/actoviqBuddy.js';
+  HadamardBuddyApi,
+  createHadamardBuddyApi,
+  getHadamardBuddyIntroText,
+  rollHadamardBuddy,
+  rollHadamardBuddyWithSeed,
+} from './buddy/hadamardBuddy.js';
 export {
-  ActoviqMemoryApi,
-  createActoviqMemoryApi,
-  getActoviqCompactBoundarySummary,
-  getActoviqDefaultSessionMemoryCompactConfig,
-  getActoviqDefaultSessionMemoryConfig,
-  getActoviqDefaultSessionMemoryTemplate,
-  getActoviqDefaultSettingsPath,
-  formatActoviqMemoryManifest,
-  getActoviqMemoryAge,
-  getActoviqMemoryAgeDays,
-  getActoviqMemoryFreshnessNote,
-  getActoviqMemoryFreshnessText,
-  getActoviqMemoryHeader,
-  readActoviqMemoriesForSurfacing,
-  scanActoviqMemoryFiles,
-  selectActoviqRelevantMemories,
-} from './memory/actoviqMemory.js';
+  HadamardMemoryApi,
+  createHadamardMemoryApi,
+  getHadamardCompactBoundarySummary,
+  getHadamardDefaultSessionMemoryCompactConfig,
+  getHadamardDefaultSessionMemoryConfig,
+  getHadamardDefaultSessionMemoryTemplate,
+  getHadamardDefaultSettingsPath,
+  formatHadamardMemoryManifest,
+  getHadamardMemoryAge,
+  getHadamardMemoryAgeDays,
+  getHadamardMemoryFreshnessNote,
+  getHadamardMemoryFreshnessText,
+  getHadamardMemoryHeader,
+  readHadamardMemoriesForSurfacing,
+  scanHadamardMemoryFiles,
+  selectHadamardRelevantMemories,
+} from './memory/hadamardMemory.js';
 export {
-  ActoviqDreamApi,
-  buildActoviqDreamPrompt,
-  createActoviqDreamApi,
-  ensureActoviqDreamLayout,
-  isActoviqDreamEligibleSession,
-  listActoviqSessionsTouchedSince,
-  readActoviqLastConsolidatedAt,
-  recordActoviqConsolidation,
-  rollbackActoviqConsolidationLock,
-  tryAcquireActoviqConsolidationLock,
-} from './memory/actoviqDream.js';
+  HadamardDreamApi,
+  buildHadamardDreamPrompt,
+  createHadamardDreamApi,
+  ensureHadamardDreamLayout,
+  isHadamardDreamEligibleSession,
+  listHadamardSessionsTouchedSince,
+  readHadamardLastConsolidatedAt,
+  recordHadamardConsolidation,
+  rollbackHadamardConsolidationLock,
+  tryAcquireHadamardConsolidationLock,
+} from './memory/hadamardDream.js';
 export {
-  ACTOVIQ_SESSION_MEMORY_STATE_KEY,
-  createDefaultActoviqSessionMemoryRuntimeState,
-  estimateActoviqConversationTokens,
-  evaluateActoviqSessionMemoryProgress,
-  filterActoviqMessagesForSessionMemory,
-  hasActoviqToolCallsInLastAssistantTurn,
-  parseActoviqSessionMemoryRuntimeState,
-  sanitizeActoviqSessionMemoryOutput,
-  serializeActoviqSessionMemoryRuntimeState,
-} from './memory/actoviqSessionMemoryState.js';
+  HADAMARD_SESSION_MEMORY_STATE_KEY,
+  createDefaultHadamardSessionMemoryRuntimeState,
+  estimateHadamardConversationTokens,
+  evaluateHadamardSessionMemoryProgress,
+  filterHadamardMessagesForSessionMemory,
+  hasHadamardToolCallsInLastAssistantTurn,
+  parseHadamardSessionMemoryRuntimeState,
+  sanitizeHadamardSessionMemoryOutput,
+  serializeHadamardSessionMemoryRuntimeState,
+} from './memory/hadamardSessionMemoryState.js';
 export { buildSystemPrompt } from './prompts/systemPrompt.js';
-export { loadDefaultActoviqSettings } from './config/loadDefaultActoviqSettings.js';
-export { loadActoviqSettings } from './config/loadActoviqSettings.js';
+export { loadDefaultHadamardSettings } from './config/loadDefaultHadamardSettings.js';
+export { loadHadamardSettings } from './config/loadHadamardSettings.js';
 export { resolveRuntimeConfig } from './config/resolveRuntimeConfig.js';
 export {
   DEFAULT_AGENT_RUNTIME_CANDIDATES,
@@ -113,17 +115,17 @@ export type {
   RuntimeLocalConfigUpdateResult,
 } from './runtime/agentRuntimeDiscovery.js';
 export {
-  encodeActoviqProjectPath,
-  getActoviqProjectSessionDirectory,
-  migrateLegacyActoviqProjectSessions,
+  encodeHadamardProjectPath,
+  getHadamardProjectSessionDirectory,
+  migrateLegacyHadamardProjectSessions,
 } from './config/projectSessionDirectory.js';
 export {
-  ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS,
-  createActoviqComputerUseMcpServer,
-  createActoviqComputerUseToolkit,
-  createActoviqComputerUseTools,
-  createDefaultActoviqComputerUseExecutor,
-} from './computer/actoviqComputerUse.js';
+  HADAMARD_COMPUTER_USE_WORKFLOW_ACTIONS,
+  createHadamardComputerUseMcpServer,
+  createHadamardComputerUseToolkit,
+  createHadamardComputerUseTools,
+  createDefaultHadamardComputerUseExecutor,
+} from './computer/hadamardComputerUse.js';
 export {
   createE2bComputerUseToolkit,
 } from './computer/e2bComputerUse.js';
@@ -134,29 +136,29 @@ export type {
   E2bDesktopSandboxLike,
 } from './computer/e2bComputerUse.js';
 export {
-  ActoviqBrowserSession,
-} from './browser/actoviqBrowserSession.js';
+  HadamardBrowserSession,
+} from './browser/hadamardBrowserSession.js';
 export type {
-  ActoviqBrowserElementRef,
-  ActoviqBrowserSnapshot,
-  ActoviqBrowserSessionOptions,
-  ActoviqBrowserTabInfo,
-} from './browser/actoviqBrowserSession.js';
+  HadamardBrowserElementRef,
+  HadamardBrowserSnapshot,
+  HadamardBrowserSessionOptions,
+  HadamardBrowserTabInfo,
+} from './browser/hadamardBrowserSession.js';
 export {
-  createActoviqBrowserTools,
-  createActoviqBrowserUseMcpServer,
-  createActoviqBrowserUseToolkit,
+  createHadamardBrowserTools,
+  createHadamardBrowserUseMcpServer,
+  createHadamardBrowserUseToolkit,
   sessionOptionsFromBrowserUse,
-} from './browser/actoviqBrowserTools.js';
+} from './browser/hadamardBrowserTools.js';
 export type {
-  ActoviqBrowserSessionLike,
-  ActoviqBrowserUseToolkit,
-} from './browser/actoviqBrowserTools.js';
+  HadamardBrowserSessionLike,
+  HadamardBrowserUseToolkit,
+} from './browser/hadamardBrowserTools.js';
 export {
-  readActoviqBrowserSettings,
-  writeActoviqBrowserSettings,
+  readHadamardBrowserSettings,
+  writeHadamardBrowserSettings,
 } from './browser/browserSettings.js';
-export type { ActoviqBrowserSettings } from './browser/browserSettings.js';
+export type { HadamardBrowserSettings } from './browser/browserSettings.js';
 export {
   MANAGED_PLUGIN_DEFINITIONS,
   MANAGED_PLUGIN_IDS,
@@ -210,9 +212,9 @@ export * from './plugins/pluginRegistryClient.js';
 export * from './plugins/pluginTrustStore.js';
 export * from './plugins/pluginManager.js';
 export {
-  ActoviqSdkError,
-  ActoviqProviderApiError,
-  ActoviqBridgeProcessError,
+  HadamardSdkError,
+  HadamardProviderApiError,
+  HadamardBridgeProcessError,
   ConfigurationError,
   DeadlineExceededError,
   RunAbortedError,
@@ -223,18 +225,18 @@ export {
 } from './errors.js';
 export { McpConnectionManager } from './mcp/connectionManager.js';
 export {
-  mergeActoviqHooks,
-  normalizeActoviqHookMessages,
-  resolveActoviqPostSamplingHooks,
-  resolveActoviqPostRunHooks,
-  resolveActoviqSessionStartHooks,
-  resolveActoviqStopHooks,
-} from './hooks/actoviqHooks.js';
-export { createActoviqFileTools } from './tools/actoviqFileTools.js';
-export type { ActoviqFileToolsOptions } from './tools/actoviqFileTools.js';
-export { createActoviqWebTools } from './tools/actoviqWebTools.js';
-export { createActoviqCoreTools } from './tools/actoviqCoreTools.js';
-export type { ActoviqCoreToolsOptions } from './tools/actoviqCoreTools.js';
+  mergeHadamardHooks,
+  normalizeHadamardHookMessages,
+  resolveHadamardPostSamplingHooks,
+  resolveHadamardPostRunHooks,
+  resolveHadamardSessionStartHooks,
+  resolveHadamardStopHooks,
+} from './hooks/hadamardHooks.js';
+export { createHadamardFileTools } from './tools/hadamardFileTools.js';
+export type { HadamardFileToolsOptions } from './tools/hadamardFileTools.js';
+export { createHadamardWebTools } from './tools/hadamardWebTools.js';
+export { createHadamardCoreTools } from './tools/hadamardCoreTools.js';
+export type { HadamardCoreToolsOptions } from './tools/hadamardCoreTools.js';
 export * from './goal/index.js';
 export * from './checkpoint/index.js';
 export * from './sandbox/index.js';
@@ -263,17 +265,17 @@ export { createExaSearchTool, EXA_SEARCH_TOOL_NAME, resolveExaApiKey, runExaSear
 export type { BashInput } from './tools/bash/BashTool.js';
 export { createTodoWriteTool, TODO_WRITE_TOOL_NAME } from './tools/todo/TodoWriteTool.js';
 export { createAskUserQuestionTool, ASK_USER_QUESTION_TOOL_NAME } from './tools/askUserQuestion/AskUserQuestionTool.js';
-export { createActoviqTaskTools } from './tools/actoviqTaskTools.js';
-export { createTaskCreateTool, TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME } from './tools/actoviqTaskTools.js';
-export { createNotebookEditTool, NOTEBOOK_EDIT_TOOL_NAME } from './tools/actoviqNotebookEdit.js';
-export { createPowerShellTool, POWERSHELL_TOOL_NAME } from './tools/actoviqShellTools.js';
-export { createActoviqMiscTools, createConfigTool, createToolSearchTool, createSkillTool, CONFIG_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, SKILL_TOOL_NAME } from './tools/actoviqMiscTools.js';
+export { createHadamardTaskTools } from './tools/hadamardTaskTools.js';
+export { createTaskCreateTool, TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME } from './tools/hadamardTaskTools.js';
+export { createNotebookEditTool, NOTEBOOK_EDIT_TOOL_NAME } from './tools/hadamardNotebookEdit.js';
+export { createPowerShellTool, POWERSHELL_TOOL_NAME } from './tools/hadamardShellTools.js';
+export { createHadamardMiscTools, createConfigTool, createToolSearchTool, createSkillTool, CONFIG_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, SKILL_TOOL_NAME } from './tools/hadamardMiscTools.js';
 export {
-  ACTOVIQ_RECENT_FILES_KEY,
-  ACTOVIQ_RECENT_SKILLS_KEY,
+  HADAMARD_RECENT_FILES_KEY,
+  HADAMARD_RECENT_SKILLS_KEY,
   trackRecentFile,
   trackRecentSkill,
-} from './runtime/actoviqCompact.js';
+} from './runtime/hadamardCompact.js';
 export { SessionManager } from './runtime/sessionManager.js';
 export { parallel, race } from './runtime/parallel.js';
 export { WorkflowApi, WorkflowBuilder } from './workflow/workflowBuilder.js';
@@ -286,93 +288,93 @@ export type {
   WorkflowRunResult,
   WorkflowRunOptions,
 } from './workflow/types.js';
-export { createAgentSdk, ActoviqAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
+export { createAgentSdk, HadamardAgentClient, AgentSessionsApi } from './runtime/agentClient.js';
 export * from './runtime/agentExecution.js';
-export * from './runtime/actoviqAgentExecutions.js';
+export * from './runtime/hadamardAgentExecutions.js';
 export {
-  ActoviqAgentHandle,
-  ActoviqAgentsApi,
-  createActoviqTaskTool,
-  summarizeActoviqAgentDefinition,
-} from './runtime/actoviqAgents.js';
-export { loadActoviqAgentDefinitions } from './runtime/actoviqAgentDefinitions.js';
-export { getDefaultActoviqAgents } from './runtime/defaultActoviqAgents.js';
+  HadamardAgentHandle,
+  HadamardAgentsApi,
+  createHadamardTaskTool,
+  summarizeHadamardAgentDefinition,
+} from './runtime/hadamardAgents.js';
+export { loadHadamardAgentDefinitions } from './runtime/hadamardAgentDefinitions.js';
+export { getDefaultHadamardAgents } from './runtime/defaultHadamardAgents.js';
 export {
-  ActoviqContextApi,
-  ActoviqSlashCommandHandle,
-  ActoviqSlashCommandsApi,
-  formatActoviqAgents,
-  formatActoviqCompactResult,
-  formatActoviqContextOverview,
-  formatActoviqDreamResult,
-  formatActoviqMemoryState,
-  formatActoviqSkills,
-  formatActoviqTools,
-} from './runtime/actoviqSlashCommands.js';
+  HadamardContextApi,
+  HadamardSlashCommandHandle,
+  HadamardSlashCommandsApi,
+  formatHadamardAgents,
+  formatHadamardCompactResult,
+  formatHadamardContextOverview,
+  formatHadamardDreamResult,
+  formatHadamardMemoryState,
+  formatHadamardSkills,
+  formatHadamardTools,
+} from './runtime/hadamardSlashCommands.js';
 export {
-  ActoviqSkillHandle,
-  ActoviqSkillsApi,
-  getDefaultActoviqBundledSkills,
-  loadActoviqSkillDefinitionFile,
-  loadActoviqSkillDefinitions,
-  resolveActoviqSkillPrompt,
+  HadamardSkillHandle,
+  HadamardSkillsApi,
+  getDefaultHadamardBundledSkills,
+  loadHadamardSkillDefinitionFile,
+  loadHadamardSkillDefinitions,
+  resolveHadamardSkillPrompt,
   skill,
-  summarizeActoviqSkillDefinition,
-} from './runtime/actoviqSkills.js';
-export { discoverActoviqSkillCatalog } from './runtime/externalSkillCatalog.js';
+  summarizeHadamardSkillDefinition,
+} from './runtime/hadamardSkills.js';
+export { discoverHadamardSkillCatalog } from './runtime/externalSkillCatalog.js';
 export type {
-  ActoviqSkillCatalog,
-  ActoviqSkillCatalogCapability,
-  ActoviqSkillCatalogConflict,
-  ActoviqSkillCatalogDiagnostic,
-  ActoviqSkillCatalogEntry,
-  ActoviqSkillCatalogEntryStatus,
-  ActoviqSkillCatalogOrigin,
-  ActoviqSkillCatalogProvider,
-  ActoviqSkillCatalogScope,
-  ActoviqSkillCatalogSource,
-  ActoviqSkillCatalogSourceStatus,
-  DiscoverActoviqSkillCatalogOptions,
+  HadamardSkillCatalog,
+  HadamardSkillCatalogCapability,
+  HadamardSkillCatalogConflict,
+  HadamardSkillCatalogDiagnostic,
+  HadamardSkillCatalogEntry,
+  HadamardSkillCatalogEntryStatus,
+  HadamardSkillCatalogOrigin,
+  HadamardSkillCatalogProvider,
+  HadamardSkillCatalogScope,
+  HadamardSkillCatalogSource,
+  HadamardSkillCatalogSourceStatus,
+  DiscoverHadamardSkillCatalogOptions,
 } from './runtime/externalSkillCatalog.js';
-export { loadActoviqExternalSkillDefinitions } from './runtime/externalSkillRuntime.js';
+export { loadHadamardExternalSkillDefinitions } from './runtime/externalSkillRuntime.js';
 export type {
-  ActoviqExternalSkillConflictSkip,
-  ActoviqExternalSkillLoadError,
-  ActoviqExternalSkillRuntimeResult,
+  HadamardExternalSkillConflictSkip,
+  HadamardExternalSkillLoadError,
+  HadamardExternalSkillRuntimeResult,
 } from './runtime/externalSkillRuntime.js';
 export {
-  actoviqExternalSkillPreferencesPath,
-  clearActoviqPreferredExternalSkill,
+  hadamardExternalSkillPreferencesPath,
+  clearHadamardPreferredExternalSkill,
   externalSkillPreferencesToRuntimeOptions,
-  readActoviqExternalSkillPreferences,
-  setActoviqExternalSkillDisabled,
-  setActoviqPreferredExternalSkill,
-  writeActoviqExternalSkillPreferences,
+  readHadamardExternalSkillPreferences,
+  setHadamardExternalSkillDisabled,
+  setHadamardPreferredExternalSkill,
+  writeHadamardExternalSkillPreferences,
 } from './runtime/externalSkillPreferences.js';
 export type {
-  ActoviqExternalSkillPreferenceLocation,
-  ActoviqExternalSkillPreferences,
+  HadamardExternalSkillPreferenceLocation,
+  HadamardExternalSkillPreferences,
 } from './runtime/externalSkillPreferences.js';
 export {
-  decideActoviqToolPermission,
-} from './runtime/actoviqPermissions.js';
+  decideHadamardToolPermission,
+} from './runtime/hadamardPermissions.js';
 export {
-  ACTOVIQ_SESSION_PERMISSION_STATE_KEY,
-  getPersistedActoviqSessionPermissionState,
-  serializeActoviqSessionPermissionState,
-} from './runtime/actoviqSessionPermissions.js';
+  HADAMARD_SESSION_PERMISSION_STATE_KEY,
+  getPersistedHadamardSessionPermissionState,
+  serializeHadamardSessionPermissionState,
+} from './runtime/hadamardSessionPermissions.js';
 export {
-  ActoviqToolsApi,
-  buildActoviqCleanToolCatalog,
-  resolveActoviqCleanToolMetadata,
-  summarizeActoviqResolvedTool,
-} from './runtime/actoviqToolCatalog.js';
-export { getActoviqApiContextManagement } from './runtime/actoviqApiMicrocompact.js';
+  HadamardToolsApi,
+  buildHadamardCleanToolCatalog,
+  resolveHadamardCleanToolMetadata,
+  summarizeHadamardResolvedTool,
+} from './runtime/hadamardToolCatalog.js';
+export { getHadamardApiContextManagement } from './runtime/hadamardApiMicrocompact.js';
 export {
-  ActoviqBackgroundTaskHandle,
-  ActoviqBackgroundTaskManager,
-  ActoviqBackgroundTasksApi,
-} from './runtime/actoviqBackgroundTasks.js';
+  HadamardBackgroundTaskHandle,
+  HadamardBackgroundTaskManager,
+  HadamardBackgroundTasksApi,
+} from './runtime/hadamardBackgroundTasks.js';
 export {
   deleteScheduledAutomationTask,
   getScheduledAutomationTask,
@@ -398,19 +400,19 @@ export type {
   AgentRunStreamOptions,
   AsyncQueueOverflowStrategy,
 } from './runtime/asyncQueue.js';
-export { ActoviqModelApi, createActoviqModelApi } from './runtime/actoviqModelApi.js';
+export { HadamardModelApi, createHadamardModelApi } from './runtime/hadamardModelApi.js';
 export { OpenaiModelApi, createOpenaiModelApi } from './provider/openai-model-api.js';
 export {
-  ACTOVIQ_MODEL_TIERS,
-  isActoviqModelTier,
-  resolveActoviqModelReference,
-  selectDefaultActoviqModel,
+  HADAMARD_MODEL_TIERS,
+  isHadamardModelTier,
+  resolveHadamardModelReference,
+  selectDefaultHadamardModel,
 } from './config/modelTiers.js';
 export {
-  ActoviqSwarmApi,
-  ActoviqSwarmTeam,
-  ActoviqSwarmTeammateHandle,
-} from './swarm/actoviqSwarm.js';
+  HadamardSwarmApi,
+  HadamardSwarmTeam,
+  HadamardSwarmTeammateHandle,
+} from './swarm/hadamardSwarm.js';
 export { tool } from './runtime/tools.js';
 export { MailboxStore } from './storage/mailboxStore.js';
 export { AgentExecutionStore } from './storage/agentExecutionStore.js';
@@ -420,11 +422,11 @@ export * from './storage/sessionForkService.js';
 export * from './storage/sessionBranchSummary.js';
 export { TeammateStore } from './storage/teammateStore.js';
 export {
-  ActoviqWorkspace,
+  HadamardWorkspace,
   createGitWorktreeWorkspace,
   createTempWorkspace,
   createWorkspace,
-} from './workspace/actoviqWorkspace.js';
+} from './workspace/hadamardWorkspace.js';
 
 // ── v0.5.0: Dynamic Workflows ─────────────────────────────────────────
 export {
@@ -675,50 +677,50 @@ export type { LoadedRouterProfile, RoutedModel } from './router/modelRouter.js';
 
 // ── Bridge SDK ────────────────────────────────────────────────────────
 export {
-  ActoviqBridgeAgentHandle,
-  ActoviqBridgeAgentsApi,
-  ActoviqBridgeContextApi,
-  ActoviqBridgeRunStream,
-  ActoviqBridgeSession,
-  ActoviqBridgeSessionsApi,
-  ActoviqBridgeSlashCommandsApi,
-  ActoviqBridgeSkillHandle,
-  ActoviqBridgeSkillsApi,
-  ActoviqBridgeSdkClient,
-  ActoviqBridgeToolsApi,
-  createActoviqBridgeSdk,
-} from './parity/actoviqBridgeSdk.js';
+  HadamardBridgeAgentHandle,
+  HadamardBridgeAgentsApi,
+  HadamardBridgeContextApi,
+  HadamardBridgeRunStream,
+  HadamardBridgeSession,
+  HadamardBridgeSessionsApi,
+  HadamardBridgeSlashCommandsApi,
+  HadamardBridgeSkillHandle,
+  HadamardBridgeSkillsApi,
+  HadamardBridgeSdkClient,
+  HadamardBridgeToolsApi,
+  createHadamardBridgeSdk,
+} from './parity/hadamardBridgeSdk.js';
 export {
-  ActoviqCleanBridgeAgentHandle,
-  ActoviqCleanBridgeAgentsApi,
-  ActoviqCleanBridgeContextApi,
-  ActoviqCleanBridgeRunStream,
-  ActoviqCleanBridgeSession,
-  ActoviqCleanBridgeSessionsApi,
-  ActoviqCleanBridgeSlashCommandsApi,
-  ActoviqCleanBridgeSkillHandle,
-  ActoviqCleanBridgeSkillsApi,
-  ActoviqCleanBridgeSdkClient,
-  ActoviqCleanBridgeToolsApi,
+  HadamardCleanBridgeAgentHandle,
+  HadamardCleanBridgeAgentsApi,
+  HadamardCleanBridgeContextApi,
+  HadamardCleanBridgeRunStream,
+  HadamardCleanBridgeSession,
+  HadamardCleanBridgeSessionsApi,
+  HadamardCleanBridgeSlashCommandsApi,
+  HadamardCleanBridgeSkillHandle,
+  HadamardCleanBridgeSkillsApi,
+  HadamardCleanBridgeSdkClient,
+  HadamardCleanBridgeToolsApi,
   bridgePromptFromMessageContent,
-  createActoviqCleanBridgeSdk,
-  getActoviqCleanBridgeParityMatrix,
+  createHadamardCleanBridgeSdk,
+  getHadamardCleanBridgeParityMatrix,
   normalizeCleanBridgeError,
-} from './parity/actoviqCleanBridgeCompatSdk.js';
+} from './parity/hadamardCleanBridgeCompatSdk.js';
 export {
-  analyzeActoviqBridgeEvents,
-  extractActoviqBridgeTaskInvocations,
-  extractActoviqBridgeToolRequests,
-  extractActoviqBridgeToolResults,
-  getActoviqBridgeTextDelta,
-} from './parity/actoviqBridgeEvents.js';
+  analyzeHadamardBridgeEvents,
+  extractHadamardBridgeTaskInvocations,
+  extractHadamardBridgeToolRequests,
+  extractHadamardBridgeToolResults,
+  getHadamardBridgeTextDelta,
+} from './parity/hadamardBridgeEvents.js';
 export {
-  getActoviqBridgeCompactBoundaries,
-  getActoviqBridgeLatestCompactBoundary,
-  getActoviqBridgeSessionInfo,
-  getActoviqBridgeSessionMessages,
-  listActoviqBridgeSessions,
-} from './parity/actoviqTranscripts.js';
+  getHadamardBridgeCompactBoundaries,
+  getHadamardBridgeLatestCompactBoundary,
+  getHadamardBridgeSessionInfo,
+  getHadamardBridgeSessionMessages,
+  listHadamardBridgeSessions,
+} from './parity/hadamardTranscripts.js';
 export {
   detectBridgeProviders,
 } from './parity/bridgeProviders.js';

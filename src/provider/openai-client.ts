@@ -3,7 +3,7 @@ import type {
   OpenaiChatCompletionChunk,
   OpenaiChatCompletionRequest,
 } from './openai-types.js';
-import { ActoviqProviderApiError } from '../errors.js';
+import { HadamardProviderApiError } from '../errors.js';
 import { computeRetryDelayMs, parseRetryAfterMs } from './client.js';
 
 export interface OpenaiProviderClientOptions {
@@ -111,7 +111,7 @@ function shouldRetryStatus(status: number): boolean {
 }
 
 function shouldRetryError(error: unknown): boolean {
-  if (error instanceof ActoviqProviderApiError) {
+  if (error instanceof HadamardProviderApiError) {
     return false;
   }
   if (!(error instanceof Error) || error.name === 'AbortError') {
@@ -142,7 +142,7 @@ function normalizeTransportError(error: unknown, url: string): unknown {
   if (!(error instanceof Error) || !isTransientTransportError(error)) {
     return error;
   }
-  return new ActoviqProviderApiError(
+  return new HadamardProviderApiError(
     `Provider transport error after retries: ${error.message} [url: ${url}]`,
     {
       status: 0,
@@ -403,7 +403,7 @@ export default class OpenaiProviderClient {
 
         const payload = await safeReadJson(response.clone());
         const url = normalizeChatUrl(this.baseURL);
-        const error = new ActoviqProviderApiError(
+        const error = new HadamardProviderApiError(
           `${createErrorMessage(response.status, payload)} [url: ${url}]`,
           {
             status: response.status,

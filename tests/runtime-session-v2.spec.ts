@@ -127,7 +127,7 @@ const agent: AgentSpec = {
 
 describe('AgentRuntime v2 sessions', () => {
   it('loads committed history lazily and appends only the new turn', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-v2-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-v2-'));
     roots.push(root);
     const storage = await SqliteStorageV2.open({ filename: path.join(root, 'session.sqlite') });
     const factory = vi.fn(() => new SqliteRuntimeSessionAdapter({ store: storage.sessions }));
@@ -155,7 +155,7 @@ describe('AgentRuntime v2 sessions', () => {
   });
 
   it('serializes concurrent turns for the same tenant/session before model execution', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-session-serial-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-serial-'));
     roots.push(root);
     const storage = await SqliteStorageV2.open({ filename: path.join(root, 'session.sqlite') });
     const services = new RuntimeServices({

@@ -73,7 +73,7 @@ function rememberTodos(scopeKey: string, todos: TodoItem[]): TodoItem[] {
   return previous;
 }
 
-export function getActoviqTodoSnapshot(scopeKey: string): TodoItem[] {
+export function getHadamardTodoSnapshot(scopeKey: string): TodoItem[] {
   return todoStateByScope.get(scopeKey) ?? [];
 }
 
@@ -83,12 +83,12 @@ function formatTodoLine(todo: TodoItem): string {
   return `${marker} ${todo.content}${suffix}`;
 }
 
-export function formatActoviqTodoListLines(todos: TodoItem[]): string {
+export function formatHadamardTodoListLines(todos: TodoItem[]): string {
   return todos.map(formatTodoLine).join('\n');
 }
 
 function buildTodoResultText(todos: TodoItem[]): string {
-  const lines = formatActoviqTodoListLines(todos);
+  const lines = formatHadamardTodoListLines(todos);
   return [
     'Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable.',
     '',

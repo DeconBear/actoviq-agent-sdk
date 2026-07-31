@@ -42,7 +42,7 @@ function getTool(tools: AgentToolDefinition[], name: string): AgentToolDefinitio
 
 describe('Project Manager issue tools', () => {
   it('lets the manager create, inspect, update, and comment without owning in_progress dispatch', async () => {
-    const root = await tempRoot('actoviq-manager-issues-');
+    const root = await tempRoot('hadamard-manager-issues-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     const tools = await createManagerTools({ workDir, homeDir, issueStorageMode: 'workspace' });
@@ -109,7 +109,7 @@ describe('Project Manager issue tools', () => {
   });
 
   it('teaches the manager and worker handoff prompts to use the issue board and IssueReport', async () => {
-    const root = await tempRoot('actoviq-manager-issue-prompt-');
+    const root = await tempRoot('hadamard-manager-issue-prompt-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     const tools = await createManagerTools({ workDir, homeDir });

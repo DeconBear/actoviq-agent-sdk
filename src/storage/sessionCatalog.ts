@@ -1,7 +1,7 @@
 import { mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { SessionNotFoundError } from '../errors.js';
 import { createId, nowIso } from '../runtime/helpers.js';
 import { extractTextFromContent } from '../runtime/messageUtils.js';
@@ -280,8 +280,8 @@ export class SessionCatalog {
       const pinned = input.pinned ?? !item.pinned;
       await store.mutate(locator.sessionId, session => {
         const metadata = { ...session.metadata };
-        if (pinned) metadata.__actoviqPinned = true;
-        else delete metadata.__actoviqPinned;
+        if (pinned) metadata.__hadamardPinned = true;
+        else delete metadata.__hadamardPinned;
         return { ...mutationTimestamp(session), metadata };
       });
     } else if (input.action === 'archive') {
@@ -347,8 +347,8 @@ export class SessionCatalog {
         model: input.model ?? 'unknown',
         kind: 'manager',
         metadata: {
-          __actoviqKind: 'manager',
-          __actoviqAssistantScope: 'global',
+          __hadamardKind: 'manager',
+          __hadamardAssistantScope: 'global',
         },
       });
       return itemFromSummary(
@@ -359,7 +359,7 @@ export class SessionCatalog {
       );
     }
     const projectPath = this.assertRegisteredProject(input.projectPath);
-    const root = getActoviqProjectSessionDirectory(projectPath, this.options.homeDir);
+    const root = getHadamardProjectSessionDirectory(projectPath, this.options.homeDir);
     const store = new SessionStore(root);
     const manager = type === 'assistant-project';
     const session = await store.create({
@@ -368,10 +368,10 @@ export class SessionCatalog {
       model: input.model ?? 'unknown',
       kind: manager ? 'manager' : 'main',
       metadata: {
-        __actoviqWorkDir: projectPath,
+        __hadamardWorkDir: projectPath,
         ...(manager
-          ? { __actoviqKind: 'manager', __actoviqAssistantScope: 'project' }
-          : { __actoviqKind: 'main' }),
+          ? { __hadamardKind: 'manager', __hadamardAssistantScope: 'project' }
+          : { __hadamardKind: 'main' }),
       },
     });
     return itemFromSummary(
@@ -385,7 +385,7 @@ export class SessionCatalog {
   private async loadKnownSessions(): Promise<SessionCatalogItem[]> {
     const items: SessionCatalogItem[] = [];
     for (const projectPath of this.projectPaths) {
-      const root = getActoviqProjectSessionDirectory(projectPath, this.options.homeDir);
+      const root = getHadamardProjectSessionDirectory(projectPath, this.options.homeDir);
       const [active, archived] = await Promise.all([
         new SessionStore(root).list().catch(() => []),
         new SessionStore(root, 'archive').list().catch(() => []),
@@ -438,7 +438,7 @@ export class SessionCatalog {
       return { root: this.globalAssistantRoot };
     }
     return {
-      root: getActoviqProjectSessionDirectory(
+      root: getHadamardProjectSessionDirectory(
         this.assertRegisteredProject(locator.projectPath),
         this.options.homeDir,
       ),

@@ -46,11 +46,11 @@ describe('VS Code/Cursor app-server client', () => {
     };
     expect(packageJson.contributes.commands.map(item => item.command)).toEqual(
       expect.arrayContaining([
-        'actoviq.openSession',
-        'actoviq.reviewDiff',
-        'actoviq.applyDiff',
-        'actoviq.restoreCheckpoint',
-        'actoviq.setGoal',
+        'hadamard.openSession',
+        'hadamard.reviewDiff',
+        'hadamard.applyDiff',
+        'hadamard.restoreCheckpoint',
+        'hadamard.setGoal',
       ]),
     );
   });

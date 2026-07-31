@@ -8,7 +8,7 @@
 
 - **调用间无状态**：加载 → 运行 → 保存。崩溃恢复是天然的
 - **人类可读**：JSON 文件可检查、编辑、备份
-- **按工作区隔离**：`~/.actoviq/projects/<hash>/sessions/<id>.json`
+- **按工作区隔离**：`~/.hadamard/projects/<hash>/sessions/<id>.json`
 - **无数据库依赖**：在任何文件系统上工作，可移植
 
 ## 模块设计
@@ -20,7 +20,7 @@
 | `storage/sessionStore.ts` | JSON 文件 CRUD + 检查点 + 原子写入 |
 | `runtime/agentSession.ts` | 内存封装，提供 run/stream/compact/dream API |
 | `runtime/sessionManager.ts` | 空闲超时、自动修剪、统计 |
-| `runtime/actoviqSessionPermissions.ts` | 权限状态持久化 |
+| `runtime/hadamardSessionPermissions.ts` | 权限状态持久化 |
 
 ### `AgentSession` — 封装器
 
@@ -53,7 +53,7 @@ AgentSession
 
 ### `AgentSessionBindings` 模式
 
-`AgentSession` 不直接调用 `ActoviqAgentClient`。它接收一个 `bindings` 对象，包含回调函数。这避免了循环依赖，使 `AgentSession` 可以用模拟 bindings 进行测试。
+`AgentSession` 不直接调用 `HadamardAgentClient`。它接收一个 `bindings` 对象，包含回调函数。这避免了循环依赖，使 `AgentSession` 可以用模拟 bindings 进行测试。
 
 ### `SessionStore` — 持久化
 

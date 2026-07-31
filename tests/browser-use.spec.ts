@@ -1,24 +1,24 @@
 import {
-  createActoviqBrowserTools,
-  createActoviqBrowserUseToolkit,
-  type ActoviqBrowserSessionLike,
-} from '../src/browser/actoviqBrowserTools.js';
+  createHadamardBrowserTools,
+  createHadamardBrowserUseToolkit,
+  type HadamardBrowserSessionLike,
+} from '../src/browser/hadamardBrowserTools.js';
 import {
-  readActoviqBrowserSettings,
-  writeActoviqBrowserSettings,
+  readHadamardBrowserSettings,
+  writeHadamardBrowserSettings,
 } from '../src/browser/browserSettings.js';
 import {
-  ActoviqBrowserSession,
+  HadamardBrowserSession,
   resolveBrowserScreenshotPath,
-} from '../src/browser/actoviqBrowserSession.js';
-import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+} from '../src/browser/hadamardBrowserSession.js';
+import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 import { realpathSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-function createNoopBrowserSession(): ActoviqBrowserSessionLike {
+function createNoopBrowserSession(): HadamardBrowserSessionLike {
   return {
     navigate: async (url) => ({ tabId: 't1', url, title: 'Example' }),
     goBack: async () => ({ url: 'https://example.com/', title: 'Example' }),
@@ -39,7 +39,7 @@ function createNoopBrowserSession(): ActoviqBrowserSessionLike {
 }
 
 function installFakePage(
-  session: ActoviqBrowserSession,
+  session: HadamardBrowserSession,
   options: {
     initialUrl?: string;
     onGoto?: (url: string) => string;
@@ -127,7 +127,7 @@ describe('browser-use toolkit', () => {
       close: vi.fn(async () => undefined),
     };
 
-    const toolkit = createActoviqBrowserUseToolkit({ session, allowEvaluate: true });
+    const toolkit = createHadamardBrowserUseToolkit({ session, allowEvaluate: true });
     const names = toolkit.tools.map((tool) => tool.name).sort();
     expect(names).toContain('browser_navigate');
     expect(names).toContain('browser_snapshot');
@@ -149,7 +149,7 @@ describe('browser-use toolkit', () => {
   });
 
   it('omits browser_evaluate unless allowEvaluate is set', () => {
-    const tools = createActoviqBrowserTools({
+    const tools = createHadamardBrowserTools({
       session: {
         navigate: async () => ({ tabId: 't1', url: 'https://example.com/', title: 'x' }),
         goBack: async () => ({ url: 'https://example.com/', title: 'x' }),
@@ -172,14 +172,14 @@ describe('browser-use toolkit', () => {
 
   it('reads and writes browser settings from settings.json shape', () => {
     const raw: Record<string, unknown> = {};
-    writeActoviqBrowserSettings(raw, {
+    writeHadamardBrowserSettings(raw, {
       enabled: true,
       headless: false,
       channel: 'chrome',
       allowedDomains: ['example.com'],
       allowEvaluate: false,
     });
-    expect(readActoviqBrowserSettings(raw)).toMatchObject({
+    expect(readHadamardBrowserSettings(raw)).toMatchObject({
       enabled: true,
       headless: false,
       channel: 'chrome',
@@ -194,19 +194,19 @@ describe('browser-use toolkit', () => {
     'javascript:alert(1)',
     'about:blank',
   ])('rejects non-HTTP public navigation before launching Playwright: %s', async (url) => {
-    const session = new ActoviqBrowserSession();
+    const session = new HadamardBrowserSession();
     await expect(session.navigate(url)).rejects.toThrow(/only http: and https:/i);
   });
 
   it('enforces allowedDomains on initial navigation before launching Playwright', async () => {
-    const session = new ActoviqBrowserSession({ allowedDomains: ['allowed.test'] });
+    const session = new HadamardBrowserSession({ allowedDomains: ['allowed.test'] });
     await expect(session.navigate('https://blocked.test/')).rejects.toThrow(
       /not in allowedDomains/i,
     );
   });
 
   it('returns to about:blank and throws when an HTTP redirect leaves allowedDomains', async () => {
-    const session = new ActoviqBrowserSession({ allowedDomains: ['allowed.test'] });
+    const session = new HadamardBrowserSession({ allowedDomains: ['allowed.test'] });
     const fake = installFakePage(session, {
       initialUrl: 'about:blank',
       onGoto: (url) =>
@@ -226,7 +226,7 @@ describe('browser-use toolkit', () => {
   it.each(['click', 'type', 'press'] as const)(
     'returns to about:blank when browser_%s navigates outside allowedDomains',
     async (action) => {
-      const session = new ActoviqBrowserSession({ allowedDomains: ['allowed.test'] });
+      const session = new HadamardBrowserSession({ allowedDomains: ['allowed.test'] });
       const fake = installFakePage(session, {
         onAction: (performed) =>
           performed === action ? 'https://blocked.test/private' : undefined,
@@ -270,11 +270,11 @@ describe('browser-use toolkit', () => {
     });
     vi.stubGlobal('document', {
       querySelectorAll: (selector: string) =>
-        selector === '[data-actoviq-idx]' ? [] : nodes,
+        selector === '[data-hadamard-idx]' ? [] : nodes,
     });
 
     try {
-      const session = new ActoviqBrowserSession({ allowedDomains: ['allowed.test'] });
+      const session = new HadamardBrowserSession({ allowedDomains: ['allowed.test'] });
       installFakePage(session, {
         evaluate: (fn, args) => fn(args),
       });
@@ -297,9 +297,9 @@ describe('browser-use toolkit', () => {
   it('forces every browser tool through interactive approval for CDP and persistent profiles', () => {
     for (const reuseOptions of [
       { cdpUrl: 'http://127.0.0.1:9222' },
-      { userDataDir: '.actoviq/browser-profile' },
+      { userDataDir: '.hadamard/browser-profile' },
     ]) {
-      const tools = createActoviqBrowserTools({
+      const tools = createHadamardBrowserTools({
         ...reuseOptions,
         session: createNoopBrowserSession(),
         allowEvaluate: true,
@@ -310,7 +310,7 @@ describe('browser-use toolkit', () => {
       }
     }
 
-    const isolated = createActoviqBrowserTools({
+    const isolated = createHadamardBrowserTools({
       session: createNoopBrowserSession(),
       allowEvaluate: true,
     });
@@ -320,7 +320,7 @@ describe('browser-use toolkit', () => {
   });
 
   it('still asks for approval in bypassPermissions when controlling a CDP session', async () => {
-    const click = createActoviqBrowserTools({
+    const click = createHadamardBrowserTools({
       cdpUrl: 'http://127.0.0.1:9222',
       session: createNoopBrowserSession(),
     }).find((definition) => definition.name === 'browser_click')!;
@@ -329,7 +329,7 @@ describe('browser-use toolkit', () => {
       reason: 'approved host-browser interaction',
     }));
 
-    const decision = await decideActoviqToolPermission({
+    const decision = await decideHadamardToolPermission({
       mode: 'bypassPermissions',
       rules: [],
       approver,
@@ -355,7 +355,7 @@ describe('browser-use toolkit', () => {
         .mockRejectedValueOnce(new Error('disconnect failed'))
         .mockResolvedValueOnce(undefined),
     };
-    const session = new ActoviqBrowserSession({ cdpUrl: 'http://127.0.0.1:9222' });
+    const session = new HadamardBrowserSession({ cdpUrl: 'http://127.0.0.1:9222' });
     Object.assign(session as unknown as Record<string, unknown>, {
       context,
       browser,
@@ -384,7 +384,7 @@ describe('browser-use toolkit', () => {
       close: vi.fn(async () => undefined),
     };
     // Unreachable CDP endpoint: after clearing stale handles, launch should fail.
-    const session = new ActoviqBrowserSession({ cdpUrl: 'http://127.0.0.1:1' });
+    const session = new HadamardBrowserSession({ cdpUrl: 'http://127.0.0.1:1' });
     Object.assign(session as unknown as Record<string, unknown>, {
       context,
       browser,
@@ -401,7 +401,7 @@ describe('browser-use toolkit', () => {
   });
 
   it('keeps screenshot output paths inside the configured workspace', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-browser-output-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-browser-output-'));
     try {
       await mkdir(path.join(root, 'artifacts'), { recursive: true });
       const canonicalRoot = realpathSync.native(root);

@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ActoviqTeammateRecord } from '../types.js';
+import type { HadamardTeammateRecord } from '../types.js';
 import { createId } from '../runtime/helpers.js';
 import {
   assertSafeStorageSegment,
@@ -15,10 +15,10 @@ export class TeammateStore {
 
   async create(
     teamName: string,
-    record: Omit<ActoviqTeammateRecord, 'id' | 'teamName'>,
-  ): Promise<ActoviqTeammateRecord> {
+    record: Omit<HadamardTeammateRecord, 'id' | 'teamName'>,
+  ): Promise<HadamardTeammateRecord> {
     await this.ensureReady(teamName);
-    const teammate: ActoviqTeammateRecord = {
+    const teammate: HadamardTeammateRecord = {
       ...record,
       id: createId(),
       teamName,
@@ -27,16 +27,16 @@ export class TeammateStore {
     return teammate;
   }
 
-  async save(record: ActoviqTeammateRecord): Promise<void> {
+  async save(record: HadamardTeammateRecord): Promise<void> {
     await this.ensureReady(record.teamName);
     await writeJsonAtomic(this.recordPath(record.teamName, record.name), record);
   }
 
-  async load(teamName: string, name: string): Promise<ActoviqTeammateRecord | undefined> {
+  async load(teamName: string, name: string): Promise<HadamardTeammateRecord | undefined> {
     await this.ensureReady(teamName);
     try {
       const raw = await readFile(this.recordPath(teamName, name), 'utf8');
-      return JSON.parse(raw) as ActoviqTeammateRecord;
+      return JSON.parse(raw) as HadamardTeammateRecord;
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
       if (nodeError.code === 'ENOENT') {
@@ -46,16 +46,16 @@ export class TeammateStore {
     }
   }
 
-  async list(teamName: string): Promise<ActoviqTeammateRecord[]> {
+  async list(teamName: string): Promise<HadamardTeammateRecord[]> {
     await this.ensureReady(teamName);
     const files = await readdir(this.teamDirectory(teamName));
-    const teammates: ActoviqTeammateRecord[] = [];
+    const teammates: HadamardTeammateRecord[] = [];
     for (const file of files) {
       if (!file.endsWith('.json')) {
         continue;
       }
       const raw = await readFile(path.join(this.teamDirectory(teamName), file), 'utf8');
-      teammates.push(JSON.parse(raw) as ActoviqTeammateRecord);
+      teammates.push(JSON.parse(raw) as HadamardTeammateRecord);
     }
     return teammates.sort((left, right) => left.name.localeCompare(right.name));
   }

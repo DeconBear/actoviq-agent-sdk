@@ -62,8 +62,8 @@ background: true
 Prioritize correctness, regressions, and verification gaps.
 ```
 
-项目定义放在 `.actoviq/agents/*.md`，用户定义放在
-`~/.actoviq/agents/*.md`。优先级为：代码传入的定义、项目定义、用户定义。
+项目定义放在 `.hadamard/agents/*.md`，用户定义放在
+`~/.hadamard/agents/*.md`。优先级为：代码传入的定义、项目定义、用户定义。
 定义还可以限制嵌套 agent、声明必需 MCP server、预加载 skill，以及启用
 worktree 隔离。产生修改的 worktree 会保留并返回路径；没有修改的 worktree
 会自动清理。
@@ -104,7 +104,7 @@ team.setRuntimeContext({
 
 仓库示例：
 
-- [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+- [examples/hadamard-swarm.ts](../../examples/hadamard-swarm.ts)
 
 ### GUI：让 Assistant 提议 Agent Graph
 
@@ -133,7 +133,7 @@ Assistant 支持多个 Session。Global 与每个项目分别记住当前活动 
 
 ```ts
 const workspace = await createTempWorkspace({
-  prefix: 'actoviq-demo-',
+  prefix: 'hadamard-demo-',
   copyFrom: './examples',
 });
 
@@ -195,8 +195,8 @@ const state = await session.compactState({
 
 仓库示例：
 
-- [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
-- [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
+- [examples/hadamard-memory.ts](../../examples/hadamard-memory.ts)
+- [examples/hadamard-session-memory.ts](../../examples/hadamard-session-memory.ts)
 
 ## 7. 可审阅 Memory 提案与 Remote Worker
 
@@ -208,7 +208,7 @@ const state = await session.compactState({
 /memory reject <proposal-id>
 ```
 
-Apply 前会展示目标、内容和来源；Reject 不产生持久写入。项目 `.actoviq/rules/` 与用户规则按 path glob、priority 和 provenance 解析，`/rules why` 可解释本轮为何命中某条规则。
+Apply 前会展示目标、内容和来源；Reject 不产生持久写入。项目 `.hadamard/rules/` 与用户规则按 path glob、priority 和 provenance 解析，`/rules why` 可解释本轮为何命中某条规则。
 
 Remote Worker 是可自托管协议，不绑定特定云厂商。它提供 durable job、事件 cursor、lease/heartbeat、断线续传、takeover、approval 回传和内容哈希 artifact。远端 worker 不能自行批准高风险工具；审批仍回到原 Session policy。artifact 会校验大小、哈希与 workspace path 映射，避免把远端路径直接写进本地任意位置。
 
@@ -250,7 +250,7 @@ console.log(autoResult.task?.id);
 
 仓库示例：
 
-- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+- [examples/hadamard-dream.ts](../../examples/hadamard-dream.ts)
 
 ## 9. Compact
 

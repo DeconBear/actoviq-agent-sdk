@@ -4,7 +4,7 @@
 
 子代理是通过 `Agent`/`Task` 工具由父 agent 创建的独立执行的 agent 会话。它们可以在前台（阻塞）或后台（非阻塞，带通知注入）运行。
 
-位置：`src/runtime/actoviqAgents.ts`, `src/runtime/agentClient.ts:2500-3000`, `src/runtime/actoviqBackgroundTasks.ts`
+位置：`src/runtime/hadamardAgents.ts`, `src/runtime/agentClient.ts:2500-3000`, `src/runtime/hadamardBackgroundTasks.ts`
 
 ### 设计原则
 
@@ -36,7 +36,7 @@
     │   ├── 运行中的 agent → 排队到 subagentInputQueues
     │   └── 已完成的 agent → 恢复会话，用消息重新运行
     │
-    └── 共享状态（ActoviqAgentClient Maps）
+    └── 共享状态（HadamardAgentClient Maps）
 ```
 
 ### 后台任务生命周期
@@ -76,8 +76,8 @@ async cancel(taskId: string): Promise<BackgroundTaskRecord> {
 三个来源（在初始化时合并）：
 
 1. **编程方式**：`createAgentSdk({ agents: [...] })`
-2. **Markdown 文件**：`~/.actoviq/agents/*.md`（用户级）和 `.actoviq/agents/*.md`（项目级）
-3. **内置**：`getDefaultActoviqAgents()` → Explore, Plan, general-purpose
+2. **Markdown 文件**：`~/.hadamard/agents/*.md`（用户级）和 `.hadamard/agents/*.md`（项目级）
+3. **内置**：`getDefaultHadamardAgents()` → Explore, Plan, general-purpose
 
 Markdown 格式（frontmatter + body）：
 ```markdown

@@ -21,7 +21,7 @@
 | `actoviq-agent-sdk/node` | SQLite sessions/checkpoints/children 与存储 adapter |
 | `actoviq-agent-sdk/compat` | 0.x compatibility façade |
 
-两条路线可以共存，但不要把 actoviq-bridge-sdk 当成 Hadamard Runtime 的依赖。Bridge 只在需要接外部 Agent CLI 时使用。
+两条路线可以共存，但不要把 hadamard-bridge-sdk 当成 Hadamard Runtime 的依赖。Bridge 只在需要接外部 Agent CLI 时使用。
 
 ## 1. 安装
 
@@ -48,7 +48,7 @@ npm install
 本地最简单的方式是准备：
 
 ```text
-~/.actoviq/settings.json
+~/.hadamard/settings.json
 ```
 
 示例：
@@ -56,11 +56,11 @@ npm install
 ```json
 {
   "env": {
-    "ACTOVIQ_AUTH_TOKEN": "your-token",
-    "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-    "ACTOVIQ_DEFAULT_MIN_MODEL": "your-fast-model",
-    "ACTOVIQ_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
-    "ACTOVIQ_DEFAULT_MAX_MODEL": "your-capable-model"
+    "HADAMARD_AUTH_TOKEN": "your-token",
+    "HADAMARD_BASE_URL": "https://api.example.com/hadamard",
+    "HADAMARD_DEFAULT_MIN_MODEL": "your-fast-model",
+    "HADAMARD_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
+    "HADAMARD_DEFAULT_MAX_MODEL": "your-capable-model"
   }
 }
 ```
@@ -98,10 +98,10 @@ const sdk = await createAgentSdk({
 ```json
 {
   "env": {
-    "ACTOVIQ_PROVIDER": "openai",
-    "ACTOVIQ_API_KEY": "sk-xxx",
-    "ACTOVIQ_BASE_URL": "https://api.deepseek.com",
-    "ACTOVIQ_MODEL": "deepseek-chat"
+    "HADAMARD_PROVIDER": "openai",
+    "HADAMARD_API_KEY": "sk-xxx",
+    "HADAMARD_BASE_URL": "https://api.deepseek.com",
+    "HADAMARD_MODEL": "deepseek-chat"
   }
 }
 ```
@@ -115,9 +115,9 @@ const sdk = await createAgentSdk({
 ### 快速/兼容入口
 
 ```ts
-import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import { createAgentSdk, loadDefaultHadamardSettings } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 const sdk = await createAgentSdk();
 
 try {
@@ -128,7 +128,7 @@ try {
 }
 ```
 
-`createAgentSdk()` 会按 Actoviq settings 解析 provider、模型、sessions、skills、memory 和核心工具，适合直接做交互应用。
+`createAgentSdk()` 会按 Hadamard settings 解析 provider、模型、sessions、skills、memory 和核心工具，适合直接做交互应用。
 
 ### 模块化 Runtime 入口
 
@@ -176,7 +176,7 @@ try {
 安装包后，可以直接启动内置的交互式 REPL：
 
 ```bash
-npx actoviq-react [工作目录]
+npx hadamard-react [工作目录]
 ```
 
 这是一个基于 readline 的 Agent，在主终端缓冲区运行：
@@ -185,24 +185,24 @@ npx actoviq-react [工作目录]
 - Tab 补全命令，↑↓ 浏览历史
 - Ctrl+C 一次中止当前请求，连按两次退出
 
-**注意：** `actoviq-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试。完整终端 UI 请使用 `actoviq-tui`。
+**注意：** `hadamard-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试。完整终端 UI 请使用 `hadamard-tui`。
 
 ## 5. 终端 UI（TUI）
 
 包内还包含完整的 Hadamard SDK 终端 UI：
 
 ```bash
-npx actoviq-tui [工作目录] [选项]
+npx hadamard-tui [工作目录] [选项]
 
 # 选项
-#   --config <path>            加载指定的 Actoviq settings JSON 配置
+#   --config <path>            加载指定的 Hadamard settings JSON 配置
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions（默认）
 #   --model <model>            覆盖配置中的模型或分级别名
 #   --resume <session-id>      恢复已保存的 Hadamard SDK 会话
 #   --continue                 继续最近更新的会话
 ```
 
-`actoviq-tui` 借鉴 Claude Code 的默认终端交互模式，但实现完全属于 Hadamard SDK：对话记录流式写入终端原生滚动缓冲区，底部可重绘区域承载状态行、Claude 风格 prompt bar、斜杠命令菜单和权限确认。
+`hadamard-tui` 借鉴 Claude Code 的默认终端交互模式，但实现完全属于 Hadamard SDK：对话记录流式写入终端原生滚动缓冲区，底部可重绘区域承载状态行、Claude 风格 prompt bar、斜杠命令菜单和权限确认。
 
 适合需要更完整终端体验的场景：
 
@@ -216,12 +216,12 @@ npx actoviq-tui [工作目录] [选项]
 - 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
 - `/permissions` 可在只读、工作区访问、完全访问、计划模式预设之间切换；使用 `--permission-mode default` 时，变更型工具会弹出 批准 / 始终允许 / 拒绝 确认，且「始终允许」规则会随会话保存。只读 Bash 命令（`ls`、`git status`…）会自动放行。
 - `/plan` 进入计划模式（研究后提议：Agent 调用 EnterPlanMode/ExitPlanMode，写出计划文件，你审批）；`/init` 生成 `CLAUDE.md`；`/context`、`/cost`/`/usage`、`/doctor` 分别查看上下文窗口、花费与配置。
-- `/output-style` 选择简洁/解释/学习等回复风格；`/hooks` 列出已配置的 PreToolUse 钩子（settings.json）；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.actoviq/mcp.json）。
+- `/output-style` 选择简洁/解释/学习等回复风格；`/hooks` 列出已配置的 PreToolUse 钩子（settings.json）；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.hadamard/mcp.json）。
 - Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
 
-`actoviq-react` 和 `actoviq-tui` 使用同样的 Hadamard SDK 默认值：`~/.actoviq/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。
+`hadamard-react` 和 `hadamard-tui` 使用同样的 Hadamard SDK 默认值：`~/.hadamard/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。
 
-未显式配置 `sessionDirectory` 时，会话按工作区隔离保存在 `~/.actoviq/projects/<workspace-key>`。
+未显式配置 `sessionDirectory` 时，会话按工作区隔离保存在 `~/.hadamard/projects/<workspace-key>`。
 
 GUI、TUI、CLI 当前走 `createAgentSdk()` 交互入口；它们与模块化 Runtime 属于同一个 Hadamard SDK 仓库，但交互入口会额外组合 sessions、skills、memory、MCP、worktrees、teams 等产品能力。
 
@@ -230,7 +230,7 @@ GUI、TUI、CLI 当前走 `createAgentSdk()` 交互入口；它们与模块化 R
 在仓库中启动开发版 GUI：
 
 ```bash
-npx actoviq-gui .
+npx hadamard-gui .
 ```
 
 打包桌面版启动后，推荐按这个顺序使用：
@@ -249,12 +249,12 @@ npx actoviq-gui .
 ## 7. 直接运行仓库示例
 
 ```bash
-npm run example:actoviq-quickstart
+npm run example:hadamard-quickstart
 ```
 
 对应文件：
 
-- [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
+- [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
 
 ## 8. 一个最小可用的流式聊天机器人
 

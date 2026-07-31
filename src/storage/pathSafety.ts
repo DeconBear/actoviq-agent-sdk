@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { ActoviqSdkError } from '../errors.js';
+import { HadamardSdkError } from '../errors.js';
 
 const PATH_SEPARATOR_PATTERN = /[\\/]/u;
 
@@ -13,7 +13,7 @@ export function assertSafeStorageSegment(label: string, value: string): string {
     PATH_SEPARATOR_PATTERN.test(value) ||
     path.isAbsolute(value)
   ) {
-    throw new ActoviqSdkError(
+    throw new HadamardSdkError(
       `Unsafe ${label} "${value}". Storage keys must be plain path segments.`,
     );
   }
@@ -30,7 +30,7 @@ export function joinUnderStorageRoot(rootDirectory: string, ...segments: string[
   const target = path.resolve(root, ...segments);
   const relative = path.relative(root, target);
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new ActoviqSdkError(`Resolved storage path escapes its root: ${target}`);
+    throw new HadamardSdkError(`Resolved storage path escapes its root: ${target}`);
   }
   return target;
 }

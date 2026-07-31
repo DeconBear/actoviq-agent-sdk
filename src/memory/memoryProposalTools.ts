@@ -23,7 +23,7 @@ export function createMemoryProposalTools(options: {
     }, async (input, context) => options.service.propose({
       targetPath: input.scope === 'user'
         ? path.join(options.homeDir, 'MEMORY.md')
-        : path.join(options.workDir, '.actoviq', 'MEMORY.md'),
+        : path.join(options.workDir, '.hadamard', 'MEMORY.md'),
       content: input.content,
       explanation: input.explanation,
       provenance: {

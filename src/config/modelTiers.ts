@@ -1,39 +1,39 @@
 import { ConfigurationError } from '../errors.js';
-import type { ActoviqModelTier, ActoviqModelTierConfig } from '../types.js';
+import type { HadamardModelTier, HadamardModelTierConfig } from '../types.js';
 
-export const ACTOVIQ_MODEL_TIERS: readonly ActoviqModelTier[] = [
+export const HADAMARD_MODEL_TIERS: readonly HadamardModelTier[] = [
   'min',
   'medium',
   'max',
 ];
 
-export function isActoviqModelTier(value: string): value is ActoviqModelTier {
-  return ACTOVIQ_MODEL_TIERS.includes(value.trim().toLowerCase() as ActoviqModelTier);
+export function isHadamardModelTier(value: string): value is HadamardModelTier {
+  return HADAMARD_MODEL_TIERS.includes(value.trim().toLowerCase() as HadamardModelTier);
 }
 
-export function resolveActoviqModelReference(
+export function resolveHadamardModelReference(
   value: string,
-  tiers: ActoviqModelTierConfig,
-): { model: string; tier?: ActoviqModelTier } {
+  tiers: HadamardModelTierConfig,
+): { model: string; tier?: HadamardModelTier } {
   const normalized = value.trim();
-  if (!isActoviqModelTier(normalized)) {
+  if (!isHadamardModelTier(normalized)) {
     return { model: normalized };
   }
 
-  const tier = normalized.toLowerCase() as ActoviqModelTier;
+  const tier = normalized.toLowerCase() as HadamardModelTier;
   const model = tiers[tier]?.trim();
   if (!model) {
     throw new ConfigurationError(
-      `Model tier "${tier}" is not configured. Set ACTOVIQ_DEFAULT_${tier.toUpperCase()}_MODEL or pass a full model ID.`,
+      `Model tier "${tier}" is not configured. Set HADAMARD_DEFAULT_${tier.toUpperCase()}_MODEL or pass a full model ID.`,
     );
   }
   return { model, tier };
 }
 
-export function selectDefaultActoviqModel(
-  tiers: ActoviqModelTierConfig,
+export function selectDefaultHadamardModel(
+  tiers: HadamardModelTierConfig,
   fallbackModel: string,
-): { model: string; tier?: ActoviqModelTier } {
+): { model: string; tier?: HadamardModelTier } {
   for (const tier of ['medium', 'max', 'min'] as const) {
     const model = tiers[tier]?.trim();
     if (model) {

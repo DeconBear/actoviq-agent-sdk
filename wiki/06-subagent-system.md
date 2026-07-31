@@ -6,8 +6,8 @@ Subagents are independently executed agent sessions spawned by the parent agent
 via the `Agent`/`Task` tool. They can run in the foreground (blocking) or
 background (non-blocking with notification injection).
 
-Location: `src/runtime/actoviqAgents.ts`, `src/runtime/agentClient.ts:2500-3000`,
-`src/runtime/actoviqBackgroundTasks.ts`
+Location: `src/runtime/hadamardAgents.ts`, `src/runtime/agentClient.ts:2500-3000`,
+`src/runtime/hadamardBackgroundTasks.ts`
 
 ### Design Principles
 
@@ -26,10 +26,10 @@ Location: `src/runtime/actoviqAgents.ts`, `src/runtime/agentClient.ts:2500-3000`
 
 | File | Role |
 |---|---|
-| `actoviqAgents.ts` | Agent/Task tool definitions, delegation option extraction |
-| `actoviqAgentDefinitions.ts` | Markdown agent definition loader |
-| `defaultActoviqAgents.ts` | Built-in agent definitions (Explore, Plan, general-purpose) |
-| `actoviqBackgroundTasks.ts` | Background task lifecycle: launch, track, cancel, reconcile |
+| `hadamardAgents.ts` | Agent/Task tool definitions, delegation option extraction |
+| `hadamardAgentDefinitions.ts` | Markdown agent definition loader |
+| `defaultHadamardAgents.ts` | Built-in agent definitions (Explore, Plan, general-purpose) |
+| `hadamardBackgroundTasks.ts` | Background task lifecycle: launch, track, cancel, reconcile |
 
 ### Delegation Architecture
 
@@ -58,7 +58,7 @@ Parent Session
     │   │   (delivered at next tool boundary)
     │   └── Completed agent → resume session, re-run with message
     │
-    └── Shared state (ActoviqAgentClient Maps)
+    └── Shared state (HadamardAgentClient Maps)
         ├── pendingDelegations: Map<parentRunId, delegation[]>
         ├── pendingRuntimeNotifications: Map<sessionId, notification[]>
         ├── subagentInputQueues: Map<agentId, queuedMessages[]>
@@ -127,7 +127,7 @@ Parent Session
               └──────────┘ └──────────┘ └──────────┘
 ```
 
-**Cancel flow** (`cancel()` in `actoviqBackgroundTasks.ts`):
+**Cancel flow** (`cancel()` in `hadamardBackgroundTasks.ts`):
 1. Check if task is in terminal state → return existing (don't overwrite)
 2. Call `AbortController.abort()`
 3. **Re-read from store** (TOCTOU protection — task may have completed between
@@ -139,8 +139,8 @@ Parent Session
 
 | Control | Source | Default |
 |---|---|---|
-| `maxSubagentDepth` | `ActoviqAgentClient` constructor | 1 (one level) |
-| `maxSubagentFanout` | `ActoviqAgentClient` constructor | 8 |
+| `maxSubagentDepth` | `HadamardAgentClient` constructor | 1 (one level) |
+| `maxSubagentFanout` | `HadamardAgentClient` constructor | 8 |
 | Per-definition `allowedAgents` | Agent definition frontmatter | undefined (all) |
 | Per-definition `disallowedTools` | Agent definition frontmatter | undefined |
 | Per-definition `maxDepth` | Agent definition frontmatter | inherit from parent |
@@ -150,8 +150,8 @@ Parent Session
 Three sources (merged at init time):
 
 1. **Programmatic**: `createAgentSdk({ agents: [...] })`
-2. **Markdown files**: `~/.actoviq/agents/*.md` (user) + `.actoviq/agents/*.md` (project)
-3. **Built-in**: `getDefaultActoviqAgents()` → Explore, Plan, general-purpose
+2. **Markdown files**: `~/.hadamard/agents/*.md` (user) + `.hadamard/agents/*.md` (project)
+3. **Built-in**: `getDefaultHadamardAgents()` → Explore, Plan, general-purpose
 
 Markdown format (frontmatter + body):
 ```markdown
@@ -173,14 +173,14 @@ First match wins (programmatic takes highest priority).
 
 ## Code Details
 
-### `createActoviqTaskTool()`
+### `createHadamardTaskTool()`
 
-Location: `src/runtime/actoviqAgents.ts:166`
+Location: `src/runtime/hadamardAgents.ts:166`
 
 Creates the `Agent`/`Task` tool with all delegation callbacks:
 
 ```typescript
-export function createActoviqTaskTool(options: {
+export function createHadamardTaskTool(options: {
   listAgentDefinitions, getAgentDefinition, runAgent, launchBackgroundAgent,
   onDelegated, name, description, maxDepth, maxFanout,
 }): AgentToolDefinition {
@@ -212,9 +212,9 @@ export function createActoviqTaskTool(options: {
 
 ```typescript
 private async prepareDelegatedWorkspace(
-  definition: ActoviqAgentDefinition,
+  definition: HadamardAgentDefinition,
   delegation: { name?, isolation?, cwd? },
-): Promise<{ workDir: string; workspace?: ActoviqWorkspace }> {
+): Promise<{ workDir: string; workspace?: HadamardWorkspace }> {
   if (delegation.cwd) return { workDir: path.resolve(delegation.cwd) };
   
   const isolation = delegation.isolation ?? definition.isolation;
@@ -224,7 +224,7 @@ private async prepareDelegatedWorkspace(
   
   const workspace = await createGitWorktreeWorkspace({
     repositoryPath: this.config.workDir,
-    branch: `actoviq-agent-${createId().slice(0, 8)}`,
+    branch: `hadamard-agent-${createId().slice(0, 8)}`,
   });
   
   return { workDir: workspace.path, workspace };

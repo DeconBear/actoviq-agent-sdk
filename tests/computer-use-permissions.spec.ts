@@ -5,11 +5,11 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { createActoviqComputerUseTools } from '../src/computer/actoviqComputerUse.js';
-import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+import { createHadamardComputerUseTools } from '../src/computer/hadamardComputerUse.js';
+import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 
 function tools() {
-  return createActoviqComputerUseTools({
+  return createHadamardComputerUseTools({
     executor: {
       openUrl: vi.fn(),
       focusWindow: vi.fn(),
@@ -88,7 +88,7 @@ describe('local computer-use permission metadata', () => {
         behavior: 'allow' as const,
         reason: 'approved',
       }));
-      const decision = await decideActoviqToolPermission({
+      const decision = await decideHadamardToolPermission({
         mode: 'bypassPermissions',
         rules: [],
         approver,
@@ -109,9 +109,9 @@ describe('local computer-use permission metadata', () => {
   });
 
   it('keeps direct and workflow screenshot output inside the active workspace', async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), 'actoviq-local-computer-'));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'hadamard-local-computer-'));
     const takeScreenshot = vi.fn((outputPath: string) => outputPath);
-    const definitions = createActoviqComputerUseTools({
+    const definitions = createHadamardComputerUseTools({
       executor: {
         openUrl: vi.fn(),
         focusWindow: vi.fn(),
@@ -155,7 +155,7 @@ describe('local computer-use permission metadata', () => {
     const blocked = new Promise<void>(() => undefined);
     const openUrl = vi.fn(() => blocked);
     const typeText = vi.fn(async () => undefined);
-    const definitions = createActoviqComputerUseTools({
+    const definitions = createHadamardComputerUseTools({
       executor: {
         openUrl,
         typeText,
@@ -205,7 +205,7 @@ describe('local computer-use permission metadata', () => {
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
     }));
-    const definitions = createActoviqComputerUseTools({
+    const definitions = createHadamardComputerUseTools({
       executor: {
         openUrl,
         typeText: vi.fn(),

@@ -6,25 +6,25 @@ import type {
   AgentSessionCompactOptions,
   AgentSessionDreamOptions,
   AgentSessionMemoryExtractionOptions,
-  ActoviqAgentContinuityState,
-  ActoviqSessionCompactResult,
-  ActoviqCompactStateOptions,
-  ActoviqCompactState,
-  ActoviqDreamRunResult,
-  ActoviqDreamState,
-  ActoviqHooks,
-  ActoviqPermissionMode,
-  ActoviqPermissionRule,
-  ActoviqSessionPermissionState,
-  ActoviqSessionMemoryExtractionResult,
-  ActoviqToolApprover,
-  ActoviqToolClassifier,
+  HadamardAgentContinuityState,
+  HadamardSessionCompactResult,
+  HadamardCompactStateOptions,
+  HadamardCompactState,
+  HadamardDreamRunResult,
+  HadamardDreamState,
+  HadamardHooks,
+  HadamardPermissionMode,
+  HadamardPermissionRule,
+  HadamardSessionPermissionState,
+  HadamardSessionMemoryExtractionResult,
+  HadamardToolApprover,
+  HadamardToolClassifier,
   SessionCheckpoint,
   SessionCheckpointSummary,
   SessionForkOptions,
   StoredSession,
 } from '../types.js';
-import { getPersistedActoviqSessionPermissionState } from './actoviqSessionPermissions.js';
+import { getPersistedHadamardSessionPermissionState } from './hadamardSessionPermissions.js';
 import type { SessionStore } from '../storage/sessionStore.js';
 import { AgentRunStream } from './asyncQueue.js';
 import { deepClone } from './helpers.js';
@@ -55,35 +55,35 @@ interface AgentSessionBindings {
   extractSessionMemory: (
     session: AgentSession,
     options?: AgentSessionMemoryExtractionOptions,
-  ) => Promise<ActoviqSessionMemoryExtractionResult>;
+  ) => Promise<HadamardSessionMemoryExtractionResult>;
   runDream: (
     session: AgentSession,
     options?: AgentSessionDreamOptions,
-  ) => Promise<ActoviqDreamRunResult>;
+  ) => Promise<HadamardDreamRunResult>;
   maybeAutoDream: (
     session: AgentSession,
     options?: AgentSessionDreamOptions,
-  ) => Promise<ActoviqDreamRunResult>;
-  getDreamState: (session: AgentSession) => Promise<ActoviqDreamState>;
+  ) => Promise<HadamardDreamRunResult>;
+  getDreamState: (session: AgentSession) => Promise<HadamardDreamState>;
   compactSession: (
     session: AgentSession,
     options?: AgentSessionCompactOptions,
-  ) => Promise<ActoviqSessionCompactResult>;
+  ) => Promise<HadamardSessionCompactResult>;
   getCompactState: (
     session: AgentSession,
-    options?: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'>,
-  ) => Promise<ActoviqCompactState>;
-  getAgentContinuity: (session: AgentSession) => Promise<ActoviqAgentContinuityState>;
-  setRuntimeHooks: (session: AgentSession, hooks?: ActoviqHooks) => void;
+    options?: Omit<HadamardCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'>,
+  ) => Promise<HadamardCompactState>;
+  getAgentContinuity: (session: AgentSession) => Promise<HadamardAgentContinuityState>;
+  setRuntimeHooks: (session: AgentSession, hooks?: HadamardHooks) => void;
   clearRuntimeHooks: (session: AgentSession) => void;
   setModel: (session: AgentSession, model: string) => Promise<StoredSession>;
   setRuntimePermissionContext: (
     session: AgentSession,
     context: {
-      mode?: ActoviqPermissionMode;
-      permissions?: ActoviqPermissionRule[];
-      classifier?: ActoviqToolClassifier;
-      approver?: ActoviqToolApprover;
+      mode?: HadamardPermissionMode;
+      permissions?: HadamardPermissionRule[];
+      classifier?: HadamardToolClassifier;
+      approver?: HadamardToolApprover;
     },
   ) => Promise<StoredSession>;
   clearRuntimePermissionContext: (session: AgentSession) => Promise<StoredSession>;
@@ -128,8 +128,8 @@ export class AgentSession {
     return [...this.stored.tags];
   }
 
-  get permissionContext(): ActoviqSessionPermissionState {
-    return getPersistedActoviqSessionPermissionState(this.stored.metadata);
+  get permissionContext(): HadamardSessionPermissionState {
+    return getPersistedHadamardSessionPermissionState(this.stored.metadata);
   }
 
   get pendingInputCount(): number {
@@ -207,39 +207,39 @@ export class AgentSession {
 
   async extractMemory(
     options: AgentSessionMemoryExtractionOptions = {},
-  ): Promise<ActoviqSessionMemoryExtractionResult> {
+  ): Promise<HadamardSessionMemoryExtractionResult> {
     return this.bindings.extractSessionMemory(this, options);
   }
 
-  async dream(options: AgentSessionDreamOptions = {}): Promise<ActoviqDreamRunResult> {
+  async dream(options: AgentSessionDreamOptions = {}): Promise<HadamardDreamRunResult> {
     return this.bindings.runDream(this, options);
   }
 
-  async maybeAutoDream(options: AgentSessionDreamOptions = {}): Promise<ActoviqDreamRunResult> {
+  async maybeAutoDream(options: AgentSessionDreamOptions = {}): Promise<HadamardDreamRunResult> {
     return this.bindings.maybeAutoDream(this, options);
   }
 
-  async dreamState(): Promise<ActoviqDreamState> {
+  async dreamState(): Promise<HadamardDreamState> {
     return this.bindings.getDreamState(this);
   }
 
   async compact(
     options: AgentSessionCompactOptions = {},
-  ): Promise<ActoviqSessionCompactResult> {
+  ): Promise<HadamardSessionCompactResult> {
     return this.bindings.compactSession(this, options);
   }
 
   async compactState(
-    options: Omit<ActoviqCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
-  ): Promise<ActoviqCompactState> {
+    options: Omit<HadamardCompactStateOptions, 'projectPath' | 'runtimeState' | 'sessionId'> = {},
+  ): Promise<HadamardCompactState> {
     return this.bindings.getCompactState(this, options);
   }
 
-  async agentContinuity(): Promise<ActoviqAgentContinuityState> {
+  async agentContinuity(): Promise<HadamardAgentContinuityState> {
     return this.bindings.getAgentContinuity(this);
   }
 
-  setHooks(hooks?: ActoviqHooks): void {
+  setHooks(hooks?: HadamardHooks): void {
     this.bindings.setRuntimeHooks(this, hooks);
   }
 
@@ -252,10 +252,10 @@ export class AgentSession {
   }
 
   async setPermissionContext(context: {
-    mode?: ActoviqPermissionMode;
-    permissions?: ActoviqPermissionRule[];
-    classifier?: ActoviqToolClassifier;
-    approver?: ActoviqToolApprover;
+    mode?: HadamardPermissionMode;
+    permissions?: HadamardPermissionRule[];
+    classifier?: HadamardToolClassifier;
+    approver?: HadamardToolApprover;
   }): Promise<void> {
     this.stored = await this.bindings.setRuntimePermissionContext(this, context);
   }

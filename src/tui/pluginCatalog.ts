@@ -1,10 +1,10 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import { isRecord } from '../runtime/helpers.js';
 
-export interface ActoviqPluginCatalogEntry {
+export interface HadamardPluginCatalogEntry {
   name: string;
   path: string;
   description?: string;
@@ -12,19 +12,19 @@ export interface ActoviqPluginCatalogEntry {
   capabilities: string[];
 }
 
-export async function discoverActoviqPlugins(options: {
+export async function discoverHadamardPlugins(options: {
   workDir: string;
   homeDir: string;
   configuredDirs?: string[];
-}): Promise<ActoviqPluginCatalogEntry[]> {
-  const dataRoot = resolveActoviqHome(options.homeDir);
+}): Promise<HadamardPluginCatalogEntry[]> {
+  const dataRoot = resolveHadamardHome(options.homeDir);
   const candidates = [
     path.join(dataRoot, 'plugins'),
-    path.join(options.workDir, '.actoviq', 'plugins'),
+    path.join(options.workDir, '.hadamard', 'plugins'),
     ...(options.configuredDirs ?? []),
   ];
   const roots = [...new Set(candidates.map(candidate => path.resolve(candidate)))];
-  const entries = new Map<string, ActoviqPluginCatalogEntry>();
+  const entries = new Map<string, HadamardPluginCatalogEntry>();
 
   for (const root of roots) {
     const direct = await readPlugin(root);
@@ -48,9 +48,9 @@ export async function discoverActoviqPlugins(options: {
   return [...entries.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function readPlugin(root: string): Promise<ActoviqPluginCatalogEntry | undefined> {
+async function readPlugin(root: string): Promise<HadamardPluginCatalogEntry | undefined> {
   const manifestPaths = [
-    path.join(root, '.actoviq-plugin', 'plugin.json'),
+    path.join(root, '.hadamard-plugin', 'plugin.json'),
     path.join(root, 'plugin.json'),
   ];
   for (const manifestPath of manifestPaths) {

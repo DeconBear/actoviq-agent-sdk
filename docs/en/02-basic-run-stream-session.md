@@ -92,7 +92,7 @@ The Hadamard SDK session store is local and file-based.
 Default location:
 
 ```text
-~/.actoviq/actoviq-agent-sdk
+~/.hadamard/actoviq-agent-sdk
 ```
 
 Each session is persisted there through the session store. Stored data includes:

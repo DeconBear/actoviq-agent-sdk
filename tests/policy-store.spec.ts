@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('PolicyStore', () => {
   it('uses revisions and can roll back to an archived snapshot', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-policy-store-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-policy-store-'));
     dirs.push(dir);
     const store = new PolicyStore(path.join(dir, 'policy.json'), 'project');
     const first = await store.save({

@@ -759,10 +759,10 @@ export function ensureConfiguredTeamGraph(definition: TeamDefinition): TeamDefin
 export async function buildGraphNodeTools(node: TeamGraphNode, cwd: string) {
   const { buildReadOnlyExpertTools } = await import('./teamRuntime.js');
   if (!node.allowedTools?.length) return buildReadOnlyExpertTools(cwd);
-  const { createActoviqCoreTools } = await import('../tools/actoviqCoreTools.js');
+  const { createHadamardCoreTools } = await import('../tools/hadamardCoreTools.js');
   const { createTavilySearchTool } = await import('../tools/tavilySearch.js');
   const allow = new Set(node.allowedTools);
-  const core = createActoviqCoreTools({ cwd });
+  const core = createHadamardCoreTools({ cwd });
   const pool = core.some((t) => t.name === 'TavilySearch') ? core : [...core, createTavilySearchTool()];
   return pool.filter((tool) => allow.has(tool.name));
 }

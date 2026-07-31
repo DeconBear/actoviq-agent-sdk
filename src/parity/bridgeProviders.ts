@@ -4,7 +4,7 @@
  * The vendored-bundle path and the original Claude Code `-p` stream-json path
  * are both the `claude` provider. `pi` and `codex` reuse the same spawn +
  * line-by-line JSONL pipeline but speak their own wire protocols, so each
- * provider supplies four pieces the rest of `actoviqBridgeSdk.ts` stays
+ * provider supplies four pieces the rest of `hadamardBridgeSdk.ts` stays
  * protocol-agnostic around:
  *
  *   1. executable resolution (which binary on PATH, default error message)
@@ -22,14 +22,14 @@ import { execFile, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgeRunOptions,
+  HadamardBridgeJsonEvent,
+  HadamardBridgeRunOptions,
   BridgeProviderDetection,
   RuntimeProviderId,
 } from '../types.js';
 
-import { ActoviqBridgeProcessError } from '../errors.js';
-import { mapActoviqEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
+import { HadamardBridgeProcessError } from '../errors.js';
+import { mapHadamardEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   findExecutableOnPath,
@@ -206,7 +206,7 @@ export interface BridgeEventNormalizer {
   translate(
     raw: Record<string, unknown>,
     control?: BridgeProcessControl,
-  ): ActoviqBridgeJsonEvent[];
+  ): HadamardBridgeJsonEvent[];
   /** The provider speaks a bidirectional JSON-lines protocol over stdio. */
   interactive?: true;
   /** Called once after the child process and its stdio pipes are ready. */
@@ -222,7 +222,7 @@ export interface BridgeEventNormalizer {
    */
   rawText?: true;
   /** Flush accumulated state at end-of-stream (raw-text providers only). */
-  flush?(): ActoviqBridgeJsonEvent[];
+  flush?(): HadamardBridgeJsonEvent[];
 }
 
 export interface BridgeProcessControl {
@@ -245,9 +245,9 @@ export interface RuntimeProvider {
    * the run path. `timeoutMs` is a finite per-process deadline.
    */
   probeVersion(executablePath: string, timeoutMs?: number): Promise<string | undefined>;
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[];
+  buildArgs(prompt: string, options: HadamardBridgeRunOptions): string[];
   /**
-   * Build the child env. `settingsEnv` is the `~/.actoviq/settings.json` env
+   * Build the child env. `settingsEnv` is the `~/.hadamard/settings.json` env
    * block; `baseEnv` is the inherited process env already filtered to
    * string values. Providers emit whatever credential variables their CLI
    * reads (claude: ANTHROPIC_*, pi/codex: their own).
@@ -260,7 +260,7 @@ export interface RuntimeProvider {
   /** A fresh normalizer for one run. */
   createNormalizer(
     prompt?: string,
-    options?: ActoviqBridgeRunOptions,
+    options?: HadamardBridgeRunOptions,
   ): BridgeEventNormalizer;
   /** Recommended model IDs for this provider (used by TUI `/bridge model`). */
   suggestedModels(): string[];
@@ -274,14 +274,14 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
 
   /**
    * Resolve the executable for a run. Precedence (all in-memory; mirrors
-   * `buildChildEnvironment` in actoviqBridgeSdk.ts — no file I/O here):
+   * `buildChildEnvironment` in hadamardBridgeSdk.ts — no file I/O here):
    *   1. `explicitPath` arg (caller-supplied `{ executable }`)
-   *   2. `ACTOVIQ_<ID>_PATH` env var (top-level or `env:` block — both are
+   *   2. `HADAMARD_<ID>_PATH` env var (top-level or `env:` block — both are
    *      captured by `extractEnv` in loadJsonConfigFile.ts)
    *   3. `raw.bridge.providers[id].path` from the loaded settings store
    *   4. `findExecutableOnPath(this.pathBinary)` — the binary on PATH
    *
-   * Mirrors the `ACTOVIQ_BASH_PATH` precedent in src/tools/bash/BashTool.ts.
+   * Mirrors the `HADAMARD_BASH_PATH` precedent in src/tools/bash/BashTool.ts.
    */
   async resolveExecutable(explicitPath?: string): Promise<string> {
     // For user-specified paths (explicit, env, settings block), just check
@@ -290,14 +290,14 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     // isExecutable check so we don't pick up non-runnable files.
     if (explicitPath) {
       if (!(await pathExists(explicitPath))) {
-        throw new ActoviqBridgeProcessError(
+        throw new HadamardBridgeProcessError(
           `The configured executable was not found: ${explicitPath}`,
         );
       }
       return explicitPath;
     }
 
-    const envVar = `ACTOVIQ_${this.id.toUpperCase()}_PATH`;
+    const envVar = `HADAMARD_${this.id.toUpperCase()}_PATH`;
     const loaded = getLoadedJsonConfig();
     const settingsEnvPath =
       typeof loaded?.env?.[envVar] === 'string' ? loaded.env[envVar] : undefined;
@@ -305,7 +305,7 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     const envPath = settingsEnvPath ?? processEnvPath;
     if (envPath) {
       if (!(await pathExists(envPath))) {
-        throw new ActoviqBridgeProcessError(
+        throw new HadamardBridgeProcessError(
           `${envVar} (${envPath}) was not found.`,
         );
       }
@@ -315,7 +315,7 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     const settingsBlockPath = readSettingsBlockPath(loaded?.raw, this.id);
     if (settingsBlockPath) {
       if (!(await pathExists(settingsBlockPath))) {
-        throw new ActoviqBridgeProcessError(
+        throw new HadamardBridgeProcessError(
           `Configured ${this.id} bridge path (${settingsBlockPath}) was not found.`,
         );
       }
@@ -326,7 +326,7 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     if (pathCandidate) {
       return pathCandidate;
     }
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       `No "${this.pathBinary}" executable was found on PATH. Install ${this.displayName}, set ${envVar}, or run \`/bridge\` to configure it.`,
     );
   }
@@ -345,7 +345,7 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
     }
   }
 
-  abstract buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[];
+  abstract buildArgs(prompt: string, options: HadamardBridgeRunOptions): string[];
   abstract buildChildEnv(
     baseEnv: Record<string, string>,
     settingsEnv: Record<string, string>,
@@ -364,8 +364,8 @@ export abstract class BaseRuntimeProvider implements RuntimeProvider {
 export function bridgeEvent(
   type: string,
   fields: Record<string, unknown> = {},
-): ActoviqBridgeJsonEvent {
-  return { type, ...fields } as ActoviqBridgeJsonEvent;
+): HadamardBridgeJsonEvent {
+  return { type, ...fields } as HadamardBridgeJsonEvent;
 }
 
 let currentProvider: RuntimeProvider | undefined;
@@ -414,7 +414,7 @@ export function resolveProvider(id?: RuntimeProviderId): RuntimeProvider {
   if (resolved === 'codewhale') return codewhaleProvider;
   if (resolved === 'reasonix') return reasonixProvider;
   if (resolved === 'crush') return crushProvider;
-  throw new ActoviqBridgeProcessError(`Unknown bridge provider: ${String(resolved)}`);
+  throw new HadamardBridgeProcessError(`Unknown bridge provider: ${String(resolved)}`);
 }
 
 /**
@@ -476,10 +476,10 @@ class ClaudeProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'claude';
   readonly displayName = 'Claude Code (@anthropic-ai/claude-code)';
 
-  buildArgs(prompt: string, _options: ActoviqBridgeRunOptions): string[] {
-    // The full flag set lives in actoviqBridgeSdk.buildCliArgs(); claude is the
+  buildArgs(prompt: string, _options: HadamardBridgeRunOptions): string[] {
+    // The full flag set lives in hadamardBridgeSdk.buildCliArgs(); claude is the
     // default and keeps using that builder. Other providers override buildArgs.
-    // (buildCliArgs is invoked directly from actoviqBridgeSdk.ts for the claude
+    // (buildCliArgs is invoked directly from hadamardBridgeSdk.ts for the claude
     // path; this indirection exists so the provider list is exhaustive.)
     return ['-p', prompt];
   }
@@ -489,14 +489,14 @@ class ClaudeProvider extends BaseRuntimeProvider {
     settingsEnv: Record<string, string>,
     overrides?: Record<string, string>,
   ): Record<string, string> {
-    // Actoviq settings are the single source of model/credential config: derive
+    // Hadamard settings are the single source of model/credential config: derive
     // ANTHROPIC_* equivalents so the Claude Code-based child process does not
     // silently fall back to ~/.claude/settings.json or keychain credentials.
     // Derived values override inherited process.env ANTHROPIC_* entries, while
     // explicit ANTHROPIC_* keys in the settings env block and caller overrides win.
     return {
       ...baseEnv,
-      ...mapActoviqEnvToAnthropicEnv(settingsEnv),
+      ...mapHadamardEnvToAnthropicEnv(settingsEnv),
       ...settingsEnv,
       ...(overrides ?? {}),
     };
@@ -504,7 +504,7 @@ class ClaudeProvider extends BaseRuntimeProvider {
 
   createNormalizer(): BridgeEventNormalizer {
     // claude's stream-json is already the canonical system/assistant/result shape.
-    return { translate: raw => [raw as ActoviqBridgeJsonEvent] };
+    return { translate: raw => [raw as HadamardBridgeJsonEvent] };
   }
   suggestedModels(): string[] {
     return ['claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-4-5', 'claude-fable-5'];
@@ -520,7 +520,7 @@ class PiProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'pi';
   readonly displayName = 'pi CLI (@earendil-works/pi-coding-agent)';
 
-  buildArgs(_prompt: string, options: ActoviqBridgeRunOptions): string[] {
+  buildArgs(_prompt: string, options: HadamardBridgeRunOptions): string[] {
     // Pi has no argv option terminator. Managed mode uses the official RPC
     // protocol so arbitrary user text is sent as JSON over stdin, never argv.
     const args = ['--mode', 'rpc'];
@@ -540,7 +540,7 @@ class PiProvider extends BaseRuntimeProvider {
     if (typeof options.resume === 'string') {
       args.push('--session', validatePiSessionId(options.resume));
     } else if (options.resume === true) {
-      throw new ActoviqBridgeProcessError(
+      throw new HadamardBridgeProcessError(
         'Pi managed mode requires an exact session id; the interactive --resume picker is unavailable.',
       );
     } else if (options.sessionId) {
@@ -557,12 +557,12 @@ class PiProvider extends BaseRuntimeProvider {
     overrides?: Record<string, string>,
   ): Record<string, string> {
     // pi reads *_API_KEY by provider (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.).
-    // We pass the Actoviq settings env through unchanged; callers set the
+    // We pass the Hadamard settings env through unchanged; callers set the
     // provider-specific key directly. No ANTHROPIC_* remapping for non-claude.
     return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
   }
 
-  createNormalizer(prompt = '', options: ActoviqBridgeRunOptions = {}): BridgeEventNormalizer {
+  createNormalizer(prompt = '', options: HadamardBridgeRunOptions = {}): BridgeEventNormalizer {
     return new PiNormalizer(prompt, options);
   }
   suggestedModels(): string[] {
@@ -581,7 +581,7 @@ function validatePiSessionId(value: string): string {
     || sessionId.startsWith('-')
     || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(sessionId)
   ) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'Pi session id must contain only letters, numbers, dots, underscores, or hyphens.',
     );
   }
@@ -603,14 +603,14 @@ function normalizePiProvider(value: string | undefined): string | undefined {
   const provider = value?.trim();
   if (!provider) return undefined;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(provider)) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'Pi credential provider must contain only letters, numbers, dots, underscores, or hyphens.',
     );
   }
   return provider;
 }
 
-function piToolArguments(options: ActoviqBridgeRunOptions): string[] {
+function piToolArguments(options: HadamardBridgeRunOptions): string[] {
   if (options.tools === 'none') return ['--no-tools'];
 
   const bypass = options.dangerouslySkipPermissions
@@ -669,25 +669,25 @@ class PiNormalizer implements BridgeEventNormalizer {
 
   constructor(
     private readonly prompt: string,
-    private readonly options: ActoviqBridgeRunOptions,
+    private readonly options: HadamardBridgeRunOptions,
   ) {}
 
   start(control: BridgeProcessControl): void {
-    control.write({ id: 'actoviq-state', type: 'get_state' });
-    control.write({ id: 'actoviq-prompt', type: 'prompt', message: this.prompt });
+    control.write({ id: 'hadamard-state', type: 'get_state' });
+    control.write({ id: 'hadamard-prompt', type: 'prompt', message: this.prompt });
   }
 
   abort(control: BridgeProcessControl): void {
-    control.write({ id: 'actoviq-abort', type: 'abort' });
+    control.write({ id: 'hadamard-abort', type: 'abort' });
   }
 
   translate(
     raw: Record<string, unknown>,
     control?: BridgeProcessControl,
-  ): ActoviqBridgeJsonEvent[] {
+  ): HadamardBridgeJsonEvent[] {
     const type = typeof raw.type === 'string' ? raw.type : '';
 
-    if (type === 'response' && raw.id === 'actoviq-state') {
+    if (type === 'response' && raw.id === 'hadamard-state') {
       const state = piRpcPayload(raw);
       this.sessionId = stringField(state, 'sessionId', 'session_id', 'id') ?? this.sessionId;
       this.cwd = stringField(state, 'cwd') ?? this.cwd;
@@ -695,7 +695,7 @@ class PiNormalizer implements BridgeEventNormalizer {
       return this.emitInit();
     }
 
-    if (type === 'response' && raw.id === 'actoviq-prompt' && raw.success === false) {
+    if (type === 'response' && raw.id === 'hadamard-prompt' && raw.success === false) {
       this.lastError = rpcErrorMessage(raw) ?? 'Pi rejected the prompt request.';
       return this.finish(control, true);
     }
@@ -830,7 +830,7 @@ class PiNormalizer implements BridgeEventNormalizer {
     return [];
   }
 
-  private emitInit(): ActoviqBridgeJsonEvent[] {
+  private emitInit(): HadamardBridgeJsonEvent[] {
     if (this.initEmitted) return [];
     this.initEmitted = true;
     return [bridgeEvent('system', {
@@ -851,7 +851,7 @@ class PiNormalizer implements BridgeEventNormalizer {
   private finish(
     control: BridgeProcessControl | undefined,
     forcedError: boolean,
-  ): ActoviqBridgeJsonEvent[] {
+  ): HadamardBridgeJsonEvent[] {
     if (this.finished) return [];
     this.finished = true;
     control?.endInput();
@@ -943,7 +943,7 @@ function validateCodexSessionId(value: string): string {
     || sessionId.startsWith('-')
     || /[\u0000-\u001f\u007f]/u.test(sessionId)
   ) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       'Codex session id must be a non-option UUID or thread name without control characters.',
     );
   }
@@ -955,7 +955,7 @@ class CodexProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'codex';
   readonly displayName = 'Codex CLI (@openai/codex)';
 
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+  buildArgs(prompt: string, options: HadamardBridgeRunOptions): string[] {
     const shouldResume = typeof options.resume === 'string'
       || options.resume === true
       || options.continueMostRecent === true;
@@ -1006,7 +1006,7 @@ class CodexProvider extends BaseRuntimeProvider {
     settingsEnv: Record<string, string>,
     overrides?: Record<string, string>,
   ): Record<string, string> {
-    // codex reads OPENAI_API_KEY / config.toml. Pass Actoviq env through.
+    // codex reads OPENAI_API_KEY / config.toml. Pass Hadamard env through.
     return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
   }
 
@@ -1063,7 +1063,7 @@ class CodexNormalizer implements BridgeEventNormalizer {
   private threadId: string | undefined;
   private initEmitted = false;
 
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  translate(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     const type = typeof raw.type === 'string' ? raw.type : '';
     const item = isRecord(raw.item) ? raw.item : undefined;
 
@@ -1170,14 +1170,14 @@ class PlainTextNormalizer implements BridgeEventNormalizer {
   private sessionId: string | undefined;
   private text = '';
 
-  translate(raw: Record<string, unknown>): ActoviqBridgeJsonEvent[] {
+  translate(raw: Record<string, unknown>): HadamardBridgeJsonEvent[] {
     // raw-text mode: `parseStdoutEvents` wraps each line as `{_raw: line}`.
     const line = typeof raw._raw === 'string' ? raw._raw : '';
     this.text += (this.text ? '\n' : '') + line;
     return [];
   }
 
-  flush(): ActoviqBridgeJsonEvent[] {
+  flush(): HadamardBridgeJsonEvent[] {
     const sid = this.sessionId ?? '';
     return [
       bridgeEvent('system', {
@@ -1218,7 +1218,7 @@ class CodewhaleProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'codewhale';
   readonly displayName = 'CodeWhale CLI (codewhale)';
 
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+  buildArgs(prompt: string, options: HadamardBridgeRunOptions): string[] {
     return buildCodewhaleArgs(prompt, options);
   }
 
@@ -1245,9 +1245,9 @@ class ReasonixProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'reasonix';
   readonly displayName = 'Reasonix CLI (reasonix)';
 
-  buildArgs(_prompt: string, options: ActoviqBridgeRunOptions): string[] {
+  buildArgs(_prompt: string, options: HadamardBridgeRunOptions): string[] {
     if (options.resume === true || options.continueMostRecent) {
-      throw new ActoviqBridgeProcessError(
+      throw new HadamardBridgeProcessError(
         'Reasonix managed mode requires an exact persisted session id.',
       );
     }
@@ -1266,7 +1266,7 @@ class ReasonixProvider extends BaseRuntimeProvider {
     return { ...baseEnv, ...settingsEnv, ...(overrides ?? {}) };
   }
 
-  createNormalizer(prompt = '', options: ActoviqBridgeRunOptions = {}): BridgeEventNormalizer {
+  createNormalizer(prompt = '', options: HadamardBridgeRunOptions = {}): BridgeEventNormalizer {
     return new ReasonixAcpNormalizer(prompt, options);
   }
   suggestedModels(): string[] {
@@ -1278,7 +1278,7 @@ function validateReasonixValue(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized || normalized.length > 512 || normalized.startsWith('-')
     || /[\u0000-\u001f\u007f]/u.test(normalized)) {
-    throw new ActoviqBridgeProcessError(
+    throw new HadamardBridgeProcessError(
       `Reasonix ${label} must be a non-option value without control characters.`,
     );
   }
@@ -1290,7 +1290,7 @@ class ReasonixAcpNormalizer implements BridgeEventNormalizer {
   readonly abortGraceMs = 300;
   private readonly session;
 
-  constructor(prompt: string, options: ActoviqBridgeRunOptions) {
+  constructor(prompt: string, options: HadamardBridgeRunOptions) {
     const nativeSessionId = typeof options.resume === 'string'
       ? validateReasonixValue(options.resume, 'session id')
       : undefined;
@@ -1316,7 +1316,7 @@ class ReasonixAcpNormalizer implements BridgeEventNormalizer {
   translate(
     raw: Record<string, unknown>,
     control?: BridgeProcessControl,
-  ): ActoviqBridgeJsonEvent[] {
+  ): HadamardBridgeJsonEvent[] {
     const handled = this.session.handle(raw);
     if (control) {
       for (const record of handled.outbound) control.write(record);
@@ -1331,7 +1331,7 @@ class CrushProvider extends BaseRuntimeProvider {
   readonly pathBinary = 'crush';
   readonly displayName = 'Crush CLI (crush)';
 
-  buildArgs(prompt: string, options: ActoviqBridgeRunOptions): string[] {
+  buildArgs(prompt: string, options: HadamardBridgeRunOptions): string[] {
     const args = ['run'];
     if (options.model) { args.push('-m', options.model); }
     // crush persists sessions per workspace and emits plain text (no session
@@ -1389,8 +1389,8 @@ export const BRIDGE_PROVIDERS: Record<RuntimeProviderId, RuntimeProvider> = {
  * This is advisory display data only — it never gates a run.
  */
 export const BRIDGE_PROVIDER_CREDENTIALS: Record<RuntimeProviderId, string[]> = {
-  // claude maps ACTOVIQ_* → ANTHROPIC_* (see anthropicEnvMapping.ts); either form works.
-  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ACTOVIQ_API_KEY', 'ACTOVIQ_AUTH_TOKEN'],
+  // claude maps HADAMARD_* → ANTHROPIC_* (see anthropicEnvMapping.ts); either form works.
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'HADAMARD_API_KEY', 'HADAMARD_AUTH_TOKEN'],
   // pi supports OpenAI- and Anthropic-compatible backends.
   pi: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
   codex: ['OPENAI_API_KEY'],

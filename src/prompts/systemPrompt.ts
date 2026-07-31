@@ -1,5 +1,5 @@
 /**
- * Actoviq System Prompt — aligned with Claude Code's prompt architecture.
+ * Hadamard System Prompt — aligned with Claude Code's prompt architecture.
  *
  * All tool prompts are injected via the `prompt` field on each tool definition.
  * The conversation engine concatenates: base system prompt + all tool prompts.
@@ -27,7 +27,7 @@ Date: ${params.date}
 </env>`);
 
   // Base system prompt
-  const base = `You are an interactive CLI agent powered by the Actoviq Agent SDK. Your working directory is ${params.workDir}. Use absolute paths for all file operations.
+  const base = `You are an interactive CLI agent powered by the Hadamard Agent SDK. Your working directory is ${params.workDir}. Use absolute paths for all file operations.
 
 ${envSections.join('\n')}
 

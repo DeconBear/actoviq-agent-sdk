@@ -8,7 +8,7 @@
  * - Model output = max per official docs
  * - Agent autonomously decides when to converge
  */
-import { createAgentSdk, loadDefaultActoviqSettings, createTavilySearchTool, createTeamTool } from '../../src/index.js';
+import { createAgentSdk, loadDefaultHadamardSettings, createTavilySearchTool, createTeamTool } from '../../src/index.js';
 import type { TeamDefinition } from '../../src/types.js';
 import type { AgentConfig, BenchmarkTask, RunMetrics, ToolCallRecord } from './types.js';
 import { buildBenchmarkPrompt } from './prompt.js';
@@ -34,7 +34,7 @@ export async function runHadamardAgent(
   task: BenchmarkTask,
   agent: AgentConfig,
 ): Promise<{ answer: string; metrics: RunMetrics }> {
-  await loadDefaultActoviqSettings().catch(() => {});
+  await loadDefaultHadamardSettings().catch(() => {});
 
   // Tools: TavilySearch always, Team tool if configured
   const tools = [createTavilySearchTool()];

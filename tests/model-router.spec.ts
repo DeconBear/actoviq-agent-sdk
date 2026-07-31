@@ -121,7 +121,7 @@ describe('leader/dispatch enrichment', () => {
 describe('user-created router profiles', () => {
   const tempDirs: string[] = [];
   const tempHome = (): string => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'actoviq-router-'));
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'hadamard-router-'));
     tempDirs.push(dir);
     return dir;
   };
@@ -139,7 +139,7 @@ describe('user-created router profiles', () => {
 
   it('lists and loads a personal profile without adding examples', () => {
     const home = tempHome();
-    const dir = path.join(home, '.actoviq', 'routers');
+    const dir = path.join(home, '.hadamard', 'routers');
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       path.join(dir, 'dispatch.json'),
@@ -174,8 +174,8 @@ describe('saveRouterProfile / deleteRouterProfile', () => {
 
   it('writes a project profile and can delete it', async () => {
     const { saveRouterProfile, deleteRouterProfile } = await import('../src/router/modelRouter.js');
-    const project = tempDir('actoviq-router-proj-');
-    const home = tempDir('actoviq-router-home-');
+    const project = tempDir('hadamard-router-proj-');
+    const home = tempDir('hadamard-router-home-');
     const filePath = await saveRouterProfile(
       {
         name: 'fast-strong',
@@ -185,7 +185,7 @@ describe('saveRouterProfile / deleteRouterProfile', () => {
       },
       { projectDir: project, homeDir: home, overwrite: true },
     );
-    expect(filePath).toContain(path.join('.actoviq', 'routers', 'fast-strong.json'));
+    expect(filePath).toContain(path.join('.hadamard', 'routers', 'fast-strong.json'));
     const loaded = loadRouterProfile('fast-strong', project, home);
     expect(loaded?.source).toBe('project');
     expect(loaded?.profile.routes[0]?.role).toBe('quick');

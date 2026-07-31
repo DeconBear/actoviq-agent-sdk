@@ -56,10 +56,10 @@ export default defineConfig({
       { text: 'English', link: '/en/README' },
       { text: '中文', link: '/zh/README' },
       { text: 'Blog', link: '/blog/' },
-      { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
+      { text: 'GitHub', link: 'https://github.com/DeconBear/hadamard' },
       { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
     ],
-    socialLinks: [{ icon: 'github', link: 'https://github.com/DeconBear/actoviq-agent-sdk' }],
+    socialLinks: [{ icon: 'github', link: 'https://github.com/DeconBear/hadamard' }],
     sidebar: {
       '/en/': enSidebar,
       '/zh/': zhSidebar,
@@ -80,7 +80,7 @@ export default defineConfig({
           { text: 'English Guide', link: '/en/README' },
           { text: '中文教程', link: '/zh/README' },
           { text: 'Blog', link: '/blog/' },
-          { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
+          { text: 'GitHub', link: 'https://github.com/DeconBear/hadamard' },
           { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
         ],
         sidebar: {
@@ -98,7 +98,7 @@ export default defineConfig({
           { text: '首页', link: '/' },
           { text: 'English', link: '/en/README' },
           { text: '中文教程', link: '/zh/README' },
-          { text: 'GitHub', link: 'https://github.com/DeconBear/actoviq-agent-sdk' },
+          { text: 'GitHub', link: 'https://github.com/DeconBear/hadamard' },
           { text: 'npm', link: 'https://www.npmjs.com/package/actoviq-agent-sdk' },
         ],
         sidebar: {

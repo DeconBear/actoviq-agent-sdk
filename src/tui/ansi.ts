@@ -1,5 +1,5 @@
 /**
- * Dependency-free ANSI helpers for the Actoviq TUI: styling, display-width
+ * Dependency-free ANSI helpers for the Hadamard TUI: styling, display-width
  * measurement (East Asian wide characters count as 2 columns), truncation,
  * and width-aware wrapping that treats escape sequences as zero-width.
  */

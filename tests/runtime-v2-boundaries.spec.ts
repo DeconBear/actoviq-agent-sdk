@@ -16,7 +16,7 @@ describe('runtime-v2 dependency boundaries', () => {
 
   it('keeps the new state machine independent of product and optional ability modules', async () => {
     const source = await readFile(path.resolve('src/runtime-v2/agentRuntime.ts'), 'utf8');
-    expect(source).not.toMatch(/from ['"].*(?:buddy|dream|team|gui|tui|parity|bridge|memory|actoviqSkills)/i);
+    expect(source).not.toMatch(/from ['"].*(?:buddy|dream|team|gui|tui|parity|bridge|memory|hadamardSkills)/i);
     expect(source).not.toContain('createAgentSdk');
     expect(source).not.toContain('process.');
   });

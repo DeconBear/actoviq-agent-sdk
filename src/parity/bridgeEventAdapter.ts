@@ -1,13 +1,13 @@
 /**
  * Bridge → Agent event adapter.
  *
- * Maps `ActoviqBridgeJsonEvent` (the canonical system/assistant/result trio
+ * Maps `HadamardBridgeJsonEvent` (the canonical system/assistant/result trio
  * that all directCli providers normalize into) to the `AgentEvent` union that
  * the GUI's `forwardAgentEvent` already switches on. This is the inverse of
- * `cleanEventToBridgeEvents` in actoviqCleanBridgeCompatSdk.ts.
+ * `cleanEventToBridgeEvents` in hadamardCleanBridgeCompatSdk.ts.
  */
 
-import type { ActoviqBridgeJsonEvent, ActoviqBridgeRunResult, AgentEvent, AgentRunResult } from '../types.js';
+import type { HadamardBridgeJsonEvent, HadamardBridgeRunResult, AgentEvent, AgentRunResult } from '../types.js';
 
 // ---------- per-event adaptation ----------
 
@@ -20,7 +20,7 @@ export function createBridgeEventAdapterState(): BridgeEventAdapterState {
 }
 
 export function bridgeEventToAgentEvents(
-  event: ActoviqBridgeJsonEvent,
+  event: HadamardBridgeJsonEvent,
   _sessionId: string,
   runId: string,
   model: string,
@@ -154,12 +154,12 @@ export interface BridgeAgentRunStream {
 }
 
 /**
- * Wrap an `ActoviqBridgeRunStream` into an async iterable of `AgentEvent`
+ * Wrap an `HadamardBridgeRunStream` into an async iterable of `AgentEvent`
  * + a `.result` promise, so the GUI run loop can branch ONLY the stream source.
  */
 export function adaptBridgeRun(
-  bridgeStream: AsyncIterable<ActoviqBridgeJsonEvent>,
-  bridgeResult: Promise<ActoviqBridgeRunResult>,
+  bridgeStream: AsyncIterable<HadamardBridgeJsonEvent>,
+  bridgeResult: Promise<HadamardBridgeRunResult>,
   runId: string,
   model: string,
 ): BridgeAgentRunStream {

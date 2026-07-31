@@ -285,7 +285,7 @@ describe('Crush session history', () => {
     const commandRunner = vi.fn<CrushHistoryCommandRunner>();
     await expect(readCrushSessionHistory(SESSION_ONE, { commandRunner }))
       .resolves.toBeUndefined();
-    await expect(readCrushSessionHistory('actoviq-crush-session:v1:../../bad', {
+    await expect(readCrushSessionHistory('hadamard-crush-session:v1:../../bad', {
       commandRunner,
     })).resolves.toBeUndefined();
     expect(commandRunner).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe('Crush session history', () => {
     expect(() => createCrushSessionReference(SESSION_ONE, '../../outside'))
       .toThrow(/exact managed profile id/u);
     expect(parseCrushSessionReferenceDetails(
-      `actoviq-crush-session:v2:${Buffer.from('../../outside').toString('base64url')}`,
+      `hadamard-crush-session:v2:${Buffer.from('../../outside').toString('base64url')}`,
     )).toBeUndefined();
 
     const mismatchedRunner: CrushHistoryCommandRunner = async () => commandResult({

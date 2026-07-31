@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AppServer } from '../src/app-server/index.js';
-import type { ActoviqAgentClient } from '../src/runtime/agentClient.js';
+import type { HadamardAgentClient } from '../src/runtime/agentClient.js';
 import type { AgentSession } from '../src/runtime/agentSession.js';
 
 describe('AppServer sessions', () => {
@@ -12,7 +12,7 @@ describe('AppServer sessions', () => {
       sessionGraph: { roots: vi.fn(async () => [{ session: { id: 'session-1' }, children: [] }]) },
       createSession: vi.fn(async () => session),
       resumeSession: vi.fn(async () => session),
-    } as unknown as ActoviqAgentClient;
+    } as unknown as HadamardAgentClient;
     const server = new AppServer(sdk);
 
     const initialized = await server.handle(request('initialize'));
@@ -37,7 +37,7 @@ describe('AppServer sessions', () => {
 
   it('manages session goals through the shared GoalService', async () => {
     const session = fakeSession('session-goal');
-    const sdk = { resumeSession: vi.fn(async () => session) } as unknown as ActoviqAgentClient;
+    const sdk = { resumeSession: vi.fn(async () => session) } as unknown as HadamardAgentClient;
     const server = new AppServer(sdk);
 
     const created = await server.handle(request('goal/create', {

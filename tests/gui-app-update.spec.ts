@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import type { AppUpdateController, AppUpdateSnapshot } from '../src/update/appUpdateService.js';
 
 const tempDirs: string[] = [];
@@ -14,19 +14,19 @@ afterEach(async () => {
 });
 
 async function request(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   pathname: string,
   method = 'GET',
 ): Promise<Response> {
   return fetch(new URL(pathname.replace(/^\/+/, ''), server.url), {
     method,
-    headers: { 'x-actoviq-token': server.token },
+    headers: { 'x-hadamard-token': server.token },
   });
 }
 
 describe('GUI app updates', () => {
   it('exposes update state and installs only after the explicit Upgrade action', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-update-api-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-update-api-'));
     tempDirs.push(root);
     const workDir = path.join(root, 'work');
     const homeDir = path.join(root, 'home');
@@ -57,7 +57,7 @@ describe('GUI app updates', () => {
       }),
       install,
     };
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir,
       appUpdater,

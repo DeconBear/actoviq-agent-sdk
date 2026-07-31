@@ -1,5 +1,5 @@
 /**
- * Pure transcript-line formatters for the Actoviq TUI. These return styled
+ * Pure transcript-line formatters for the Hadamard TUI. These return styled
  * strings (not yet wrapped); the screen layer wraps them to the terminal
  * width before printing into scrollback.
  */

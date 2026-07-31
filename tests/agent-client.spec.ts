@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
-  ActoviqProviderApiError,
+  HadamardProviderApiError,
   createAgentSdk,
   SessionStore,
   tool,
@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 async function createSessionDirectory(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sdk-client-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sdk-client-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -100,7 +100,7 @@ class MockModelApi implements ModelApi {
   }
 }
 
-describe('ActoviqAgentClient', () => {
+describe('HadamardAgentClient', () => {
   it('lets a run select automatic effort over a configured default', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
@@ -303,7 +303,7 @@ describe('ActoviqAgentClient', () => {
     await firstSdk.close();
 
     const stored = await new SessionStore(sessionDirectory).load(sessionId);
-    expect(stored.metadata.__actoviqWorkDir).toBe(overrideWorkDir);
+    expect(stored.metadata.__hadamardWorkDir).toBe(overrideWorkDir);
 
     let resumedHookWorkDir: string | undefined;
     const secondSdk = await createAgentSdk({
@@ -326,7 +326,7 @@ describe('ActoviqAgentClient', () => {
       const resumed = await secondSdk.resumeSession(sessionId);
       await resumed.send('Continue in the persisted workspace.');
       expect(resumedHookWorkDir).toBe(overrideWorkDir);
-      expect((await new SessionStore(sessionDirectory).load(sessionId)).metadata.__actoviqWorkDir)
+      expect((await new SessionStore(sessionDirectory).load(sessionId)).metadata.__hadamardWorkDir)
         .toBe(overrideWorkDir);
     } finally {
       await secondSdk.close();
@@ -566,7 +566,7 @@ describe('ActoviqAgentClient', () => {
     const longPrompt = 'release-checklist '.repeat(4000);
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
           return makeMessage([
             {
               type: 'text',
@@ -612,7 +612,7 @@ describe('ActoviqAgentClient', () => {
       expect(modelApi.createCalls).toHaveLength(2);
       expect(
         (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
-          ?.actoviq_internal_task,
+          ?.hadamard_internal_task,
       ).toBe('session_memory');
       expect(memoryState.exists).toBe(true);
       expect(memoryState.content).toContain('Release memory snapshot');
@@ -632,7 +632,7 @@ describe('ActoviqAgentClient', () => {
     const workDir = path.join(tempDir, 'workspace');
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
           return makeMessage([
             {
               type: 'text',
@@ -686,7 +686,7 @@ describe('ActoviqAgentClient', () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'compact') {
           return makeMessage([
             {
               type: 'text',
@@ -726,7 +726,7 @@ describe('ActoviqAgentClient', () => {
       expect(modelApi.createCalls).toHaveLength(2);
       expect(
         (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
-          ?.actoviq_internal_task,
+          ?.hadamard_internal_task,
       ).toBe('compact');
       expect(session.messages[0]).toMatchObject({
         role: 'user',
@@ -748,7 +748,7 @@ describe('ActoviqAgentClient', () => {
     const sessionDirectory = await createSessionDirectory();
     const firstModelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'compact') {
           throw new Error('summary provider unavailable');
         }
         return makeMessage([{ type: 'text', text: 'Seed response for compact failure.' }]);
@@ -844,7 +844,7 @@ describe('ActoviqAgentClient', () => {
     const longPrompt = 'release-checklist '.repeat(40);
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'compact') {
           return makeMessage([
             {
               type: 'text',
@@ -882,7 +882,7 @@ describe('ActoviqAgentClient', () => {
       expect(modelApi.createCalls).toHaveLength(2);
       expect(
         (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
-          ?.actoviq_internal_task,
+          ?.hadamard_internal_task,
       ).toBe('compact');
       expect(compactState.compactCount).toBe(1);
       expect(compactState.summaryMessage).toContain('Auto compact summary');
@@ -904,10 +904,10 @@ describe('ActoviqAgentClient', () => {
     let compactAttempts = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'compact') {
           compactAttempts += 1;
           if (compactAttempts === 1) {
-            throw new ActoviqProviderApiError('Provider request failed with HTTP 413: Prompt is too long', {
+            throw new HadamardProviderApiError('Provider request failed with HTTP 413: Prompt is too long', {
               status: 413,
             });
           }
@@ -965,7 +965,7 @@ describe('ActoviqAgentClient', () => {
     const modelApi = new MockModelApi({
       create: (request) => {
         const internalTask = (request.metadata as Record<string, unknown> | undefined)
-          ?.actoviq_internal_task;
+          ?.hadamard_internal_task;
         if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
@@ -1022,7 +1022,7 @@ describe('ActoviqAgentClient', () => {
       expect(
         modelApi.createCalls.filter(
           request =>
-            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            (request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task ===
             'loop_compact',
         ),
       ).toHaveLength(1);
@@ -1049,7 +1049,7 @@ describe('ActoviqAgentClient', () => {
     const modelApi = new MockModelApi({
       create: (request) => {
         const internalTask = (request.metadata as Record<string, unknown> | undefined)
-          ?.actoviq_internal_task;
+          ?.hadamard_internal_task;
         if (internalTask === 'compact' || internalTask === 'loop_compact') {
           return makeMessage([
             {
@@ -1069,7 +1069,7 @@ describe('ActoviqAgentClient', () => {
           ]);
         }
         if (nonCompactCalls <= 3) {
-          throw new ActoviqProviderApiError(
+          throw new HadamardProviderApiError(
             'Provider request failed with HTTP 413: Prompt is too long',
             { status: 413 },
           );
@@ -1117,14 +1117,14 @@ describe('ActoviqAgentClient', () => {
       expect(
         modelApi.createCalls.filter(
           request =>
-            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            (request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task ===
             'loop_compact',
         ),
       ).toHaveLength(1);
       expect(
         modelApi.createCalls.filter(
           request =>
-            (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task ===
+            (request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task ===
             'compact',
         ),
       ).toHaveLength(1);
@@ -1132,7 +1132,7 @@ describe('ActoviqAgentClient', () => {
       expect(compactState.latestBoundarySummary).toContain('continuationDepth=1');
       const finalRequest = modelApi.createCalls.filter(
         request =>
-          !(request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task,
+          !(request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task,
       ).at(-1);
       expect(
         finalRequest?.messages.filter(
@@ -1844,7 +1844,7 @@ describe('ActoviqAgentClient', () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
       create: (request, index) => {
-        if (request.system?.includes('general-purpose Actoviq subagent')) {
+        if (request.system?.includes('general-purpose Hadamard subagent')) {
           return makeMessage([
             {
               type: 'text',
@@ -2393,7 +2393,7 @@ describe('ActoviqAgentClient', () => {
     const longPrompt = 'release-checklist '.repeat(4000);
     const modelApi = new MockModelApi({
       create: (request, index) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'session_memory') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
           return makeMessage([
             {
               type: 'text',
@@ -2455,7 +2455,7 @@ describe('ActoviqAgentClient', () => {
     let compactCount = 0;
     const modelApi = new MockModelApi({
       create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task === 'compact') {
+        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'compact') {
           compactCount += 1;
           return makeMessage([
             {

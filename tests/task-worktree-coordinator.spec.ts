@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 async function repository() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-task-worktree-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-task-worktree-'));
   tempDirs.push(root);
   await execFile('git', ['init', root]);
   await execFile('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
@@ -61,7 +61,7 @@ describe('TaskWorktreeCoordinator', () => {
     expect(worktrees.stdout).not.toContain(path.join(worktreesRoot, 'session-rollback'));
     await expect(execFile('git', [
       '-C', root,
-      'show-ref', '--verify', 'refs/heads/actoviq/session-rollback',
+      'show-ref', '--verify', 'refs/heads/hadamard/session-rollback',
     ])).rejects.toThrow();
   });
 });

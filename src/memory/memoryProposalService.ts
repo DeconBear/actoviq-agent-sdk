@@ -72,7 +72,7 @@ export class MemoryProposalService {
       throw new Error('Memory target changed after proposal creation; regenerate the proposal.');
     }
     const provenance = [
-      `<!-- actoviq-memory-proposal:${proposal.id}`,
+      `<!-- hadamard-memory-proposal:${proposal.id}`,
       `source:${proposal.provenance.source}`,
       proposal.provenance.sessionId ? `session:${proposal.provenance.sessionId}` : '',
       proposal.provenance.runId ? `run:${proposal.provenance.runId}` : '',

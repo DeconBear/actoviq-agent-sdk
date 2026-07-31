@@ -104,10 +104,10 @@ Harness principle in action.
 - **Global `AgentPool`** — one shared concurrency cap (`min(16, cores − 2)`)
   across workflows, teams, and swarms.
 - **Cost tracking** — per‑model token accounting plus a pricing table
-  (`src/team/pricing.ts` + `~/.actoviq/pricing.json` override); `estimatedCost`
+  (`src/team/pricing.ts` + `~/.hadamard/pricing.json` override); `estimatedCost`
   is `null` when pricing is unknown.
-- **Persistence** — team definitions live in `.actoviq/teams/` (project) and
-  `~/.actoviq/teams/` (personal); reachable from the TUI via `/team`.
+- **Persistence** — team definitions live in `.hadamard/teams/` (project) and
+  `~/.hadamard/teams/` (personal); reachable from the TUI via `/team`.
 
 ### 1.4 An optional orchestration layer
 

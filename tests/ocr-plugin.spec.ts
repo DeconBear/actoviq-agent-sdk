@@ -20,7 +20,7 @@ async function tempFile(name: string, contents: Uint8Array): Promise<{
   root: string;
   filePath: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-ocr-plugin-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ocr-plugin-'));
   tempDirs.push(root);
   const filePath = path.join(root, name);
   await writeFile(filePath, contents);
@@ -231,7 +231,7 @@ describe('managed OCR plugin', () => {
   });
 
   it('rejects absolute and parent-traversal local sources before reading or uploading them', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-ocr-boundary-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ocr-boundary-'));
     tempDirs.push(root);
     const workspace = path.join(root, 'workspace');
     const outsideFile = path.join(root, 'outside.png');
@@ -257,7 +257,7 @@ describe('managed OCR plugin', () => {
   });
 
   it('rejects a workspace symlink that resolves to a local file outside the workspace', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-ocr-symlink-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ocr-symlink-'));
     tempDirs.push(root);
     const workspace = path.join(root, 'workspace');
     const outside = path.join(root, 'outside');
@@ -282,7 +282,7 @@ describe('managed OCR plugin', () => {
   });
 
   it('does not resolve the workspace for HTTP(S) URL sources', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-ocr-url-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ocr-url-'));
     tempDirs.push(root);
     const fetchImpl = vi.fn(async () =>
       jsonResponse({

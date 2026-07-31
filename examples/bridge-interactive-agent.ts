@@ -5,10 +5,10 @@ import { createInterface } from 'node:readline/promises';
 import process from 'node:process';
 
 import {
-  analyzeActoviqBridgeEvents,
-  createActoviqBridgeSdk,
-  getActoviqBridgeTextDelta,
-  loadDefaultActoviqSettings,
+  analyzeHadamardBridgeEvents,
+  createHadamardBridgeSdk,
+  getHadamardBridgeTextDelta,
+  loadDefaultHadamardSettings,
   loadJsonConfigFile,
 } from 'actoviq-agent-sdk';
 
@@ -48,15 +48,15 @@ async function main(): Promise<void> {
     await ensureFileExists(JSON_CONFIG_PATH);
     await loadJsonConfigFile(JSON_CONFIG_PATH);
   } catch {
-    await loadDefaultActoviqSettings();
-    configSource = '~/.actoviq/settings.json';
+    await loadDefaultHadamardSettings();
+    configSource = '~/.hadamard/settings.json';
   }
 
-  const sdk = await createActoviqBridgeSdk({
-    ...(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH
+  const sdk = await createHadamardBridgeSdk({
+    ...(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH
       ? {
           executable: process.execPath,
-          cliPath: path.resolve(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH),
+          cliPath: path.resolve(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH),
         }
       : {}),
     workDir: WORKSPACE_PATH,
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   });
 
-  console.log('Actoviq interactive agent example');
+  console.log('Hadamard interactive agent example');
   console.log(`Workspace: ${WORKSPACE_PATH}`);
   console.log(`Config source: ${configSource}`);
   console.log(`Runtime model: ${runtime.model ?? 'unknown-model'}`);
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
 
       for await (const event of stream) {
         bufferedEvents.push(event);
-        const delta = getActoviqBridgeTextDelta(event);
+        const delta = getHadamardBridgeTextDelta(event);
         if (delta) {
           if (!printedText) {
             process.stdout.write('\nAgent> ');
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
       }
 
       const result = await stream.result;
-      const analysis = analyzeActoviqBridgeEvents(bufferedEvents);
+      const analysis = analyzeHadamardBridgeEvents(bufferedEvents);
 
       if (printedText) {
         process.stdout.write('\n');

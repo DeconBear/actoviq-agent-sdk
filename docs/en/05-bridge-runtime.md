@@ -4,7 +4,7 @@ This chapter explains the compatibility bridge path and when it is still useful.
 
 ## 1. Prerequisites — linking a runtime bundle
 
-The actoviq-bridge-sdk requires a runtime bundle from a third-party agent runtime (e.g. Claude Code). This file is **not included** in the actoviq-agent-sdk package.
+The hadamard-bridge-sdk requires a runtime bundle from a third-party agent runtime (e.g. Claude Code). This file is **not included** in the actoviq-agent-sdk package.
 
 If you have Claude Code installed, link its runtime bundle:
 
@@ -12,29 +12,29 @@ If you have Claude Code installed, link its runtime bundle:
 # Claude Code is published as @anthropic-ai/claude-code on npm
 
 # macOS / Linux (npm global)
-npx actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
+npx hadamard-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
 
 # macOS / Linux (nvm)
-npx actoviq-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
+npx hadamard-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
 
 # Windows
-npx actoviq-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
+npx hadamard-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
 
 # Or let npm find it for you:
-npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
+npx hadamard-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 ```
 
 Alternatively, set the environment variable:
 
 ```bash
-export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
+export HADAMARD_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 ```
 
-Without this bundle, actoviq-bridge-sdk features will not work.
+Without this bundle, hadamard-bridge-sdk features will not work.
 
 > **Note (native-exe Claude Code):** newer `@anthropic-ai/claude-code` ships
 > as a native executable (`bin/claude.exe`) with **no** `runtime.bundle.br`
-> inside the package, so `actoviq-link-runtime` cannot link it. Use the
+> inside the package, so `hadamard-link-runtime` cannot link it. Use the
 > **directCli mode** below instead — it spawns your local `claude` binary
 > directly and needs no bundle.
 
@@ -44,9 +44,9 @@ If Claude Code is installed on your PATH, you can skip the bundle and have
 the bridge spawn your local `claude` directly:
 
 ```ts
-import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk } from 'actoviq-agent-sdk';
 
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   directCli: true,           // spawn the local claude, bypassing runtime.bundle.br + Bun
   // executable: 'claude',   // optional; defaults to `claude` found on PATH
   workDir: process.cwd(),
@@ -60,10 +60,10 @@ PATH, spawns it with `-p --output-format stream-json --verbose …`, and parses
 the same `system/assistant/result` event stream as the bundle path — only the
 child process is your installed official claude instead of the vendored bundle.
 
-**Authentication modes:** `authSource: 'native'` is the default. Actoviq starts
+**Authentication modes:** `authSource: 'native'` is the default. Hadamard starts
 the CLI with its normal home/config environment intact, so the child reuses the
-CLI's existing OAuth/login or native configuration. Actoviq does not read or
-copy credential-store values, and it does not map Actoviq API credentials into
+CLI's existing OAuth/login or native configuration. Hadamard does not read or
+copy credential-store values, and it does not map Hadamard API credentials into
 the child in this mode. Provider credentials already present in the parent shell
 environment remain available, just as when the CLI is launched manually;
 therefore `native` means "use the CLI's normal authentication environment", not
@@ -72,7 +72,7 @@ therefore `native` means "use the CLI's normal authentication environment", not
 Use `authSource: 'apiKey'` for an isolated override:
 
 ```ts
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   directCli: true,
   directCliProvider: 'claude',
   authSource: 'apiKey',
@@ -83,14 +83,14 @@ const sdk = await createActoviqBridgeSdk({
 
 The override is passed only to that child process, redacted from retained
 events/errors, and never written into the selected CLI's credential store. If
-you save the profile, the value is still stored in Actoviq's
+you save the profile, the value is still stored in Hadamard's
 `bridge-configs.json` (mode `0600` on POSIX); "child-only" describes runtime
 injection, not an in-memory-only secret.
 
 For Pi, CodeWhale, Reasonix, and Crush, API-key mode separates transient
 credential/config files from durable session state. Transient homes are removed
 when the managed client closes; resumable state is kept under
-`~/.actoviq/external-cli-profiles/<runtime>/<profile-hash>/`. A saved config's
+`~/.hadamard/external-cli-profiles/<runtime>/<profile-hash>/`. A saved config's
 `profileName` provides the stable identity, and neither the raw key nor a hash of
 the key is used in the path. This prevents the user's native credential store
 from overriding the selected key while preserving same-profile history across
@@ -104,7 +104,7 @@ The SDK adapter registry, GUI, TUI, and external-runtime manager support all six
 providers below. Every runtime can run in the foreground or background, stream
 normalized events, be interrupted, and have its supervised process tree
 reclaimed. History and exact resume use each CLI's native session surface rather
-than replaying an Actoviq transcript into a new API conversation.
+than replaying an Hadamard transcript into a new API conversation.
 
 | Provider | `directCliProvider` | Binary | Entry | Protocol |
 |---|---|---|---|---|
@@ -116,7 +116,7 @@ than replaying an Actoviq transcript into a new API conversation.
 | Crush | `'crush'` | `crush` | `crush server --host <private-socket>` | HTTP + SSE over a local socket |
 
 ```ts
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   directCli: true,
   directCliProvider: 'codewhale',   // or 'reasonix', 'crush', …
   workDir: process.cwd(),
@@ -128,9 +128,9 @@ const sdk = await createActoviqBridgeSdk({
 | Runtime | Model and permission control | Native session/history behavior |
 |---|---|---|
 | Pi | `provider/model`, thinking effort, and explicit tool allow/exclude lists are sent to RPC mode. Default/plan are read-only, `acceptEdits` adds edit/write, and only `bypassPermissions` exposes the full native tool set. `trustProjectResources` defaults to false and controls Pi's separate project-trust prompt; it does not grant tool permissions. | Exact IDs use Pi's native session flags. The history reader understands v3 tree JSONL and renders only the active parent-linked branch. |
-| CodeWhale | Model and tool lists use native `exec` flags. Default/plan/dontAsk are restricted to a known read-only allowlist. The 0.8.65 CLI cannot represent `acceptEdits` safely, so Actoviq rejects that mode; `--auto` is emitted only for explicit `bypassPermissions`. | Stream metadata contains only a redacted fingerprint. Actoviq correlates it by fingerprint, cwd, and run time only when one native SavedSession matches; it never guesses between ambiguous sessions. Exact `--resume=<id>` and bounded SavedSession history/tool records then use that ID. |
-| Reasonix | The ACP adapter normalizes message, thought, tool, result, permission, and completion records. Model is passed at startup; effort/budget are changed only when the agent advertises matching ACP config options. Permission requests fail closed unless the selected mode explicitly allows them. | Actoviq keeps one ACP child and native session alive for consecutive turns, serializes concurrent prompts, and cancels through `session/cancel`. Exact cross-process resume is used only when the agent advertises `session/load`; Reasonix 0.53 advertises `loadSession: false`, so its persisted transcript remains inspectable but a restart-time resume returns an explicit unsupported-capability error instead of starting a new conversation. Unqualified "continue latest" is rejected. |
-| Crush | Actoviq configures provider/key/base URL/model through the server's workspace endpoints and maps permission requests deterministically (`acceptEdits` allows edit/write/multiedit for the session; default denies; bypass allows). Native model selection is workspace-scoped; isolated API-key settings are profile-global and never mutate the user's native config. | Runs use a fresh private Unix-domain socket or Windows named pipe, never a TCP listener. Exact resume verifies that the server returned the requested session ID. History uses bounded `crush session list/show --json` commands for native and managed-profile stores; the GUI/TUI labels their source separately. Native fork and unqualified "continue latest" are not exposed. |
+| CodeWhale | Model and tool lists use native `exec` flags. Default/plan/dontAsk are restricted to a known read-only allowlist. The 0.8.65 CLI cannot represent `acceptEdits` safely, so Hadamard rejects that mode; `--auto` is emitted only for explicit `bypassPermissions`. | Stream metadata contains only a redacted fingerprint. Hadamard correlates it by fingerprint, cwd, and run time only when one native SavedSession matches; it never guesses between ambiguous sessions. Exact `--resume=<id>` and bounded SavedSession history/tool records then use that ID. |
+| Reasonix | The ACP adapter normalizes message, thought, tool, result, permission, and completion records. Model is passed at startup; effort/budget are changed only when the agent advertises matching ACP config options. Permission requests fail closed unless the selected mode explicitly allows them. | Hadamard keeps one ACP child and native session alive for consecutive turns, serializes concurrent prompts, and cancels through `session/cancel`. Exact cross-process resume is used only when the agent advertises `session/load`; Reasonix 0.53 advertises `loadSession: false`, so its persisted transcript remains inspectable but a restart-time resume returns an explicit unsupported-capability error instead of starting a new conversation. Unqualified "continue latest" is rejected. |
+| Crush | Hadamard configures provider/key/base URL/model through the server's workspace endpoints and maps permission requests deterministically (`acceptEdits` allows edit/write/multiedit for the session; default denies; bypass allows). Native model selection is workspace-scoped; isolated API-key settings are profile-global and never mutate the user's native config. | Runs use a fresh private Unix-domain socket or Windows named pipe, never a TCP listener. Exact resume verifies that the server returned the requested session ID. History uses bounded `crush session list/show --json` commands for native and managed-profile stores; the GUI/TUI labels their source separately. Native fork and unqualified "continue latest" are not exposed. |
 
 Reasonix and Crush reject bridge options that their managed protocols cannot
 enforce (for example system-prompt/tool filters or turn limits, and Crush
@@ -138,7 +138,7 @@ effort/budget). They never accept those options and silently run with broader or
 different behavior.
 
 **Authentication status is intentionally conservative.** CodeWhale exposes an
-auth status command. Pi only exposes an offline model-catalog probe, so Actoviq
+auth status command. Pi only exposes an offline model-catalog probe, so Hadamard
 reports its credential state as `unknown`; catalog availability is not treated
 as proof of a login or API key. Crush's model probe can report configured model
 state but is not proof of a particular OAuth identity. Reasonix currently has no
@@ -146,7 +146,7 @@ non-interactive auth status command, so the UI reports `unknown` and lets the AC
 run be the source of truth.
 
 **Crush project config is trusted input.** In both native and isolated API-key
-mode, Actoviq refuses to start when `crush.json` or `.crush.json` exists in the
+mode, Hadamard refuses to start when `crush.json` or `.crush.json` exists in the
 cwd or an ancestor unless `trustProjectResources: true` is set explicitly. This
 is separate from the tool permission mode.
 
@@ -166,24 +166,24 @@ publishes Claude Code's complete introspection surface.
 
 ## 1.3. Env overrides & auto-detection
 
-### `ACTOVIQ_<PROVIDER>_PATH`
+### `HADAMARD_<PROVIDER>_PATH`
 
 Overrides the auto-detected binary path when the CLI is not on `PATH`:
 
 ```bash
-export ACTOVIQ_CLAUDE_PATH=/opt/claude-code/bin/claude
-export ACTOVIQ_CODEX_PATH=/custom/codex
-export ACTOVIQ_REASONIX_PATH=~/bin/reasonix
-# … same pattern for every provider: ACTOVIQ_<ID>_PATH
+export HADAMARD_CLAUDE_PATH=/opt/claude-code/bin/claude
+export HADAMARD_CODEX_PATH=/custom/codex
+export HADAMARD_REASONIX_PATH=~/bin/reasonix
+# … same pattern for every provider: HADAMARD_<ID>_PATH
 ```
 
-These go into `~/.actoviq/settings.json`'s `env` block (or the top level) —
-mirrors the `ACTOVIQ_BASH_PATH` convention.
+These go into `~/.hadamard/settings.json`'s `env` block (or the top level) —
+mirrors the `HADAMARD_BASH_PATH` convention.
 
 ### `bridge` settings block
 
 ```jsonc
-// ~/.actoviq/settings.json
+// ~/.hadamard/settings.json
 {
   "bridge": {
     "defaultProvider": "codewhale",
@@ -195,7 +195,7 @@ mirrors the `ACTOVIQ_BASH_PATH` convention.
 ```
 
 Resolution order (all in-memory, no file I/O during a run):
-`executable` option → `ACTOVIQ_<ID>_PATH` env → `bridge.providers[id].path` → `PATH`.
+`executable` option → `HADAMARD_<ID>_PATH` env → `bridge.providers[id].path` → `PATH`.
 
 ### `detectBridgeProviders()`
 
@@ -215,7 +215,7 @@ In the TUI, `/bridge` opens a control board of saved connection configs. Selecti
 one activates it as the active runtime. A `Direct API` config injects its model
 client into the Hadamard session in-process. An `External CLI` config launches
 the selected Claude Code, Codex, Pi, CodeWhale, Reasonix, or Crush executable,
-streams its native events, and persists the native session binding per Actoviq
+streams its native events, and persists the native session binding per Hadamard
 chat/config/workspace when the selected authentication mode preserves the CLI's
 session store. `/resume` therefore does not cross-wire native-mode CLI
 conversations. `/bridge background`,
@@ -233,7 +233,7 @@ field at once — **name**, **execution mode**, **runtime/provider**, **authenti
 source**, optional **credential provider**, **apiKey/baseURL**, **model**, and
 **project-resource trust** — with each field's current value. You can edit any field in any order
 (e.g. set the key, then go back and change the name), then **Save** to commit or
-**Cancel** to discard. Saved configs persist in `~/.actoviq/bridge-configs.json`.
+**Cancel** to discard. Saved configs persist in `~/.hadamard/bridge-configs.json`.
 Each Direct API config is a complete preset — e.g. `deepseek-claude` (provider `claude`,
 `ANTHROPIC_BASE_URL=https://api.deepseek.com`, `ANTHROPIC_API_KEY=…`,
 `model=deepseek-chat`) — so you can keep several backend
@@ -249,35 +249,35 @@ reactivates it; removing an active config disables bridge mode.
 Provider is `'anthropic'` (Anthropic-compatible: Claude, DeepSeek, vLLM, …) or
 `'openai'` (OpenAI-compatible: Qwen, GPT, vLLM, …). The config's provider/apiKey/
 baseURL/model are passed directly to the SDK — no env vars, no credential mapping.
-Implementation: `src/parity/bridgeConfigs.ts`, `src/tui/actoviqTui.ts`.
+Implementation: `src/parity/bridgeConfigs.ts`, `src/tui/hadamardTui.ts`.
 
 ## 1.4. Troubleshooting — no runtime detected?
 
 1. **Install the CLI** (`npm i -g @anthropic-ai/claude-code`, `npm i -g codewhale`, …)
    and restart your shell so it's on `PATH`.
-2. **Run `npx actoviq-interactive-agent`** and type `/bridge` — the wizard shows
+2. **Run `npx hadamard-interactive-agent`** and type `/bridge` — the wizard shows
    detected providers and lets you pick a default.
-3. **Set `ACTOVIQ_<ID>_PATH`** (see 1.3) if the binary is installed but not on `PATH`
+3. **Set `HADAMARD_<ID>_PATH`** (see 1.3) if the binary is installed but not on `PATH`
    (common in CI, IDE launchers that don't inherit shell profiles).
 4. **Ask Claude Code to help:** paste the output of `/providers` (or the GUI's
    "Detect runtimes" button) into Claude Code and let it guide the install.
 
 Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalizer +
 `BRIDGE_PROVIDER_CREDENTIALS` readiness hints), `src/cli/bridge-interactive-agent.ts`
-(/bridge wizard), `src/tui/actoviqTui.ts` (TUI `/bridge` control board — one-tap
+(/bridge wizard), `src/tui/hadamardTui.ts` (TUI `/bridge` control board — one-tap
 provider activation, per-provider model, credential hints, and live run status; the
 `run`/`background`/`runs`/`stop`/`history`/`resume`/`switch`/`model`/`setup`/`off`/`help`
-sub-commands autocomplete), `src/gui/actoviqGui.ts` (loopback-only bridge panel,
+sub-commands autocomplete), `src/gui/hadamardGui.ts` (loopback-only bridge panel,
 background controls, and native history browser).
 
 ## 2. What bridge means
 
-The actoviq-bridge-sdk is a compatibility layer that exposes a runtime-oriented execution path from the current package.
+The hadamard-bridge-sdk is a compatibility layer that exposes a runtime-oriented execution path from the current package.
 
 Use:
 
 ```ts
-import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk } from 'actoviq-agent-sdk';
 ```
 
 ## 3. When to use bridge
@@ -296,13 +296,13 @@ If you are building a new application, prefer the Hadamard SDK first. Treat brid
 
 ```ts
 import {
-  createActoviqBridgeSdk,
-  loadDefaultActoviqSettings,
+  createHadamardBridgeSdk,
+  loadDefaultHadamardSettings,
 } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   workDir: process.cwd(),
   maxTurns: 4,
 });
@@ -344,11 +344,11 @@ Bridge also supports:
 
 Bridge exports helpers for parsing runtime events:
 
-1. `getActoviqBridgeTextDelta(...)`
-2. `extractActoviqBridgeToolRequests(...)`
-3. `extractActoviqBridgeToolResults(...)`
-4. `extractActoviqBridgeTaskInvocations(...)`
-5. `analyzeActoviqBridgeEvents(...)`
+1. `getHadamardBridgeTextDelta(...)`
+2. `extractHadamardBridgeToolRequests(...)`
+3. `extractHadamardBridgeToolResults(...)`
+4. `extractHadamardBridgeTaskInvocations(...)`
+5. `analyzeHadamardBridgeEvents(...)`
 
 Next chapter:
 

@@ -1,5 +1,5 @@
-import { listActoviqBridgeSessions } from 'actoviq-agent-sdk';
+import { listHadamardBridgeSessions } from 'actoviq-agent-sdk';
 
-const sessions = await listActoviqBridgeSessions({ limit: 10 });
+const sessions = await listHadamardBridgeSessions({ limit: 10 });
 
 console.log(JSON.stringify(sessions, null, 2));

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { stripAnsi } from '../src/tui/ansi.js';
 import { formatEditCall } from '../src/tui/transcript.js';
-import { renderRichText } from '../src/tui/actoviqTui.js';
+import { renderRichText } from '../src/tui/hadamardTui.js';
 
 describe('formatEditCall', () => {
   it('renders a header with the file path plus removed/added lines', () => {

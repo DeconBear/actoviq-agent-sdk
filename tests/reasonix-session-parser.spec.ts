@@ -278,8 +278,8 @@ describe('resolveReasonixSessionRoots', () => {
     const state = path.join(root, 'state', 'reasonix-test');
     expect(resolveReasonixSessionRoots(home, {
       REASONIX_HOME: '~/isolated-reasonix',
-      REASONIX_STATE_HOME: '$ACTOVIQ_REASONIX_STATE',
-      ACTOVIQ_REASONIX_STATE: state,
+      REASONIX_STATE_HOME: '$HADAMARD_REASONIX_STATE',
+      HADAMARD_REASONIX_STATE: state,
       APPDATA: path.join(root, 'ignored-appdata'),
     })).toEqual([
       path.join(state, 'sessions'),

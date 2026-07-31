@@ -1,59 +1,59 @@
 {
-  "name": "actoviq",
-  "displayName": "Actoviq",
-  "description": "Thin VS Code/Cursor client for the Actoviq app-server.",
+  "name": "hadamard",
+  "displayName": "Hadamard",
+  "description": "Thin VS Code/Cursor client for the Hadamard app-server.",
   "version": "0.1.0",
-  "publisher": "actoviq",
+  "publisher": "hadamard",
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": ["Other"],
   "activationEvents": [
-    "onView:actoviq.sessions",
-    "onCommand:actoviq.openSession",
-    "onChatParticipant:actoviq.chat"
+    "onView:hadamard.sessions",
+    "onCommand:hadamard.openSession",
+    "onChatParticipant:hadamard.chat"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
-      { "command": "actoviq.openSession", "title": "Actoviq: Open Session" },
-      { "command": "actoviq.selectSession", "title": "Actoviq: Select Session" },
-      { "command": "actoviq.newSession", "title": "Actoviq: New Session" },
-      { "command": "actoviq.refreshSessions", "title": "Actoviq: Refresh Sessions" },
-      { "command": "actoviq.reviewDiff", "title": "Actoviq: Review Session Diff" },
-      { "command": "actoviq.applyDiff", "title": "Actoviq: Apply Session Diff" },
-      { "command": "actoviq.restoreCheckpoint", "title": "Actoviq: Restore Checkpoint" },
-      { "command": "actoviq.setGoal", "title": "Actoviq: Set Goal" },
-      { "command": "actoviq.rememberApproval", "title": "Actoviq: Remember Approval" }
+      { "command": "hadamard.openSession", "title": "Hadamard: Open Session" },
+      { "command": "hadamard.selectSession", "title": "Hadamard: Select Session" },
+      { "command": "hadamard.newSession", "title": "Hadamard: New Session" },
+      { "command": "hadamard.refreshSessions", "title": "Hadamard: Refresh Sessions" },
+      { "command": "hadamard.reviewDiff", "title": "Hadamard: Review Session Diff" },
+      { "command": "hadamard.applyDiff", "title": "Hadamard: Apply Session Diff" },
+      { "command": "hadamard.restoreCheckpoint", "title": "Hadamard: Restore Checkpoint" },
+      { "command": "hadamard.setGoal", "title": "Hadamard: Set Goal" },
+      { "command": "hadamard.rememberApproval", "title": "Hadamard: Remember Approval" }
     ],
     "chatParticipants": [
       {
-        "id": "actoviq.chat",
-        "name": "actoviq",
-        "fullName": "Actoviq",
-        "description": "Work with the current Actoviq Session."
+        "id": "hadamard.chat",
+        "name": "hadamard",
+        "fullName": "Hadamard",
+        "description": "Work with the current Hadamard Session."
       }
     ],
     "viewsContainers": {
       "activitybar": [
-        { "id": "actoviq", "title": "Actoviq", "icon": "media/actoviq.svg" }
+        { "id": "hadamard", "title": "Hadamard", "icon": "media/hadamard.svg" }
       ]
     },
     "views": {
-      "actoviq": [
-        { "id": "actoviq.sessions", "name": "Sessions" },
-        { "id": "actoviq.approvals", "name": "Approvals" }
+      "hadamard": [
+        { "id": "hadamard.sessions", "name": "Sessions" },
+        { "id": "hadamard.approvals", "name": "Approvals" }
       ]
     },
     "configuration": {
-      "title": "Actoviq",
+      "title": "Hadamard",
       "properties": {
-        "actoviq.appServer.command": {
+        "hadamard.appServer.command": {
           "type": "string",
-          "default": "actoviq-app-server",
+          "default": "hadamard-app-server",
           "description": "App-server executable."
         },
-        "actoviq.appServer.args": {
+        "hadamard.appServer.args": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],

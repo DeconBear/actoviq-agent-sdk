@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('remote job lease takeover', () => {
   it('allows another worker to take over only after lease expiry', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-remote-takeover-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-remote-takeover-'));
     dirs.push(dir);
     const store = new RemoteJobStore(dir);
     await new RemoteWorkerClient(store).submit({
@@ -37,7 +37,7 @@ describe('remote job lease takeover', () => {
   });
 
   it('leases a queued job to only one worker across store instances', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-remote-store-race-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-remote-store-race-'));
     dirs.push(dir);
     const first = new RemoteJobStore(dir);
     const second = new RemoteJobStore(dir);

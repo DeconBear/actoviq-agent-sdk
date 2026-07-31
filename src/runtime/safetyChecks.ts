@@ -15,7 +15,7 @@ export interface SafetyCheckResult {
 const PROTECTED_PATHS = [
   '.git',
   '.claude',
-  '.actoviq',
+  '.hadamard',
 ];
 
 const PROTECTED_SHELL_FILES = [

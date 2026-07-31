@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const DEFAULT_KIMI_WEBBRIDGE_ENDPOINT = 'http://127.0.0.1:10086/command';
-export const DEFAULT_KIMI_WEBBRIDGE_SESSION = 'actoviq-kimi-webbridge';
+export const DEFAULT_KIMI_WEBBRIDGE_SESSION = 'hadamard-kimi-webbridge';
 
 export const KIMI_WEBBRIDGE_ALLOWED_ACTIONS = [
   'navigate',

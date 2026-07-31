@@ -9,14 +9,14 @@
  * turn then runs exactly like a normal Hadamard agent turn, and that executor
  * may itself convene a team. Routing re-evaluates on the next user input.
  *
- * Profiles load from `.actoviq/routers/<name>.json` (project) and
- * `~/.actoviq/routers/<name>.json` (personal). `apiKey` values starting with
+ * Profiles load from `.hadamard/routers/<name>.json` (project) and
+ * `~/.hadamard/routers/<name>.json` (personal). `apiKey` values starting with
  * `$` are resolved from environment variables.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 
 import type {
   ModelApi,
@@ -26,7 +26,7 @@ import type {
   RouterRoute,
 } from '../types.js';
 import { resolveRuntimeConfig } from '../config/resolveRuntimeConfig.js';
-import { createActoviqModelApi } from '../runtime/actoviqModelApi.js';
+import { createHadamardModelApi } from '../runtime/hadamardModelApi.js';
 import { createOpenaiModelApi } from '../provider/openai-model-api.js';
 
 function resolveApiKey(apiKey?: string): string | undefined {
@@ -52,7 +52,7 @@ export async function buildRouteModelApi(ref: RouterModelRef): Promise<RoutedMod
   });
   const api = resolved.provider === 'openai'
     ? createOpenaiModelApi(resolved)
-    : createActoviqModelApi(resolved);
+    : createHadamardModelApi(resolved);
   return { model: resolved.model, modelApi: api, maxTokens: ref.maxTokens ?? 32000 };
 }
 
@@ -160,7 +160,7 @@ export async function resolveRoutedRun(
   return { model: routed.model, modelApi: routed.modelApi, label: decision.label, decision };
 }
 
-// ── Persistence (.actoviq/routers + ~/.actoviq/routers) ──────────────
+// ── Persistence (.hadamard/routers + ~/.hadamard/routers) ──────────────
 
 export interface LoadedRouterProfile {
   name: string;
@@ -170,9 +170,9 @@ export interface LoadedRouterProfile {
 }
 
 function resolveRouterDirs(projectDir?: string, homeDir?: string): string[] {
-  const home = resolveActoviqHome(homeDir);
+  const home = resolveHadamardHome(homeDir);
   const dirs: string[] = [];
-  if (projectDir) dirs.push(path.join(projectDir, '.actoviq', 'routers'));
+  if (projectDir) dirs.push(path.join(projectDir, '.hadamard', 'routers'));
   dirs.push(path.join(home, 'routers'));
   return dirs;
 }

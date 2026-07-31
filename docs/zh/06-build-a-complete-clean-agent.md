@@ -36,9 +36,9 @@ npm install actoviq-agent-sdk zod
 
 ```json
 {
-  "ACTOVIQ_BASE_URL": "https://your-model-endpoint.example.com/v1",
-  "ACTOVIQ_AUTH_TOKEN": "your-token",
-  "ACTOVIQ_MODEL": "your-model-name"
+  "HADAMARD_BASE_URL": "https://your-model-endpoint.example.com/v1",
+  "HADAMARD_AUTH_TOKEN": "your-token",
+  "HADAMARD_MODEL": "your-model-name"
 }
 ```
 
@@ -47,9 +47,9 @@ npm install actoviq-agent-sdk zod
 ```json
 {
   "env": {
-    "ACTOVIQ_BASE_URL": "https://your-model-endpoint.example.com/v1",
-    "ACTOVIQ_AUTH_TOKEN": "your-token",
-    "ACTOVIQ_MODEL": "your-model-name"
+    "HADAMARD_BASE_URL": "https://your-model-endpoint.example.com/v1",
+    "HADAMARD_AUTH_TOKEN": "your-token",
+    "HADAMARD_MODEL": "your-model-name"
   }
 }
 ```
@@ -91,7 +91,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { z } from 'zod';
 import {
   createAgentSdk,
-  createActoviqFileTools,
+  createHadamardFileTools,
   loadJsonConfigFile,
   skill,
   tool,
@@ -126,7 +126,7 @@ const releaseCheck = skill({
 const sdk = await createAgentSdk({
   workDir: WORK_DIR,
   tools: [
-    ...createActoviqFileTools({ cwd: WORK_DIR }),
+    ...createHadamardFileTools({ cwd: WORK_DIR }),
     addNumbers,
   ],
   skills: [releaseCheck],
@@ -311,7 +311,7 @@ await oldSession.send('继续刚才的话题');
 默认情况下，Hadamard SDK 会把 session 数据保存到：
 
 ```text
-~/.actoviq/projects/<workspace-key>
+~/.hadamard/projects/<workspace-key>
 ```
 
 `<workspace-key>` 由规范化的 `workDir` 生成，因此不同项目默认隔离。
@@ -396,10 +396,10 @@ const session = await sdk.createSession({
 
 如果你想对照更多官方示例，可以继续看：
 
-1. [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
-2. [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
-3. [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
-4. [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+1. [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
+2. [examples/hadamard-skills.ts](../../examples/hadamard-skills.ts)
+3. [examples/hadamard-agent-helpers.ts](../../examples/hadamard-agent-helpers.ts)
+4. [examples/hadamard-swarm.ts](../../examples/hadamard-swarm.ts)
 
 ## 十二、什么时候迁移到模块化 Runtime
 

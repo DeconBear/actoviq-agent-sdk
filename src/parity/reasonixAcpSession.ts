@@ -1,6 +1,6 @@
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgePermissionMode,
+  HadamardBridgeJsonEvent,
+  HadamardBridgePermissionMode,
 } from '../types.js';
 
 export type ReasonixAcpJsonRpcId = string | number;
@@ -20,7 +20,7 @@ export interface CreateReasonixAcpSessionOptions {
   model?: string;
   effort?: string;
   maxBudgetUsd?: number;
-  permissionMode: ActoviqBridgePermissionMode;
+  permissionMode: HadamardBridgePermissionMode;
   nativeSessionId?: string;
 }
 
@@ -31,7 +31,7 @@ export type ReasonixAcpTurnOptions = Pick<
 
 export interface ReasonixAcpHandleResult {
   outbound: ReasonixAcpJsonRpcRecord[];
-  events: ActoviqBridgeJsonEvent[];
+  events: HadamardBridgeJsonEvent[];
   done: boolean;
   nativeSessionId?: string;
 }
@@ -78,8 +78,8 @@ function jsonRpcId(value: unknown): ReasonixAcpJsonRpcId | undefined {
 function bridgeEvent(
   type: string,
   fields: Record<string, unknown> = {},
-): ActoviqBridgeJsonEvent {
-  return { type, ...fields } as ActoviqBridgeJsonEvent;
+): HadamardBridgeJsonEvent {
+  return { type, ...fields } as HadamardBridgeJsonEvent;
 }
 
 function textFromContent(value: unknown): string {
@@ -175,7 +175,7 @@ class ReasonixAcpSessionState implements ReasonixAcpSession {
       protocolVersion: 1,
       clientInfo: {
         name: 'actoviq-agent-sdk',
-        title: 'Actoviq',
+        title: 'Hadamard',
       },
       clientCapabilities: {},
     }, 'initialize')];
@@ -328,7 +328,7 @@ class ReasonixAcpSessionState implements ReasonixAcpSession {
     return this.result(next.outbound, [initEvent, ...next.events]);
   }
 
-  private initEvent(): ActoviqBridgeJsonEvent {
+  private initEvent(): HadamardBridgeJsonEvent {
     return bridgeEvent('system', {
       subtype: 'init',
       session_id: this.nativeSessionId,
@@ -384,7 +384,7 @@ class ReasonixAcpSessionState implements ReasonixAcpSession {
     ], []);
   }
 
-  private translateUpdate(value: unknown): ActoviqBridgeJsonEvent[] {
+  private translateUpdate(value: unknown): HadamardBridgeJsonEvent[] {
     // Current Reasonix replays persisted transcript records as session/update
     // notifications while session/load is still pending. History integration
     // owns those records; this run state machine only emits the new live turn.
@@ -494,7 +494,7 @@ class ReasonixAcpSessionState implements ReasonixAcpSession {
       ?? stringValue(result.stop_reason)
       ?? 'end_turn';
     const isError = stopReason !== 'end_turn';
-    const events: ActoviqBridgeJsonEvent[] = [];
+    const events: HadamardBridgeJsonEvent[] = [];
     if (this.assistantText) {
       events.push(bridgeEvent('assistant', {
         session_id: this.nativeSessionId ?? '',
@@ -535,7 +535,7 @@ class ReasonixAcpSessionState implements ReasonixAcpSession {
 
   private result(
     outbound: ReasonixAcpJsonRpcRecord[],
-    events: ActoviqBridgeJsonEvent[],
+    events: HadamardBridgeJsonEvent[],
   ): ReasonixAcpHandleResult {
     return {
       outbound,

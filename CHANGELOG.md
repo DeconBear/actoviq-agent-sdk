@@ -31,7 +31,7 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ### Bridge / tests / CI
 
-- Add regression coverage for consecutive `ActoviqBridgeSession.stream()` calls so the second turn uses `--resume` (GitHub #8).
+- Add regression coverage for consecutive `HadamardBridgeSession.stream()` calls so the second turn uses `--resume` (GitHub #8).
 - Harden GUI publish update-metadata validation (`workflow_dispatch` may rebuild an existing tag with the current builder).
 
 ### Notes
@@ -124,12 +124,12 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 - **Subagent infrastructure**: `Agent`/`Task` tool with Task compatibility alias, persistent sessions, and `SendMessage` continuation
 - **Background agents**: automatic completion notifications, progress tracking, cancellation, and lifecycle reconciliation
-- **Markdown agent definitions**: user-level (`~/.actoviq/agents/`) and project-level (`.actoviq/agents/`) `.md` files with tool/skill/permission/MCP/effort controls
+- **Markdown agent definitions**: user-level (`~/.hadamard/agents/`) and project-level (`.hadamard/agents/`) `.md` files with tool/skill/permission/MCP/effort controls
 - **Worktree isolation**: `isolation: "worktree"` for parallel agents editing overlapping files; dirty worktrees retained, clean ones auto-removed
 - **Nested delegation controls**: configurable depth limit (`maxSubagentDepth`), fanout limit (`maxSubagentFanout`), and per-definition allowed agents
 - **Built-in agent definitions**: Explore, Plan, and general-purpose agents with Claude Code-compatible profiles
 - **Windows Bash tool**: now uses Git Bash for POSIX commands on Windows
-- **TUI**: full-screen terminal UI (`actoviq-tui`) with session management, permission mode switching, and provider configuration
+- **TUI**: full-screen terminal UI (`hadamard-tui`) with session management, permission mode switching, and provider configuration
 - **Model tiers**: `min`/`medium`/`max` tier resolution with `ACTVIQ_DEFAULT_{TIER}_MODEL` env vars
 - **Enhanced Agent tool prompt**: Claude Code-level subagent guidance (foreground/background, parallel delegation, "never delegate understanding")
 
@@ -140,7 +140,7 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 - Background task `cancel()`: re-reads store after abort to prevent TOCTOU race with terminal state
 - `forwardStreamResult`: captures both pump and result errors instead of silently losing one
 - Agent definition loader: logs a warning for malformed `.md` files instead of silently skipping them
-- `encodeActoviqProjectPath` test made platform-aware (was hardcoded to Windows paths)
+- `encodeHadamardProjectPath` test made platform-aware (was hardcoded to Windows paths)
 
 ### Benchmark
 
@@ -151,17 +151,17 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ### TUI Branding
 
-- Display name changed from `Actoviq TUI` to `Hadamard Agent` (3 visible strings; all internal names, env vars, and config paths unchanged)
+- Display name changed from `Hadamard TUI` to `Hadamard Agent` (3 visible strings; all internal names, env vars, and config paths unchanged)
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.3.1...v0.4.0
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.3.1...v0.4.0
 
 ## v0.3.1 - 2026-06-11
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.3.0...v0.3.1
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.3.0...v0.3.1
 
 ## v0.3.0 - 2026-05-11
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/commits/v0.3.0
+**Full Changelog**: https://github.com/DeconBear/hadamard/commits/v0.3.0
 
 ## v0.2.0 - 2026-05-08
 
@@ -194,61 +194,61 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 - Added `workflow-annotated.ts` — annotated walkthrough of every API parameter
 - Added `workflow-agent-orchestration.ts` — Agent autonomously designs and executes workflows
-- Added `actoviq-platform.ts` — consolidated workspaces + swarm + session memory + dream
+- Added `hadamard-platform.ts` — consolidated workspaces + swarm + session memory + dream
 - Removed 8 redundant examples (buddy, computer-use, dream, memory, session-memory, skills, swarm, workspaces)
 - 12 focused examples remaining
 
 ### Fixes
 
 - 18 bugs across provider layer, runtime, and workflow engine
-- Missing public API exports (trackRecentFile, resolveActoviqStopHooks, etc.)
+- Missing public API exports (trackRecentFile, resolveHadamardStopHooks, etc.)
 
 ### Internal
 
 - Fixed regex for hyphenated step IDs in variable interpolation (`\w+` → `[\w-]+`)
 - Defensive `?.` checks on optional `dependsOn` and `steps` fields across workflow engine
-- `getTool()` public method on `ActoviqAgentClient` for tool registry lookup
+- `getTool()` public method on `HadamardAgentClient` for tool registry lookup
 
 ## v0.1.12 - 2026-05-06
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.11...v0.1.12
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.11...v0.1.12
 
 ## v0.1.11 - 2026-04-04
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.9...v0.1.11
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.9...v0.1.11
 
 ## v0.1.10 - 2026-04-03
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.9...v0.1.10
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.9...v0.1.10
 
 ## v0.1.9 - 2026-04-03
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.8...v0.1.9
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.8...v0.1.9
 
 ## v0.1.8 - 2026-04-03
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.7...v0.1.8
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.7...v0.1.8
 
 ## v0.1.7 - 2026-04-02
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.6...v0.1.7
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.6...v0.1.7
 
 ## v0.1.6 - 2026-04-02
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.5...v0.1.6
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.5...v0.1.6
 
 ## v0.1.5 - 2026-04-02
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.4...v0.1.5
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.4...v0.1.5
 
 ## v0.1.4 - 2026-04-02
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.3...v0.1.4
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.3...v0.1.4
 
 ## v0.1.3 - 2026-04-01
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.2...v0.1.3
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.2...v0.1.3
 
 ## v0.1.2 - 2026-04-01
 
-**Full Changelog**: https://github.com/DeconBear/actoviq-agent-sdk/compare/v0.1.1...v0.1.2
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.1.1...v0.1.2

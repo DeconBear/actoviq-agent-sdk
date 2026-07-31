@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { discoverActoviqPlugins } from '../src/tui/pluginCatalog.js';
+import { discoverHadamardPlugins } from '../src/tui/pluginCatalog.js';
 
 const tempDirs: string[] = [];
 
@@ -14,15 +14,15 @@ afterEach(async () => {
 
 describe('Clean plugin catalog', () => {
   it('discovers user, project, and configured plugin manifests with capabilities', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-catalog-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-catalog-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const pluginDir = path.join(workDir, '.actoviq', 'plugins', 'release-tools');
-    await mkdir(path.join(pluginDir, '.actoviq-plugin'), { recursive: true });
+    const pluginDir = path.join(workDir, '.hadamard', 'plugins', 'release-tools');
+    await mkdir(path.join(pluginDir, '.hadamard-plugin'), { recursive: true });
     await mkdir(path.join(pluginDir, 'skills'), { recursive: true });
     await writeFile(
-      path.join(pluginDir, '.actoviq-plugin', 'plugin.json'),
+      path.join(pluginDir, '.hadamard-plugin', 'plugin.json'),
       JSON.stringify({
         name: 'release-tools',
         version: '1.0.0',
@@ -30,7 +30,7 @@ describe('Clean plugin catalog', () => {
       }),
     );
 
-    const plugins = await discoverActoviqPlugins({ homeDir, workDir });
+    const plugins = await discoverHadamardPlugins({ homeDir, workDir });
 
     expect(plugins).toEqual([
       expect.objectContaining({

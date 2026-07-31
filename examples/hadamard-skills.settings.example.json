@@ -1,0 +1,9 @@
+{
+  "env": {
+    "HADAMARD_AUTH_TOKEN": "your-token",
+    "HADAMARD_BASE_URL": "https://api.example.com/hadamard",
+    "HADAMARD_DEFAULT_MIN_MODEL": "your-small-model",
+    "HADAMARD_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
+    "HADAMARD_DEFAULT_MAX_MODEL": "your-large-model"
+  }
+}

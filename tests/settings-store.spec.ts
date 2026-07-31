@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { persistActoviqSettingsStore } from '../src/config/actoviqSettingsStore.js';
+import { persistHadamardSettingsStore } from '../src/config/hadamardSettingsStore.js';
 
 const tempDirs: string[] = [];
 
@@ -12,23 +12,23 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
-describe('Actoviq settings store', () => {
+describe('Hadamard settings store', () => {
   it('persists settings without changing their structure', async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-settings-store-'));
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-settings-store-'));
     tempDirs.push(homeDir);
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
 
-    await persistActoviqSettingsStore(configPath, {
+    await persistHadamardSettingsStore(configPath, {
       env: {
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_PROVIDER: 'anthropic',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_PROVIDER: 'anthropic',
       },
     });
 
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
       env: {
-        ACTOVIQ_API_KEY: 'test-key',
-        ACTOVIQ_PROVIDER: 'anthropic',
+        HADAMARD_API_KEY: 'test-key',
+        HADAMARD_PROVIDER: 'anthropic',
       },
     });
     if (process.platform !== 'win32') {

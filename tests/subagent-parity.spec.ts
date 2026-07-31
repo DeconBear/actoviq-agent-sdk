@@ -9,7 +9,7 @@ import { z } from 'zod';
 
 import {
   clearLoadedJsonConfig,
-  createActoviqCoreTools,
+  createHadamardCoreTools,
   createAgentSdk,
   tool,
   type ModelApi,
@@ -98,8 +98,8 @@ const isCI = process.env.CI === 'true';
 
 describe('Hadamard SDK subagent parity', () => {
   it.skipIf(isCI)('exposes Agent with Task compatibility and injects background completion notifications', async () => {
-    const sessionDirectory = await tempDirectory('actoviq-subagent-notify-');
-    const homeDir = await tempDirectory('actoviq-subagent-home-');
+    const sessionDirectory = await tempDirectory('hadamard-subagent-notify-');
+    const homeDir = await tempDirectory('hadamard-subagent-home-');
     const modelApi = new RecordingModelApi(request => {
       if (request.system?.includes('focused code-review subagent')) {
         return makeMessage([{ type: 'text', text: 'Background review complete.' }]);
@@ -175,8 +175,8 @@ describe('Hadamard SDK subagent parity', () => {
   });
 
   it.skipIf(isCI)('resumes a completed agent through SendMessage with session context preserved', async () => {
-    const sessionDirectory = await tempDirectory('actoviq-subagent-resume-');
-    const homeDir = await tempDirectory('actoviq-subagent-home-');
+    const sessionDirectory = await tempDirectory('hadamard-subagent-resume-');
+    const homeDir = await tempDirectory('hadamard-subagent-home-');
     const modelApi = new RecordingModelApi(request => {
       if (request.system?.includes('focused debugging subagent')) {
         return makeMessage([{
@@ -251,8 +251,8 @@ describe('Hadamard SDK subagent parity', () => {
   });
 
   it('delivers and deduplicates SendMessage input across SDK clients', async () => {
-    const sessionDirectory = await tempDirectory('actoviq-subagent-steer-');
-    const homeDir = await tempDirectory('actoviq-subagent-steer-home-');
+    const sessionDirectory = await tempDirectory('hadamard-subagent-steer-');
+    const homeDir = await tempDirectory('hadamard-subagent-steer-home-');
     let releaseGate!: () => void;
     let markGateStarted!: () => void;
     const gate = new Promise<void>(resolve => {
@@ -406,8 +406,8 @@ describe('Hadamard SDK subagent parity', () => {
   });
 
   it('resumes a follow-up that races with background task settlement', async () => {
-    const sessionDirectory = await tempDirectory('actoviq-subagent-settlement-race-');
-    const homeDir = await tempDirectory('actoviq-subagent-settlement-home-');
+    const sessionDirectory = await tempDirectory('hadamard-subagent-settlement-race-');
+    const homeDir = await tempDirectory('hadamard-subagent-settlement-home-');
     let releaseGate!: () => void;
     let markGateStarted!: () => void;
     const gate = new Promise<void>(resolve => {
@@ -581,13 +581,13 @@ describe('Hadamard SDK subagent parity', () => {
   });
 
   it('loads project agent Markdown definitions and applies tool boundaries', async () => {
-    const root = await tempDirectory('actoviq-subagent-definitions-');
+    const root = await tempDirectory('hadamard-subagent-definitions-');
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'project');
     const sessionDirectory = path.join(root, 'sessions');
-    await mkdir(path.join(workDir, '.actoviq', 'agents'), { recursive: true });
+    await mkdir(path.join(workDir, '.hadamard', 'agents'), { recursive: true });
     await writeFile(
-      path.join(workDir, '.actoviq', 'agents', 'auditor.md'),
+      path.join(workDir, '.hadamard', 'agents', 'auditor.md'),
       [
         '---',
         'name: auditor',
@@ -614,7 +614,7 @@ describe('Hadamard SDK subagent parity', () => {
       sessionDirectory,
       model: 'test-model',
       modelApi,
-      tools: createActoviqCoreTools({ cwd: workDir }),
+      tools: createHadamardCoreTools({ cwd: workDir }),
     });
 
     try {
@@ -644,7 +644,7 @@ describe('Hadamard SDK subagent parity', () => {
   });
 
   it('runs editing agents in retained worktrees without changing the parent checkout', async () => {
-    const root = await tempDirectory('actoviq-subagent-worktree-');
+    const root = await tempDirectory('hadamard-subagent-worktree-');
     const repository = path.join(root, 'repository');
     const sessionDirectory = path.join(root, 'sessions');
     await mkdir(repository, { recursive: true });
@@ -665,7 +665,7 @@ describe('Hadamard SDK subagent parity', () => {
     });
 
     const modelApi = new RecordingModelApi(request => {
-      if (request.system?.includes('general-purpose Actoviq subagent')) {
+      if (request.system?.includes('general-purpose Hadamard subagent')) {
         const text = requestText(request);
         if (text.includes('tool_result')) {
           return makeMessage([{ type: 'text', text: 'Isolated edit complete.' }]);
@@ -706,7 +706,7 @@ describe('Hadamard SDK subagent parity', () => {
       workDir: repository,
       sessionDirectory,
       modelApi,
-      tools: createActoviqCoreTools({ cwd: repository }),
+      tools: createHadamardCoreTools({ cwd: repository }),
       permissionMode: 'bypassPermissions',
     });
 

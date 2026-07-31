@@ -32,7 +32,7 @@
 1. 输入验证 → adapter.inputSchema.parse(toolUse.input)
     │
     ▼
-2. 权限检查 → decideActoviqToolPermission(...)
+2. 权限检查 → decideHadamardToolPermission(...)
     │  deny → ToolExecutionError
     │
     ▼

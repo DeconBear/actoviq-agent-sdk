@@ -74,30 +74,30 @@ jobs:
           - name: Windows x64
             runner: windows-latest
             eb_args: --win --x64
-            artifact_glob: Actoviq-*-win-x64.exe
+            artifact_glob: Hadamard-*-win-x64.exe
             update_metadata: latest.yml
           - name: Windows arm64
             runner: windows-latest
             eb_args: --win --arm64
-            artifact_glob: Actoviq-*-win-arm64.exe
+            artifact_glob: Hadamard-*-win-arm64.exe
           - name: macOS x64
             runner: macos-latest
             eb_args: --mac --x64
-            artifact_glob: Actoviq-*-mac-x64.dmg
+            artifact_glob: Hadamard-*-mac-x64.dmg
           - name: macOS arm64
             runner: macos-latest
             eb_args: --mac --arm64
-            artifact_glob: Actoviq-*-mac-arm64.dmg
+            artifact_glob: Hadamard-*-mac-arm64.dmg
           - name: Linux x64
             runner: ubuntu-latest
             eb_args: --linux AppImage --x64
             # electron-builder names AppImage arch x86_64 (not x64).
-            artifact_glob: 'Actoviq-*-linux-x86_64.AppImage'
+            artifact_glob: 'Hadamard-*-linux-x86_64.AppImage'
             update_metadata: latest-linux.yml
           - name: Linux arm64
             runner: ubuntu-24.04-arm
             eb_args: --linux AppImage --arm64
-            artifact_glob: 'Actoviq-*-linux-arm64.AppImage'
+            artifact_glob: 'Hadamard-*-linux-arm64.AppImage'
 
     steps:
       - name: Checkout repository

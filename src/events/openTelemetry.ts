@@ -123,10 +123,10 @@ function toSpanEvent(event: RunEvent): OpenTelemetrySpanEvent {
     name: event.type,
     time: event.timestamp,
     attributes: {
-      'actoviq.event.id': event.eventId,
-      'actoviq.event.sequence': event.sequence,
-      'actoviq.event.schema_version': event.schemaVersion,
-      'actoviq.event.data': event.data,
+      'hadamard.event.id': event.eventId,
+      'hadamard.event.sequence': event.sequence,
+      'hadamard.event.schema_version': event.schemaVersion,
+      'hadamard.event.data': event.data,
     },
   };
 }
@@ -153,10 +153,10 @@ function toReadableSpan(
         : { code: 'UNSET', ...(incomplete ? { message: 'incomplete' } : {}) },
     attributes: {
       'service.name': serviceName,
-      'actoviq.run.id': span.first.runId,
-      ...(span.first.parentRunId ? { 'actoviq.run.parent_id': span.first.parentRunId } : {}),
-      'actoviq.events.dropped': span.droppedEvents,
-      'actoviq.run.incomplete': incomplete,
+      'hadamard.run.id': span.first.runId,
+      ...(span.first.parentRunId ? { 'hadamard.run.parent_id': span.first.parentRunId } : {}),
+      'hadamard.events.dropped': span.droppedEvents,
+      'hadamard.run.incomplete': incomplete,
     },
     events: Object.freeze([...span.events]),
   };

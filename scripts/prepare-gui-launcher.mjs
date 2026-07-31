@@ -1,5 +1,5 @@
-// Windows dev launcher: copy electron.exe → Actoviq.exe beside Electron's dist
-// resources (icudtl.dat, resources/, …) and embed assets/actoviq-icon.ico.
+// Windows dev launcher: copy electron.exe → Hadamard.exe beside Electron's dist
+// resources (icudtl.dat, resources/, …) and embed assets/hadamard-icon.ico.
 // Windows taskbar icons come from the executable image, not BrowserWindow.setIcon.
 import { copyFileSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -15,11 +15,11 @@ if (process.platform !== 'win32') {
 
 const electronExe = require('electron');
 const distDir = dirname(electronExe);
-const iconIco = join(root, 'assets', 'actoviq-icon.ico');
-const launcher = join(distDir, 'Actoviq.exe');
+const iconIco = join(root, 'assets', 'hadamard-icon.ico');
+const launcher = join(distDir, 'Hadamard.exe');
 
 if (!existsSync(iconIco)) {
-  process.stderr.write('prepare-gui-launcher: missing assets/actoviq-icon.ico — run npm run generate:icon\n');
+  process.stderr.write('prepare-gui-launcher: missing assets/hadamard-icon.ico — run npm run generate:icon\n');
   process.exit(1);
 }
 
@@ -46,11 +46,11 @@ await rcedit(launcher, {
   icon: iconIco,
   'product-version': '1.0.0',
   'version-string': {
-    FileDescription: 'Actoviq',
-    ProductName: 'Actoviq',
-    CompanyName: 'Actoviq',
-    OriginalFilename: 'Actoviq.exe',
-    InternalName: 'Actoviq',
+    FileDescription: 'Hadamard',
+    ProductName: 'Hadamard',
+    CompanyName: 'Hadamard',
+    OriginalFilename: 'Hadamard.exe',
+    InternalName: 'Hadamard',
   },
 });
 

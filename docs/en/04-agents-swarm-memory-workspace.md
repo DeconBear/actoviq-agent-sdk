@@ -63,8 +63,8 @@ background: true
 Prioritize correctness, regressions, and verification gaps.
 ```
 
-Place project definitions in `.actoviq/agents/*.md` and user definitions in
-`~/.actoviq/agents/*.md`. Programmatic definitions override project
+Place project definitions in `.hadamard/agents/*.md` and user definitions in
+`~/.hadamard/agents/*.md`. Programmatic definitions override project
 definitions, which override user definitions. Definitions can also constrain
 nested agents, require MCP servers, preload skills, and opt into worktree
 isolation. A dirty delegated worktree is retained and its path is returned;
@@ -106,7 +106,7 @@ team.setRuntimeContext({
 
 Repository example:
 
-- [examples/actoviq-swarm.ts](../../examples/actoviq-swarm.ts)
+- [examples/hadamard-swarm.ts](../../examples/hadamard-swarm.ts)
 
 ## 4. Workspace helpers
 
@@ -120,7 +120,7 @@ Available helpers:
 
 ```ts
 const workspace = await createTempWorkspace({
-  prefix: 'actoviq-demo-',
+  prefix: 'hadamard-demo-',
   copyFrom: './examples',
 });
 
@@ -157,8 +157,8 @@ const state = await session.compactState({
 
 Repository examples:
 
-- [examples/actoviq-memory.ts](../../examples/actoviq-memory.ts)
-- [examples/actoviq-session-memory.ts](../../examples/actoviq-session-memory.ts)
+- [examples/hadamard-memory.ts](../../examples/hadamard-memory.ts)
+- [examples/hadamard-session-memory.ts](../../examples/hadamard-session-memory.ts)
 
 ## 6. Buddy
 
@@ -212,7 +212,7 @@ await sdk.maybeAutoDream({
 
 Repository example:
 
-- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+- [examples/hadamard-dream.ts](../../examples/hadamard-dream.ts)
 
 ## 8. Compact
 

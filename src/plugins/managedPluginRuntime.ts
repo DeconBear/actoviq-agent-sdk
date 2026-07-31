@@ -4,9 +4,9 @@ import { homedir } from 'node:os';
 
 import { z } from 'zod';
 
-import { resolveBrowserScreenshotPath } from '../browser/actoviqBrowserSession.js';
-import { createActoviqBrowserUseToolkit } from '../browser/actoviqBrowserTools.js';
-import { createActoviqComputerUseTools } from '../computer/actoviqComputerUse.js';
+import { resolveBrowserScreenshotPath } from '../browser/hadamardBrowserSession.js';
+import { createHadamardBrowserUseToolkit } from '../browser/hadamardBrowserTools.js';
+import { createHadamardComputerUseTools } from '../computer/hadamardComputerUse.js';
 import { createE2bComputerUseToolkit } from '../computer/e2bComputerUse.js';
 import { tool } from '../runtime/tools.js';
 import type { AgentToolDefinition } from '../types.js';
@@ -108,7 +108,7 @@ export function createManagedPluginRuntime(
       closers.push(runtime.close);
     } else if (backend === 'local') {
       enabledPluginIds.push('computer-use');
-      tools.push(...createActoviqComputerUseTools());
+      tools.push(...createHadamardComputerUseTools());
     }
   }
 
@@ -138,7 +138,7 @@ export function createManagedPluginRuntime(
 
   const playwright = readStoredManagedPluginConfig(raw, 'playwright');
   if (playwright.enabled === true) {
-    const runtime = createActoviqBrowserUseToolkit({
+    const runtime = createHadamardBrowserUseToolkit({
       headless: playwright.headless !== false,
       channel: browserChannel(playwright.channel),
       cdpUrl: stringValue(playwright.cdpUrl),

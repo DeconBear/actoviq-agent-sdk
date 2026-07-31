@@ -18,7 +18,7 @@ function fakeUpdater() {
       return updater;
     }),
     checkForUpdates: vi.fn(async () => {
-      const info = { version: '1.2.0', releaseName: 'Actoviq 1.2' };
+      const info = { version: '1.2.0', releaseName: 'Hadamard 1.2' };
       listeners.get('update-available')?.(info);
       return { updateInfo: info };
     }),
@@ -30,7 +30,7 @@ function fakeUpdater() {
         bytesPerSecond: 20,
       });
       listeners.get('update-downloaded')?.({ version: '1.2.0' });
-      return ['Actoviq.exe'];
+      return ['Hadamard.exe'];
     }),
     quitAndInstall: vi.fn(),
   } as unknown as NativeAppUpdater;
@@ -91,7 +91,7 @@ describe('app update service', () => {
   it('uses the returned version when the native updater does not emit an availability event', async () => {
     const { updater } = fakeUpdater();
     vi.mocked(updater.checkForUpdates).mockResolvedValueOnce({
-      updateInfo: { version: '1.10.0', releaseName: 'Actoviq 1.10' },
+      updateInfo: { version: '1.10.0', releaseName: 'Hadamard 1.10' },
     });
     const controller = createAppUpdateController({ updater, currentVersion: '1.9.9' });
 

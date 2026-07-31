@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('PluginTrustStore', () => {
   it('invalidates trust when version, integrity, or capabilities change', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-trust-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-trust-'));
     dirs.push(dir);
     const trust = new PluginTrustStore(path.join(dir, 'trust.json'));
     await trust.trust({
@@ -38,7 +38,7 @@ describe('PluginTrustStore', () => {
   });
 
   it('rejects trust grants that omit integrity hashes', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-trust-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-trust-'));
     dirs.push(dir);
     const trust = new PluginTrustStore(path.join(dir, 'trust.json'));
     await expect(trust.trust({

@@ -13,7 +13,7 @@ export class RuleCommandService {
 
   constructor(homeDir: string, workDir: string) {
     this.user = new RuleStore(path.join(homeDir, 'rules.json'));
-    this.project = new RuleStore(path.join(workDir, '.actoviq', 'rules.json'));
+    this.project = new RuleStore(path.join(workDir, '.hadamard', 'rules.json'));
   }
 
   async execute(input: string): Promise<RuleCommandResult> {

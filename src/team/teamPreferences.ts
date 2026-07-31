@@ -1,5 +1,5 @@
 /**
- * Team preferences — the `preferences.team` block of `~/.actoviq/settings.json`.
+ * Team preferences — the `preferences.team` block of `~/.hadamard/settings.json`.
  *
  * Shared by GUI / TUI / REPL so the three surfaces read and write the same
  * policy switches:

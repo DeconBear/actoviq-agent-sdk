@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('ReviewStore', () => {
   it('persists line comments and resolution revisions atomically', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-review-store-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-review-store-'));
     tempDirs.push(root);
     const store = new ReviewStore(root);
     const added = await store.addComment('session', {

@@ -3,7 +3,7 @@
  * 5 dimensions, each 0-10. No DRACO PASS/FAIL, no truncation.
  */
 import { resolveRuntimeConfig } from '../../src/config/resolveRuntimeConfig.js';
-import { createActoviqModelApi } from '../../src/runtime/actoviqModelApi.js';
+import { createHadamardModelApi } from '../../src/runtime/hadamardModelApi.js';
 import { robustJsonParse } from '../../src/provider/json-parse.js';
 import type { StandardScore } from './types.js';
 
@@ -25,7 +25,7 @@ export async function scoreAnswer(
   expectedCoverage?: string[],
 ): Promise<StandardScore> {
   const config = await resolveRuntimeConfig({ workDir: process.cwd(), model: 'deepseek-v4-pro' });
-  const api = createActoviqModelApi(config);
+  const api = createHadamardModelApi(config);
 
   let text = '';
   for (let attempt = 0; attempt < 2; attempt++) {

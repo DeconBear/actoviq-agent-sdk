@@ -29,12 +29,12 @@ const realpathNative = promisify(realpathCallback.native);
 let workspaceDir: string;
 
 beforeEach(async () => {
-  workspaceDir = await realpathNative(await mkdtemp(path.join(tmpdir(), 'actoviq-workflow-v2-')));
+  workspaceDir = await realpathNative(await mkdtemp(path.join(tmpdir(), 'hadamard-workflow-v2-')));
 });
 
 afterEach(async () => {
   await rm(workspaceDir, { recursive: true, force: true });
-  delete process.env.ACTOVIQ_WORKFLOW_HOST_SECRET;
+  delete process.env.HADAMARD_WORKFLOW_HOST_SECRET;
 });
 
 function untrustedRequest(
@@ -114,14 +114,14 @@ describe('workflow v2 trust routing', () => {
 
 describe('local isolated-process workflow security boundary', () => {
   it('does not inherit a host secret or expose process/require/network globals', async () => {
-    process.env.ACTOVIQ_WORKFLOW_HOST_SECRET = 'must-not-cross-boundary';
+    process.env.HADAMARD_WORKFLOW_HOST_SECRET = 'must-not-cross-boundary';
     const executor = new LocalIsolatedProcessWorkflowExecutor();
     const source = `async ({ input }) => {
       let escapedSecret = 'blocked';
       let inputConstructorEscape = 'blocked';
       try {
         escapedSecret = globalThis.constructor.constructor(
-          'return process.env.ACTOVIQ_WORKFLOW_HOST_SECRET'
+          'return process.env.HADAMARD_WORKFLOW_HOST_SECRET'
         )();
       } catch {}
       try {

@@ -52,15 +52,15 @@ describe('Kimi WebBridge plugin', () => {
     });
     const plugin = createKimiWebBridgePlugin({
       fetch: fetchImpl as typeof fetch,
-      session: 'actoviq-project-cand4',
+      session: 'hadamard-project-cand4',
     });
 
     await plugin.command('navigate', { url: 'https://www.kimi.com', newTab: true });
     await plugin.command('snapshot');
 
     expect(requests.map((request) => request.session)).toEqual([
-      'actoviq-project-cand4',
-      'actoviq-project-cand4',
+      'hadamard-project-cand4',
+      'hadamard-project-cand4',
     ]);
   });
 

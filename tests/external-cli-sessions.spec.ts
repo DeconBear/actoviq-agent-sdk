@@ -73,7 +73,7 @@ describe('Crush command-backed external history aggregation', () => {
   const crushSessionId = '33333333-3333-4333-8333-333333333333';
 
   it('merges Crush metadata into global pagination before opening file transcripts', async () => {
-    const tempDir = await createTempDir('actoviq-external-crush-order-');
+    const tempDir = await createTempDir('hadamard-external-crush-order-');
     const claudeRoot = path.join(tempDir, 'claude');
     const claudeSessionId = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
     const claudePath = path.join(claudeRoot, `${claudeSessionId}.jsonl`);
@@ -148,19 +148,19 @@ describe('Crush command-backed external history aggregation', () => {
   });
 
   it('keeps the native CLI home separate from managed Crush data-root profiles', async () => {
-    const homeDir = await createTempDir('actoviq-external-crush-profiles-');
-    const actoviqHomeDir = path.join(homeDir, 'custom-actoviq-data-root');
+    const homeDir = await createTempDir('hadamard-external-crush-profiles-');
+    const hadamardHomeDir = path.join(homeDir, 'custom-hadamard-data-root');
     const profileA = 'a'.repeat(64);
     const profileB = 'b'.repeat(64);
     const dataA = path.join(
-      actoviqHomeDir,
+      hadamardHomeDir,
       'external-cli-profiles',
       'crush',
       profileA,
       'data',
     );
     const dataB = path.join(
-      actoviqHomeDir,
+      hadamardHomeDir,
       'external-cli-profiles',
       'crush',
       profileB,
@@ -219,7 +219,7 @@ describe('Crush command-backed external history aggregation', () => {
     });
     const options = {
       homeDir,
-      actoviqHomeDir,
+      hadamardHomeDir,
       runtimes: ['crush' as const],
       crushEnv: { CRUSH_GLOBAL_DATA: explicitNativeData },
       crushCommandRunner: commandRunner,
@@ -260,10 +260,10 @@ describe('Crush command-backed external history aggregation', () => {
   });
 
   it('ignores malformed, non-hash, and symlinked managed Crush profiles', async () => {
-    const homeDir = await createTempDir('actoviq-external-crush-profile-safety-');
+    const homeDir = await createTempDir('hadamard-external-crush-profile-safety-');
     const profilesRoot = path.join(
       homeDir,
-      '.actoviq',
+      '.hadamard',
       'external-cli-profiles',
       'crush',
     );
@@ -309,17 +309,17 @@ describe('Crush command-backed external history aggregation', () => {
       options,
     )).resolves.toBeUndefined();
     await expect(readExternalCliSession(
-      `actoviq-crush-session:v2:${Buffer.from('../../outside').toString('base64url')}`,
+      `hadamard-crush-session:v2:${Buffer.from('../../outside').toString('base64url')}`,
       options,
     )).resolves.toBeUndefined();
     expect(commandRunner).not.toHaveBeenCalled();
   });
 
   it('bounds managed Crush profile discovery to 256 safe directories', async () => {
-    const homeDir = await createTempDir('actoviq-external-crush-profile-limit-');
+    const homeDir = await createTempDir('hadamard-external-crush-profile-limit-');
     const profilesRoot = path.join(
       homeDir,
-      '.actoviq',
+      '.hadamard',
       'external-cli-profiles',
       'crush',
     );
@@ -398,7 +398,7 @@ function isRecordWithCode(value: unknown): value is { code: string } {
 
 describe('external CLI session history', () => {
   it('recursively indexes and reads Claude Code sessions from an injected home', async () => {
-    const homeDir = await createTempDir('actoviq-external-claude-');
+    const homeDir = await createTempDir('hadamard-external-claude-');
     const cwd = path.join(homeDir, 'workspace');
     const nativeSessionId = '11111111-2222-3333-4444-555555555555';
     const sessionPath = path.join(
@@ -489,7 +489,7 @@ describe('external CLI session history', () => {
   });
 
   it('indexes Codex rollout JSONL from an explicit root without duplicating event messages', async () => {
-    const tempDir = await createTempDir('actoviq-external-codex-');
+    const tempDir = await createTempDir('hadamard-external-codex-');
     const codexRoot = path.join(tempDir, 'custom-codex-sessions');
     const claudeRoot = path.join(tempDir, 'no-claude-sessions');
     const piRoot = path.join(tempDir, 'no-pi-sessions');
@@ -597,7 +597,7 @@ describe('external CLI session history', () => {
   });
 
   it('reads the active branch from Pi v3 history under the default root', async () => {
-    const homeDir = await createTempDir('actoviq-external-pi-');
+    const homeDir = await createTempDir('hadamard-external-pi-');
     const cwd = path.join(homeDir, 'workspace');
     const nativeSessionId = '0190f1a2-b3c4-7000-8000-000000000001';
     const sessionPath = path.join(
@@ -759,7 +759,7 @@ describe('external CLI session history', () => {
   });
 
   it('honors Pi config and session directory environment overrides', async () => {
-    const tempDir = await createTempDir('actoviq-external-pi-roots-');
+    const tempDir = await createTempDir('hadamard-external-pi-roots-');
     const agentDir = path.join(tempDir, 'pi-agent-home');
     const configuredSessions = path.join(agentDir, 'sessions');
     const overriddenSessions = path.join(tempDir, 'pi-session-override');
@@ -806,7 +806,7 @@ describe('external CLI session history', () => {
   });
 
   it('indexes top-level Reasonix checkpoints from current and legacy roots with sidecar metadata', async () => {
-    const homeDir = await createTempDir('actoviq-external-reasonix-roots-');
+    const homeDir = await createTempDir('hadamard-external-reasonix-roots-');
     const stateHome = path.join(homeDir, 'reasonix-state');
     const currentRoot = path.join(stateHome, 'sessions');
     const legacyRoot = path.join(homeDir, '.reasonix', 'sessions');
@@ -925,7 +925,7 @@ describe('external CLI session history', () => {
   });
 
   it('bounds Reasonix transcript reads by bytes and retained messages', async () => {
-    const tempDir = await createTempDir('actoviq-external-reasonix-bounds-');
+    const tempDir = await createTempDir('hadamard-external-reasonix-bounds-');
     const reasonixRoot = path.join(tempDir, 'sessions');
     const sessionPath = path.join(reasonixRoot, 'bounded-reasonix.jsonl');
     const lines = Array.from({ length: 20 }, (_, index) => JSON.stringify({
@@ -976,7 +976,7 @@ describe('external CLI session history', () => {
   });
 
   it('rejects nested and symlinked Reasonix checkpoints and ignores symlinked metadata', async () => {
-    const tempDir = await createTempDir('actoviq-external-reasonix-safety-');
+    const tempDir = await createTempDir('hadamard-external-reasonix-safety-');
     const reasonixRoot = path.join(tempDir, 'sessions');
     const safePath = path.join(reasonixRoot, 'safe-session.jsonl');
     const nestedPath = path.join(reasonixRoot, 'nested', 'nested-session.jsonl');
@@ -1030,7 +1030,7 @@ describe('external CLI session history', () => {
   });
 
   it('indexes only top-level CodeWhale SavedSession JSON from canonical and legacy roots', async () => {
-    const homeDir = await createTempDir('actoviq-external-codewhale-roots-');
+    const homeDir = await createTempDir('hadamard-external-codewhale-roots-');
     const workspace = path.join(homeDir, 'workspace');
     const canonicalRoot = path.join(homeDir, '.codewhale', 'sessions');
     const legacyRoot = path.join(homeDir, '.deepseek', 'sessions');
@@ -1081,7 +1081,7 @@ describe('external CLI session history', () => {
   });
 
   it('prefers CODEWHALE_HOME while allowing an explicit CodeWhale root override', async () => {
-    const homeDir = await createTempDir('actoviq-external-codewhale-env-');
+    const homeDir = await createTempDir('hadamard-external-codewhale-env-');
     const codewhaleHome = path.join(homeDir, 'configured-codewhale-home');
     const configuredRoot = path.join(codewhaleHome, 'sessions');
     const fallbackRoot = path.join(homeDir, '.codewhale', 'sessions');
@@ -1117,7 +1117,7 @@ describe('external CLI session history', () => {
   });
 
   it('normalizes CodeWhale text, thinking, tool, result, and server-tool blocks', async () => {
-    const tempDir = await createTempDir('actoviq-external-codewhale-content-');
+    const tempDir = await createTempDir('hadamard-external-codewhale-content-');
     const codewhaleRoot = path.join(tempDir, 'sessions');
     const sessionPath = path.join(codewhaleRoot, 'content-session.json');
     await mkdir(codewhaleRoot, { recursive: true });
@@ -1207,7 +1207,7 @@ describe('external CLI session history', () => {
   });
 
   it('bounds CodeWhale SavedSession reads by bytes and messages without whole-file reads', async () => {
-    const tempDir = await createTempDir('actoviq-external-codewhale-bounds-');
+    const tempDir = await createTempDir('hadamard-external-codewhale-bounds-');
     const codewhaleRoot = path.join(tempDir, 'sessions');
     const sessionPath = path.join(codewhaleRoot, 'bounded-session.json');
     const messages = Array.from({ length: 20 }, (_, index) => ({
@@ -1260,7 +1260,7 @@ describe('external CLI session history', () => {
   });
 
   it('rejects nested and symlinked CodeWhale session files', async () => {
-    const tempDir = await createTempDir('actoviq-external-codewhale-safety-');
+    const tempDir = await createTempDir('hadamard-external-codewhale-safety-');
     const codewhaleRoot = path.join(tempDir, 'sessions');
     const nestedPath = path.join(codewhaleRoot, 'checkpoints', 'nested.json');
     const outsidePath = path.join(tempDir, 'outside.json');
@@ -1309,7 +1309,7 @@ describe('external CLI session history', () => {
   });
 
   it('resolves a CodeWhale fingerprint only within the matching cwd and mtime window', async () => {
-    const tempDir = await createTempDir('actoviq-external-codewhale-correlation-');
+    const tempDir = await createTempDir('hadamard-external-codewhale-correlation-');
     const codewhaleRoot = path.join(tempDir, 'sessions');
     const workspace = path.join(tempDir, 'workspace');
     const nativeSessionId = 'correlated-native-session';
@@ -1344,7 +1344,7 @@ describe('external CLI session history', () => {
   });
 
   it('rejects reads outside the configured session roots', async () => {
-    const tempDir = await createTempDir('actoviq-external-path-safety-');
+    const tempDir = await createTempDir('hadamard-external-path-safety-');
     const claudeRoot = path.join(tempDir, '.claude', 'projects');
     const codexRoot = path.join(tempDir, '.codex', 'sessions');
     const piRoot = path.join(tempDir, '.pi', 'agent', 'sessions');
@@ -1365,7 +1365,7 @@ describe('external CLI session history', () => {
   });
 
   it('bounds large summary reads and reuses the mtime-and-size cache', async () => {
-    const tempDir = await createTempDir('actoviq-external-large-summary-');
+    const tempDir = await createTempDir('hadamard-external-large-summary-');
     const claudeRoot = path.join(tempDir, '.claude', 'projects');
     const codexRoot = path.join(tempDir, '.codex', 'sessions');
     const piRoot = path.join(tempDir, '.pi', 'agent', 'sessions');
@@ -1412,7 +1412,7 @@ describe('external CLI session history', () => {
   });
 
   it('sorts and paginates file metadata before opening transcript streams', async () => {
-    const tempDir = await createTempDir('actoviq-external-metadata-order-');
+    const tempDir = await createTempDir('hadamard-external-metadata-order-');
     const claudeRoot = path.join(tempDir, '.claude', 'projects');
     const codexRoot = path.join(tempDir, '.codex', 'sessions');
     const piRoot = path.join(tempDir, '.pi', 'agent', 'sessions');
@@ -1448,7 +1448,7 @@ describe('external CLI session history', () => {
   });
 
   it('streams details with byte and message limits instead of loading the whole JSONL', async () => {
-    const tempDir = await createTempDir('actoviq-external-detail-limits-');
+    const tempDir = await createTempDir('hadamard-external-detail-limits-');
     const claudeRoot = path.join(tempDir, '.claude', 'projects');
     const codexRoot = path.join(tempDir, '.codex', 'sessions');
     const piRoot = path.join(tempDir, '.pi', 'agent', 'sessions');

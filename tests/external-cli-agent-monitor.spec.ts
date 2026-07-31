@@ -11,7 +11,7 @@ function run(
 ): ExternalCliRunSnapshot {
   return {
     runId,
-    actoviqSessionId: 'actoviq-session-1',
+    hadamardSessionId: 'hadamard-session-1',
     configId: 'claude-native-config',
     cwd: 'C:/workspace/cand4',
     background: true,
@@ -47,7 +47,7 @@ describe('External CLI Agent monitor adapter', () => {
 
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]?.nodes[0]).toMatchObject({
-      sessionId: 'actoviq-session-1',
+      sessionId: 'hadamard-session-1',
       runtime: 'claude',
       model: 'claude-sonnet-4-5',
       agentStatus: 'running',
@@ -106,7 +106,7 @@ describe('External CLI Agent monitor adapter', () => {
       },
       {
         run: run('aborted', 'aborted', {
-          actoviqSessionId: 'actoviq-session-2',
+          hadamardSessionId: 'hadamard-session-2',
           configId: 'pi-native-config',
         }),
         configName: 'Pi native',

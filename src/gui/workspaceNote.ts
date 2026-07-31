@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 
 export function workspaceNotePath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'workspace-note.txt');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'workspace-note.txt');
 }
 
 export async function readWorkspaceNote(workDir: string, homeDir: string): Promise<string> {

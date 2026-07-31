@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'actoviq-packed-package-'));
+const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'hadamard-packed-package-'));
 const npmCli = process.env.npm_execpath;
 if (!npmCli) throw new Error('npm_execpath is unavailable; run this verifier through npm.');
 
@@ -33,7 +33,7 @@ try {
   const tarball = path.join(packDirectory, filename);
 
   await writeFile(path.join(consumerDirectory, 'package.json'), JSON.stringify({
-    name: 'actoviq-package-verifier',
+    name: 'hadamard-package-verifier',
     private: true,
     type: 'module',
   }, null, 2), 'utf8');

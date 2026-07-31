@@ -16,7 +16,7 @@ vi.mock('../src/parity/externalCliAuth.js', async importOriginal => ({
   probeExternalCliAuth: externalCliAuthProbe,
 }));
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import { writeBridgeConfigs } from '../src/parity/bridgeConfigs.js';
 import {
   ExternalCliRuntimeManager,
@@ -25,11 +25,11 @@ import {
   type ExternalCliSessionLike,
 } from '../src/parity/externalCliRuntimeManager.js';
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgeRunOptions,
-  ActoviqBridgeRunResult,
-  ActoviqBridgeSessionCreateOptions,
-  CreateActoviqBridgeSdkOptions,
+  HadamardBridgeJsonEvent,
+  HadamardBridgeRunOptions,
+  HadamardBridgeRunResult,
+  HadamardBridgeSessionCreateOptions,
+  CreateHadamardBridgeSdkOptions,
 } from '../src/types.js';
 import type { AgentExecutionProjectView } from '../src/ui/agentExecutionView.js';
 
@@ -44,22 +44,22 @@ const managedRuntimeProviderCases = [
 ] as const;
 
 class FakeRunStream implements ExternalCliRunStreamLike {
-  readonly result: Promise<ActoviqBridgeRunResult>;
+  readonly result: Promise<HadamardBridgeRunResult>;
 
   constructor(
-    private readonly events: ActoviqBridgeJsonEvent[],
-    result: ActoviqBridgeRunResult,
+    private readonly events: HadamardBridgeJsonEvent[],
+    result: HadamardBridgeRunResult,
   ) {
     this.result = Promise.resolve(result);
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ActoviqBridgeJsonEvent> {
+  async *[Symbol.asyncIterator](): AsyncIterator<HadamardBridgeJsonEvent> {
     for (const event of this.events) yield event;
   }
 }
 
 class DeferredRunStream implements ExternalCliRunStreamLike {
-  readonly result: Promise<ActoviqBridgeRunResult>;
+  readonly result: Promise<HadamardBridgeRunResult>;
   private readonly ready: Promise<void>;
   private release!: () => void;
 
@@ -86,7 +86,7 @@ class DeferredRunStream implements ExternalCliRunStreamLike {
     this.release();
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ActoviqBridgeJsonEvent> {
+  async *[Symbol.asyncIterator](): AsyncIterator<HadamardBridgeJsonEvent> {
     await this.ready;
     yield {
       type: 'system',
@@ -105,7 +105,7 @@ class DeferredRunStream implements ExternalCliRunStreamLike {
 }
 
 class AbortableRunStream implements ExternalCliRunStreamLike {
-  readonly result: Promise<ActoviqBridgeRunResult>;
+  readonly result: Promise<HadamardBridgeRunResult>;
 
   constructor(signal: AbortSignal | undefined) {
     this.result = new Promise((_resolve, reject) => {
@@ -115,7 +115,7 @@ class AbortableRunStream implements ExternalCliRunStreamLike {
     });
   }
 
-  async *[Symbol.asyncIterator](): AsyncIterator<ActoviqBridgeJsonEvent> {
+  async *[Symbol.asyncIterator](): AsyncIterator<HadamardBridgeJsonEvent> {
     await this.result;
   }
 }
@@ -123,13 +123,13 @@ class AbortableRunStream implements ExternalCliRunStreamLike {
 type FakeStreamFactory = (
   session: FakeSession,
   prompt: string,
-  options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>,
+  options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>,
 ) => ExternalCliRunStreamLike;
 
 class FakeSession implements ExternalCliSessionLike {
   readonly streamCalls: Array<{
     prompt: string;
-    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>;
+    options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>;
   }> = [];
 
   constructor(
@@ -139,7 +139,7 @@ class FakeSession implements ExternalCliSessionLike {
 
   stream(
     prompt: string,
-    options: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'> = {},
+    options: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'> = {},
   ): ExternalCliRunStreamLike {
     this.streamCalls.push({ prompt, options });
     if (this.streamFactory) return this.streamFactory(this, prompt, options);
@@ -176,10 +176,10 @@ class FakeSession implements ExternalCliSessionLike {
 }
 
 class FakeClient implements ExternalCliClientLike {
-  readonly createSessionCalls: ActoviqBridgeSessionCreateOptions[] = [];
+  readonly createSessionCalls: HadamardBridgeSessionCreateOptions[] = [];
   readonly resumeSessionCalls: Array<{
     sessionId: string;
-    options: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'>;
+    options: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'>;
   }> = [];
   readonly sessions: FakeSession[] = [];
   closeCount = 0;
@@ -187,7 +187,7 @@ class FakeClient implements ExternalCliClientLike {
   constructor(private readonly streamFactory?: FakeStreamFactory) {}
 
   async createSession(
-    options: ActoviqBridgeSessionCreateOptions = {},
+    options: HadamardBridgeSessionCreateOptions = {},
   ): Promise<ExternalCliSessionLike> {
     this.createSessionCalls.push(options);
     const session = new FakeSession(
@@ -200,7 +200,7 @@ class FakeClient implements ExternalCliClientLike {
 
   async resumeSession(
     sessionId: string,
-    options: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'> = {},
+    options: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'> = {},
   ): Promise<ExternalCliSessionLike> {
     this.resumeSessionCalls.push({ sessionId, options });
     const session = new FakeSession(sessionId, this.streamFactory);
@@ -214,14 +214,14 @@ class FakeClient implements ExternalCliClientLike {
 }
 
 async function apiJson<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const response = await fetch(new URL(requestPath.replace(/^\/+/, ''), server.url), {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -229,14 +229,14 @@ async function apiJson<T>(
 }
 
 async function send(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   text: string,
 ): Promise<Array<Record<string, unknown>>> {
   const response = await fetch(new URL('api/send', server.url), {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
     },
     body: JSON.stringify({ text }),
   });
@@ -249,8 +249,8 @@ async function send(
 }
 
 beforeEach(() => {
-  vi.stubEnv('ACTOVIQ_API_KEY', '');
-  vi.stubEnv('ACTOVIQ_AUTH_TOKEN', '');
+  vi.stubEnv('HADAMARD_API_KEY', '');
+  vi.stubEnv('HADAMARD_AUTH_TOKEN', '');
   externalCliAuthProbe.mockClear();
 });
 
@@ -262,7 +262,7 @@ afterEach(async () => {
 
 describe('GUI External CLI runtime', () => {
   it('accepts configuration and authentication gates for all six managed runtimes', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-runtime-gates-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-runtime-gates-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
@@ -279,7 +279,7 @@ describe('GUI External CLI runtime', () => {
         authSource: 'native',
       })),
     }, homeDir);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       configPath,
       homeDir,
       workDir,
@@ -344,7 +344,7 @@ describe('GUI External CLI runtime', () => {
   });
 
   it('streams through Claude Code without a Hadamard credential and reuses its native session', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-external-runtime-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-external-runtime-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
@@ -363,7 +363,7 @@ describe('GUI External CLI runtime', () => {
       }],
     }, homeDir);
 
-    const factoryOptions: CreateActoviqBridgeSdkOptions[] = [];
+    const factoryOptions: CreateHadamardBridgeSdkOptions[] = [];
     const clients: FakeClient[] = [];
     const externalCliRuntimeManager = new ExternalCliRuntimeManager({
       clientFactory: async options => {
@@ -375,7 +375,7 @@ describe('GUI External CLI runtime', () => {
     });
     const streamSpy = vi.spyOn(externalCliRuntimeManager, 'stream');
     const startSpy = vi.spyOn(externalCliRuntimeManager, 'start');
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       configPath,
       externalCliRuntimeManager,
       homeDir,
@@ -427,7 +427,7 @@ describe('GUI External CLI runtime', () => {
       const firstRun = streamSpy.mock.calls[0]![0];
       const secondRun = streamSpy.mock.calls[1]![0];
       expect(firstRun).toMatchObject({
-        actoviqSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+        hadamardSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/),
         configId: expect.stringMatching(/^claude-native:[a-f0-9]{24}$/),
         cwd: path.resolve(workDir),
         prompt: 'first turn',
@@ -436,7 +436,7 @@ describe('GUI External CLI runtime', () => {
           authSource: 'native',
         },
         sessionOptions: {
-          title: 'actoviq-gui-claude-claude-native',
+          title: 'hadamard-gui-claude-claude-native',
         },
         runOptions: {
           includePartialMessages: true,
@@ -447,7 +447,7 @@ describe('GUI External CLI runtime', () => {
       expect(firstRun.nativeSessionId).toBeUndefined();
       expect(firstRun.clientOptions).not.toHaveProperty('apiKey');
       expect(secondRun).toMatchObject({
-        actoviqSessionId: firstRun.actoviqSessionId,
+        hadamardSessionId: firstRun.hadamardSessionId,
         configId: firstRun.configId,
         cwd: firstRun.cwd,
         prompt: 'second turn',
@@ -467,7 +467,7 @@ describe('GUI External CLI runtime', () => {
       expect(client.createSessionCalls).toHaveLength(1);
       expect(client.createSessionCalls[0]).toMatchObject({
         directCli: true,
-        title: 'actoviq-gui-claude-claude-native',
+        title: 'hadamard-gui-claude-claude-native',
         workDir: path.resolve(workDir),
       });
       expect(client.resumeSessionCalls).toHaveLength(0);
@@ -499,10 +499,10 @@ describe('GUI External CLI runtime', () => {
         background: true,
       });
       expect(background.body.run).not.toHaveProperty('configId');
-      expect(background.body.run).not.toHaveProperty('actoviqSessionId');
+      expect(background.body.run).not.toHaveProperty('hadamardSessionId');
       expect(startSpy).toHaveBeenCalledTimes(1);
       expect(startSpy.mock.calls[0]![0]).toMatchObject({
-        actoviqSessionId: firstRun.actoviqSessionId,
+        hadamardSessionId: firstRun.hadamardSessionId,
         configId: firstRun.configId,
         cwd: firstRun.cwd,
         prompt: 'background turn',
@@ -569,7 +569,7 @@ describe('GUI External CLI runtime', () => {
       ]));
       expect(runs.body.runs.every(run => run.nativeSessionId === 'native-claude-1')).toBe(true);
       expect(runs.body.runs.every(run => !('configId' in run))).toBe(true);
-      expect(runs.body.runs.every(run => !('actoviqSessionId' in run))).toBe(true);
+      expect(runs.body.runs.every(run => !('hadamardSessionId' in run))).toBe(true);
       expect(runs.body.runs.every(run => !('events' in run))).toBe(true);
       expect(runs.body.runs.every(run => !('logs' in run))).toBe(true);
       expect(runs.body.runs.every(run => !('result' in run))).toBe(true);
@@ -580,7 +580,7 @@ describe('GUI External CLI runtime', () => {
   }, 30_000);
 
   it('persists a background result only to the chat where it was started', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-external-origin-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-external-origin-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
@@ -614,7 +614,7 @@ describe('GUI External CLI runtime', () => {
         return deferred;
       }),
     });
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       configPath,
       externalCliRuntimeManager: manager,
       homeDir,
@@ -729,7 +729,7 @@ describe('GUI External CLI runtime', () => {
   }, 30_000);
 
   it('keeps the external CLI running across an HTTP disconnect and aborts it explicitly', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-external-disconnect-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-external-disconnect-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'workspace');
@@ -754,7 +754,7 @@ describe('GUI External CLI runtime', () => {
         return new AbortableRunStream(options.signal);
       }),
     });
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       configPath,
       externalCliRuntimeManager: manager,
       homeDir,
@@ -775,7 +775,7 @@ describe('GUI External CLI runtime', () => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-actoviq-token': server.token,
+          'x-hadamard-token': server.token,
         },
         body: JSON.stringify({ text: 'stay running', clientRequestId }),
         signal: disconnect.signal,

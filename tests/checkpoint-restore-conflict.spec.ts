@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('checkpoint restore path conflicts', () => {
   it('rejects a symlink that resolves outside the workspace', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-checkpoint-symlink-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-checkpoint-symlink-'));
     tempDirs.push(root);
     const workspace = path.join(root, 'workspace');
     const outside = path.join(root, 'outside');

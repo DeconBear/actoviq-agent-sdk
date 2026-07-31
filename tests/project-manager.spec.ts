@@ -160,7 +160,7 @@ describe('Manager progress documents (plan §4.4)', () => {
       {},
     );
     expect(await readProgressFile(workDir, homeDir)).toContain('All good.');
-    expect(fs.existsSync(path.join(workDir, '.actoviq', 'PROGRESS.md'))).toBe(false);
+    expect(fs.existsSync(path.join(workDir, '.hadamard', 'PROGRESS.md'))).toBe(false);
   });
 
   it('ProgressWrite mirrors to the workspace only when opted in', async () => {
@@ -170,7 +170,7 @@ describe('Manager progress documents (plan §4.4)', () => {
       { content: '# Mirrored' },
       {},
     );
-    expect(fs.readFileSync(path.join(workDir, '.actoviq', 'PROGRESS.md'), 'utf8')).toContain('Mirrored');
+    expect(fs.readFileSync(path.join(workDir, '.hadamard', 'PROGRESS.md'), 'utf8')).toContain('Mirrored');
   });
 
   it('the default config never writes any workspace file', async () => {

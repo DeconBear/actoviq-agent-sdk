@@ -43,7 +43,7 @@ export class PluginPackageManager {
       };
     }
     if (action === 'search') {
-      if (!this.registryUrl) throw new Error('Set ACTOVIQ_PLUGIN_REGISTRY to search a registry.');
+      if (!this.registryUrl) throw new Error('Set HADAMARD_PLUGIN_REGISTRY to search a registry.');
       this.assertRegistryAllowed();
       const entries = await new PluginRegistryClient(this.registryUrl).search(rest.join(' '));
       entries.forEach(entry => this.assertManifestAllowed(entry.manifest));
@@ -59,7 +59,7 @@ export class PluginPackageManager {
       const source = rest.join(' ').trim();
       if (!source) throw new Error(`Usage: /plugin ${action} <local-package-directory>`);
       const manifest = parsePluginPackageManifest(JSON.parse(
-        await readFile(path.join(path.resolve(source), 'actoviq-plugin.json'), 'utf8'),
+        await readFile(path.join(path.resolve(source), 'hadamard-plugin.json'), 'utf8'),
       ));
       this.assertManifestAllowed(manifest);
       const installed = await this.packages.install(path.resolve(source));

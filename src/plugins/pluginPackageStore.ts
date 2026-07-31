@@ -30,7 +30,7 @@ export class PluginPackageStore {
     return this.serial(async () => {
       await assertRegularPackageTree(sourceDirectory);
       const manifest = parsePluginPackageManifest(JSON.parse(
-        await readFile(path.join(sourceDirectory, 'actoviq-plugin.json'), 'utf8'),
+        await readFile(path.join(sourceDirectory, 'hadamard-plugin.json'), 'utf8'),
       ));
       const entry = await readFile(path.resolve(sourceDirectory, manifest.entry));
       if (manifest.integrity) {
@@ -88,7 +88,7 @@ export class PluginPackageStore {
         const packagePath = this.packagePath(id, version);
         try {
           const manifest = parsePluginPackageManifest(JSON.parse(
-            await readFile(path.join(packagePath, 'actoviq-plugin.json'), 'utf8'),
+            await readFile(path.join(packagePath, 'hadamard-plugin.json'), 'utf8'),
           ));
           packages.push({
             manifest,
@@ -146,7 +146,7 @@ export class PluginPackageStore {
   private async readInstalled(target: string): Promise<PluginPackageManifest | undefined> {
     try {
       return parsePluginPackageManifest(JSON.parse(
-        await readFile(path.join(target, 'actoviq-plugin.json'), 'utf8'),
+        await readFile(path.join(target, 'hadamard-plugin.json'), 'utf8'),
       ));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;

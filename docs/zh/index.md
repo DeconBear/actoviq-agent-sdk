@@ -1,4 +1,4 @@
-# Actoviq Agent SDK 中文教程
+# Hadamard Agent SDK 中文教程
 
 这是一套面向当前 SDK 的中文上手教程，目标是让你从零开始，逐步掌握 Hadamard SDK、providers、tools、session、memory、MCP 与 orchestration。
 
@@ -6,7 +6,7 @@
 
 ## 先选择入口
 
-Actoviq 现在有两条都受支持、但用途不同的 API 路线：
+Hadamard 现在有两条都受支持、但用途不同的 API 路线：
 
 | 路线 | 入口 | 适用场景 |
 |---|---|---|
@@ -27,10 +27,10 @@ Hadamard SDK 的核心实现完全独立。需要兼容 Claude、Codex、Pi 等�
 
 如果你想最快跑起来：
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
-2. 运行 `npm run example:actoviq-quickstart`
+2. 运行 `npm run example:hadamard-quickstart`
 3. 或启动交互式终端界面：
-   - `npx actoviq-react [工作目录]`：轻量级 scrollback REPL。
-   - `npx actoviq-tui [工作目录]`：完整 Hadamard SDK 终端 UI。
+   - `npx hadamard-react [工作目录]`：轻量级 scrollback REPL。
+   - `npx hadamard-tui [工作目录]`：完整 Hadamard SDK 终端 UI。
 
 如果你想完整做一个真正可用的 Hadamard SDK 项目，推荐直接阅读：
 - [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)

@@ -16,7 +16,7 @@ async function loadModule(filePath) {
   return import(pathToFileURL(filePath).href);
 }
 
-const settingsPath = path.join(os.homedir(), '.actoviq', 'settings.json');
+const settingsPath = path.join(os.homedir(), '.hadamard', 'settings.json');
 await mkdir(path.dirname(settingsPath), { recursive: true });
 let raw = {};
 try {
@@ -69,7 +69,7 @@ const tavilyTool = runtime.tools.find(t => t.name === 'TavilySearch');
 if (tavilyTool) {
   console.log('\n=== live TavilySearch ===');
   const out = await tavilyTool.execute(
-    { query: 'Actoviq agent SDK', depth: 'basic', max_results: 2, include_answer: true },
+    { query: 'Hadamard agent SDK', depth: 'basic', max_results: 2, include_answer: true },
     { cwd: process.cwd(), signal: AbortSignal.timeout(25_000) },
   );
   console.log(String(out).slice(0, 700));
@@ -81,7 +81,7 @@ const exaTool = runtime.tools.find(t => t.name === 'ExaSearch');
 if (exaTool) {
   console.log('\n=== live ExaSearch ===');
   const out = await exaTool.execute(
-    { query: 'Actoviq agent SDK', type: 'fast', num_results: 2 },
+    { query: 'Hadamard agent SDK', type: 'fast', num_results: 2 },
     { cwd: process.cwd(), signal: AbortSignal.timeout(25_000) },
   );
   console.log(String(out).slice(0, 700));

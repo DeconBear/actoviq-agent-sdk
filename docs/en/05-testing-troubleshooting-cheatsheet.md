@@ -17,7 +17,7 @@ Optional local checks:
 
 ```bash
 npm run smoke
-npm run example:actoviq-quickstart
+npm run example:hadamard-quickstart
 ```
 
 ## 2. Common problems
@@ -26,9 +26,9 @@ npm run example:actoviq-quickstart
 
 If you see a configuration error, check:
 
-1. `~/.actoviq/settings.json`
+1. `~/.hadamard/settings.json`
 2. `loadJsonConfigFile(...)`
-3. required keys such as `ACTOVIQ_AUTH_TOKEN` and `ACTOVIQ_BASE_URL`
+3. required keys such as `HADAMARD_AUTH_TOKEN` and `HADAMARD_BASE_URL`
 
 ### Session not found
 
@@ -51,13 +51,13 @@ Check whether:
 ## 3. Handy example commands
 
 ```bash
-npm run example:actoviq-quickstart
-npm run example:actoviq-session
-npm run example:actoviq-stream-loop
-npm run example:actoviq-skills
-npm run example:actoviq-file-tools
-npm run example:actoviq-memory
-npm run example:actoviq-swarm
+npm run example:hadamard-quickstart
+npm run example:hadamard-session
+npm run example:hadamard-stream-loop
+npm run example:hadamard-skills
+npm run example:hadamard-file-tools
+npm run example:hadamard-memory
+npm run example:hadamard-swarm
 ```
 
 ## 4. API cheat sheet
@@ -76,5 +76,5 @@ npm run example:actoviq-swarm
 You now have the full tutorial set. If you want a single next step, run:
 
 ```bash
-npm run example:actoviq-quickstart
+npm run example:hadamard-quickstart
 ```

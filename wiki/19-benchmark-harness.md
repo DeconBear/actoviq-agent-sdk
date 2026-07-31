@@ -4,7 +4,7 @@
 
 The benchmark harness evaluates agent behavior across task suites by running
 SDK instances in isolated workspaces and grading deterministic end states.
-It compares Hadamard SDK, actoviq-bridge-sdk, and the official Claude Agent SDK.
+It compares Hadamard SDK, hadamard-bridge-sdk, and the official Claude Agent SDK.
 
 Location: `bench/*`
 
@@ -76,7 +76,7 @@ Each runner is a standalone script that:
 // clean-sdk-runner.ts (simplified)
 const sdk = await createAgentSdk({
   workDir: workspace,
-  tools: createActoviqCoreTools({ cwd: workspace }),
+  tools: createHadamardCoreTools({ cwd: workspace }),
   permissionMode: 'bypassPermissions',
 });
 const result = await sdk.run(instruction, {
@@ -95,7 +95,7 @@ a comparison table:
 | Runtime | Passed | Total | Pass Rate |
 |---|---:|---:|---:|
 | Hadamard SDK | 8 | 8 | 100.00% |
-| actoviq-bridge-sdk | 8 | 8 | 100.00% |
+| hadamard-bridge-sdk | 8 | 8 | 100.00% |
 | Official Claude Agent SDK | 7 | 8 | 87.50% |
 ```
 
@@ -143,7 +143,7 @@ bench/reports/
 
 ```typescript
 // Case declares budget.maxTurns:
-//   → Hadamard SDK: ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS env var
+//   → Hadamard SDK: HADAMARD_BENCH_MAX_TOOL_ITERATIONS env var
 //   → Bridge SDK: --max-turns CLI flag
 //   → Official SDK: maxTurns option
 // No declared budget:

@@ -10,13 +10,13 @@ export async function loadPolicyDocuments(options: {
 }): Promise<PolicyDocument[]> {
   const candidates: Array<{ filePath: string; scope: PolicyScope }> = [
     {
-      filePath: process.env.ACTOVIQ_HOST_POLICY
-        ? path.resolve(process.env.ACTOVIQ_HOST_POLICY)
+      filePath: process.env.HADAMARD_HOST_POLICY
+        ? path.resolve(process.env.HADAMARD_HOST_POLICY)
         : path.join(options.homeDir, 'policy', 'host.json'),
       scope: 'host',
     },
     { filePath: path.join(options.homeDir, 'policy', 'user.json'), scope: 'user' },
-    { filePath: path.join(options.workDir, '.actoviq', 'policy.json'), scope: 'project' },
+    { filePath: path.join(options.workDir, '.hadamard', 'policy.json'), scope: 'project' },
   ];
   const loaded: PolicyDocument[] = [];
   for (const candidate of candidates) {

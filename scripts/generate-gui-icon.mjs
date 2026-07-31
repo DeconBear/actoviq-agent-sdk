@@ -1,4 +1,4 @@
-// Generates the Actoviq GUI app icon (assets/actoviq-icon.png) with no external
+// Generates the Hadamard GUI app icon (assets/hadamard-icon.png) with no external
 // dependencies: it rasterizes the brand mark (node graph + spark on a blue→green
 // rounded tile) into an RGBA buffer and encodes a PNG via zlib. Re-run with
 // `node scripts/generate-gui-icon.mjs` after changing the design.
@@ -138,6 +138,6 @@ function encodePng(width, height, rgba) {
 
 const outDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets');
 mkdirSync(outDir, { recursive: true });
-const outPath = path.join(outDir, 'actoviq-icon.png');
+const outPath = path.join(outDir, 'hadamard-icon.png');
 writeFileSync(outPath, encodePng(SIZE, SIZE, px));
 process.stdout.write(`wrote ${outPath} (${SIZE}x${SIZE})\n`);

@@ -109,8 +109,8 @@ describe('media gen plugins', () => {
     expect(selectMediaProfile(profiles, undefined).id).toBe('nano-banana');
   });
 
-  it('generates an OpenAI image and writes it under .actoviq/generated', async () => {
-    const cwd = await mkdtemp(path.join(os.tmpdir(), 'actoviq-image-'));
+  it('generates an OpenAI image and writes it under .hadamard/generated', async () => {
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'hadamard-image-'));
     try {
       const png = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
@@ -149,7 +149,7 @@ describe('media gen plugins', () => {
         signal: new AbortController().signal,
       } as never);
       expect(result.provider).toBe('openai');
-      expect(result.path).toMatch(/\.actoviq\/generated\/images\//u);
+      expect(result.path).toMatch(/\.hadamard\/generated\/images\//u);
       const bytes = await readFile(path.join(cwd, result.path));
       expect(bytes.equals(png)).toBe(true);
       expect(result.userIntent).toBe('画只猫');
@@ -159,7 +159,7 @@ describe('media gen plugins', () => {
   });
 
   it('polls Seedance video tasks and downloads the mp4', async () => {
-    const cwd = await mkdtemp(path.join(os.tmpdir(), 'actoviq-video-'));
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'hadamard-video-'));
     try {
       const mp4 = Buffer.from('fake-mp4-bytes');
       let polls = 0;
@@ -202,7 +202,7 @@ describe('media gen plugins', () => {
         signal: new AbortController().signal,
       } as never);
       expect(result.taskId).toBe('task_1');
-      expect(result.path).toMatch(/\.actoviq\/generated\/videos\//u);
+      expect(result.path).toMatch(/\.hadamard\/generated\/videos\//u);
       expect(await readFile(path.join(cwd, result.path))).toEqual(mp4);
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -210,7 +210,7 @@ describe('media gen plugins', () => {
   });
 
   it('runs Meshy preview+refine and downloads a GLB', async () => {
-    const cwd = await mkdtemp(path.join(os.tmpdir(), 'actoviq-mesh-'));
+    const cwd = await mkdtemp(path.join(os.tmpdir(), 'hadamard-mesh-'));
     try {
       const glb = Buffer.from('glTF-binary');
       const fetchImpl: typeof fetch = async (input, init) => {
@@ -251,7 +251,7 @@ describe('media gen plugins', () => {
         cwd,
         signal: new AbortController().signal,
       } as never);
-      expect(result.path).toMatch(/\.actoviq\/generated\/meshes\//u);
+      expect(result.path).toMatch(/\.hadamard\/generated\/meshes\//u);
       expect(await readFile(path.join(cwd, result.path))).toEqual(glb);
     } finally {
       await rm(cwd, { recursive: true, force: true });

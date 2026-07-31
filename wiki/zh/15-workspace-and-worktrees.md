@@ -4,7 +4,7 @@
 
 工作区模块管理 agent 的隔离工作目录——临时目录、目录复制和 git worktree。Worktree 是并行子代理的主要隔离机制。
 
-位置：`src/workspace/actoviqWorkspace.ts`
+位置：`src/workspace/hadamardWorkspace.ts`
 
 ### Worktree 类型
 
@@ -14,10 +14,10 @@
 | `temp` | `mkdtemp` | dispose 时自动删除 | 一次性隔离工作 |
 | `git-worktree` | `git worktree add` | 无更改时自动删除 | 并行 agent 隔离 |
 
-### `ActoviqWorkspace` — 抽象
+### `HadamardWorkspace` — 抽象
 
 ```typescript
-class ActoviqWorkspace {
+class HadamardWorkspace {
   readonly id: string;
   readonly kind: 'directory' | 'temp' | 'git-worktree';
   readonly path: string;
@@ -33,25 +33,25 @@ class ActoviqWorkspace {
 ### 工厂函数
 
 ```typescript
-createWorkspace({ path, copyFrom?, ensureExists? }) → ActoviqWorkspace
-createTempWorkspace({ parentDir?, prefix?, copyFrom? }) → ActoviqWorkspace
+createWorkspace({ path, copyFrom?, ensureExists? }) → HadamardWorkspace
+createTempWorkspace({ parentDir?, prefix?, copyFrom? }) → HadamardWorkspace
 createGitWorktreeWorkspace({
   repositoryPath,     // Git 仓库路径
   path?, name?,       // 目标路径和名称
   branch?, ref?,      // 分支和引用
   detach?, force?,    // 分离 HEAD、强制覆盖
-}) → ActoviqWorkspace
+}) → HadamardWorkspace
 ```
 
 ### Git Worktree 创建
 
 ```typescript
-async function createGitWorktreeWorkspace(options): Promise<ActoviqWorkspace> {
+async function createGitWorktreeWorkspace(options): Promise<HadamardWorkspace> {
   // 1. 解析仓库根目录（git rev-parse --show-toplevel）
   // 2. 生成目标路径
   // 3. 构建 git worktree add 命令
   // 4. 执行：git worktree add [--force] [-b <branch>] <path> [<ref>]
-  // 5. 返回带 disposer 的 ActoviqWorkspace：
+  // 5. 返回带 disposer 的 HadamardWorkspace：
   //    - 尝试：git worktree remove --force <path>
   //    - 回退：rm -rf <path>（含安全检查）
 }
@@ -90,7 +90,7 @@ async function isGitWorkspaceDirty(workDir: string): Promise<boolean> {
 参数：`name`, `branch`, `ref`, `detach`, `pr`, `path`
 
 - 创建隔离 git worktree，切换 agent 工作目录
-- 默认位置：`.actoviq/worktrees/<name>/`
+- 默认位置：`.hadamard/worktrees/<name>/`
 - PR checkout：自动 fetch `pull/<n>/head`
 - 从 worktree 内部只能通过 `path` 切换到另一个已有 worktree
 

@@ -260,13 +260,13 @@ export class SessionStore {
       ...(options.metadata ?? {}),
     };
     for (const key of [
-      '__actoviqExecutionId',
-      '__actoviqRootExecutionId',
-      '__actoviqParentExecutionId',
-      '__actoviqParentSessionId',
-      '__actoviqAgentPath',
-      '__actoviqBackgroundParentRunId',
-      '__actoviqBackgroundParentSessionId',
+      '__hadamardExecutionId',
+      '__hadamardRootExecutionId',
+      '__hadamardParentExecutionId',
+      '__hadamardParentSessionId',
+      '__hadamardAgentPath',
+      '__hadamardBackgroundParentRunId',
+      '__hadamardBackgroundParentSessionId',
     ]) {
       delete metadata[key];
     }
@@ -478,23 +478,23 @@ export class SessionStore {
   }
 
   private toSummary(session: StoredSession): SessionSummary {
-    const runtimeRaw = session.metadata.__actoviqRuntime;
-    const configRaw = session.metadata.__actoviqConfigName;
+    const runtimeRaw = session.metadata.__hadamardRuntime;
+    const configRaw = session.metadata.__hadamardConfigName;
     const kind = session.kind
-      ?? (session.metadata.__actoviqKind === 'manager'
+      ?? (session.metadata.__hadamardKind === 'manager'
         ? 'manager'
-        : typeof session.metadata.__actoviqAgentDefinition === 'string'
+        : typeof session.metadata.__hadamardAgentDefinition === 'string'
           ? 'agent'
           : undefined);
-    const issueIdRaw = session.metadata.__actoviqIssueId;
-    const issueNumberRaw = session.metadata.__actoviqIssueNumber;
-    const issueKeyRaw = session.metadata.__actoviqIssueKey;
-    const agentProfileRaw = session.metadata.__actoviqAgentProfile;
-    const executionIdRaw = session.metadata.__actoviqExecutionId;
-    const rootExecutionIdRaw = session.metadata.__actoviqRootExecutionId;
-    const agentNameRaw = session.metadata.__actoviqAgentName
-      ?? session.metadata.__actoviqAgentDefinition;
-    const agentPathRaw = session.metadata.__actoviqAgentPath;
+    const issueIdRaw = session.metadata.__hadamardIssueId;
+    const issueNumberRaw = session.metadata.__hadamardIssueNumber;
+    const issueKeyRaw = session.metadata.__hadamardIssueKey;
+    const agentProfileRaw = session.metadata.__hadamardAgentProfile;
+    const executionIdRaw = session.metadata.__hadamardExecutionId;
+    const rootExecutionIdRaw = session.metadata.__hadamardRootExecutionId;
+    const agentNameRaw = session.metadata.__hadamardAgentName
+      ?? session.metadata.__hadamardAgentDefinition;
+    const agentPathRaw = session.metadata.__hadamardAgentPath;
     const issueNumber = typeof issueNumberRaw === 'number'
       ? issueNumberRaw
       : typeof issueNumberRaw === 'string' && Number.isFinite(Number(issueNumberRaw))
@@ -535,7 +535,7 @@ export class SessionStore {
       brief: truncateText(extractConversationBrief(session.messages), 100),
       messageCount: session.messages.length,
       runCount: session.runs.length,
-      ...(session.metadata.__actoviqPinned === true ? { pinned: true } : {}),
+      ...(session.metadata.__hadamardPinned === true ? { pinned: true } : {}),
     };
   }
 }

@@ -17,8 +17,8 @@
 Hadamard SDK 当前可以组合这些工具来源：
 
 1. 你自己用 `tool(...)` 定义的本地工具
-2. `createActoviqFileTools(...)` 生成的文件工具
-3. `createActoviqComputerUseToolkit(...)` 生成的 computer-use 工具
+2. `createHadamardFileTools(...)` 生成的文件工具
+3. `createHadamardComputerUseToolkit(...)` 生成的 computer-use 工具
 4. 注册 named agents 后自动出现的 `Task` 委派工具
 5. 通过 MCP 挂进来的外部工具
 
@@ -54,8 +54,8 @@ console.log(catalog.byCategory.computer);
 
 仓库示例：
 
-- [examples/actoviq-agent-helpers.ts](../../examples/actoviq-agent-helpers.ts)
-- [examples/actoviq-file-tools.ts](../../examples/actoviq-file-tools.ts)
+- [examples/hadamard-agent-helpers.ts](../../examples/hadamard-agent-helpers.ts)
+- [examples/hadamard-file-tools.ts](../../examples/hadamard-file-tools.ts)
 
 ## 4. 自定义本地工具
 
@@ -86,7 +86,7 @@ const sdk = await createAgentSdk({
 
 1. bundled skills
 2. 自定义 skills
-3. 从 `~/.actoviq/skills`、`.actoviq/skills` 自动加载 skills
+3. 从 `~/.hadamard/skills`、`.hadamard/skills` 自动加载 skills
 4. `inline` / `fork` 两种运行模式
 
 常用入口：
@@ -124,7 +124,7 @@ const sdk = await createAgentSdk({
 
 仓库示例：
 
-- [examples/actoviq-skills.ts](../../examples/actoviq-skills.ts)
+- [examples/hadamard-skills.ts](../../examples/hadamard-skills.ts)
 
 ## 6. Dream：长期记忆整合
 
@@ -156,7 +156,7 @@ await sdk.maybeAutoDream({
 
 仓库示例：
 
-- [examples/actoviq-dream.ts](../../examples/actoviq-dream.ts)
+- [examples/hadamard-dream.ts](../../examples/hadamard-dream.ts)
 
 ## 7. 权限、classifier、approver
 
@@ -297,7 +297,7 @@ Goal 随 Session 保存。runtime 每轮只注入短目标上下文，并记录 
 - permission policy 决定工具调用是 `allow`、`ask` 还是 `deny`。
 - sandbox 在执行层限制读写根、网络和子进程；平台能力不足时会明确标记 degraded。
 
-项目策略放在 `.actoviq/policy.json`，用户和主机策略分别放在 `~/.actoviq/policy/user.json`、`~/.actoviq/policy/host.json`。高权威策略可以锁定设置：
+项目策略放在 `.hadamard/policy.json`，用户和主机策略分别放在 `~/.hadamard/policy/user.json`、`~/.hadamard/policy/host.json`。高权威策略可以锁定设置：
 
 ```json
 {

@@ -4,7 +4,7 @@
 
 钩子是生命周期回调，在 agent 执行管道的特定点注入自定义行为。无需修改核心源码即可扩展 SDK。
 
-位置：`src/hooks/actoviqHooks.ts`
+位置：`src/hooks/hadamardHooks.ts`
 
 ### 钩子类型
 
@@ -20,7 +20,7 @@
 通过合并策略组合钩子：base hooks + extra hooks = 合并数组。不覆盖——所有注册的钩子都会运行。
 
 ```typescript
-function mergeActoviqHooks(base, extra): ActoviqHooks | undefined {
+function mergeHadamardHooks(base, extra): HadamardHooks | undefined {
   return {
     sessionStart: [...(base?.sessionStart ?? []), ...(extra?.sessionStart ?? [])],
     postSampling: [...(base?.postSampling ?? []), ...(extra?.postSampling ?? [])],
@@ -33,7 +33,7 @@ function mergeActoviqHooks(base, extra): ActoviqHooks | undefined {
 ### PostSampling 钩子
 
 ```typescript
-type ActoviqPostSamplingHook = (context: {
+type HadamardPostSamplingHook = (context: {
   sessionId?: string; runId: string;
   messages: MessageParam[]; model: string;
 }) => Promise<{ messages?: MessageParam[] } | void>;
@@ -44,7 +44,7 @@ type ActoviqPostSamplingHook = (context: {
 ### 消息标准化
 
 ```typescript
-function normalizeActoviqHookMessages(messages?: MessageParam[]): MessageParam[] {
+function normalizeHadamardHookMessages(messages?: MessageParam[]): MessageParam[] {
   if (!Array.isArray(messages)) return [];
   return messages.filter(m =>
     (m.role === 'user' || m.role === 'assistant') &&

@@ -6,7 +6,7 @@
 
 ## 1. 前置条件 — 链接运行时 bundle
 
-actoviq-bridge-sdk 依赖第三方 agent runtime 的运行时 bundle（例如 Claude Code）。该文件**不包含**在 actoviq-agent-sdk 包中。
+hadamard-bridge-sdk 依赖第三方 agent runtime 的运行时 bundle（例如 Claude Code）。该文件**不包含**在 actoviq-agent-sdk 包中。
 
 如果你已安装 Claude Code，可以链接它的 bundle：
 
@@ -14,29 +14,29 @@ actoviq-bridge-sdk 依赖第三方 agent runtime 的运行时 bundle（例如 Cl
 # Claude Code 的 npm 包名为 @anthropic-ai/claude-code
 
 # macOS / Linux（npm 全局安装）
-npx actoviq-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
+npx hadamard-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code
 
 # macOS / Linux（nvm 安装）
-npx actoviq-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
+npx hadamard-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code
 
 # Windows
-npx actoviq-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
+npx hadamard-link-runtime %AppData%\npm\node_modules\@anthropic-ai\claude-code
 
 # 或者让 npm 自己找：
-npx actoviq-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
+npx hadamard-link-runtime "$(npm root -g)/@anthropic-ai/claude-code"
 ```
 
 或者设置环境变量：
 
 ```bash
-export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
+export HADAMARD_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 ```
 
-没有这个 bundle，actoviq-bridge-sdk 功能将不可用。
+没有这个 bundle，hadamard-bridge-sdk 功能将不可用。
 
 > **注意（原生 exe 形态的 Claude Code）：** 新版 `@anthropic-ai/claude-code`
 > 以原生可执行文件发布（`bin/claude.exe`），包内**没有** `runtime.bundle.br`，
-> `actoviq-link-runtime` 对它无法生效。此时请改用下面的 **directCli 模式**，
+> `hadamard-link-runtime` 对它无法生效。此时请改用下面的 **directCli 模式**，
 > 它直接 spawn 本机 `claude` 二进制，不需要 bundle。
 
 ## 1.1 直接复用本机 Claude Code（directCli 模式）
@@ -45,9 +45,9 @@ export ACTOVIQ_RUNTIME_BUNDLE="/path/to/runtime-bundle"
 spawn 本机的 `claude`：
 
 ```ts
-import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk } from 'actoviq-agent-sdk';
 
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   directCli: true,           // spawn 本机 claude，绕过 runtime.bundle.br + Bun
   // executable: 'claude',   // 可选，默认在 PATH 上找 `claude`
   workDir: process.cwd(),
@@ -61,20 +61,20 @@ bridge 在 PATH 上找到 `claude`，以 `-p --output-format stream-json --verbo
 参数 spawn 它，并解析标准 `system/assistant/result` 事件流——与 bundle 模式
 的协议完全相同，只是子进程换成了你本机安装的官方 claude。
 
-**Provider 隔离（关键能力）：** directCli 模式**完整保留** actoviq 的 env
-注入链（`~/.actoviq/settings.json` 的 `env` 块 → `ANTHROPIC_BASE_URL` /
+**Provider 隔离（关键能力）：** directCli 模式**完整保留** hadamard 的 env
+注入链（`~/.hadamard/settings.json` 的 `env` 块 → `ANTHROPIC_BASE_URL` /
 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL` 等，见 `anthropicEnvMapping.ts`）。
 因此你可以让 **交互式 `claude` 走 Claude 官方，而 bridge 下的 `claude` 子进程
 重定向到 DeepSeek 等其他 provider**——子进程的 `ANTHROPIC_*` 环境变量覆盖
 `~/.claude/settings.json`，两者互不干扰。例：
 
 ```json
-// ~/.actoviq/settings.json（仅影响 bridge 子进程，不影响交互式 claude）
+// ~/.hadamard/settings.json（仅影响 bridge 子进程，不影响交互式 claude）
 {
   "env": {
-    "ACTOVIQ_AUTH_TOKEN": "sk-...",
-    "ACTOVIQ_BASE_URL": "https://api.deepseek.com/anthropic",
-    "ACTOVIQ_DEFAULT_MAX_MODEL": "deepseek-v4-pro"
+    "HADAMARD_AUTH_TOKEN": "sk-...",
+    "HADAMARD_BASE_URL": "https://api.deepseek.com/anthropic",
+    "HADAMARD_DEFAULT_MAX_MODEL": "deepseek-v4-pro"
   }
 }
 ```
@@ -94,7 +94,7 @@ bridge 在 PATH 上找到 `claude`，以 `-p --output-format stream-json --verbo
 | Crush | `'crush'` | `crush` | `crush run [--model] [--session] <prompt>` | 纯文本 |
 
 ```ts
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   directCli: true,
   directCliProvider: 'codewhale',   // 或 'reasonix', 'crush', …
   workDir: process.cwd(),
@@ -103,30 +103,30 @@ const sdk = await createActoviqBridgeSdk({
 
 **凭证：** claude → `ANTHROPIC_*`；codewhale → ANTHROPIC_*/DEEPSEEK_*；
 reasonix → DEEPSEEK_*；crush → OPENAI_*/ANTHROPIC_*。
-在 `~/.actoviq/settings.json` 的 `env` 块里直接写对应 provider 的 key。
+在 `~/.hadamard/settings.json` 的 `env` 块里直接写对应 provider 的 key。
 
 **Introspection 降级** 适用于 pi/codex/reasonix/crush（启动事件不含 tools/skills 清单）。
 run/stream/session 等生命周期方法六家完整对齐。
 
 ## 1.3 环境覆盖与自动检测
 
-### `ACTOVIQ_<PROVIDER>_PATH`
+### `HADAMARD_<PROVIDER>_PATH`
 
 当 CLI 不在 `PATH` 上时，用它覆盖自动检测的二进制路径：
 
 ```bash
-export ACTOVIQ_CLAUDE_PATH=/opt/claude-code/bin/claude
-export ACTOVIQ_CODEX_PATH=/custom/codex
-export ACTOVIQ_REASONIX_PATH=~/bin/reasonix
-# … 每个 provider 都遵循 ACTOVIQ_<ID>_PATH 模式
+export HADAMARD_CLAUDE_PATH=/opt/claude-code/bin/claude
+export HADAMARD_CODEX_PATH=/custom/codex
+export HADAMARD_REASONIX_PATH=~/bin/reasonix
+# … 每个 provider 都遵循 HADAMARD_<ID>_PATH 模式
 ```
 
-写在 `~/.actoviq/settings.json` 的 `env` 块（或顶层）——与 `ACTOVIQ_BASH_PATH` 惯例一致。
+写在 `~/.hadamard/settings.json` 的 `env` 块（或顶层）——与 `HADAMARD_BASH_PATH` 惯例一致。
 
 ### `bridge` 设置块
 
 ```jsonc
-// ~/.actoviq/settings.json
+// ~/.hadamard/settings.json
 {
   "bridge": {
     "defaultProvider": "codewhale",
@@ -138,7 +138,7 @@ export ACTOVIQ_REASONIX_PATH=~/bin/reasonix
 ```
 
 解析优先级（全部在内存中，run 时无文件 I/O）：
-`executable` 选项 → `ACTOVIQ_<ID>_PATH` 环境变量 → `bridge.providers[id].path` → `PATH`。
+`executable` 选项 → `HADAMARD_<ID>_PATH` 环境变量 → `bridge.providers[id].path` → `PATH`。
 
 ### `detectBridgeProviders()` API
 
@@ -168,13 +168,13 @@ const providers = await detectBridgeProviders();
 单页**配置编辑器**，一次性显示所有字段——**名称**、**provider**（运行时）、**apiKey**、
 **baseURL**、可选的 **model**——并显示每个字段的当前值。你可以按任意顺序编辑任意字段（例如先
 配置好 key，再回去修改名称），然后**保存**提交或**取消**放弃。配置保存在
-`~/.actoviq/bridge-configs.json`。每个 config 是一个完整预设——例如
+`~/.hadamard/bridge-configs.json`。每个 config 是一个完整预设——例如
 `deepseek-claude`（provider=`claude`、`ANTHROPIC_BASE_URL=https://api.deepseek.com`、
 `ANTHROPIC_API_KEY=…`、`model=deepseek-chat`）——可以保留多个后端配置，按名称切换。
 
 保存后，`/bridge` 会列出**已保存的配置**；选中一个（或 `/bridge switch <名称>`）即激活该
 运行时。config 的凭证会**逐轮注入**（作为 per-run env 覆盖，优先级高于
-`~/.actoviq/settings.json`），随后作为普通多轮对话运行，支持全部 agent 功能。`/bridge off`
+`~/.hadamard/settings.json`），随后作为普通多轮对话运行，支持全部 agent 功能。`/bridge off`
 切回进程内 SDK。可在 `/bridge config` 中编辑/删除配置；编辑当前激活的配置将在下一轮生效。
 
 按 provider 的凭证映射：`claude`/`codewhale` → `ANTHROPIC_*`；`pi`/`codex` → `OPENAI_*`
@@ -185,18 +185,18 @@ const providers = await detectBridgeProviders();
 
 1. **安装 CLI**（`npm i -g @anthropic-ai/claude-code`、`npm i -g codewhale`、…）
    并重启 shell 确保它在 `PATH` 上。
-2. **运行 `npx actoviq-interactive-agent`** 并输入 `/bridge`——向导会展示检测到的
+2. **运行 `npx hadamard-interactive-agent`** 并输入 `/bridge`——向导会展示检测到的
    provider，让你选择一个作为默认。
-3. **设置 `ACTOVIQ_<ID>_PATH`**（见 1.3），适用于二进制已安装但不在 `PATH` 的情况
+3. **设置 `HADAMARD_<ID>_PATH`**（见 1.3），适用于二进制已安装但不在 `PATH` 的情况
    （CI、不继承 shell profile 的 IDE 启动器等常见场景）。
 4. **让 Claude Code 帮忙：** 把 `/providers` 的输出（或 GUI 的「Detect runtimes」
    按钮结果）贴给 Claude Code，让它指导安装和配置。
 
 实现：`src/parity/bridgeProviders.ts`（各 provider 的 argv/env/normalizer +
 `BRIDGE_PROVIDER_CREDENTIALS` 凭证就绪提示），`src/cli/bridge-interactive-agent.ts`
-（/bridge 向导），`src/tui/actoviqTui.ts`（TUI `/bridge` 控制面板——一键激活 provider、
+（/bridge 向导），`src/tui/hadamardTui.ts`（TUI `/bridge` 控制面板——一键激活 provider、
 逐 provider 设置模型、凭证提示、实跑状态；`run`/`switch`/`model`/`setup`/`off`/`help`
-子命令支持自动补全），`src/gui/actoviqGui.ts`（bridge 面板 + 实跑）。
+子命令支持自动补全），`src/gui/hadamardGui.ts`（bridge 面板 + 实跑）。
 
 ## 2. bridge 是什么
 
@@ -205,7 +205,7 @@ bridge 可以理解成一层兼容适配层。它暴露的是更偏 runtime 风�
 入口：
 
 ```ts
-import { createActoviqBridgeSdk } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk } from 'actoviq-agent-sdk';
 ```
 
 ## 2. 什么情况下才需要 bridge
@@ -229,13 +229,13 @@ bridge 更适合“兼容”和“研究”，不是默认主路径。
 
 ```ts
 import {
-  createActoviqBridgeSdk,
-  loadDefaultActoviqSettings,
+  createHadamardBridgeSdk,
+  loadDefaultHadamardSettings,
 } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 
-const sdk = await createActoviqBridgeSdk({
+const sdk = await createHadamardBridgeSdk({
   workDir: process.cwd(),
   maxTurns: 4,
 });
@@ -278,11 +278,11 @@ bridge 侧还支持：
 
 如果你要分析 runtime 输出的事件流，可以使用：
 
-1. `getActoviqBridgeTextDelta(...)`
-2. `extractActoviqBridgeToolRequests(...)`
-3. `extractActoviqBridgeToolResults(...)`
-4. `extractActoviqBridgeTaskInvocations(...)`
-5. `analyzeActoviqBridgeEvents(...)`
+1. `getHadamardBridgeTextDelta(...)`
+2. `extractHadamardBridgeToolRequests(...)`
+3. `extractHadamardBridgeToolResults(...)`
+4. `extractHadamardBridgeTaskInvocations(...)`
+5. `analyzeHadamardBridgeEvents(...)`
 
 下一章：
 

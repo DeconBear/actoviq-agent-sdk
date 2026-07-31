@@ -15,7 +15,7 @@ afterEach(async () => {
 
 describe('ArtifactTransfer', () => {
   it('enforces safe names, size limits, and SHA-256 integrity', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-artifact-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-artifact-'));
     dirs.push(dir);
     const transfer = new ArtifactTransfer(dir, 16);
     const content = Buffer.from('verified');

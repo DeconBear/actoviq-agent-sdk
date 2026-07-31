@@ -166,9 +166,9 @@ describe('Workflow persistence', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `actoviq-wf-test-${Date.now()}`);
+    tmpDir = path.join(os.tmpdir(), `hadamard-wf-test-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
-    fs.mkdirSync(path.join(tmpDir, '.actoviq', 'workflows'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.hadamard', 'workflows'), { recursive: true });
   });
 
   afterEach(() => {
@@ -246,13 +246,13 @@ describe('Workflow persistence', () => {
     expect(isWorkflowsDisabled()).toBe(false);
 
     // Set env var
-    process.env.ACTOVIQ_DISABLE_WORKFLOWS = '1';
+    process.env.HADAMARD_DISABLE_WORKFLOWS = '1';
     expect(isWorkflowsDisabled()).toBe(true);
 
-    process.env.ACTOVIQ_DISABLE_WORKFLOWS = 'true';
+    process.env.HADAMARD_DISABLE_WORKFLOWS = 'true';
     expect(isWorkflowsDisabled()).toBe(true);
 
-    delete process.env.ACTOVIQ_DISABLE_WORKFLOWS;
+    delete process.env.HADAMARD_DISABLE_WORKFLOWS;
   });
 });
 

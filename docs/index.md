@@ -2,9 +2,9 @@
 layout: home
 
 hero:
-  name: "Actoviq Agent SDK"
+  name: "Hadamard Agent SDK"
   text: "Stable contracts for real agent runtimes"
-  tagline: "Build provider-neutral, durable, observable, multi-agent systems with Actoviq 1.0."
+  tagline: "Build provider-neutral, durable, observable, multi-agent systems with Hadamard 1.0."
   actions:
     - theme: brand
       text: Start with English
@@ -14,10 +14,10 @@ hero:
       link: /zh/
     - theme: alt
       text: GitHub
-      link: https://github.com/DeconBear/actoviq-agent-sdk
+      link: https://github.com/DeconBear/hadamard
 
 features:
-  - title: Actoviq 1.0 Runtime
+  - title: Hadamard 1.0 Runtime
     details: Compose immutable agents, capability-checked providers, lazy services, durable state, tools, and orchestration around one runtime.
   - title: Bilingual Tutorials
     details: Read full guides in English and Chinese, including step-by-step practical project walkthroughs.

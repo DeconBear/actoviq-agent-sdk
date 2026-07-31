@@ -16,7 +16,7 @@ afterEach(async () => {
 
 describe('managed approval policy runtime', () => {
   it('applies remembered denies before a tool executes', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-approval-runtime-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-approval-runtime-'));
     dirs.push(dir);
     const execute = vi.fn(async () => 'executed');
     let call = 0;

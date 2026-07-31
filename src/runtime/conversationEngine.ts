@@ -11,10 +11,10 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { ActoviqProviderApiError, ActoviqSdkError, RunAbortedError, ToolExecutionError } from '../errors.js';
+import { HadamardProviderApiError, HadamardSdkError, RunAbortedError, ToolExecutionError } from '../errors.js';
 import {
-  getActoviqTodoSnapshot,
-  formatActoviqTodoListLines,
+  getHadamardTodoSnapshot,
+  formatHadamardTodoListLines,
   TODO_WRITE_TOOL_NAME,
 } from '../tools/todo/TodoWriteTool.js';
 import type {
@@ -24,8 +24,8 @@ import type {
   AgentRequestSummary,
   AgentRunOptions,
   AgentRunResult,
-  ActoviqPermissionDecision,
-  ActoviqHooks,
+  HadamardPermissionDecision,
+  HadamardHooks,
   AgentToolCallEventPayload,
   AgentToolCallRecord,
   AgentToolDefinition,
@@ -39,19 +39,19 @@ import type {
 import { McpConnectionManager } from '../mcp/connectionManager.js';
 import { asError, deepClone, nowIso, signalAborted } from './helpers.js';
 import { withDeadline } from './deadline.js';
-import { resolveActoviqPostSamplingHooks, resolveActoviqStopHooks } from '../hooks/actoviqHooks.js';
+import { resolveHadamardPostSamplingHooks, resolveHadamardStopHooks } from '../hooks/hadamardHooks.js';
 import {
-  compactActoviqConversationIfNeeded,
-  isActoviqPromptTooLongError,
-} from './actoviqCompact.js';
+  compactHadamardConversationIfNeeded,
+  isHadamardPromptTooLongError,
+} from './hadamardCompact.js';
 import {
-  getActoviqApiContextManagement,
-  prepareActoviqProviderRequestMessages,
-} from './actoviqApiMicrocompact.js';
-import { decideActoviqToolPermission } from './actoviqPermissions.js';
+  getHadamardApiContextManagement,
+  prepareHadamardProviderRequestMessages,
+} from './hadamardApiMicrocompact.js';
+import { decideHadamardToolPermission } from './hadamardPermissions.js';
 import { HookRunner } from '../hooks/hookRunner.js';
 import type {
-  ActoviqLifecycleEvent,
+  HadamardLifecycleEvent,
   TypedHookOutput,
 } from '../hooks/hookTypes.js';
 import {
@@ -87,7 +87,7 @@ export interface ExecuteConversationOptions {
   classifier?: AgentRunOptions['classifier'];
   approver?: AgentRunOptions['approver'];
   canUseTool?: AgentRunOptions['canUseTool'];
-  hooks?: ActoviqHooks;
+  hooks?: HadamardHooks;
   drainQueuedInputs?: () => string[] | Promise<string[]>;
   drainFollowUpInputs?: () => string[];
   streaming: boolean;
@@ -128,7 +128,7 @@ export async function executeConversation(
       : options.effort ?? options.config.effort;
   const promptText =
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
-  const postSamplingHooks = resolveActoviqPostSamplingHooks(options.hooks);
+  const postSamplingHooks = resolveHadamardPostSamplingHooks(options.hooks);
   const conversation = deepClone(options.messages ?? []);
   if (!options.skipInitialInput) {
     conversation.push(...deepClone(options.prefixedMessages ?? []));
@@ -167,7 +167,7 @@ export async function executeConversation(
   const toolMap = new Map(resolvedTools.map((tool) => [tool.publicName, tool]));
   const requestSummaries: AgentRequestSummary[] = [];
   const toolCalls: AgentToolCallRecord[] = [];
-  const permissionDecisions: ActoviqPermissionDecision[] = [];
+  const permissionDecisions: HadamardPermissionDecision[] = [];
   const loopCompactions: AgentLoopCompactionRecord[] = [];
 
   let iteration = 0;
@@ -192,7 +192,7 @@ export async function executeConversation(
     // In-loop auto-compact: keep a single long run within the context window
     // by summarizing old turns before each provider request. Mirrors Claude
     // Code's per-iteration autocompact and never throws.
-    const loopCompact = await compactActoviqConversationIfNeeded(conversation, {
+    const loopCompact = await compactHadamardConversationIfNeeded(conversation, {
       model,
       modelApi: options.modelApi,
       compactConfig: options.config.compact,
@@ -206,7 +206,7 @@ export async function executeConversation(
       loopCompact.reason === 'circuit_breaker_open' ||
       (loopCompact.reason === 'failed' && (loopCompact.consecutiveFailures ?? 0) >= 3)
     ) {
-      throw new ActoviqSdkError(
+      throw new HadamardSdkError(
         `In-loop compaction failed ${loopCompact.consecutiveFailures ?? 3} times; stopping to avoid an endless compact/retry loop.${loopCompact.error ? ` Last error: ${loopCompact.error}` : ''}`,
       );
     }
@@ -247,7 +247,7 @@ export async function executeConversation(
     // local microcompact breaks automatic prefix caches (DeepSeek / MiniMax /
     // other Anthropic-compatible hosts). Align with Claude Code: keep
     // append-only history and rely on full autocompact for context pressure.
-    const preparedMessages = prepareActoviqProviderRequestMessages(
+    const preparedMessages = prepareHadamardProviderRequestMessages(
       conversation,
       options.config.compact,
       { localToolResultMicrocompact: false },
@@ -267,7 +267,7 @@ export async function executeConversation(
       // Skip context_management for third-party providers — their APIs
       // may not support server-side message edits, causing undefined behavior.
       context_management: useAnthropicContextManagement
-        ? getActoviqApiContextManagement(conversation, options.config.compact)
+        ? getHadamardApiContextManagement(conversation, options.config.compact)
         : undefined,
       messages: deepClone(preparedMessages.messages),
       signal: options.signal,
@@ -351,9 +351,9 @@ export async function executeConversation(
       // in-flight conversation and retry this iteration, preserving mid-run
       // progress. One attempt per successful-response window, mirroring
       // Claude Code's withheld-prompt-too-long reactive compact.
-      if (isActoviqPromptTooLongError(error) && !reactiveCompactAttempted) {
+      if (isHadamardPromptTooLongError(error) && !reactiveCompactAttempted) {
         reactiveCompactAttempted = true;
-        const reactiveOutcome = await compactActoviqConversationIfNeeded(conversation, {
+        const reactiveOutcome = await compactHadamardConversationIfNeeded(conversation, {
           model,
           modelApi: options.modelApi,
           compactConfig: options.config.compact,
@@ -493,7 +493,7 @@ export async function executeConversation(
     }
 
     // Run stop hooks — allow termination or error injection before tool loop
-    const stopHooks = resolveActoviqStopHooks(options.hooks);
+    const stopHooks = resolveHadamardStopHooks(options.hooks);
     let preventContinuation = false;
     let hookStopReason: string | undefined;
     const hookDurations: Array<{ index: number; durationMs: number }> = [];
@@ -640,7 +640,7 @@ export async function executeConversation(
     if (preventContinuation || toolUses.length === 0) {
       const completedAt = nowIso();
       if (!finalMessage) {
-        throw new ActoviqSdkError('No final message was produced.');
+        throw new HadamardSdkError('No final message was produced.');
       }
       const result: AgentRunResult = {
         runId: options.runId,
@@ -715,7 +715,7 @@ export async function executeConversation(
         });
         return result;
       }
-      throw new ActoviqSdkError(
+      throw new HadamardSdkError(
         `The run exceeded the max tool iteration limit (${options.config.maxToolIterations}).`,
       );
     }
@@ -770,7 +770,7 @@ export async function executeConversation(
             lifecycleBlockReason('PreToolUse', preToolOutputs),
           );
         }
-        const permissionDecision = await decideActoviqToolPermission({
+        const permissionDecision = await decideHadamardToolPermission({
           mode: options.permissionMode ?? 'default',
           rules: options.permissions ?? [],
           classifier: options.classifier,
@@ -980,7 +980,7 @@ export async function executeConversation(
       iterationsSinceTodoWrite += 1;
       if (toolMap.has(TODO_WRITE_TOOL_NAME) && iterationsSinceTodoWrite >= TODO_REMINDER_INTERVAL) {
         const reminder = buildTodoReminderText(
-          getActoviqTodoSnapshot(options.sessionId ?? options.runId),
+          getHadamardTodoSnapshot(options.sessionId ?? options.runId),
         );
         const lastResult = toolResults.at(-1);
         if (lastResult) {
@@ -1129,7 +1129,7 @@ export async function executeConversation(
         });
         return result;
       }
-      throw new ActoviqSdkError(
+      throw new HadamardSdkError(
         `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
       );
     }
@@ -1138,7 +1138,7 @@ export async function executeConversation(
 
 async function runTypedLifecycleHooks(
   options: ExecuteConversationOptions,
-  event: ActoviqLifecycleEvent,
+  event: HadamardLifecycleEvent,
   payload: Record<string, unknown>,
   toolName?: string,
 ): Promise<TypedHookOutput[]> {
@@ -1167,12 +1167,12 @@ async function runTypedLifecycleHooks(
 
 async function requireLifecycleContinue(
   options: ExecuteConversationOptions,
-  event: ActoviqLifecycleEvent,
+  event: HadamardLifecycleEvent,
   payload: Record<string, unknown>,
 ): Promise<void> {
   const outputs = await runTypedLifecycleHooks(options, event, payload);
   if (hasLifecycleBlock(outputs)) {
-    throw new ActoviqSdkError(lifecycleBlockReason(event, outputs));
+    throw new HadamardSdkError(lifecycleBlockReason(event, outputs));
   }
 }
 
@@ -1181,7 +1181,7 @@ function hasLifecycleBlock(outputs: TypedHookOutput[]): boolean {
 }
 
 function lifecycleBlockReason(
-  event: ActoviqLifecycleEvent,
+  event: HadamardLifecycleEvent,
   outputs: TypedHookOutput[],
 ): string {
   const blocked = outputs.find(output => output.behavior === 'block');
@@ -1205,7 +1205,7 @@ async function writeToolResultArtifact(
 ): Promise<string> {
   const artifactDir = path.join(
     options.workDir,
-    '.actoviq-artifacts',
+    '.hadamard-artifacts',
     'tool-results',
     sanitizeArtifactSegment(options.runId),
   );
@@ -1404,7 +1404,7 @@ function isLikelyTruncatedToolUse(toolUse: ToolUseBlock): boolean {
   );
 }
 
-function buildTodoReminderText(todos: ReturnType<typeof getActoviqTodoSnapshot>): string {
+function buildTodoReminderText(todos: ReturnType<typeof getHadamardTodoSnapshot>): string {
   if (todos.length === 0) {
     return [
       '<system-reminder>',
@@ -1416,14 +1416,14 @@ function buildTodoReminderText(todos: ReturnType<typeof getActoviqTodoSnapshot>)
   return [
     '<system-reminder>',
     'Current todo list state (re-injected for continuity):',
-    formatActoviqTodoListLines(todos),
+    formatHadamardTodoListLines(todos),
     'Continue working through pending items, update statuses with TodoWrite as you progress, and do not mention this reminder to the user.',
     '</system-reminder>',
   ].join('\n');
 }
 
 function isModelFallbackEligibleError(error: unknown): boolean {
-  if (error instanceof ActoviqProviderApiError) {
+  if (error instanceof HadamardProviderApiError) {
     const status = error.status ?? 0;
     return status === 429 || status === 529 || (status >= 500 && status < 600);
   }
@@ -1464,12 +1464,12 @@ const TRANSPORT_ERROR_PATTERN =
  * keeps retrying within its own deadline/abort budget.
  */
 function isRetryableStreamInterruption(error: unknown): boolean {
-  if (error instanceof ActoviqProviderApiError) {
+  if (error instanceof HadamardProviderApiError) {
     return error.status === 0 && error.errorType === 'transport_error';
   }
   if (
     error instanceof RunAbortedError ||
-    error instanceof ActoviqSdkError ||
+    error instanceof HadamardSdkError ||
     error instanceof ToolExecutionError
   ) {
     return false;

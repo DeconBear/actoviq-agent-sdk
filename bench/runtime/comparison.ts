@@ -62,7 +62,7 @@ export function compareRuntimeBenchmarkReports(
 
   return {
     schemaVersion: 1,
-    suite: 'actoviq-runtime-comparison',
+    suite: 'hadamard-runtime-comparison',
     thresholdPercent,
     status: regressions.length === 0
       ? 'passed'

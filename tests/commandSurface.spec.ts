@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ACTOVIQ_INTERACTIVE_COMMANDS,
+  HADAMARD_INTERACTIVE_COMMANDS,
   SUBCOMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
@@ -18,7 +18,7 @@ describe('filterInteractiveCommands', () => {
     expect(filterInteractiveCommands('/bri')).toEqual(['bridge']);
     expect(filterInteractiveCommands('/bridge')).toEqual(['bridge']);
     // Every registered command is completable from its first letter.
-    for (const name of Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS)) {
+    for (const name of Object.keys(HADAMARD_INTERACTIVE_COMMANDS)) {
       expect(filterInteractiveCommands(`/${name[0]}`)).toContain(name);
     }
   });
@@ -88,7 +88,7 @@ describe('filterInteractiveCommands', () => {
 
   it('SUBCOMMANDS only references registered top-level commands', () => {
     for (const head of Object.keys(SUBCOMMANDS)) {
-      expect(ACTOVIQ_INTERACTIVE_COMMANDS[head]).toBeDefined();
+      expect(HADAMARD_INTERACTIVE_COMMANDS[head]).toBeDefined();
     }
   });
 

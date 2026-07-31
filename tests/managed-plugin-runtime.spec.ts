@@ -10,7 +10,7 @@ import {
   prepareKimiCommandArgs,
 } from '../src/plugins/managedPluginRuntime.js';
 import { patchManagedPluginSettings } from '../src/plugins/managedPluginCatalog.js';
-import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 
 describe('managed plugin runtime', () => {
   it('mounts only enabled and configured managed plugin tools', async () => {
@@ -124,7 +124,7 @@ describe('managed plugin runtime', () => {
           behavior: 'allow' as const,
           reason: 'approved',
         }));
-        const decision = await decideActoviqToolPermission({
+        const decision = await decideHadamardToolPermission({
           mode: 'bypassPermissions',
           rules: [],
           approver,
@@ -146,7 +146,7 @@ describe('managed plugin runtime', () => {
   });
 
   it('constrains Kimi output and upload paths to the workspace', async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), 'actoviq-kimi-policy-'));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'hadamard-kimi-policy-'));
     const canonicalWorkspace = realpathSync.native(workspace);
     const source = path.join(workspace, 'upload.txt');
     await writeFile(source, 'safe', 'utf8');

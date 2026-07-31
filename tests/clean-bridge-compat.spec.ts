@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
-  createActoviqCleanBridgeSdk,
-  getActoviqCleanBridgeParityMatrix,
+  createHadamardCleanBridgeSdk,
+  getHadamardCleanBridgeParityMatrix,
   skill,
   tool,
   type ModelApi,
@@ -90,7 +90,7 @@ class MockModelApi implements ModelApi {
 
 describe('clean bridge compatibility facade', () => {
   it('publishes a parity matrix for every bridge option', () => {
-    const matrix = getActoviqCleanBridgeParityMatrix();
+    const matrix = getHadamardCleanBridgeParityMatrix();
     const options = matrix.map(entry => entry.option);
 
     expect(options).toEqual(expect.arrayContaining([
@@ -120,8 +120,8 @@ describe('clean bridge compatibility facade', () => {
   });
 
   it('maps bridge run options into clean run options and reports bridge-only fields', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-bridge-sessions-');
-    const workDir = await createTempDir('actoviq-clean-bridge-workdir-');
+    const sessionDirectory = await createTempDir('hadamard-clean-bridge-sessions-');
+    const workDir = await createTempDir('hadamard-clean-bridge-workdir-');
     const modelApi = new MockModelApi();
     const echo = tool(
       {
@@ -140,7 +140,7 @@ describe('clean bridge compatibility facade', () => {
       async ({ text }) => ({ text }),
     );
 
-    const sdk = await createActoviqCleanBridgeSdk({
+    const sdk = await createHadamardCleanBridgeSdk({
       model: 'base-model',
       sessionDirectory,
       workDir,
@@ -200,9 +200,9 @@ describe('clean bridge compatibility facade', () => {
   });
 
   it('adapts clean stream events to bridge stream-json events', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-bridge-stream-');
+    const sessionDirectory = await createTempDir('hadamard-clean-bridge-stream-');
     const modelApi = new MockModelApi();
-    const sdk = await createActoviqCleanBridgeSdk({
+    const sdk = await createHadamardCleanBridgeSdk({
       model: 'test-model',
       sessionDirectory,
       modelApi,
@@ -226,10 +226,10 @@ describe('clean bridge compatibility facade', () => {
   });
 
   it('supports bridge-style sessions, continuation, fork, catalog, and skills', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-bridge-session-');
-    const workDir = await createTempDir('actoviq-clean-bridge-session-workdir-');
+    const sessionDirectory = await createTempDir('hadamard-clean-bridge-session-');
+    const workDir = await createTempDir('hadamard-clean-bridge-session-workdir-');
     const modelApi = new MockModelApi();
-    const sdk = await createActoviqCleanBridgeSdk({
+    const sdk = await createHadamardCleanBridgeSdk({
       model: 'test-model',
       sessionDirectory,
       workDir,

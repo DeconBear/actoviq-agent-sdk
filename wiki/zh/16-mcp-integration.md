@@ -50,7 +50,7 @@ const transport = new StdioClientTransport({
   args: server.args,
   env: { ...process.env, ...server.env },
 });
-const client = new Client({ name: 'actoviq', version: '1.0.0' });
+const client = new Client({ name: 'hadamard', version: '1.0.0' });
 await client.connect(transport);
 ```
 

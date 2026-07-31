@@ -6,7 +6,7 @@ Hooks are lifecycle callbacks that inject custom behavior at specific points in
 the agent execution pipeline. They allow extending the SDK without modifying
 core source.
 
-Location: `src/hooks/actoviqHooks.ts`
+Location: `src/hooks/hadamardHooks.ts`
 
 ### Hook Types
 
@@ -27,10 +27,10 @@ Hooks are composed through a merge strategy: base hooks + extra hooks = merged
 array. No hooks override each other — all registered hooks run.
 
 ```typescript
-function mergeActoviqHooks(
-  base: ActoviqHooks | undefined,
-  extra: ActoviqHooks | undefined,
-): ActoviqHooks | undefined {
+function mergeHadamardHooks(
+  base: HadamardHooks | undefined,
+  extra: HadamardHooks | undefined,
+): HadamardHooks | undefined {
   const sessionStart = [...(base?.sessionStart ?? []), ...(extra?.sessionStart ?? [])];
   const postSampling = [...(base?.postSampling ?? []), ...(extra?.postSampling ?? [])];
   const postRun = [...(base?.postRun ?? []), ...(extra?.postRun ?? [])];
@@ -53,14 +53,14 @@ for (const hook of sessionStartHooks) {
 
 ## Code Details
 
-### `ActoviqHooks` Type
+### `HadamardHooks` Type
 
 ```typescript
-interface ActoviqHooks {
-  sessionStart?: ActoviqSessionStartHook[];
-  postSampling?: ActoviqPostSamplingHook[];
-  postRun?: ActoviqPostRunHook[];
-  stopHooks?: ActoviqStopHook[];
+interface HadamardHooks {
+  sessionStart?: HadamardSessionStartHook[];
+  postSampling?: HadamardPostSamplingHook[];
+  postRun?: HadamardPostRunHook[];
+  stopHooks?: HadamardStopHook[];
 }
 ```
 
@@ -69,7 +69,7 @@ interface ActoviqHooks {
 Runs after each model response, before tool execution:
 
 ```typescript
-type ActoviqPostSamplingHook = (context: {
+type HadamardPostSamplingHook = (context: {
   sessionId?: string;
   runId: string;
   messages: MessageParam[];
@@ -88,7 +88,7 @@ allows:
 Runs when a run is aborted or errors:
 
 ```typescript
-type ActoviqStopHook = (context: {
+type HadamardStopHook = (context: {
   sessionId?: string;
   runId: string;
   reason: 'aborted' | 'error' | 'max_iterations';
@@ -102,7 +102,7 @@ Hooks receive `MessageParam[]` — the SDK normalizes messages before passing to
 hooks to ensure consistent format:
 
 ```typescript
-function normalizeActoviqHookMessages(messages: MessageParam[] | undefined): MessageParam[] {
+function normalizeHadamardHookMessages(messages: MessageParam[] | undefined): MessageParam[] {
   if (!Array.isArray(messages)) return [];
   return messages.filter(m =>
     (m.role === 'user' || m.role === 'assistant') &&
@@ -115,11 +115,11 @@ function normalizeActoviqHookMessages(messages: MessageParam[] | undefined): Mes
 
 ```typescript
 // After model response
-const hookResult = await resolveActoviqPostSamplingHooks(hooks);
+const hookResult = await resolveHadamardPostSamplingHooks(hooks);
 if (hookResult) {
   messages.push(...hookResult.messages);
 }
 
 // On abort/error
-await resolveActoviqStopHooks(hooks, { reason: 'aborted', runId });
+await resolveHadamardStopHooks(hooks, { reason: 'aborted', runId });
 ```

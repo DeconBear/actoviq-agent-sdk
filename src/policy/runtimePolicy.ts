@@ -1,10 +1,10 @@
 import type {
-  ActoviqPermissionMode,
-  ActoviqPermissionRule,
+  HadamardPermissionMode,
+  HadamardPermissionRule,
 } from '../types.js';
 import type { ResolvedPolicy } from './types.js';
 
-export function policyPermissionRules(policy: ResolvedPolicy): ActoviqPermissionRule[] {
+export function policyPermissionRules(policy: ResolvedPolicy): HadamardPermissionRule[] {
   return policy.rules.map(rule => ({
     toolName: rule.tool?.trim() || '*',
     behavior: rule.effect,
@@ -17,7 +17,7 @@ export function policyPermissionRules(policy: ResolvedPolicy): ActoviqPermission
 
 export function policyPermissionMode(
   policy: ResolvedPolicy,
-): ActoviqPermissionMode | undefined {
+): HadamardPermissionMode | undefined {
   const value = policy.settings.permissionMode;
   return value === 'default'
     || value === 'acceptEdits'

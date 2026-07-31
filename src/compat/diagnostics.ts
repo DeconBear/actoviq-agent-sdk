@@ -46,7 +46,7 @@ export function recordCompatUsage(symbol: string): void {
     warned.add(normalized);
     process.emitWarning(
       `${normalized} is provided by the compatibility façade; migrate via the documented subpath APIs.`,
-      { code: 'ACTOVIQ_COMPAT_API' },
+      { code: 'HADAMARD_COMPAT_API' },
     );
   }
 }

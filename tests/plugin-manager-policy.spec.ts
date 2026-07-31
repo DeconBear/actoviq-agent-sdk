@@ -14,12 +14,12 @@ afterEach(async () => {
 
 describe('PluginPackageManager managed policy', () => {
   it('rejects a disallowed publisher or capability before installation', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-plugin-policy-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-plugin-policy-'));
     dirs.push(dir);
     const source = path.join(dir, 'source');
     await mkdir(source);
     await writeFile(path.join(source, 'index.js'), 'export default {};\n', 'utf8');
-    await writeFile(path.join(source, 'actoviq-plugin.json'), JSON.stringify({
+    await writeFile(path.join(source, 'hadamard-plugin.json'), JSON.stringify({
       schemaVersion: 1,
       id: 'demo',
       name: 'Demo',

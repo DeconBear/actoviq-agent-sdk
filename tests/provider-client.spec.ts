@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { ActoviqProviderApiError } from '../src/errors.js';
-import ActoviqProviderClient, { normalizeProviderUsage } from '../src/provider/client.js';
+import { HadamardProviderApiError } from '../src/errors.js';
+import HadamardProviderClient, { normalizeProviderUsage } from '../src/provider/client.js';
 import OpenaiProviderClient from '../src/provider/openai-client.js';
 import { OpenaiModelApi } from '../src/provider/openai-model-api.js';
-import { ActoviqModelApi } from '../src/runtime/actoviqModelApi.js';
+import { HadamardModelApi } from '../src/runtime/hadamardModelApi.js';
 
 function makeCompletionResponse(): Response {
   return new Response(JSON.stringify({
@@ -55,7 +55,7 @@ describe('OpenaiProviderClient retry behavior', () => {
       model: 'test-model',
       messages: [{ role: 'user', content: 'hello' }],
     })).rejects.toMatchObject({
-      code: 'ACTOVIQ_PROVIDER_API_ERROR',
+      code: 'HADAMARD_PROVIDER_API_ERROR',
       status: 0,
       errorType: 'transport_error',
     });
@@ -86,7 +86,7 @@ describe('OpenaiProviderClient retry behavior', () => {
     await expect(client.chat.completions.create({
       model: 'test-model',
       messages: [{ role: 'user', content: 'hello' }],
-    })).rejects.toBeInstanceOf(ActoviqProviderApiError);
+    })).rejects.toBeInstanceOf(HadamardProviderApiError);
     expect(calls).toBe(1);
   });
 
@@ -213,7 +213,7 @@ describe('provider stream completion validation', () => {
         usage: { input_tokens: 1, output_tokens: 0 },
       },
     };
-    const client = new ActoviqProviderClient({
+    const client = new HadamardProviderClient({
       apiKey: 'test-key',
       fetch: async () => makeSseResponse(`event: message_start\ndata: ${JSON.stringify(start)}\n\n`),
     });
@@ -233,13 +233,13 @@ describe('provider stream completion validation', () => {
   });
 });
 
-describe('ActoviqProviderClient retry behavior', () => {
+describe('HadamardProviderClient retry behavior', () => {
   it('stops retry backoff immediately when the caller aborts', async () => {
     const controller = new AbortController();
     let calls = 0;
     let markFirstCall!: () => void;
     const firstCall = new Promise<void>((resolve) => { markFirstCall = resolve; });
-    const client = new ActoviqProviderClient({
+    const client = new HadamardProviderClient({
       apiKey: 'test-key',
       maxRetries: 3,
       fetch: async () => {
@@ -288,8 +288,8 @@ describe('reasoning effort request mapping', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     };
-    const api = new ActoviqModelApi(
-      new ActoviqProviderClient({
+    const api = new HadamardModelApi(
+      new HadamardProviderClient({
         apiKey: 'test-key',
         baseURL: 'https://example.test',
         fetch: fetchImpl,
@@ -324,8 +324,8 @@ describe('reasoning effort request mapping', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     };
-    const api = new ActoviqModelApi(
-      new ActoviqProviderClient({
+    const api = new HadamardModelApi(
+      new HadamardProviderClient({
         apiKey: 'test-key',
         baseURL: 'https://example.test',
         fetch: fetchImpl,
@@ -423,7 +423,7 @@ describe('normalizeProviderUsage', () => {
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
-    const client = new ActoviqProviderClient({
+    const client = new HadamardProviderClient({
       apiKey: 'test-key',
       baseURL: 'https://api.deepseek.com/anthropic',
       fetch: fetchImpl,

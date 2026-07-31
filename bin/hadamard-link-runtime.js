@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+/**
+ * Link or copy a third-party agent runtime bundle for use with the bridge SDK.
+ *
+ * Usage:
+ *   npx hadamard-link-runtime /path/to/claude-code
+ *   npx hadamard-link-runtime /path/to/runtime-bundle
+ */
+import { existsSync, symlinkSync, copyFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const targetDir = resolve(__dirname, '..', 'vendor', 'hadamard-runtime');
+const targetPath = join(targetDir, 'runtime.bundle.br');
+
+const input = process.argv[2];
+if (!input || input === '--help' || input === '-h') {
+  console.log('Usage: hadamard-link-runtime <path>');
+  console.log('');
+  console.log('  <path>  Path to a third-party agent runtime installation,');
+  console.log('          or directly to a runtime bundle file.');
+  console.log('');
+  console.log('Examples:');
+  console.log('  hadamard-link-runtime ~/.nvm/versions/node/v22/lib/node_modules/@anthropic-ai/claude-code');
+  console.log('  hadamard-link-runtime /usr/local/lib/node_modules/@anthropic-ai/claude-code');
+  console.log('  hadamard-link-runtime ./runtime-bundle');
+  console.log('');
+  console.log('The bridge SDK works with a third-party agent runtime bundle');
+  console.log('to provide the reference implementation.');
+  process.exit(0);
+}
+
+const sourcePath = resolve(input);
+
+// If the input is a directory, look for the bundle inside it
+let bundlePath;
+if (existsSync(sourcePath) && existsSync(join(sourcePath, 'vendor', 'hadamard-runtime', 'runtime.bundle.br'))) {
+  bundlePath = join(sourcePath, 'vendor', 'hadamard-runtime', 'runtime.bundle.br');
+} else if (existsSync(sourcePath) && sourcePath.endsWith('.br')) {
+  bundlePath = sourcePath;
+} else if (existsSync(join(sourcePath, 'runtime.bundle.br'))) {
+  bundlePath = join(sourcePath, 'runtime.bundle.br');
+} else {
+  console.error(`Could not find runtime bundle in: ${sourcePath}`);
+  console.error('Make sure the path points to an agent runtime installation or a runtime bundle file.');
+  process.exit(1);
+}
+
+if (!existsSync(bundlePath)) {
+  console.error(`Bundle not found at: ${bundlePath}`);
+  process.exit(1);
+}
+
+// Remove existing target if any
+if (existsSync(targetPath)) {
+  console.log(`Removing existing: ${targetPath}`);
+  unlinkSync(targetPath);
+}
+
+// Try symlink first, fall back to copy
+try {
+  mkdirSync(targetDir, { recursive: true });
+  symlinkSync(bundlePath, targetPath);
+  console.log(`Linked: ${bundlePath} -> ${targetPath}`);
+} catch {
+  mkdirSync(targetDir, { recursive: true });
+  copyFileSync(bundlePath, targetPath);
+  console.log(`Copied: ${bundlePath} -> ${targetPath}`);
+}
+
+console.log('');
+console.log('Bridge runtime bundle is now available.');
+console.log('Run: npx hadamard-interactive-agent');

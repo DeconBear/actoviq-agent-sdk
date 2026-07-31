@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { decideActoviqToolPermission } from '../src/runtime/actoviqPermissions.js';
+import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 import { checkSafety } from '../src/runtime/safetyChecks.js';
 
 function check(filePath: string) {
@@ -15,7 +15,7 @@ function check(filePath: string) {
 describe('safety checks', () => {
   it('blocks protected directories with slash or backslash paths', () => {
     expect(check('C:/repo/.git/config').blocked).toBe(true);
-    expect(check('C:\\repo\\.actoviq\\settings.json').blocked).toBe(true);
+    expect(check('C:\\repo\\.hadamard\\settings.json').blocked).toBe(true);
   });
 
   it('blocks nested shell configuration files on Windows-style paths', () => {
@@ -26,7 +26,7 @@ describe('safety checks', () => {
   });
 
   it('does not let tool-specific allow bypass safety checks', async () => {
-    const result = await decideActoviqToolPermission({
+    const result = await decideHadamardToolPermission({
       mode: 'default',
       rules: [],
       adapter: {
@@ -53,7 +53,7 @@ describe('permission modes', () => {
 
   it('requires approval for destructive tools in default mode', async () => {
     let approvalCalls = 0;
-    const result = await decideActoviqToolPermission({
+    const result = await decideHadamardToolPermission({
       mode: 'default',
       rules: [],
       adapter: destructiveAdapter,
@@ -78,7 +78,7 @@ describe('permission modes', () => {
   });
 
   it('does not silently allow destructive tools without an approver', async () => {
-    const result = await decideActoviqToolPermission({
+    const result = await decideHadamardToolPermission({
       mode: 'default',
       rules: [],
       adapter: destructiveAdapter,
@@ -99,7 +99,7 @@ describe('permission modes', () => {
   });
 
   it('acceptEdits allows file edits but still requires approval for shell commands', async () => {
-    const edit = await decideActoviqToolPermission({
+    const edit = await decideHadamardToolPermission({
       mode: 'acceptEdits',
       rules: [],
       adapter: destructiveAdapter,
@@ -111,7 +111,7 @@ describe('permission modes', () => {
       toolInput: { file_path: 'README.md', content: 'test' },
       iteration: 1,
     });
-    const shell = await decideActoviqToolPermission({
+    const shell = await decideHadamardToolPermission({
       mode: 'acceptEdits',
       rules: [],
       adapter: destructiveAdapter,

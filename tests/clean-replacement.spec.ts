@@ -6,10 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
-  ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS,
-  createActoviqBridgeSdk,
-  createActoviqComputerUseToolkit,
-  createActoviqFileTools,
+  HADAMARD_COMPUTER_USE_WORKFLOW_ACTIONS,
+  createHadamardBridgeSdk,
+  createHadamardComputerUseToolkit,
+  createHadamardFileTools,
   createAgentSdk,
   localMcpServer,
   skill,
@@ -105,9 +105,9 @@ class MockModelApi implements ModelApi {
 
 describe('Hadamard SDK replacement parity', () => {
   it('exposes clean tool discovery, context helpers, and slash-style replacements', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-tools-');
-    const workDir = await createTempDir('actoviq-clean-tools-workdir-');
-    const toolkit = createActoviqComputerUseToolkit({
+    const sessionDirectory = await createTempDir('hadamard-clean-tools-');
+    const workDir = await createTempDir('hadamard-clean-tools-workdir-');
+    const toolkit = createHadamardComputerUseToolkit({
       executor: {
         async openUrl() {},
         async focusWindow() {},
@@ -125,7 +125,7 @@ describe('Hadamard SDK replacement parity', () => {
     const modelApi = new MockModelApi({
       create: (request) => {
         const internalTask =
-          (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task;
+          (request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task;
         if (internalTask === 'compact') {
           return makeMessage([{ type: 'text', text: 'Compact summary for clean command helpers.' }]);
         }
@@ -138,7 +138,7 @@ describe('Hadamard SDK replacement parity', () => {
       sessionDirectory,
       workDir,
       modelApi,
-      tools: [...createActoviqFileTools({ cwd: workDir }), ...toolkit.tools],
+      tools: [...createHadamardFileTools({ cwd: workDir }), ...toolkit.tools],
       mcpServers: [
         toolkit.mcpServer,
         localMcpServer({
@@ -236,7 +236,7 @@ describe('Hadamard SDK replacement parity', () => {
   });
 
   it('inherits swarm runtime hooks and approvals, and exposes transcript plus reentry helpers', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-swarm-');
+    const sessionDirectory = await createTempDir('hadamard-clean-swarm-');
     const observedPrompts: string[] = [];
     let executedWrites = 0;
     const writeNote = tool(
@@ -363,12 +363,12 @@ describe('Hadamard SDK replacement parity', () => {
   });
 
   it('tracks clean parity coverage against the local reference runtime', async () => {
-    const sessionDirectory = await createTempDir('actoviq-clean-parity-');
-    const workDir = await createTempDir('actoviq-clean-parity-workdir-');
+    const sessionDirectory = await createTempDir('hadamard-clean-parity-');
+    const workDir = await createTempDir('hadamard-clean-parity-workdir-');
     const modelApi = new MockModelApi({
       create: (request) => {
         const internalTask =
-          (request.metadata as Record<string, unknown> | undefined)?.actoviq_internal_task;
+          (request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task;
         if (internalTask === 'compact') {
           return makeMessage([{ type: 'text', text: 'Clean compact summary.' }]);
         }
@@ -380,7 +380,7 @@ describe('Hadamard SDK replacement parity', () => {
       sessionDirectory,
       workDir,
       modelApi,
-      tools: createActoviqFileTools({ cwd: workDir }),
+      tools: createHadamardFileTools({ cwd: workDir }),
       agents: [
         {
           name: 'reviewer',
@@ -388,9 +388,9 @@ describe('Hadamard SDK replacement parity', () => {
         },
       ],
     });
-    const bridge = await createActoviqBridgeSdk({
+    const bridge = await createHadamardBridgeSdk({
       executable: process.execPath,
-      cliPath: path.resolve('tests', 'fixtures', 'fake-actoviq-runtime-cli.mjs'),
+      cliPath: path.resolve('tests', 'fixtures', 'fake-hadamard-runtime-cli.mjs'),
       workDir,
       maxTurns: 2,
     });
@@ -432,7 +432,7 @@ describe('Hadamard SDK replacement parity', () => {
   });
 
   it('expands the public computer-use toolkit with reusable workflow actions', async () => {
-    const toolkit = createActoviqComputerUseToolkit({
+    const toolkit = createHadamardComputerUseToolkit({
       executor: {
         async openUrl() {},
         async focusWindow() {},
@@ -451,7 +451,7 @@ describe('Hadamard SDK replacement parity', () => {
     expect(toolkit.tools.map(toolDefinition => toolDefinition.name)).toEqual(
       expect.arrayContaining(['computer_focus_window', 'computer_wait', 'computer_run_workflow']),
     );
-    expect([...ACTOVIQ_COMPUTER_USE_WORKFLOW_ACTIONS]).toEqual(
+    expect([...HADAMARD_COMPUTER_USE_WORKFLOW_ACTIONS]).toEqual(
       expect.arrayContaining(['focus_window', 'wait']),
     );
   });

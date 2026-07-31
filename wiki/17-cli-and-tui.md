@@ -2,11 +2,11 @@
 
 ## Architecture
 
-Two interactive surfaces: a lightweight scrollback REPL (`actoviq-react`) and
-a full terminal UI (`actoviq-tui`). Both use the same SDK runtime but differ
+Two interactive surfaces: a lightweight scrollback REPL (`hadamard-react`) and
+a full terminal UI (`hadamard-tui`). Both use the same SDK runtime but differ
 in rendering approach.
 
-| | actoviq-react | actoviq-tui |
+| | hadamard-react | hadamard-tui |
 |---|---|---|
 | **Rendering** | Native scrollback (readline) | Alternate screen buffer (full TUI) |
 | **Input** | readline with history | Custom key handling |
@@ -20,15 +20,15 @@ in rendering approach.
 
 | File | Role |
 |---|---|
-| `cli/actoviq-react.ts` | Scrollback REPL (~370 lines) |
-| `cli/actoviq-tui.ts` | TUI entry point |
-| `tui/actoviqTui.ts` | Full TUI implementation (~1000+ lines) |
+| `cli/hadamard-react.ts` | Scrollback REPL (~370 lines) |
+| `cli/hadamard-tui.ts` | TUI entry point |
+| `tui/hadamardTui.ts` | Full TUI implementation (~1000+ lines) |
 | `tui/transcript.ts` | Transcript rendering |
-| `runtime/actoviqSlashCommands.ts` | Slash command registry + formatting |
+| `runtime/hadamardSlashCommands.ts` | Slash command registry + formatting |
 
-### `actoviq-react` — Scrollback REPL
+### `hadamard-react` — Scrollback REPL
 
-Location: `src/cli/actoviq-react.ts`
+Location: `src/cli/hadamard-react.ts`
 
 ```
 main()
@@ -72,7 +72,7 @@ try { await loadJsonConfigFile(CONFIG_PATH); } catch (e) {
 }
 
 // If using default settings.json:
-try { await loadDefaultActoviqSettings(); } catch (e) {
+try { await loadDefaultHadamardSettings(); } catch (e) {
   // Tolerate missing file (first run), warn on other errors
   if (!/not found|ENOENT/i.test(e.message)) {
     process.stderr.write(`⚠ Default settings load failed: ${e.message}`);
@@ -80,9 +80,9 @@ try { await loadDefaultActoviqSettings(); } catch (e) {
 }
 ```
 
-### `actoviq-tui` — Full Terminal UI
+### `hadamard-tui` — Full Terminal UI
 
-Location: `src/tui/actoviqTui.ts`
+Location: `src/tui/hadamardTui.ts`
 
 Uses alternate screen buffer (`\x1b[?1049h`) for a redrawable interface:
 
@@ -115,24 +115,24 @@ Key features:
 
 ### Slash Command Registry
 
-Location: `src/runtime/actoviqSlashCommands.ts`
+Location: `src/runtime/hadamardSlashCommands.ts`
 
 ```typescript
-class ActoviqSlashCommandsApi {
-  register(command: ActoviqSlashCommandDefinition): ActoviqSlashCommandHandle
-  list(): ActoviqSlashCommandDefinition[]
-  execute(name: string, args: string): Promise<ActoviqSlashCommandResult>
+class HadamardSlashCommandsApi {
+  register(command: HadamardSlashCommandDefinition): HadamardSlashCommandHandle
+  list(): HadamardSlashCommandDefinition[]
+  execute(name: string, args: string): Promise<HadamardSlashCommandResult>
 }
 ```
 
 Formatters (for `/help`-style output):
-- `formatActoviqAgents()` — registered agent definitions
-- `formatActoviqSkills()` — registered skill definitions
-- `formatActoviqTools()` — available tool catalog
-- `formatActoviqContextOverview()` — session + memory state
-- `formatActoviqCompactResult()` — last compaction details
-- `formatActoviqDreamResult()` — last dream consolidation
-- `formatActoviqMemoryState()` — memory file status
+- `formatHadamardAgents()` — registered agent definitions
+- `formatHadamardSkills()` — registered skill definitions
+- `formatHadamardTools()` — available tool catalog
+- `formatHadamardContextOverview()` — session + memory state
+- `formatHadamardCompactResult()` — last compaction details
+- `formatHadamardDreamResult()` — last dream consolidation
+- `formatHadamardMemoryState()` — memory file status
 
 ## Code Details
 

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-`ActoviqAgentClient` is the central orchestrator. Every SDK operation flows
+`HadamardAgentClient` is the central orchestrator. Every SDK operation flows
 through it. It's the "god class" — ~3820 lines, 12 public API surfaces,
 4 shared mutable state Maps.
 
@@ -23,7 +23,7 @@ separate classes behind the same facade.
 ### Constructor Dependencies
 
 ```
-ActoviqAgentClient.create(config, store, backgroundTaskStore,
+HadamardAgentClient.create(config, store, backgroundTaskStore,
     mailboxStore, teammateStore, modelApi, mcpManager,
     defaultTools, defaultMcpServers, hooks,
     agentDefinitions, skillDefinitions,
@@ -63,7 +63,7 @@ stream(prompt, options?) → AgentRunStream
 **Subagent delegation** (~lines 2500-3000):
 ```
 runWithAgent(agent, prompt, options?, delegation?) → { result, sessionId, worktreePath }
-launchBackgroundAgentTask(agent, prompt, ...) → ActoviqBackgroundTaskRecord
+launchBackgroundAgentTask(agent, prompt, ...) → HadamardBackgroundTaskRecord
   ├── requireAgentDefinition()
   ├── prepareDelegatedWorkspace()      (worktree or cwd)
   ├── extractInheritedDelegationOptions() (permission, effort, hooks)
@@ -200,13 +200,13 @@ private extractInheritedDelegationOptions(
 ): AgentRunOptions | undefined {
   // Enforce limits
   if (delegation.depth >= this.maxSubagentDepth) {
-    throw new ActoviqSdkError('Maximum subagent depth exceeded');
+    throw new HadamardSdkError('Maximum subagent depth exceeded');
   }
   
   // Fanout check
   const currentFanout = this.countActiveDelegations();
   if (currentFanout >= this.maxSubagentFanout) {
-    throw new ActoviqSdkError('Maximum subagent fanout exceeded');
+    throw new HadamardSdkError('Maximum subagent fanout exceeded');
   }
   
   // Filter allowed agents

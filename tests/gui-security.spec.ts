@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 
 const tempDirs: string[] = [];
 
@@ -33,26 +33,26 @@ function rawRequest(port: number, requestPath: string, headers: http.OutgoingHtt
 
 describe('GUI server auth gates', () => {
   it('refuses a non-loopback bind address', async () => {
-    await expect(startActoviqGuiServer({ host: '0.0.0.0' }))
+    await expect(startHadamardGuiServer({ host: '0.0.0.0' }))
       .rejects.toThrow(/may bind only to localhost/iu);
   });
 
   it('requires a valid token and rejects foreign host/origin', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-gui-sec-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-gui-sec-'));
     tempDirs.push(root);
     const homeDir = path.join(root, 'home');
     const workDir = path.join(root, 'work');
     await mkdir(workDir, { recursive: true });
-    const configPath = path.join(homeDir, '.actoviq', 'settings.json');
+    const configPath = path.join(homeDir, '.hadamard', 'settings.json');
     await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
 
     const port = 46000 + Math.floor(Math.random() * 9000);
-    const server = await startActoviqGuiServer({ workDir, homeDir, host: '127.0.0.1', port, configPath });
+    const server = await startHadamardGuiServer({ workDir, homeDir, host: '127.0.0.1', port, configPath });
     const actualPort = Number(new URL(server.url).port);
     const goodHost = `127.0.0.1:${actualPort}`;
 
@@ -62,22 +62,22 @@ describe('GUI server auth gates', () => {
       expect(noToken.status).toBe(403);
 
       // Valid token → 200.
-      const withToken = await rawRequest(actualPort, '/api/state', { host: goodHost, 'x-actoviq-token': server.token });
+      const withToken = await rawRequest(actualPort, '/api/state', { host: goodHost, 'x-hadamard-token': server.token });
       expect(withToken.status).toBe(200);
 
       // Foreign Host header (DNS-rebinding) → 403 even with a valid token.
-      const badHost = await rawRequest(actualPort, '/api/state', { host: 'evil.example.com', 'x-actoviq-token': server.token });
+      const badHost = await rawRequest(actualPort, '/api/state', { host: 'evil.example.com', 'x-hadamard-token': server.token });
       expect(badHost.status).toBe(403);
 
       // Cross-site Origin → 403.
-      const badOrigin = await rawRequest(actualPort, '/api/state', { host: goodHost, origin: 'http://evil.example.com', 'x-actoviq-token': server.token });
+      const badOrigin = await rawRequest(actualPort, '/api/state', { host: goodHost, origin: 'http://evil.example.com', 'x-hadamard-token': server.token });
       expect(badOrigin.status).toBe(403);
 
       // The HTML entrypoint ships a CSP header and the bootstrap token.
       const page = await rawRequest(actualPort, '/', { host: goodHost });
       expect(page.status).toBe(200);
       expect(page.headers['content-security-policy']).toContain("default-src 'none'");
-      expect(page.body).toContain('window.__ACTOVIQ_TOKEN__');
+      expect(page.body).toContain('window.__HADAMARD_TOKEN__');
     } finally {
       await server.close();
     }

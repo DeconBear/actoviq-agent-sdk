@@ -54,7 +54,7 @@ export const DEFAULT_AGENT_RUNTIME_CANDIDATES: AgentRuntimeCandidate[] = [
     label: 'Hadamard SDK',
     runtime: 'hadamard',
     commands: [],
-    description: 'Built-in Actoviq runtime. No external CLI is required.',
+    description: 'Built-in Hadamard runtime. No external CLI is required.',
   },
   {
     id: 'claude-code',
@@ -179,7 +179,7 @@ function reuseHint(
 ): string {
   if (runtime === 'hadamard') return 'Built in and always reusable.';
   if (installed && configured) return `Detected locally and configured as ${configNames.join(', ')}.`;
-  if (installed) return 'Detected on PATH. Add credentials or a provider config to reuse it from Actoviq.';
+  if (installed) return 'Detected on PATH. Add credentials or a provider config to reuse it from Hadamard.';
   if (configured) return `Configured as ${configNames.join(', ')}, but no local CLI was found on PATH.`;
   return 'Not detected yet. Install the runtime or add a provider config.';
 }

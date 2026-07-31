@@ -4,7 +4,7 @@
  */
 export function getTranscriptClientScript(): string {
   return `
-/* === Actoviq transcript UI (parts-driven) === */
+/* === Hadamard transcript UI (parts-driven) === */
 (function () {
   const TR = {
     parts: [],
@@ -495,7 +495,7 @@ export function getTranscriptClientScript(): string {
     if (part.state !== 'awaiting-approval' || !part.permissionId) return;
     const footer = document.createElement('div');
     footer.className = 'tool-approval-footer';
-    footer.__actoviqPermissionId = part.permissionId;
+    footer.__hadamardPermissionId = part.permissionId;
     const mk = (label, decision, primary) => {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -525,8 +525,8 @@ export function getTranscriptClientScript(): string {
     const questions = Array.isArray(input.questions) ? input.questions : [];
     const wrap = document.createElement('div');
     wrap.className = 'tool-question';
-    wrap.__actoviqPermissionId = part.permissionId;
-    wrap.__actoviqQuestionInput = part.input;
+    wrap.__hadamardPermissionId = part.permissionId;
+    wrap.__hadamardQuestionInput = part.input;
     const answers = {};
     const otherInputs = {};
 
@@ -797,7 +797,7 @@ export function getTranscriptClientScript(): string {
   }
 
   function updateToolBody(body, part, family) {
-    const previous = body.__actoviqToolBodyRender;
+    const previous = body.__hadamardToolBodyRender;
     const collapsed = !!part.collapsed;
     const questionState = family === 'question' ? part.state : '';
     const input = inputRecord(part.input);
@@ -813,7 +813,7 @@ export function getTranscriptClientScript(): string {
       && previous.questionState === questionState) return;
     body.textContent = '';
     if (!collapsed) fillToolBody(body, part);
-    body.__actoviqToolBodyRender = {
+    body.__hadamardToolBodyRender = {
       family,
       collapsed,
       input: part.input,
@@ -831,7 +831,7 @@ export function getTranscriptClientScript(): string {
     if (part.state === 'awaiting-approval' && part.permissionId) {
       if (question) question.remove();
       if (questionFooter) questionFooter.remove();
-      if (!approval || approval.__actoviqPermissionId !== part.permissionId) {
+      if (!approval || approval.__hadamardPermissionId !== part.permissionId) {
         if (approval) approval.remove();
         appendApprovalFooter(card, part);
       }
@@ -842,8 +842,8 @@ export function getTranscriptClientScript(): string {
     if (part.state === 'awaiting-answer' && part.permissionId) {
       const canKeepQuestion = question
         && questionFooter
-        && question.__actoviqPermissionId === part.permissionId
-        && question.__actoviqQuestionInput === part.input;
+        && question.__hadamardPermissionId === part.permissionId
+        && question.__hadamardQuestionInput === part.input;
       if (!canKeepQuestion) {
         if (question) question.remove();
         if (questionFooter) questionFooter.remove();
@@ -1105,8 +1105,8 @@ export function getTranscriptClientScript(): string {
   }
 
   const hooks = {};
-  window.__ActoviqTranscript = createController(hooks);
-  window.__ActoviqTranscriptCreate = function (opts) {
+  window.__HadamardTranscript = createController(hooks);
+  window.__HadamardTranscriptCreate = function (opts) {
     // Secondary controllers share card builders but keep independent roots via ephemeral helpers.
     const ctrl = createController(hooks);
     if (opts) ctrl.init(opts);

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { isIssueStorageMode, type IssueStorageMode } from '../issues/issueStore.js';
 
 /** Manual project lifecycle status (not "is this the current workspace"). */
@@ -36,7 +36,7 @@ export function isProjectStatus(value: unknown): value is ProjectStatus {
 }
 
 export function projectMetaPath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'meta.json');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'meta.json');
 }
 
 export async function readProjectMeta(workDir: string, homeDir: string): Promise<ProjectMeta> {

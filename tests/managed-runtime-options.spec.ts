@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { createActoviqBridgeSdk } from '../src/index.js';
+import { createHadamardBridgeSdk } from '../src/index.js';
 
 const reasonixCliPath = path.resolve(
   process.cwd(),
@@ -19,7 +19,7 @@ const crushCliPath = path.resolve(
 
 describe('managed external CLI option enforcement', () => {
   it('fails closed when Reasonix cannot enforce generic bridge options', async () => {
-    const sdk = await createActoviqBridgeSdk({
+    const sdk = await createHadamardBridgeSdk({
       directCli: true,
       directCliProvider: 'reasonix',
       executable: process.execPath,
@@ -39,7 +39,7 @@ describe('managed external CLI option enforcement', () => {
   });
 
   it('fails closed when Crush cannot enforce generic or effort options', async () => {
-    const sdk = await createActoviqBridgeSdk({
+    const sdk = await createHadamardBridgeSdk({
       directCli: true,
       directCliProvider: 'crush',
       executable: process.execPath,

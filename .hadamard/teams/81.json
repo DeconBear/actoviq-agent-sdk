@@ -1,0 +1,17 @@
+{
+  "name": "81",
+  "description": "411",
+  "mode": "graph",
+  "version": 3,
+  "orchestration": "graph",
+  "squadType": "subagent",
+  "members": [
+    {
+      "role": "81",
+      "model": "",
+      "systemPrompt": "53125"
+    }
+  ],
+  "nodes": [],
+  "edges": []
+}

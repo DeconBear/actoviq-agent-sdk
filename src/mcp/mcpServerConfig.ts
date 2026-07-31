@@ -2,13 +2,13 @@
  * User-managed MCP server config (gap #10, scoped subset — now includes
  * remote HTTP servers).
  *
- * Persisted to ~/.actoviq/mcp.json. Each entry is either a stdio server
+ * Persisted to ~/.hadamard/mcp.json. Each entry is either a stdio server
  * (command + optional args/env/cwd) or an HTTP server (url + optional headers).
  * The TUI's /mcp add writes here and reloads the client.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 
 export interface PersistedMcpServer {
   name: string;
@@ -26,7 +26,7 @@ export interface PersistedMcpConfig {
 }
 
 export function getMcpConfigPath(homeDir?: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'mcp.json');
+  return path.join(resolveHadamardHome(homeDir), 'mcp.json');
 }
 
 export function readMcpServerConfig(homeDir?: string): PersistedMcpConfig {

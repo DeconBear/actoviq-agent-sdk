@@ -13,7 +13,7 @@ import {
   listProjectIssues,
 } from '../src/issues/issueStore.js';
 import type { AgentSession } from '../src/runtime/agentSession.js';
-import type { ActoviqAgentClient } from '../src/runtime/agentClient.js';
+import type { HadamardAgentClient } from '../src/runtime/agentClient.js';
 import type {
   AgentRunOptions,
   AgentRunResult,
@@ -95,7 +95,7 @@ async function fixture(
   workerBehavior: (options: AgentRunOptions, workDir: string) => ReturnType<typeof streamOf>,
   reconcile?: (options: AgentRunOptions, workDir: string) => Promise<void>,
 ) {
-  const root = await tempRoot('actoviq-issue-execution-');
+  const root = await tempRoot('hadamard-issue-execution-');
   const workDir = path.join(root, 'work');
   const homeDir = path.join(root, 'home');
   const issue = await createProjectIssue(workDir, homeDir, {
@@ -130,7 +130,7 @@ async function fixture(
       createdSessionOptions = options;
       return workerSession;
     },
-  } as unknown as ActoviqAgentClient;
+  } as unknown as HadamardAgentClient;
 
   const options: ExecuteProjectIssueOptions = {
     sdk,
@@ -179,8 +179,8 @@ describe('issue execution lifecycle', () => {
       comment.kind === 'progress' && comment.body.includes('ran focused tests'),
     )).toBe(true);
     expect(test.getCreatedSessionOptions()?.metadata).toMatchObject({
-      __actoviqIssueId: persisted.id,
-      __actoviqIssueKey: 'ISS-1',
+      __hadamardIssueId: persisted.id,
+      __hadamardIssueKey: 'ISS-1',
     });
   });
 

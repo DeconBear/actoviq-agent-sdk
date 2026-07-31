@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('ApprovalPolicy', () => {
   it('persists path-scoped decisions and ignores expired approvals', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-approval-policy-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-approval-policy-'));
     dirs.push(dir);
     const policy = new ApprovalPolicy(path.join(dir, 'approvals.json'));
     await policy.remember({

@@ -4,7 +4,7 @@
 
 Swarm 系统通过邮箱通信模式提供长期的多 agent 协作。与子代理（一次性或等待完成）不同，Swarm 队友跨交互持久存在并异步交换消息。
 
-位置：`src/swarm/actoviqSwarm.ts`
+位置：`src/swarm/hadamardSwarm.ts`
 
 ### Swarm vs 子代理
 
@@ -33,12 +33,12 @@ Swarm 系统通过邮箱通信模式提供长期的多 agent 协作。与子代�
 ### 核心 API
 
 ```typescript
-class ActoviqSwarmApi {
-  async createTeam(name, config) → ActoviqSwarmTeam
-  async listTeams() → ActoviqSwarmTeamSummary[]
+class HadamardSwarmApi {
+  async createTeam(name, config) → HadamardSwarmTeam
+  async listTeams() → HadamardSwarmTeamSummary[]
 }
 
-class ActoviqSwarmTeammateHandle {
+class HadamardSwarmTeammateHandle {
   async send(to, message) → void       // 发送到邮箱
   async receive() → MailboxMessage[]   // 从邮箱接收
   async run(prompt) → AgentRunResult   // 运行对话

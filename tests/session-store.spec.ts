@@ -18,13 +18,13 @@ afterEach(async () => {
 });
 
 async function createStore(): Promise<SessionStore> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sdk-store-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sdk-store-'));
   tempDirs.push(dir);
   return new SessionStore(dir);
 }
 
 async function createStoreAndRoot(): Promise<{ store: SessionStore; root: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sdk-store-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sdk-store-'));
   tempDirs.push(root);
   return { store: new SessionStore(root), root };
 }
@@ -63,12 +63,12 @@ describe('SessionStore', () => {
     expect(listed[0]?.runtime).toBe('hadamard');
     expect(listed[0]?.configName).toBeNull();
 
-    created.metadata.__actoviqRuntime = 'claude';
-    created.metadata.__actoviqConfigName = 'deepseek';
-    created.metadata.__actoviqIssueId = 'iss_1';
-    created.metadata.__actoviqIssueNumber = 1;
-    created.metadata.__actoviqIssueKey = 'ISS-1';
-    created.metadata.__actoviqAgentProfile = 'Claude reviewer';
+    created.metadata.__hadamardRuntime = 'claude';
+    created.metadata.__hadamardConfigName = 'deepseek';
+    created.metadata.__hadamardIssueId = 'iss_1';
+    created.metadata.__hadamardIssueNumber = 1;
+    created.metadata.__hadamardIssueKey = 'ISS-1';
+    created.metadata.__hadamardAgentProfile = 'Claude reviewer';
     await store.save(created);
     const relisted = await store.list();
     const updated = relisted.find((item) => item.id === created.id);

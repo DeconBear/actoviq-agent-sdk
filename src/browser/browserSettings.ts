@@ -1,6 +1,6 @@
-import type { CreateActoviqBrowserUseOptions } from '../types.js';
+import type { CreateHadamardBrowserUseOptions } from '../types.js';
 
-export interface ActoviqBrowserSettings extends CreateActoviqBrowserUseOptions {
+export interface HadamardBrowserSettings extends CreateHadamardBrowserUseOptions {
   /** When true, GUI/SDK hosts may auto-attach browser tools. */
   enabled?: boolean;
 }
@@ -9,7 +9,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function readActoviqBrowserSettings(raw: Record<string, unknown> | null | undefined): ActoviqBrowserSettings {
+export function readHadamardBrowserSettings(raw: Record<string, unknown> | null | undefined): HadamardBrowserSettings {
   const source = isRecord(raw?.browser) ? raw.browser : {};
   const allowedDomains = Array.isArray(source.allowedDomains)
     ? source.allowedDomains.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
@@ -33,12 +33,12 @@ export function readActoviqBrowserSettings(raw: Record<string, unknown> | null |
   };
 }
 
-export function writeActoviqBrowserSettings(
+export function writeHadamardBrowserSettings(
   raw: Record<string, unknown>,
-  patch: Partial<ActoviqBrowserSettings>,
+  patch: Partial<HadamardBrowserSettings>,
 ): Record<string, unknown> {
-  const current = readActoviqBrowserSettings(raw);
-  const next: ActoviqBrowserSettings = {
+  const current = readHadamardBrowserSettings(raw);
+  const next: HadamardBrowserSettings = {
     ...current,
     ...patch,
   };

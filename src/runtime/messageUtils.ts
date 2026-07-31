@@ -1,5 +1,5 @@
 import type { Message, MessageParam, ToolResultBlockParam } from '../provider/types.js';
-import type { ActoviqInvokedSkillRecord, ActoviqSurfacedMemory } from '../types.js';
+import type { HadamardInvokedSkillRecord, HadamardSurfacedMemory } from '../types.js';
 
 import { deepClone, isRecord } from './helpers.js';
 
@@ -17,7 +17,7 @@ export function buildUserMessage(input: string | MessageParam['content']): Messa
   };
 }
 
-export function buildRelevantMemoryMessages(memories: readonly ActoviqSurfacedMemory[]): MessageParam[] {
+export function buildRelevantMemoryMessages(memories: readonly HadamardSurfacedMemory[]): MessageParam[] {
   return memories.map(memory =>
     buildUserMessage(
       `<system-reminder>\n${memory.header}\n\n${memory.content}\n</system-reminder>`,
@@ -26,7 +26,7 @@ export function buildRelevantMemoryMessages(memories: readonly ActoviqSurfacedMe
 }
 
 export function buildInvokedSkillMessages(
-  skills: readonly ActoviqInvokedSkillRecord[],
+  skills: readonly HadamardInvokedSkillRecord[],
 ): MessageParam[] {
   return skills.map(skill =>
     buildUserMessage(

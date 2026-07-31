@@ -1,4 +1,4 @@
-export const ACTOVIQ_INTERACTIVE_COMMANDS: Record<string, string> = {
+export const HADAMARD_INTERACTIVE_COMMANDS: Record<string, string> = {
   help: 'Show available commands',
   clear: 'Clear the screen',
   init: 'Generate a CLAUDE.md for this project',
@@ -188,7 +188,7 @@ export function filterInteractiveCommands(input: string): string[] {
   // No space yet: complete the top-level command name.
   if (!input.includes(' ')) {
     const partial = head.toLowerCase();
-    return Object.keys(ACTOVIQ_INTERACTIVE_COMMANDS).filter((name) => name.startsWith(partial));
+    return Object.keys(HADAMARD_INTERACTIVE_COMMANDS).filter((name) => name.startsWith(partial));
   }
 
   // A space is present. Offer sub-commands only for commands that have them,

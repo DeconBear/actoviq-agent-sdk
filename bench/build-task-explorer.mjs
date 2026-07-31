@@ -125,7 +125,7 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Actoviq Benchmark — Task Design</title>
+<title>Hadamard Benchmark — Task Design</title>
 <style>
   :root { --bg:#0e1116; --panel:#161b22; --panel2:#1c2230; --bd:#2a3140; --fg:#e6edf3; --dim:#8b949e;
           --acc:#3fb6a8; --code:#0b0f14; --bug:#f85149; --trap:#d29922; --chip:#21425f; }
@@ -172,7 +172,7 @@ const html = `<!doctype html>
 </head>
 <body>
 <header>
-  <h1>Actoviq Benchmark — Task Design</h1>
+  <h1>Hadamard Benchmark — Task Design</h1>
   <div class="sub" id="meta"></div>
   <nav id="nav"></nav>
 </header>

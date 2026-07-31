@@ -14,7 +14,7 @@ Session CAS 和 checkpoint 可以记录本地状态，但无法与外部系统�
 
 ### 1. 不提供通用 exactly-once 承诺
 
-Actoviq 只承诺：
+Hadamard 只承诺：
 
 - 本地状态转换使用 revision/CAS，避免静默覆盖；
 - 已持久化为 `committed` 的 tool result 恢复时不重复追加；

@@ -4,30 +4,30 @@ import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveActoviqHome } from '../config/actoviqHome.js';
-import { getDefaultActoviqBundledSkills } from './actoviqSkills.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
+import { getDefaultHadamardBundledSkills } from './hadamardSkills.js';
 
-export type ActoviqSkillCatalogProvider =
-  | 'actoviq'
+export type HadamardSkillCatalogProvider =
+  | 'hadamard'
   | 'agents'
   | 'claude-code'
   | 'codex'
   | 'cursor'
   | 'cc-switch';
 
-export type ActoviqSkillCatalogScope = 'bundled' | 'user' | 'project';
+export type HadamardSkillCatalogScope = 'bundled' | 'user' | 'project';
 
-export type ActoviqSkillCatalogSourceStatus =
+export type HadamardSkillCatalogSourceStatus =
   | 'ready'
   | 'needs-trust'
   | 'missing'
   | 'unreadable';
 
-export type ActoviqSkillCatalogEntryStatus = 'ready' | 'needs-trust' | 'invalid';
+export type HadamardSkillCatalogEntryStatus = 'ready' | 'needs-trust' | 'invalid';
 
-export type ActoviqSkillCatalogCapability = 'assets' | 'references' | 'scripts';
+export type HadamardSkillCatalogCapability = 'assets' | 'references' | 'scripts';
 
-export interface ActoviqSkillCatalogDiagnostic {
+export interface HadamardSkillCatalogDiagnostic {
   code:
     | 'invalid-frontmatter'
     | 'invalid-name'
@@ -41,24 +41,24 @@ export interface ActoviqSkillCatalogDiagnostic {
   path?: string;
 }
 
-export interface ActoviqSkillCatalogSource {
+export interface HadamardSkillCatalogSource {
   id: string;
   label: string;
-  provider: ActoviqSkillCatalogProvider;
-  scope: ActoviqSkillCatalogScope;
+  provider: HadamardSkillCatalogProvider;
+  scope: HadamardSkillCatalogScope;
   root?: string;
   managedBy: string;
   readOnly: boolean;
   needsTrust: boolean;
-  status: ActoviqSkillCatalogSourceStatus;
+  status: HadamardSkillCatalogSourceStatus;
   skillCount: number;
 }
 
-export interface ActoviqSkillCatalogOrigin {
+export interface HadamardSkillCatalogOrigin {
   sourceId: string;
   sourceLabel: string;
-  provider: ActoviqSkillCatalogProvider;
-  scope: ActoviqSkillCatalogScope;
+  provider: HadamardSkillCatalogProvider;
+  scope: HadamardSkillCatalogScope;
   directoryName: string;
   loadedFrom: 'bundled' | 'skills' | 'commands';
   skillRoot?: string;
@@ -69,7 +69,7 @@ export interface ActoviqSkillCatalogOrigin {
   needsTrust: boolean;
 }
 
-export interface ActoviqSkillCatalogEntry {
+export interface HadamardSkillCatalogEntry {
   /** Stable source identity. Content revisions are tracked separately by contentHash. */
   id: string;
   /** The invocation name. A valid frontmatter `name` wins over the directory name. */
@@ -78,37 +78,37 @@ export interface ActoviqSkillCatalogEntry {
   directoryName: string;
   description: string;
   version?: string;
-  status: ActoviqSkillCatalogEntryStatus;
+  status: HadamardSkillCatalogEntryStatus;
   conflict: boolean;
   contentHash: string;
   sourceId: string;
-  provider: ActoviqSkillCatalogProvider;
-  scope: ActoviqSkillCatalogScope;
+  provider: HadamardSkillCatalogProvider;
+  scope: HadamardSkillCatalogScope;
   skillRoot?: string;
   canonicalSkillRoot?: string;
   readOnly: boolean;
   needsTrust: boolean;
-  capabilities: ActoviqSkillCatalogCapability[];
+  capabilities: HadamardSkillCatalogCapability[];
   /** Metadata only. The catalog never turns declarations into permission grants. */
   declaredAllowedTools: string[];
   frontmatterKeys: string[];
-  origins: ActoviqSkillCatalogOrigin[];
-  diagnostics: ActoviqSkillCatalogDiagnostic[];
+  origins: HadamardSkillCatalogOrigin[];
+  diagnostics: HadamardSkillCatalogDiagnostic[];
 }
 
-export interface ActoviqSkillCatalogConflict {
+export interface HadamardSkillCatalogConflict {
   name: string;
   skillIds: string[];
   contentHashes: string[];
   sourceIds: string[];
 }
 
-export interface ActoviqSkillCatalog {
+export interface HadamardSkillCatalog {
   generatedAt: string;
-  sources: ActoviqSkillCatalogSource[];
-  skills: ActoviqSkillCatalogEntry[];
-  conflicts: ActoviqSkillCatalogConflict[];
-  diagnostics: ActoviqSkillCatalogDiagnostic[];
+  sources: HadamardSkillCatalogSource[];
+  skills: HadamardSkillCatalogEntry[];
+  conflicts: HadamardSkillCatalogConflict[];
+  diagnostics: HadamardSkillCatalogDiagnostic[];
   summary: {
     sourceCount: number;
     discoveredSourceCount: number;
@@ -119,23 +119,23 @@ export interface ActoviqSkillCatalog {
   };
 }
 
-export interface DiscoverActoviqSkillCatalogOptions {
+export interface DiscoverHadamardSkillCatalogOptions {
   /** Operating-system home used for native CLI roots. Defaults to os.homedir(). */
   osHomeDir?: string;
-  /** Direct Actoviq data root. When omitted ACTOVIQ_HOME/data-root/default resolution is used. */
-  actoviqHomeDir?: string;
-  /** Project whose native and Actoviq skill roots should be inspected. */
+  /** Direct Hadamard data root. When omitted HADAMARD_HOME/data-root/default resolution is used. */
+  hadamardHomeDir?: string;
+  /** Project whose native and Hadamard skill roots should be inspected. */
   workDir?: string;
-  /** Environment seam for CLAUDE_CONFIG_DIR, CODEX_HOME, and ACTOVIQ_HOME. */
+  /** Environment seam for CLAUDE_CONFIG_DIR, CODEX_HOME, and HADAMARD_HOME. */
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
-  includeBundledActoviq?: boolean;
+  includeBundledHadamard?: boolean;
   includeMissingSources?: boolean;
   trustedProjectSourceIds?: readonly string[];
   maxSkillBytes?: number;
   scanConcurrency?: number;
 }
 
-interface SkillSourceDescriptor extends ActoviqSkillCatalogSource {
+interface SkillSourceDescriptor extends HadamardSkillCatalogSource {
   order: number;
   kind: 'bundled' | 'directory' | 'commands';
   excludeDirectoryNames: ReadonlySet<string>;
@@ -157,11 +157,11 @@ interface SkillCandidate {
   version?: string;
   invalid: boolean;
   contentHash: string;
-  capabilities: ActoviqSkillCatalogCapability[];
+  capabilities: HadamardSkillCatalogCapability[];
   declaredAllowedTools: string[];
   frontmatterKeys: string[];
-  origins: ActoviqSkillCatalogOrigin[];
-  diagnostics: ActoviqSkillCatalogDiagnostic[];
+  origins: HadamardSkillCatalogOrigin[];
+  diagnostics: HadamardSkillCatalogDiagnostic[];
 }
 
 const DEFAULT_MAX_SKILL_BYTES = 1024 * 1024;
@@ -170,15 +170,15 @@ const EMPTY_EXCLUSIONS = new Set<string>();
 const CODEX_EXCLUSIONS = new Set(['.system']);
 
 /**
- * Discover a normalized, read-only catalog without changing Actoviq settings or
+ * Discover a normalized, read-only catalog without changing Hadamard settings or
  * any native runtime directory. The result is intentionally metadata-only so it
  * can be returned directly by GUI/TUI APIs.
  */
-export async function discoverActoviqSkillCatalog(
-  options: DiscoverActoviqSkillCatalogOptions = {},
-): Promise<ActoviqSkillCatalog> {
+export async function discoverHadamardSkillCatalog(
+  options: DiscoverHadamardSkillCatalogOptions = {},
+): Promise<HadamardSkillCatalog> {
   const descriptors = await buildSourceDescriptors(options);
-  const diagnostics: ActoviqSkillCatalogDiagnostic[] = [];
+  const diagnostics: HadamardSkillCatalogDiagnostic[] = [];
   const candidates: SkillCandidate[] = [];
 
   for (const source of descriptors) {
@@ -217,14 +217,14 @@ export async function discoverActoviqSkillCatalog(
 }
 
 async function buildSourceDescriptors(
-  options: DiscoverActoviqSkillCatalogOptions,
+  options: DiscoverHadamardSkillCatalogOptions,
 ): Promise<SkillSourceDescriptor[]> {
   const env = options.env ?? process.env;
   const osHomeDir = path.resolve(options.osHomeDir ?? os.homedir());
   const workDir = path.resolve(options.workDir ?? process.cwd());
-  const actoviqHomeDir = options.actoviqHomeDir?.trim()
-    ? path.resolve(options.actoviqHomeDir)
-    : resolveActoviqHome(undefined, { env, osHomeDir });
+  const hadamardHomeDir = options.hadamardHomeDir?.trim()
+    ? path.resolve(options.hadamardHomeDir)
+    : resolveHadamardHome(undefined, { env, osHomeDir });
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR?.trim()
     ? path.resolve(env.CLAUDE_CONFIG_DIR)
     : path.join(osHomeDir, '.claude');
@@ -245,28 +245,28 @@ async function buildSourceDescriptors(
     });
   };
 
-  if (options.includeBundledActoviq !== false) {
+  if (options.includeBundledHadamard !== false) {
     add({
-      id: 'actoviq:bundled',
-      label: 'Actoviq bundled skills',
-      provider: 'actoviq',
+      id: 'hadamard:bundled',
+      label: 'Hadamard bundled skills',
+      provider: 'hadamard',
       scope: 'bundled',
-      managedBy: 'Actoviq',
+      managedBy: 'Hadamard',
       readOnly: true,
       kind: 'bundled',
       excludeDirectoryNames: EMPTY_EXCLUSIONS,
     });
   }
 
-  addDirectorySource(add, 'actoviq:user', 'Actoviq user skills', 'actoviq', 'user', path.join(actoviqHomeDir, 'skills'), false);
-  addDirectorySource(add, 'actoviq:project', 'Actoviq project skills', 'actoviq', 'project', path.join(workDir, '.actoviq', 'skills'), false);
+  addDirectorySource(add, 'hadamard:user', 'Hadamard user skills', 'hadamard', 'user', path.join(hadamardHomeDir, 'skills'), false);
+  addDirectorySource(add, 'hadamard:project', 'Hadamard project skills', 'hadamard', 'project', path.join(workDir, '.hadamard', 'skills'), false);
   addDirectorySource(
     add,
-    'actoviq:project-commands',
-    'Actoviq project commands',
-    'actoviq',
+    'hadamard:project-commands',
+    'Hadamard project commands',
+    'hadamard',
     'project',
-    path.join(workDir, '.actoviq', 'commands'),
+    path.join(workDir, '.hadamard', 'commands'),
     false,
     EMPTY_EXCLUSIONS,
     undefined,
@@ -293,8 +293,8 @@ function addDirectorySource(
   add: (input: Omit<SkillSourceDescriptor, 'needsTrust' | 'order' | 'skillCount' | 'status'>) => void,
   id: string,
   label: string,
-  provider: ActoviqSkillCatalogProvider,
-  scope: Exclude<ActoviqSkillCatalogScope, 'bundled'>,
+  provider: HadamardSkillCatalogProvider,
+  scope: Exclude<HadamardSkillCatalogScope, 'bundled'>,
   root: string,
   readOnly: boolean,
   excludeDirectoryNames: ReadonlySet<string> = EMPTY_EXCLUSIONS,
@@ -345,7 +345,7 @@ async function addClaudePluginSources(
       workDir,
     );
     if (!installation) continue;
-    const scope: Exclude<ActoviqSkillCatalogScope, 'bundled'> =
+    const scope: Exclude<HadamardSkillCatalogScope, 'bundled'> =
       activation.scope === 'project' || activation.scope === 'local' ? 'project' : 'user';
     addDirectorySource(
       add,
@@ -603,19 +603,19 @@ async function existingDirectory(candidate: string): Promise<string | undefined>
   }
 }
 
-function providerLabel(provider: ActoviqSkillCatalogProvider): string {
+function providerLabel(provider: HadamardSkillCatalogProvider): string {
   switch (provider) {
     case 'claude-code': return 'Claude Code';
     case 'cc-switch': return 'cc-switch';
     case 'agents': return 'Shared agent configuration';
-    case 'actoviq': return 'Actoviq';
+    case 'hadamard': return 'Hadamard';
     case 'codex': return 'Codex';
     case 'cursor': return 'Cursor';
   }
 }
 
 function bundledCandidates(source: SkillSourceDescriptor): SkillCandidate[] {
-  return getDefaultActoviqBundledSkills().map(definition => {
+  return getDefaultHadamardBundledSkills().map(definition => {
     const serialized = JSON.stringify({
       name: definition.name,
       description: definition.description,
@@ -642,8 +642,8 @@ function bundledCandidates(source: SkillSourceDescriptor): SkillCandidate[] {
 
 async function scanSkillSource(
   source: SkillSourceDescriptor,
-  options: DiscoverActoviqSkillCatalogOptions,
-  diagnostics: ActoviqSkillCatalogDiagnostic[],
+  options: DiscoverHadamardSkillCatalogOptions,
+  diagnostics: HadamardSkillCatalogDiagnostic[],
 ): Promise<SkillCandidate[]> {
   let entries: Dirent[];
   try {
@@ -682,8 +682,8 @@ async function scanSkillSource(
 async function scanSkillEntry(
   source: SkillSourceDescriptor,
   entry: Dirent,
-  options: DiscoverActoviqSkillCatalogOptions,
-  diagnostics: ActoviqSkillCatalogDiagnostic[],
+  options: DiscoverHadamardSkillCatalogOptions,
+  diagnostics: HadamardSkillCatalogDiagnostic[],
 ): Promise<SkillCandidate | undefined> {
   const skillRoot = path.join(source.root!, entry.name);
   return scanSkillFile(source, {
@@ -698,8 +698,8 @@ async function scanSkillEntry(
 
 async function scanCommandSkillSource(
   source: SkillSourceDescriptor,
-  options: DiscoverActoviqSkillCatalogOptions,
-  diagnostics: ActoviqSkillCatalogDiagnostic[],
+  options: DiscoverHadamardSkillCatalogOptions,
+  diagnostics: HadamardSkillCatalogDiagnostic[],
 ): Promise<SkillCandidate[]> {
   let files: string[];
   try {
@@ -787,8 +787,8 @@ interface SkillFileDescriptor {
 async function scanSkillFile(
   source: SkillSourceDescriptor,
   descriptor: SkillFileDescriptor,
-  options: DiscoverActoviqSkillCatalogOptions,
-  diagnostics: ActoviqSkillCatalogDiagnostic[],
+  options: DiscoverHadamardSkillCatalogOptions,
+  diagnostics: HadamardSkillCatalogDiagnostic[],
 ): Promise<SkillCandidate | undefined> {
   const { directoryName, fallbackName, skillRoot, skillFile } = descriptor;
   let fileStat;
@@ -827,7 +827,7 @@ async function scanSkillFile(
     ]);
     const parsed = parseSkillFrontmatter(raw);
     const contentHash = hashContent(raw);
-    const diagnosticsForSkill: ActoviqSkillCatalogDiagnostic[] = parsed.diagnostics.map(item => ({
+    const diagnosticsForSkill: HadamardSkillCatalogDiagnostic[] = parsed.diagnostics.map(item => ({
       ...item,
       severity: 'error',
       sourceId: source.id,
@@ -899,8 +899,8 @@ async function scanSkillFile(
 function originFromSource(
   source: SkillSourceDescriptor,
   directoryName: string,
-  loadedFrom: ActoviqSkillCatalogOrigin['loadedFrom'] = 'skills',
-): ActoviqSkillCatalogOrigin {
+  loadedFrom: HadamardSkillCatalogOrigin['loadedFrom'] = 'skills',
+): HadamardSkillCatalogOrigin {
   return {
     sourceId: source.id,
     sourceLabel: source.label,
@@ -913,8 +913,8 @@ function originFromSource(
   };
 }
 
-async function detectCapabilities(skillRoot: string): Promise<ActoviqSkillCatalogCapability[]> {
-  const names: ActoviqSkillCatalogCapability[] = ['assets', 'references', 'scripts'];
+async function detectCapabilities(skillRoot: string): Promise<HadamardSkillCatalogCapability[]> {
+  const names: HadamardSkillCatalogCapability[] = ['assets', 'references', 'scripts'];
   const found = await Promise.all(names.map(async name => {
     try {
       return (await stat(path.join(skillRoot, name))).isDirectory() ? name : undefined;
@@ -922,13 +922,13 @@ async function detectCapabilities(skillRoot: string): Promise<ActoviqSkillCatalo
       return undefined;
     }
   }));
-  return found.filter((name): name is ActoviqSkillCatalogCapability => name !== undefined);
+  return found.filter((name): name is HadamardSkillCatalogCapability => name !== undefined);
 }
 
-function deduplicateCandidates(candidates: SkillCandidate[]): ActoviqSkillCatalogEntry[] {
-  const byCanonicalPath = new Map<string, ActoviqSkillCatalogEntry>();
-  const byNameAndHash = new Map<string, ActoviqSkillCatalogEntry>();
-  const skills: ActoviqSkillCatalogEntry[] = [];
+function deduplicateCandidates(candidates: SkillCandidate[]): HadamardSkillCatalogEntry[] {
+  const byCanonicalPath = new Map<string, HadamardSkillCatalogEntry>();
+  const byNameAndHash = new Map<string, HadamardSkillCatalogEntry>();
+  const skills: HadamardSkillCatalogEntry[] = [];
 
   for (const candidate of candidates) {
     const canonicalFile = candidate.origins[0]?.canonicalSkillFile;
@@ -946,7 +946,7 @@ function deduplicateCandidates(candidates: SkillCandidate[]): ActoviqSkillCatalo
     }
 
     const firstOrigin = candidate.origins[0]!;
-    const skill: ActoviqSkillCatalogEntry = {
+    const skill: HadamardSkillCatalogEntry = {
       id: skillId(candidate.name, firstOrigin),
       name: candidate.name,
       aliases: uniqueSorted(candidate.aliases),
@@ -979,12 +979,12 @@ function deduplicateCandidates(candidates: SkillCandidate[]): ActoviqSkillCatalo
   return skills;
 }
 
-function mergeCandidate(entry: ActoviqSkillCatalogEntry, candidate: SkillCandidate): void {
+function mergeCandidate(entry: HadamardSkillCatalogEntry, candidate: SkillCandidate): void {
   entry.aliases = uniqueSorted([...entry.aliases, ...candidate.aliases]);
   entry.capabilities = uniqueSorted([
     ...entry.capabilities,
     ...candidate.capabilities,
-  ]) as ActoviqSkillCatalogCapability[];
+  ]) as HadamardSkillCatalogCapability[];
   entry.declaredAllowedTools = uniqueSorted([
     ...entry.declaredAllowedTools,
     ...candidate.declaredAllowedTools,
@@ -1002,15 +1002,15 @@ function mergeCandidate(entry: ActoviqSkillCatalogEntry, candidate: SkillCandida
   }
 }
 
-function markConflicts(skills: ActoviqSkillCatalogEntry[]): ActoviqSkillCatalogConflict[] {
-  const byName = new Map<string, ActoviqSkillCatalogEntry[]>();
+function markConflicts(skills: HadamardSkillCatalogEntry[]): HadamardSkillCatalogConflict[] {
+  const byName = new Map<string, HadamardSkillCatalogEntry[]>();
   for (const skill of skills) {
     const entries = byName.get(skill.name) ?? [];
     entries.push(skill);
     byName.set(skill.name, entries);
   }
 
-  const conflicts: ActoviqSkillCatalogConflict[] = [];
+  const conflicts: HadamardSkillCatalogConflict[] = [];
   for (const [name, entries] of byName) {
     if (entries.length < 2) continue;
     for (const entry of entries) entry.conflict = true;
@@ -1170,7 +1170,7 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function skillId(name: string, origin: ActoviqSkillCatalogOrigin): string {
+function skillId(name: string, origin: HadamardSkillCatalogOrigin): string {
   return `skill:${hashContent(`${name}\0${origin.sourceId}\0${origin.directoryName}`).slice(0, 24)}`;
 }
 
@@ -1219,7 +1219,7 @@ async function mapWithConcurrency<T, U>(
   return results;
 }
 
-function toPublicSource(source: SkillSourceDescriptor): ActoviqSkillCatalogSource {
+function toPublicSource(source: SkillSourceDescriptor): HadamardSkillCatalogSource {
   return {
     id: source.id,
     label: source.label,
@@ -1234,13 +1234,13 @@ function toPublicSource(source: SkillSourceDescriptor): ActoviqSkillCatalogSourc
   };
 }
 
-function compareSkills(left: ActoviqSkillCatalogEntry, right: ActoviqSkillCatalogEntry): number {
+function compareSkills(left: HadamardSkillCatalogEntry, right: HadamardSkillCatalogEntry): number {
   return left.name.localeCompare(right.name) || left.contentHash.localeCompare(right.contentHash);
 }
 
 function compareDiagnostics(
-  left: ActoviqSkillCatalogDiagnostic,
-  right: ActoviqSkillCatalogDiagnostic,
+  left: HadamardSkillCatalogDiagnostic,
+  right: HadamardSkillCatalogDiagnostic,
 ): number {
   return left.sourceId.localeCompare(right.sourceId)
     || (left.path ?? '').localeCompare(right.path ?? '')

@@ -3,10 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const PRODUCT_SURFACES = [
-  ['src/cli/actoviq-react.ts', 'cli'],
-  ['src/tui/actoviqTui.ts', 'tui'],
-  ['src/gui/actoviqGui.ts', 'gui'],
-  ['src/parity/actoviqCleanBridgeCompatSdk.ts', 'bridge'],
+  ['src/cli/hadamard-react.ts', 'cli'],
+  ['src/tui/hadamardTui.ts', 'tui'],
+  ['src/gui/hadamardGui.ts', 'gui'],
+  ['src/parity/hadamardCleanBridgeCompatSdk.ts', 'bridge'],
 ] as const;
 
 describe('product RunEvent wiring boundary', () => {
@@ -32,7 +32,7 @@ describe('product RunEvent wiring boundary', () => {
 
   it('routes GUI issue dispatch through durable spawn/checkpoint coordination', async () => {
     const source = await readFile(
-      new URL('../src/gui/actoviqGui.ts', import.meta.url),
+      new URL('../src/gui/hadamardGui.ts', import.meta.url),
       'utf8',
     );
 
@@ -43,9 +43,9 @@ describe('product RunEvent wiring boundary', () => {
   });
 
   it.each([
-    'src/cli/actoviq-react.ts',
-    'src/tui/actoviqTui.ts',
-    'src/gui/actoviqGui.ts',
+    'src/cli/hadamard-react.ts',
+    'src/tui/hadamardTui.ts',
+    'src/gui/hadamardGui.ts',
   ])('%s mounts and closes the managed plugin runtime', async (file) => {
     const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
     expect(source).toContain('createManagedPluginRuntime');
@@ -54,8 +54,8 @@ describe('product RunEvent wiring boundary', () => {
   });
 
   it.each([
-    'src/cli/actoviq-react.ts',
-    'src/tui/actoviqTui.ts',
+    'src/cli/hadamard-react.ts',
+    'src/tui/hadamardTui.ts',
   ])('%s retries managed plugin cleanup and exits nonzero on failure', async (file) => {
     const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
     expect(source).toContain('closeManagedPluginsForExit');
@@ -67,7 +67,7 @@ describe('product RunEvent wiring boundary', () => {
 
   it('keeps React CLI interactive approvals out of the steering queue', async () => {
     const source = await readFile(
-      new URL('../src/cli/actoviq-react.ts', import.meta.url),
+      new URL('../src/cli/hadamard-react.ts', import.meta.url),
       'utf8',
     );
     const approvalBranch = source.indexOf('if (pendingToolApproval) {', source.indexOf("rl.on('line'"));
@@ -79,7 +79,7 @@ describe('product RunEvent wiring boundary', () => {
 
   it('reports GUI and Electron cleanup failures instead of always exiting successfully', async () => {
     const gui = await readFile(
-      new URL('../src/gui/actoviqGui.ts', import.meta.url),
+      new URL('../src/gui/hadamardGui.ts', import.meta.url),
       'utf8',
     );
     const electron = await readFile(

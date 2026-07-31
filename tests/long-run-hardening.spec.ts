@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
-  ActoviqProviderApiError,
+  HadamardProviderApiError,
   createAgentSdk,
   skill,
   tool,
@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 async function createSessionDirectory(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-long-run-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-long-run-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -705,14 +705,14 @@ describe('stream interruption recovery', () => {
     };
     const offlineStream = (): ModelStreamHandle => ({
       async finalMessage(): Promise<Message> {
-        throw new ActoviqProviderApiError('Provider transport error after retries: fetch failed', {
+        throw new HadamardProviderApiError('Provider transport error after retries: fetch failed', {
           status: 0,
           errorType: 'transport_error',
           cause: new TypeError('fetch failed'),
         });
       },
       async *[Symbol.asyncIterator](): AsyncIterator<MessageStreamEvent> {
-        throw new ActoviqProviderApiError('Provider transport error after retries: fetch failed', {
+        throw new HadamardProviderApiError('Provider transport error after retries: fetch failed', {
           status: 0,
           errorType: 'transport_error',
           cause: new TypeError('fetch failed'),
@@ -1144,7 +1144,7 @@ describe('fallback model switching', () => {
     const modelApi = new MockModelApi({
       create: (request) => {
         if (request.model === 'primary-model') {
-          throw new ActoviqProviderApiError('Overloaded', { status: 529 });
+          throw new HadamardProviderApiError('Overloaded', { status: 529 });
         }
         return makeMessage([{ type: 'text', text: 'Fallback model answered.' }]);
       },
@@ -1174,7 +1174,7 @@ describe('fallback model switching', () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({
       create: () => {
-        throw new ActoviqProviderApiError('Overloaded', { status: 529 });
+        throw new HadamardProviderApiError('Overloaded', { status: 529 });
       },
     });
     const sdk = await createAgentSdk({

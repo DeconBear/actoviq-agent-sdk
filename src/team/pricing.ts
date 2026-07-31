@@ -1,12 +1,12 @@
 /**
  * Pricing data for major AI models.
  * Built-in table updated per release. Users can override via
- * ~/.actoviq/pricing.json: { "<model-slug>": { "input": <$/1M>, "output": <$/1M> } }
+ * ~/.hadamard/pricing.json: { "<model-slug>": { "input": <$/1M>, "output": <$/1M> } }
  */
 import type { ModelPricing } from '../types.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 
 /** $ per 1M tokens */
 const BUILT_IN_PRICING: Record<string, ModelPricing> = {
@@ -49,7 +49,7 @@ const BUILT_IN_PRICING: Record<string, ModelPricing> = {
 };
 
 function resolvePricingPath(homeDir?: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'pricing.json');
+  return path.join(resolveHadamardHome(homeDir), 'pricing.json');
 }
 
 let _userPricing: Record<string, ModelPricing> | null = null;

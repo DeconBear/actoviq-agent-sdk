@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('typed lifecycle hooks runtime', () => {
   it('blocks a turn before the model request when a blocking TurnStart hook fails', async () => {
-    const sessionDirectory = await mkdtemp(path.join(os.tmpdir(), 'actoviq-typed-hooks-'));
+    const sessionDirectory = await mkdtemp(path.join(os.tmpdir(), 'hadamard-typed-hooks-'));
     tempDirs.push(sessionDirectory);
     const createMessage = vi.fn();
     const modelApi = {

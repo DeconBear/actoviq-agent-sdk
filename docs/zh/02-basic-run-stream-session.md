@@ -94,7 +94,7 @@ Hadamard SDK 的 session 历史是本地文件存储。
 默认目录：
 
 ```text
-~/.actoviq/projects/<workspace-key>
+~/.hadamard/projects/<workspace-key>
 ```
 
 其中 `<workspace-key>` 由规范化工作目录生成。旧版全局目录中的可归属数据会在首次解析项目目录时尝试迁移。里面保存的内容通常包括：

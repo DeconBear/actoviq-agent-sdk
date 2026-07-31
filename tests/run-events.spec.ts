@@ -161,9 +161,9 @@ describe('run event envelope', () => {
       traceId: root.traceId,
       parentSpanId: root.spanId,
       attributes: {
-        'actoviq.run.id': 'child',
-        'actoviq.run.parent_id': 'root',
-        'actoviq.events.dropped': 1,
+        'hadamard.run.id': 'child',
+        'hadamard.run.parent_id': 'root',
+        'hadamard.events.dropped': 1,
       },
       status: { code: 'OK' },
     });

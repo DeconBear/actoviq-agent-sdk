@@ -15,14 +15,14 @@ describe('scheduled automation persistence', () => {
   let workDir: string;
 
   beforeEach(async () => {
-    workDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-scheduled-'));
+    workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-scheduled-'));
   });
 
   afterEach(async () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  it('creates workflow tasks under the workspace .actoviq directory', async () => {
+  it('creates workflow tasks under the workspace .hadamard directory', async () => {
     const task = await upsertScheduledAutomationTask(workDir, {
       name: 'Daily review',
       kind: 'workflow',

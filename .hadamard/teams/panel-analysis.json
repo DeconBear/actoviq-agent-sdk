@@ -1,0 +1,145 @@
+{
+  "name": "panel-analysis",
+  "description": "Research Panel: independent read-only investigation from multiple angles, reconciled by a synthesizer.",
+  "mode": "graph",
+  "version": 3,
+  "orchestration": "graph",
+  "members": [],
+  "nodes": [
+    {
+      "kind": "task",
+      "id": "task",
+      "ui": {
+        "x": 454,
+        "y": 48
+      }
+    },
+    {
+      "model": "",
+      "role": "researcher",
+      "name": "researcher",
+      "systemPrompt": "Expert researcher. Investigate with read-only tools; cite sources.",
+      "kind": "agent",
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "TavilySearch"
+      ],
+      "timeoutMs": 300000,
+      "maxIterations": 12,
+      "reconnectAttempts": 10,
+      "ui": {
+        "x": 180,
+        "y": 258
+      }
+    },
+    {
+      "model": "",
+      "role": "skeptic",
+      "name": "skeptic",
+      "systemPrompt": "Rigorous skeptic. Verify with sources; challenge assumptions.",
+      "kind": "agent",
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "TavilySearch"
+      ],
+      "timeoutMs": 300000,
+      "maxIterations": 12,
+      "reconnectAttempts": 10,
+      "ui": {
+        "x": 710.7049620447574,
+        "y": 287.1383817814836
+      }
+    },
+    {
+      "model": "",
+      "role": "synthesizer",
+      "name": "synthesizer",
+      "systemPrompt": "Synthesizer. Reconcile the panel findings into the best answer and decide when they suffice.",
+      "kind": "agent",
+      "allowedTools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "TavilySearch"
+      ],
+      "timeoutMs": 300000,
+      "maxIterations": 12,
+      "reconnectAttempts": 10,
+      "maxRounds": 100,
+      "ui": {
+        "x": 415,
+        "y": 468
+      }
+    },
+    {
+      "kind": "return",
+      "id": "return-void",
+      "returnMode": "void",
+      "ui": {
+        "x": 454,
+        "y": 678
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "researcher",
+      "to": "synthesizer",
+      "channel": "message",
+      "trigger": "on_complete"
+    },
+    {
+      "from": "skeptic",
+      "to": "synthesizer",
+      "channel": "message",
+      "trigger": "on_complete"
+    },
+    {
+      "from": "task",
+      "to": "researcher",
+      "trigger": "on_complete",
+      "channel": "message",
+      "payloadTemplate": "{{run.prompt}}"
+    },
+    {
+      "from": "task",
+      "to": "skeptic",
+      "trigger": "on_complete",
+      "channel": "message",
+      "payloadTemplate": "{{run.prompt}}"
+    },
+    {
+      "from": "synthesizer",
+      "to": "return-void",
+      "trigger": "on_complete",
+      "condition": "FINALIZE",
+      "channel": "message"
+    },
+    {
+      "from": "synthesizer",
+      "to": "researcher",
+      "trigger": "on_complete",
+      "condition": "/^CONTINUE/i",
+      "channel": "message",
+      "loop": true
+    },
+    {
+      "from": "synthesizer",
+      "to": "skeptic",
+      "trigger": "on_complete",
+      "condition": "/^CONTINUE/i",
+      "channel": "message",
+      "loop": true
+    }
+  ],
+  "timeoutMs": 300000,
+  "maxRounds": 100,
+  "maxIterations": 12
+}

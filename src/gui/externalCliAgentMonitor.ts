@@ -67,7 +67,7 @@ function activityOf(item: ExternalCliAgentMonitorRun, at: string): AgentExecutio
 
 function groupKey(item: ExternalCliAgentMonitorRun): string {
   return [
-    item.run.actoviqSessionId,
+    item.run.hadamardSessionId,
     item.run.configId,
     pathIdentity(item.run.cwd),
   ].join('\u0000');
@@ -117,11 +117,11 @@ export function createExternalCliAgentExecutionSnapshots(
       rootExecutionId,
       nodes: [{
         id: rootExecutionId,
-        sessionId: run.actoviqSessionId,
+        sessionId: run.hadamardSessionId,
         rootExecutionId,
         parentExecutionId: null,
         parentSessionId: null,
-        canonicalPath: `/external/${latest.runtime || 'cli'}/${run.nativeSessionId || run.actoviqSessionId}`,
+        canonicalPath: `/external/${latest.runtime || 'cli'}/${run.nativeSessionId || run.hadamardSessionId}`,
         spawnOrder: 0,
         agentName: latest.configName || `${latest.runtime || 'External'} CLI`,
         nickname: latest.configName || null,

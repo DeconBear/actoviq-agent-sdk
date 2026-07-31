@@ -12,7 +12,7 @@ const flagValue = flag => {
 };
 const transcriptPath = flagValue('--transcript');
 if (transcriptPath) mkdirSync(path.dirname(transcriptPath), { recursive: true });
-const logPath = process.env.ACTOVIQ_E2E_INVOCATIONS;
+const logPath = process.env.HADAMARD_E2E_INVOCATIONS;
 const log = value => {
   if (logPath) appendFileSync(logPath, `${JSON.stringify(value)}\n`, 'utf8');
 };

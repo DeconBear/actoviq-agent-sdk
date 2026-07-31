@@ -1,5 +1,5 @@
 /**
- * GoalStore - persists a Goal in a session's metadata under `__actoviqGoal`.
+ * GoalStore - persists a Goal in a session's metadata under `__hadamardGoal`.
  *
  * The store is a thin adapter over a session-metadata port so it can run
  * against either a live `AgentSession` (which owns `mergeMetadata`) or a raw
@@ -12,7 +12,7 @@ import type { Goal, GoalBlockAudit, GoalBudget, GoalEvidence, GoalStatus } from 
 import { GOAL_SCHEMA_VERSION } from './types.js';
 
 /** Metadata key under which the Goal contract is persisted. */
-export const GOAL_METADATA_KEY = '__actoviqGoal';
+export const GOAL_METADATA_KEY = '__hadamardGoal';
 
 /**
  * Port to a session's metadata. `read` returns the raw persisted value;

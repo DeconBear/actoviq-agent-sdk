@@ -34,7 +34,7 @@ async function exists(filePath: string): Promise<boolean> {
 
 describe('storage path safety', () => {
   it('rejects traversal session ids before touching files outside the session root', async () => {
-    const { root, escaped } = await createRoot('actoviq-storage-session-');
+    const { root, escaped } = await createRoot('hadamard-storage-session-');
     await mkdir(path.join(root, 'sessions'), { recursive: true });
     const store = new SessionStore(root);
 
@@ -44,7 +44,7 @@ describe('storage path safety', () => {
   });
 
   it('rejects traversal task ids before touching files outside the task root', async () => {
-    const { root, escaped } = await createRoot('actoviq-storage-task-');
+    const { root, escaped } = await createRoot('hadamard-storage-task-');
     await mkdir(path.join(root, 'tasks'), { recursive: true });
     const store = new BackgroundTaskStore(root);
 
@@ -54,7 +54,7 @@ describe('storage path safety', () => {
   });
 
   it('rejects traversal mailbox team names and recipients', async () => {
-    const { root, escaped } = await createRoot('actoviq-storage-mailbox-');
+    const { root, escaped } = await createRoot('hadamard-storage-mailbox-');
     const store = new MailboxStore(root);
     const message = {
       from: 'lead',
@@ -70,7 +70,7 @@ describe('storage path safety', () => {
   });
 
   it('rejects traversal teammate team names and names', async () => {
-    const { root, escaped } = await createRoot('actoviq-storage-teammate-');
+    const { root, escaped } = await createRoot('hadamard-storage-teammate-');
     const store = new TeammateStore(root);
     const record = {
       name: 'member',

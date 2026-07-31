@@ -2,8 +2,8 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import readline from 'node:readline';
 
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgePermissionMode,
+  HadamardBridgeJsonEvent,
+  HadamardBridgePermissionMode,
 } from '../types.js';
 import { IS_WINDOWS } from './bridgeExecResolver.js';
 import { terminateManagedProcessTree } from './bridgeProcessTree.js';
@@ -40,9 +40,9 @@ export interface ReasonixManagedTurnOptions {
   model?: string;
   effort?: string;
   maxBudgetUsd?: number;
-  permissionMode: ActoviqBridgePermissionMode;
+  permissionMode: HadamardBridgePermissionMode;
   signal?: AbortSignal;
-  onEvent?: (event: ActoviqBridgeJsonEvent) => void;
+  onEvent?: (event: HadamardBridgeJsonEvent) => void;
 }
 
 export interface ReasonixManagedTurnResult {
@@ -53,7 +53,7 @@ export interface ReasonixManagedTurnResult {
 }
 
 interface ActiveTurn {
-  onEvent?: (event: ActoviqBridgeJsonEvent) => void;
+  onEvent?: (event: HadamardBridgeJsonEvent) => void;
   resolve: (result: { sessionId: string; reusable: boolean }) => void;
   reject: (error: Error) => void;
 }
@@ -287,7 +287,7 @@ export class ReasonixManagedClient {
     const active = this.activeTurn;
     if (!active) return;
     for (const event of result.events) {
-      active.onEvent?.(redactValue(event, this.secrets) as ActoviqBridgeJsonEvent);
+      active.onEvent?.(redactValue(event, this.secrets) as HadamardBridgeJsonEvent);
     }
     if (!result.done) return;
     this.activeTurn = undefined;

@@ -1,0 +1,11 @@
+{
+  "name": "145",
+  "description": "5641",
+  "mode": "graph",
+  "version": 3,
+  "orchestration": "graph",
+  "squadType": "subagent",
+  "members": [],
+  "nodes": [],
+  "edges": []
+}

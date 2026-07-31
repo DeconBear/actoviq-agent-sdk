@@ -4,12 +4,12 @@
 
 记忆系统提供跨会话的持久化、上下文感知知识。Dream 系统执行反思性整合——定期回顾最近的会话并提取持久的记忆。
 
-位置：`src/memory/actoviqMemory.ts`, `src/memory/actoviqDream.ts`
+位置：`src/memory/hadamardMemory.ts`, `src/memory/hadamardDream.ts`
 
 ### 记忆存储布局
 
 ```
-~/.actoviq/projects/<hash>/memory/
+~/.hadamard/projects/<hash>/memory/
 ├── MEMORY.md                 # 所有记忆的索引
 ├── user-expertise.md         # 单独的记忆文件
 ├── project-architecture.md
@@ -46,7 +46,7 @@ metadata:
 Dream 触发（自动或通过 /dream 手动）
     │
     ▼
-1. 获取锁（tryAcquireActoviqConsolidationLock — 防止并发）
+1. 获取锁（tryAcquireHadamardConsolidationLock — 防止并发）
     │
     ▼
 2. 识别自上次整合以来的会话
@@ -63,7 +63,7 @@ Dream 触发（自动或通过 /dream 手动）
 5. 写入更新的 MEMORY.md + 记忆文件
     │
     ▼
-6. 记录整合时间戳（recordActoviqConsolidation）
+6. 记录整合时间戳（recordHadamardConsolidation）
     │
     ▼
 7. 释放锁
@@ -76,7 +76,7 @@ Dream 触发（自动或通过 /dream 手动）
 ### 记忆新鲜度
 
 ```typescript
-function getActoviqMemoryFreshnessNote(ageMs: number): string {
+function getHadamardMemoryFreshnessNote(ageMs: number): string {
   if (ageMs < 3600000) return ' (created < 1 hour ago)';
   if (ageMs < 86400000) return ` (created ${Math.round(ageMs / 3600000)}h ago)`;
   return ` (created ${Math.round(ageMs / 86400000)}d ago)`;

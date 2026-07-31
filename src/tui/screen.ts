@@ -1,5 +1,5 @@
 /**
- * Scrollback-friendly renderer for the Actoviq TUI, mirroring Claude Code's
+ * Scrollback-friendly renderer for the Hadamard TUI, mirroring Claude Code's
  * default REPL model (Ink <Static> + dynamic bottom region) without React:
  *
  * - Transcript lines are printed permanently into the normal terminal

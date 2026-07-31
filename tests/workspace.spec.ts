@@ -27,8 +27,8 @@ async function createTempDir(prefix: string): Promise<string> {
 
 describe('workspace helpers', () => {
   it('creates a standard workspace and can seed it from an existing directory', async () => {
-    const seedDir = await createTempDir('actoviq-workspace-seed-');
-    const workspaceRoot = await createTempDir('actoviq-workspace-root-');
+    const seedDir = await createTempDir('hadamard-workspace-seed-');
+    const workspaceRoot = await createTempDir('hadamard-workspace-root-');
     const targetPath = path.join(workspaceRoot, 'seeded-workspace');
 
     await mkdir(path.join(seedDir, 'nested'), { recursive: true });
@@ -47,11 +47,11 @@ describe('workspace helpers', () => {
   });
 
   it('creates a temp workspace and removes it when disposed', async () => {
-    const seedDir = await createTempDir('actoviq-temp-seed-');
+    const seedDir = await createTempDir('hadamard-temp-seed-');
     await writeFile(path.join(seedDir, 'seed.txt'), 'temp seed', 'utf8');
 
     const workspace = await createTempWorkspace({
-      prefix: 'actoviq-temp-test-',
+      prefix: 'hadamard-temp-test-',
       copyFrom: seedDir,
       metadata: { source: 'temp-seed' },
     });
@@ -66,12 +66,12 @@ describe('workspace helpers', () => {
   });
 
   it('creates and disposes a git worktree workspace', async () => {
-    const repoDir = await createTempDir('actoviq-worktree-repo-');
-    const worktreeParent = await createTempDir('actoviq-worktree-parent-');
+    const repoDir = await createTempDir('hadamard-worktree-repo-');
+    const worktreeParent = await createTempDir('hadamard-worktree-parent-');
     const worktreePath = path.join(worktreeParent, 'review-worktree');
 
     await execFile('git', ['init', '-b', 'main'], { cwd: repoDir, windowsHide: true });
-    await execFile('git', ['config', 'user.name', 'Actoviq Tests'], { cwd: repoDir, windowsHide: true });
+    await execFile('git', ['config', 'user.name', 'Hadamard Tests'], { cwd: repoDir, windowsHide: true });
     await execFile('git', ['config', 'user.email', 'tests@example.com'], {
       cwd: repoDir,
       windowsHide: true,
@@ -107,7 +107,7 @@ describe('workspace helpers', () => {
   });
 
   it('refuses to force-remove unsafe git worktree targets', async () => {
-    const repoDir = await createTempDir('actoviq-worktree-repo-');
+    const repoDir = await createTempDir('hadamard-worktree-repo-');
     await execFile('git', ['init', '-b', 'main'], { cwd: repoDir, windowsHide: true });
 
     await expect(

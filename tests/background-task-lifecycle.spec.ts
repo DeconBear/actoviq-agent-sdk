@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ActoviqBackgroundTaskManager } from '../src/runtime/actoviqBackgroundTasks.js';
+import { HadamardBackgroundTaskManager } from '../src/runtime/hadamardBackgroundTasks.js';
 import { BackgroundTaskStore } from '../src/storage/backgroundTaskStore.js';
 
 const tempDirs: string[] = [];
@@ -17,15 +17,15 @@ afterEach(async () => {
 });
 
 async function createManager(): Promise<{
-  manager: ActoviqBackgroundTaskManager;
+  manager: HadamardBackgroundTaskManager;
   store: BackgroundTaskStore;
   workDir: string;
 }> {
-  const workDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-background-lifecycle-'));
+  const workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-background-lifecycle-'));
   tempDirs.push(workDir);
   const store = new BackgroundTaskStore(path.join(workDir, 'state'));
   return {
-    manager: new ActoviqBackgroundTaskManager(store),
+    manager: new HadamardBackgroundTaskManager(store),
     store,
     workDir,
   };
@@ -42,7 +42,7 @@ function deferred(): {
   return { promise, resolve };
 }
 
-describe('ActoviqBackgroundTaskManager lifecycle', () => {
+describe('HadamardBackgroundTaskManager lifecycle', () => {
   it('keeps a successful task completed when its settlement observer throws', async () => {
     const { manager, store, workDir } = await createManager();
     const onSettled = vi.fn(async () => {
@@ -288,7 +288,7 @@ describe('ActoviqBackgroundTaskManager lifecycle', () => {
     await progressLoadCaptured.promise;
 
     const cancellingStore = new BackgroundTaskStore(path.join(workDir, 'state'));
-    const cancellingManager = new ActoviqBackgroundTaskManager(cancellingStore);
+    const cancellingManager = new HadamardBackgroundTaskManager(cancellingStore);
     const cancelMutationStarted = deferred();
     const originalCancelMutate = cancellingStore.mutate.bind(cancellingStore);
     vi.spyOn(cancellingStore, 'mutate').mockImplementation((taskId, updater) => {
@@ -321,7 +321,7 @@ describe('ActoviqBackgroundTaskManager lifecycle', () => {
     const { manager, store, workDir } = await createManager();
     const started = deferred();
     const finishRun = deferred();
-    const secondManager = new ActoviqBackgroundTaskManager(
+    const secondManager = new HadamardBackgroundTaskManager(
       new BackgroundTaskStore(path.join(workDir, 'state')),
     );
     const launched = await manager.launch({
@@ -397,7 +397,7 @@ describe('ActoviqBackgroundTaskManager lifecycle', () => {
     });
     await runStarted.promise;
 
-    const secondManager = new ActoviqBackgroundTaskManager(
+    const secondManager = new HadamardBackgroundTaskManager(
       new BackgroundTaskStore(path.join(workDir, 'state')),
     );
     await expect(secondManager.reconcileInterruptedTasks()).resolves.toEqual([]);

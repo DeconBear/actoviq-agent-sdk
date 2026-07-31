@@ -40,7 +40,7 @@ export async function runRuntimeBenchmarks(
   assertUniqueMetricIds(metrics);
   const report: RuntimeBenchmarkReport = {
     schemaVersion: 1,
-    suite: 'actoviq-runtime',
+    suite: 'hadamard-runtime',
     mode,
     generatedAt: new Date().toISOString(),
     configurationFingerprint: fingerprint(workload),
@@ -100,7 +100,7 @@ export function assertRuntimeBenchmarkReport(
   value: unknown,
 ): asserts value is RuntimeBenchmarkReport {
   if (!isRecord(value)) throw new TypeError('Benchmark report must be an object.');
-  if (value.schemaVersion !== 1 || value.suite !== 'actoviq-runtime') {
+  if (value.schemaVersion !== 1 || value.suite !== 'hadamard-runtime') {
     throw new TypeError('Unsupported runtime benchmark report schema.');
   }
   if (value.mode !== 'smoke' && value.mode !== 'full') {

@@ -247,7 +247,7 @@ function parseLegacySession(input: {
     tenantId: input.tenantId,
     sessionId: parsed.id,
     metadata: {
-      sourceFormat: 'actoviq-json-v1',
+      sourceFormat: 'hadamard-json-v1',
       legacy: header,
     },
     createdAt: fallbackCreatedAt,

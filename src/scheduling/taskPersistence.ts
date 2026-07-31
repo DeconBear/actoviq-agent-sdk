@@ -29,7 +29,7 @@ interface ScheduledAutomationFile {
 }
 
 export function scheduledAutomationFilePath(workDir: string): string {
-  return path.join(path.resolve(workDir), '.actoviq', 'scheduled-tasks.json');
+  return path.join(path.resolve(workDir), '.hadamard', 'scheduled-tasks.json');
 }
 
 export async function listScheduledAutomationTasks(workDir: string): Promise<ScheduledAutomationTask[]> {

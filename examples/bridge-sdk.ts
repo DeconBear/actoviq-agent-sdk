@@ -1,14 +1,14 @@
 import path from 'node:path';
 
-import { createActoviqBridgeSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import { createHadamardBridgeSdk, loadDefaultHadamardSettings } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 
-const sdk = await createActoviqBridgeSdk({
-  ...(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH
+const sdk = await createHadamardBridgeSdk({
+  ...(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH
     ? {
         executable: process.execPath,
-        cliPath: path.resolve(process.env.ACTOVIQ_BRIDGE_EXAMPLE_CLI_PATH),
+        cliPath: path.resolve(process.env.HADAMARD_BRIDGE_EXAMPLE_CLI_PATH),
       }
     : {}),
   workDir: process.cwd(),
@@ -17,7 +17,7 @@ const sdk = await createActoviqBridgeSdk({
 
 try {
   const result = await sdk.run(
-    'Use Actoviq Runtime built-in tools to inspect the examples directory, then summarize what examples/quickstart.ts does.',
+    'Use Hadamard Runtime built-in tools to inspect the examples directory, then summarize what examples/quickstart.ts does.',
   );
 
   console.log('Agents:', result.initEvent?.agents);

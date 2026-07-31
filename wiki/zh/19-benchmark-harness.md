@@ -2,7 +2,7 @@
 
 ## 架构
 
-Benchmark 测试框架通过在隔离的工作区中运行 SDK 实例并评分确定性的最终状态来评估 agent 行为。它比较 Hadamard SDK、actoviq-bridge-sdk 和官方 Claude Agent SDK。
+Benchmark 测试框架通过在隔离的工作区中运行 SDK 实例并评分确定性的最终状态来评估 agent 行为。它比较 Hadamard SDK、hadamard-bridge-sdk 和官方 Claude Agent SDK。
 
 位置：`bench/*`
 
@@ -62,7 +62,7 @@ interface BehaviorExpectations {
 
 ```typescript
 // 用例声明 budget.maxTurns：
-//   → Hadamard SDK: ACTOVIQ_BENCH_MAX_TOOL_ITERATIONS 环境变量
+//   → Hadamard SDK: HADAMARD_BENCH_MAX_TOOL_ITERATIONS 环境变量
 //   → Bridge SDK: --max-turns CLI 标志
 //   → 官方 SDK: maxTurns 选项
 // 未声明 budget：

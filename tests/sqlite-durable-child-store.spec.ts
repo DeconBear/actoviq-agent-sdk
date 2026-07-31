@@ -9,7 +9,7 @@ import { SqliteDurableChildStore, SqliteStorageV2 } from '../src/node/index.js';
 
 describe('SqliteDurableChildStore', () => {
   it('persists, enumerates, and CAS-updates children across connection restart', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-durable-child-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-durable-child-'));
     const filename = path.join(root, 'children.sqlite');
     try {
       const firstStorage = await SqliteStorageV2.open({ filename });

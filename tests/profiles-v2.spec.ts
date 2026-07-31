@@ -157,7 +157,7 @@ describe('composable agent profiles', () => {
 
   it('declares research artifact and citation result metadata', () => {
     const profile = buildProfile('research');
-    const metadata = profile.spec.metadata?.actoviqProfile as JsonObject;
+    const metadata = profile.spec.metadata?.hadamardProfile as JsonObject;
     const result = metadata.result as JsonObject;
 
     expect(profile.config.dependencies.requiredServices).toContain('artifacts');

@@ -39,9 +39,9 @@ describe('team preferences (plan §3.3 / Phase 0)', () => {
     // surfaces implement this with the same guard expression.
     const root = join(import.meta.dirname, '..');
     for (const file of [
-      join(root, 'src', 'cli', 'actoviq-react.ts'),
-      join(root, 'src', 'tui', 'actoviqTui.ts'),
-      join(root, 'src', 'gui', 'actoviqGui.ts'),
+      join(root, 'src', 'cli', 'hadamard-react.ts'),
+      join(root, 'src', 'tui', 'hadamardTui.ts'),
+      join(root, 'src', 'gui', 'hadamardGui.ts'),
     ]) {
       const source = readFileSync(file, 'utf8');
       expect(source, file).toContain('activeTeamTool && teamPrefs.autoInvoke ?');

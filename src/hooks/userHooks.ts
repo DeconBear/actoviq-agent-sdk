@@ -3,18 +3,18 @@
  *
  * Claude Code lets users gate tools behind shell commands in settings.json.
  * This module provides a `createPreToolUseHookClassifier()` that loads a
- * `hooks.PreToolUse[]` block from the Actoviq settings store and runs each
+ * `hooks.PreToolUse[]` block from the Hadamard settings store and runs each
  * matching command before a tool executes. A command that exits non-zero (or
  * prints a line starting with "BLOCK") denies the tool; a zero exit allows it.
  *
- * The classifier is the engine's PreToolUse seam (actoviqPermissions.ts), so
+ * The classifier is the engine's PreToolUse seam (hadamardPermissions.ts), so
  * this needs no engine changes — the TUI/SDK wires it via `classifier` in the
  * run options. Hooks are best-effort and never throw (a failing hook command
  * denies with the captured stderr, not a crash).
  */
 import { spawnSync } from 'node:child_process';
 
-import type { ActoviqToolClassifier, ActoviqClassifierOutcome } from '../types.js';
+import type { HadamardToolClassifier, HadamardClassifierOutcome } from '../types.js';
 
 export interface PreToolUseHook {
   /** Glob-style matcher for the tool name, e.g. "Bash", "Write", "Edit", "*". */
@@ -175,8 +175,8 @@ function toolMatches(matcher: string, toolName: string): boolean {
  */
 export function createPreToolUseHookClassifier(
   loadHooks: () => PreToolUseHook[],
-): ActoviqToolClassifier {
-  return async (ctx): Promise<ActoviqClassifierOutcome | void> => {
+): HadamardToolClassifier {
+  return async (ctx): Promise<HadamardClassifierOutcome | void> => {
     const hooks = loadHooks().filter(isHookEnabled);
     if (hooks.length === 0) return undefined;
     const matched = hooks.filter(h => toolMatches(h.matcher, ctx.publicName));
@@ -193,10 +193,10 @@ export function createPreToolUseHookClassifier(
           timeout: 10_000,
           env: {
             ...process.env,
-            ACTOVIQ_HOOK_EVENT: 'PreToolUse',
-            ACTOVIQ_HOOK_TOOL: ctx.publicName,
-            ACTOVIQ_HOOK_INPUT: (() => { try { return JSON.stringify(ctx.input ?? {}); } catch { return '{}'; } })(),
-            ACTOVIQ_HOOK_PROMPT: typeof ctx.prompt === 'string' ? ctx.prompt.slice(0, 4000) : '',
+            HADAMARD_HOOK_EVENT: 'PreToolUse',
+            HADAMARD_HOOK_TOOL: ctx.publicName,
+            HADAMARD_HOOK_INPUT: (() => { try { return JSON.stringify(ctx.input ?? {}); } catch { return '{}'; } })(),
+            HADAMARD_HOOK_PROMPT: typeof ctx.prompt === 'string' ? ctx.prompt.slice(0, 4000) : '',
           },
         });
         const stdout = (result.stdout ?? '').trim();
@@ -244,10 +244,10 @@ export function runPostToolUseHooks(
         timeout: 10_000,
         env: {
           ...process.env,
-          ACTOVIQ_HOOK_EVENT: 'PostToolUse',
-          ACTOVIQ_HOOK_TOOL: publicName,
-          ACTOVIQ_HOOK_INPUT: JSON.stringify(input ?? {}).slice(0, 4000),
-          ACTOVIQ_HOOK_OUTPUT: typeof output === 'string' ? output.slice(0, 8000) : JSON.stringify(output ?? {}).slice(0, 8000),
+          HADAMARD_HOOK_EVENT: 'PostToolUse',
+          HADAMARD_HOOK_TOOL: publicName,
+          HADAMARD_HOOK_INPUT: JSON.stringify(input ?? {}).slice(0, 4000),
+          HADAMARD_HOOK_OUTPUT: typeof output === 'string' ? output.slice(0, 8000) : JSON.stringify(output ?? {}).slice(0, 8000),
         },
       });
     } catch {
@@ -273,7 +273,7 @@ export function runSessionStartHooks(
         input: '',
         encoding: 'utf8',
         timeout: 15_000,
-        env: { ...process.env, ACTOVIQ_HOOK_EVENT: 'SessionStart' },
+        env: { ...process.env, HADAMARD_HOOK_EVENT: 'SessionStart' },
       });
     } catch {
       // best-effort

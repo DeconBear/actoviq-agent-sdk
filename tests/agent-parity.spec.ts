@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import {
-  createActoviqComputerUseToolkit,
+  createHadamardComputerUseToolkit,
   createAgentSdk,
   tool,
   type ModelApi,
@@ -119,9 +119,9 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-describe('Actoviq advanced parity features', () => {
+describe('Hadamard advanced parity features', () => {
   it('applies permission rules before mutating tools execute', async () => {
-    const sessionDirectory = await createTempDir('actoviq-permissions-');
+    const sessionDirectory = await createTempDir('hadamard-permissions-');
     let executed = false;
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -174,7 +174,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('allows classifier-approved tool execution in restrictive mode', async () => {
-    const sessionDirectory = await createTempDir('actoviq-classifier-');
+    const sessionDirectory = await createTempDir('hadamard-classifier-');
     let executed = false;
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -228,7 +228,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('adds api microcompact context management for tool-heavy follow-up requests', async () => {
-    const sessionDirectory = await createTempDir('actoviq-microcompact-');
+    const sessionDirectory = await createTempDir('hadamard-microcompact-');
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
         if (index === 0) {
@@ -277,7 +277,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('keeps historical tool results intact for OpenAI-compatible follow-up requests', async () => {
-    const sessionDirectory = await createTempDir('actoviq-openai-prefix-stable-');
+    const sessionDirectory = await createTempDir('hadamard-openai-prefix-stable-');
     const longPayload = 'lookup-result-'.repeat(200);
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -334,7 +334,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('supports swarm teammates, side sessions, and background completion mail', async () => {
-    const sessionDirectory = await createTempDir('actoviq-swarm-');
+    const sessionDirectory = await createTempDir('hadamard-swarm-');
     const seenPrompts: string[] = [];
     const modelApi = new MockModelApi({
       create: async (request) => {
@@ -394,7 +394,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('supports mailbox-driven teammate continuation and teammate recovery', async () => {
-    const sessionDirectory = await createTempDir('actoviq-swarm-continuity-');
+    const sessionDirectory = await createTempDir('hadamard-swarm-continuity-');
     const seenPrompts: string[] = [];
     let hasFailedOnce = false;
     const modelApi = new MockModelApi({
@@ -476,7 +476,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('can replace private computer-use tooling with public executor-backed tools', async () => {
-    const sessionDirectory = await createTempDir('actoviq-computer-');
+    const sessionDirectory = await createTempDir('hadamard-computer-');
     const calls: string[] = [];
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -536,7 +536,7 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('supports multi-step public computer-use workflows', async () => {
-    const sessionDirectory = await createTempDir('actoviq-computer-workflow-');
+    const sessionDirectory = await createTempDir('hadamard-computer-workflow-');
     const calls: string[] = [];
     const modelApi = new MockModelApi({
       create: async (_request, index) => {
@@ -617,9 +617,9 @@ describe('Actoviq advanced parity features', () => {
   });
 
   it('provides a composable computer-use toolkit with focus-aware workflow steps', async () => {
-    const sessionDirectory = await createTempDir('actoviq-computer-toolkit-');
+    const sessionDirectory = await createTempDir('hadamard-computer-toolkit-');
     const calls: string[] = [];
-    const toolkit = createActoviqComputerUseToolkit({
+    const toolkit = createHadamardComputerUseToolkit({
       executor: {
         openUrl: async (url) => {
           calls.push(`open:${url}`);
@@ -689,7 +689,7 @@ describe('Actoviq advanced parity features', () => {
         | { stepCount?: number; results?: Array<Record<string, unknown>> }
         | undefined;
 
-      expect(toolkit.mcpServer.name).toBe('actoviq-computer-use');
+      expect(toolkit.mcpServer.name).toBe('hadamard-computer-use');
       expect(result.toolCalls[0]?.publicName).toBe('computer_run_workflow');
       expect(workflowOutput?.stepCount).toBe(5);
       expect(calls).toEqual([

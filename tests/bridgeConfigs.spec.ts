@@ -155,8 +155,8 @@ describe('bridgeConfigs persistence', () => {
     expect(read.configs.find(c => c.name === 'migrated')?.provider).toBe('anthropic');
   });
 
-  it('getBridgeConfigsPath points under ~/.actoviq/bridge-configs.json', () => {
-    expect(getBridgeConfigsPath('/home/user')).toBe(path.join('/home/user', '.actoviq', 'bridge-configs.json'));
+  it('getBridgeConfigsPath points under ~/.hadamard/bridge-configs.json', () => {
+    expect(getBridgeConfigsPath('/home/user')).toBe(path.join('/home/user', '.hadamard', 'bridge-configs.json'));
   });
 });
 
@@ -190,7 +190,7 @@ describe('managed External CLI runtime gates', () => {
 
 describe('legacy provider migration', () => {
   it('migrates legacy RuntimeProviderId → in-process provider on read', async () => {
-    // Must use an isolated temp home — never os.tmpdir()/.actoviq, which is shared.
+    // Must use an isolated temp home — never os.tmpdir()/.hadamard, which is shared.
     const home = await makeHome();
     const file = getBridgeConfigsPath(home);
     mkdirSync(path.dirname(file), { recursive: true });

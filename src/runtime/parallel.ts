@@ -1,5 +1,5 @@
 import type { ParallelOptions, RaceOptions } from '../types.js';
-import { ActoviqSdkError } from '../errors.js';
+import { HadamardSdkError } from '../errors.js';
 
 export async function parallel<T>(
   tasks: Array<() => Promise<T>>,
@@ -48,7 +48,7 @@ export async function parallel<T>(
   }
 
   if (signal?.aborted) {
-    throw new ActoviqSdkError('Parallel execution aborted');
+    throw new HadamardSdkError('Parallel execution aborted');
   }
 
   if (firstError && failFast) {
@@ -56,7 +56,7 @@ export async function parallel<T>(
   }
 
   if (errors.length === tasks.length) {
-    throw new ActoviqSdkError(
+    throw new HadamardSdkError(
       `All tasks failed: ${errors.map((e) => e.error.message).join('; ')}`,
     );
   }
@@ -71,7 +71,7 @@ export async function race<T>(
   const { timeoutMs, signal } = options;
 
   if (tasks.length === 0) {
-    throw new ActoviqSdkError('race() requires at least one task');
+    throw new HadamardSdkError('race() requires at least one task');
   }
 
   const contenders: Promise<{ value: T }>[] = tasks.map((t) =>
@@ -84,7 +84,7 @@ export async function race<T>(
     contenders.push(
       new Promise<never>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new ActoviqSdkError(`race() timed out after ${timeoutMs}ms`)),
+          () => reject(new HadamardSdkError(`race() timed out after ${timeoutMs}ms`)),
           timeoutMs,
         );
       }),
@@ -97,9 +97,9 @@ export async function race<T>(
     contenders.push(
       new Promise<never>((_, reject) => {
         if (signal.aborted) {
-          reject(new ActoviqSdkError('race() aborted'));
+          reject(new HadamardSdkError('race() aborted'));
         } else {
-          const onAbort = () => reject(new ActoviqSdkError('race() aborted'));
+          const onAbort = () => reject(new HadamardSdkError('race() aborted'));
           signal.addEventListener('abort', onAbort, { once: true });
         }
       }),

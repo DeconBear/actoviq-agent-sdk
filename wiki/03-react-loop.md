@@ -23,11 +23,11 @@ Location: `src/runtime/conversationEngine.ts:90`
 ```
 conversationEngine.ts
     ├── types.ts              (AgentRunResult, AgentEvent, ModelRequest, etc.)
-    ├── actoviqCompact.ts     (context size management)
-    ├── actoviqPermissions.ts (tool permission decisions)
-    ├── actoviqApiMicrocompact.ts (per-request message trimming)
+    ├── hadamardCompact.ts     (context size management)
+    ├── hadamardPermissions.ts (tool permission decisions)
+    ├── hadamardApiMicrocompact.ts (per-request message trimming)
     ├── messageUtils.ts       (content extraction, message building)
-    ├── hooks/actoviqHooks.ts (post-sampling hooks)
+    ├── hooks/hadamardHooks.ts (post-sampling hooks)
     ├── mcp/connectionManager.ts (MCP tool resolution)
     └── tools/todo/TodoWriteTool.ts (todo snapshot for reminders)
 ```
@@ -70,7 +70,7 @@ executeConversation(options)
     │   ├── 5. Execute tools (up to MAX_CONCURRENT_TOOL_USES = 10)
     │   │      • For each tool_use:
     │   │        a. Validate input (Zod parse)
-    │   │        b. Permission check (decideActoviqToolPermission)
+    │   │        b. Permission check (decideHadamardToolPermission)
     │   │        c. Execute (adapter.execute)
     │   │        d. Handle error → ToolExecutionError
     │   │        e. Track consecutive same-tool failures
@@ -169,7 +169,7 @@ for (const toolUse of toolUses) {
   const parsedInput = adapter.inputSchema.parse(toolUse.input);
 
   // 3. Permission check
-  const decision = await decideActoviqToolPermission({
+  const decision = await decideHadamardToolPermission({
     mode, rules, classifier, approver, canUseTool,
     adapter, runId, sessionId, workDir,
     toolName, publicName, toolInput, iteration,
@@ -188,7 +188,7 @@ for (const toolUse of toolUses) {
 
 ### Post-Sampling Hooks
 
-After each model response, `resolveActoviqPostSamplingHooks()` runs registered
+After each model response, `resolveHadamardPostSamplingHooks()` runs registered
 hooks. Hooks receive the full messages array and can inject additional context.
 
 ### Message Pairing Invariant

@@ -21,7 +21,7 @@ npm install
 The easiest local setup is:
 
 ```text
-~/.actoviq/settings.json
+~/.hadamard/settings.json
 ```
 
 Example:
@@ -29,18 +29,18 @@ Example:
 ```json
 {
   "env": {
-    "ACTOVIQ_AUTH_TOKEN": "your-token",
-    "ACTOVIQ_BASE_URL": "https://api.example.com/actoviq",
-    "ACTOVIQ_DEFAULT_MIN_MODEL": "your-fast-model",
-    "ACTOVIQ_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
-    "ACTOVIQ_DEFAULT_MAX_MODEL": "your-capable-model"
+    "HADAMARD_AUTH_TOKEN": "your-token",
+    "HADAMARD_BASE_URL": "https://api.example.com/hadamard",
+    "HADAMARD_DEFAULT_MIN_MODEL": "your-fast-model",
+    "HADAMARD_DEFAULT_MEDIUM_MODEL": "your-balanced-model",
+    "HADAMARD_DEFAULT_MAX_MODEL": "your-capable-model"
   }
 }
 ```
 
 You can also keep a project-local JSON file and preload it with `loadJsonConfigFile(...)`.
 
-The `min`, `medium`, and `max` names are provider-neutral aliases. `ACTOVIQ_MODEL`
+The `min`, `medium`, and `max` names are provider-neutral aliases. `HADAMARD_MODEL`
 may be an alias or a concrete provider model ID. If it is omitted, the SDK
 prefers `medium`, then `max`, then `min`.
 
@@ -75,10 +75,10 @@ The provider can also be set via environment variable or JSON config:
 ```json
 {
   "env": {
-    "ACTOVIQ_PROVIDER": "openai",
-    "ACTOVIQ_API_KEY": "sk-xxx",
-    "ACTOVIQ_BASE_URL": "https://api.deepseek.com",
-    "ACTOVIQ_MODEL": "deepseek-chat"
+    "HADAMARD_PROVIDER": "openai",
+    "HADAMARD_API_KEY": "sk-xxx",
+    "HADAMARD_BASE_URL": "https://api.deepseek.com",
+    "HADAMARD_MODEL": "deepseek-chat"
   }
 }
 ```
@@ -88,9 +88,9 @@ The SDK automatically handles protocol translation. All APIs (`sdk.run()`, `sess
 ## 3. Your first SDK call
 
 ```ts
-import { createAgentSdk, loadDefaultActoviqSettings } from 'actoviq-agent-sdk';
+import { createAgentSdk, loadDefaultHadamardSettings } from 'actoviq-agent-sdk';
 
-await loadDefaultActoviqSettings();
+await loadDefaultHadamardSettings();
 const sdk = await createAgentSdk();
 
 try {
@@ -106,7 +106,7 @@ try {
 The package includes a built-in interactive REPL. After installing, you can start it directly:
 
 ```bash
-npx actoviq-react [work-dir]
+npx hadamard-react [work-dir]
 ```
 
 This launches a readline-based agent in the main terminal buffer:
@@ -115,24 +115,24 @@ This launches a readline-based agent in the main terminal buffer:
 - Tab completion for commands, ↑↓ for history
 - Ctrl+C once to abort the current request, twice to exit
 
-**Important:** `actoviq-react` is a lightweight scrollback REPL. It is **not a full TUI** — there is no alternate screen buffer, no ScrollBox, and no rich terminal rendering. It is intended for quick interaction and debugging. For the full terminal UI, use `actoviq-tui`.
+**Important:** `hadamard-react` is a lightweight scrollback REPL. It is **not a full TUI** — there is no alternate screen buffer, no ScrollBox, and no rich terminal rendering. It is intended for quick interaction and debugging. For the full terminal UI, use `hadamard-tui`.
 
 ## 5. Terminal UI (TUI)
 
 The package also includes the full Hadamard SDK terminal UI:
 
 ```bash
-npx actoviq-tui [work-dir] [options]
+npx hadamard-tui [work-dir] [options]
 
 # Options
-#   --config <path>            Load a specific Actoviq settings JSON file
+#   --config <path>            Load a specific Hadamard settings JSON file
 #   --permission-mode <mode>   default | acceptEdits | plan | bypassPermissions (default)
 #   --model <model>            Override the configured model or tier alias
 #   --resume <session-id>      Resume a stored Hadamard SDK session
 #   --continue                 Continue the most recently updated session
 ```
 
-`actoviq-tui` mirrors Claude Code's default terminal interaction pattern while staying fully Hadamard SDK-owned: transcript output streams into native scrollback, and a redrawable bottom region hosts the status line, a Claude-style prompt bar, slash-command menu, and permission prompts.
+`hadamard-tui` mirrors Claude Code's default terminal interaction pattern while staying fully Hadamard SDK-owned: transcript output streams into native scrollback, and a redrawable bottom region hosts the status line, a Claude-style prompt bar, slash-command menu, and permission prompts.
 
 Use it when you want a richer terminal experience:
 
@@ -146,22 +146,22 @@ Use it when you want a richer terminal experience:
 - Mid-run steering: type while the agent is working and press Enter to queue guidance into the next model request.
 - `/permissions` switches between read-only, workspace-access, full-access, and plan presets; with `--permission-mode default`, mutating tools prompt for approve / always-allow / deny, and always-allow rules persist with the session. Read-only Bash commands (`ls`, `git status`, …) are auto-allowed.
 - `/plan` enters plan mode (research-then-propose: the agent calls EnterPlanMode/ExitPlanMode, writes a plan file, you approve); `/init` generates a `CLAUDE.md`; `/context`, `/cost`/`/usage`, and `/doctor` inspect the context window, spend, and config.
-- `/output-style` picks concise/explanatory/learning response styles; `/hooks` lists configured PreToolUse hooks (settings.json); `/mcp add`/`/mcp remove` manage stdio MCP servers (~/.actoviq/mcp.json).
+- `/output-style` picks concise/explanatory/learning response styles; `/hooks` lists configured PreToolUse hooks (settings.json); `/mcp add`/`/mcp remove` manage stdio MCP servers (~/.hadamard/mcp.json).
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
-Both `actoviq-react` and `actoviq-tui` use the same Hadamard SDK defaults: `~/.actoviq/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
+Both `hadamard-react` and `hadamard-tui` use the same Hadamard SDK defaults: `~/.hadamard/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
 
-When `sessionDirectory` is not set explicitly, sessions are isolated by workspace under `~/.actoviq/projects/<workspace-key>`.
+When `sessionDirectory` is not set explicitly, sessions are isolated by workspace under `~/.hadamard/projects/<workspace-key>`.
 
 ## 6. Run the repository quickstart
 
 ```bash
-npm run example:actoviq-quickstart
+npm run example:hadamard-quickstart
 ```
 
 Reference:
 
-- [examples/actoviq-quickstart.ts](../../examples/actoviq-quickstart.ts)
+- [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
 
 ## 7. Minimal streaming chat bot
 

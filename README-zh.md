@@ -1,19 +1,19 @@
-# Actoviq Agent SDK
+# Hadamard Agent SDK
 
-[![CI](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/ci.yml)
-[![Publish npm Package](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/actoviq-agent-sdk/actions/workflows/publish-npm.yml)
+[![CI](https://github.com/DeconBear/hadamard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DeconBear/hadamard/actions/workflows/ci.yml)
+[![Publish npm Package](https://github.com/DeconBear/hadamard/actions/workflows/publish-npm.yml/badge.svg?branch=main)](https://github.com/DeconBear/hadamard/actions/workflows/publish-npm.yml)
 [![npm version](https://img.shields.io/npm/v/actoviq-agent-sdk)](https://www.npmjs.com/package/actoviq-agent-sdk)
-[![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/actoviq-agent-sdk/)
+[![Docs](https://img.shields.io/badge/docs-github%20pages-0f766e)](https://deconbear.github.io/hadamard/)
 
 [English](./README.md) | [中文](./README-zh.md)
 
-文档站地址：https://deconbear.github.io/actoviq-agent-sdk/
+文档站地址：https://deconbear.github.io/hadamard/
 
-**Actoviq**（`0.4.x`）是 TypeScript agent SDK 与 agent-team 平台，含 TUI、GUI、Bridge 与多 agent 协作。未来的 **1.0** 线将稳定 package subpath 契约；该表面**尚未发布**。
+**Hadamard**（`0.4.x`）是 TypeScript agent SDK 与 agent-team 平台，含 TUI、GUI、Bridge 与多 agent 协作。未来的 **1.0** 线将稳定 package subpath 契约；该表面**尚未发布**。
 
 > **说明：** 桌面端 **Agent graph** 编排 UI（可视化团队 / 图编辑器）**仍在持续迭代与优化中**，交互与行为可能变化。生产工作流请优先使用 `/team`、已保存的 team 定义，以及 SDK 的 `createTeam()` / graph runtime。详见 `CHANGELOG.md`。
 
-受 Claude Code、Codex、Deepagents 等项目启发。Actoviq 保持独立，拥有自己的公开 API 与文档。
+受 Claude Code、Codex、Deepagents 等项目启发。Hadamard 保持独立，拥有自己的公开 API 与文档。
 
 ## 愿景
 
@@ -24,11 +24,11 @@
 ## 亮点
 
 - **Model Team** — `panel-analysis`（并行调查 + 收敛）和 `reviewer`（只报告可验证问题的审计者）。runtime-owned 成员池、流式 `TeamEvent`、成员 provider 配置，以及继承的权限/重试边界。
-- **Model Router / Leader-Dispatch** — 每轮由 leader 分派到最佳 specialist（任意模型/提供商），执行者自身也可召集 team。Profile 位于 `~/.actoviq/routers/`。
+- **Model Router / Leader-Dispatch** — 每轮由 leader 分派到最佳 specialist（任意模型/提供商），执行者自身也可召集 team。Profile 位于 `~/.hadamard/routers/`。
 - **Dynamic Workflows** — 显式信任等级的 JS 编排：trusted 兼容执行、隔离 local-process，或由 host 提供的远程/container 强 sandbox；local process 不宣传为对抗性多租户沙箱。
 - **Bridge（命名运行时配置）** — 可选 `Direct API` 做 provider/API 级复用，也可选 `External CLI` 直接启动已安装的 Claude Code、Codex、Pi、CodeWhale、Reasonix 或 Crush，继承各 CLI 的原生登录和配置、流式显示规范化后的工具与回答事件、终止后台任务，并浏览/恢复受支持的原生会话。单独填写的 key 只注入子进程，不写入 CLI 的凭据库；Pi、CodeWhale、Reasonix 与 Crush 会使用按配置隔离的持久会话目录，因此 key 模式重启后仍可读取历史，同时不会读取原生登录凭据。
-- **桌面 GUI (`actoviq-gui`)** — Electron 聊天 UI：流式 transcript、对话历史、命令面板、设置、每工具权限提示。安全增强。全局 **Assistant** FAB（Global/Project 作用域）。可视化 **Agent graph** 编排 UI 仍在迭代中，暂勿当作稳定产品面。
-- **TUI (`actoviq-tui`)** — 终端 UI，25+ 斜杠命令，Claude Code 风格 UX：`/team`、`/bridge`、`/plan`、`/hooks`、`/mcp`、`/review`、`/context`、`/cost`、`/doctor` 等。实时状态旋转器、滚动 transcript、todo 面板、项目/用户级权限对话框、子命令自动补全。
+- **桌面 GUI (`hadamard-gui`)** — Electron 聊天 UI：流式 transcript、对话历史、命令面板、设置、每工具权限提示。安全增强。全局 **Assistant** FAB（Global/Project 作用域）。可视化 **Agent graph** 编排 UI 仍在迭代中，暂勿当作稳定产品面。
+- **TUI (`hadamard-tui`)** — 终端 UI，25+ 斜杠命令，Claude Code 风格 UX：`/team`、`/bridge`、`/plan`、`/hooks`、`/mcp`、`/review`、`/context`、`/cost`、`/doctor` 等。实时状态旋转器、滚动 transcript、todo 面板、项目/用户级权限对话框、子命令自动补全。
 - **计划模式 + hooks** — `EnterPlanMode`/`ExitPlanMode` 工具 + 计划文件；`settings.json` 中的 `PreToolUse`/`PostToolUse`/`SessionStart` hooks。
 - **Worktree 工具** — `EnterWorktree`/`ExitWorktree`，栈式 cwd，`.worktreeinclude`，PR checkout。
 - **TavilySearch** — AI 优化网络搜索，纯 TypeScript。
@@ -63,7 +63,7 @@ npm install actoviq-agent-sdk zod
 本地使用，请将配置放在：
 
 ```text
-~/.actoviq/settings.json
+~/.hadamard/settings.json
 ```
 
 也可以使用 `loadJsonConfigFile(...)` 预加载自定义 JSON 文件。
@@ -100,8 +100,8 @@ try {
 运行仓库示例：
 
 ```bash
-npm run example:actoviq-quickstart
-npm run example:actoviq-agent-helpers
+npm run example:hadamard-quickstart
+npm run example:hadamard-agent-helpers
 npm run example:profiles
 ```
 
@@ -110,18 +110,18 @@ npm run example:profiles
 安装包后，可以直接从终端启动交互式 scrollback 模式 REPL：
 
 ```bash
-npx actoviq-react [工作目录]
+npx hadamard-react [工作目录]
 ```
 
 ## 终端 UI (TUI)
 
-`actoviq-tui` 是全功能终端 UI，模拟 Claude Code 的 REPL 设计:
+`hadamard-tui` 是全功能终端 UI，模拟 Claude Code 的 REPL 设计:
 
 ```bash
-npx actoviq-tui [工作目录] [选项]
+npx hadamard-tui [工作目录] [选项]
 
 # 选项
-#   --config <路径>            加载指定的 Actoviq 设置 JSON 文件
+#   --config <路径>            加载指定的 Hadamard 设置 JSON 文件
 #   --permission-mode <模式>   default | acceptEdits | plan | bypassPermissions (默认)
 #   --model <模型>             覆盖已配置的模型
 #   --resume <会话ID>          恢复已存储的 Hadamard SDK 会话
@@ -130,19 +130,19 @@ npx actoviq-tui [工作目录] [选项]
 
 特性与英文 README 一致，包括上下文管理（append-only 前缀以利于 DeepSeek 等自动缓存；超阈值走整段摘要 compact）、bridge config、计划模式、hooks、MCP、诊断等。六种 External CLI 都可使用 `/bridge status`、`/bridge background`、`/bridge runs` 和 `/bridge stop`；`/bridge history` 与 `/bridge resume` 在 TUI 和 GUI 中共享同一套校验逻辑，但原生历史/恢复能力仍取决于已安装 CLI 的协议与版本。
 
-## 桌面 GUI (`actoviq-gui`)
+## 桌面 GUI (`hadamard-gui`)
 
 ```bash
-npx actoviq-gui [工作目录] [选项]
+npx hadamard-gui [工作目录] [选项]
 ```
 
 - Project 详情提供 `Document` / `Issues` 双 Tab。Issue 支持优先级、标签、验收标准、评论，以及受守卫保护的 `backlog → todo → in_progress → in_review/blocked → done` 生命周期。
 - **Agent graph 编排 UI**（GUI **Agent** 区域的可视化团队/图编辑器）**仍在持续迭代和优化中**，请勿当作已定稿产品面；稳定工作流请用已保存 team + `/team` / SDK API。
 - Settings → Models & routing 可创建 Agent Profile，将 bridge config 与模型绑定。`/issues start <id> [agent-profile]` 会先让 Project Manager 生成任务书，再创建关联会话；执行 agent 通过 `IssueReport` 汇报待审或阻塞状态。
-- Issue 与会话可双向跳转。Issue 默认保存在 `<data-root>/projects/<workspace-key>/issues.json`，也可切换到受保护的工作区文件 `.actoviq/issues.json`。
+- Issue 与会话可双向跳转。Issue 默认保存在 `<data-root>/projects/<workspace-key>/issues.json`，也可切换到受保护的工作区文件 `.hadamard/issues.json`。
 - Settings → General 可将完整数据根目录迁移到空目录：复制并校验数据、写入 bootstrap 指针、重建 SDK/session store，并保留旧目录供手动清理。
 
-数据根目录解析优先级为：显式 SDK `homeDir` → `ACTOVIQ_HOME` → `~/.actoviq/data-root.json` → `~/.actoviq`。
+数据根目录解析优先级为：显式 SDK `homeDir` → `HADAMARD_HOME` → `~/.hadamard/data-root.json` → `~/.hadamard`。
 
 ## 开发者笔记
 
@@ -155,12 +155,12 @@ npx actoviq-gui [工作目录] [选项]
 
 - 英文教程：[docs/en/README.md](./docs/en/README.md)
 - 中文教程：[docs/zh/README.md](./docs/zh/README.md)
-- GitHub Pages 文档站：https://deconbear.github.io/actoviq-agent-sdk/
+- GitHub Pages 文档站：https://deconbear.github.io/hadamard/
 
 入口示例：
-- [examples/actoviq-quickstart.ts](./examples/actoviq-quickstart.ts)
-- [examples/actoviq-workflow.ts](./examples/actoviq-workflow.ts)
-- [examples/actoviq-agent-helpers.ts](./examples/actoviq-agent-helpers.ts)
+- [examples/hadamard-quickstart.ts](./examples/hadamard-quickstart.ts)
+- [examples/hadamard-workflow.ts](./examples/hadamard-workflow.ts)
+- [examples/hadamard-agent-helpers.ts](./examples/hadamard-agent-helpers.ts)
 - [examples/profiles/all-profiles.ts](./examples/profiles/all-profiles.ts)
 
 架构与运维文档：

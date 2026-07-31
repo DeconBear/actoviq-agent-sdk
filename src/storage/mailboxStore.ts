@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ActoviqMailboxMessage } from '../types.js';
+import type { HadamardMailboxMessage } from '../types.js';
 import { createId } from '../runtime/helpers.js';
 import {
   assertSafeStorageSegment,
@@ -16,10 +16,10 @@ export class MailboxStore {
   async post(
     teamName: string,
     recipient: string,
-    message: Omit<ActoviqMailboxMessage, 'id' | 'teamName' | 'to'>,
-  ): Promise<ActoviqMailboxMessage> {
+    message: Omit<HadamardMailboxMessage, 'id' | 'teamName' | 'to'>,
+  ): Promise<HadamardMailboxMessage> {
     await this.ensureReady(teamName);
-    const entry: ActoviqMailboxMessage = {
+    const entry: HadamardMailboxMessage = {
       ...message,
       id: createId(),
       teamName,
@@ -31,11 +31,11 @@ export class MailboxStore {
     return entry;
   }
 
-  async list(teamName: string, recipient: string): Promise<ActoviqMailboxMessage[]> {
+  async list(teamName: string, recipient: string): Promise<HadamardMailboxMessage[]> {
     await this.ensureReady(teamName);
     try {
       const raw = await readFile(this.mailboxPath(teamName, recipient), 'utf8');
-      return JSON.parse(raw) as ActoviqMailboxMessage[];
+      return JSON.parse(raw) as HadamardMailboxMessage[];
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
       if (nodeError.code === 'ENOENT') {
@@ -45,7 +45,7 @@ export class MailboxStore {
     }
   }
 
-  async drain(teamName: string, recipient: string): Promise<ActoviqMailboxMessage[]> {
+  async drain(teamName: string, recipient: string): Promise<HadamardMailboxMessage[]> {
     const entries = await this.list(teamName, recipient);
     await rm(this.mailboxPath(teamName, recipient), { force: true });
     return entries;

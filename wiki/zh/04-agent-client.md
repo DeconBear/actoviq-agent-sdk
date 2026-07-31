@@ -2,7 +2,7 @@
 
 ## 架构
 
-`ActoviqAgentClient` 是中央编排器。所有 SDK 操作都经过它。它是"上帝类"——~3820 行，12 个公开 API 接口，4 个共享可变状态 Map。
+`HadamardAgentClient` 是中央编排器。所有 SDK 操作都经过它。它是"上帝类"——~3820 行，12 个公开 API 接口，4 个共享可变状态 Map。
 
 位置：`src/runtime/agentClient.ts:575`
 

@@ -35,7 +35,7 @@ function createSandbox(
 
 describe('E2B computer-use plugin', () => {
   it('creates one sandbox only after explicit start and reuses it for desktop tools', async () => {
-    const temp = await mkdtemp(path.join(os.tmpdir(), 'actoviq-e2b-'));
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hadamard-e2b-'));
     const outputPath = path.join(temp, 'screen.png');
     const sandbox = createSandbox(vi.fn(async () => undefined));
     const factory = vi.fn(async () => sandbox);
@@ -145,7 +145,7 @@ describe('E2B computer-use plugin', () => {
   });
 
   it('returns screenshots in memory or writes only inside the current workspace', async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), 'actoviq-e2b-workspace-'));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'hadamard-e2b-workspace-'));
     const outside = path.resolve(workspace, '..', `${path.basename(workspace)}-outside.png`);
     const sandbox = createSandbox();
     const toolkit = createE2bComputerUseToolkit({

@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import {
-  createActoviqCoreTools,
+  createHadamardCoreTools,
   createAgentSdk,
-  loadDefaultActoviqSettings,
+  loadDefaultHadamardSettings,
 } from '../index.js';
 import { AppServer } from './appServer.js';
 import { StdioAppServerTransport } from './transports/stdioTransport.js';
 
 async function main(): Promise<void> {
-  await loadDefaultActoviqSettings();
+  await loadDefaultHadamardSettings();
   const workDir = process.argv[2] ? process.argv[2] : process.cwd();
   const sdk = await createAgentSdk({
     workDir,
-    tools: createActoviqCoreTools({ cwd: workDir }),
+    tools: createHadamardCoreTools({ cwd: workDir }),
     permissionMode: 'default',
   });
   const close = async () => {
@@ -28,6 +28,6 @@ async function main(): Promise<void> {
 }
 
 main().catch(error => {
-  process.stderr.write(`actoviq-app-server: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`hadamard-app-server: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

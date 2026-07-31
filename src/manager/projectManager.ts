@@ -8,9 +8,9 @@
  *   - Tools: Read/Glob/Grep (scoped by `readScope`) + WebFetch + PlanWrite +
  *     ProgressWrite. No Write/Edit/Bash/shell, no Team tools, no Task.
  *   - Writes: only `plan.json` and `PROGRESS.md` inside the project store
- *     (`~/.actoviq/projects/<hash>/`), via the two dedicated tools whose
+ *     (`~/.hadamard/projects/<hash>/`), via the two dedicated tools whose
  *     target paths are hard-coded. Optional opt-in mirror of PROGRESS.md to
- *     `<workDir>/.actoviq/PROGRESS.md`.
+ *     `<workDir>/.hadamard/PROGRESS.md`.
  *   - Read scope: `workspace-only` (default) | `workspace+docs` |
  *     `explicit-allowlist` | `full-access` — enforced by wrapping the read
  *     tools' execute (`full-access` skips path checks; writes stay limited).
@@ -23,7 +23,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 
 import { tool } from '../runtime/tools.js';
-import { getActoviqProjectSessionDirectory } from '../config/projectSessionDirectory.js';
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { isRecord } from '../runtime/helpers.js';
 import type { AgentToolDefinition } from '../types.js';
 import {
@@ -56,11 +56,11 @@ export interface ProjectPlan {
 export const EMPTY_PROJECT_PLAN: ProjectPlan = { milestones: [], today: [], upcoming: [] };
 
 export function managerPlanPath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'plan.json');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'plan.json');
 }
 
 export function managerProgressPath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'PROGRESS.md');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'PROGRESS.md');
 }
 
 export async function readProjectPlanFile(workDir: string, homeDir: string): Promise<ProjectPlan> {
@@ -125,7 +125,7 @@ export interface ManagerConfig {
    */
   model?: string;
   /**
-   * Named provider config from `~/.actoviq/bridge-configs.json`. When set, the
+   * Named provider config from `~/.hadamard/bridge-configs.json`. When set, the
    * Manager turn uses that config's model/provider credentials (Hadamard path).
    */
   bridgeConfig?: string;
@@ -133,7 +133,7 @@ export interface ManagerConfig {
   readScope: ManagerReadScope;
   /** Extra readable paths for `workspace+docs` / `explicit-allowlist`. */
   allowedReadPaths: string[];
-  /** Opt-in mirror of PROGRESS.md to `<workDir>/.actoviq/PROGRESS.md`. */
+  /** Opt-in mirror of PROGRESS.md to `<workDir>/.hadamard/PROGRESS.md`. */
   mirrorProgressToWorkspace: boolean;
   /** Optional extra instructions appended to the manager system prompt. */
   promptOverride?: string;
@@ -148,7 +148,7 @@ export const DEFAULT_MANAGER_CONFIG: ManagerConfig = {
 };
 
 export function managerConfigPath(workDir: string, homeDir: string): string {
-  return path.join(getActoviqProjectSessionDirectory(workDir, homeDir), 'manager.json');
+  return path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'manager.json');
 }
 
 export async function readManagerConfig(workDir: string, homeDir: string): Promise<ManagerConfig> {
@@ -206,7 +206,7 @@ export function resolveManagerReadRoots(
   if (config.readScope === 'full-access') return [];
   const roots = [
     normalizeRoot(workDir),
-    normalizeRoot(getActoviqProjectSessionDirectory(projectPath, homeDir)),
+    normalizeRoot(getHadamardProjectSessionDirectory(projectPath, homeDir)),
   ];
   if (config.readScope === 'workspace+docs' || config.readScope === 'explicit-allowlist') {
     for (const extra of config.allowedReadPaths) roots.push(normalizeRoot(extra));
@@ -293,13 +293,13 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
   const config = options.config ?? (await readManagerConfig(projectPath, homeDir));
   const roots = resolveManagerReadRoots(workDir, homeDir, config, projectPath);
 
-  const { createActoviqFileTools } = await import('../tools/actoviqFileTools.js');
-  const { createActoviqWebTools } = await import('../tools/actoviqWebTools.js');
+  const { createHadamardFileTools } = await import('../tools/hadamardFileTools.js');
+  const { createHadamardWebTools } = await import('../tools/hadamardWebTools.js');
 
-  const readTools = createActoviqFileTools({ cwd: workDir })
+  const readTools = createHadamardFileTools({ cwd: workDir })
     .filter((t) => MANAGER_READ_TOOLS.has(t.name))
     .map((t) => (config.readScope === 'full-access' ? t : restrictToolReadScope(t, roots, workDir)));
-  const webTools = createActoviqWebTools().filter((t) => t.name === 'WebFetch');
+  const webTools = createHadamardWebTools().filter((t) => t.name === 'WebFetch');
 
   const planWrite = tool(
     {
@@ -354,7 +354,7 @@ export async function createManagerTools(options: CreateManagerToolsOptions): Pr
       await writeFile(filePath, input.content, 'utf8');
       let mirrored: string | undefined;
       if (config.mirrorProgressToWorkspace) {
-        const mirrorPath = path.join(workDir, '.actoviq', 'PROGRESS.md');
+        const mirrorPath = path.join(workDir, '.hadamard', 'PROGRESS.md');
         await mkdir(path.dirname(mirrorPath), { recursive: true });
         await writeFile(mirrorPath, input.content, 'utf8');
         mirrored = mirrorPath;

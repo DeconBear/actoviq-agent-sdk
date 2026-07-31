@@ -2,19 +2,19 @@ import path from 'node:path';
 
 import { ConfigurationError } from '../errors.js';
 import type {
-  ActoviqModelTierConfig,
+  HadamardModelTierConfig,
   CreateAgentSdkOptions,
   ResolvedRuntimeConfig,
 } from '../types.js';
 import { getLoadedJsonConfig } from './loadJsonConfigFile.js';
-import { resolveActoviqHome } from './actoviqHome.js';
+import { migrateLegacyActoviqHomeIfNeeded, resolveHadamardHome } from './hadamardHome.js';
 import {
-  resolveActoviqModelReference,
-  selectDefaultActoviqModel,
+  resolveHadamardModelReference,
+  selectDefaultHadamardModel,
 } from './modelTiers.js';
 import {
-  getActoviqProjectSessionDirectory,
-  migrateLegacyActoviqProjectData,
+  getHadamardProjectSessionDirectory,
+  migrateLegacyHadamardProjectData,
 } from './projectSessionDirectory.js';
 import { resolveSandboxPolicy } from '../sandbox/policyResolver.js';
 import { SandboxExecutor } from '../sandbox/sandboxExecutor.js';
@@ -55,10 +55,16 @@ function getRuntimeConfigValue(
   primaryKey: string,
   ...sources: Array<NodeJS.ProcessEnv | Record<string, string>>
 ): string | undefined {
+  const keys = [primaryKey];
+  if (primaryKey.startsWith('HADAMARD_')) {
+    keys.push(`ACTOVIQ_${primaryKey.slice('HADAMARD_'.length)}`);
+  }
   for (const source of sources) {
-    const value = getConfigValue(source, primaryKey);
-    if (value != null && value.length > 0) {
-      return value;
+    for (const key of keys) {
+      const value = getConfigValue(source, key);
+      if (value != null && value.length > 0) {
+        return value;
+      }
     }
   }
   return undefined;
@@ -67,7 +73,10 @@ function getRuntimeConfigValue(
 export async function resolveRuntimeConfig(
   options: CreateAgentSdkOptions = {},
 ): Promise<ResolvedRuntimeConfig> {
-  const homeDir = resolveActoviqHome(options.homeDir);
+  if (!options.homeDir) {
+    await migrateLegacyActoviqHomeIfNeeded().catch(() => undefined);
+  }
+  const homeDir = resolveHadamardHome(options.homeDir);
   const workDir = path.resolve(options.workDir ?? process.cwd());
   const loadedConfig = getLoadedJsonConfig();
   const effectivePolicy = resolvePolicy(await loadPolicyDocuments({
@@ -81,58 +90,58 @@ export async function resolveRuntimeConfig(
 
   const apiKey =
     options.apiKey ??
-    getRuntimeConfigValue('ACTOVIQ_API_KEY', ...envSources);
+    getRuntimeConfigValue('HADAMARD_API_KEY', ...envSources);
   const authToken =
     options.authToken ??
-    getRuntimeConfigValue('ACTOVIQ_AUTH_TOKEN', ...envSources);
+    getRuntimeConfigValue('HADAMARD_AUTH_TOKEN', ...envSources);
 
   if (!options.modelApi && !apiKey && !authToken) {
     throw new ConfigurationError(
       loadedConfig
-        ? `No Actoviq credential was found. Checked "${loadedConfig.path}".`
-        : 'No Actoviq credential was found. Call loadJsonConfigFile(...) before createAgentSdk() to use a JSON file.',
+        ? `No Hadamard credential was found. Checked "${loadedConfig.path}".`
+        : 'No Hadamard credential was found. Call loadJsonConfigFile(...) before createAgentSdk() to use a JSON file.',
     );
   }
 
   const provider =
     options.provider ??
-    (getRuntimeConfigValue('ACTOVIQ_PROVIDER', ...envSources) as 'anthropic' | 'openai' | undefined) ??
+    (getRuntimeConfigValue('HADAMARD_PROVIDER', ...envSources) as 'anthropic' | 'openai' | undefined) ??
     'anthropic';
 
-  const modelTiers: ActoviqModelTierConfig = {
-    min: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MIN_MODEL', ...envSources),
-    medium: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MEDIUM_MODEL', ...envSources),
-    max: getRuntimeConfigValue('ACTOVIQ_DEFAULT_MAX_MODEL', ...envSources),
+  const modelTiers: HadamardModelTierConfig = {
+    min: getRuntimeConfigValue('HADAMARD_DEFAULT_MIN_MODEL', ...envSources),
+    medium: getRuntimeConfigValue('HADAMARD_DEFAULT_MEDIUM_MODEL', ...envSources),
+    max: getRuntimeConfigValue('HADAMARD_DEFAULT_MAX_MODEL', ...envSources),
   };
   const requestedModel =
     policySetting<string>(effectivePolicy, 'model') ??
     options.model ??
-    getRuntimeConfigValue('ACTOVIQ_MODEL', ...envSources);
+    getRuntimeConfigValue('HADAMARD_MODEL', ...envSources);
   const selectedModel = requestedModel
-    ? resolveActoviqModelReference(requestedModel, modelTiers)
+    ? resolveHadamardModelReference(requestedModel, modelTiers)
     : provider === 'openai'
-      ? selectDefaultActoviqModel(modelTiers, OPENAI_FALLBACK_MODEL)
-      : selectDefaultActoviqModel(modelTiers, '');
+      ? selectDefaultHadamardModel(modelTiers, OPENAI_FALLBACK_MODEL)
+      : selectDefaultHadamardModel(modelTiers, '');
   if (!selectedModel.model) {
     throw new ConfigurationError(
-      'No model was configured. Set ACTOVIQ_MODEL, configure a min/medium/max model tier, or pass model to createAgentSdk().',
+      'No model was configured. Set HADAMARD_MODEL, configure a min/medium/max model tier, or pass model to createAgentSdk().',
     );
   }
 
   const baseURL =
     options.baseURL ??
-    getRuntimeConfigValue('ACTOVIQ_BASE_URL', ...envSources);
+    getRuntimeConfigValue('HADAMARD_BASE_URL', ...envSources);
 
   const requestedFallbackModel =
     options.fallbackModel ??
-    getRuntimeConfigValue('ACTOVIQ_FALLBACK_MODEL', ...envSources);
+    getRuntimeConfigValue('HADAMARD_FALLBACK_MODEL', ...envSources);
   const fallbackModel = requestedFallbackModel
-    ? resolveActoviqModelReference(requestedFallbackModel, modelTiers).model
+    ? resolveHadamardModelReference(requestedFallbackModel, modelTiers).model
     : undefined;
   const requestedEffort =
     policySetting<string>(effectivePolicy, 'effort') ??
     options.effort ??
-    getRuntimeConfigValue('ACTOVIQ_EFFORT', ...envSources);
+    getRuntimeConfigValue('HADAMARD_EFFORT', ...envSources);
   if (
     requestedEffort !== undefined &&
     !['low', 'medium', 'high', 'max'].includes(requestedEffort)
@@ -142,17 +151,17 @@ export async function resolveRuntimeConfig(
     );
   }
   const sessionDirectory =
-    options.sessionDirectory ?? getActoviqProjectSessionDirectory(workDir, homeDir);
+    options.sessionDirectory ?? getHadamardProjectSessionDirectory(workDir, homeDir);
   if (!options.sessionDirectory) {
     try {
-      await migrateLegacyActoviqProjectData({
+      await migrateLegacyHadamardProjectData({
         homeDir,
         workDir,
         targetDirectory: sessionDirectory,
       });
     } catch (error) {
       console.warn(
-        `Could not migrate legacy Actoviq project data: ${(error as Error).message}`,
+        `Could not migrate legacy Hadamard project data: ${(error as Error).message}`,
       );
     }
   }

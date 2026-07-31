@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 
 const tempDirs: string[] = [];
 
@@ -19,7 +19,7 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
@@ -27,7 +27,7 @@ async function api<T>(
   const res = await fetch(url, {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -35,20 +35,20 @@ async function api<T>(
 }
 
 describe('GUI runtime local config reuse', () => {
-  it('reads and updates external runtime config from the user home, not the Actoviq data root', async () => {
-    const root = await tempRoot('actoviq-gui-runtime-home-');
+  it('reads and updates external runtime config from the user home, not the Hadamard data root', async () => {
+    const root = await tempRoot('hadamard-gui-runtime-home-');
     const userHome = path.join(root, 'home');
     const workDir = path.join(root, 'work');
-    const dataRoot = path.join(userHome, '.actoviq');
+    const dataRoot = path.join(userHome, '.hadamard');
     const claudeDir = path.join(userHome, '.claude');
-    const migratedDataRoot = path.join(root, 'actoviq-data');
+    const migratedDataRoot = path.join(root, 'hadamard-data');
     await mkdir(workDir, { recursive: true });
     await mkdir(dataRoot, { recursive: true });
     await mkdir(claudeDir, { recursive: true });
     await writeFile(path.join(dataRoot, 'settings.json'), JSON.stringify({
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_MODEL: 'gpt-4o-mini',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_MODEL: 'gpt-4o-mini',
     }), 'utf8');
     await writeFile(path.join(claudeDir, 'settings.json'), JSON.stringify({
       env: {
@@ -59,7 +59,7 @@ describe('GUI runtime local config reuse', () => {
     }), 'utf8');
 
     const port = 45000 + Math.floor(Math.random() * 10000);
-    const server = await startActoviqGuiServer({
+    const server = await startHadamardGuiServer({
       workDir,
       homeDir: userHome,
       host: '127.0.0.1',

@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startActoviqGuiServer } from '../src/gui/actoviqGui.js';
+import { startHadamardGuiServer } from '../src/gui/hadamardGui.js';
 import { saveRouterProfile } from '../src/router/modelRouter.js';
 import { saveWorkflow } from '../src/workflow/workflowPersistence.js';
 
@@ -23,14 +23,14 @@ async function tempRoot(prefix: string): Promise<string> {
 }
 
 async function api<T>(
-  server: Awaited<ReturnType<typeof startActoviqGuiServer>>,
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
   requestPath: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: T }> {
   const response = await fetch(new URL(requestPath.replace(/^\/+/, ''), server.url), {
     ...init,
     headers: {
-      'x-actoviq-token': server.token,
+      'x-hadamard-token': server.token,
       ...(init.headers ?? {}),
     },
   });
@@ -89,13 +89,13 @@ async function startConfiguredGui(prefix: string, providerUrl: string) {
   await mkdir(homeDir, { recursive: true });
   await writeFile(configPath, JSON.stringify({
     env: {
-      ACTOVIQ_PROVIDER: 'openai',
-      ACTOVIQ_API_KEY: 'test-key',
-      ACTOVIQ_BASE_URL: providerUrl,
-      ACTOVIQ_MODEL: 'test-model',
+      HADAMARD_PROVIDER: 'openai',
+      HADAMARD_API_KEY: 'test-key',
+      HADAMARD_BASE_URL: providerUrl,
+      HADAMARD_MODEL: 'test-model',
     },
   }), 'utf8');
-  const server = await startActoviqGuiServer({
+  const server = await startHadamardGuiServer({
     workDir,
     homeDir,
     configPath,
@@ -114,7 +114,7 @@ const jsonRequest = (body: unknown, method = 'POST'): RequestInit => ({
 describe('GUI runtime mutation gate', () => {
   it('keeps workflow runs leased and rejects runtime/session mutations until cleanup', async () => {
     const provider = await startDeferredProvider();
-    const { server, workDir } = await startConfiguredGui('actoviq-gui-runtime-gate-workflow-', provider.url);
+    const { server, workDir } = await startConfiguredGui('hadamard-gui-runtime-gate-workflow-', provider.url);
     try {
       await saveWorkflow('lease-test', [
         'export const meta = { name: "lease-test", description: "gate test" };',
@@ -130,7 +130,7 @@ describe('GUI runtime mutation gate', () => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-actoviq-token': server.token,
+          'x-hadamard-token': server.token,
         },
         body: JSON.stringify({ text: '/workflows run lease-test' }),
       });
@@ -208,7 +208,7 @@ describe('GUI runtime mutation gate', () => {
 
   it('leases an unregistered Team proposal run before awaiting the provider', async () => {
     const provider = await startDeferredProvider();
-    const { server } = await startConfiguredGui('actoviq-gui-runtime-gate-proposal-', provider.url);
+    const { server } = await startConfiguredGui('hadamard-gui-runtime-gate-proposal-', provider.url);
     try {
       const proposal = api<{ error?: string }>(server, '/api/team/propose', jsonRequest({
         instruction: 'Create a review team',

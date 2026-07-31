@@ -73,7 +73,7 @@ describe('mcpServerConfig', () => {
     expect(read.servers[0]?.name).toBe('ok');
   });
 
-  it('getMcpConfigPath points under ~/.actoviq/mcp.json', () => {
-    expect(getMcpConfigPath('/home/user')).toBe(path.join('/home/user', '.actoviq', 'mcp.json'));
+  it('getMcpConfigPath points under ~/.hadamard/mcp.json', () => {
+    expect(getMcpConfigPath('/home/user')).toBe(path.join('/home/user', '.hadamard', 'mcp.json'));
   });
 });

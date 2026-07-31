@@ -18,7 +18,7 @@ protocol translation for cross-provider compatibility.
 
 | File | Role |
 |---|---|
-| `runtime/actoviqModelApi.ts` | Native Anthropic wire format |
+| `runtime/hadamardModelApi.ts` | Native Anthropic wire format |
 | `provider/openai-model-api.ts` | OpenAI Chat Completions API adapter |
 | `provider/types.ts` | Message, stream event, tool type definitions |
 | `provider/json-parse.ts` | Robust JSON parsing (handles malformed paths) |
@@ -40,7 +40,7 @@ resolveRuntimeConfig() → config.provider
     ▼
 agentClient.ts:
     provider === 'openai' → new OpenaiModelApi(config)
-    otherwise             → new ActoviqModelApi(config)
+    otherwise             → new HadamardModelApi(config)
 ```
 
 Both receive the same `config` (baseURL, authToken, model, maxTokens, etc.).
@@ -76,9 +76,9 @@ interface ModelRequest {
 
 ## Code Details
 
-### `ActoviqModelApi`
+### `HadamardModelApi`
 
-Location: `src/runtime/actoviqModelApi.ts`
+Location: `src/runtime/hadamardModelApi.ts`
 
 Native Anthropic Messages API client. Sends requests directly to the configured
 `baseURL` with Anthropic wire format. No translation needed.
@@ -128,7 +128,7 @@ async createMessage(request: ModelRequest): Promise<Message> {
 |---|---|---|
 | DeepSeek (Anthropic endpoint) | Rejects `type: "custom"` on tools | Strip `type` field from tool definitions before sending |
 | Non-Anthropic providers | No `context_management` support | Skip `context_management` in requests (checked via `isAnthropicAPI`) |
-| OpenAI-compatible | Different error response format | Normalized to `ActoviqProviderApiError` |
+| OpenAI-compatible | Different error response format | Normalized to `HadamardProviderApiError` |
 | Small providers | May not support streaming | Graceful fallback to non-streaming |
 
 ### `robustJsonParse()`

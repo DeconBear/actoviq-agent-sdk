@@ -2,9 +2,9 @@
 
 ## 架构
 
-两个交互终端：轻量级 scrollback REPL（`actoviq-react`）和完整终端 UI（`actoviq-tui`）。两者使用相同的 SDK 运行时，但渲染方式不同。
+两个交互终端：轻量级 scrollback REPL（`hadamard-react`）和完整终端 UI（`hadamard-tui`）。两者使用相同的 SDK 运行时，但渲染方式不同。
 
-| | actoviq-react | actoviq-tui |
+| | hadamard-react | hadamard-tui |
 |---|---|---|
 | **渲染** | 原生 scrollback（readline） | 备用屏幕缓冲区（完整 TUI） |
 | **输入** | readline + 历史记录 | 自定义键盘处理 |
@@ -12,9 +12,9 @@
 | **斜杠命令** | 内联解析 | 可搜索菜单 |
 | **复杂度** | ~370 行 | ~1000+ 行 |
 
-### `actoviq-react` — Scrollback REPL
+### `hadamard-react` — Scrollback REPL
 
-位置：`src/cli/actoviq-react.ts`
+位置：`src/cli/hadamard-react.ts`
 
 ```
 main()
@@ -37,9 +37,9 @@ main()
             └── error → 错误消息
 ```
 
-### `actoviq-tui` — 完整终端 UI
+### `hadamard-tui` — 完整终端 UI
 
-位置：`src/tui/actoviqTui.ts`
+位置：`src/tui/hadamardTui.ts`
 
 使用备用屏幕缓冲区，界面布局：
 
@@ -69,7 +69,7 @@ try { await loadJsonConfigFile(CONFIG_PATH); } catch (e) {
 }
 
 // 默认 settings.json：
-try { await loadDefaultActoviqSettings(); } catch (e) {
+try { await loadDefaultHadamardSettings(); } catch (e) {
   // 容忍缺失（首次运行），警告其他错误
   if (!/not found|ENOENT/i.test(e.message)) {
     process.stderr.write(`⚠ 默认设置加载失败: ${e.message}`);

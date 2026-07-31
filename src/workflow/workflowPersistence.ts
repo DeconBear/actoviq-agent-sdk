@@ -2,13 +2,13 @@
  * Workflow persistence — save/load workflow scripts to/from disk.
  *
  * Search path (project overrides personal):
- *   1. .actoviq/workflows/<name>.js   (project)
- *   2. ~/.actoviq/workflows/<name>.js (personal)
+ *   1. .hadamard/workflows/<name>.js   (project)
+ *   2. ~/.hadamard/workflows/<name>.js (personal)
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 import type { WorkflowMeta } from '../types.js';
 
 export interface SavedWorkflow {
@@ -25,10 +25,10 @@ export interface SavedWorkflow {
  */
 function resolveWorkflowDirs(projectDir?: string, homeDir?: string): string[] {
   const dirs: string[] = [];
-  const home = resolveActoviqHome(homeDir);
+  const home = resolveHadamardHome(homeDir);
 
   if (projectDir) {
-    dirs.push(path.join(projectDir, '.actoviq', 'workflows'));
+    dirs.push(path.join(projectDir, '.hadamard', 'workflows'));
   }
   dirs.push(path.join(home, 'workflows'));
   return dirs;
@@ -155,8 +155,8 @@ export async function deleteWorkflow(
  * Check if dynamic workflows are disabled.
  */
 export function isWorkflowsDisabled(): boolean {
-  if (process.env.ACTOVIQ_DISABLE_WORKFLOWS === '1') return true;
-  if (process.env.ACTOVIQ_DISABLE_WORKFLOWS === 'true') return true;
+  if (process.env.HADAMARD_DISABLE_WORKFLOWS === '1') return true;
+  if (process.env.HADAMARD_DISABLE_WORKFLOWS === 'true') return true;
   return false;
 }
 

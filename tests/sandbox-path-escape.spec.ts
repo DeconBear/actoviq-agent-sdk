@@ -15,7 +15,7 @@ afterEach(async () => {
 
 describe('sandbox path validation', () => {
   it('blocks lexical and symlink escapes from writable roots', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-path-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sandbox-path-'));
     tempDirs.push(root);
     const workspace = path.join(root, 'workspace');
     const outside = path.join(root, 'outside');
@@ -36,7 +36,7 @@ describe('sandbox path validation', () => {
   });
 
   it('does not bind the whole host filesystem for linux bubblewrap profiles', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-bwrap-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sandbox-bwrap-'));
     tempDirs.push(root);
     const workspace = path.join(root, 'workspace');
     await mkdir(workspace);
@@ -80,7 +80,7 @@ describe('sandbox path validation', () => {
   });
 
   it('includes writable roots (not blanket host writes) in macOS seatbelt profiles', () => {
-    const root = path.join(os.tmpdir(), 'actoviq-sandbox-macos-profile');
+    const root = path.join(os.tmpdir(), 'hadamard-sandbox-macos-profile');
     const executor = new SandboxExecutor({
       ...resolveSandboxPolicy(root),
       enforcement: 'best-effort',
@@ -113,7 +113,7 @@ describe('sandbox path validation', () => {
   });
 
   it('can write files with the host Node binary under the active sandbox adapter', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'actoviq-sandbox-node-write-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-sandbox-node-write-'));
     tempDirs.push(root);
     const executor = new SandboxExecutor(resolveSandboxPolicy(root));
     const marker = path.join(root, 'ok.txt');

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 
 export type WorkspaceRegistryEntry = {
   /** Stable primary path used as the project's storage/catalog locator. */
@@ -15,7 +15,7 @@ export type WorkspaceRegistryEntry = {
 };
 
 function registryPath(homeDir: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'workspaces.json');
+  return path.join(resolveHadamardHome(homeDir), 'workspaces.json');
 }
 
 function normalizeKey(value: string): string {

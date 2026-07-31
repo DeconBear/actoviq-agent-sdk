@@ -6,7 +6,7 @@ The memory system provides persistent, context-aware knowledge across sessions.
 The dream system performs reflective consolidation — periodically reviewing
 recent sessions and extracting durable memories.
 
-Location: `src/memory/actoviqMemory.ts`, `src/memory/actoviqDream.ts`
+Location: `src/memory/hadamardMemory.ts`, `src/memory/hadamardDream.ts`
 
 ### Design Principles
 
@@ -23,14 +23,14 @@ Location: `src/memory/actoviqMemory.ts`, `src/memory/actoviqDream.ts`
 
 | File | Role |
 |---|---|
-| `memory/actoviqMemory.ts` | Memory CRUD, scanning, selection, formatting |
-| `memory/actoviqDream.ts` | Dream consolidation engine |
-| `memory/actoviqSessionMemoryState.ts` | Session memory extraction & runtime state |
+| `memory/hadamardMemory.ts` | Memory CRUD, scanning, selection, formatting |
+| `memory/hadamardDream.ts` | Dream consolidation engine |
+| `memory/hadamardSessionMemoryState.ts` | Session memory extraction & runtime state |
 
 ### Memory Storage Layout
 
 ```
-~/.actoviq/projects/<hash>/memory/
+~/.hadamard/projects/<hash>/memory/
 ├── MEMORY.md                 # Index of all memories (one line per memory)
 ├── user-expertise.md         # Individual memory file
 ├── project-architecture.md
@@ -70,11 +70,11 @@ When preparing a model request, relevant memories are selected based on:
 3. Type priority (feedback > user > project > reference)
 
 ```typescript
-function selectActoviqRelevantMemories(
-  memories: ActoviqMemory[],
+function selectHadamardRelevantMemories(
+  memories: HadamardMemory[],
   context: string,
   limit: number = 5,
-): ActoviqMemory[] {
+): HadamardMemory[] {
   // Score each memory by keyword relevance
   // Sort by relevance × freshness
   // Return top-N
@@ -88,11 +88,11 @@ Dream Trigger (auto or manual via /dream)
     │
     ▼
 1. Lock acquisition (prevents concurrent dreams)
-    tryAcquireActoviqConsolidationLock()
+    tryAcquireHadamardConsolidationLock()
     │
     ▼
 2. Identify sessions since last consolidation
-    listActoviqSessionsTouchedSince(lastConsolidatedAt)
+    listHadamardSessionsTouchedSince(lastConsolidatedAt)
     │
     ▼
 3. For each session, extract memory-worthy content
@@ -113,7 +113,7 @@ Dream Trigger (auto or manual via /dream)
     │
     ▼
 6. Record consolidation timestamp
-    recordActoviqConsolidation()
+    recordHadamardConsolidation()
     │
     ▼
 7. Release lock
@@ -121,27 +121,27 @@ Dream Trigger (auto or manual via /dream)
 
 ## Code Details
 
-### `ActoviqMemoryApi`
+### `HadamardMemoryApi`
 
-Location: `src/memory/actoviqMemory.ts:466`
+Location: `src/memory/hadamardMemory.ts:466`
 
 ```typescript
-class ActoviqMemoryApi {
-  async list(type?: string): Promise<ActoviqMemory[]> { /* scan directory */ }
-  async read(name: string): Promise<ActoviqMemory | undefined> { /* read file */ }
-  async write(memory: ActoviqMemory): Promise<void> { /* write file + update index */ }
+class HadamardMemoryApi {
+  async list(type?: string): Promise<HadamardMemory[]> { /* scan directory */ }
+  async read(name: string): Promise<HadamardMemory | undefined> { /* read file */ }
+  async write(memory: HadamardMemory): Promise<void> { /* write file + update index */ }
   async delete(name: string): Promise<void> { /* delete file + update index */ }
-  async selectRelevant(context: string, limit?: number): Promise<ActoviqMemory[]> { /* keyword match */ }
+  async selectRelevant(context: string, limit?: number): Promise<HadamardMemory[]> { /* keyword match */ }
 }
 ```
 
-### `ActoviqDreamApi`
+### `HadamardDreamApi`
 
-Location: `src/memory/actoviqDream.ts:50`
+Location: `src/memory/hadamardDream.ts:50`
 
 ```typescript
-class ActoviqDreamApi {
-  async run(options?: ActoviqDreamOptions): Promise<ActoviqDreamResult> {
+class HadamardDreamApi {
+  async run(options?: HadamardDreamOptions): Promise<HadamardDreamResult> {
     // Full dream consolidation cycle
   }
   
@@ -149,7 +149,7 @@ class ActoviqDreamApi {
     // Check: enough new content since last dream?
   }
   
-  async getState(): Promise<ActoviqDreamState> {
+  async getState(): Promise<HadamardDreamState> {
     // Last consolidation, pending sessions, etc.
   }
 }
@@ -158,11 +158,11 @@ class ActoviqDreamApi {
 ### Memory Freshness Metadata
 
 ```typescript
-function getActoviqMemoryAge(createdAt: string): number {
+function getHadamardMemoryAge(createdAt: string): number {
   return Date.now() - new Date(createdAt).getTime();
 }
 
-function getActoviqMemoryFreshnessNote(ageMs: number): string {
+function getHadamardMemoryFreshnessNote(ageMs: number): string {
   if (ageMs < 3600000) return ' (created < 1 hour ago)';
   if (ageMs < 86400000) return ` (created ${Math.round(ageMs / 3600000)}h ago)`;
   return ` (created ${Math.round(ageMs / 86400000)}d ago)`;

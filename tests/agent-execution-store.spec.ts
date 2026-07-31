@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 
 async function createStore(): Promise<{ store: AgentExecutionStore; root: string; temp: string }> {
-  const temp = await mkdtemp(path.join(os.tmpdir(), 'actoviq-agent-execution-'));
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'hadamard-agent-execution-'));
   tempDirs.push(temp);
   const root = path.join(temp, 'sessions-root');
   return { store: new AgentExecutionStore(root), root, temp };

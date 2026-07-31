@@ -1,39 +1,39 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { createActoviqBridgeSdk } from './actoviqBridgeSdk.js';
+import { createHadamardBridgeSdk } from './hadamardBridgeSdk.js';
 import type {
-  ActoviqBridgeJsonEvent,
-  ActoviqBridgeRunOptions,
-  ActoviqBridgeRunResult,
-  ActoviqBridgeSessionCreateOptions,
-  CreateActoviqBridgeSdkOptions,
+  HadamardBridgeJsonEvent,
+  HadamardBridgeRunOptions,
+  HadamardBridgeRunResult,
+  HadamardBridgeSessionCreateOptions,
+  CreateHadamardBridgeSdkOptions,
 } from '../types.js';
 
 export type ExternalCliRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted';
 
-export interface ExternalCliRunStreamLike extends AsyncIterable<ActoviqBridgeJsonEvent> {
-  readonly result: Promise<ActoviqBridgeRunResult>;
+export interface ExternalCliRunStreamLike extends AsyncIterable<HadamardBridgeJsonEvent> {
+  readonly result: Promise<HadamardBridgeRunResult>;
 }
 
 export interface ExternalCliSessionLike {
   readonly id: string;
   stream(
     prompt: string,
-    options?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId'>,
+    options?: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId'>,
   ): ExternalCliRunStreamLike;
 }
 
 export interface ExternalCliClientLike {
-  createSession(options?: ActoviqBridgeSessionCreateOptions): Promise<ExternalCliSessionLike>;
+  createSession(options?: HadamardBridgeSessionCreateOptions): Promise<ExternalCliSessionLike>;
   resumeSession(
     sessionId: string,
-    options?: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'>,
+    options?: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'>,
   ): Promise<ExternalCliSessionLike>;
   close(): Promise<void>;
 }
 
 export type ExternalCliClientFactory = (
-  options: CreateActoviqBridgeSdkOptions,
+  options: CreateHadamardBridgeSdkOptions,
 ) => Promise<ExternalCliClientLike>;
 
 export interface ExternalCliRuntimeManagerOptions {
@@ -51,7 +51,7 @@ export interface ExternalCliRuntimeManagerOptions {
 }
 
 export interface ExternalCliRunStartOptions {
-  actoviqSessionId: string;
+  hadamardSessionId: string;
   configId: string;
   cwd: string;
   prompt: string;
@@ -59,16 +59,16 @@ export interface ExternalCliRunStartOptions {
   background?: boolean;
   /** Child-only authentication/configuration override. It is never retained by the manager. */
   env?: Record<string, string>;
-  clientOptions?: CreateActoviqBridgeSdkOptions;
-  sessionOptions?: Omit<ActoviqBridgeSessionCreateOptions, 'sessionId'>;
-  runOptions?: Omit<ActoviqBridgeRunOptions, 'resume' | 'sessionId' | 'signal'>;
+  clientOptions?: CreateHadamardBridgeSdkOptions;
+  sessionOptions?: Omit<HadamardBridgeSessionCreateOptions, 'sessionId'>;
+  runOptions?: Omit<HadamardBridgeRunOptions, 'resume' | 'sessionId' | 'signal'>;
 }
 
 export interface ExternalCliRunEvent {
   kind: 'event';
   sequence: number;
   timestamp: string;
-  event: ActoviqBridgeJsonEvent;
+  event: HadamardBridgeJsonEvent;
 }
 
 export interface ExternalCliRunLog {
@@ -99,7 +99,7 @@ export interface ExternalCliRunErrorSnapshot {
 
 export interface ExternalCliRunSnapshot {
   runId: string;
-  actoviqSessionId: string;
+  hadamardSessionId: string;
   configId: string;
   cwd: string;
   background: boolean;
@@ -134,7 +134,7 @@ interface CachedRuntime {
 interface RunRecord {
   runId: string;
   cacheKey: string;
-  actoviqSessionId: string;
+  hadamardSessionId: string;
   configId: string;
   cwd: string;
   background: boolean;
@@ -212,9 +212,9 @@ function truncateUtf8(value: string, maxBytes: number): string {
 }
 
 function truncateEvent(
-  _event: ActoviqBridgeJsonEvent,
+  _event: HadamardBridgeJsonEvent,
   originalBytes: number,
-): ActoviqBridgeJsonEvent {
+): HadamardBridgeJsonEvent {
   return {
     type: 'truncated',
     truncated: true,
@@ -278,9 +278,9 @@ function collectSecrets(options: ExternalCliRunStartOptions): string[] {
 }
 
 function sanitizeEvent(
-  event: ActoviqBridgeJsonEvent,
+  event: HadamardBridgeJsonEvent,
   secrets: readonly string[],
-): ActoviqBridgeJsonEvent {
+): HadamardBridgeJsonEvent {
   const sanitized = sanitizeValue(event, secrets);
   if (!sanitized || typeof sanitized !== 'object' || Array.isArray(sanitized)) {
     return { type: 'unknown' };
@@ -309,8 +309,8 @@ function isTerminal(status: ExternalCliRunStatus): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function cacheKeyFor(actoviqSessionId: string, configId: string, cwd: string): string {
-  return `${actoviqSessionId}\u0000${configId}\u0000${cwd}`;
+function cacheKeyFor(hadamardSessionId: string, configId: string, cwd: string): string {
+  return `${hadamardSessionId}\u0000${configId}\u0000${cwd}`;
 }
 
 function copyEvent(entry: ExternalCliRunEvent): ExternalCliRunEvent {
@@ -343,7 +343,7 @@ export class ExternalCliRuntimeManager {
   private closed = false;
 
   constructor(options: ExternalCliRuntimeManagerOptions = {}) {
-    this.clientFactory = options.clientFactory ?? (async sdkOptions => createActoviqBridgeSdk(sdkOptions));
+    this.clientFactory = options.clientFactory ?? (async sdkOptions => createHadamardBridgeSdk(sdkOptions));
     this.maxRetainedRuns = positiveInteger(
       options.maxRetainedRuns,
       DEFAULT_MAX_RETAINED_RUNS,
@@ -463,19 +463,19 @@ export class ExternalCliRuntimeManager {
 
   private launch(options: ExternalCliRunStartOptions): RunRecord {
     if (this.closed) throw new Error('External CLI runtime manager is closed.');
-    if (!options.actoviqSessionId || !options.configId || !options.cwd) {
-      throw new TypeError('actoviqSessionId, configId, and cwd are required.');
+    if (!options.hadamardSessionId || !options.configId || !options.cwd) {
+      throw new TypeError('hadamardSessionId, configId, and cwd are required.');
     }
 
     const cwd = path.resolve(options.cwd);
-    const cacheKey = cacheKeyFor(options.actoviqSessionId, options.configId, cwd);
+    const cacheKey = cacheKeyFor(options.hadamardSessionId, options.configId, cwd);
     const runId = this.runIdFactory();
     if (this.runs.has(runId)) throw new Error(`Duplicate external CLI run id: ${runId}`);
 
     const record: RunRecord = {
       runId,
       cacheKey,
-      actoviqSessionId: options.actoviqSessionId,
+      hadamardSessionId: options.hadamardSessionId,
       configId: options.configId,
       cwd,
       background: options.background === true,
@@ -620,7 +620,7 @@ export class ExternalCliRuntimeManager {
   }
 
   private sanitizeResult(
-    result: ActoviqBridgeRunResult,
+    result: HadamardBridgeRunResult,
     secrets: readonly string[],
   ): ExternalCliRunResultSnapshot {
     return {
@@ -637,7 +637,7 @@ export class ExternalCliRuntimeManager {
     };
   }
 
-  private pushEvent(record: RunRecord, event: ActoviqBridgeJsonEvent): void {
+  private pushEvent(record: RunRecord, event: HadamardBridgeJsonEvent): void {
     const originalBytes = serializedBytes(event);
     let boundedEvent = originalBytes > this.maxEventBytes
       ? truncateEvent(event, originalBytes)
@@ -710,7 +710,7 @@ export class ExternalCliRuntimeManager {
   private snapshot(record: RunRecord): ExternalCliRunSnapshot {
     return {
       runId: record.runId,
-      actoviqSessionId: record.actoviqSessionId,
+      hadamardSessionId: record.hadamardSessionId,
       configId: record.configId,
       cwd: record.cwd,
       background: record.background,

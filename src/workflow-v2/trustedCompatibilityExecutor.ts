@@ -103,28 +103,28 @@ export class TrustedCompatibilityWorkflowExecutor implements TrustedWorkflowExec
       Object.freeze(capabilityObject);
 
       Object.defineProperties(contextObject, {
-        __actoviqInput: { value: input, configurable: false, writable: false },
-        __actoviqCapabilities: {
+        __hadamardInput: { value: input, configurable: false, writable: false },
+        __hadamardCapabilities: {
           value: capabilityObject,
           configurable: false,
           writable: false,
         },
-        __actoviqSignal: { value: signal, configurable: false, writable: false },
+        __hadamardSignal: { value: signal, configurable: false, writable: false },
       });
       const context = vm.createContext(contextObject, {
-        name: 'actoviq-trusted-workflow-compatibility',
+        name: 'hadamard-trusted-workflow-compatibility',
       });
       const program = new vm.Script(
         [
           '"use strict";',
-          `const __actoviqProgram = (${request.source});`,
-          'if (typeof __actoviqProgram !== "function") {',
+          `const __hadamardProgram = (${request.source});`,
+          'if (typeof __hadamardProgram !== "function") {',
           '  throw new TypeError("Workflow source must evaluate to a function.");',
           '}',
-          'Promise.resolve(__actoviqProgram({',
-          '  input: globalThis.__actoviqInput,',
-          '  capabilities: globalThis.__actoviqCapabilities,',
-          '  signal: globalThis.__actoviqSignal,',
+          'Promise.resolve(__hadamardProgram({',
+          '  input: globalThis.__hadamardInput,',
+          '  capabilities: globalThis.__hadamardCapabilities,',
+          '  signal: globalThis.__hadamardSignal,',
           '}));',
         ].join('\n'),
         { filename: 'trusted-workflow.js' },
@@ -150,14 +150,14 @@ export class TrustedCompatibilityWorkflowExecutor implements TrustedWorkflowExec
       }
       signal.throwIfAborted();
 
-      Object.defineProperty(contextObject, '__actoviqResult', {
+      Object.defineProperty(contextObject, '__hadamardResult', {
         value: rawResult,
         configurable: true,
       });
       let serialized: unknown;
       try {
         serialized = new vm.Script(
-          'JSON.stringify(globalThis.__actoviqResult)',
+          'JSON.stringify(globalThis.__hadamardResult)',
           { filename: 'trusted-workflow-output.js' },
         ).runInContext(context, {
           timeout: Math.max(1, expiresAt - Date.now()),
@@ -170,7 +170,7 @@ export class TrustedCompatibilityWorkflowExecutor implements TrustedWorkflowExec
           cause: error,
         });
       } finally {
-        delete contextObject.__actoviqResult;
+        delete contextObject.__hadamardResult;
       }
       if (typeof serialized !== 'string') {
         throw new WorkflowExecutionError('Workflow output must be a JSON value.');

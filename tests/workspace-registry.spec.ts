@@ -24,7 +24,7 @@ describe('workspaceRegistry', () => {
   });
 
   async function tempHome(): Promise<string> {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-ws-reg-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ws-reg-'));
     dirs.push(dir);
     return dir;
   }
@@ -54,9 +54,9 @@ describe('workspaceRegistry', () => {
 
   it('tolerates a corrupt registry file', async () => {
     const home = await tempHome();
-    const actoviq = path.join(home, '.actoviq');
-    await mkdir(actoviq, { recursive: true });
-    await writeFile(path.join(actoviq, 'workspaces.json'), '{not-json');
+    const hadamard = path.join(home, '.hadamard');
+    await mkdir(hadamard, { recursive: true });
+    await writeFile(path.join(hadamard, 'workspaces.json'), '{not-json');
     expect(await readWorkspaceRegistry(home)).toEqual([]);
   });
 

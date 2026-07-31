@@ -1,0 +1,11 @@
+{
+  "name": "5335",
+  "description": "35355",
+  "mode": "graph",
+  "version": 3,
+  "orchestration": "graph",
+  "squadType": "workflow",
+  "members": [],
+  "nodes": [],
+  "edges": []
+}

@@ -67,7 +67,7 @@ Graph 在构造时拒绝 duplicate/cycle/invalid reducer，按 lexical topologic
 
 ## 兼容影响
 
-- 旧 `ModelTeam`、`ActoviqSwarmApi`、router 和 `WorkflowEngine` 暂时保留；迁移后它们应逐步成为 preset/adapter。
+- 旧 `ModelTeam`、`HadamardSwarmApi`、router 和 `WorkflowEngine` 暂时保留；迁移后它们应逐步成为 preset/adapter。
 - 新 primitive 的 result、event 和 conversation ownership 与旧 team result 不同，不能只按 text 比较；需要验证 owner、trace、usage 和 child status。
 - `WorkflowGraph` 当前不是 durable graph scheduler；需要跨进程恢复的工作应使用 durable child/checkpoint，不能宣称 graph 自身已支持全图恢复。
 - Handoff 由 orchestration API 显式触发；`executeHandoff()` 会调用 `AgentRuntime.beforeHandoff()`，再启动 target child 并转移 owner。core model loop 不自动消费 `handoff_call`，这是避免隐式 ownership 变化和 same-session 递归锁的 1.0 边界，不是未实现的 tool 旁路。

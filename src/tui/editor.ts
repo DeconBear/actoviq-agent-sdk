@@ -1,5 +1,5 @@
 /**
- * Pure multi-line input editor state for the Actoviq TUI. No terminal I/O —
+ * Pure multi-line input editor state for the Hadamard TUI. No terminal I/O —
  * the app feeds key operations in and renders `visualLines()` out, which
  * keeps the editing logic unit-testable without a PTY.
  */

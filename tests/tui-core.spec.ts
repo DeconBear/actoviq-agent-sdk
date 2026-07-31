@@ -9,7 +9,7 @@ import {
   formatToolResult,
   summarizeToolInput,
 } from '../src/tui/transcript.js';
-import { filterSlashCommands, activeAtToken, isTuiChatSession } from '../src/tui/actoviqTui.js';
+import { filterSlashCommands, activeAtToken, isTuiChatSession } from '../src/tui/hadamardTui.js';
 import {
   filterTuiSelectionItems,
   moveTuiSelection,

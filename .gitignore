@@ -7,7 +7,7 @@ output/
 .DS_Store
 .codegraph/
 .deepseek/
-.actoviq-artifacts/
+.hadamard-artifacts/
 *.tgz
 examples/*.local.json
 bench/reports/
@@ -15,9 +15,9 @@ bench/workspaces/
 plan/
 AGENTS.md
 CLAUDE.md
-vendor/actoviq-runtime/runtime.bundle.br
-vendor/actoviq-runtime/runtime.bundle.mjs
-vendor/actoviq-runtime/SYNC_SUMMARY.json
+vendor/hadamard-runtime/runtime.bundle.br
+vendor/hadamard-runtime/runtime.bundle.mjs
+vendor/hadamard-runtime/SYNC_SUMMARY.json
 bench/dashboard.html
 bench/task-explorer.html
 bench/results/

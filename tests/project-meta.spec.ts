@@ -40,8 +40,8 @@ describe('projectMeta', () => {
   });
 
   it('defaults to not_started and persists status updates', async () => {
-    homeDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-meta-home-'));
-    workDir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-meta-work-'));
+    homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-meta-home-'));
+    workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-meta-work-'));
     const initial = await readProjectMeta(workDir, homeDir);
     expect(initial.status).toBe('not_started');
 

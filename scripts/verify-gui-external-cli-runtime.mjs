@@ -16,7 +16,7 @@ import { _electron as electron } from 'playwright';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ARTIFACTS = path.join(ROOT, 'output', 'playwright', 'gui-external-cli-runtime');
-const TMP = await mkdtemp(path.join(os.tmpdir(), 'actoviq-external-cli-e2e-'));
+const TMP = await mkdtemp(path.join(os.tmpdir(), 'hadamard-external-cli-e2e-'));
 const HOME = path.join(TMP, 'home');
 const WORK = path.join(TMP, 'workspace');
 const BIN = path.join(TMP, 'bin');
@@ -258,7 +258,7 @@ async function api(page, requestPath, init = {}) {
     const response = await fetch(requestPath, {
       ...init,
       headers: {
-        'x-actoviq-token': window.__ACTOVIQ_TOKEN__,
+        'x-hadamard-token': window.__HADAMARD_TOKEN__,
         ...(init.headers || {}),
       },
     });
@@ -349,7 +349,7 @@ const delimiter = argv.indexOf('--');
 const prompt = delimiter >= 0 ? (argv[delimiter + 1] || '') : '';
 const resumeId = flag('--resume');
 const sessionId = resumeId || flag('--session-id') || 'e2e-native-session';
-appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
   runtime: 'claude',
   argv,
   prompt,
@@ -445,7 +445,7 @@ const positionals = delimiter >= 0 ? argv.slice(delimiter + 1) : [];
 const resumed = argv[1] === 'resume';
 const sessionId = resumed ? (positionals[0] || 'e2e-codex-session') : 'e2e-codex-session';
 const prompt = resumed ? (positionals[1] || '') : (positionals[0] || '');
-appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
   runtime: 'codex',
   argv,
   prompt,
@@ -545,7 +545,7 @@ for await (const line of input) {
   }
   if (request.type !== 'prompt') continue;
   const prompt = typeof request.message === 'string' ? request.message : '';
-  appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+  appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
     runtime: 'pi', argv, prompt, sessionId, resumed, cwd: process.cwd(),
     hasProviderKey: Boolean(process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY),
   }) + '\\n');
@@ -620,7 +620,7 @@ const redactedIdentifierForLog = identifier => {
   return '<redacted:' + hash.toString(16).padStart(16, '0') + '>';
 };
 
-appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
   runtime: 'codewhale', argv, prompt, sessionId, resumed, cwd: process.cwd(),
   hasProviderKey: Boolean(process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY),
 }) + '\\n');
@@ -721,7 +721,7 @@ for await (const line of input) {
   const block = Array.isArray(record.params && record.params.prompt) ? record.params.prompt[0] : undefined;
   const prompt = block && typeof block.text === 'string' ? block.text : '';
   const currentResumed = resumed || turnCount > 0;
-  appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+  appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
     runtime: 'reasonix', argv, prompt, sessionId, resumed: currentResumed, cwd: process.cwd(),
     hasProviderKey: Boolean(process.env.DEEPSEEK_API_KEY),
   }) + '\\n');
@@ -776,9 +776,9 @@ import http from 'node:http';
 import process from 'node:process';
 
 const argv = process.argv.slice(2);
-const historyId = process.env.ACTOVIQ_E2E_CRUSH_HISTORY_ID;
-const historyTitle = process.env.ACTOVIQ_E2E_CRUSH_HISTORY_TITLE;
-const historyAnswer = process.env.ACTOVIQ_E2E_CRUSH_HISTORY_ANSWER;
+const historyId = process.env.HADAMARD_E2E_CRUSH_HISTORY_ID;
+const historyTitle = process.env.HADAMARD_E2E_CRUSH_HISTORY_TITLE;
+const historyAnswer = process.env.HADAMARD_E2E_CRUSH_HISTORY_ANSWER;
 if (argv.includes('--version')) {
   process.stdout.write('crush 0.84.1\\n');
   process.exit(0);
@@ -915,7 +915,7 @@ const server = http.createServer(async (request, response) => {
     const prompt = body.prompt || '';
     const currentResumed = resumed;
     resumed = true;
-    appendFileSync(process.env.ACTOVIQ_E2E_INVOCATIONS, JSON.stringify({
+    appendFileSync(process.env.HADAMARD_E2E_INVOCATIONS, JSON.stringify({
       runtime: 'crush', argv, prompt, sessionId, resumed: currentResumed, cwd: process.cwd(),
       hasProviderKey: Boolean(process.env.CRUSH_OPENAI_API_KEY || process.env.CRUSH_ANTHROPIC_API_KEY),
     }) + '\\n');
@@ -1204,11 +1204,11 @@ try {
   const guiPort = await freePort();
   const env = {
     ...process.env,
-    ACTOVIQ_HOME: HOME,
-    ACTOVIQ_E2E_INVOCATIONS: INVOCATION_LOG,
-    ACTOVIQ_E2E_CRUSH_HISTORY_ID: RUNTIME_BY_ID.crush.historyId,
-    ACTOVIQ_E2E_CRUSH_HISTORY_TITLE: RUNTIME_BY_ID.crush.historyTitle,
-    ACTOVIQ_E2E_CRUSH_HISTORY_ANSWER: RUNTIME_BY_ID.crush.historyAnswer,
+    HADAMARD_HOME: HOME,
+    HADAMARD_E2E_INVOCATIONS: INVOCATION_LOG,
+    HADAMARD_E2E_CRUSH_HISTORY_ID: RUNTIME_BY_ID.crush.historyId,
+    HADAMARD_E2E_CRUSH_HISTORY_TITLE: RUNTIME_BY_ID.crush.historyTitle,
+    HADAMARD_E2E_CRUSH_HISTORY_ANSWER: RUNTIME_BY_ID.crush.historyAnswer,
     CLAUDE_CONFIG_DIR: path.join(HOME, '.claude'),
     CODEX_HOME: path.join(HOME, '.codex'),
     PI_CODING_AGENT_SESSION_DIR: path.join(HOME, '.pi', 'agent', 'sessions'),
@@ -1220,8 +1220,8 @@ try {
   };
   // Native-auth mode is the behavior under test. Keep the parent developer
   // shell's provider credentials out of the deterministic child process.
-  delete env.ACTOVIQ_API_KEY;
-  delete env.ACTOVIQ_AUTH_TOKEN;
+  delete env.HADAMARD_API_KEY;
+  delete env.HADAMARD_AUTH_TOKEN;
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -1446,7 +1446,7 @@ try {
   assert.equal(runsResponse.status, 200);
   assert(runsResponse.body.runs.length >= RUNTIMES.length * 5);
   assert(runsResponse.body.runs.every(run => !('configId' in run)));
-  assert(runsResponse.body.runs.every(run => !('actoviqSessionId' in run)));
+  assert(runsResponse.body.runs.every(run => !('hadamardSessionId' in run)));
 
   await page.setViewportSize({ width: 430, height: 900 });
   await openModelsSettings(page);

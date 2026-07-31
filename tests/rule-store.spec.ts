@@ -14,7 +14,7 @@ afterEach(async () => {
 
 describe('RuleStore', () => {
   it('persists rule provenance and enable state', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-rules-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-rules-'));
     dirs.push(dir);
     const store = new RuleStore(path.join(dir, 'rules.json'));
     const added = await store.add({

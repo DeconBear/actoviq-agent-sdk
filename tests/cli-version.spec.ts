@@ -34,7 +34,7 @@ describe('CLI version helpers', () => {
   });
 
   it('walks upward from a compiled nested CLI path', async () => {
-    const tempDir = await createTempDir('actoviq-cli-version-');
+    const tempDir = await createTempDir('hadamard-cli-version-');
     const nestedDir = path.join(tempDir, 'dist', 'src', 'cli');
     await mkdir(nestedDir, { recursive: true });
     await writeFile(

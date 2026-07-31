@@ -1,7 +1,7 @@
 /**
  * Named bridge connection configs (apiKey + baseURL presets).
  *
- * Persisted to ~/.actoviq/bridge-configs.json. Each config bundles a provider
+ * Persisted to ~/.hadamard/bridge-configs.json. Each config bundles a provider
  * (now 'anthropic'|'openai' — the in-process SDK enum) plus apiKey/baseURL/model
  * so the user can pre-configure e.g. one anthropic profile pointed at DeepSeek
  * and another at Qwen, and switch between them by name.
@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { resolveActoviqHome } from '../config/actoviqHome.js';
+import { resolveHadamardHome } from '../config/hadamardHome.js';
 
 export type InProcessProvider = 'anthropic' | 'openai';
 
@@ -146,7 +146,7 @@ function migrateProvider(raw: string): InProcessProvider {
 }
 
 export function getBridgeConfigsPath(homeDir?: string): string {
-  return path.join(resolveActoviqHome(homeDir), 'bridge-configs.json');
+  return path.join(resolveHadamardHome(homeDir), 'bridge-configs.json');
 }
 
 export const VALID_RUNTIMES: BridgeRuntime[] = ['hadamard', 'claude', 'codewhale', 'pi', 'codex', 'reasonix', 'crush'];

@@ -18,9 +18,9 @@
                     └──────┬──────────┬────────┘
                            │          │
               ┌────────────▼──┐  ┌───▼──────────────────┐
-              │ Hadamard SDK  │  │ actoviq-bridge-sdk    │
+              │ Hadamard SDK  │  │ hadamard-bridge-sdk    │
               │               │  │                       │
-              │ createAgentSdk│  │ createActoviqBridgeSdk│
+              │ createAgentSdk│  │ createHadamardBridgeSdk│
               │ 进程内执行     │  │ 子进程（bun）          │
               │ ReAct 循环    │  │ 黑盒运行时              │
               └───────────────┘  └───────────────────────┘
@@ -28,7 +28,7 @@
 
 **Hadamard SDK**（`createAgentSdk()`）：进程内执行。ReAct 循环（`conversationEngine.ts`）直接在 Node.js 中运行。所有 TypeScript 源码可修改。除 `zod` 和 `glob` 外无运行时依赖。
 
-**actoviq-bridge-sdk**（`createActoviqBridgeSdk()`）：通过 `bun` 子进程运行预编译的运行时 bundle。作为参考实现和回退方案。bundle 内的 ReAct 循环不可修改。设 `directCli: true` 时则直接 spawn PATH 上的本地 `claude`（无需 bundle/Bun），复用官方原生 exe Claude Code；provider 隔离（`ANTHROPIC_*` 环境注入）两种模式都适用。
+**hadamard-bridge-sdk**（`createHadamardBridgeSdk()`）：通过 `bun` 子进程运行预编译的运行时 bundle。作为参考实现和回退方案。bundle 内的 ReAct 循环不可修改。设 `directCli: true` 时则直接 spawn PATH 上的本地 `claude`（无需 bundle/Bun），复用官方原生 exe Claude Code；provider 隔离（`ANTHROPIC_*` 环境注入）两种模式都适用。
 
 ### Harness 设计哲学
 
@@ -46,8 +46,8 @@
 
 ```
 CreateAgentSdkOptions  (编程方式，最高优先级)
-    → process.env      (ACTOVIQ_* 环境变量)
-    → settings.json    (~/.actoviq/settings.json → env 块)
+    → process.env      (HADAMARD_* 环境变量)
+    → settings.json    (~/.hadamard/settings.json → env 块)
     → 硬编码默认值     (provider=anthropic, maxTokens=32000, ...)
 ```
 
@@ -61,18 +61,18 @@ CreateAgentSdkOptions  (编程方式，最高优先级)
 
 | 类别 | 关键导出 |
 |---|---|
-| **入口** | `createAgentSdk`, `createActoviqBridgeSdk` |
-| **配置** | `resolveRuntimeConfig`, `loadJsonConfigFile`, `loadDefaultActoviqSettings` |
-| **运行时** | `ActoviqAgentClient`, `AgentSession`, `AgentRunStream` |
-| **工具** | `tool()`, `createActoviqCoreTools`, `createActoviqFileTools`, `createBashTool` |
-| **子代理** | `ActoviqAgentsApi`, `ActoviqBackgroundTaskManager`, `loadActoviqAgentDefinitions` |
+| **入口** | `createAgentSdk`, `createHadamardBridgeSdk` |
+| **配置** | `resolveRuntimeConfig`, `loadJsonConfigFile`, `loadDefaultHadamardSettings` |
+| **运行时** | `HadamardAgentClient`, `AgentSession`, `AgentRunStream` |
+| **工具** | `tool()`, `createHadamardCoreTools`, `createHadamardFileTools`, `createBashTool` |
+| **子代理** | `HadamardAgentsApi`, `HadamardBackgroundTaskManager`, `loadHadamardAgentDefinitions` |
 | **工作流** | `WorkflowEngine`, `WorkflowBuilder`, `WorkflowApi` |
-| **Swarm** | `ActoviqSwarmApi`, `ActoviqSwarmTeam`, `ActoviqSwarmTeammateHandle` |
-| **记忆** | `ActoviqMemoryApi`, `ActoviqDreamApi` |
+| **Swarm** | `HadamardSwarmApi`, `HadamardSwarmTeam`, `HadamardSwarmTeammateHandle` |
+| **记忆** | `HadamardMemoryApi`, `HadamardDreamApi` |
 | **存储** | `SessionStore`, `MailboxStore`, `TeammateStore` |
-| **工作区** | `ActoviqWorkspace`, `createGitWorktreeWorkspace` |
-| **Bridge** | `ActoviqBridgeSdkClient`, `ActoviqCleanBridgeSdkClient` |
-| **错误** | `ActoviqSdkError`, `ConfigurationError`, `SessionNotFoundError` 等 |
+| **工作区** | `HadamardWorkspace`, `createGitWorktreeWorkspace` |
+| **Bridge** | `HadamardBridgeSdkClient`, `HadamardCleanBridgeSdkClient` |
+| **错误** | `HadamardSdkError`, `ConfigurationError`, `SessionNotFoundError` 等 |
 
 ### 模块依赖图
 
@@ -85,7 +85,7 @@ src/index.ts (公开接口)
     │   ├── agentClient   (中央编排器)
     │   ├── conversationEngine (ReAct 循环)
     │   ├── agentSession  (会话封装)
-    │   ├── actoviqAgents (子代理系统)
+    │   ├── hadamardAgents (子代理系统)
     │   └── ...
     ├── tools/*           (独立 — 纯函数 + Zod)
     ├── storage/*         (独立 — JSON 文件 I/O)
@@ -120,12 +120,12 @@ sdk.run(prompt)
 ```typescript
 export async function createAgentSdk(
   options: CreateAgentSdkOptions = {},
-): Promise<ActoviqAgentClient> {
+): Promise<HadamardAgentClient> {
   const config = await resolveRuntimeConfig(options);
   const store = new SessionStore(config.sessionDirectory);
   const backgroundTaskStore = new BackgroundTaskStore(config.sessionDirectory);
   // ... 解析工具、MCP、agent、skills、hooks ...
-  return ActoviqAgentClient.create(config, store, /* ... */);
+  return HadamardAgentClient.create(config, store, /* ... */);
 }
 ```
 
@@ -137,26 +137,26 @@ export async function createAgentSdk(
 5. 加载 agent 定义（编程方式 + Markdown 文件）
 6. 加载 skill 定义（内置 + 项目 + 用户）
 7. 创建 McpConnectionManager
-8. 实例化 `ActoviqAgentClient`
+8. 实例化 `HadamardAgentClient`
 
-### `ActoviqAgentClient` — 接口概览
+### `HadamardAgentClient` — 接口概览
 
 位置：`src/runtime/agentClient.ts:575`（~3820 行）
 
 ```
-ActoviqAgentClient
+HadamardAgentClient
 ├── 公开 API（只读属性）
 │   ├── sessions: AgentSessionsApi      创建/恢复/列出/复制/删除
-│   ├── agents: ActoviqAgentsApi         列出/获取/运行/后台启动
-│   ├── skills: ActoviqSkillsApi         列出/获取/运行/流式
-│   ├── tools: ActoviqToolsApi           获取工具/列出元数据
-│   ├── tasks: ActoviqBackgroundTasksApi 列出/获取/等待/取消
-│   ├── buddy: ActoviqBuddyApi           人格配置
-│   ├── memory: ActoviqMemoryApi         读写记忆
-│   ├── dream: ActoviqDreamApi           触发整合
-│   ├── swarm: ActoviqSwarmApi           创建/管理 swarm
-│   ├── context: ActoviqContextApi       上下文概览
-│   ├── slashCommands: ActoviqSlashCommandsApi
+│   ├── agents: HadamardAgentsApi         列出/获取/运行/后台启动
+│   ├── skills: HadamardSkillsApi         列出/获取/运行/流式
+│   ├── tools: HadamardToolsApi           获取工具/列出元数据
+│   ├── tasks: HadamardBackgroundTasksApi 列出/获取/等待/取消
+│   ├── buddy: HadamardBuddyApi           人格配置
+│   ├── memory: HadamardMemoryApi         读写记忆
+│   ├── dream: HadamardDreamApi           触发整合
+│   ├── swarm: HadamardSwarmApi           创建/管理 swarm
+│   ├── context: HadamardContextApi       上下文概览
+│   ├── slashCommands: HadamardSlashCommandsApi
 │   └── workflow: WorkflowApi            DAG 引擎
 │
 ├── 公开方法

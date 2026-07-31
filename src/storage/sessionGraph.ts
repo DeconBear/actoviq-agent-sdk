@@ -5,7 +5,7 @@ import type { StoredSession } from '../types.js';
 import { deepClone } from '../runtime/helpers.js';
 import type { SessionStore } from './sessionStore.js';
 
-const MESSAGE_IDS_KEY = '__actoviqMessageIds';
+const MESSAGE_IDS_KEY = '__hadamardMessageIds';
 
 export interface SessionGraphNode {
   session: StoredSession;

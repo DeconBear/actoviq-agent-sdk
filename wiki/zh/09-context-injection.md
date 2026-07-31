@@ -4,7 +4,7 @@
 
 在每次模型请求前，SDK 会用额外上下文增强对话：后台任务通知、记忆、Dream 结果、工具提示词、Skill 提示词和环境信息。这是"上下文注入管道"。
 
-位置：`src/runtime/agentClient.ts:2105`（`prepareRunAugmentations`）、`src/runtime/actoviqCompact.ts`
+位置：`src/runtime/agentClient.ts:2105`（`prepareRunAugmentations`）、`src/runtime/hadamardCompact.ts`
 
 ### 系统提示词构建
 
@@ -43,12 +43,12 @@ System Prompt =
 上下文大小检查（每次模型请求前）
     │
     ├── < 阈值 → append-only（不改写历史）
-    └── ≥ 阈值 → compactActoviqConversationIfNeeded()
+    └── ≥ 阈值 → compactHadamardConversationIfNeeded()
         ├── 仅整段摘要 compact（microcompact 只作摘要输入预处理，不写回会话）
         └── 断路器：连续 3 次失败 → 停止压缩
 ```
 
-`createAgentSdk` / `actoviq-react` 使用的会话级 `compactActoviqSession` 遵循同样规则。
+`createAgentSdk` / `hadamard-react` 使用的会话级 `compactHadamardSession` 遵循同样规则。
 
 ### 工具结果归档
 

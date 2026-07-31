@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
 import type { AgentSession } from '../runtime/agentSession.js';
-import type { ActoviqAgentClient } from '../runtime/agentClient.js';
+import type { HadamardAgentClient } from '../runtime/agentClient.js';
 import { tool } from '../runtime/tools.js';
 import type {
-  ActoviqPermissionMode,
+  HadamardPermissionMode,
   AgentEvent,
   AgentRunOptions,
   AgentRunResult,
@@ -29,7 +29,7 @@ import {
 } from './issueStore.js';
 
 export interface ExecuteProjectIssueOptions {
-  sdk: ActoviqAgentClient;
+  sdk: HadamardAgentClient;
   managerSession: AgentSession;
   workDir: string;
   homeDir: string;
@@ -37,7 +37,7 @@ export interface ExecuteProjectIssueOptions {
   issue: ProjectIssue;
   agentProfile?: string;
   defaultModel?: string;
-  permissionMode?: ActoviqPermissionMode;
+  permissionMode?: HadamardPermissionMode;
   systemPrompt?: string;
   signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
@@ -134,8 +134,8 @@ export async function executeProjectIssue(
     tools: managerTools,
     signal: options.signal,
     model: managerConfig.model ?? options.defaultModel,
-    __actoviqUseDefaultTools: false,
-    __actoviqAllowedTools: managerTools.map(tool => tool.name),
+    __hadamardUseDefaultTools: false,
+    __hadamardAllowedTools: managerTools.map(tool => tool.name),
   } as AgentRunOptions;
   const managerStream = options.managerSession.stream(briefPrompt, managerRunOptions);
   for await (const event of managerStream) {
@@ -159,12 +159,12 @@ export async function executeProjectIssue(
     ...(model ? { model } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     metadata: {
-      __actoviqIssueId: issue.id,
-      __actoviqIssueNumber: issue.number,
-      __actoviqIssueKey: `ISS-${issue.number}`,
-      __actoviqAgentProfile: profileName ?? null,
-      __actoviqRuntime: profile?.bridgeConfig.runtime ?? 'hadamard',
-      __actoviqConfigName: profile?.bridgeConfig.name ?? null,
+      __hadamardIssueId: issue.id,
+      __hadamardIssueNumber: issue.number,
+      __hadamardIssueKey: `ISS-${issue.number}`,
+      __hadamardAgentProfile: profileName ?? null,
+      __hadamardRuntime: profile?.bridgeConfig.runtime ?? 'hadamard',
+      __hadamardConfigName: profile?.bridgeConfig.name ?? null,
     },
   });
 

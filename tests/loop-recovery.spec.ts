@@ -12,7 +12,7 @@ import {
   type ModelApi,
   type ModelRequest,
 } from '../src/index.js';
-import { ActoviqProviderApiError } from '../src/errors.js';
+import { HadamardProviderApiError } from '../src/errors.js';
 import type { Message, MessageParam } from '../src/provider/types.js';
 
 const tempDirs: string[] = [];
@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 async function createSessionDirectory(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'actoviq-loop-recovery-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-loop-recovery-'));
   tempDirs.push(dir);
   return dir;
 }
@@ -53,7 +53,7 @@ function isLoopCompactRequest(request: ModelRequest): boolean {
   return (
     typeof request.metadata === 'object' &&
     request.metadata !== null &&
-    (request.metadata as Record<string, unknown>).actoviq_internal_task === 'loop_compact'
+    (request.metadata as Record<string, unknown>).hadamard_internal_task === 'loop_compact'
   );
 }
 
@@ -105,7 +105,7 @@ describe('reactive compact on prompt-too-long provider errors', () => {
       }
       if (regularCallIndex === 1) {
         promptTooLongThrown = true;
-        throw new ActoviqProviderApiError('prompt is too long: 210000 tokens > 200000 maximum', {
+        throw new HadamardProviderApiError('prompt is too long: 210000 tokens > 200000 maximum', {
           status: 400,
         });
       }
@@ -180,7 +180,7 @@ describe('reactive compact on prompt-too-long provider errors', () => {
           'tool_use',
         );
       }
-      throw new ActoviqProviderApiError('prompt is too long', { status: 400 });
+      throw new HadamardProviderApiError('prompt is too long', { status: 400 });
     });
     const lookup = tool(
       {
@@ -228,7 +228,7 @@ describe('reactive compact on prompt-too-long provider errors', () => {
     const modelApi = new RecoveryModelApi((request) => {
       const internalTask =
         typeof request.metadata === 'object' && request.metadata !== null
-          ? (request.metadata as Record<string, unknown>).actoviq_internal_task
+          ? (request.metadata as Record<string, unknown>).hadamard_internal_task
           : undefined;
       if (internalTask === 'loop_compact') {
         return makeMessage([{ type: 'text', text: 'In-loop recovery summary.' }]);
@@ -240,7 +240,7 @@ describe('reactive compact on prompt-too-long provider errors', () => {
       if (regularCalls === 1) {
         return makeMessage([{ type: 'text', text: 'Seed turn complete.' }]);
       }
-      throw new ActoviqProviderApiError('prompt is too long', { status: 400 });
+      throw new HadamardProviderApiError('prompt is too long', { status: 400 });
     });
     const sdk = await createAgentSdk({
       model: 'test-model',
@@ -277,7 +277,7 @@ describe('reactive compact on prompt-too-long provider errors', () => {
 
       expect(recoveryError).toBeInstanceOf(Error);
       expect((recoveryError as Error).message).toContain('Session compact persistence failed.');
-      expect((recoveryError as Error).cause).toBeInstanceOf(ActoviqProviderApiError);
+      expect((recoveryError as Error).cause).toBeInstanceOf(HadamardProviderApiError);
       const execution = await sdk.executions.getSnapshot(session.id);
       expect(execution?.nodes).toEqual([
         expect.objectContaining({

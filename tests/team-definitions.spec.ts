@@ -19,9 +19,9 @@ describe('Team definitions from disk', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `actoviq-team-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tmpDir = path.join(os.tmpdir(), `hadamard-team-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     fs.mkdirSync(tmpDir, { recursive: true });
-    fs.mkdirSync(path.join(tmpDir, '.actoviq', 'teams'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.hadamard', 'teams'), { recursive: true });
   });
 
   afterEach(() => {
@@ -122,7 +122,7 @@ describe('Team definitions from disk', () => {
     await saveTeamDefinition(defWithMixed, { projectDir: tmpDir });
 
     // Read the raw file
-    const filePath = path.join(tmpDir, '.actoviq', 'teams', 'mixed-keys.json');
+    const filePath = path.join(tmpDir, '.hadamard', 'teams', 'mixed-keys.json');
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
     expect(raw.mode).toBe('graph');
@@ -276,7 +276,7 @@ describe('Team definitions from disk', () => {
     );
 
     await cloneTeamDefinition('env-source', 'env-clone', { projectDir: tmpDir });
-    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'env-clone.json'), 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.hadamard', 'teams', 'env-clone.json'), 'utf-8'));
     const agent = raw.nodes.find((n: { kind?: string }) => (n.kind ?? 'agent') === 'agent');
     expect(agent.apiKey).toBe('$CLONE_TEST_KEY');
     delete process.env.CLONE_TEST_KEY;
@@ -304,7 +304,7 @@ describe('Team definitions from disk', () => {
     };
     await saveTeamDefinition(def, { projectDir: tmpDir });
 
-    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.actoviq', 'teams', 'graph-keys.json'), 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(path.join(tmpDir, '.hadamard', 'teams', 'graph-keys.json'), 'utf-8'));
     const agents = raw.nodes.filter((n: { kind?: string }) => (n.kind ?? 'agent') === 'agent');
     expect(agents[0].apiKey).toBe('$NODE_KEY_TEST'); // $refs kept
     expect(agents[1].apiKey).toBeUndefined(); // literals stripped

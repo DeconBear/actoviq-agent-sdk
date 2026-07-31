@@ -12,8 +12,8 @@ during refactoring.
 | `agentClient.ts:591-597` | 4 shared Maps without locks | **High** | Node.js event loop prevents true parallel races; async interleaving still vulnerable (TOCTOU) |
 | `agentClient.ts` (3820 lines) | God class with 12 API surfaces | **High** | Planned: extract SubagentOrchestrator, ContextAugmentor |
 | `conversationEngine.ts` → `agentClient.ts` | ReAct loop depends on compaction, permissions, hooks from client | **Medium** | Deps passed via options object, not direct imports |
-| `actoviqAgents.ts` → `agentClient.ts` | Task tool callbacks close over client methods | **Medium** | Tool cannot be tested without full client |
-| `actoviqCompact.ts` ↔ `conversationEngine.ts` | Compaction references tool_use_id pairing logic in engine | **Medium** | Pairing invariant documented; `extendPreserveToIncludeReferencedToolUses()` guard |
+| `hadamardAgents.ts` → `agentClient.ts` | Task tool callbacks close over client methods | **Medium** | Tool cannot be tested without full client |
+| `hadamardCompact.ts` ↔ `conversationEngine.ts` | Compaction references tool_use_id pairing logic in engine | **Medium** | Pairing invariant documented; `extendPreserveToIncludeReferencedToolUses()` guard |
 
 ### Loose Coupling (Good Patterns)
 
@@ -34,7 +34,7 @@ during refactoring.
 subagent operations without synchronization.
 
 **Impact**: Async interleaving at `await` boundaries can cause TOCTOU bugs.
-**History**: `cancel()` in `actoviqBackgroundTasks.ts` had a TOCTOU race (task
+**History**: `cancel()` in `hadamardBackgroundTasks.ts` had a TOCTOU race (task
 completes between status check and abort call). Fixed by re-reading store after
 abort.
 
@@ -43,7 +43,7 @@ abort.
 
 ### 2. God Class Anti-Pattern
 
-`ActoviqAgentClient` (~3820 lines) directly owns: session lifecycle, tool
+`HadamardAgentClient` (~3820 lines) directly owns: session lifecycle, tool
 management, subagent delegation, background tasks, context augmentation,
 notification injection, SendMessage routing, workspace management, MCP
 lifecycle, and hook invocation.
@@ -51,7 +51,7 @@ lifecycle, and hook invocation.
 **Recommendation**:
 1. Extract `SubagentOrchestrator` (delegation, background tasks, SendMessage)
 2. Extract `ContextAugmentor` (notifications, memory, dream, system prompt)
-3. Keep `ActoviqAgentClient` as facade delegating to these classes
+3. Keep `HadamardAgentClient` as facade delegating to these classes
 
 ### 3. `tool_use_id` Pairing Invariant
 
@@ -59,7 +59,7 @@ lifecycle, and hook invocation.
 subsequent user message's `tool_result` block. These live in **separate
 messages**. Compaction can accidentally separate these pairs.
 
-**Guard**: `extendPreserveToIncludeReferencedToolUses()` in `actoviqCompact.ts`
+**Guard**: `extendPreserveToIncludeReferencedToolUses()` in `hadamardCompact.ts`
 ensures the preservation window always includes both sides of the pair. Any
 change to compaction logic must preserve this invariant.
 
@@ -89,7 +89,7 @@ Cleanup runs independently with try/catch per step. Errors collected into
 
 ### 8. Flaky Test
 
-`tests/actoviq-dream.spec.ts` has a pre-existing flaky test (ENOENT on
+`tests/hadamard-dream.spec.ts` has a pre-existing flaky test (ENOENT on
 `project-memory.md`). The file may not exist when the test runs depending on
 test order and cleanup timing.
 

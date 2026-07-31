@@ -20,10 +20,10 @@ try {
   setIfMissing('TAVILY_API_KEY', keys.TAVILY_API_KEY);
   setIfMissing('DEEPSEEK_API_KEY', keys.DEEPSEEK_API_KEY);
   // Make the in-process SDK (Hadamard agents, panel members, the judge) able to
-  // authenticate directly from env — no dependency on loadDefaultActoviqSettings
+  // authenticate directly from env — no dependency on loadDefaultHadamardSettings
   // having run first.
-  setIfMissing('ACTOVIQ_AUTH_TOKEN', keys.DEEPSEEK_API_KEY);
-  setIfMissing('ACTOVIQ_BASE_URL', 'https://api.deepseek.com/anthropic');
+  setIfMissing('HADAMARD_AUTH_TOKEN', keys.DEEPSEEK_API_KEY);
+  setIfMissing('HADAMARD_BASE_URL', 'https://api.deepseek.com/anthropic');
   // Route the official `claude -p` runner to the same DeepSeek endpoint as the
   // other agents, so the benchmark compares harnesses on one held-constant model.
   setIfMissing('ANTHROPIC_BASE_URL', 'https://api.deepseek.com/anthropic');

@@ -132,11 +132,11 @@ log(`Found ${verified.filter(Boolean).length} issues.`);
 ### 持久化
 
 ```bash
-~/.actoviq/workflows/<name>.js     # 个人
-.actoviq/workflows/<name>.js       # 项目（覆盖个人）
+~/.hadamard/workflows/<name>.js     # 个人
+.hadamard/workflows/<name>.js       # 项目（覆盖个人）
 ```
 
-禁用开关：`ACTOVIQ_DISABLE_WORKFLOWS=1` 或 `disableWorkflows: true` 在 settings.json
+禁用开关：`HADAMARD_DISABLE_WORKFLOWS=1` 或 `disableWorkflows: true` 在 settings.json
 
 ### TUI/REPL 集成
 

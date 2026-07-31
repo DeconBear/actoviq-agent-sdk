@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
-import { ActoviqSdkError } from '../errors.js';
+import { HadamardSdkError } from '../errors.js';
 import type { WorktreeInfo, WorktreeSettings, WorktreeStackEntry } from '../types.js';
 
 const execFile = promisify(execFileCallback);
@@ -43,7 +43,7 @@ async function execGit(args: string[], cwd?: string): Promise<{ stdout: string; 
     return await execFile('git', args, { windowsHide: true, cwd });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new ActoviqSdkError(`Git operation failed: ${message}`);
+    throw new HadamardSdkError(`Git operation failed: ${message}`);
   }
 }
 
@@ -93,7 +93,7 @@ export class WorktreeService {
       this.repoRoot = '';
       return;
     }
-    this.worktreesDir = path.join(this.repoRoot, '.actoviq', 'worktrees');
+    this.worktreesDir = path.join(this.repoRoot, '.hadamard', 'worktrees');
     await mkdir(this.worktreesDir, { recursive: true });
   }
 
@@ -139,18 +139,18 @@ export class WorktreeService {
   /** Enter an existing worktree by path. */
   async enterWorktree(worktreePath: string, branch?: string): Promise<WorktreeStackEntry> {
     if (!this.repoRoot) {
-      throw new ActoviqSdkError('Not in a git repository. Cannot enter worktree.');
+      throw new HadamardSdkError('Not in a git repository. Cannot enter worktree.');
     }
 
     const resolved = path.resolve(worktreePath);
     if (!fs.existsSync(resolved)) {
-      throw new ActoviqSdkError(`Worktree path does not exist: ${resolved}`);
+      throw new HadamardSdkError(`Worktree path does not exist: ${resolved}`);
     }
 
-    // Verify it's under .actoviq/worktrees/
+    // Verify it's under .hadamard/worktrees/
     const relativePath = path.relative(this.worktreesDir, resolved);
     if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-      throw new ActoviqSdkError(
+      throw new HadamardSdkError(
         `Worktree must be under ${this.worktreesDir}. Got: ${resolved}`,
       );
     }
@@ -159,7 +159,7 @@ export class WorktreeService {
     if (this.isInWorktree) {
       const currentEntry = this.workDirStack[this.workDirStack.length - 1]!;
       if (path.resolve(currentEntry.workDir) === resolved) {
-        throw new ActoviqSdkError('Already in this worktree.');
+        throw new HadamardSdkError('Already in this worktree.');
       }
     }
 
@@ -187,7 +187,7 @@ export class WorktreeService {
     pr?: string;
   }): Promise<WorktreeStackEntry> {
     if (!this.repoRoot) {
-      throw new ActoviqSdkError('Not in a git repository. Cannot create worktree.');
+      throw new HadamardSdkError('Not in a git repository. Cannot create worktree.');
     }
 
     const name = options.name ?? generateWorktreeName();
@@ -195,7 +195,7 @@ export class WorktreeService {
     const worktreePath = path.join(this.worktreesDir, name);
 
     if (fs.existsSync(worktreePath)) {
-      throw new ActoviqSdkError(`Worktree already exists: ${worktreePath}`);
+      throw new HadamardSdkError(`Worktree already exists: ${worktreePath}`);
     }
 
     await mkdir(path.dirname(worktreePath), { recursive: true });
@@ -220,7 +220,7 @@ export class WorktreeService {
         ]);
         args.push(`origin/pr/${prNum}`);
       } catch {
-        throw new ActoviqSdkError(
+        throw new HadamardSdkError(
           `Failed to fetch PR #${prNum}. Make sure the remote is configured.`,
         );
       }
@@ -252,7 +252,7 @@ export class WorktreeService {
   /** Exit current worktree, return to previous workDir. */
   exitWorktree(): WorktreeStackEntry | null {
     if (this.workDirStack.length === 0) {
-      throw new ActoviqSdkError('Not in a worktree. Nothing to exit.');
+      throw new HadamardSdkError('Not in a worktree. Nothing to exit.');
     }
 
     const popped = this.workDirStack.pop()!;
@@ -291,7 +291,7 @@ export class WorktreeService {
     }
   }
 
-  /** List all worktrees in .actoviq/worktrees/. */
+  /** List all worktrees in .hadamard/worktrees/. */
   async listWorktrees(): Promise<WorktreeInfo[]> {
     if (!this.repoRoot || !fs.existsSync(this.worktreesDir)) return [];
 

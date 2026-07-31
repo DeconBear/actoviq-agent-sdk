@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { tool } from '../../runtime/tools.js';
 import { isReadOnlyBashCommand } from '../../runtime/bashClassification.js';
 import type {
-  ActoviqBackgroundTaskRecord,
+  HadamardBackgroundTaskRecord,
   AgentToolDefinition,
   ToolExecutionContext,
 } from '../../types.js';
@@ -50,7 +50,7 @@ interface BashBackgroundTaskLauncher {
       updateProgress: (
         progress: Partial<
           Pick<
-            ActoviqBackgroundTaskRecord,
+            HadamardBackgroundTaskRecord,
             | 'partialText'
             | 'toolCallCount'
             | 'toolErrorCount'
@@ -61,8 +61,8 @@ interface BashBackgroundTaskLauncher {
             | 'queuedMessageCount'
           >
         >,
-      ) => Promise<ActoviqBackgroundTaskRecord>,
-      task: ActoviqBackgroundTaskRecord,
+      ) => Promise<HadamardBackgroundTaskRecord>,
+      task: HadamardBackgroundTaskRecord,
     ) => Promise<{
       runId: string;
       sessionId?: string;
@@ -72,13 +72,13 @@ interface BashBackgroundTaskLauncher {
       toolErrorCount?: number;
       requestCount?: number;
     }>;
-    onSettled?: (task: ActoviqBackgroundTaskRecord) => Promise<void> | void;
-  }): Promise<ActoviqBackgroundTaskRecord>;
+    onSettled?: (task: HadamardBackgroundTaskRecord) => Promise<void> | void;
+  }): Promise<HadamardBackgroundTaskRecord>;
 }
 
 export interface BashToolOptions {
   backgroundTaskManager?: BashBackgroundTaskLauncher;
-  onBackgroundTaskSettled?: (task: ActoviqBackgroundTaskRecord) => Promise<void> | void;
+  onBackgroundTaskSettled?: (task: HadamardBackgroundTaskRecord) => Promise<void> | void;
 }
 
 export function createBashTool(options: BashToolOptions = {}): AgentToolDefinition {
@@ -287,7 +287,7 @@ function formatBashTaskOutput(
 }
 
 function backgroundBashLogPath(cwd: string, taskId: string): string {
-  return path.join(cwd, '.actoviq-artifacts', 'background-bash', `${taskId}.log`);
+  return path.join(cwd, '.hadamard-artifacts', 'background-bash', `${taskId}.log`);
 }
 
 function summarizeBashCommand(command: string): string {
@@ -300,7 +300,7 @@ function tailText(text: string, maxChars: number): string {
 }
 
 /**
- * Block host-wide process kills that would take down Actoviq itself
+ * Block host-wide process kills that would take down Hadamard itself
  * (e.g. `taskkill /IM node.exe`, `killall node`, `pkill -f node`).
  * Prefer killing a specific PID from the command that started the server.
  */
@@ -310,27 +310,27 @@ export function detectDangerousBashCommand(command: string): string | null {
   if (/\btaskkill\b/i.test(cmd) && /\/(?:IM|FI)\b/i.test(cmd) && /\b(?:node|bun|deno)(?:\.exe)?\b/i.test(cmd) && !/\b\/PID\b/i.test(cmd)) {
     return (
       'Blocked: refusing to kill all node/bun/deno processes by image name ' +
-      '(this would terminate Actoviq itself). Kill a specific PID instead ' +
+      '(this would terminate Hadamard itself). Kill a specific PID instead ' +
       '(e.g. taskkill /PID <pid> /F), or stop the server you started via its own PID.'
     );
   }
   // killall / pkill of node/bun/deno without a more specific filter that includes a pid
   if (/\bkillall\b/i.test(cmd) && /\b(?:node|bun|deno)\b/i.test(cmd)) {
     return (
-      'Blocked: refusing killall on node/bun/deno (would terminate Actoviq). ' +
+      'Blocked: refusing killall on node/bun/deno (would terminate Hadamard). ' +
       'Use kill <pid> for the specific server process instead.'
     );
   }
   if (/\bpkill\b/i.test(cmd) && /(?:^|[\s"'])-f(?:\s|=)/i.test(cmd) && /\b(?:node|bun|deno)\b/i.test(cmd) && !/\b\d{2,}\b/.test(cmd)) {
     return (
-      'Blocked: refusing broad pkill -f on node/bun/deno (would terminate Actoviq). ' +
+      'Blocked: refusing broad pkill -f on node/bun/deno (would terminate Hadamard). ' +
       'Use kill <pid> for the specific server process instead.'
     );
   }
   // PowerShell Stop-Process -Name node (kills every node process)
   if (/\bStop-Process\b/i.test(cmd) && /(?:-Name|-ProcessName)\s+['"]?(?:node|bun|deno)(?:\.exe)?['"]?/i.test(cmd) && !/-Id\b/i.test(cmd)) {
     return (
-      'Blocked: refusing Stop-Process -Name node/bun/deno (would terminate Actoviq). ' +
+      'Blocked: refusing Stop-Process -Name node/bun/deno (would terminate Hadamard). ' +
       'Use Stop-Process -Id <pid> for the specific server process instead.'
     );
   }
@@ -346,7 +346,7 @@ function resolveBashShell(): { executable: string; args: string[] } {
   }
 
   const candidates = [
-    process.env.ACTOVIQ_BASH_PATH,
+    process.env.HADAMARD_BASH_PATH,
     process.env.ProgramFiles
       ? path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe')
       : undefined,
@@ -360,7 +360,7 @@ function resolveBashShell(): { executable: string; args: string[] } {
   const executable = candidates.find(candidate => existsSync(candidate));
   if (!executable) {
     throw new Error(
-      'Bash requires Git for Windows. Install Git Bash or set ACTOVIQ_BASH_PATH.',
+      'Bash requires Git for Windows. Install Git Bash or set HADAMARD_BASH_PATH.',
     );
   }
   return { executable, args: ['-lc'] };

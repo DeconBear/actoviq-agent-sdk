@@ -3,15 +3,15 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 
-const pidFile = process.env.ACTOVIQ_TEST_CHILD_PID_FILE;
+const pidFile = process.env.HADAMARD_TEST_CHILD_PID_FILE;
 if (pidFile) writeFileSync(pidFile, String(process.pid), 'utf8');
 
-const terminationLogFile = process.env.ACTOVIQ_TEST_TERMINATION_LOG_FILE;
+const terminationLogFile = process.env.HADAMARD_TEST_TERMINATION_LOG_FILE;
 if (terminationLogFile) {
   process.on('SIGTERM', () => appendFileSync(terminationLogFile, 'parent\n', 'utf8'));
 }
 
-const grandchildPidFile = process.env.ACTOVIQ_TEST_GRANDCHILD_PID_FILE;
+const grandchildPidFile = process.env.HADAMARD_TEST_GRANDCHILD_PID_FILE;
 if (grandchildPidFile) {
   const grandchildSource = [
     "import { appendFileSync, writeFileSync } from 'node:fs';",
@@ -41,7 +41,7 @@ process.stdout.write(`${JSON.stringify({
   plugins: [],
 })}\n`);
 
-if (process.env.ACTOVIQ_TEST_MALFORMED_OUTPUT === '1') {
+if (process.env.HADAMARD_TEST_MALFORMED_OUTPUT === '1') {
   process.stdout.write('{malformed-json\n');
 }
 
