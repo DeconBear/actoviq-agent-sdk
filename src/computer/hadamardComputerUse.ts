@@ -1,4 +1,5 @@
 import { realpath as realpathCallback } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -59,6 +60,10 @@ function killChildProcessTree(child: { pid?: number; kill: (signal?: NodeJS.Sign
 
 async function runPowerShell(command: string, signal?: AbortSignal): Promise<string> {
   ensureWindows();
+  return runExecutable('powershell.exe', ['-NoProfile', '-Command', command], signal);
+}
+
+async function runExecutable(file: string, args: string[], signal?: AbortSignal): Promise<string> {
   signalAborted(signal);
   const { execFile } = await import('node:child_process');
   return new Promise((resolve, reject) => {
@@ -71,8 +76,8 @@ async function runPowerShell(command: string, signal?: AbortSignal): Promise<str
       fn();
     };
     const child = execFile(
-      'powershell.exe',
-      ['-NoProfile', '-Command', command],
+      file,
+      args,
       {
         windowsHide: true,
         timeout: 30_000,
@@ -109,6 +114,63 @@ async function runPowerShell(command: string, signal?: AbortSignal): Promise<str
   });
 }
 
+export function desktopScreenshotCommandCandidates(
+  platform: NodeJS.Platform,
+  outputPath: string,
+): Array<{ file: string; args: string[] }> {
+  if (platform === 'win32') {
+    const escaped = outputPath.replace(/'/g, "''");
+    const command = [
+      'Add-Type -AssemblyName System.Windows.Forms;',
+      'Add-Type -AssemblyName System.Drawing;',
+      '$bounds=[System.Windows.Forms.SystemInformation]::VirtualScreen;',
+      '$bmp=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height;',
+      '$g=[System.Drawing.Graphics]::FromImage($bmp);',
+      '$g.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size);',
+      `$bmp.Save('${escaped}');`,
+      '$g.Dispose();',
+      '$bmp.Dispose();',
+    ].join(' ');
+    return [{ file: 'powershell.exe', args: ['-NoProfile', '-Command', command] }];
+  }
+  if (platform === 'darwin') {
+    return [{ file: 'screencapture', args: ['-x', outputPath] }];
+  }
+  if (platform === 'linux') {
+    return [
+      { file: 'gnome-screenshot', args: ['-f', outputPath] },
+      { file: 'scrot', args: [outputPath] },
+      { file: 'import', args: ['-window', 'root', outputPath] },
+    ];
+  }
+  return [];
+}
+
+export async function captureDesktopScreenshot(
+  outputPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const candidates = desktopScreenshotCommandCandidates(process.platform, outputPath);
+  if (candidates.length === 0) {
+    throw new Error(`Desktop screenshots are not supported on ${process.platform}.`);
+  }
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      await runExecutable(candidate.file, candidate.args, signal);
+      return outputPath;
+    } catch (error) {
+      signalAborted(signal);
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `Unable to capture the desktop with the available ${process.platform} screenshot tools.`,
+    { cause: lastError },
+  );
+}
+
 export function createDefaultHadamardComputerUseExecutor(): HadamardComputerUseExecutor {
   return {
     openUrl: (url, signal) =>
@@ -136,23 +198,7 @@ export function createDefaultHadamardComputerUseExecutor(): HadamardComputerUseE
         signal,
       ).then(() => undefined);
     },
-    takeScreenshot: async (outputPath, signal) => {
-      await runPowerShell(
-        [
-          'Add-Type -AssemblyName System.Windows.Forms;',
-          'Add-Type -AssemblyName System.Drawing;',
-          '$bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;',
-          '$bmp=New-Object System.Drawing.Bitmap $bounds.Width,$bounds.Height;',
-          '$g=[System.Drawing.Graphics]::FromImage($bmp);',
-          '$g.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size);',
-          `$bmp.Save('${outputPath.replace(/'/g, "''")}');`,
-          '$g.Dispose();',
-          '$bmp.Dispose();',
-        ].join(' '),
-        signal,
-      );
-      return outputPath;
-    },
+    takeScreenshot: captureDesktopScreenshot,
   };
 }
 

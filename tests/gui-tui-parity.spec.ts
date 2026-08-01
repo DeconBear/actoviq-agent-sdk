@@ -241,6 +241,7 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsOutputStyle"');
     expect(html).toContain('id="settingsOpenMemory"');
     expect(html).toContain('id="settingsShortcutsList"');
+    expect(html).not.toContain('Remapping is not supported yet.');
     expect(html).toContain('id="settingsHooksList"');
     expect(html).toContain('id="settingsProjectGitBtn"');
     expect(html).toContain('id="settingsShowBranchInComposer"');
@@ -259,6 +260,11 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('/api/hooks');
     expect(js).toContain('refreshHooksSettings');
     expect(js).toContain('renderShortcutsPanel');
+    expect(js).toContain('DEFAULT_SHORTCUTS');
+    expect(js).toContain('eventToShortcut');
+    expect(js).toContain('dispatchShortcut');
+    expect(js).toContain("api('/api/screenshot'");
+    expect(js).toContain("title: 'Screenshot'");
     expect(js).toContain('showBranchInComposer');
     expect(js).toContain('showProviderConfigsInComposer');
     expect(js).toContain('showAgentProfilesInComposer');

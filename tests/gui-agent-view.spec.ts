@@ -177,7 +177,7 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain("ev.key === 'ArrowRight'");
     expect(js).toContain("event.key !== 'ArrowLeft'");
     expect(js).toContain('bridgeConfig: target?.name');
-    expect(js).toContain("event.key === '/'");
+    expect(js).toContain("cycleModel: 'Mod+/'");
     expect(js).toContain("event.key === 'ArrowDown'");
     expect(js).toContain('current < 0 ? 0 : Math.min(current + 1');
     expect(js).toContain('current < 0 ? rows.length - 1');

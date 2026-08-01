@@ -10,6 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { captureDesktopScreenshot } from '../computer/hadamardComputerUse.js';
 import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
 import {
@@ -640,7 +641,31 @@ interface GuiPreferences {
   showProviderConfigsInComposer: boolean;
   showAgentProfilesInComposer: boolean;
   showRouterProfilesInComposer: boolean;
+  shortcuts: GuiShortcuts;
 }
+
+type GuiShortcutAction =
+  | 'newChat'
+  | 'cycleModel'
+  | 'openReview'
+  | 'openBrowser'
+  | 'openFiles'
+  | 'toggleTerminal'
+  | 'openSettings'
+  | 'takeScreenshot';
+
+type GuiShortcuts = Record<GuiShortcutAction, string>;
+
+const DEFAULT_GUI_SHORTCUTS: GuiShortcuts = {
+  newChat: 'Mod+N',
+  cycleModel: 'Mod+/',
+  openReview: 'Mod+Shift+G',
+  openBrowser: 'Mod+T',
+  openFiles: 'Mod+P',
+  toggleTerminal: 'Mod+Backquote',
+  openSettings: 'Mod+,',
+  takeScreenshot: 'Mod+Shift+S',
+};
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   workMode: 'coding',
@@ -654,6 +679,7 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   showProviderConfigsInComposer: true,
   showAgentProfilesInComposer: true,
   showRouterProfilesInComposer: true,
+  shortcuts: DEFAULT_GUI_SHORTCUTS,
 };
 
 function isOutputStyleId(value: unknown): value is OutputStyleId {
@@ -913,6 +939,13 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
   const workMode = source.workMode === 'daily' ? 'daily' : 'coding';
   const theme = source.theme === 'light' || source.theme === 'dark' ? source.theme : 'system';
   const density = source.density === 'compact' ? 'compact' : 'comfortable';
+  const shortcutSource = isPlainRecord(source.shortcuts) ? source.shortcuts : {};
+  const shortcuts = Object.fromEntries(
+    Object.entries(DEFAULT_GUI_SHORTCUTS).map(([action, fallback]) => {
+      const value = shortcutSource[action];
+      return [action, typeof value === 'string' && value.length <= 64 ? value.trim() : fallback];
+    }),
+  ) as GuiShortcuts;
   return {
     workMode,
     theme,
@@ -941,6 +974,7 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     showRouterProfilesInComposer: typeof source.showRouterProfilesInComposer === 'boolean'
       ? source.showRouterProfilesInComposer
       : DEFAULT_GUI_PREFERENCES.showRouterProfilesInComposer,
+    shortcuts,
   };
 }
 
@@ -7880,6 +7914,24 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         openPathInSystem(store.configPath);
         return json(res, 200, { ok: true, path: store.configPath });
       }
+      if (req.method === 'POST' && url.pathname === '/api/screenshot') {
+        try {
+          const outputPath = path.join(
+            workDir,
+            '.hadamard',
+            'screenshots',
+            `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
+          );
+          await captureDesktopScreenshot(outputPath);
+          return json(res, 200, {
+            ok: true,
+            path: outputPath,
+            relativePath: path.relative(workDir, outputPath).split(path.sep).join('/'),
+          });
+        } catch (error) {
+          return json(res, 500, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         try {
           const body = await readJson(req);
@@ -9690,7 +9742,7 @@ export function createHadamardGuiHtml(): string {
                 <button type="button" class="aux-action" data-aux="review">
                   <span class="aux-action-icon">${guiIcon('review')}</span>
                   <span class="aux-action-label">Review</span>
-                  <kbd class="aux-action-kbd">Ctrl+Shift+G</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openReview">Mod+Shift+G</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="git">
                   <span class="aux-action-icon">${guiIcon('git')}</span>
@@ -9699,16 +9751,17 @@ export function createHadamardGuiHtml(): string {
                 <button type="button" class="aux-action" data-aux="terminal">
                   <span class="aux-action-icon">${guiIcon('terminal')}</span>
                   <span class="aux-action-label">Terminal</span>
+                  <kbd class="aux-action-kbd" data-shortcut-action="toggleTerminal">Mod+Backquote</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="browser">
                   <span class="aux-action-icon">${guiIcon('globe')}</span>
                   <span class="aux-action-label">Browser</span>
-                  <kbd class="aux-action-kbd">Ctrl+T</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openBrowser">Mod+T</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="files">
                   <span class="aux-action-icon">${guiIcon('folder')}</span>
                   <span class="aux-action-label">Files</span>
-                  <kbd class="aux-action-kbd">Ctrl+P</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openFiles">Mod+P</kbd>
                 </button>
               </nav>
               <div class="aux-view hidden" id="auxView"></div>
@@ -10297,7 +10350,7 @@ export function createHadamardGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
         <h1>Keyboard shortcuts</h1>
-        <p class="muted">Read-only reference matching the live key bindings. Remapping is not supported yet.</p>
+        <p class="muted">Click a binding and press a new key combination. <code>Mod</code> means Ctrl on Windows/Linux and Command on macOS. Backspace clears a binding.</p>
         <div id="settingsShortcutsList" class="settings-group shortcut-list"></div>
       </section>
       <section class="settings-panel" data-settings-panel="capabilities">
@@ -12346,7 +12399,7 @@ button.composer-meta-chip:hover {
   width: 100%;
   min-height: 36px;
   display: grid;
-  grid-template-columns: 24px minmax(0, auto) minmax(0, 1fr) 18px;
+  grid-template-columns: 24px minmax(0, auto) minmax(0, 1fr) max-content;
   align-items: center;
   gap: 7px;
   padding: 5px 8px;
@@ -12387,7 +12440,7 @@ button.composer-meta-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.add-context-row-end { color: var(--text-muted); font-size: 11px; text-align: right; }
+.add-context-row-end { color: var(--text-muted); font-size: 11px; text-align: right; white-space: nowrap; }
 .add-context-header {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
@@ -13381,6 +13434,11 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
 .shortcut-group { margin-bottom: 14px; }
 .shortcut-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.shortcut-row { flex-wrap: wrap; }
+.shortcut-row > span { flex: 1; min-width: 160px; }
+.shortcut-binding { width: 160px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font: 12px var(--font-mono); }
+.shortcut-binding:focus { border-color: var(--brand); outline: 2px solid color-mix(in srgb, var(--brand) 18%, transparent); }
+.shortcut-reset { min-height: 30px; }
 .hooks-event-block { margin-bottom: 16px; }
 .hooks-event-block h3 { margin: 0 0 8px; font-size: 13px; }
 .hooks-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg-surface); }
@@ -14193,7 +14251,17 @@ const state = {
   skillCatalogData: null,
   skillCatalogQuery: '',
   skillCatalogExpanded: {},
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true }
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, shortcuts: {} }
+};
+const DEFAULT_SHORTCUTS = {
+  newChat: 'Mod+N',
+  cycleModel: 'Mod+/',
+  openReview: 'Mod+Shift+G',
+  openBrowser: 'Mod+T',
+  openFiles: 'Mod+P',
+  toggleTerminal: 'Mod+Backquote',
+  openSettings: 'Mod+,',
+  takeScreenshot: 'Mod+Shift+S',
 };
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
@@ -14267,6 +14335,7 @@ function applyPreferences(preferences) {
   const T = tx();
   if (T) T.setAutoScroll(shouldAutoScroll());
   refreshOpenTerminalThemes();
+  renderShortcutHints();
   renderComposerMeta();
   if (el('settingsModal') && !el('settingsModal').classList.contains('hidden')) renderShortcutsPanel();
 }
@@ -21638,6 +21707,23 @@ function setComposerCommand(command) {
   input.setSelectionRange(input.value.length, input.value.length);
   renderSlashMenu();
 }
+async function captureScreenshotContext() {
+  closeAddContextMenu();
+  flashStatus('Capturing screenshot...');
+  try {
+    const res = await api('/api/screenshot', { method: 'POST' });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Screenshot failed');
+    addContextAttachment(
+      'Screenshot: ' + String(payload.relativePath || 'desktop'),
+      'screenshot',
+      '@' + String(payload.relativePath || ''),
+    );
+    flashStatus('Screenshot attached');
+  } catch (error) {
+    flashStatus(error.message || String(error));
+  }
+}
 function addContextAttachment(name, contextType, text) {
   state.attachments.push({
     id: 'att-' + (++state.attachmentCounter),
@@ -21671,6 +21757,13 @@ function renderAddContextRoot() {
       title: 'Folder',
       description: 'Attach files from a folder',
       onClick: () => { closeAddContextMenu(); el('folderInput').click(); },
+    }),
+    addContextRow({
+      icon: 'computer',
+      title: 'Screenshot',
+      description: 'Capture all displays and attach the PNG',
+      end: ((state.preferences.shortcuts || {}).takeScreenshot ?? DEFAULT_SHORTCUTS.takeScreenshot) || '—',
+      onClick: () => void captureScreenshotContext(),
     }),
     addContextRow({
       icon: 'review',
@@ -29753,36 +29846,27 @@ function renderShortcutsPanel() {
   const root = el('settingsShortcutsList');
   if (!root) return;
   root.textContent = '';
-  const enterToSend = state.preferences.enterToSend !== false;
   const groups = [
     {
       title: 'Composer',
-      rows: enterToSend
-        ? [
-            [['Enter'], 'Send message'],
-            [['Shift', 'Enter'], 'Insert new line'],
-            [['/'], 'Open command flow'],
-          ]
-        : [
-            [['Ctrl', 'Enter'], 'Send message (Cmd+Enter on macOS)'],
-            [['Enter'], 'Insert new line'],
-            [['/'], 'Open command flow'],
-          ],
+      rows: [
+        ['newChat', 'New chat'],
+        ['cycleModel', 'Cycle model'],
+        ['takeScreenshot', 'Capture and attach screenshot'],
+      ],
     },
     {
       title: 'Aux panels',
       rows: [
-        [['Ctrl', 'Shift', 'G'], 'Open Review'],
-        [['Ctrl', 'T'], 'Open Browser'],
-        [['Ctrl', 'P'], 'Open Files'],
-        [['Ctrl', '\`'], 'Toggle terminal'],
+        ['openReview', 'Open Review'],
+        ['openBrowser', 'Open Browser'],
+        ['openFiles', 'Open Files'],
+        ['toggleTerminal', 'Toggle terminal'],
       ],
     },
     {
       title: 'Global',
-      rows: [
-        [['Escape'], 'Close menus, pickers, and aux focus'],
-      ],
+      rows: [['openSettings', 'Open Settings']],
     },
   ];
   for (const group of groups) {
@@ -29791,27 +29875,95 @@ function renderShortcutsPanel() {
     const h = document.createElement('h3');
     h.textContent = group.title;
     wrap.appendChild(h);
-    for (const [keys, label] of group.rows) {
+    for (const [action, label] of group.rows) {
       const row = document.createElement('div');
-      keys.forEach((key, i) => {
-        if (i > 0) row.appendChild(document.createTextNode(' + '));
-        const kbd = document.createElement('kbd');
-        kbd.textContent = key;
-        row.appendChild(kbd);
-      });
+      row.className = 'shortcut-row';
       const span = document.createElement('span');
       span.textContent = label;
-      row.appendChild(span);
+      const input = document.createElement('input');
+      input.className = 'shortcut-binding';
+      input.readOnly = true;
+      input.value = (state.preferences.shortcuts || {})[action] ?? DEFAULT_SHORTCUTS[action];
+      input.setAttribute('aria-label', label + ' shortcut');
+      input.addEventListener('keydown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Escape') {
+          input.blur();
+          return;
+        }
+        const clearing = (event.key === 'Backspace' || event.key === 'Delete')
+          && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        const binding = clearing ? '' : eventToShortcut(event);
+        if (!binding && !clearing) return;
+        state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: binding };
+        input.value = binding;
+        scheduleSettingsAutosave(50);
+      });
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'secondary-btn shortcut-reset';
+      reset.textContent = 'Reset';
+      reset.addEventListener('click', () => {
+        state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: DEFAULT_SHORTCUTS[action] };
+        input.value = DEFAULT_SHORTCUTS[action];
+        scheduleSettingsAutosave(50);
+      });
+      row.append(span, input, reset);
       wrap.appendChild(row);
     }
     root.appendChild(wrap);
   }
   const note = document.createElement('p');
   note.className = 'muted';
-  note.textContent = enterToSend
-    ? 'Enter-to-send is on (Appearance). Turn it off to require Ctrl/Cmd+Enter to send.'
-    : 'Enter-to-send is off (Appearance). Press Ctrl/Cmd+Enter to send.';
+  note.textContent = state.preferences.enterToSend !== false
+    ? 'Enter sends; Shift+Enter inserts a new line. Escape always closes open menus.'
+    : 'Enter inserts a new line; Ctrl/Cmd+Enter sends. Escape always closes open menus.';
   root.appendChild(note);
+}
+
+function eventToShortcut(event) {
+  if (['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) return '';
+  const parts = [];
+  const mac = /mac|iphone|ipad|ipod/i.test(navigator.platform || '');
+  if ((mac && event.metaKey) || (!mac && event.ctrlKey)) parts.push('Mod');
+  else {
+    if (event.ctrlKey) parts.push('Ctrl');
+    if (event.metaKey) parts.push('Meta');
+  }
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+  let key = event.code === 'Backquote' ? 'Backquote' : event.key;
+  if (key === ' ') key = 'Space';
+  else if (key.length === 1 && /[a-z]/i.test(key)) key = key.toUpperCase();
+  parts.push(key);
+  return parts.join('+');
+}
+
+function renderShortcutHints() {
+  const shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) };
+  document.querySelectorAll('[data-shortcut-action]').forEach(node => {
+    node.textContent = shortcuts[node.dataset.shortcutAction] || '—';
+  });
+}
+
+function dispatchShortcut(event) {
+  if (isTypingTarget(event.target)) return false;
+  const pressed = eventToShortcut(event).toLowerCase();
+  if (!pressed) return false;
+  const shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) };
+  const action = Object.keys(DEFAULT_SHORTCUTS).find(name => String(shortcuts[name] || '').toLowerCase() === pressed);
+  if (!action) return false;
+  event.preventDefault();
+  if (action === 'newChat') void createNewSession().catch(error => flashStatus(error.message || String(error)));
+  else if (action === 'cycleModel') cyclePickerModel();
+  else if (action === 'openReview') handleAuxAction('review');
+  else if (action === 'openBrowser') handleAuxAction('browser');
+  else if (action === 'openFiles') handleAuxAction('files');
+  else if (action === 'toggleTerminal') toggleTerminalDock();
+  else if (action === 'openSettings') void openSettings('general').catch(console.error);
+  else if (action === 'takeScreenshot') void captureScreenshotContext();
+  return true;
 }
 function openProjectGitFromSettings() {
   closeSettings();
@@ -30897,6 +31049,7 @@ function collectSettingsBody() {
       showProviderConfigsInComposer: el('settingsShowProviderConfigsInComposer')?.checked !== false,
       showAgentProfilesInComposer: el('settingsShowAgentProfilesInComposer')?.checked !== false,
       showRouterProfilesInComposer: el('settingsShowRouterProfilesInComposer')?.checked !== false,
+      shortcuts: { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) },
     },
   };
 }
@@ -31347,11 +31500,7 @@ document.addEventListener('contextmenu', (event) => {
   if (!onTarget) hideContextMenu();
 });
 document.addEventListener('keydown', (event) => {
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key === '/') {
-    event.preventDefault();
-    cyclePickerModel();
-    return;
-  }
+  if (dispatchShortcut(event)) return;
   if (event.key === 'Escape') {
     hideContextMenu();
     closeGraphContextMenu();
@@ -31409,19 +31558,6 @@ document.addEventListener('keydown', (event) => {
       syncGraphControlModeToolbar();
       return;
     }
-  }
-  if (!typing && event.ctrlKey && event.shiftKey && (event.key === 'G' || event.key === 'g')) {
-    event.preventDefault();
-    handleAuxAction('review');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'T' || event.key === 't')) {
-    event.preventDefault();
-    handleAuxAction('browser');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'P' || event.key === 'p')) {
-    event.preventDefault();
-    handleAuxAction('files');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && event.code === 'Backquote') {
-    event.preventDefault();
-    toggleTerminalDock();
   }
 });
 document.addEventListener('keyup', (event) => {

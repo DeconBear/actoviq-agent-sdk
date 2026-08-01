@@ -5,7 +5,10 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { createHadamardComputerUseTools } from '../src/computer/hadamardComputerUse.js';
+import {
+  createHadamardComputerUseTools,
+  desktopScreenshotCommandCandidates,
+} from '../src/computer/hadamardComputerUse.js';
 import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 
 function tools() {
@@ -23,6 +26,23 @@ function tools() {
 }
 
 describe('local computer-use permission metadata', () => {
+  it('provides native screenshot commands on Windows, macOS, and Linux', () => {
+    expect(desktopScreenshotCommandCandidates('win32', 'C:\\work\\screen.png')).toEqual([
+      {
+        file: 'powershell.exe',
+        args: expect.arrayContaining(['-NoProfile', '-Command']),
+      },
+    ]);
+    expect(desktopScreenshotCommandCandidates('darwin', '/work/screen.png')).toEqual([
+      { file: 'screencapture', args: ['-x', '/work/screen.png'] },
+    ]);
+    expect(desktopScreenshotCommandCandidates('linux', '/work/screen.png')).toEqual([
+      { file: 'gnome-screenshot', args: ['-f', '/work/screen.png'] },
+      { file: 'scrot', args: ['/work/screen.png'] },
+      { file: 'import', args: ['-window', 'root', '/work/screen.png'] },
+    ]);
+  });
+
   it('classifies each host action accurately', () => {
     const byName = new Map(tools().map(tool => [tool.name, tool]));
     const hostMutations = [
