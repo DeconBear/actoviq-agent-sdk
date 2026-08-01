@@ -5,7 +5,6 @@
  */
 import type {
   TeamDefinition,
-  TeamMember,
   TeamCost,
   ExpertPanelReport,
   GraphTeamResult,

@@ -174,14 +174,6 @@ const MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS = 35_000;
 
 /** Core tools that mutate state and require approval in 'default' mode. */
 const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
-const PERMISSION_MODES = new Set<HadamardPermissionMode>([
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions',
-  'auto',
-]);
-
 export const TUI_SLASH_COMMANDS = HADAMARD_INTERACTIVE_COMMANDS;
 
 function errorMessage(error: unknown): string {
@@ -3329,10 +3321,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     return GoalService.forSession(session);
   }
 
-  async function getGoal() {
-    return goalService().read();
-  }
-
   async function setGoal(objective: string): Promise<void> {
     await goalService().create({ objective });
   }
@@ -4299,8 +4287,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         case 'stats': {
-          const now = Date.now();
-          const uptime = Math.max(0, Math.round((now - (runStartedAt || now)) / 1000));
           const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
           appendStatic([
             `${A.bold}Session stats${A.reset}`,

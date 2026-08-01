@@ -1,6 +1,4 @@
 import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
-import path from 'node:path';
-
 import type { HadamardMailboxMessage } from '../types.js';
 import { createId } from '../runtime/helpers.js';
 import {

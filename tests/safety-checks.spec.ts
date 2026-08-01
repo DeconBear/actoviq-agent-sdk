@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
-import { checkSafety } from '../src/runtime/safetyChecks.js';
+import { checkSafety, detectCatastrophicShellCommand } from '../src/runtime/safetyChecks.js';
 
 function check(filePath: string) {
   return checkSafety({
@@ -43,6 +43,45 @@ describe('safety checks', () => {
 
     expect(result.behavior).toBe('deny');
     expect(result.reason).toContain('.git');
+  });
+
+  it('detects system-disk and active-workspace deletion across shells', () => {
+    const workDir = process.platform === 'win32' ? 'E:\\repo\\project' : '/repo/project';
+
+    expect(detectCatastrophicShellCommand('rm -rf /', workDir)).toContain('explicit approval');
+    expect(detectCatastrophicShellCommand('rm -rf .', workDir)).toContain('active workspace');
+    expect(detectCatastrophicShellCommand(`rm -rf "${workDir}"`, workDir)).toContain('active workspace');
+    expect(detectCatastrophicShellCommand('Remove-Item -LiteralPath C:\\ -Recurse -Force', workDir))
+      .toContain('explicit approval');
+    expect(detectCatastrophicShellCommand('format C:', workDir)).toContain('entire disk');
+    expect(detectCatastrophicShellCommand('rm -rf node_modules', workDir)).toBeNull();
+  });
+
+  it('requires an explicit approval even in bypass-permissions mode', async () => {
+    const base = {
+      mode: 'bypassPermissions' as const,
+      rules: [],
+      runId: 'run-catastrophic-delete',
+      workDir: process.cwd(),
+      toolName: 'Bash',
+      publicName: 'Bash',
+      prompt: 'delete the workspace',
+      toolInput: { command: 'rm -rf .' },
+      iteration: 1,
+    };
+
+    const denied = await decideHadamardToolPermission(base);
+    expect(denied.behavior).toBe('deny');
+    expect(denied.reason).toContain('explicit approval');
+
+    const approved = await decideHadamardToolPermission({
+      ...base,
+      approver: () => ({ behavior: 'allow', reason: 'The user explicitly approved this exact deletion.' }),
+    });
+    expect(approved).toMatchObject({
+      behavior: 'allow',
+      source: 'approver',
+    });
   });
 });
 

@@ -24,7 +24,6 @@ import {
   loadTeamDefinition,
   cloneTeamDefinition,
   instantiateTeamDefinition,
-  listTeamAgentLabels,
   countTeamAgents,
   createModelTeam,
   createTeamTool,
@@ -70,7 +69,7 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import * as readline from 'node:readline';
 import { hasVersionFlag, readPackageVersion } from './version.js';
-import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
+import { readPlanFile } from '../tools/planMode/PlanModeTools.js';
 
 if (hasVersionFlag(process.argv.slice(2))) {
   process.stdout.write(`${readPackageVersion(import.meta.url)}\n`);
@@ -99,10 +98,6 @@ const C = {
   r: '\x1b[0m', d: '\x1b[2m', c: '\x1b[36m', y: '\x1b[33m',
   g: '\x1b[32m', R: '\x1b[31m', b: '\x1b[1m', m: '\x1b[35m',
 };
-
-function stripAnsi(s: string): number {
-  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
-}
 
 function surfaceRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -894,7 +889,6 @@ async function main() {
               return;
             }
             const definition = instantiateTeamDefinition(loaded.definition, session.model);
-            const memberModels = listTeamAgentLabels(definition);
             process.stdout.write(`${C.d}Asking team "${teamName}" (${definition.mode})...${C.r}\n`);
             try {
               const team = createModelTeam(definition);

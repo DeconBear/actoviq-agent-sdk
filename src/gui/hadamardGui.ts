@@ -181,7 +181,6 @@ import {
   getScheduledAutomationTask,
   listAgentProfiles,
   listSelectableAgents,
-  matchSelectableAgent,
   resolveSelectableAgentRun,
   agentProfileRunOverrides,
   transitionProjectIssue,
@@ -198,7 +197,6 @@ import {
   type HadamardAgentClient,
   type AgentProfile,
   type ManagerConfig,
-  type SelectableAgent,
   type IssueCommentKind,
   type IssueStorageMode,
   type ProjectIssue,
@@ -210,7 +208,6 @@ import {
   maskApiKey,
   readBridgeConfigs,
   removeBridgeConfig,
-  runtimeToProvider,
   isManagedExternalCliRuntime,
   VALID_RUNTIMES,
   type BridgeRuntime,
@@ -290,7 +287,6 @@ import {
 } from '../hooks/userHooks.js';
 import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
-  encodeHadamardProjectPath,
   getHadamardProjectSessionDirectory,
   migrateLegacyHadamardProjectData,
 } from '../config/projectSessionDirectory.js';
@@ -376,7 +372,6 @@ import type {
   SessionCreateOptions,
   SessionResumeOptions,
   ModelTeamResult,
-  ModelTeamMode,
   WorkflowNode,
   StoredSession,
 } from '../types.js';

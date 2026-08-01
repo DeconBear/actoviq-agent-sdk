@@ -3,9 +3,7 @@ import { tool } from '../runtime/tools.js';
 import type {
   AgentToolDefinition,
   ModelRequest,
-  ToolCallProgress,
   ToolExecutionContext,
-  ToolProgressData,
 } from '../types.js';
 import { webFetchPrompt } from './prompts/webFetchPrompt.js';
 import { webSearchPrompt } from './prompts/webSearchPrompt.js';

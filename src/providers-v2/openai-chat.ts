@@ -1,4 +1,4 @@
-import type { InputItem, JsonValue, OutputItem, Usage } from '../core/index.js';
+import type { InputItem, OutputItem, Usage } from '../core/index.js';
 
 import {
   BaseModelProvider,

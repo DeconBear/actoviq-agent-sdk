@@ -643,6 +643,52 @@ describe('consecutive tool failure handling', () => {
       await sdk.close();
     }
   });
+
+  it('stops after three consecutive permission denials even when tool names change', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const toolNames = ['denied_one', 'denied_two', 'denied_three'];
+    const modelApi = new MockModelApi({
+      create: (_request, index) => makeMessage(
+        [{
+          type: 'tool_use',
+          id: `toolu_denied_${index + 1}`,
+          name: toolNames[index] ?? toolNames.at(-1)!,
+          input: {},
+        }],
+        'tool_use',
+      ),
+    });
+    const tools = toolNames.map(name => tool(
+      {
+        name,
+        description: `${name} must not execute.`,
+        inputSchema: z.strictObject({}),
+      },
+      async () => 'unexpected execution',
+    ));
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      permissionMode: 'bypassPermissions',
+      permissions: toolNames.map(toolName => ({ toolName, behavior: 'deny' as const })),
+    });
+
+    try {
+      const result = await sdk.run('Keep trying denied tools.', { tools });
+
+      expect(result.incompleteReason).toBe('consecutive_permission_denials');
+      expect(result.toolCalls).toHaveLength(3);
+      expect(result.permissionDecisions?.map(item => item.behavior)).toEqual([
+        'deny',
+        'deny',
+        'deny',
+      ]);
+      expect(modelApi.createCalls).toHaveLength(3);
+    } finally {
+      await sdk.close();
+    }
+  });
 });
 
 describe('TodoWrite state tracking', () => {

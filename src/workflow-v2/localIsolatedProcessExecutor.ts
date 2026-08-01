@@ -31,7 +31,6 @@ import {
 } from './limits.js';
 import { createLocalProcessChildSource } from './localProcessChild.js';
 import type {
-  JsonValue,
   SandboxWorkflowExecutor,
   UntrustedWorkflowExecutionRequest,
   WorkflowCapabilityMap,

@@ -4,7 +4,6 @@
  * These are typically gitignored files like .env, config/secrets.json.
  */
 import fs from 'node:fs';
-import path from 'node:path';
 
 /**
  * Parse a .worktreeinclude file, returning the list of patterns.

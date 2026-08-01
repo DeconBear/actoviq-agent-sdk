@@ -1,10 +1,9 @@
-﻿import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+﻿import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { MessageParam } from '../provider/types.js';
 import type {
   HadamardEffort,
-  HadamardSkillContextMode,
   HadamardSkillDefinition,
   HadamardSkillDefinitionSummary,
   HadamardSkillLoadedFrom,
@@ -13,7 +12,6 @@ import type {
   HadamardSkillSource,
   AgentRunOptions,
   AgentRunResult,
-  SessionCreateOptions,
 } from '../types.js';
 import { deepClone, isRecord, truncateText } from './helpers.js';
 import { AgentRunStream } from './asyncQueue.js';
@@ -743,7 +741,7 @@ function collapseSkillMarkdownFiles(files: string[]): string[] {
   }
 
   const result: string[] = [];
-  for (const [directory, directoryFiles] of byDirectory) {
+  for (const directoryFiles of byDirectory.values()) {
     const skillFile = directoryFiles.find(filePath => path.basename(filePath).toUpperCase() === 'SKILL.MD');
     if (skillFile) {
       result.push(skillFile);

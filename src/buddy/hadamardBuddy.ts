@@ -20,7 +20,6 @@ import type {
   HadamardBuddySpecies,
   HadamardBuddyState,
   HadamardBuddyStatName,
-  HadamardBuddySoul,
   HatchHadamardBuddyOptions,
   StoredHadamardBuddy,
 } from '../types.js';

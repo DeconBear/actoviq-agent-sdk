@@ -116,15 +116,6 @@ export interface WorkflowRuntimeOptions {
   args?: any;
 }
 
-interface PendingAgentCall {
-  id: string;
-  prompt: string;
-  opts: WorkflowAgentOptions;
-  phase?: string;
-  resolve: (result: any) => void;
-  reject: (err: Error) => void;
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Cache key normalization
 // ═══════════════════════════════════════════════════════════════════
@@ -147,8 +138,6 @@ function canonicalAgentKey(prompt: string, opts: WorkflowAgentOptions, phase?: s
 // ═══════════════════════════════════════════════════════════════════
 //  Script syntax check
 // ═══════════════════════════════════════════════════════════════════
-
-const BANNED_GLOBALS = ['Date', 'Math.random', 'process', 'require', 'import', 'fs', 'net', 'child_process'];
 
 function validateScript(script: string): void {
   // Ban Date.now(), Math.random(), new Date() — break determinism for resume
@@ -204,7 +193,6 @@ function extractMeta(script: string): WorkflowMeta {
 // ═══════════════════════════════════════════════════════════════════
 
 class HostBridge {
-  private agentQueue: PendingAgentCall[] = [];
   private activeAgents = 0;
   private maxConcurrent: number;
   private totalAgents = 0;
@@ -212,7 +200,6 @@ class HostBridge {
   private signal?: AbortSignal;
   private sdk: HadamardAgentClient;
   private cache: Map<string, WorkflowCacheEntry>;
-  private resumeCompleted: Set<string>;
   private agentRecords: WorkflowAgentCallRecord[];
   private onEvent?: (event: any) => void;
   private runId: string;
@@ -239,8 +226,6 @@ class HostBridge {
 
     // Resume state
     this.cache = options.resumeState?.cache ?? new Map();
-    this.resumeCompleted = options.resumeState?.completedAgentIds ?? new Set();
-
     // Restore phases from resume
     if (options.resumeState?.phases) {
       for (const phase of options.resumeState.phases) {

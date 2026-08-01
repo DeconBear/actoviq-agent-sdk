@@ -1,7 +1,5 @@
 import type {
   InputItem,
-  JsonObject,
-  ModelRef,
   OutputItem,
   Usage,
 } from '../core/index.js';
@@ -21,7 +19,7 @@ import type {
   Usage as LegacyUsage,
 } from '../provider/types.js';
 
-import { BaseModelProvider, isRecord, safeJsonParse } from './adapter-base.js';
+import { BaseModelProvider, isRecord } from './adapter-base.js';
 import {
   createModelRef,
   mergeModelCapabilities,
@@ -39,7 +37,6 @@ import {
   textOutput,
   toolCallOutput,
   usageFromProvider,
-  zeroUsage,
 } from './mapping.js';
 import { createModelStream, type ModelStreamMapper } from './stream.js';
 import type {

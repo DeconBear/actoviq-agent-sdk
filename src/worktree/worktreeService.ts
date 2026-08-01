@@ -3,11 +3,9 @@
  * Handles create, enter, exit, list, cleanup, and dirty detection.
  */
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdir, rm, readFile, stat } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { HadamardSdkError } from '../errors.js';
 import type { WorktreeInfo, WorktreeSettings, WorktreeStackEntry } from '../types.js';

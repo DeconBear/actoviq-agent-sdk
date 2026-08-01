@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { resolveHadamardHome } from '../config/hadamardHome.js';
-import type { TeamDefinition, TeamGraphNode, TeamMember } from '../types.js';
+import type { TeamDefinition, TeamMember } from '../types.js';
 import {
   canonicalizeTeamDefinition,
   graphNodeKind,

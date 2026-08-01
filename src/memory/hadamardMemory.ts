@@ -43,7 +43,6 @@ import type {
   HadamardMemoryStateOptions,
   HadamardSessionMemoryState,
   HadamardSurfacedMemory,
-  HadamardTranscriptBoundary,
   UpdateHadamardMemorySettingsInput,
 } from '../types.js';
 
