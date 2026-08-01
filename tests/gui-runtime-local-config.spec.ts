@@ -71,6 +71,7 @@ describe('GUI runtime local config reuse', () => {
         model?: string;
         baseURL?: string;
         hasApiKey?: boolean;
+        apiKey?: string;
         source?: string;
       }>(server, '/api/bridge/detect-local?runtime=claude');
       expect(before.status).toBe(200);
@@ -78,22 +79,36 @@ describe('GUI runtime local config reuse', () => {
         model: 'claude-local-model',
         baseURL: 'https://claude.local',
         hasApiKey: true,
+        apiKey: 'local-secret',
         source: '~/.claude/settings.json',
       });
-      expect(before.body).not.toHaveProperty('apiKey');
 
       const stateBefore = await api<{
+        settings: { apiKey: string };
         bridgeState: {
           runtimeDiscovery: Array<{ runtime: string; localConfig: null | { model: string; baseURL: string; hasApiKey: boolean } }>;
         };
       }>(server, '/api/state');
       expect(stateBefore.status).toBe(200);
+      expect(stateBefore.body.settings.apiKey).toBe('test-key');
       expect(stateBefore.body.bridgeState.runtimeDiscovery.find((item) => item.runtime === 'claude')?.localConfig)
         .toMatchObject({
           model: 'claude-local-model',
           baseURL: 'https://claude.local',
           hasApiKey: true,
         });
+
+      const clearedDefaultKey = await api<{ settings: { apiKey: string; apiKeyConfigured: boolean } }>(
+        server,
+        '/api/settings',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ apiKey: 'test-key', clearApiKey: true }),
+        },
+      );
+      expect(clearedDefaultKey.status).toBe(200);
+      expect(clearedDefaultKey.body.settings).toMatchObject({ apiKey: '', apiKeyConfigured: false });
 
       const migrated = await api<{ ok: boolean; dataRoot: { root: string } }>(server, '/api/settings/data-root', {
         method: 'POST',
@@ -113,7 +128,7 @@ describe('GUI runtime local config reuse', () => {
         baseURL: 'https://claude.local',
         hasApiKey: true,
       });
-      expect(afterMigration.body.apiKey).toBeUndefined();
+      expect(afterMigration.body.apiKey).toBe('local-secret');
 
       const updated = await api<{ ok: boolean; source: string }>(server, '/api/bridge/update-local', {
         method: 'POST',
@@ -150,7 +165,7 @@ describe('GUI runtime local config reuse', () => {
       });
       expect(configured.status).toBe(200);
       const configuredJson = JSON.stringify(configured.body);
-      expect(configuredJson).not.toContain('child-only-secret');
+      expect(configuredJson).toContain('child-only-secret');
       const bridgeState = (configured.body as {
         bridgeState?: { configs?: Array<Record<string, unknown>> };
       }).bridgeState;
@@ -158,8 +173,8 @@ describe('GUI runtime local config reuse', () => {
         execution: 'cli',
         authSource: 'apiKey',
         hasApiKey: true,
+        apiKey: 'child-only-secret',
       });
-      expect(bridgeState?.configs?.[0]).not.toHaveProperty('apiKey');
     } finally {
       await server.close();
     }

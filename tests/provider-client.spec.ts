@@ -301,9 +301,11 @@ describe('reasoning effort request mapping', () => {
       messages: [{ role: 'user', content: 'hello' }],
       max_tokens: 100,
       effort: 'max',
+      top_p: 0.8,
     });
 
     expect(body?.output_config).toEqual({ effort: 'max' });
+    expect(body?.top_p).toBe(0.8);
     expect(headers?.get('anthropic-beta')).toContain('effort-2025-11-24');
   });
 
@@ -373,9 +375,11 @@ describe('reasoning effort request mapping', () => {
       messages: [{ role: 'user', content: 'hello' }],
       max_tokens: 100,
       effort: 'max',
+      top_p: 0.7,
     });
 
     expect(body?.reasoning_effort).toBe('high');
+    expect(body?.top_p).toBe(0.7);
   });
 });
 

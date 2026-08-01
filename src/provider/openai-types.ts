@@ -57,6 +57,7 @@ export interface OpenaiChatCompletionRequest {
   max_tokens?: number;
   max_completion_tokens?: number;
   temperature?: number;
+  top_p?: number;
   tools?: OpenaiTool[];
   tool_choice?: OpenaiToolChoice;
   stop?: string | string[];

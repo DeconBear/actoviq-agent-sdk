@@ -81,6 +81,9 @@ describe('createAssistantGlobalTools', () => {
     expect(names).toContain('UpdateGuiPreferences');
     expect(names).toContain('UpdateRuntimeEnv');
     expect(names).toContain('UpsertBridgeConfig');
+    expect(names).toContain('ListRouterProfiles');
+    expect(names).toContain('UpsertRouterProfile');
+    expect(names).toContain('DeleteRouterProfile');
     expect(names).toContain('OpenProject');
     for (const forbidden of ['Bash', 'Write', 'Edit', 'Task', 'TeamAsk']) {
       expect(names).not.toContain(forbidden);
@@ -166,6 +169,30 @@ describe('createAssistantGlobalTools', () => {
     expect(patches[0]).toMatchObject({ defaultModel: 'demo-model', apiKey: 'sk-write-only' });
     expect(JSON.stringify(result)).not.toContain('sk-write-only');
     expect(result).toMatchObject({ ok: true, apiKeySet: true });
+  });
+
+  it('creates, lists, and deletes router profiles without exposing secrets', async () => {
+    const tools = await createAssistantGlobalTools({
+      homeDir,
+      currentWorkDir: workDir,
+    });
+    const created = await callTool(tools.find(tool => tool.name === 'UpsertRouterProfile')!, {
+      name: 'smart-router',
+      scope: 'personal',
+      routerModel: { model: 'leader-model', apiKey: '$ROUTER_API_KEY' },
+      routes: [{ role: 'fast', when: 'Simple requests', model: 'fast-model' }],
+    });
+    expect(JSON.stringify(created)).not.toContain('$ROUTER_API_KEY');
+
+    const listed = await callTool(tools.find(tool => tool.name === 'ListRouterProfiles')!);
+    expect(JSON.stringify(listed)).toContain('smart-router');
+    expect(JSON.stringify(listed)).not.toContain('$ROUTER_API_KEY');
+
+    await callTool(tools.find(tool => tool.name === 'DeleteRouterProfile')!, {
+      name: 'smart-router',
+    });
+    const afterDelete = await callTool(tools.find(tool => tool.name === 'ListRouterProfiles')!);
+    expect(JSON.stringify(afterDelete)).not.toContain('smart-router');
   });
 
   it('builds a Global system prompt with hard rules', () => {

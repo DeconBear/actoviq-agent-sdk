@@ -158,8 +158,9 @@ describe('GUI Project Agent execution view', () => {
     expect(html).toContain('Ctrl / ⌘ + / to cycle');
     expect(js).toContain("appendPickerRouterSection(items, targets.routers");
     expect(js).toContain("appendPickerSection(items, 'Configurations'");
-    expect(js).toContain("appendPickerSection(items, 'Agents'");
-    expect(js).toContain('const routers = (snap.routers || []).map');
+    expect(js).toContain('appendPickerAgentSection(items, targets.agents');
+    expect(js).not.toContain("appendPickerSection(items, 'Agents'");
+    expect(js).toContain('showRouterProfilesInComposer === false');
     expect(js).toContain("api('/api/router/activate'");
     expect(js).not.toContain("label.textContent = 'Auto'");
     expect(js).not.toContain("Use this conversation’s default model");
@@ -325,6 +326,21 @@ describe('GUI Project Agent execution view', () => {
       js.indexOf('function handleEvent(event)'),
     );
     expect(send).toContain('if (state.sessionResumePending)');
+  });
+
+  it('forces the transcript to the bottom after the conversation view becomes visible', () => {
+    const js = createHadamardGuiClientScript();
+    const switchView = js.slice(
+      js.indexOf('function switchProjectView(view)'),
+      js.indexOf('function renderOverview()', js.indexOf('function switchProjectView(view)')),
+    );
+
+    expect(js).toContain('function forceScrollTranscriptToBottom()');
+    expect(js).toContain('T.scrollToBottom()');
+    expect(switchView).toContain("if (view === 'conversation' && prev !== 'conversation')");
+    expect(switchView.indexOf("cv.classList.toggle('hidden', view !== 'conversation')")).toBeLessThan(
+      switchView.indexOf('requestAnimationFrame(forceScrollTranscriptToBottom)'),
+    );
   });
 
   it('waits for server-side resume mutations before returning reconciliation state', () => {

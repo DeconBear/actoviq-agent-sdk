@@ -33,6 +33,11 @@ import {
   type PersistedBridgeConfig,
 } from '../parity/bridgeConfigs.js';
 import {
+  deleteRouterProfile,
+  listRouterProfiles,
+  saveRouterProfile,
+} from '../router/modelRouter.js';
+import {
   MANAGED_PLUGIN_IDS,
   patchManagedPluginSettings,
   readManagedPluginCatalog,
@@ -45,7 +50,12 @@ import {
   setScheduledAutomationEnabled,
   upsertScheduledAutomationTask,
 } from '../scheduling/taskPersistence.js';
-import type { AgentToolDefinition, ScheduledAutomationTaskInput } from '../types.js';
+import type {
+  AgentToolDefinition,
+  RouterModelRef,
+  RouterProfile,
+  ScheduledAutomationTaskInput,
+} from '../types.js';
 import { isProjectStatus, readProjectMeta, writeProjectMeta } from '../gui/projectMeta.js';
 import { readWorkspaceNote, writeWorkspaceNote } from '../gui/workspaceNote.js';
 import { readWorkspaceRegistry } from '../gui/workspaceRegistry.js';
@@ -159,6 +169,33 @@ function redactBridgeConfig(config: PersistedBridgeConfig): Record<string, unkno
   };
 }
 
+function redactRouterRef(ref: RouterModelRef): Record<string, unknown> {
+  return {
+    model: ref.model,
+    provider: ref.provider,
+    baseURL: ref.baseURL,
+    maxTokens: ref.maxTokens,
+    hasApiKey: Boolean(ref.apiKey),
+  };
+}
+
+function redactRouterProfile(profile: RouterProfile): Record<string, unknown> {
+  return {
+    name: profile.name,
+    description: profile.description,
+    routerModel: redactRouterRef(profile.routerModel),
+    routes: profile.routes.map(route => ({
+      ...redactRouterRef(route),
+      when: route.when,
+      name: route.name,
+      role: route.role,
+      description: route.description,
+    })),
+    fallback: profile.fallback ? redactRouterRef(profile.fallback) : undefined,
+    classificationPrompt: profile.classificationPrompt,
+  };
+}
+
 export async function listAssistantProjectBriefs(
   homeDir: string,
   currentWorkDir: string,
@@ -236,7 +273,7 @@ export function buildAssistantGlobalSystemPrompt(currentWorkDir: string): string
     'You are the Hadamard desktop Assistant in Global scope.',
     `The GUI is currently focused on workspace: ${currentWorkDir}.`,
     '',
-    'Your job: help the user understand and operate Hadamard itself — projects, settings, provider configs, plugins, automation, and MCP — without modifying project source code.',
+    'Your job: help the user understand and operate Hadamard itself — projects, settings, provider configs, agent profiles, router profiles, plugins, automation, and MCP — without modifying project source code.',
     '',
     'Hard rules:',
     '- You have no Write/Edit/Bash tools for source trees. Do not invent workarounds.',
@@ -252,6 +289,13 @@ export function buildAssistantGlobalSystemPrompt(currentWorkDir: string): string
 export async function createAssistantGlobalTools(
   host: AssistantGlobalHost,
 ): Promise<AgentToolDefinition[]> {
+  const routerRefSchema = z.strictObject({
+    model: z.string(),
+    provider: z.enum(['anthropic', 'openai']).optional(),
+    baseURL: z.string().optional(),
+    apiKey: z.string().optional().describe('$ENV_VAR reference; literal secrets are not persisted'),
+    maxTokens: z.number().int().positive().optional(),
+  });
   const ListProjects = tool(
     {
       name: 'ListProjects',
@@ -405,6 +449,21 @@ export async function createAssistantGlobalTools(
     }),
   );
 
+  const ListRouterProfilesTool = tool(
+    {
+      name: 'ListRouterProfiles',
+      description: 'List project and personal router profiles with API keys redacted.',
+      inputSchema: z.strictObject({}),
+      isReadOnly: () => true,
+    },
+    async () => ({
+      profiles: listRouterProfiles(host.currentWorkDir, host.homeDir).map(item => ({
+        source: item.source,
+        profile: redactRouterProfile(item.profile),
+      })),
+    }),
+  );
+
   const ListPlugins = tool(
     {
       name: 'ListPlugins',
@@ -526,7 +585,7 @@ export async function createAssistantGlobalTools(
   const UpdateGuiPreferences = tool(
     {
       name: 'UpdateGuiPreferences',
-      description: 'Update GUI preferences (theme, density, workMode, enterToSend, autoScroll, outputStyle).',
+      description: 'Update GUI preferences, including which config/profile types appear in the chat model picker.',
       inputSchema: z.strictObject({
         theme: z.enum(['system', 'light', 'dark']).optional(),
         density: z.enum(['comfortable', 'compact']).optional(),
@@ -536,6 +595,9 @@ export async function createAssistantGlobalTools(
         developerTools: z.boolean().optional(),
         outputStyle: z.enum(['default', 'concise', 'explanatory', 'learning']).optional(),
         showBranchInComposer: z.boolean().optional(),
+        showProviderConfigsInComposer: z.boolean().optional(),
+        showAgentProfilesInComposer: z.boolean().optional(),
+        showRouterProfilesInComposer: z.boolean().optional(),
       }),
     },
     async (input) => {
@@ -559,6 +621,8 @@ export async function createAssistantGlobalTools(
         mediumModel: z.string().optional(),
         maxModel: z.string().optional(),
         effort: z.enum(['auto', 'low', 'medium', 'high', 'max']).optional(),
+        defaultModelContext1M: z.boolean().optional(),
+        defaultModelMultimodal: z.boolean().optional(),
       }),
     },
     async (input) => {
@@ -617,6 +681,7 @@ export async function createAssistantGlobalTools(
         effort: z.enum(['auto', 'low', 'medium', 'high', 'max']).optional(),
         maxTokens: z.number().int().positive().optional(),
         temperature: z.number().min(0).max(2).optional(),
+        topP: z.number().min(0).max(1).optional(),
         systemPromptAppend: z.string().optional(),
       }),
     },
@@ -630,10 +695,74 @@ export async function createAssistantGlobalTools(
         ...(input.effort ? { effort: input.effort } : {}),
         ...(typeof input.maxTokens === 'number' ? { maxTokens: input.maxTokens } : {}),
         ...(typeof input.temperature === 'number' ? { temperature: input.temperature } : {}),
+        ...(typeof input.topP === 'number' ? { topP: input.topP } : {}),
         ...(input.systemPromptAppend ? { systemPromptAppend: input.systemPromptAppend } : {}),
       };
       const saved = upsertAgentProfile(profile, host.homeDir);
       return { ok: true, profile: saved.profile, warnings: saved.warnings };
+    },
+  );
+
+  const UpsertRouterProfileTool = tool(
+    {
+      name: 'UpsertRouterProfile',
+      description: 'Create or replace a project or personal leader/dispatch router profile.',
+      inputSchema: z.strictObject({
+        name: z.string(),
+        scope: z.enum(['project', 'personal']).optional(),
+        description: z.string().optional(),
+        routerModel: routerRefSchema,
+        routes: z.array(z.strictObject({
+          model: z.string(),
+          provider: z.enum(['anthropic', 'openai']).optional(),
+          baseURL: z.string().optional(),
+          apiKey: z.string().optional().describe('$ENV_VAR reference; literal secrets are not persisted'),
+          maxTokens: z.number().int().positive().optional(),
+          when: z.string(),
+          name: z.string().optional(),
+          role: z.string().optional(),
+          description: z.string().optional(),
+        })).min(1),
+        fallback: routerRefSchema.optional(),
+        classificationPrompt: z.string().optional(),
+      }),
+    },
+    async (input) => {
+      const profile: RouterProfile = {
+        name: input.name.trim(),
+        ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+        routerModel: input.routerModel,
+        routes: input.routes,
+        ...(input.fallback ? { fallback: input.fallback } : {}),
+        ...(input.classificationPrompt?.trim()
+          ? { classificationPrompt: input.classificationPrompt.trim() }
+          : {}),
+      };
+      const filePath = await saveRouterProfile(profile, {
+        projectDir: input.scope === 'personal' ? undefined : host.currentWorkDir,
+        homeDir: host.homeDir,
+        overwrite: true,
+      });
+      return { ok: true, filePath, profile: redactRouterProfile(profile) };
+    },
+  );
+
+  const DeleteRouterProfileTool = tool(
+    {
+      name: 'DeleteRouterProfile',
+      description: 'Delete a router profile by name. Optionally constrain deletion to project or personal scope.',
+      inputSchema: z.strictObject({
+        name: z.string(),
+        scope: z.enum(['project', 'personal']).optional(),
+      }),
+    },
+    async (input) => {
+      const deleted = await deleteRouterProfile(
+        input.name.trim(),
+        input.scope === 'personal' ? undefined : host.currentWorkDir,
+        host.homeDir,
+      );
+      return { ok: true, deleted };
     },
   );
 
@@ -806,6 +935,7 @@ export async function createAssistantGlobalTools(
     GetAppState,
     ListBridgeConfigs,
     ListAgentProfiles,
+    ListRouterProfilesTool,
     ListPlugins,
     ListScheduledTasks,
     ListMcpServers,
@@ -817,6 +947,8 @@ export async function createAssistantGlobalTools(
     UpsertBridgeConfigTool,
     UpsertAgentProfileTool,
     DeleteAgentProfileTool,
+    UpsertRouterProfileTool,
+    DeleteRouterProfileTool,
     ActivateAgentTool,
     UpdateManagedPlugin,
     UpsertScheduledTask,

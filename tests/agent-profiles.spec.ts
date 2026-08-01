@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   deleteAgentProfile,
+  agentProfileRunOverrides,
   findAgentProfile,
   findSelectableAgent,
   getAgentProfilesPath,
@@ -52,6 +53,7 @@ describe('agentProfiles', () => {
       effort: 'high',
       maxTokens: 16000,
       temperature: 0.2,
+      topP: 0.85,
       systemPromptAppend: 'Focus on regressions.',
     }, home);
 
@@ -61,6 +63,7 @@ describe('agentProfiles', () => {
       effort: 'high',
       maxTokens: 16000,
       temperature: 0.2,
+      topP: 0.85,
     });
     expect(listAgentProfiles(home)).toHaveLength(1);
     await expect(readFile(getAgentProfilesPath(home), 'utf8')).resolves.toContain('reviewer');
@@ -179,6 +182,7 @@ describe('agentProfiles', () => {
       effort: 'high',
       maxTokens: 8000,
       temperature: 0.3,
+      topP: 0.9,
     }, home);
 
     const agents = listSelectableAgents(home);
@@ -193,6 +197,7 @@ describe('agentProfiles', () => {
       effort: 'high',
       maxTokens: 8000,
       temperature: 0.3,
+      topP: 0.9,
     });
     // Covered by reviewer — no duplicate auto preset for the same config+model.
     expect(agents.filter(a => a.bridgeConfig === 'deepseek' && a.model === 'deepseek-v4-pro')).toHaveLength(1);
@@ -215,6 +220,11 @@ describe('agentProfiles', () => {
     const resolved = await resolveSelectableAgentRun(flash!.name, home);
     expect(resolved.model).toBe('deepseek-v4-flash');
     expect(resolved.selectable.source).toBe('config');
+  });
+
+  it('returns an optional topP sampling override', () => {
+    expect(agentProfileRunOverrides({ topP: 0.8 })).toEqual({ topP: 0.8 });
+    expect(agentProfileRunOverrides({})).toEqual({});
   });
 
   it('matches tier aliases against resolved model ids from buildRouteModelApi', async () => {

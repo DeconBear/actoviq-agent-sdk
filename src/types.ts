@@ -309,6 +309,7 @@ export interface ModelRequest {
   max_tokens: number;
   system?: string;
   temperature?: number;
+  top_p?: number;
   tools?: ProviderTool[];
   tool_choice?: ToolChoice;
   metadata?: Metadata;
@@ -921,6 +922,7 @@ export interface AgentRunOptions {
   modelApi?: CreateAgentSdkOptions['modelApi'];
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
   toolChoice?: ToolChoice;
   userId?: string;
   metadata?: Record<string, unknown>;
