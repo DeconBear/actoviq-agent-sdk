@@ -286,6 +286,7 @@ import {
   runSessionStartHooks,
   toSettingsHooksBlock,
 } from '../hooks/userHooks.js';
+import { parseTypedHooks } from '../hooks/hookConfig.js';
 import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   getHadamardProjectSessionDirectory,
@@ -5566,17 +5567,23 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       }
       case 'hooks': {
         const raw = getLoadedJsonConfig()?.raw;
+        const typed = parseTypedHooks(raw?.typedHooks);
         const pre = readPreToolUseHooks(raw);
         const post = readPostToolUseHooks(raw);
         const start = readSessionStartHooks(raw);
         const lines: string[] = [];
         const fmt = (h: { matcher?: string; command?: string; enabled?: boolean }) =>
           `  ${h.enabled === false ? '[disabled] ' : ''}${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
+        lines.push(`Lifecycle (${typed.hooks.length}):`);
+        typed.hooks.forEach(h => lines.push(
+          `  ${h.enabled === false ? '[disabled] ' : ''}${h.id}: ${h.event} -> ${h.handler.type}`,
+        ));
+        typed.issues.forEach(issue => lines.push(`  [invalid] ${issue}`));
         lines.push(`PreToolUse (${pre.length}):`); pre.forEach(h => lines.push(fmt(h)));
         lines.push(`PostToolUse (${post.length}):`); post.forEach(h => lines.push(fmt(h)));
         lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(fmt(h)));
-        if (pre.length + post.length + start.length === 0) {
-          lines.push('', 'No hooks configured. Add to settings.json:', '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $HADAMARD_HOOK_TOOL" }] } }');
+        if (typed.hooks.length + pre.length + post.length + start.length === 0) {
+          lines.push('', 'No hooks configured. Open Settings > Hooks to add a lifecycle hook.');
         }
         return [{ type: 'command.result', title: 'Hooks', text: lines.join('\n') }];
       }
@@ -7945,9 +7952,13 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           configPath: options.configPath,
           homeDir: currentHomeInput(),
         }).catch(() => undefined);
+        const raw = store?.raw ?? getLoadedJsonConfig()?.raw;
+        const typed = parseTypedHooks(raw?.typedHooks);
         return json(res, 200, {
           configPath: store?.configPath ?? null,
-          hooks: readUserHooksConfig(store?.raw ?? getLoadedJsonConfig()?.raw),
+          hooks: readUserHooksConfig(raw),
+          typedHooks: typed.hooks,
+          typedHookIssues: typed.issues,
         });
       }
       if (req.method === 'PUT' && url.pathname === '/api/hooks') {
@@ -7959,11 +7970,30 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
               homeDir: currentHomeInput(),
             });
             const raw = structuredClone(store.raw);
-            const hooks = normalizeUserHooksConfig(body);
-            raw.hooks = toSettingsHooksBlock(hooks);
+            const input = typeof body === 'object' && body !== null
+              ? body as Record<string, unknown>
+              : {};
+            const hooks = 'hooks' in input
+              ? normalizeUserHooksConfig(input.hooks)
+              : readUserHooksConfig(raw);
+            if ('hooks' in input) raw.hooks = toSettingsHooksBlock(hooks);
+            const typed = 'typedHooks' in input
+              ? parseTypedHooks(input.typedHooks)
+              : parseTypedHooks(raw.typedHooks);
+            if (typed.issues.length > 0) {
+              throw new Error(typed.issues.join(' '));
+            }
+            if ('typedHooks' in input) raw.typedHooks = typed.hooks;
             await persistHadamardSettingsStore(store.configPath, raw);
             await loadJsonConfigFile(store.configPath);
-            return { ok: true, configPath: store.configPath, hooks };
+            if ('typedHooks' in input && sdk && !needsCredentials) await reloadSdk();
+            return {
+              ok: true,
+              configPath: store.configPath,
+              hooks,
+              typedHooks: typed.hooks,
+              typedHookIssues: [],
+            };
           });
           return json(res, 200, result);
         } catch (error) {
@@ -9940,6 +9970,37 @@ export function createHadamardGuiHtml(): string {
       </div>
     </form>
   </div>
+  <div id="typedHookEditorModal" class="modal hidden">
+    <form id="typedHookEditorForm" class="dialog hook-editor">
+      <h2 id="typedHookEditorTitle">New lifecycle hook</h2>
+      <div class="two-col">
+        <label class="dialog-field">Hook ID<input id="typedHookId" autocomplete="off" required placeholder="e.g. audit-tool-use"></label>
+        <label class="dialog-field">Event<select id="typedHookEvent">
+          <option>SessionStart</option><option>SessionEnd</option><option>TurnStart</option><option>TurnEnd</option>
+          <option>ModelRequest</option><option>ModelResponse</option><option>PreToolUse</option><option>PostToolUse</option>
+          <option>PermissionDecision</option><option>Compact</option><option>Stop</option><option>WorktreeCreate</option><option>WorktreeRemove</option>
+        </select></label>
+      </div>
+      <label class="dialog-field">Matcher (optional regular expression)<input id="typedHookMatcher" autocomplete="off" placeholder="tool name or event"></label>
+      <div class="two-col">
+        <label class="dialog-field">Handler<select id="typedHookHandlerType"><option value="command">Command</option><option value="prompt">Prompt</option><option value="http">HTTP</option></select></label>
+        <label class="dialog-field">On error<select id="typedHookErrorPolicy"><option value="continue">Continue</option><option value="block">Block lifecycle</option></select></label>
+      </div>
+      <label id="typedHookValueField" class="dialog-field">Command<input id="typedHookValue" autocomplete="off" required placeholder="node"></label>
+      <label id="typedHookArgsField" class="dialog-field">Arguments (one per line)<textarea id="typedHookArgs" rows="3" placeholder="script.js&#10;--flag"></textarea></label>
+      <label id="typedHookCwdField" class="dialog-field">Working directory (optional)<input id="typedHookCwd" autocomplete="off"></label>
+      <label id="typedHookHeadersField" class="dialog-field hidden">HTTP headers (JSON object, optional)<textarea id="typedHookHeaders" rows="3" placeholder='{"authorization":"Bearer ..."}'></textarea></label>
+      <div class="two-col">
+        <label class="dialog-field">Timeout (ms, optional)<input id="typedHookTimeout" type="number" min="1" step="1" placeholder="30000"></label>
+        <label class="check-row"><input id="typedHookEnabled" type="checkbox" checked>Enabled</label>
+      </div>
+      <p id="typedHookStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="typedHookCancel">Cancel</button>
+        <button type="submit" id="typedHookSave" class="primary">Save hook</button>
+      </div>
+    </form>
+  </div>
   <div id="bridgeEditorModal" class="modal hidden">
     <form id="bridgeEditorForm" class="dialog bridge-editor">
       <h2 id="bridgeEditorTitle">New config</h2>
@@ -10447,7 +10508,13 @@ export function createHadamardGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="hooks">
         <h1>Hooks</h1>
         <div class="settings-group">
-          <p class="muted">Shell hooks from <code>settings.json</code> (<code>hooks.PreToolUse</code> / <code>PostToolUse</code> / <code>SessionStart</code>). These are not SDK TypeScript callbacks. Toggle to disable without deleting; remove to drop an entry. Edit commands in the settings file.</p>
+          <div class="settings-group-head"><div><h2>Lifecycle hooks</h2><p class="muted">Run a command, prompt check, or HTTP callback at runtime lifecycle events. Matchers are optional regular expressions. Blocking is supported where the lifecycle can still be stopped.</p></div><button type="button" id="settingsTypedHookAdd" class="primary">+ New hook</button></div>
+          <div id="settingsTypedHooksIssues" class="muted"></div>
+          <div id="settingsTypedHooksList"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Legacy shell hooks</h2>
+          <p class="muted">Compatibility settings for <code>hooks.PreToolUse</code>, <code>PostToolUse</code>, and <code>SessionStart</code>. They remain active and can be toggled or removed here; use lifecycle hooks above for new automation.</p>
           <div class="settings-action-row">
             <button type="button" id="settingsHooksOpenConfig" class="secondary-btn">Open settings.json</button>
             <button type="button" id="settingsHooksRefresh" class="secondary-btn">Refresh</button>
@@ -13448,6 +13515,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .hooks-card-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .hooks-card-desc { margin-top: 4px; font-size: 12px; color: var(--text-2); }
 .hooks-card-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.hook-editor { width: min(640px, 100%); max-height: 88vh; overflow: auto; }
+.hook-editor textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: var(--bg-surface); font-size: 11.5px; }
 .secondary-btn,
 .settings-view .secondary-btn,
@@ -29707,18 +29776,25 @@ async function removeMcpServerConfig(name) {
   renderMcpServers();
 }
 let settingsHooksCache = { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+let settingsTypedHooksCache = [];
+let typedHookEditingIndex = -1;
 let settingsHooksConfigPath = '';
 async function refreshHooksSettings() {
   const root = el('settingsHooksList');
+  const typedRoot = el('settingsTypedHooksList');
+  const typedIssues = el('settingsTypedHooksIssues');
   const pathEl = el('settingsHooksPath');
-  if (!root) return;
+  if (!root || !typedRoot) return;
   root.textContent = '';
+  typedRoot.textContent = '';
   try {
     const res = await api('/api/hooks');
     if (!res.ok) throw new Error('load failed');
     const data = await res.json();
     settingsHooksCache = data.hooks || { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+    settingsTypedHooksCache = Array.isArray(data.typedHooks) ? data.typedHooks : [];
     settingsHooksConfigPath = data.configPath || '';
+    if (typedIssues) typedIssues.textContent = (data.typedHookIssues || []).join(' ');
     if (pathEl) pathEl.textContent = settingsHooksConfigPath ? ('Config: ' + settingsHooksConfigPath) : 'Settings path unavailable';
   } catch (err) {
     if (pathEl) pathEl.textContent = 'Could not load hooks.';
@@ -29728,6 +29804,7 @@ async function refreshHooksSettings() {
     root.appendChild(note);
     return;
   }
+  renderTypedHooksSettings();
   const events = [
     ['PreToolUse', 'Before tool use (can deny)'],
     ['PostToolUse', 'After tool use (fire-and-forget)'],
@@ -29801,6 +29878,69 @@ async function refreshHooksSettings() {
     root.appendChild(tip);
   }
 }
+function typedHookHandlerSummary(hook) {
+  const handler = hook.handler || {};
+  if (handler.type === 'command') return [handler.command].concat(handler.args || []).join(' ');
+  if (handler.type === 'prompt') return handler.prompt || '';
+  return handler.url || '';
+}
+function renderTypedHooksSettings() {
+  const root = el('settingsTypedHooksList');
+  if (!root) return;
+  root.textContent = '';
+  if (settingsTypedHooksCache.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No lifecycle hooks configured.';
+    root.appendChild(empty);
+    return;
+  }
+  settingsTypedHooksCache.forEach((hook, index) => {
+    const card = document.createElement('article');
+    const enabled = hook.enabled !== false;
+    card.className = 'hooks-card' + (enabled ? '' : ' disabled');
+    const head = document.createElement('div');
+    head.className = 'hooks-card-head';
+    const title = document.createElement('div');
+    title.className = 'hooks-card-title';
+    title.textContent = hook.id + ' · ' + hook.event;
+    const actions = document.createElement('div');
+    actions.className = 'hooks-card-actions';
+    const toggle = document.createElement('label');
+    toggle.className = 'switch-field';
+    toggle.title = 'Enabled';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = enabled;
+    checkbox.addEventListener('change', () => { void updateTypedHookEnabled(index, checkbox.checked); });
+    toggle.appendChild(checkbox);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'secondary-btn';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => { openTypedHookEditor(index); });
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'secondary-btn';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => { void removeTypedHookEntry(index); });
+    actions.append(toggle, editBtn, removeBtn);
+    head.append(title, actions);
+    const value = document.createElement('div');
+    value.className = 'hooks-card-cmd';
+    value.textContent = (hook.handler?.type || 'unknown') + ': ' + typedHookHandlerSummary(hook);
+    card.append(head, value);
+    const details = [];
+    if (hook.matcher) details.push('matcher: ' + hook.matcher);
+    if (hook.timeoutMs) details.push('timeout: ' + hook.timeoutMs + ' ms');
+    details.push('on error: ' + (hook.errorPolicy || 'continue'));
+    const desc = document.createElement('div');
+    desc.className = 'hooks-card-desc';
+    desc.textContent = details.join(' · ');
+    card.appendChild(desc);
+    root.appendChild(card);
+  });
+}
 async function persistHooksCache() {
   const res = await api('/api/hooks', {
     method: 'PUT',
@@ -29813,6 +29953,132 @@ async function persistHooksCache() {
   }
   const data = await res.json();
   settingsHooksCache = data.hooks || settingsHooksCache;
+}
+async function persistTypedHooksCache() {
+  const res = await api('/api/hooks', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ typedHooks: settingsTypedHooksCache }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('save failed (' + res.status + ')'));
+  settingsTypedHooksCache = data.typedHooks || settingsTypedHooksCache;
+}
+async function updateTypedHookEnabled(index, enabled) {
+  if (!settingsTypedHooksCache[index]) return;
+  settingsTypedHooksCache[index] = { ...settingsTypedHooksCache[index], enabled };
+  try {
+    await persistTypedHooksCache();
+    renderTypedHooksSettings();
+    el('settingsStatus').textContent = enabled ? 'Lifecycle hook enabled' : 'Lifecycle hook disabled';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+async function removeTypedHookEntry(index) {
+  const hook = settingsTypedHooksCache[index];
+  if (!hook || !window.confirm('Remove lifecycle hook "' + hook.id + '"?')) return;
+  settingsTypedHooksCache.splice(index, 1);
+  try {
+    await persistTypedHooksCache();
+    renderTypedHooksSettings();
+    el('settingsStatus').textContent = 'Lifecycle hook removed';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+function updateTypedHookHandlerFields() {
+  const type = el('typedHookHandlerType').value;
+  const valueField = el('typedHookValueField');
+  const value = el('typedHookValue');
+  valueField.firstChild.textContent = type === 'command' ? 'Command' : (type === 'prompt' ? 'Prompt' : 'URL');
+  value.placeholder = type === 'command' ? 'node' : (type === 'prompt' ? 'Review this lifecycle input' : 'https://example.com/hooks');
+  el('typedHookArgsField').classList.toggle('hidden', type !== 'command');
+  el('typedHookCwdField').classList.toggle('hidden', type !== 'command');
+  el('typedHookHeadersField').classList.toggle('hidden', type !== 'http');
+}
+function openTypedHookEditor(index = -1) {
+  typedHookEditingIndex = index;
+  const hook = index >= 0 ? settingsTypedHooksCache[index] : null;
+  el('typedHookEditorTitle').textContent = hook ? 'Edit lifecycle hook' : 'New lifecycle hook';
+  el('typedHookId').value = hook?.id || '';
+  el('typedHookEvent').value = hook?.event || 'PreToolUse';
+  el('typedHookMatcher').value = hook?.matcher || '';
+  el('typedHookHandlerType').value = hook?.handler?.type || 'command';
+  el('typedHookValue').value = hook?.handler?.command || hook?.handler?.prompt || hook?.handler?.url || '';
+  el('typedHookArgs').value = (hook?.handler?.args || []).join('\\n');
+  el('typedHookCwd').value = hook?.handler?.cwd || '';
+  el('typedHookHeaders').value = hook?.handler?.headers ? JSON.stringify(hook.handler.headers, null, 2) : '';
+  el('typedHookTimeout').value = hook?.timeoutMs || '';
+  el('typedHookErrorPolicy').value = hook?.errorPolicy || 'continue';
+  el('typedHookEnabled').checked = hook?.enabled !== false;
+  el('typedHookStatus').textContent = '';
+  updateTypedHookHandlerFields();
+  el('typedHookEditorModal').classList.remove('hidden');
+  el('typedHookId').focus();
+}
+function closeTypedHookEditor() {
+  el('typedHookEditorModal').classList.add('hidden');
+  typedHookEditingIndex = -1;
+}
+async function saveTypedHookEditor() {
+  const status = el('typedHookStatus');
+  const id = el('typedHookId').value.trim();
+  const matcher = el('typedHookMatcher').value.trim();
+  const type = el('typedHookHandlerType').value;
+  const value = el('typedHookValue').value.trim();
+  if (!id || !value) { status.textContent = 'Hook ID and handler value are required.'; return; }
+  if (matcher) {
+    try { new RegExp(matcher, 'u'); } catch { status.textContent = 'Matcher must be a valid regular expression.'; return; }
+  }
+  const duplicate = settingsTypedHooksCache.findIndex((hook, index) => hook.id === id && index !== typedHookEditingIndex);
+  if (duplicate >= 0) { status.textContent = 'Hook ID must be unique.'; return; }
+  let handler;
+  if (type === 'command') {
+    const args = el('typedHookArgs').value.split(/\\r?\\n/u).map(entry => entry.trim()).filter(Boolean);
+    const cwd = el('typedHookCwd').value.trim();
+    handler = { type, command: value, ...(args.length ? { args } : {}), ...(cwd ? { cwd } : {}) };
+  } else if (type === 'prompt') {
+    handler = { type, prompt: value };
+  } else {
+    let headers;
+    const headerText = el('typedHookHeaders').value.trim();
+    if (headerText) {
+      try {
+        headers = JSON.parse(headerText);
+        if (!headers || Array.isArray(headers) || typeof headers !== 'object' || Object.values(headers).some(item => typeof item !== 'string')) throw new Error();
+      } catch {
+        status.textContent = 'HTTP headers must be a JSON object with string values.';
+        return;
+      }
+    }
+    handler = { type, url: value, ...(headers ? { headers } : {}) };
+  }
+  const timeout = Number(el('typedHookTimeout').value);
+  const hook = {
+    id,
+    event: el('typedHookEvent').value,
+    handler,
+    ...(matcher ? { matcher } : {}),
+    ...(timeout > 0 ? { timeoutMs: timeout } : {}),
+    enabled: !!el('typedHookEnabled').checked,
+    errorPolicy: el('typedHookErrorPolicy').value,
+  };
+  const previous = settingsTypedHooksCache.slice();
+  if (typedHookEditingIndex >= 0) settingsTypedHooksCache[typedHookEditingIndex] = hook;
+  else settingsTypedHooksCache.push(hook);
+  status.textContent = 'Saving...';
+  try {
+    await persistTypedHooksCache();
+    closeTypedHookEditor();
+    await refreshHooksSettings();
+    el('settingsStatus').textContent = 'Lifecycle hook saved';
+  } catch (e) {
+    settingsTypedHooksCache = previous;
+    status.textContent = 'Error: ' + (e.message || e);
+  }
 }
 async function updateHookEnabled(eventName, index, enabled) {
   const list = settingsHooksCache[eventName] || [];
@@ -31456,6 +31722,16 @@ el('settingsOpenMemory')?.addEventListener('click', () => { showSettingsTab('mem
 el('settingsHooksRefresh')?.addEventListener('click', () => { refreshHooksSettings().catch(console.error); });
 el('settingsHooksOpenConfig')?.addEventListener('click', () => {
   api('/api/settings/open-config', { method: 'POST' }).catch(console.error);
+});
+el('settingsTypedHookAdd')?.addEventListener('click', () => { openTypedHookEditor(); });
+el('typedHookHandlerType')?.addEventListener('change', updateTypedHookHandlerFields);
+el('typedHookCancel')?.addEventListener('click', closeTypedHookEditor);
+el('typedHookEditorForm')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveTypedHookEditor().catch(console.error);
+});
+el('typedHookEditorModal')?.addEventListener('click', (event) => {
+  if (event.target === el('typedHookEditorModal')) closeTypedHookEditor();
 });
 el('settingsShowBranchInComposer')?.addEventListener('change', () => {
   scheduleSettingsAutosave(120);

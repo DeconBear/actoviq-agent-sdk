@@ -243,6 +243,9 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="settingsShortcutsList"');
     expect(html).not.toContain('Remapping is not supported yet.');
     expect(html).toContain('id="settingsHooksList"');
+    expect(html).toContain('id="settingsTypedHooksList"');
+    expect(html).toContain('id="typedHookEditorModal"');
+    expect(html).toContain('id="settingsTypedHookAdd"');
     expect(html).toContain('id="settingsProjectGitBtn"');
     expect(html).toContain('id="settingsShowBranchInComposer"');
     expect(html).toContain('id="settingsShowProviderConfigsInComposer"');
@@ -259,6 +262,8 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain("setField('bridgeCfgApiKey', cfg ? (cfg.apiKey || '') : '')");
     expect(js).toContain('/api/hooks');
     expect(js).toContain('refreshHooksSettings');
+    expect(js).toContain('openTypedHookEditor');
+    expect(js).toContain('persistTypedHooksCache');
     expect(js).toContain('renderShortcutsPanel');
     expect(js).toContain('DEFAULT_SHORTCUTS');
     expect(js).toContain('eventToShortcut');

@@ -84,6 +84,7 @@ import {
   resolveHadamardSettingsStore,
 } from '../config/hadamardSettingsStore.js';
 import { createPreToolUseHookClassifier, readPreToolUseHooks, readPostToolUseHooks, runPostToolUseHooks, readSessionStartHooks, runSessionStartHooks } from '../hooks/userHooks.js';
+import { parseTypedHooks } from '../hooks/hookConfig.js';
 import type {
   HadamardEffort,
   HadamardRunEffort,
@@ -4389,24 +4390,27 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           await showMcp();
           return;
         case 'hooks': {
-          // List configured hooks from settings.json (gap #2). Hooks are read
-          // live from the hooks.PreToolUse[], hooks.PostToolUse[], and
-          // hooks.SessionStart[] blocks.
-          const preHooks = readPreToolUseHooks(getLoadedJsonConfig()?.raw);
-          const postHooks = readPostToolUseHooks(getLoadedJsonConfig()?.raw);
-          const startHooks = readSessionStartHooks(getLoadedJsonConfig()?.raw);
-          const total = preHooks.length + postHooks.length + startHooks.length;
+          const raw = getLoadedJsonConfig()?.raw;
+          const typedHooks = parseTypedHooks(raw?.typedHooks);
+          const preHooks = readPreToolUseHooks(raw);
+          const postHooks = readPostToolUseHooks(raw);
+          const startHooks = readSessionStartHooks(raw);
+          const total = typedHooks.hooks.length + preHooks.length + postHooks.length + startHooks.length;
           if (total === 0) {
             appendStatic([
               ...formatInfoLine('no hooks configured'),
-              ...formatInfoLine('add to ~/.hadamard/settings.json: "{ hooks: { PreToolUse: [...], PostToolUse: [...], SessionStart: [...] } }"'),
-              `  ${A.dim}PreToolUse:   { "matcher": "Bash", "command": "echo checking $HADAMARD_HOOK_TOOL" }${A.reset}`,
-              `  ${A.dim}PostToolUse:  { "matcher": "*", "command": "notify-tool-complete" }  (fire-and-forget)${A.reset}`,
-              `  ${A.dim}SessionStart: { "command": "echo session started" }  (fire-and-forget)${A.reset}`,
+              ...formatInfoLine('open GUI Settings > Hooks or add typedHooks to ~/.hadamard/settings.json'),
               '',
             ]);
           } else {
             const lines: string[] = [`${A.bold}Hooks${A.reset} ${A.dim}(${total})${A.reset}`];
+            if (typedHooks.hooks.length > 0) {
+              lines.push(`${A.bold}  Lifecycle${A.reset} ${A.dim}(${typedHooks.hooks.length})${A.reset}`);
+              typedHooks.hooks.forEach((hook, index) => lines.push(
+                `    ${A.dim}${index + 1}.${A.reset} ${A.bold}${hook.id}${A.reset} ${hook.event} ${A.dim}-> ${hook.handler.type}${A.reset}`,
+              ));
+            }
+            typedHooks.issues.forEach(issue => lines.push(`    ${A.yellow}[invalid] ${issue}${A.reset}`));
             if (preHooks.length > 0) {
               lines.push(`${A.bold}  PreToolUse${A.reset} ${A.dim}(${preHooks.length}) — blocks tool on non-zero exit or "BLOCK" stdout${A.reset}`);
               preHooks.forEach((h, i) => lines.push(`    ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 50)}`));

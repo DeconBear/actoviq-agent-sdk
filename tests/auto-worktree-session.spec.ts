@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -52,6 +52,47 @@ describe('automatic Session worktrees', () => {
       if (sessionId) {
         await sdk.taskWorktrees?.cleanup(sessionId, { force: true, deleteBranch: true });
       }
+      await sdk.close();
+    }
+  });
+
+  it('emits typed lifecycle hooks when an owned worktree is created and removed', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'hadamard-auto-worktree-hooks-'));
+    dirs.push(base);
+    const repo = path.join(base, 'repo');
+    const marker = path.join(base, 'worktree-hooks.txt');
+    await execFile('git', ['init', repo]);
+    await execFile('git', ['-C', repo, 'config', 'user.email', 'test@example.com']);
+    await execFile('git', ['-C', repo, 'config', 'user.name', 'Test']);
+    await writeFile(path.join(repo, 'file.txt'), 'base\n');
+    await execFile('git', ['-C', repo, 'add', '.']);
+    await execFile('git', ['-C', repo, 'commit', '-m', 'base']);
+    const modelApi = {
+      createMessage: async () => { throw new Error('Unexpected model call.'); },
+      streamMessage: () => { throw new Error('Unexpected model call.'); },
+    } as unknown as ModelApi;
+    const hook = (id: string, event: 'WorktreeCreate' | 'WorktreeRemove') => ({
+      id,
+      event,
+      handler: {
+        type: 'command' as const,
+        command: process.execPath,
+        args: ['-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, ${JSON.stringify(`${event}\n`)})`],
+      },
+    });
+    const sdk = await createAgentSdk({
+      model: 'test',
+      modelApi,
+      workDir: repo,
+      sessionDirectory: path.join(base, 'sessions'),
+      autoWorktree: true,
+      typedHooks: [hook('created', 'WorktreeCreate'), hook('removed', 'WorktreeRemove')],
+    });
+    try {
+      const session = await sdk.createSession();
+      await sdk.taskWorktrees?.cleanup(session.id, { force: true, deleteBranch: true });
+      await expect(readFile(marker, 'utf8')).resolves.toBe('WorktreeCreate\nWorktreeRemove\n');
+    } finally {
       await sdk.close();
     }
   });
