@@ -77,6 +77,7 @@ export interface ExecuteConversationOptions {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
   toolChoice?: AgentRunOptions['toolChoice'];
   userId?: string;
   metadata?: Record<string, unknown>;
@@ -257,6 +258,7 @@ export async function executeConversation(
       max_tokens: options.maxTokens ?? options.config.maxTokens,
       system: options.systemPrompt ?? options.config.systemPrompt,
       temperature: options.temperature ?? options.config.temperature,
+      top_p: options.topP,
       effort,
       tools: resolvedTools.length > 0 ? resolvedTools.map((tool) => tool.providerTool) : undefined,
       tool_choice: options.toolChoice,
@@ -479,6 +481,7 @@ export async function executeConversation(
           model: options.model,
           maxTokens: options.maxTokens,
           temperature: options.temperature,
+          topP: options.topP,
           effort: options.effort,
           toolChoice: options.toolChoice,
           userId: options.userId,

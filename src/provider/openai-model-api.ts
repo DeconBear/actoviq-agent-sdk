@@ -406,6 +406,7 @@ export class OpenaiModelApi implements ModelApi {
       messages: openaiMessages,
       max_completion_tokens: request.max_tokens,
       temperature: request.temperature,
+      top_p: request.top_p,
       tools: providerToolsToOpenai(request.tools),
       tool_choice: mapToolChoice(request.tool_choice),
       stop: request.stop_sequences,

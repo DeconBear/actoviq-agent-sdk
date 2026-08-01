@@ -30,6 +30,7 @@ export interface HadamardCreateMessageRequest {
   max_tokens: number;
   system?: string | unknown[];
   temperature?: number;
+  top_p?: number;
   tools?: Tool[];
   tool_choice?: ToolChoice;
   metadata?: Metadata;

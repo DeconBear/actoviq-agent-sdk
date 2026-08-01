@@ -25,6 +25,7 @@ import {
 } from '../update/appUpdateService.js';
 
 let guiServer: HadamardGuiServer | null = null;
+let mainWindow: BrowserWindow | null = null;
 let cleanupInProgress = false;
 let quittingAfterCleanup = false;
 const { autoUpdater } = electronUpdater;
@@ -210,13 +211,17 @@ async function createWindow(): Promise<void> {
     minHeight: 620,
     title: 'Hadamard',
     backgroundColor: '#f3f3f3',
-    show: false,
+    show: true,
     ...(hasIcon ? { icon: iconPath } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  mainWindow = window;
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null;
   });
   window.setMenuBarVisibility(true);
   if (hasIcon && iconPath) {
@@ -231,6 +236,7 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
   await window.loadURL(guiServer.url);
+  if (!window.isVisible()) window.show();
 }
 
 app.whenReady().then(() => {

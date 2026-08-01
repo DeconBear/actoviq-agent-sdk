@@ -124,6 +124,25 @@ describe('HadamardAgentClient', () => {
     }
   });
 
+  it('passes an optional topP run override to the model request', async () => {
+    const sessionDirectory = await createSessionDirectory();
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'Top P test complete.' }]),
+    });
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+    });
+
+    try {
+      await sdk.run('use top p', { topP: 0.82 });
+      expect(modelApi.createCalls[0]?.top_p).toBe(0.82);
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('clears session manager timers when the client closes', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi({

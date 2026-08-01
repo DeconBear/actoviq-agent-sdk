@@ -37,6 +37,8 @@ export interface AgentProfile {
   maxTokens?: number;
   /** Optional sampling override for this agent (0–2). */
   temperature?: number;
+  /** Optional nucleus sampling override for this agent (0-1). */
+  topP?: number;
 }
 
 export interface PersistedAgentProfiles {
@@ -107,6 +109,17 @@ function parseTemperature(value: unknown): number | undefined {
   return undefined;
 }
 
+function parseTopP(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+  }
+  return undefined;
+}
+
 function normalizeAgentProfile(raw: unknown): AgentProfile | null {
   if (!isRecord(raw)) return null;
   const name = typeof raw.name === 'string' ? raw.name.trim() : '';
@@ -128,6 +141,8 @@ function normalizeAgentProfile(raw: unknown): AgentProfile | null {
   if (maxTokens !== undefined) profile.maxTokens = maxTokens;
   const temperature = parseTemperature(raw.temperature);
   if (temperature !== undefined) profile.temperature = temperature;
+  const topP = parseTopP(raw.topP);
+  if (topP !== undefined) profile.topP = topP;
   return profile;
 }
 
@@ -300,21 +315,24 @@ export interface SelectableAgent {
   effort?: HadamardRunEffort;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
   /** True when this entry was synthesized and is not stored in agent-configs.json. */
   ephemeral?: boolean;
 }
 
 /** Sampling / effort overrides to pass into `session.stream` / `AgentRunOptions`. */
-export function agentProfileRunOverrides(profile: Pick<AgentProfile, 'effort' | 'maxTokens' | 'temperature'> | null | undefined): {
+export function agentProfileRunOverrides(profile: Pick<AgentProfile, 'effort' | 'maxTokens' | 'temperature' | 'topP'> | null | undefined): {
   effort?: HadamardRunEffort;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
 } {
   if (!profile) return {};
   return {
     ...(profile.effort ? { effort: profile.effort } : {}),
     ...(typeof profile.maxTokens === 'number' ? { maxTokens: profile.maxTokens } : {}),
     ...(typeof profile.temperature === 'number' ? { temperature: profile.temperature } : {}),
+    ...(typeof profile.topP === 'number' ? { topP: profile.topP } : {}),
   };
 }
 
@@ -394,6 +412,7 @@ export function listSelectableAgents(homeDir?: string): SelectableAgent[] {
       ...(profile.effort ? { effort: profile.effort } : {}),
       ...(typeof profile.maxTokens === 'number' ? { maxTokens: profile.maxTokens } : {}),
       ...(typeof profile.temperature === 'number' ? { temperature: profile.temperature } : {}),
+      ...(typeof profile.topP === 'number' ? { topP: profile.topP } : {}),
     });
   }
 

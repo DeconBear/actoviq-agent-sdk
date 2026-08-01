@@ -95,4 +95,20 @@ describe('product RunEvent wiring boundary', () => {
     expect(electron).toContain('dialog.showErrorBox');
     expect(electron).not.toContain('server.close().finally(() => app.quit())');
   });
+
+  it('shows the Electron window after the GUI URL loads even if ready-to-show does not fire', async () => {
+    const electron = await readFile(
+      new URL('../src/gui/electronMain.ts', import.meta.url),
+      'utf8',
+    );
+    const loadIndex = electron.indexOf('await window.loadURL(guiServer.url);');
+    const fallbackIndex = electron.indexOf('if (!window.isVisible()) window.show();');
+    expect(loadIndex).toBeGreaterThan(0);
+    expect(fallbackIndex).toBeGreaterThan(loadIndex);
+    expect(electron).toContain('let mainWindow: BrowserWindow | null = null;');
+    expect(electron).toContain('mainWindow = window;');
+    expect(electron).toContain('if (mainWindow === window) mainWindow = null;');
+    expect(electron).toContain('show: true,');
+    expect(electron).not.toContain('show: false,');
+  });
 });

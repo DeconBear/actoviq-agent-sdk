@@ -387,11 +387,7 @@ export function getTranscriptClientScript(): string {
       jump.type = 'button';
       jump.className = 'transcript-jump';
       jump.textContent = '↓ Jump to bottom';
-      jump.addEventListener('click', () => {
-        TR.stick = true;
-        jump.classList.remove('visible');
-        TR.root.scrollTop = TR.root.scrollHeight;
-      });
+      jump.addEventListener('click', scrollToBottom);
       shell.appendChild(jump);
       TR.jumpBtn = jump;
       TR.root.addEventListener('scroll', () => {
@@ -407,6 +403,13 @@ export function getTranscriptClientScript(): string {
       if (TR.jumpBtn && TR.root && !TR.stick) TR.jumpBtn.classList.add('visible');
       return;
     }
+    TR.root.scrollTop = TR.root.scrollHeight;
+  }
+
+  function scrollToBottom() {
+    if (!TR.root) return;
+    TR.stick = true;
+    if (TR.jumpBtn) TR.jumpBtn.classList.remove('visible');
     TR.root.scrollTop = TR.root.scrollHeight;
   }
 
@@ -1059,6 +1062,7 @@ export function getTranscriptClientScript(): string {
         }
       },
       scroll: maybeScroll,
+      scrollToBottom,
       store: TR,
       classifyToolFamily,
       buildToolCard,

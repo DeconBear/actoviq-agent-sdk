@@ -2612,6 +2612,7 @@ export class HadamardAgentClient {
           model,
           maxTokens: options.maxTokens,
           temperature: options.temperature,
+          topP: options.topP,
           effort: options.effort,
           toolChoice: options.toolChoice,
           userId: options.userId ?? this.config.userId,

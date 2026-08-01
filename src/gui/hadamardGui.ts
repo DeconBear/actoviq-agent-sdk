@@ -642,6 +642,9 @@ interface GuiPreferences {
   developerTools: boolean;
   outputStyle: OutputStyleId;
   showBranchInComposer: boolean;
+  showProviderConfigsInComposer: boolean;
+  showAgentProfilesInComposer: boolean;
+  showRouterProfilesInComposer: boolean;
 }
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
@@ -653,6 +656,9 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   developerTools: false,
   outputStyle: 'default',
   showBranchInComposer: true,
+  showProviderConfigsInComposer: true,
+  showAgentProfilesInComposer: true,
+  showRouterProfilesInComposer: true,
 };
 
 function isOutputStyleId(value: unknown): value is OutputStyleId {
@@ -886,6 +892,24 @@ function readEnvFromSettings(raw: Record<string, unknown>): Record<string, strin
   return env;
 }
 
+export function shouldShowDefaultModelOnboarding(
+  raw: Record<string, unknown>,
+  bridgeConfigCount: number,
+): boolean {
+  const env = readEnvFromSettings(raw);
+  const settingsModelFields = [
+    'HADAMARD_API_KEY',
+    'HADAMARD_AUTH_TOKEN',
+    'HADAMARD_BASE_URL',
+    'HADAMARD_MODEL',
+    'HADAMARD_DEFAULT_MIN_MODEL',
+    'HADAMARD_DEFAULT_MEDIUM_MODEL',
+    'HADAMARD_DEFAULT_MAX_MODEL',
+  ];
+  const hasSettingsModelConfig = settingsModelFields.some(key => Boolean(env[key]?.trim()));
+  return !hasSettingsModelConfig && bridgeConfigCount === 0;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -914,6 +938,15 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     showBranchInComposer: typeof source.showBranchInComposer === 'boolean'
       ? source.showBranchInComposer
       : DEFAULT_GUI_PREFERENCES.showBranchInComposer,
+    showProviderConfigsInComposer: typeof source.showProviderConfigsInComposer === 'boolean'
+      ? source.showProviderConfigsInComposer
+      : DEFAULT_GUI_PREFERENCES.showProviderConfigsInComposer,
+    showAgentProfilesInComposer: typeof source.showAgentProfilesInComposer === 'boolean'
+      ? source.showAgentProfilesInComposer
+      : DEFAULT_GUI_PREFERENCES.showAgentProfilesInComposer,
+    showRouterProfilesInComposer: typeof source.showRouterProfilesInComposer === 'boolean'
+      ? source.showRouterProfilesInComposer
+      : DEFAULT_GUI_PREFERENCES.showRouterProfilesInComposer,
   };
 }
 
@@ -2875,6 +2908,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       effort: fromAgent.effort ?? currentEffort(),
       ...(typeof fromAgent.maxTokens === 'number' ? { maxTokens: fromAgent.maxTokens } : {}),
       ...(typeof fromAgent.temperature === 'number' ? { temperature: fromAgent.temperature } : {}),
+      ...(typeof fromAgent.topP === 'number' ? { topP: fromAgent.topP } : {}),
     };
   };
 
@@ -3082,10 +3116,15 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         provider: env.HADAMARD_PROVIDER ?? sdk?.config.provider ?? 'anthropic',
         baseURL: env.HADAMARD_BASE_URL ?? '',
         defaultModel: env.HADAMARD_MODEL ?? '',
+        defaultEffort: env.HADAMARD_EFFORT ?? '',
+        defaultModelContext1M: env.HADAMARD_DEFAULT_MODEL_CONTEXT_1M === '1',
+        defaultModelMultimodal: env.HADAMARD_DEFAULT_MODEL_MULTIMODAL === '1',
         minModel: env.HADAMARD_DEFAULT_MIN_MODEL ?? '',
         mediumModel: env.HADAMARD_DEFAULT_MEDIUM_MODEL ?? '',
         maxModel: env.HADAMARD_DEFAULT_MAX_MODEL ?? '',
         apiKeyConfigured: Boolean(env.HADAMARD_API_KEY || env.HADAMARD_AUTH_TOKEN),
+        apiKey: env.HADAMARD_API_KEY ?? env.HADAMARD_AUTH_TOKEN ?? '',
+        apiKeyMasked: maskApiKey(env.HADAMARD_API_KEY ?? env.HADAMARD_AUTH_TOKEN ?? ''),
         preferences: store ? readGuiPreferences(store.raw) : DEFAULT_GUI_PREFERENCES,
         browser: readHadamardBrowserSettings(store?.raw ?? {}),
         bridge: store?.raw?.bridge ?? {},
@@ -3132,6 +3171,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           credentialProvider: c.credentialProvider ?? '',
           trustProjectResources: c.trustProjectResources === true,
           hasApiKey: Boolean(c.apiKey),
+          apiKey: c.apiKey ?? '',
           apiKeyMasked: c.apiKey ? maskApiKey(c.apiKey) : '',
           baseURL: c.baseURL ?? '',
           model: c.model ?? '',
@@ -3189,6 +3229,10 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       mcpServers: readMcpServerConfig(homeDir).servers,
       goal: getGoal(),
       needsCredentials,
+      needsDefaultModelOnboarding: shouldShowDefaultModelOnboarding(
+        store?.raw ?? {},
+        bridgeConfigs.length,
+      ),
       outputStyle,
       outputStyles: OUTPUT_STYLES,
       planMode: currentPermissionMode() === 'plan',
@@ -3224,11 +3268,13 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     if (body.provider === 'anthropic' || body.provider === 'openai') {
       env.HADAMARD_PROVIDER = body.provider;
     }
-    if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
-      env.HADAMARD_API_KEY = body.apiKey.trim();
-      delete env.HADAMARD_AUTH_TOKEN;
-    } else if (body.clearApiKey === true) {
+    if (body.clearApiKey === true) {
       delete env.HADAMARD_API_KEY;
+      delete env.HADAMARD_AUTH_TOKEN;
+      delete raw.HADAMARD_API_KEY;
+      delete raw.HADAMARD_AUTH_TOKEN;
+    } else if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+      env.HADAMARD_API_KEY = body.apiKey.trim();
       delete env.HADAMARD_AUTH_TOKEN;
     }
     const envFields = [
@@ -3243,6 +3289,19 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       const value = body[field].trim();
       if (value) env[key] = value;
       else delete env[key];
+    }
+    if (typeof body.effort === 'string') {
+      const defaultEffort = body.effort.trim().toLowerCase();
+      if (isEffort(defaultEffort)) env.HADAMARD_EFFORT = defaultEffort;
+      else if (defaultEffort === 'auto') delete env.HADAMARD_EFFORT;
+    }
+    if (typeof body.defaultModelContext1M === 'boolean') {
+      if (body.defaultModelContext1M) env.HADAMARD_DEFAULT_MODEL_CONTEXT_1M = '1';
+      else delete env.HADAMARD_DEFAULT_MODEL_CONTEXT_1M;
+    }
+    if (typeof body.defaultModelMultimodal === 'boolean') {
+      if (body.defaultModelMultimodal) env.HADAMARD_DEFAULT_MODEL_MULTIMODAL = '1';
+      else delete env.HADAMARD_DEFAULT_MODEL_MULTIMODAL;
     }
 
     // Bridge settings: write per-provider paths + default provider.
@@ -3545,7 +3604,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   async function getAssistantGlobalSdk(): Promise<HadamardAgentClient> {
     if (assistantGlobalSdk) return assistantGlobalSdk;
     if (needsCredentials || !sdk) {
-      throw new Error('No API key configured — open Settings → General to add one.');
+      throw new Error('No API key configured — open Settings → Models & routing to add one.');
     }
     const homeDir = managerHomeDir();
     const sessionDirectory = assistantSessionDirectory(homeDir);
@@ -3727,7 +3786,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     clientRequestId?: string;
     replayEvents?: Array<GuiRunEvent & { sequence: number }>;
   }): Promise<string> {
-    if (needsCredentials || !sdk) throw new Error('No API key configured — open Settings → General to add one.');
+    if (needsCredentials || !sdk) throw new Error('No API key configured — open Settings → Models & routing to add one.');
     for (const run of runs.values()) {
       if (run.desc.kind === 'manager' && run.desc.status === 'running') {
         throw new Error('An Assistant run is already in progress.');
@@ -3990,7 +4049,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
 
   async function runAutomationPrompt(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
     if (needsCredentials || !sdk) {
-      throw new Error('No API key configured - open Settings > General to add one.');
+      throw new Error('No API key configured - open Settings > Models & routing to add one.');
     }
     const input = task.prompt?.trim() ?? '';
     if (!input) throw new Error('Scheduled prompt is empty');
@@ -5855,6 +5914,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       ...(modelApi ? { modelApi } : {}),
       ...(typeof profileOverrides.maxTokens === 'number' ? { maxTokens: profileOverrides.maxTokens } : {}),
       ...(typeof profileOverrides.temperature === 'number' ? { temperature: profileOverrides.temperature } : {}),
+      ...(typeof profileOverrides.topP === 'number' ? { topP: profileOverrides.topP } : {}),
       tools: [issueReportTool],
     });
     for await (const event of stream) {
@@ -5919,7 +5979,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     let reported = false;
     let workerRunId: string | null = null;
     try {
-      if (needsCredentials || !sdk) throw new Error('No API key configured - open Settings > General to add one.');
+      if (needsCredentials || !sdk) throw new Error('No API key configured - open Settings > Models & routing to add one.');
       const idOrNumber = body.id ?? body.number ?? body.idOrNumber;
       if (typeof idOrNumber !== 'string' && typeof idOrNumber !== 'number') throw new Error('Missing issue id');
       homeDir = resolveGuiHomeDir();
@@ -6160,7 +6220,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
 
     const externalCliSelected = activeBridgeConfig?.execution === 'cli';
     if (needsCredentials && !externalCliSelected) {
-      send({ type: 'error', message: 'No API key configured — open Settings → General to add one.' });
+      send({ type: 'error', message: 'No API key configured — open Settings → Models & routing to add one.' });
       send({ type: 'state', state: await state() });
       send({ type: 'done' });
       res.end();
@@ -8083,6 +8143,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
               model: local.model,
               baseURL: local.baseURL,
               hasApiKey: Boolean(local.apiKey),
+              apiKey: local.apiKey,
               source: local.source,
             }
           : {});
@@ -8223,6 +8284,12 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             const temperature = typeof body.temperature === 'number' ? body.temperature : Number(body.temperature);
             if (Number.isFinite(temperature) && temperature >= 0 && temperature <= 2) {
               profile.temperature = temperature;
+            }
+          }
+          if (body.topP !== undefined && body.topP !== null && body.topP !== '') {
+            const topP = typeof body.topP === 'number' ? body.topP : Number(body.topP);
+            if (Number.isFinite(topP) && topP >= 0 && topP <= 1) {
+              profile.topP = topP;
             }
           }
           const result = await withRuntimeMutation(async () => {
@@ -9137,7 +9204,7 @@ async function onboardCredentials(opts: { configPath?: string; homeDir?: string 
   const model = (await ask('  Model [deepseek-chat]: ')).trim() || 'deepseek-chat';
   rl.close();
   if (!apiKey) {
-    process.stdout.write('  No API key entered. Set HADAMARD_API_KEY and rerun, or open Settings → Environment in the GUI.\n');
+    process.stdout.write('  No API key entered. Set HADAMARD_API_KEY and rerun, or open Settings → Models & routing in the GUI.\n');
     return;
   }
   const store = await resolveHadamardSettingsStore({ configPath: opts.configPath, homeDir: opts.homeDir });
@@ -9830,12 +9897,12 @@ export function createHadamardGuiHtml(): string {
   <div id="bridgeEditorModal" class="modal hidden">
     <form id="bridgeEditorForm" class="dialog bridge-editor">
       <h2 id="bridgeEditorTitle">New config</h2>
-      <label class="dialog-field">Config name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
+      <label id="bridgeConfigNameField" class="dialog-field">Config name<input id="bridgeCfgName" autocomplete="off" placeholder="e.g. deepseek-anthropic"></label>
       <div class="two-col">
         <label class="dialog-field">Execution mode<select id="bridgeCfgExecution"><option value="api">Direct API</option><option value="cli">External CLI</option></select></label>
         <label class="dialog-field">Runtime<select id="bridgeCfgRuntime"><option value="hadamard">Hadamard SDK</option><option value="claude">Claude Code</option><option value="codewhale">CodeWhale</option><option value="pi">Pi</option><option value="codex">Codex CLI</option><option value="reasonix">Reasonix</option><option value="crush">Crush</option></select></label>
       </div>
-      <div class="two-col">
+      <div id="bridgeAuthenticationFields" class="two-col">
         <label class="dialog-field">Authentication<select id="bridgeCfgAuthSource"><option value="native">Reuse CLI login / config</option><option value="apiKey">API key override</option></select></label>
         <label id="bridgeProviderField" class="dialog-field">API protocol<select id="bridgeCfgProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
       </div>
@@ -9858,10 +9925,11 @@ export function createHadamardGuiHtml(): string {
           </div>
         </div>
         <label class="check-row" id="bridgeClearKeyRow"><input id="bridgeCfgClearKey" type="checkbox">Clear saved API key</label>
+        <label id="bridgeDefaultEffortField" class="dialog-field hidden">Reasoning effort<select id="bridgeDefaultEffort"><option value="">Inherit current</option><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
       </div>
-      <div class="bridge-models-section">
-        <h3>Models</h3>
-        <p class="muted">Add one or more models for this config. The first is the default.</p>
+      <div id="bridgeModelsSection" class="bridge-models-section">
+        <h3 id="bridgeModelsTitle">Models</h3>
+        <p id="bridgeModelsHelp" class="muted">Add one or more models for this config. The first is the default.</p>
         <div class="bridge-model-row">
           <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)">
           <div class="bridge-model-controls">
@@ -9902,16 +9970,22 @@ export function createHadamardGuiHtml(): string {
       </select></label>
       <div class="two-col">
         <label class="dialog-field">Effort<select id="agentProfileEffort">
-          <option value="">Session default</option>
+          <option value="">Inherit session/default model</option>
           <option value="auto">Auto</option>
           <option value="low">Low</option>
           <option value="medium">Medium</option>
           <option value="high">High</option>
           <option value="max">Max</option>
         </select></label>
-        <label class="dialog-field">Max tokens<input id="agentProfileMaxTokens" type="number" min="1" step="1" placeholder="e.g. 32000"></label>
+        <label class="dialog-field">Max tokens<input id="agentProfileMaxTokens" type="number" min="1" step="1" placeholder="Blank = runtime default"></label>
       </div>
       <label class="dialog-field">Temperature<input id="agentProfileTemperature" type="number" min="0" max="2" step="0.1" placeholder="e.g. 0.7 (0–2, blank = provider default)"></label>
+      <p class="muted">Effort controls reasoning depth; temperature controls sampling randomness. They are independent, but some provider/model combinations reject temperature while reasoning is enabled. Leaving a field blank avoids an override and inherits the session, runtime, or provider default.</p>
+      <details id="agentProfileAdvanced" class="agent-profile-advanced">
+        <summary>Advanced</summary>
+        <label class="dialog-field">Top P<input id="agentProfileTopP" type="number" min="0" max="1" step="0.05" placeholder="Blank = provider default"></label>
+        <p class="muted">Optional nucleus sampling override. Prefer changing either Temperature or Top P, not both.</p>
+      </details>
       <label class="dialog-field">System prompt append<textarea id="agentProfileSystemPrompt" rows="4" placeholder="Optional instructions appended when this agent runs"></textarea></label>
       <p id="agentProfileCfgStatus" class="muted"></p>
       <div class="dialog-actions">
@@ -10010,6 +10084,25 @@ export function createHadamardGuiHtml(): string {
       </div>
     </div>
   </div>
+  <div id="defaultModelOnboarding" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="defaultModelOnboardingTitle">
+    <form id="defaultModelOnboardingForm" class="dialog onboarding-dialog">
+      <h2 id="defaultModelOnboardingTitle">Set up your default model</h2>
+      <p class="muted">Connect the first model before entering Hadamard. API key, Base URL, and model ID are required.</p>
+      <div id="bridgeExecutionFields" class="two-col">
+        <label class="dialog-field">API protocol<select id="onboardingProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
+        <label class="dialog-field">Model ID<input id="onboardingModel" autocomplete="off" required placeholder="e.g. claude-sonnet-4-5"></label>
+      </div>
+      <label class="dialog-field">API key<input id="onboardingApiKey" type="password" autocomplete="new-password" required></label>
+      <label class="dialog-field">Base URL<input id="onboardingBaseUrl" type="url" autocomplete="off" required placeholder="https://api.example.com"></label>
+      <label class="dialog-field">Reasoning effort<select id="onboardingEffort"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
+      <div class="onboarding-options">
+        <div class="settings-help-row"><span><strong>1M context</strong><small>This model supports a one-million-token context window.</small></span><label class="switch-field"><input type="checkbox" id="onboardingContext1M"></label></div>
+        <div class="settings-help-row"><span><strong>Multimodal</strong><small>This model accepts image or other multimodal input.</small></span><label class="switch-field"><input type="checkbox" id="onboardingMultimodal"></label></div>
+      </div>
+      <p id="defaultModelOnboardingStatus" class="muted"></p>
+      <div class="dialog-actions"><button type="submit" id="defaultModelOnboardingSave" class="primary">Continue</button></div>
+    </form>
+  </div>
   <div id="settingsModal" class="settings-view hidden">
     <aside class="settings-sidebar">
       <button type="button" id="backToAppBtn" class="back-btn">&lt; Back to app</button>
@@ -10018,7 +10111,6 @@ export function createHadamardGuiHtml(): string {
         <h2>Personal</h2>
         <button type="button" class="settings-tab active" data-settings-tab="general"><span class="settings-icon">${guiIcon('gear')}</span>General</button>
         <button type="button" class="settings-tab" data-settings-tab="models"><span class="settings-icon">${guiIcon('model')}</span>Models & routing</button>
-        <button type="button" class="settings-tab" data-settings-tab="profile"><span class="settings-icon">${guiIcon('profile')}</span>Profile</button>
         <button type="button" class="settings-tab" data-settings-tab="appearance"><span class="settings-icon">${guiIcon('palette')}</span>Appearance</button>
         <button type="button" class="settings-tab" data-settings-tab="personalization"><span class="settings-icon">${guiIcon('agent')}</span>Personalization</button>
         <button type="button" class="settings-tab" data-settings-tab="shortcuts"><span class="settings-icon">${guiIcon('keyboard')}</span>Keyboard shortcuts</button>
@@ -10037,7 +10129,6 @@ export function createHadamardGuiHtml(): string {
         <h2>Coding</h2>
         <button type="button" class="settings-tab" data-settings-tab="hooks"><span class="settings-icon">${guiIcon('hooks')}</span>Hooks</button>
         <button type="button" class="settings-tab" data-settings-tab="git"><span class="settings-icon">${guiIcon('git')}</span>Git</button>
-        <button type="button" class="settings-tab" data-settings-tab="env"><span class="settings-icon">${guiIcon('environment')}</span>Environment</button>
         <button type="button" class="settings-tab" data-settings-tab="worktree"><span class="settings-icon">${guiIcon('worktree')}</span>Worktrees</button>
       </section>
     </aside>
@@ -10103,11 +10194,19 @@ export function createHadamardGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="models">
         <h1>Models & routing</h1>
         <div class="settings-group">
+          <h2>Available in chat</h2>
+          <p class="muted">Choose which saved configuration types are listed when the model picker opens. Existing data is not deleted.</p>
+          <div class="settings-help-row"><span><strong>Provider configs</strong><small>Show saved configs from <code>bridge-configs.json</code>.</small></span><label class="switch-field"><input type="checkbox" id="settingsShowProviderConfigsInComposer"></label></div>
+          <div class="settings-help-row"><span><strong>Agent profiles</strong><small>Show saved agent names for direct selection.</small></span><label class="switch-field"><input type="checkbox" id="settingsShowAgentProfilesInComposer"></label></div>
+          <div class="settings-help-row"><span><strong>Router profiles</strong><small>Show saved leader/dispatch profiles.</small></span><label class="switch-field"><input type="checkbox" id="settingsShowRouterProfilesInComposer"></label></div>
+        </div>
+        <div class="settings-group">
           <div class="settings-group-head">
-            <h2>Provider configs</h2>
+            <h2>Configs</h2>
             <button type="button" id="bridgeNewConfig" class="primary">+ New config</button>
           </div>
-<p class="muted">Choose <strong>External CLI</strong> to launch the selected runtime with its native login/config, or <strong>Direct API</strong> to call a provider through Hadamard. The chat composer also exposes agents built from these configs. Configs live in <code>~/.hadamard/bridge-configs.json</code>.</p>
+          <p id="settingsPath" class="muted"></p>
+<p class="muted">The default model from <code>settings.json</code> is listed first and is used when nothing else is selected. Other configs live in <code>~/.hadamard/bridge-configs.json</code>. Choose <strong>External CLI</strong> to reuse a CLI login, or <strong>Direct API</strong> to call a provider through Hadamard.</p>
           <p id="bridgeActive" class="muted">No active provider config — using the default provider.</p>
           <div id="bridgeConfigsList" class="settings-card-list"></div>
         </div>
@@ -10116,7 +10215,7 @@ export function createHadamardGuiHtml(): string {
             <h2>Agent profiles</h2>
             <button type="button" id="agentProfileNew" class="primary">+ New profile</button>
           </div>
-          <p class="muted">Reusable agent roles bound to a provider config and one model. They appear in the composer agent picker and Issue dispatch. Auto presets are also created from each config's models when no profile covers them.</p>
+          <p class="muted">Reusable agent roles bound to a provider config and one model. Saved profiles appear by name in the composer and in Issue dispatch.</p>
           <p id="agentProfilesStatus" class="muted"></p>
           <div id="agentProfilesList" class="settings-card-list"></div>
         </div>
@@ -10172,10 +10271,6 @@ export function createHadamardGuiHtml(): string {
           <div id="externalCliHistoryList" class="settings-card-list compact"></div>
           <div class="settings-action-row"><button type="button" id="externalCliHistoryMore" class="secondary-btn hidden">Load more</button></div>
         </div>
-      </section>
-      <section class="settings-panel" data-settings-panel="profile">
-        <h1>Profile</h1>
-        <div class="settings-group"><p>User profile settings are stored in local Hadamard settings and memories. Use /memory and /dream to inspect durable context.</p></div>
       </section>
       <section class="settings-panel" data-settings-panel="appearance">
         <h1>Appearance</h1>
@@ -10330,21 +10425,6 @@ export function createHadamardGuiHtml(): string {
           <div class="settings-help-row"><span><strong>Show branch in composer</strong><small>Display the current git branch chip above the message box.</small></span><label class="switch-field"><input type="checkbox" id="settingsShowBranchInComposer"></label></div>
         </div>
       </section>
-      <section class="settings-panel" data-settings-panel="env">
-        <h1>Environment</h1>
-        <p id="settingsPath" class="muted"></p>
-        <div class="settings-group two-col">
-          <label>Provider<select id="settingsProvider"><option value="anthropic">Anthropic-compatible</option><option value="openai">OpenAI-compatible</option></select></label>
-          <label>Default model<input id="settingsDefaultModel" autocomplete="off"></label>
-          <label>API key<input id="settingsApiKey" type="password" autocomplete="new-password" placeholder="Leave blank to keep current key"></label>
-          <label class="check-row"><input id="settingsClearApiKey" type="checkbox">Clear saved API key</label>
-          <label>Base URL<input id="settingsBaseUrl" autocomplete="off" placeholder="Provider default"></label>
-          <label>Effort<select id="settingsEffort"><option value="">Keep current</option><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>
-          <label>Min model<input id="settingsMinModel" autocomplete="off"></label>
-          <label>Medium model<input id="settingsMediumModel" autocomplete="off"></label>
-          <label>Max model<input id="settingsMaxModel" autocomplete="off"></label>
-        </div>
-      </section>
       <section class="settings-panel" data-settings-panel="worktree">
         <h1>Worktrees</h1>
         <div class="settings-group">
@@ -10379,6 +10459,7 @@ body {
   background: var(--bg-app);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+body[data-onboarding="true"] #appView { visibility: hidden; }
 button, input, textarea, select { font: inherit; }
 input, textarea, select { color: inherit; }
 button { cursor: pointer; }
@@ -13124,6 +13205,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.18); display: grid; place-items: center; padding: 20px; z-index: 30; }
 .modal.hidden, .settings-view.hidden { display: none; }
 .dialog { width: min(520px, 100%); background: var(--bg-surface); border-radius: 8px; border: 1px solid var(--border); padding: 18px; box-shadow: 0 20px 55px rgba(0,0,0,.14); }
+.dialog.onboarding-dialog { width: min(600px, 100%); }
+.onboarding-options { margin: 14px 0; border-top: 1px solid var(--border); }
 .dialog.workspace-dialog { width: min(760px, 100%); }
 .workspace-choice-list { display: grid; gap: 4px; max-height: 160px; overflow: auto; margin: 10px 0 12px; padding: 2px; }
 .workspace-path-row { display: flex; align-items: stretch; gap: 8px; margin-top: 4px; }
@@ -13465,7 +13548,11 @@ kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 
 .settings-help-row small { color: var(--text-2); font-size: 11.5px; line-height: 1.45; }
 .settings-help-row .secondary-btn { white-space: nowrap; flex: 0 0 auto; }
 .switch-field { display: inline-flex; align-items: center; }
-.switch-field input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
+.switch-field input[type="checkbox"] { appearance: none; width: 36px; height: 20px; margin: 0; border: 0; border-radius: 999px; background: var(--border-hover); cursor: pointer; position: relative; transition: background .16s ease; }
+.switch-field input[type="checkbox"]::after { content: ''; position: absolute; width: 16px; height: 16px; top: 2px; left: 2px; border-radius: 50%; background: var(--bg-surface); box-shadow: 0 1px 3px rgba(0,0,0,.22); transition: transform .16s ease; }
+.switch-field input[type="checkbox"]:checked { background: var(--brand); }
+.switch-field input[type="checkbox"]:checked::after { transform: translateX(16px); }
+.switch-field input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .settings-card-list { display: grid; gap: 10px; max-height: 360px; overflow: auto; padding-right: 2px; margin-top: 2px; }
 .settings-card-list.compact { max-height: 260px; }
 #runtimeDiscoveryList,
@@ -13769,6 +13856,8 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
   .picker-edit-popover { left: calc(100% + 6px); right: auto; top: 0; bottom: auto; width: var(--model-picker-menu-width, min(248px, calc(100vw - 32px))); max-height: 210px; }
 }
 .bridge-editor { width: min(560px, 100%); max-height: 86vh; overflow-y: auto; }
+.agent-profile-advanced { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; }
+.agent-profile-advanced > summary { cursor: pointer; color: var(--text-1); font-weight: 600; }
 .router-editor { width: min(720px, 100%); }
 .router-editor textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; background: var(--bg-surface); color: var(--text-1); font: inherit; }
 .router-route-draft { margin-bottom: 8px; }
@@ -14111,7 +14200,7 @@ const state = {
   skillCatalogData: null,
   skillCatalogQuery: '',
   skillCatalogExpanded: {},
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true }
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true }
 };
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
@@ -14165,6 +14254,14 @@ function scrollTranscript() {
     return;
   }
   if (shouldAutoScroll()) transcript.scrollTop = transcript.scrollHeight;
+}
+function forceScrollTranscriptToBottom() {
+  const T = tx();
+  if (T && typeof T.scrollToBottom === 'function') {
+    T.scrollToBottom();
+    return;
+  }
+  transcript.scrollTop = transcript.scrollHeight;
 }
 function applyPreferences(preferences) {
   state.preferences = { ...state.preferences, ...(preferences || {}) };
@@ -16189,6 +16286,7 @@ async function loadState() {
 }
 function applyLoadedState() {
   applyPreferences(state.snapshot.settings?.preferences);
+  syncDefaultModelOnboarding();
   document.body.dataset.terminalCapable = state.snapshot.terminalCapable ? 'true' : 'false';
   // Initial sidebar mode: the default landing view is the project overview
   // (no chat selected), so use the slim 4-nav sidebar. switchProjectView will
@@ -16222,6 +16320,59 @@ function applyLoadedState() {
   if (!el('workspaceModal').classList.contains('hidden')) renderWorkspaceChoices();
   if (!el('settingsModal').classList.contains('hidden')) renderSettingsCommandPanels();
   refreshProjectDetailSidebar();
+}
+function syncDefaultModelOnboarding() {
+  const modal = el('defaultModelOnboarding');
+  if (!modal) return;
+  const open = state.snapshot?.needsDefaultModelOnboarding === true;
+  modal.classList.toggle('hidden', !open);
+  document.body.dataset.onboarding = open ? 'true' : 'false';
+  if (open && modal.dataset.initialized !== '1') {
+    modal.dataset.initialized = '1';
+    setField('onboardingProvider', 'anthropic');
+    setField('onboardingEffort', 'medium');
+    setChecked('onboardingContext1M', false);
+    setChecked('onboardingMultimodal', false);
+    setTimeout(() => el('onboardingApiKey')?.focus(), 0);
+  }
+}
+
+async function submitDefaultModelOnboarding(event) {
+  event.preventDefault();
+  const form = el('defaultModelOnboardingForm');
+  if (!form?.reportValidity()) return;
+  const button = el('defaultModelOnboardingSave');
+  const status = el('defaultModelOnboardingStatus');
+  button.disabled = true;
+  status.textContent = 'Connecting…';
+  try {
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: el('onboardingProvider').value,
+        defaultModel: el('onboardingModel').value.trim(),
+        apiKey: el('onboardingApiKey').value.trim(),
+        baseURL: el('onboardingBaseUrl').value.trim(),
+        effort: el('onboardingEffort').value || 'medium',
+        defaultModelContext1M: el('onboardingContext1M').checked,
+        defaultModelMultimodal: el('onboardingMultimodal').checked,
+      }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Could not save the default model.');
+    state.snapshot = payload;
+    el('onboardingApiKey').value = '';
+    applyLoadedState();
+    if (payload.settingsApplyError) {
+      throw new Error('Saved, but the model connection could not be loaded: ' + payload.settingsApplyError);
+    }
+  } catch (error) {
+    status.textContent = error?.message || String(error);
+  } finally {
+    button.disabled = false;
+    if (state.snapshot?.needsDefaultModelOnboarding !== true) status.textContent = '';
+  }
 }
 function updateConversationSummary() {
   const snap = state.snapshot || {};
@@ -16562,7 +16713,7 @@ function openPickerEffortEditor(targetKey) {
 
 function filteredPickerTargets() {
   const snap = state.snapshot || {};
-  const routers = (snap.routers || []).map(router => ({
+  const routers = (state.preferences.showRouterProfilesInComposer === false ? [] : (snap.routers || [])).map(router => ({
     key: 'router:' + router.name,
     kind: 'router',
     name: router.name,
@@ -16579,7 +16730,7 @@ function filteredPickerTargets() {
       ...(router.profile?.routes || []).flatMap(route => [route.role, route.name, route.model, route.when]),
     ].filter(Boolean).join(' '),
   }));
-  const configs = (snap.bridgeState?.configs || []).map(config => ({
+  const configs = (state.preferences.showProviderConfigsInComposer === false ? [] : (snap.bridgeState?.configs || [])).map(config => ({
     key: 'config:' + config.name,
     kind: 'config',
     name: config.name,
@@ -16587,7 +16738,7 @@ function filteredPickerTargets() {
     meta: [pickerRuntimeLabel(config), config.execution === 'cli' ? 'CLI' : 'API'].filter(Boolean).join(' · '),
     search: [config.name, config.runtime, config.provider, config.model, ...(config.models || []).map(item => item.name)].filter(Boolean).join(' '),
   }));
-  const agents = (snap.selectableAgents || [])
+  const agents = (state.preferences.showAgentProfilesInComposer === false ? [] : (snap.selectableAgents || []))
     .filter(agent => agent.source === 'profile')
     .map(agent => ({
       key: 'agent:' + agent.name,
@@ -16706,6 +16857,44 @@ function appendPickerSection(items, label, targets, activeAgent, activeConfigNam
   }
 }
 
+function appendPickerAgentSection(items, agents, activeAgent, selectionBlocked) {
+  if (!agents.length) return;
+  const heading = document.createElement('div');
+  heading.className = 'picker-section-label';
+  heading.textContent = 'Agents';
+  items.appendChild(heading);
+  for (const agent of agents) {
+    const item = document.createElement('div');
+    item.id = 'model-picker-option-' + String(agent.key).replace(/[^A-Za-z0-9_-]/g, '-');
+    item.className = 'picker-item';
+    item.setAttribute('role', 'option');
+    item.tabIndex = -1;
+    item.dataset.pickerValue = agent.key;
+    const isActive = activeAgent?.name === agent.name;
+    item.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    item.setAttribute('aria-disabled', selectionBlocked ? 'true' : 'false');
+    if (isActive) item.classList.add('selected');
+    if (selectionBlocked) item.classList.add('disabled');
+
+    const label = document.createElement('span');
+    label.className = 'picker-item-label';
+    label.textContent = agent.label;
+    item.append(label, makePickerCheck(isActive));
+    const activate = () => {
+      if (!selectionBlocked && !isActive) void selectPickerAgent(agent.name, null, { close: true });
+    };
+    item.addEventListener('click', activate);
+    item.addEventListener('keydown', (event) => {
+      if (handlePickerNavigation(event)) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        activate();
+      }
+    });
+    items.appendChild(item);
+  }
+}
+
 function appendPickerRouterSection(items, routers, activeRouterName, selectionBlocked) {
   if (!routers.length) return;
   const heading = document.createElement('div');
@@ -16777,7 +16966,7 @@ function renderModelPicker() {
 
   appendPickerRouterSection(items, targets.routers, activeRouterName, selectionBlocked);
   appendPickerSection(items, 'Configurations', targets.configs, activeAgent, activeConfigName, editing, selectionBlocked);
-  appendPickerSection(items, 'Agents', targets.agents, activeAgent, activeConfigName, editing, selectionBlocked);
+  appendPickerAgentSection(items, targets.agents, activeAgent, selectionBlocked);
 
   if (state.pickerError) {
     const error = document.createElement('div');
@@ -16935,7 +17124,9 @@ function toggleModelPicker() {
 }
 function cyclePickerModel() {
   if (state.pickerSelectionPending || state.running || state.snapshot?.running) return;
-  const agents = state.snapshot?.selectableAgents || [];
+  const agents = state.preferences.showAgentProfilesInComposer === false
+    ? []
+    : (state.snapshot?.selectableAgents || []).filter(agent => agent.source === 'profile');
   if (!agents.length) return;
   const activeName = state.snapshot?.activeAgent?.name || '';
   const current = agents.findIndex(agent => agent.name === activeName);
@@ -17770,6 +17961,9 @@ function switchProjectView(view) {
   cv.classList.toggle('hidden', view !== 'conversation');
   document.body.dataset.sidebarMode = view === 'overview' || view === 'chats' ? 'nav' : 'full';
   state.projectView = view;
+  if (view === 'conversation' && prev !== 'conversation') {
+    requestAnimationFrame(forceScrollTranscriptToBottom);
+  }
   if (view === 'chats') {
     sessionCenterState.page = 1;
     void refreshSessionCenter();
@@ -27926,7 +28120,7 @@ function handleEvent(event) {
     renderQueue();
     addMessage('notice', 'batch: queued ' + prompts.length + ' prompts — running in sequence');
   }
-  else if (event.type === 'settings.open') void openSettings(event.tab || 'env').catch(console.error);
+  else if (event.type === 'settings.open') void openSettings(event.tab || 'models').catch(console.error);
   else if (event.type === 'state') { if (event.state) state.snapshot = event.state; loadState().catch(console.error); }
   else if (event.type === 'done') {
     finalizeAssistant(); state.currentAssistant = null; stopRailPolling(); void refreshRail();
@@ -28514,10 +28708,33 @@ async function openExternalCliHistorySession(id) {
   }
   el('surfaceDrawer').classList.remove('hidden');
 }
+function defaultBridgeConfigView() {
+  const settings = state.snapshot?.settings || {};
+  const model = settings.defaultModel || '';
+  return {
+    isDefault: true,
+    name: 'Default model',
+    runtime: 'hadamard',
+    execution: 'api',
+    authSource: 'apiKey',
+    provider: settings.provider || 'anthropic',
+    apiKey: settings.apiKey || '',
+    hasApiKey: Boolean(settings.apiKey),
+    apiKeyMasked: settings.apiKeyMasked || '',
+    baseURL: settings.baseURL || '',
+    model,
+    effort: settings.defaultEffort || '',
+    models: model ? [{
+      name: model,
+      context1M: settings.defaultModelContext1M === true,
+      modality: settings.defaultModelMultimodal === true ? 'multimodal' : 'text',
+    }] : [],
+  };
+}
 function renderBridgeConfigs() {
   const bs = (state.snapshot && state.snapshot.bridgeState) || {};
   const active = bs.activeConfig;
-  const configs = bs.configs || [];
+  const configs = [defaultBridgeConfigView(), ...(bs.configs || [])];
   renderRuntimeDiscovery();
   renderAgentProfiles();
   populateExternalCliRunConfigs();
@@ -28527,15 +28744,8 @@ function renderBridgeConfigs() {
     : 'No active runtime config — using the Hadamard SDK default.';
   const root = el('bridgeConfigsList');
   root.textContent = '';
-  if (configs.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = 'No saved configs yet — add one above.';
-    root.appendChild(empty);
-    return;
-  }
   for (const cfg of configs) {
-    const isActive = active && active.name === cfg.name;
+    const isActive = cfg.isDefault ? !active : active && active.name === cfg.name;
     const card = document.createElement('article');
     card.className = 'settings-card' + (isActive ? ' active' : '');
     const strong = document.createElement('strong');
@@ -28543,9 +28753,11 @@ function renderBridgeConfigs() {
     card.appendChild(strong);
     const p = document.createElement('p');
     const modelCount = Array.isArray(cfg.models) ? cfg.models.length : 0;
-    const modelSummary = modelCount > 0
-      ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
-      : (cfg.model ? cfg.model : 'no models');
+    const modelSummary = cfg.isDefault
+      ? (cfg.model || 'model not configured')
+      : modelCount > 0
+        ? modelCount + ' model' + (modelCount === 1 ? '' : 's')
+        : (cfg.model ? cfg.model : 'no models');
     const executionLabel = cfg.execution === 'cli' ? 'External CLI' : (cfg.runtime === 'hadamard' ? 'Hadamard SDK' : 'Direct API');
     const authLabel = cfg.execution === 'cli'
       ? (cfg.authSource === 'native' ? 'reuse CLI login' : 'API key override')
@@ -28557,11 +28769,14 @@ function renderBridgeConfigs() {
     editBtn.type = 'button';
     editBtn.textContent = 'Edit';
     editBtn.addEventListener('click', () => openBridgeEditor(cfg));
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.textContent = 'Remove';
-    delBtn.addEventListener('click', () => deleteBridgeConfig(cfg.name));
-    footer.append(editBtn, delBtn);
+    footer.appendChild(editBtn);
+    if (!cfg.isDefault) {
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.textContent = 'Remove';
+      delBtn.addEventListener('click', () => deleteBridgeConfig(cfg.name));
+      footer.appendChild(delBtn);
+    }
     card.appendChild(footer);
     root.appendChild(card);
   }
@@ -28697,6 +28912,7 @@ function openAgentProfileEditor(profile) {
   setField('agentProfileEffort', profile?.effort || '');
   setField('agentProfileMaxTokens', profile?.maxTokens != null ? String(profile.maxTokens) : '');
   setField('agentProfileTemperature', profile?.temperature != null ? String(profile.temperature) : '');
+  setField('agentProfileTopP', profile?.topP != null ? String(profile.topP) : '');
   setField('agentProfileSystemPrompt', profile?.systemPromptAppend || '');
   populateAgentProfileBridgeOptions(profile?.bridgeConfig || '');
   populateAgentProfileModelOptions(profile?.model || '');
@@ -28726,6 +28942,7 @@ async function saveAgentProfileViaApi() {
     effort: el('agentProfileEffort').value,
     maxTokens: el('agentProfileMaxTokens').value.trim(),
     temperature: el('agentProfileTemperature').value.trim(),
+    topP: el('agentProfileTopP').value.trim(),
     systemPromptAppend: el('agentProfileSystemPrompt').value.trim(),
   };
   const res = await api('/api/agent-profiles', {
@@ -28763,6 +28980,7 @@ async function deleteAgentProfileViaApi(name) {
 }
 
 let editingBridgeConfigName = null;
+let editingDefaultBridgeConfig = false;
 let bridgeEditorUsesLocalConfig = false;
 const localRuntimeConfigCache = {};
 // runtime → wire-protocol mapping (mirrors runtimeToProvider in bridgeConfigs.ts)
@@ -28801,7 +29019,7 @@ function toggleCredentialFields() {
 
   // Auto-select wire protocol from runtime (user can override).
   const pv = RUNTIME_PROVIDER[runtime] || 'anthropic';
-  el('bridgeCfgProvider').value = pv;
+  if (!editingDefaultBridgeConfig) el('bridgeCfgProvider').value = pv;
   const hint = el('bridgeExecutionHint');
   if (hint) {
     hint.textContent = execution === 'cli'
@@ -28830,12 +29048,10 @@ function applyLocalRuntimeConfig(local) {
   if (!local) return;
   if (local.provider) setField('bridgeCfgProvider', local.provider);
   setField('bridgeCfgBaseUrl', local.baseURL || '');
-  setField('bridgeCfgApiKey', '');
+  setField('bridgeCfgApiKey', local.apiKey || '');
   el('bridgeCfgApiKey').type = 'password';
   el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
-  el('bridgeCfgApiKey').placeholder = local.hasApiKey
-    ? 'Local key detected (not exposed) — enter a replacement only'
-    : 'sk-…';
+  el('bridgeCfgApiKey').placeholder = 'Paste API key';
   if (local.model) {
     draftBridgeModels = [{ name: local.model, context1M: false, modality: 'text' }];
     el('bridgeNewModelName').value = local.model;
@@ -28919,12 +29135,10 @@ async function applyReuseConfig(configName) {
   setField('bridgeCfgCredentialProvider', cfg.credentialProvider || '');
   el('bridgeCfgTrustProject').checked = cfg.trustProjectResources === true;
   setField('bridgeCfgBaseUrl', cfg.baseURL || '');
-  setField('bridgeCfgApiKey', '');
+  setField('bridgeCfgApiKey', cfg.apiKey || '');
   el('bridgeCfgApiKey').type = 'password';
   el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
-  el('bridgeCfgApiKey').placeholder = cfg.hasApiKey
-    ? 'Saved key retained — enter a replacement only'
-    : 'sk-…';
+  el('bridgeCfgApiKey').placeholder = 'Paste API key';
   draftBridgeModels = Array.isArray(cfg.models)
     ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
     : [];
@@ -28932,43 +29146,57 @@ async function applyReuseConfig(configName) {
   el('bridgeCfgStatus').textContent = 'Reused settings from "' + cfg.name + '". Edit as needed, then Save.';
 }
 function openBridgeEditor(cfg) {
-  editingBridgeConfigName = cfg ? cfg.name : null;
+  editingDefaultBridgeConfig = Boolean(cfg && cfg.isDefault);
+  editingBridgeConfigName = editingDefaultBridgeConfig ? null : (cfg ? cfg.name : null);
   bridgeEditorUsesLocalConfig = false;
-  el('bridgeEditorTitle').textContent = cfg ? 'Edit config' : 'New config';
+  el('bridgeEditorTitle').textContent = editingDefaultBridgeConfig ? 'Edit default model' : (cfg ? 'Edit config' : 'New config');
   setField('bridgeCfgName', cfg ? cfg.name : '');
+  el('bridgeCfgName').disabled = editingDefaultBridgeConfig;
   setField('bridgeCfgRuntime', cfg ? (cfg.runtime || 'claude') : 'claude');
   setField('bridgeCfgExecution', cfg ? (cfg.execution || 'api') : 'cli');
   setField('bridgeCfgAuthSource', cfg ? (cfg.authSource || (cfg.execution === 'cli' ? 'native' : 'apiKey')) : 'native');
   setField('bridgeCfgProvider', cfg ? cfg.provider : 'anthropic');
+  el('bridgeCfgRuntime').disabled = editingDefaultBridgeConfig;
+  el('bridgeCfgExecution').disabled = editingDefaultBridgeConfig;
   setField('bridgeCfgCredentialProvider', cfg ? (cfg.credentialProvider || '') : '');
   el('bridgeCfgTrustProject').checked = Boolean(cfg && cfg.trustProjectResources);
-  setField('bridgeCfgApiKey', '');
+  setField('bridgeCfgApiKey', cfg ? (cfg.apiKey || '') : '');
   el('bridgeCfgApiKey').type = 'password';
   el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
-  el('bridgeCfgApiKey').placeholder = cfg && cfg.hasApiKey
-    ? 'Saved key retained — enter a replacement only'
-    : 'sk-…';
+  el('bridgeCfgApiKey').placeholder = 'Paste API key';
   setField('bridgeCfgBaseUrl', cfg ? (cfg.baseURL || '') : '');
+  setField('bridgeDefaultEffort', cfg ? (cfg.effort || '') : '');
+  el('bridgeDefaultEffortField').classList.toggle('hidden', !editingDefaultBridgeConfig);
   el('bridgeCfgClearKey').checked = false;
   el('bridgeClearKeyRow').style.display = cfg && cfg.hasApiKey ? '' : 'none';
   toggleCredentialFields();
+  if (editingDefaultBridgeConfig) el('bridgeReuseRow').classList.add('hidden');
   draftBridgeModels = cfg && Array.isArray(cfg.models)
     ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
     : [];
   renderBridgeModels();
-  el('bridgeNewModelName').value = '';
-  el('bridgeNewModel1M').checked = false;
-  el('bridgeNewModelModality').value = 'text';
+  el('bridgeModelsTitle').textContent = editingDefaultBridgeConfig ? 'Model' : 'Models';
+  el('bridgeModelsHelp').textContent = editingDefaultBridgeConfig
+    ? 'Configure the single model used when no other config, agent, or router is selected.'
+    : 'Add one or more models for this config. The first is the default.';
+  el('bridgeModelAdd').classList.toggle('hidden', editingDefaultBridgeConfig);
+  el('bridgeModelsList').classList.toggle('hidden', editingDefaultBridgeConfig);
+  el('bridgeNewModelName').value = editingDefaultBridgeConfig ? (cfg?.model || '') : '';
+  el('bridgeNewModel1M').checked = editingDefaultBridgeConfig && cfg?.models?.[0]?.context1M === true;
+  el('bridgeNewModelModality').value = editingDefaultBridgeConfig && cfg?.models?.[0]?.modality === 'multimodal'
+    ? 'multimodal'
+    : 'text';
   el('bridgeCfgStatus').textContent = cfg && cfg.hasApiKey
-    ? 'Editing "' + cfg.name + '" — the saved API key is hidden; leave blank to keep it.'
+    ? 'The saved API key is loaded and masked. Use the eye button to reveal it.'
     : '';
   updateBridgeLocalConfigButton();
   el('bridgeEditorModal').classList.remove('hidden');
-  el('bridgeCfgName').focus();
+  (editingDefaultBridgeConfig ? el('bridgeNewModelName') : el('bridgeCfgName')).focus();
 }
 function closeBridgeEditor() {
   el('bridgeEditorModal').classList.add('hidden');
   editingBridgeConfigName = null;
+  editingDefaultBridgeConfig = false;
   bridgeEditorUsesLocalConfig = false;
   updateBridgeLocalConfigButton();
 }
@@ -29007,7 +29235,8 @@ function addBridgeModel() {
     context1M: el('bridgeNewModel1M').checked,
     modality: el('bridgeNewModelModality').value || 'text',
   };
-  draftBridgeModels.push(model);
+  if (editingDefaultBridgeConfig) draftBridgeModels = [model];
+  else draftBridgeModels.push(model);
   el('bridgeNewModelName').value = '';
   el('bridgeNewModel1M').checked = false;
   el('bridgeNewModelModality').value = 'text';
@@ -29054,14 +29283,39 @@ async function updateLocalBridgeConfig() {
   }
 }
 async function saveBridgeConfig() {
-  const name = el('bridgeCfgName').value.trim();
-  if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
   const clearKey = el('bridgeCfgClearKey').checked;
   // The first registered model is the config's default model. If models were
   // added we prefer models[0]; otherwise keep any previously-selected model
   // (carried in editingBridgeConfigName's stored config) so activation still
   // has a target.
-  const defaultModel = draftBridgeModels.length > 0 ? draftBridgeModels[0].name : '';
+  const defaultModel = editingDefaultBridgeConfig
+    ? el('bridgeNewModelName').value.trim()
+    : draftBridgeModels.length > 0 ? draftBridgeModels[0].name : '';
+  if (editingDefaultBridgeConfig) {
+    if (!defaultModel) { el('bridgeCfgStatus').textContent = 'Model ID is required.'; return; }
+    el('bridgeCfgStatus').textContent = 'Saving...';
+    const res = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: el('bridgeCfgProvider').value || 'anthropic',
+        defaultModel,
+        apiKey: el('bridgeCfgApiKey').value,
+        clearApiKey: clearKey,
+        baseURL: el('bridgeCfgBaseUrl').value.trim(),
+        effort: el('bridgeDefaultEffort').value,
+        defaultModelContext1M: el('bridgeNewModel1M').checked,
+        defaultModelMultimodal: el('bridgeNewModelModality').value === 'multimodal',
+      }),
+    });
+    if (!res.ok) { el('bridgeCfgStatus').textContent = 'Save failed: ' + (await res.text()); return; }
+    state.snapshot = await res.json();
+    closeBridgeEditor();
+    renderBridgeConfigs();
+    return;
+  }
+  const name = el('bridgeCfgName').value.trim();
+  if (!name) { el('bridgeCfgStatus').textContent = 'Name is required.'; return; }
   const body = {
     name,
     runtime: el('bridgeCfgRuntime').value,
@@ -30547,12 +30801,6 @@ async function openSettings(tab = 'general') {
   const mode = preferences.workMode === 'daily' ? 'daily' : 'coding';
   setChecked('settingsWorkModeCoding', mode === 'coding');
   setChecked('settingsWorkModeDaily', mode === 'daily');
-  setField('settingsProvider', settings.provider || 'anthropic');
-  setField('settingsDefaultModel', settings.defaultModel || '');
-  setField('settingsApiKey', '');
-  el('settingsApiKey').placeholder = settings.apiKeyConfigured ? 'Configured; leave blank to keep current key' : 'Paste API key';
-  setChecked('settingsClearApiKey', false);
-  setField('settingsBaseUrl', settings.baseURL || '');
   setField('settingsPermissionPreset', '');
   setChecked('settingsDefaultPermission', true);
   setChecked('settingsAutoAudit', state.snapshot?.permissionMode === 'acceptEdits');
@@ -30580,16 +30828,15 @@ async function openSettings(tab = 'general') {
       ? 'Locked settings: ' + locked.join(', ')
       : 'No settings are locked by a higher authority.';
   }
-  setField('settingsMinModel', settings.minModel || '');
-  setField('settingsMediumModel', settings.mediumModel || '');
-  setField('settingsMaxModel', settings.maxModel || '');
-  setField('settingsEffort', '');
   setField('settingsTheme', preferences.theme || 'system');
   setField('settingsDensity', preferences.density || 'comfortable');
   setChecked('settingsEnterToSend', preferences.enterToSend);
   setChecked('settingsAutoScroll', preferences.autoScroll !== false);
   setChecked('settingsDeveloperTools', preferences.developerTools === true);
   setChecked('settingsShowBranchInComposer', preferences.showBranchInComposer !== false);
+  setChecked('settingsShowProviderConfigsInComposer', preferences.showProviderConfigsInComposer !== false);
+  setChecked('settingsShowAgentProfilesInComposer', preferences.showAgentProfilesInComposer !== false);
+  setChecked('settingsShowRouterProfilesInComposer', preferences.showRouterProfilesInComposer !== false);
   setField('settingsOutputStyle', preferences.outputStyle || state.snapshot?.outputStyle || 'default');
   renderBridgeConfigs();
   renderMcpServers();
@@ -30612,16 +30859,7 @@ let settingsAutosaveSeq = 0;
 function collectSettingsBody() {
   const workMode = document.querySelector('input[name="settingsWorkMode"]:checked')?.value || 'coding';
   return {
-    provider: el('settingsProvider').value,
-    defaultModel: el('settingsDefaultModel').value,
-    apiKey: el('settingsApiKey').value,
-    clearApiKey: el('settingsClearApiKey').checked,
-    baseURL: el('settingsBaseUrl').value,
     permissionPreset: derivePermissionPreset(),
-    minModel: el('settingsMinModel').value,
-    mediumModel: el('settingsMediumModel').value,
-    maxModel: el('settingsMaxModel').value,
-    effort: el('settingsEffort').value,
     preferences: {
       workMode,
       theme: el('settingsTheme').value,
@@ -30631,6 +30869,9 @@ function collectSettingsBody() {
       developerTools: el('settingsDeveloperTools').checked,
       outputStyle: el('settingsOutputStyle')?.value || 'default',
       showBranchInComposer: el('settingsShowBranchInComposer')?.checked !== false,
+      showProviderConfigsInComposer: el('settingsShowProviderConfigsInComposer')?.checked !== false,
+      showAgentProfilesInComposer: el('settingsShowAgentProfilesInComposer')?.checked !== false,
+      showRouterProfilesInComposer: el('settingsShowRouterProfilesInComposer')?.checked !== false,
     },
   };
 }
@@ -30657,12 +30898,6 @@ async function persistSettingsNow() {
     }
     if (state.snapshot.settingsApplyError) {
       addMessage('notice', 'Settings saved, but the active SDK could not reload: ' + state.snapshot.settingsApplyError);
-    }
-    // Clear API key field after a successful save so we don't re-send it.
-    if (el('settingsApiKey').value) {
-      setField('settingsApiKey', '');
-      el('settingsApiKey').placeholder = 'Configured; leave blank to keep current key';
-      setChecked('settingsClearApiKey', false);
     }
     await loadState();
     if (seq !== settingsAutosaveSeq) return;
@@ -31049,6 +31284,16 @@ el('settingsShowBranchInComposer')?.addEventListener('change', () => {
   state.preferences.showBranchInComposer = !!el('settingsShowBranchInComposer')?.checked;
   renderComposerMeta();
 });
+for (const [id, preference] of [
+  ['settingsShowProviderConfigsInComposer', 'showProviderConfigsInComposer'],
+  ['settingsShowAgentProfilesInComposer', 'showAgentProfilesInComposer'],
+  ['settingsShowRouterProfilesInComposer', 'showRouterProfilesInComposer'],
+]) {
+  el(id)?.addEventListener('change', () => {
+    state.preferences[preference] = !!el(id)?.checked;
+    if (!el('modelPickerFlyout')?.classList.contains('hidden')) renderModelPicker();
+  });
+}
 document.addEventListener('click', (event) => {
   hideContextMenu();
   const flyout = el('modelPickerFlyout');
@@ -31186,7 +31431,10 @@ el('surfaceDrawer').addEventListener('click', (event) => { if (event.target === 
 el('settingsBtn').addEventListener('click', () => { void openSettings('general').catch(console.error); });
 el('credentialHintLink').addEventListener('click', (event) => {
   event.preventDefault();
-  void openSettings('general').catch(console.error);
+  void openSettings('models').catch(console.error);
+});
+el('defaultModelOnboardingForm').addEventListener('submit', (event) => {
+  void submitDefaultModelOnboarding(event);
 });
 el('backToAppBtn').addEventListener('click', closeSettings);
 wireSettingsAutosave();

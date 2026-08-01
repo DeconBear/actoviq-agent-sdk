@@ -71,6 +71,7 @@ describe('GUI agent profile API', () => {
           effort: 'max',
           maxTokens: 12000,
           temperature: 0.4,
+          topP: 0.75,
         }),
       });
       expect(created.status).toBe(200);
@@ -83,6 +84,7 @@ describe('GUI agent profile API', () => {
         effort: 'max',
         maxTokens: 12000,
         temperature: 0.4,
+        topP: 0.75,
       });
 
       const listed = await api<{ profiles: Array<{ name: string }> }>(server, 'api/agent-profiles');
