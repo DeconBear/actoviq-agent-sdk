@@ -153,10 +153,18 @@ describe('GUI Project Agent execution view', () => {
     const css = createHadamardGuiStyles();
 
     expect(html).toContain('id="modelPickerBtn"');
+    expect(html).toContain('id="composerMetaRuntime"');
+    expect(html).toContain('id="composerMetaRuntimeLabel"');
+    expect(html).not.toContain('id="composerMetaEnv"');
+    expect(html).not.toContain('id="teamEnvSelect"');
     expect(html).toContain('aria-haspopup="listbox"');
     expect(html).toContain('placeholder="Search models, routers, providers"');
     expect(html).toContain('Ctrl / ⌘ + / to cycle');
     expect(js).toContain("appendPickerRouterSection(items, targets.routers");
+    expect(js).toContain("executionLabel = 'External CLI · '");
+    expect(js).toContain("executionLabel = 'Direct API · '");
+    expect(js).toContain("executionLabel = 'Router · '");
+    expect(js).toContain("el('composerMetaRuntime').addEventListener('click'");
     expect(js).toContain("appendPickerSection(items, 'Configurations'");
     expect(js).toContain('appendPickerAgentSection(items, targets.agents');
     expect(js).not.toContain("appendPickerSection(items, 'Agents'");

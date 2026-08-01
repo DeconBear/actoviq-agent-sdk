@@ -828,7 +828,6 @@ function guiIcon(name: string): string {
     computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
     drive: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/>',
     dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
-    environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
     hand: '<path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v8"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
@@ -9621,15 +9620,15 @@ export function createHadamardGuiHtml(): string {
               <section id="transcript" class="transcript"></section>
               <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
               <div class="composer-stack">
-                <div class="composer-meta" id="composerMeta" aria-label="Workspace context">
+                <div class="composer-meta" id="composerMeta" aria-label="Workspace and runtime context">
                   <span class="composer-meta-chip" id="composerMetaProject" title="Workspace">
                     <span class="composer-meta-icon">${guiIcon('folder')}</span>
                     <span class="composer-meta-label" id="composerMetaProjectLabel">—</span>
                   </span>
-                  <span class="composer-meta-chip" id="composerMetaEnv" title="Environment">
-                    <span class="composer-meta-icon">${guiIcon('computer')}</span>
-                    <span class="composer-meta-label">本地</span>
-                  </span>
+                  <button type="button" class="composer-meta-chip" id="composerMetaRuntime" title="Runtime" aria-label="Runtime" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="composer-meta-icon" id="composerMetaRuntimeIcon">${guiIcon('model')}</span>
+                    <span class="composer-meta-label" id="composerMetaRuntimeLabel">Hadamard SDK</span>
+                  </button>
                   <button type="button" class="composer-meta-chip composer-meta-branch" id="composerMetaBranch" title="Git branch">
                     <span class="composer-meta-icon">${guiIcon('gitBranch')}</span>
                     <span class="composer-meta-label" id="composerMetaBranchLabel">—</span>
@@ -9733,7 +9732,6 @@ export function createHadamardGuiHtml(): string {
           <p>Compose agents, workflows, and collaboration graphs (teams)</p>
         </div>
         <div class="region-actions">
-          <select id="teamEnvSelect" class="team-env-select" title="Environment"><option value="dev">Dev</option><option value="staging">Staging</option><option value="prod">Prod</option></select>
           <span id="teamSavedStatus" class="team-saved-status saved">${guiIcon('gear')}<span>Saved</span></span>
           <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
           <button type="button" id="teamEditToggleBtn" class="pill-btn">Agent settings</button>
@@ -13015,8 +13013,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .ins-queue .q-stat { flex: 1; text-align: center; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .ins-queue .q-stat strong { display: block; font-size: 16px; color: var(--text-1); }
 .ins-queue .q-stat small { color: var(--text-2); font-size: 10.5px; }
-/* Team top bar: environment + saved status (§5). */
-.team-env-select, .team-saved-status { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 11px; color: var(--text-2); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+/* Team top bar saved status. */
+.team-saved-status { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 11px; color: var(--text-2); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
 .team-saved-status.saved { color: var(--ok); border-color: rgba(16,185,129,.3); background: #F0FDF4; }
 .team-saved-status.unsaved { color: var(--warn); border-color: rgba(245,158,11,.3); background: #FFFBEB; }
 .team-inspector { width: auto; flex: none; padding: 18px; background: var(--bg-surface); }
@@ -16385,6 +16383,36 @@ function renderComposerMeta() {
   const projectChip = el('composerMetaProject');
   if (projectLabel) projectLabel.textContent = projectName;
   if (projectChip) projectChip.title = workDir || 'Workspace';
+  const runtimeChip = el('composerMetaRuntime');
+  const runtimeLabel = el('composerMetaRuntimeLabel');
+  const runtimeIcon = el('composerMetaRuntimeIcon');
+  const bridge = snap.bridgeState || {};
+  const config = bridge.activeConfig || null;
+  const activeAgentName = snap.activeAgent?.name || '';
+  let executionLabel = 'Hadamard SDK';
+  let executionIcon = 'model';
+  let executionDetail = 'default provider';
+  if (config?.execution === 'cli') {
+    executionLabel = 'External CLI · ' + (activeAgentName || config.name || config.runtime || 'runtime');
+    executionIcon = 'terminal';
+    executionDetail = [config.runtime, config.model || bridge.activeModelLabel].filter(Boolean).join(' · ');
+  } else if (config) {
+    executionLabel = 'Direct API · ' + (activeAgentName || config.name || 'config');
+    executionIcon = 'globe';
+    executionDetail = [config.provider || config.runtime, config.model || bridge.activeModelLabel].filter(Boolean).join(' · ');
+  } else if (snap.activeRouterName) {
+    executionLabel = 'Router · ' + snap.activeRouterName;
+    executionIcon = 'split';
+    executionDetail = snap.routedModelLabel || 'selects a model for each prompt';
+  }
+  if (runtimeLabel) runtimeLabel.textContent = executionLabel;
+  if (runtimeIcon) runtimeIcon.innerHTML = guiIcon(executionIcon);
+  if (runtimeChip) {
+    const title = 'Runtime: ' + executionLabel + (executionDetail ? ' · ' + executionDetail : '') + '. Click to change.';
+    runtimeChip.title = title;
+    runtimeChip.setAttribute('aria-label', title);
+    runtimeChip.setAttribute('aria-expanded', String(!el('modelPickerFlyout')?.classList.contains('hidden')));
+  }
   const git = snap.git || {};
   const branchLabel = el('composerMetaBranchLabel');
   const branchChip = el('composerMetaBranch');
@@ -17076,6 +17104,7 @@ function closeModelPicker() {
   const flyout = el('modelPickerFlyout');
   if (flyout) flyout.classList.add('hidden');
   el('modelPickerBtn')?.setAttribute('aria-expanded', 'false');
+  el('composerMetaRuntime')?.setAttribute('aria-expanded', 'false');
   state.pickerEditingAgent = null;
   closePickerEffortEditor();
 }
@@ -17108,6 +17137,7 @@ function toggleModelPicker() {
     flyout.classList.remove('hidden');
     positionModelPickerFlyout();
     el('modelPickerBtn')?.setAttribute('aria-expanded', 'true');
+    el('composerMetaRuntime')?.setAttribute('aria-expanded', 'true');
     const search = el('modelPickerSearch');
     if (search) {
       search.value = '';
@@ -31411,6 +31441,7 @@ document.addEventListener('click', (event) => {
 el('permissionPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); togglePermissionPicker(); });
 el('permissionPickerMenu').addEventListener('click', (event) => event.stopPropagation());
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
+el('composerMetaRuntime').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('modelPickerSearch').addEventListener('input', (event) => {
   state.pickerQuery = event.target.value || '';
   state.pickerActiveIndex = 0;
