@@ -479,35 +479,31 @@ describe('TUI and GUI parity', () => {
     expect(js).not.toContain("mode: 'built-in'");
   });
 
-  it('keeps /issues available on all three surfaces (project issue workflow)', () => {
+  it('keeps /issues available in the TUI and GUI (project issue workflow)', () => {
     const root = join(import.meta.dirname, '..');
     expect(SUBCOMMANDS.issues).toEqual(['list', 'show', 'create', 'start', 'review', 'done', 'block']);
-    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
     const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
-    for (const source of [repl, tui, gui]) {
+    for (const source of [tui, gui]) {
       expect(source).toContain('/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]');
       expect(source).toContain('createProjectIssue');
       expect(source).toContain('transitionProjectIssue');
       expect(source).toContain('listProjectIssues');
     }
-    expect(repl).toContain('executeProjectIssue');
     expect(tui).toContain('executeProjectIssue');
     expect(gui).toContain('streamIssueDispatch');
   });
 
-  it('keeps /manager chat available on all three surfaces (plan §4.6)', () => {
+  it('keeps /manager chat available in the TUI and GUI (plan §4.6)', () => {
     const root = join(import.meta.dirname, '..');
     expect(SUBCOMMANDS.manager).toContain('chat');
     expect(SUBCOMMANDS.manager).toContain('update');
     // Each surface must both parse the chat subcommand and show it in usage.
-    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
     const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
-    for (const source of [repl, tui, gui]) {
+    for (const source of [tui, gui]) {
       expect(source).toContain('/manager chat <message>');
     }
-    expect(repl).toContain("sub === 'chat' || sub.startsWith('chat ')");
     expect(tui).toContain("args === 'chat' || args.startsWith('chat ')");
     expect(gui).toContain("input.startsWith('/manager chat ')");
   });
@@ -645,7 +641,7 @@ describe('TUI and GUI parity', () => {
     );
 
     const splitHistoryRoots = /homeDir: pointerHomeDir\(\),\r?\n\s+hadamardHomeDir: resolveGuiHomeDir\(\),/gu;
-    expect(gui.match(splitHistoryRoots)).toHaveLength(5);
+    expect(gui.match(splitHistoryRoots)).toHaveLength(6);
 
     const guiHistoryStart = js.indexOf('async function loadExternalCliHistory');
     const guiHistoryEnd = js.indexOf('async function openExternalCliHistorySession', guiHistoryStart);
@@ -662,27 +658,23 @@ describe('TUI and GUI parity', () => {
     );
   });
 
-  it('keeps /team clone available on all three surfaces (plan Phase 1)', () => {
+  it('keeps /team clone available in the TUI and GUI (plan Phase 1)', () => {
     const root = join(import.meta.dirname, '..');
     expect(SUBCOMMANDS.team).toContain('clone');
-    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
     const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
-    for (const source of [repl, tui, gui]) {
+    for (const source of [tui, gui]) {
       expect(source).toContain('cloneTeamDefinition');
       expect(source).toContain("startsWith('clone ')");
     }
   });
 
-  it('keeps manager config knobs (model/readScope/mirror) on all three surfaces (plan M0/M3)', () => {
+  it('keeps manager config knobs (model/readScope/mirror) in the TUI and GUI (plan M0/M3)', () => {
     const root = join(import.meta.dirname, '..');
-    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
-    for (const source of [repl, tui]) {
-      expect(source).toContain("startsWith('config set ')");
-      expect(source).toContain('writeManagerConfig');
-      expect(source).toContain('read-only regardless of model');
-    }
+    expect(tui).toContain("startsWith('config set ')");
+    expect(tui).toContain('writeManagerConfig');
+    expect(tui).toContain('read-only regardless of model');
     const html = createHadamardGuiHtml();
     const js = createHadamardGuiClientScript();
     const css = createHadamardGuiStyles();
@@ -754,15 +746,12 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('saveTargetField');
   });
 
-  it('keeps Team Run tree formatting on all three surfaces (plan Phase 5)', () => {
+  it('keeps Team Run tree formatting in the TUI and GUI (plan Phase 5)', () => {
     const root = join(import.meta.dirname, '..');
-    const repl = readFileSync(join(root, 'src', 'cli', 'hadamard-react.ts'), 'utf8');
     const tui = readFileSync(join(root, 'src', 'tui', 'hadamardTui.ts'), 'utf8');
     const gui = readFileSync(join(root, 'src', 'gui', 'hadamardGui.ts'), 'utf8');
-    for (const source of [repl, tui]) {
-      expect(source).toContain('formatTeamRunTreeLines');
-      expect(source).toContain('applyTeamRunEvent');
-    }
+    expect(tui).toContain('formatTeamRunTreeLines');
+    expect(tui).toContain('applyTeamRunEvent');
     const js = createHadamardGuiClientScript();
     expect(js).toContain('renderTeamRunTree');
     expect(js).toContain("event.type === 'team.edge.triggered'");

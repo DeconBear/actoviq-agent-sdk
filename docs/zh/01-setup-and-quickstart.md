@@ -171,23 +171,7 @@ try {
 
 这里不会隐式加载 sessions、tools 或 memory。需要什么能力，就通过 `AgentRuntime` 的 `tools`、`services`、`middleware` 等选项显式注入。
 
-## 4. CLI 交互式 REPL（scrollback 模式）
-
-安装包后，可以直接启动内置的交互式 REPL：
-
-```bash
-npx hadamard-react [工作目录]
-```
-
-这是一个基于 readline 的 Agent，在主终端缓冲区运行：
-- 直接输入消息，实时流式输出回复
-- 使用 `/` 斜杠命令：`/help`、`/clear`、`/compact`、`/memory`、`/model`、`/tools`、`/dream`、`/exit`
-- Tab 补全命令，↑↓ 浏览历史
-- Ctrl+C 一次中止当前请求，连按两次退出
-
-**注意：** `hadamard-react` 是一个轻量级 scrollback REPL，**不是完整的 TUI**——没有 alternate screen buffer、没有 ScrollBox、没有富文本终端渲染。它适用于快速交互和调试。完整终端 UI 请使用 `hadamard-tui`。
-
-## 5. 终端 UI（TUI）
+## 4. CLI / 终端 UI
 
 包内还包含完整的 Hadamard SDK 终端 UI：
 
@@ -216,16 +200,16 @@ npx hadamard-tui [工作目录] [选项]
 - 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
 - `/permissions` 可在只读、工作区访问、完全访问、计划模式预设之间切换；使用 `--permission-mode default` 时，变更型工具会弹出 批准 / 始终允许 / 拒绝 确认，且「始终允许」规则会随会话保存。只读 Bash 命令（`ls`、`git status`…）会自动放行。
 - `/plan` 进入计划模式（研究后提议：Agent 调用 EnterPlanMode/ExitPlanMode，写出计划文件，你审批）；`/init` 生成 `CLAUDE.md`；`/context`、`/cost`/`/usage`、`/doctor` 分别查看上下文窗口、花费与配置。
-- `/output-style` 选择简洁/解释/学习等回复风格；`/hooks` 列出已配置的 PreToolUse 钩子（settings.json）；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.hadamard/mcp.json）。
+- `/output-style` 选择简洁/解释/学习等回复风格；`/hooks` 列出 typed lifecycle hooks 和兼容的旧 shell hooks；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.hadamard/mcp.json）。
 - Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
 
-`hadamard-react` 和 `hadamard-tui` 使用同样的 Hadamard SDK 默认值：`~/.hadamard/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。
+`hadamard-tui` 是唯一的交互式终端 Agent 入口，使用 Hadamard SDK 默认值：`~/.hadamard/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。原 `hadamard-react` 和 `hadamard-interactive-agent` 的能力已合并进 TUI，旧入口已移除。
 
 未显式配置 `sessionDirectory` 时，会话按工作区隔离保存在 `~/.hadamard/projects/<workspace-key>`。
 
-GUI、TUI、CLI 当前走 `createAgentSdk()` 交互入口；它们与模块化 Runtime 属于同一个 Hadamard SDK 仓库，但交互入口会额外组合 sessions、skills、memory、MCP、worktrees、teams 等产品能力。
+GUI 和 TUI 当前走 `createAgentSdk()` 交互入口；它们与模块化 Runtime 属于同一个 Hadamard SDK 仓库，但交互入口会额外组合 sessions、skills、memory、MCP、worktrees、teams 等产品能力。
 
-## 6. 桌面 GUI 快速上手
+## 5. 桌面 GUI 快速上手
 
 在仓库中启动开发版 GUI：
 
@@ -246,7 +230,7 @@ npx hadamard-gui .
 
 项目多工作路径的边界是“同一个逻辑项目的多个根目录”，不是把任意磁盘目录变成全局可写区。每次只有一个活动工作路径；新增路径不会移动或复制源文件，移除路径也不会删除文件。
 
-## 7. 直接运行仓库示例
+## 6. 直接运行仓库示例
 
 ```bash
 npm run example:hadamard-quickstart
@@ -256,7 +240,7 @@ npm run example:hadamard-quickstart
 
 - [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
 
-## 8. 一个最小可用的流式聊天机器人
+## 7. 一个最小可用的流式聊天机器人
 
 下面这段代码就是一个可以直接拿来改的最小聊天机器人。你只要把自己的 JSON 配置路径接上，就可以在终端里持续聊天，并且保留同一个 session 的上下文。
 
@@ -300,7 +284,7 @@ try {
 }
 ```
 
-## 9. 下一步
+## 8. 下一步
 
 继续阅读下一章，了解流式输出、会话和工具使用。
 

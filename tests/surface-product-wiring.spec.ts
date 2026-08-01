@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const PRODUCT_SURFACES = [
-  ['src/cli/hadamard-react.ts', 'cli'],
   ['src/tui/hadamardTui.ts', 'tui'],
   ['src/gui/hadamardGui.ts', 'gui'],
   ['src/parity/hadamardCleanBridgeCompatSdk.ts', 'bridge'],
@@ -43,7 +42,6 @@ describe('product RunEvent wiring boundary', () => {
   });
 
   it.each([
-    'src/cli/hadamard-react.ts',
     'src/tui/hadamardTui.ts',
     'src/gui/hadamardGui.ts',
   ])('%s mounts and closes the managed plugin runtime', async (file) => {
@@ -54,7 +52,6 @@ describe('product RunEvent wiring boundary', () => {
   });
 
   it.each([
-    'src/cli/hadamard-react.ts',
     'src/tui/hadamardTui.ts',
   ])('%s retries managed plugin cleanup and exits nonzero on failure', async (file) => {
     const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
@@ -63,18 +60,6 @@ describe('product RunEvent wiring boundary', () => {
     expect(source).toContain('billing may continue');
     expect(source).toContain('exitCode = 1');
     expect(source).not.toMatch(/managedPluginRuntime\?*\.close\(\)\.catch\(\(\) => undefined\)/);
-  });
-
-  it('keeps React CLI interactive approvals out of the steering queue', async () => {
-    const source = await readFile(
-      new URL('../src/cli/hadamard-react.ts', import.meta.url),
-      'utf8',
-    );
-    const approvalBranch = source.indexOf('if (pendingToolApproval) {', source.indexOf("rl.on('line'"));
-    const steeringBranch = source.indexOf('if (abortCtrl) {', source.indexOf("rl.on('line'"));
-    expect(approvalBranch).toBeGreaterThan(0);
-    expect(approvalBranch).toBeLessThan(steeringBranch);
-    expect(source).toContain("behavior: allowed ? 'allow' : 'deny'");
   });
 
   it('reports GUI and Electron cleanup failures instead of always exiting successfully', async () => {

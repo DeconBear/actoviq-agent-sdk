@@ -108,23 +108,7 @@ npm run example:hadamard-agent-helpers
 npm run example:profiles
 ```
 
-## CLI REPL
-
-After installing the package, you can start an interactive scrollback-mode REPL directly from the terminal:
-
-```bash
-npx hadamard-react [work-dir]
-```
-
-This launches a readline-based interactive agent with:
-- Real-time streaming output in the main terminal buffer (native scrollback)
-- Tab completion for slash commands, including session model, permission, compact, and resume controls
-- Command history via ↑↓ arrow keys
-- Ctrl+C to abort the current request, press twice to exit
-
-**Note:** `hadamard-react` is a lightweight scrollback REPL, **not a full-featured TUI**. It does not use an alternate screen buffer, ScrollBox, or rich terminal rendering. It is designed for quick interaction and debugging. For the full terminal UI, use `hadamard-tui` below.
-
-## Terminal UI (TUI)
+## CLI / Terminal UI
 
 `hadamard-tui` is the full terminal UI, modeled on Claude Code's REPL design: the transcript prints into native scrollback while a redrawable bottom region hosts the status line, a Claude-style prompt bar, the slash-command menu, and permission dialogs.
 
@@ -156,7 +140,7 @@ Features:
 - **MCP management** — `/mcp add`/`/mcp remove` manage stdio + remote HTTP MCP servers, persisted to `~/.hadamard/mcp.json`.
 - **Image attachments** — `@<path>.png` tokens expand into image content blocks (in-process, read as base64).
 
-Both CLIs share the same Hadamard SDK runtime defaults (Hadamard settings from `~/.hadamard/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and run against any Anthropic-compatible or OpenAI-compatible provider.
+The TUI uses the Hadamard SDK runtime defaults (Hadamard settings from `~/.hadamard/settings.json`, core tools, `bypassPermissions`, uncapped tool iterations) and runs against any Anthropic-compatible or OpenAI-compatible provider. `hadamard-tui` is the only interactive terminal agent entry point; the former `hadamard-react` and `hadamard-interactive-agent` entry points were retired after their capabilities were consolidated here.
 
 By default, Hadamard SDK sessions are scoped to the current workspace under `~/.hadamard/projects/<workspace-key>`. Explicit `sessionDirectory` settings still take precedence.
 

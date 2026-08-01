@@ -71,4 +71,4 @@ try {
 
 console.log('');
 console.log('Bridge runtime bundle is now available.');
-console.log('Run: npx hadamard-interactive-agent');
+console.log('Run: npx hadamard-tui');

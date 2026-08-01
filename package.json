@@ -87,11 +87,9 @@
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "hadamard-react": "./bin/hadamard-react.js",
     "hadamard-tui": "./bin/hadamard-tui.js",
     "hadamard-gui": "./bin/hadamard-gui.js",
     "hadamard-app-server": "./bin/hadamard-app-server.js",
-    "hadamard-interactive-agent": "./bin/hadamard-interactive-agent.js",
     "hadamard-link-runtime": "./bin/hadamard-link-runtime.js"
   },
   "exports": {

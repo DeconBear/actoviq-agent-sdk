@@ -311,7 +311,10 @@ import {
   type AppUpdateController,
 } from '../update/appUpdateService.js';
 import { discoverHadamardPlugins } from '../tui/pluginCatalog.js';
-import { HADAMARD_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
+import {
+  HADAMARD_INTERACTIVE_COMMANDS,
+  interactiveCommandUsage,
+} from '../ui/commandSurface.js';
 import {
   createAgentExecutionProjectView,
   createAgentExecutionRootView,
@@ -820,18 +823,7 @@ function expandImageRefs(text: string, workDir: string): string | ContentBlockPa
 }
 
 function commandUsage(command: string): string {
-  switch (command) {
-    case 'model': return '/model [config|router [name|off]|<model>|default]';
-    case 'effort': return '/effort [auto|low|medium|high|max]';
-    case 'permissions': return '/permissions [read-only|workspace|full]';
-    case 'resume': return '/resume [session-id]';
-    case 'dream': return '/dream [status|run]';
-    case 'workflows': return '/workflows [run <name> [input]]';
-    case 'worktree': return '/worktree [enter <name>|exit|list]';
-    case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]';
-    case 'issues': return '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]';
-    default: return `/${command}`;
-  }
+  return interactiveCommandUsage(command);
 }
 
 function guiIcon(name: string): string {
@@ -4940,16 +4932,83 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             detail: `${skill.description} ${skill.whenToUse ?? ''}`,
           })),
         }];
-      case 'agents':
-        return [{
-          type: 'command.result',
-          title: 'Subagents',
-          items: sdk!.agents.list().map(agent => ({
-            label: agent.name,
-            description: agent.model ?? 'inherits model',
-            detail: agent.description,
-          })),
-        }];
+      case 'agents': {
+        if (!sdk) {
+          return [{ type: 'error', message: 'Agents require a configured Hadamard provider.' }];
+        }
+        const [subcommand = 'list', target = ''] = args.trim().split(/\s+/, 2);
+        if (subcommand === 'list' && !target) {
+          return [{
+            type: 'command.result',
+            title: 'Subagents',
+            items: sdk.agents.list().map(agent => ({
+              label: agent.name,
+              description: agent.model ?? 'inherits model',
+              detail: agent.description,
+            })),
+          }];
+        }
+        const snapshots = await sdk.executions.listSnapshots();
+        const views = snapshots.map(snapshot => createAgentExecutionRootView(snapshot));
+        const flatten = (view: ReturnType<typeof createAgentExecutionRootView>) => {
+          const nodes: typeof view.detached = [];
+          const visit = (node: NonNullable<typeof view.root>): void => {
+            nodes.push(node);
+            node.children.forEach(visit);
+          };
+          if (view.root) visit(view.root);
+          view.detached.forEach(visit);
+          return nodes;
+        };
+        if (subcommand === 'runs') {
+          if (target) return runSlashCommand(`/agents show ${target}`);
+          const project = createAgentExecutionProjectView(snapshots);
+          const runs = [...project.active, ...project.waiting, ...project.completed];
+          return [{
+            type: 'command.result',
+            title: 'Agent executions',
+            items: runs.map(run => ({
+              label: run.rootExecutionId,
+              description: `${run.lifecycle} · ${run.displayName} · ${run.nodeCount} agents`,
+              detail: run.currentActivity?.summary ?? `${run.timing.elapsedMs}ms`,
+            })),
+            text: runs.length ? undefined : 'No Agent executions are recorded for this project.',
+          }];
+        }
+        if (subcommand === 'show') {
+          if (!target) return [{ type: 'error', message: 'usage: /agents show <root-execution-id>' }];
+          const view = views.find(item => item.rootExecutionId === target);
+          if (!view) {
+            return [{ type: 'error', message: `No Agent execution tree found for '${target}'. Use /agents runs to browse.` }];
+          }
+          return [{
+            type: 'command.result',
+            title: `Agent execution · ${view.rootExecutionId}`,
+            items: flatten(view).map(node => ({
+              label: `${'  '.repeat(node.depth)}${node.displayName}`,
+              description: `${node.lifecycle} · ${node.runtime}${node.model ? ` · ${node.model}` : ''}`,
+              detail: `session: ${node.sessionId}${node.currentActivity?.summary ? ` · ${node.currentActivity.summary}` : ''}`,
+            })),
+            text: `${view.status} · ${view.nodeCount} agents · ${view.edgeCount} links · ${view.timing.elapsedMs}ms`,
+          }];
+        }
+        if (subcommand === 'open') {
+          if (!target) return [{ type: 'error', message: 'usage: /agents open <session-or-execution-id>' }];
+          const node = views.flatMap(flatten).find(item => item.id === target || item.sessionId === target);
+          if (!node) {
+            return [{ type: 'error', message: `No Agent execution or conversation matches '${target}'. Use /agents runs to browse.` }];
+          }
+          return runtimeMutationCommand(async () => {
+            session = await resumeGuiSession(node.sessionId, {
+              model: options.model,
+              permissionMode: options.permissionMode,
+            });
+            await restoreSessionRuntimeSelection();
+            return [{ type: 'notice', message: `opened Agent conversation: ${session.id}` }, { type: 'state' }];
+          });
+        }
+        return [{ type: 'error', message: 'usage: /agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]' }];
+      }
       case 'mcp': {
         const mcpTools = toolMetadata.filter(tool => tool.provider === 'mcp');
         return [{
@@ -4999,6 +5058,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           const rest = args.slice(4).trim();
           const split = rest.indexOf(' ');
           return runWorkflow(split === -1 ? rest : rest.slice(0, split), split === -1 ? undefined : rest.slice(split + 1).trim());
+        }
+        if (args && args !== 'list') {
+          return [{ type: 'error', message: 'usage: /workflows [list|run <name> [task]]' }];
         }
         return [{
           type: 'command.result',
@@ -5716,9 +5778,11 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         if (args === 'help') {
           return [{ type: 'command.result', title: 'Bridge help', text: [
             '/bridge — open runtime configuration (Settings → Models & routing)',
+            '/bridge setup — open runtime setup (Settings → Models & routing)',
             '/bridge switch <name> — activate a named API or External CLI config',
             '/bridge status — show the active execution/runtime/auth/session',
-        '/bridge history — browse native External CLI conversations',
+            '/bridge history — browse native External CLI conversations',
+            '/bridge resume <native-id> — resume a native External CLI conversation',
             '/bridge background <prompt> — start work in the active External CLI',
             '/bridge runs — list foreground/background External CLI work',
             '/bridge stop <run-id> — interrupt External CLI work',
@@ -5729,6 +5793,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             'Configs live in ~/.hadamard/bridge-configs.json',
           ].join('\n') }];
         }
+        if (args === 'setup') return [{ type: 'settings.open', tab: 'models' }];
         if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
         if (args === 'status') {
           if (!activeBridgeConfig) {
@@ -5768,6 +5833,53 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             })),
           text: history.length ? undefined : 'No native External CLI sessions were found.',
           }];
+        }
+        if (args === 'resume' || args.startsWith('resume ')) {
+          const nativeSessionId = args.startsWith('resume ')
+            ? args.slice('resume '.length).trim()
+            : '';
+          if (!nativeSessionId) {
+            return [{ type: 'error', message: 'usage: /bridge resume <native-id>' }];
+          }
+          if (
+            !activeBridgeConfig
+            || activeBridgeConfig.execution !== 'cli'
+            || !isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+          ) {
+            return [{ type: 'error', message: 'activate an External CLI config first' }];
+          }
+          const config = activeBridgeConfig as SupportedExternalCliConfig;
+          const summary = (await listExternalCliSessions({
+            homeDir: pointerHomeDir(),
+            hadamardHomeDir: resolveGuiHomeDir(),
+            crushCwd: workDir,
+            runtimes: [config.runtime],
+          })).find(item => item.nativeSessionId === nativeSessionId
+            && isExternalCliHistoryConfigCompatible(item, config));
+          if (!summary) {
+            return [{
+              type: 'error',
+              message: `native ${config.runtime} session not found: ${nativeSessionId}`,
+            }];
+          }
+          if (summary.cwd && !sameWorkspace(summary.cwd, workDir)) {
+            return [{
+              type: 'error',
+              message: `open the session workspace before resuming it: ${summary.cwd}`,
+            }];
+          }
+          return runtimeMutationCommand(async () => {
+            await activateBridgeConfig(config);
+            await rememberExternalNativeSession(config, summary.nativeSessionId);
+            await persistSessionRuntimeMetadata();
+            return [
+              {
+                type: 'notice',
+                message: `native ${config.runtime} session selected: ${summary.nativeSessionId}. The next message resumes that native conversation.`,
+              },
+              { type: 'state' },
+            ];
+          });
         }
         if (args === 'runs') {
           const externalRuns = externalCliRuntimeManager.list();

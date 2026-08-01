@@ -5,6 +5,7 @@ import {
   SUBCOMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  interactiveCommandUsage,
   selectInteractiveCommand,
 } from '../src/ui/commandSurface.js';
 
@@ -89,6 +90,15 @@ describe('filterInteractiveCommands', () => {
   it('SUBCOMMANDS only references registered top-level commands', () => {
     for (const head of Object.keys(SUBCOMMANDS)) {
       expect(HADAMARD_INTERACTIVE_COMMANDS[head]).toBeDefined();
+    }
+  });
+
+  it('keeps shared help usage aligned with every registered sub-command', () => {
+    for (const [head, subcommands] of Object.entries(SUBCOMMANDS)) {
+      const usage = interactiveCommandUsage(head);
+      for (const subcommand of subcommands) {
+        expect(usage, `/${head} ${subcommand}`).toContain(subcommand);
+      }
     }
   });
 

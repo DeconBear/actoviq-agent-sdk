@@ -185,7 +185,7 @@ const providers = await detectBridgeProviders();
 
 1. **安装 CLI**（`npm i -g @anthropic-ai/claude-code`、`npm i -g codewhale`、…）
    并重启 shell 确保它在 `PATH` 上。
-2. **运行 `npx hadamard-interactive-agent`** 并输入 `/bridge`——向导会展示检测到的
+2. **运行 `npx hadamard-tui`** 并输入 `/bridge`——控制面板会展示检测到的
    provider，让你选择一个作为默认。
 3. **设置 `HADAMARD_<ID>_PATH`**（见 1.3），适用于二进制已安装但不在 `PATH` 的情况
    （CI、不继承 shell profile 的 IDE 启动器等常见场景）。
@@ -193,8 +193,7 @@ const providers = await detectBridgeProviders();
    按钮结果）贴给 Claude Code，让它指导安装和配置。
 
 实现：`src/parity/bridgeProviders.ts`（各 provider 的 argv/env/normalizer +
-`BRIDGE_PROVIDER_CREDENTIALS` 凭证就绪提示），`src/cli/bridge-interactive-agent.ts`
-（/bridge 向导），`src/tui/hadamardTui.ts`（TUI `/bridge` 控制面板——一键激活 provider、
+`BRIDGE_PROVIDER_CREDENTIALS` 凭证就绪提示），`src/tui/hadamardTui.ts`（TUI `/bridge` 控制面板——一键激活 provider、
 逐 provider 设置模型、凭证提示、实跑状态；`run`/`switch`/`model`/`setup`/`off`/`help`
 子命令支持自动补全），`src/gui/hadamardGui.ts`（bridge 面板 + 实跑）。
 

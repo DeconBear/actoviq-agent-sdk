@@ -36,10 +36,9 @@ describe('team preferences (plan §3.3 / Phase 0)', () => {
   it('gates the attached team tool on autoInvoke in every surface (Phase 0 acceptance)', () => {
     // When autoInvoke is off, an attached team must stay a selection only —
     // the main agent's tool list must NOT include the team tool. All three
-    // surfaces implement this with the same guard expression.
+    // TUI and GUI implement this with the same guard expression.
     const root = join(import.meta.dirname, '..');
     for (const file of [
-      join(root, 'src', 'cli', 'hadamard-react.ts'),
       join(root, 'src', 'tui', 'hadamardTui.ts'),
       join(root, 'src', 'gui', 'hadamardGui.ts'),
     ]) {

@@ -130,6 +130,7 @@ import {
   HADAMARD_INTERACTIVE_COMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  interactiveCommandUsage,
   selectInteractiveCommand,
 } from '../ui/commandSurface.js';
 import {
@@ -1971,43 +1972,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
   // ── Slash commands ─────────────────────────────────────────────────
 
   function commandUsage(name: string): string {
-    const usage: Record<string, string> = {
-      help: '/help',
-      clear: '/clear',
-      init: '/init',
-      compact: '/compact [summary instructions]',
-      memory: '/memory',
-      context: '/context',
-      cost: '/cost',
-      usage: '/usage',
-      doctor: '/doctor',
-      batch: '/batch <file>',
-      goal: '/goal [objective|clear|pause|resume]',
-      review: '/review',
-      stats: '/stats',
-      export: '/export [filename]',
-      model: '/model [model|min|medium|max|default|config|router]',
-      effort: '/effort [low|medium|high|max|auto]',
-      'output-style': '/output-style [default|concise|explanatory|learning]',
-      permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
-      plan: '/plan [off|open|view]',
-      rewind: '/rewind <N>',
-      sessions: '/sessions',
-      resume: '/resume [session-id]',
-      tools: '/tools',
-      skills: '/skills',
-      agents: '/agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]',
-      mcp: '/mcp',
-      hooks: '/hooks',
-      plugins: '/plugins',
-      dream: '/dream [run|status]',
-      workflows: '/workflows [run <name>|list]',
-      worktree: '/worktree [enter <name>|exit|list]',
-      team: '/team [ask <name> <prompt>|list]',
-      issues: '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]',
-      exit: '/exit',
-    };
-    return usage[name] ?? `/${name}`;
+    return interactiveCommandUsage(name);
   }
 
   async function resumeSession(
@@ -4524,6 +4489,10 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
               runSpace === -1 ? runRest : runRest.slice(0, runSpace),
               runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim(),
             );
+            return;
+          }
+          if (args && args !== 'list') {
+            appendStatic([...formatErrorLine('usage: /workflows [list|run <name> [task]]'), '']);
             return;
           }
 

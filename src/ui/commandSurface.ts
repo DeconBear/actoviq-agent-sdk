@@ -29,7 +29,7 @@ export const HADAMARD_INTERACTIVE_COMMANDS: Record<string, string> = {
   skills: 'Browse available skills',
   agents: 'Browse subagent definitions and execution runs',
   mcp: 'Inspect MCP servers and tools',
-  hooks: 'List configured PreToolUse hooks',
+  hooks: 'List configured lifecycle and legacy hooks',
   plugins: 'Browse discovered Clean plugins',
   plugin: 'Manage versioned plugin packages and trust',
   dream: 'Inspect or run memory consolidation',
@@ -179,6 +179,39 @@ export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
   'memory apply': 'Apply a proposal after explicit --confirm',
   'memory reject': 'Reject a proposal without changing memory',
 };
+
+const COMMAND_USAGES: Record<string, string> = {
+  compact: '/compact [summary instructions]',
+  batch: '/batch <file>',
+  goal: '/goal [objective|clear|pause|resume]',
+  export: '/export [filename]',
+  model: '/model [model|min|medium|max|default|config|router [name|off]]',
+  effort: '/effort [auto|low|medium|high|max]',
+  'output-style': '/output-style [default|concise|explanatory|learning]',
+  permissions: '/permissions [read-only|workspace|full]',
+  plan: '/plan [view|approve|revise <feedback>|off]',
+  rewind: '/rewind <N>',
+  checkpoint: '/checkpoint [list|show <id>|restore <id> <mode> --confirm]',
+  session: '/session [tree|fork|clone|label|rename|pin|archive|restore|delete]',
+  resume: '/resume [session-id]',
+  memory: '/memory [proposals|apply <id> --confirm|reject <id>]',
+  rules: '/rules [list|add|remove|enable|disable]',
+  agents: '/agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]',
+  plugin: '/plugin [list|search|install|update|pin|enable|disable|remove|trust]',
+  dream: '/dream [run|status]',
+  workflows: '/workflows [list|run <name> [input]]',
+  worktree: '/worktree [enter <name>|exit|list]',
+  team: '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]',
+  issues: '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]',
+  manager: '/manager [chat <message>|update [instruction]|status|config|schedule|sessions|new|resume <id>|team <prompt>]',
+  assistant: '/assistant [chat <message>|sessions|new|resume <id>|team <prompt>]',
+  bridge: '/bridge [run|background|runs|stop|status|history|resume|switch|model|config|setup|off|help]',
+  diff: '/diff [show|apply --confirm]',
+};
+
+export function interactiveCommandUsage(command: string): string {
+  return COMMAND_USAGES[command] ?? `/${command}`;
+}
 
 export function filterInteractiveCommands(input: string): string[] {
   if (!input.startsWith('/')) return [];

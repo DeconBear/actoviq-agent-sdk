@@ -107,17 +107,9 @@ npm run example:hadamard-agent-helpers
 npm run example:profiles
 ```
 
-## CLI REPL
-
-安装包后，可以直接从终端启动交互式 scrollback 模式 REPL：
-
-```bash
-npx hadamard-react [工作目录]
-```
-
 ## 终端 UI (TUI)
 
-`hadamard-tui` 是全功能终端 UI，模拟 Claude Code 的 REPL 设计:
+`hadamard-tui` 是唯一的交互式终端 Agent 入口，也是全功能终端 UI：
 
 ```bash
 npx hadamard-tui [工作目录] [选项]
