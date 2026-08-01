@@ -43,3 +43,33 @@ export interface DiffApplyResult {
   conflict: boolean;
   message: string;
 }
+
+// --- Progressive Review Summary types ---
+
+export type ReviewChangeImpact = 'added' | 'modified' | 'removed' | 'refactored';
+
+export interface ReviewFileChange {
+  path: string;
+  impact: ReviewChangeImpact;
+  /** One sentence describing what changed in this file. */
+  summary: string;
+}
+
+export interface ReviewSemanticGroup {
+  /** User-perceivable behaviour change title. */
+  title: string;
+  impact: ReviewChangeImpact;
+  /** 2-3 sentence natural language explanation. */
+  description: string;
+  files: ReviewFileChange[];
+}
+
+export interface ReviewSummary {
+  /** One-line overall summary. */
+  headline: string;
+  groups: ReviewSemanticGroup[];
+  /** Potential risk notes (optional). */
+  riskNotes?: string[];
+  generatedAt: string;
+  model: string;
+}

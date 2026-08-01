@@ -1332,6 +1332,25 @@ export class HadamardAgentClient {
     return this.threadDiffs.apply(diff, targetDir ?? diff.repoRoot);
   }
 
+  /** One-shot model call that does NOT enter conversation history. */
+  async oneShotMessage(request: {
+    system?: string;
+    prompt: string;
+    maxTokens?: number;
+    temperature?: number;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const response = await this.modelApi.createMessage({
+      model: this.config.model,
+      max_tokens: request.maxTokens ?? 2048,
+      system: request.system,
+      temperature: request.temperature ?? 0.3,
+      messages: [{ role: 'user', content: request.prompt }],
+      signal: request.signal,
+    });
+    return extractTextFromContent(response.content);
+  }
+
   private hasPersistedSessionResumeOverrides(options: SessionResumeOptions): boolean {
     return Boolean(
       options.model ||

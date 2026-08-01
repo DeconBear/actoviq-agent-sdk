@@ -387,6 +387,7 @@ import { BackgroundTaskStore } from '../storage/backgroundTaskStore.js';
 import { assertSafeStorageSegment } from '../storage/pathSafety.js';
 import { extractConversationBrief, extractPreviewFromMessages } from '../runtime/messageUtils.js';
 import { truncateText } from '../runtime/helpers.js';
+import { generateReviewSummary } from '../review/reviewSummaryService.js';
 import type { ContentBlockParam, ToolResultBlockParam, ToolUseBlock } from '../provider/types.js';
 
 const DEFAULT_PORT = 4174;
@@ -8690,6 +8691,40 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           return json(res, 400, { error: (error as Error).message });
         }
       }
+      if (req.method === 'GET' && url.pathname === '/api/review/commits') {
+        const limit = Math.min(Number(url.searchParams.get('limit')) || 30, 100);
+        const logRaw = await gitText(['log', '--decorate=short', '--pretty=format:%h%x1f%s%x1f%an%x1f%ae%x1f%ar%x1f%aI%x1f%p%x1f%D%x1e', '-n', String(limit)]);
+        return json(res, 200, { commits: parseGitCommitLog(logRaw) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/review/diff') {
+        try {
+          const body = await readJson(req);
+          const base = typeof body.base === 'string' ? body.base.trim() : '';
+          const head = typeof body.head === 'string' ? body.head.trim() : '';
+          const args = ['--no-pager', 'diff', '--no-color'];
+          if (base) args.push(base + (head ? '..' + head : '..HEAD'));
+          const patch = await gitText(args);
+          return json(res, 200, { patch, truncated: patch.length > 200_000 });
+        } catch (error) {
+          return json(res, 400, { error: (error as Error).message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/review/summarize') {
+        if (!sdk) return json(res, 400, { error: 'No provider configured' });
+        try {
+          const body = await readJson(req);
+          const patch = typeof body.patch === 'string' ? body.patch : '';
+          if (!patch.trim()) return json(res, 400, { error: 'Empty diff' });
+          const summary = await generateReviewSummary({
+            diff: patch,
+            model: sdk.config.model,
+            oneShotMessage: (r) => sdk!.oneShotMessage(r),
+          });
+          return json(res, 200, summary);
+        } catch (error) {
+          return json(res, 500, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/session/delete') {
         const body = await readJson(req);
         const id = typeof body.id === 'string' ? body.id : '';
@@ -11896,6 +11931,42 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .aux-view-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
 .aux-view-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
 .aux-empty { margin: 24px 0; color: var(--text-2); font-size: 13px; text-align: center; }
+.review-toolbar { flex-wrap: wrap; }
+.review-select { height: 26px; font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-1); padding: 0 6px; max-width: 130px; }
+.review-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0 14px; flex: 0 0 auto; }
+.review-tab { padding: 7px 14px; font-size: 12.5px; font-weight: 500; border: 0; background: transparent; color: var(--text-2); cursor: pointer; border-bottom: 2px solid transparent; }
+.review-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.review-tab:hover { color: var(--text-1); }
+.review-body { display: flex; flex-direction: column; gap: 10px; }
+.review-headline { font-size: 14px; font-weight: 600; color: var(--text-1); margin: 0 0 4px; }
+.review-risk { font-size: 12px; color: #d97706; background: rgba(217,119,6,.08); border-radius: 6px; padding: 6px 10px; }
+.review-summary-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; border-left: 3px solid var(--border); }
+.review-summary-card.review-impact-added { border-left-color: #22c55e; }
+.review-summary-card.review-impact-modified { border-left-color: #3b82f6; }
+.review-summary-card.review-impact-removed { border-left-color: #ef4444; }
+.review-summary-card.review-impact-refactored { border-left-color: #a855f7; }
+.review-card-title { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 4px; }
+.review-card-desc { font-size: 12.5px; color: var(--text-2); margin: 0 0 6px; line-height: 1.5; }
+.review-card-files { margin: 0; padding-left: 16px; font-size: 12px; color: var(--text-2); }
+.review-card-files li { margin-bottom: 2px; }
+.review-meta { font-size: 11px; margin-top: 8px; }
+.review-retry-btn { align-self: center; margin-top: 8px; padding: 5px 14px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); color: var(--text-1); cursor: pointer; }
+.review-retry-btn:hover { background: rgba(0,0,0,.04); }
+.review-change-section { margin-bottom: 12px; }
+.review-change-section h4 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--text-1); }
+.review-file-row { display: flex; gap: 8px; padding: 5px 8px; border-radius: 6px; font-size: 12px; align-items: baseline; }
+.review-file-row:hover { background: rgba(0,0,0,.03); }
+.review-file-path { font-family: var(--font-mono); font-weight: 500; color: var(--text-1); white-space: nowrap; }
+.review-file-summary { color: var(--text-2); }
+.review-impact-added .review-file-path { color: #16a34a; }
+.review-impact-removed .review-file-path { color: #dc2626; }
+.review-impact-refactored .review-file-path { color: #9333ea; }
+.review-diff-raw { max-height: none; font-size: 11.5px; }
+.review-loading { display: flex; justify-content: center; gap: 6px; padding: 20px 0; }
+.review-loading span { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: reviewPulse 1s infinite ease-in-out; }
+.review-loading span:nth-child(2) { animation-delay: .15s; }
+.review-loading span:nth-child(3) { animation-delay: .3s; }
+@keyframes reviewPulse { 0%,80%,100% { opacity: .3; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
 .aux-file-row, .aux-browser-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border-radius: 7px; border: 0; background: transparent; color: var(--text-1); font-size: 13px; text-align: left; cursor: pointer; }
 .aux-file-row:hover, .aux-browser-row:hover { background: rgba(0,0,0,.05); }
 .aux-file-row .ui-icon, .aux-browser-row .ui-icon { width: 15px; height: 15px; color: var(--text-2); flex: 0 0 auto; }
@@ -14232,50 +14303,242 @@ async function renderAuxReview() {
   const view = el('auxView');
   if (!view) return;
   view.textContent = '';
+  // --- State ---
+  if (!state.reviewState) state.reviewState = { tab: 'summary', base: '', head: '', patch: '', summary: null, loading: false };
+  const rs = state.reviewState;
+
+  // --- Header ---
   const head = document.createElement('div');
-  head.className = 'aux-view-header';
+  head.className = 'aux-view-header review-toolbar';
   head.innerHTML = '<span class="aux-view-title">Review</span>';
-  const body = document.createElement('div');
-  body.className = 'aux-view-body';
-  body.innerHTML = '<p class="aux-empty muted">Loading git changes…</p>';
-  view.append(head, body);
-  const data = await gitData();
-  body.textContent = '';
-  if (!data || !data.isRepo) {
-    const note = document.createElement('p');
-    note.className = 'aux-empty muted';
-    note.textContent = data ? 'This workspace is not a git repository.' : 'Git unavailable.';
-    body.appendChild(note);
-    return;
+
+  const baseSelect = document.createElement('select');
+  baseSelect.className = 'review-select';
+  baseSelect.title = 'Base commit';
+  const headSelect = document.createElement('select');
+  headSelect.className = 'review-select';
+  headSelect.title = 'Head commit';
+  head.append(baseSelect, headSelect);
+  view.appendChild(head);
+
+  // --- Tabs ---
+  const tabBar = document.createElement('div');
+  tabBar.className = 'review-tabs';
+  for (const tab of ['summary', 'changes', 'diff']) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'review-tab' + (rs.tab === tab ? ' active' : '');
+    btn.textContent = tab === 'summary' ? 'Summary' : tab === 'changes' ? 'Changes' : 'Diff';
+    btn.addEventListener('click', () => { rs.tab = tab; renderAuxReview(); });
+    tabBar.appendChild(btn);
   }
-  const status = data.status || [];
-  if (!status.length) {
-    const note = document.createElement('p');
-    note.className = 'aux-empty muted';
-    note.textContent = 'Working tree clean.';
-    body.appendChild(note);
-  } else {
-    for (const entry of status) {
-      const row = document.createElement('div');
-      row.className = 'git-row';
-      const code = (entry.x || '') + (entry.y || '');
-      const stat = document.createElement('span');
-      stat.className = 'git-stat' + (code.indexOf('D') !== -1 ? ' del' : '');
-      stat.textContent = code || '•';
-      const file = document.createElement('span');
-      file.className = 'git-mono';
-      file.textContent = entry.file;
-      row.append(stat, file);
-      body.appendChild(row);
+  view.appendChild(tabBar);
+
+  // --- Body ---
+  const body = document.createElement('div');
+  body.className = 'aux-view-body review-body';
+  view.appendChild(body);
+
+  // --- Load commits into selectors ---
+  try {
+    const cres = await api('/api/review/commits?limit=30');
+    if (cres.ok) {
+      const cdata = await cres.json();
+      const commits = cdata.commits || [];
+      baseSelect.textContent = '';
+      headSelect.textContent = '';
+      const optWT = document.createElement('option');
+      optWT.value = '';
+      optWT.textContent = 'Working Tree';
+      baseSelect.appendChild(optWT);
+      for (const c of commits) {
+        const o = document.createElement('option');
+        o.value = c.hash;
+        o.textContent = c.hash + ' ' + (c.subject || '').slice(0, 40);
+        baseSelect.appendChild(o);
+      }
+      const optHead = document.createElement('option');
+      optHead.value = '';
+      optHead.textContent = 'HEAD';
+      headSelect.appendChild(optHead);
+      for (const c of commits) {
+        const o = document.createElement('option');
+        o.value = c.hash;
+        o.textContent = c.hash + ' ' + (c.subject || '').slice(0, 40);
+        headSelect.appendChild(o);
+      }
+      baseSelect.value = rs.base;
+      headSelect.value = rs.head;
+    }
+  } catch { /* best effort */ }
+
+  baseSelect.addEventListener('change', () => { rs.base = baseSelect.value; rs.summary = null; rs.patch = ''; loadReviewDiff(); });
+  headSelect.addEventListener('change', () => { rs.head = headSelect.value; rs.summary = null; rs.patch = ''; loadReviewDiff(); });
+
+  // --- Load diff and render active tab ---
+  await loadReviewDiff();
+
+  async function loadReviewDiff() {
+    body.textContent = '';
+    body.innerHTML = '<p class="aux-empty muted">Loading diff\u2026</p>';
+    try {
+      const dres = await api('/api/review/diff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base: rs.base || undefined, head: rs.head || undefined }),
+      });
+      const ddata = await dres.json().catch(() => ({}));
+      rs.patch = ddata.patch || '';
+    } catch { rs.patch = ''; }
+    paintReviewTab();
+  }
+
+  function paintReviewTab() {
+    body.textContent = '';
+    if (!rs.patch.trim()) {
+      body.innerHTML = '<p class="aux-empty muted">No changes in this range.</p>';
+      return;
+    }
+    if (rs.tab === 'summary') paintSummaryTab();
+    else if (rs.tab === 'changes') paintChangesTab();
+    else paintDiffTab();
+  }
+
+  async function paintSummaryTab() {
+    if (rs.summary) { renderSummaryCards(rs.summary); return; }
+    body.innerHTML = '<div class="review-loading"><span></span><span></span><span></span></div><p class="muted" style="text-align:center">Generating AI summary\u2026</p>';
+    try {
+      const sres = await api('/api/review/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patch: rs.patch }),
+      });
+      if (!sres.ok) { const e = await sres.json().catch(() => ({})); throw new Error(e.error || 'Summary failed'); }
+      rs.summary = await sres.json();
+      body.textContent = '';
+      renderSummaryCards(rs.summary);
+    } catch (err) {
+      body.textContent = '';
+      const note = document.createElement('p');
+      note.className = 'aux-empty muted';
+      note.textContent = 'Could not generate summary: ' + (err.message || err);
+      body.appendChild(note);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'review-retry-btn';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', () => { rs.summary = null; paintSummaryTab(); });
+      body.appendChild(retry);
     }
   }
-  const meta = document.createElement('p');
-  meta.className = 'muted';
-  meta.style.marginTop = '12px';
-  meta.style.fontSize = '12px';
-  const tracking = (data.ahead ? ' ↑' + data.ahead : '') + (data.behind ? ' ↓' + data.behind : '');
-  meta.textContent = 'On ' + data.branch + (data.upstream ? ' → ' + data.upstream : '') + tracking;
-  body.appendChild(meta);
+
+  function renderSummaryCards(summary) {
+    const headline = document.createElement('h3');
+    headline.className = 'review-headline';
+    headline.textContent = summary.headline || 'Changes';
+    body.appendChild(headline);
+    if (summary.riskNotes && summary.riskNotes.length) {
+      const risk = document.createElement('div');
+      risk.className = 'review-risk';
+      risk.innerHTML = '<strong>\u26a0 Risks:</strong> ' + summary.riskNotes.join('; ');
+      body.appendChild(risk);
+    }
+    for (const group of (summary.groups || [])) {
+      const card = document.createElement('div');
+      card.className = 'review-summary-card review-impact-' + (group.impact || 'modified');
+      const title = document.createElement('div');
+      title.className = 'review-card-title';
+      title.textContent = impactIcon(group.impact) + ' ' + group.title;
+      const desc = document.createElement('p');
+      desc.className = 'review-card-desc';
+      desc.textContent = group.description || '';
+      card.append(title, desc);
+      if (group.files && group.files.length) {
+        const fileList = document.createElement('ul');
+        fileList.className = 'review-card-files';
+        for (const f of group.files) {
+          const li = document.createElement('li');
+          li.textContent = f.path + ' \u2014 ' + f.summary;
+          fileList.appendChild(li);
+        }
+        card.appendChild(fileList);
+      }
+      body.appendChild(card);
+    }
+    const meta = document.createElement('p');
+    meta.className = 'muted review-meta';
+    meta.textContent = 'Model: ' + (summary.model || '?') + ' \u00b7 ' + (summary.generatedAt || '');
+    body.appendChild(meta);
+    const regen = document.createElement('button');
+    regen.type = 'button';
+    regen.className = 'review-retry-btn';
+    regen.textContent = 'Regenerate';
+    regen.addEventListener('click', () => { rs.summary = null; paintSummaryTab(); });
+    body.appendChild(regen);
+  }
+
+  function paintChangesTab() {
+    if (rs.summary && rs.summary.groups) {
+      for (const group of rs.summary.groups) {
+        const section = document.createElement('div');
+        section.className = 'review-change-section';
+        const heading = document.createElement('h4');
+        heading.textContent = impactIcon(group.impact) + ' ' + group.title;
+        section.appendChild(heading);
+        for (const f of (group.files || [])) {
+          const row = document.createElement('div');
+          row.className = 'review-file-row review-impact-' + f.impact;
+          row.innerHTML = '<span class="review-file-path">' + escapeHtml(f.path) + '</span><span class="review-file-summary">' + escapeHtml(f.summary) + '</span>';
+          section.appendChild(row);
+        }
+        body.appendChild(section);
+      }
+    } else {
+      // Fallback: parse file list from diff headers
+      const files = rs.patch.split('\\n').filter(function(l) { return l.startsWith('diff --git'); });
+      if (!files.length) { body.innerHTML = '<p class="aux-empty muted">No file changes detected.</p>'; return; }
+      for (const line of files) {
+        const parts = line.split(' b/');
+        const fname = parts.length > 1 ? parts[parts.length - 1] : line;
+        const row = document.createElement('div');
+        row.className = 'review-file-row';
+        row.textContent = fname;
+        body.appendChild(row);
+      }
+      const hint = document.createElement('p');
+      hint.className = 'muted';
+      hint.textContent = 'Generate a Summary to see semantic grouping.';
+      body.appendChild(hint);
+    }
+  }
+
+  function paintDiffTab() {
+    const pre = document.createElement('pre');
+    pre.className = 'git-diff-body code-block review-diff-raw';
+    const lines = rs.patch.split('\\n');
+    for (const line of lines) {
+      const row = document.createElement('div');
+      row.className = 'git-diff-line';
+      if (line.startsWith('+') && !line.startsWith('+++')) row.classList.add('add');
+      else if (line.startsWith('-') && !line.startsWith('---')) row.classList.add('del');
+      else if (line.startsWith('@@')) row.classList.add('hunk');
+      row.textContent = line;
+      pre.appendChild(row);
+    }
+    body.appendChild(pre);
+  }
+
+  function impactIcon(impact) {
+    switch (impact) {
+      case 'added': return '\ud83d\udfe2';
+      case 'removed': return '\ud83d\udd34';
+      case 'refactored': return '\ud83d\udfe3';
+      default: return '\ud83d\udfe1';
+    }
+  }
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 }
 async function renderAuxGit() {
   const view = el('auxView');
@@ -15849,6 +16112,7 @@ function renderTranscriptFromMessages(messages) {
     state.toolNodes.clear();
     state.currentAssistant = T.getCurrentAssistantNode();
     setRunStatus(state.running ? 'Running' : readyLabel(), state.running ? 'running' : '');
+    scrollTranscript();
     return;
   }
   transcript.textContent = '';
