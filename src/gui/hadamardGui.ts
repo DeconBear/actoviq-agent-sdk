@@ -12001,6 +12001,7 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .team-agent-modal-body .ins-head { margin-bottom: 12px; }
 .dialog.team-agent-dialog .dialog-actions { padding: 12px 18px 16px; border-top: 1px solid var(--border); margin: 0; }
 .te-check label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-1); cursor: pointer; }
+.te-check input { width: auto; }
 .te-target select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; padding: 0 8px; }
 .te-field select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; padding: 0 8px; width: 100%; }
 .te-edge-row { background: var(--bg-surface); }

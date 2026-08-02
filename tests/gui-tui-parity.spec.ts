@@ -184,6 +184,7 @@ describe('TUI and GUI parity', () => {
     expect(tui).toContain('readManagedPluginCatalog');
     expect(html).not.toContain('wip-hidden');
     expect(html).not.toContain('settings-wip-note');
+    expect(css).toContain('.te-check input { width: auto; }');
     expect(js).toContain('Graph (team)');
     expect(js).toContain("label: 'Graph (team)'");
     expect(js).toContain("label: 'Blank'");
