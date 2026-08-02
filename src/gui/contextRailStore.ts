@@ -122,8 +122,8 @@ export function createContextRailItem(
 /** Sort todos/reminders for display: open first, then by createdAt. */
 export function sortContextRailItems(items: ContextRailItem[]): ContextRailItem[] {
   return [...items].sort((a, b) => {
-    const aOpen = a.kind === 'todo' ? !a.done : !a.done;
-    const bOpen = b.kind === 'todo' ? !b.done : !b.done;
+    const aOpen = !a.done;
+    const bOpen = !b.done;
     if (aOpen !== bOpen) return aOpen ? -1 : 1;
     if (a.kind === 'reminder' && b.kind === 'reminder' && a.remindAt && b.remindAt) {
       return Date.parse(a.remindAt) - Date.parse(b.remindAt);

@@ -12285,10 +12285,6 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .terminal-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-dock-body .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane { min-height: 0; }
-.pane-stub { flex: 1; display: grid; place-content: center; place-items: center; gap: 12px; text-align: center; color: var(--text-2); padding: 24px; }
-.pane-stub .stub-icon { display: inline-grid; place-items: center; color: var(--text-2); }
-.pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
-.pane-stub p { margin: 0; font-size: 14px; }
 /* Terminal pane: xterm fills the pane; chrome follows app theme. */
 .pane-terminal { background: var(--term-bg); color: var(--term-fg); }
 .pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid var(--term-border); background: var(--term-chrome); }
@@ -15181,13 +15177,6 @@ function loadXterm() {
     setTimeout(() => resolve(Boolean(window.Terminal && window.FitAddon)), 4000);
   });
   return xtermLoadPromise;
-}
-function makeStub(pane, type, note) {
-  pane.textContent = '';
-  const stub = document.createElement('div');
-  stub.className = 'pane-stub';
-  stub.innerHTML = '<span class="stub-icon">' + guiIcon(type === 'terminal' ? 'terminal' : 'folder') + '</span><p>' + note + '</p>';
-  pane.appendChild(stub);
 }
 // --- Smart terminal helpers (plan phase 5): blocks, history, output→agent ---
 function stripAnsiClient(s) { return String(s || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, ''); }

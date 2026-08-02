@@ -68,6 +68,7 @@ export class WorktreeService {
   private repoRoot: string;
   private settings: WorktreeSettings;
   private workDirStack: WorktreeStackEntry[] = [];
+  private originalWorkDir: string;
   private sessionWorkDir: string;
 
   constructor(
@@ -75,6 +76,7 @@ export class WorktreeService {
     settings?: Partial<WorktreeSettings>,
   ) {
     this.sessionWorkDir = path.resolve(initialWorkDir);
+    this.originalWorkDir = this.sessionWorkDir;
     this.settings = {
       baseRef: settings?.baseRef ?? 'fresh',
       cleanupPeriodDays: settings?.cleanupPeriodDays ?? 7,
@@ -256,7 +258,7 @@ export class WorktreeService {
     const popped = this.workDirStack.pop()!;
     this.sessionWorkDir = this.workDirStack.length > 0
       ? this.workDirStack[this.workDirStack.length - 1]!.workDir
-      : popped.workDir; // TODO: restore to originalWorkDir
+      : this.originalWorkDir;
 
     return popped;
   }
