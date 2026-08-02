@@ -265,6 +265,10 @@ import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/
 import { estimateCost } from '../team/pricing.js';
 import { AgentPool } from '../team/agentPool.js';
 import { runMemberAgent } from '../team/teamRuntime.js';
+import {
+  runWorkflowSquad,
+  validateWorkflowSquad,
+} from '../team/workflowSquad.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
@@ -377,7 +381,6 @@ import type {
   SessionCreateOptions,
   SessionResumeOptions,
   ModelTeamResult,
-  WorkflowNode,
   StoredSession,
 } from '../types.js';
 import { AgentSession } from '../runtime/agentSession.js';
@@ -1911,73 +1914,6 @@ async function runSubagentSquad(
     reports: [],
     skippedNodes: [],
     incompleteReason: run.status.error,
-  };
-}
-
-/** Run a workflow squad — walk the workflow tree. */
-async function runWorkflowSquad(
-  def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
-  onEvent?: (e: TeamEvent) => void,
-): Promise<ModelTeamResult> {
-  const pool = new AgentPool();
-  const startedAt = Date.now();
-  const statuses: any[] = [];
-  let totalInput = 0, totalOutput = 0;
-  let lastOutput = prompt;
-
-  async function runAgentNode(node: WorkflowNode): Promise<string> {
-    const identity = { id: node.id, model: node.model || '', role: node.label || node.type };
-    const run = await runMemberAgent({
-      identity,
-      member: { model: node.model || '', role: node.label || 'agent', systemPrompt: '' } as any,
-      task: node.prompt ? node.prompt.replace(/\{\{input\}\}/g, lastOutput) : lastOutput,
-      systemPrompt: '',
-      cwd: workDir,
-      tools: [],
-      maxIterations: Infinity,
-      timeoutMs: def.timeoutMs ?? 300000,
-      signal,
-      pool,
-      round: 1,
-      onEvent,
-    });
-    statuses.push(run.status);
-    totalInput += run.inputTokens;
-    totalOutput += run.outputTokens;
-    return run.report;
-  }
-
-  async function walk(node: WorkflowNode | undefined): Promise<void> {
-    if (!node) return;
-    if (node.type === 'agent') {
-      lastOutput = await runAgentNode(node);
-      return;
-    }
-    if (node.type === 'branch') {
-      const cond = (node.condition || '').toLowerCase();
-      const match = cond ? lastOutput.toLowerCase().includes(cond) : true;
-      const child = match ? node.children?.[0] : node.children?.[1];
-      await walk(child);
-      return;
-    }
-    if (node.type === 'parallel') {
-      const children = node.children || [];
-      const results = await Promise.all(children.map((c) => runAgentNode(c)));
-      lastOutput = results.filter(Boolean).join('\n\n');
-      return;
-    }
-  }
-
-  await walk(def.workflowTree);
-  return {
-    answer: lastOutput,
-    mode: 'graph',
-    cost: { totalInputTokens: totalInput, totalOutputTokens: totalOutput, estimatedCost: null, breakdown: [] },
-    durationMs: Date.now() - startedAt,
-    memberStatuses: statuses,
-    reports: [],
-    skippedNodes: [],
-    incompleteReason: undefined,
   };
 }
 
@@ -7416,6 +7352,10 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         const problems = validateTeamGraph(migrated);
         if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
         def = migrated;
+      } else if (squadType === 'workflow') {
+        const problems = validateWorkflowSquad(def);
+        if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+        def = { ...def, squadType, mode: 'graph', version: 3, orchestration: 'graph' };
       } else {
         def = { ...def, squadType, mode: 'graph', version: 3, orchestration: 'graph' };
       }
@@ -24231,7 +24171,7 @@ async function selectTeam(name, opts) {
       if (def) state.teamDefinitionCache[name] = def;
     } catch { /* offline */ }
   }
-  if (def && !def.nodes?.some((n) => n.kind === 'task')) {
+  if (def && (def.squadType || 'graph') === 'graph' && !def.nodes?.some((n) => n.kind === 'task')) {
     delete state.teamDefinitionCache[name];
     try {
       const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
@@ -24745,14 +24685,14 @@ function closeTeamModals() {
   closeTeamEdgeEditor();
   closeTeamSquadEditor();
 }
-function teFieldLive(label, value, onChange, textarea) {
+function teFieldLive(label, value, onChange, textarea, markDirty = true) {
   const f = document.createElement('div');
   f.className = 'te-field';
   const l = document.createElement('label');
   l.textContent = label;
   const inp = textarea ? document.createElement('textarea') : document.createElement('input');
   inp.value = value;
-  const fire = () => { onChange(inp.value); setTeamSavedStatus(false); };
+  const fire = () => { onChange(inp.value); if (markDirty) setTeamSavedStatus(false); };
   inp.addEventListener('input', fire);
   inp.addEventListener('change', fire);
   f.append(l, inp);
@@ -25654,8 +25594,8 @@ function teLabeledSelect(label, value, options, onChange) {
   f.append(l, sel);
   return f;
 }
-function teHintField(label, hint, value, onChange) {
-  const f = teFieldLive(label, value, onChange);
+function teHintField(label, hint, value, onChange, markDirty = true) {
+  const f = teFieldLive(label, value, onChange, false, markDirty);
   const h = document.createElement('p');
   h.className = 'te-hint';
   h.textContent = hint;
@@ -25692,7 +25632,6 @@ async function saveTeamDefinition() {
     window.alert('This is a staged Assistant proposal. Use Apply on its Proposal card so the base version is checked before saving.');
     return;
   }
-  if (view === 'chats') void refreshSessionCenter();
   // Server-side /api/team/save migrates (migrateTeamDefinitionToGraph) +
   // validates before writing — the renderer doesn't have that helper in scope.
   try {
@@ -25731,6 +25670,7 @@ function showTeamGraphProblems(problems) {
   const boxes = [
     document.getElementById('teamGraphProblems'),
     document.getElementById('teamGraphCanvasProblems'),
+    document.getElementById('teamWorkflowProblems'),
   ].filter(Boolean);
   if (!boxes.length) return;
   for (const box of boxes) {
@@ -25738,7 +25678,9 @@ function showTeamGraphProblems(problems) {
     if (!problems || !problems.length) { box.classList.add('hidden'); continue; }
     box.classList.remove('hidden');
     const title = document.createElement('strong');
-    title.textContent = 'The engine rejected this graph:';
+    title.textContent = box.id === 'teamWorkflowProblems'
+      ? 'The engine rejected this workflow:'
+      : 'The engine rejected this graph:';
     box.appendChild(title);
     for (const p of problems) {
       const li = document.createElement('div');
@@ -25974,7 +25916,7 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   left.innerHTML = '<button class="active">Workflow</button>';
   const right = document.createElement('div'); right.className = 'graph-tools';
   const pill = document.createElement('span'); pill.className = 'graph-mode-pill';
-  pill.textContent = 'workflow · ' + (def.name || name);
+  pill.textContent = 'workflow · ' + (def.name || name) + ' · ' + wfNodeCount(def.workflowTree) + ' steps';
   right.appendChild(pill);
   if (editable) {
     const designBtn = document.createElement('button');
@@ -25990,6 +25932,10 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   }
   toolbar.append(left, right);
   g.appendChild(toolbar);
+  const problems = document.createElement('div');
+  problems.id = 'teamWorkflowProblems';
+  problems.className = 'te-problems hidden';
+  g.appendChild(problems);
   const canvas = document.createElement('div');
   canvas.className = 'wf-canvas';
   const tree = document.createElement('div');
@@ -25997,6 +25943,10 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   tree.appendChild(renderWfNode(def.workflowTree, def, editable));
   canvas.appendChild(tree);
   g.appendChild(canvas);
+}
+function wfNodeCount(root) {
+  if (!root) return 0;
+  return 1 + (root.children || []).reduce((total, child) => total + wfNodeCount(child), 0);
 }
 function renderWfNode(node, def, editable) {
   const col = document.createElement('div');
@@ -26046,30 +25996,31 @@ function renderWfNode(node, def, editable) {
   if (node.model) { const s = document.createElement('span'); s.textContent = node.model; meta.appendChild(s); }
   if (meta.children.length) card.appendChild(meta);
   col.appendChild(card);
-  // Children
-  if (node.children && node.children.length) {
+  // Children and continuation controls.
+  const children = node.children || [];
+  if (children.length) {
     const conn = document.createElement('div'); conn.className = 'wf-connector';
     col.appendChild(conn);
     const childRow = document.createElement('div');
     childRow.className = 'wf-children';
-    node.children.forEach((child, i) => {
+    children.forEach((child, i) => {
       const childCol = renderWfNode(child, def, editable);
       if (node.type === 'branch') {
         const lbl = document.createElement('div');
         lbl.className = 'wf-branch-label';
         lbl.textContent = i === 0 ? 'IF' : 'ELSE';
-        childCol.appendChild(lbl);
+        childCol.insertBefore(lbl, childCol.firstChild);
       }
       childRow.appendChild(childCol);
     });
     col.appendChild(childRow);
-  } else if (editable && node.type !== 'agent') {
-    // branch/parallel with no children: show add button
-    const conn = document.createElement('div'); conn.className = 'wf-connector';
-    col.appendChild(conn);
-    col.appendChild(wfAddButton(def, node));
-  } else if (editable) {
-    // agent leaf: add button
+  }
+  const canAdd = editable && (
+    (node.type === 'agent' && children.length < 1)
+    || (node.type === 'branch' && children.length < 2)
+    || node.type === 'parallel'
+  );
+  if (canAdd) {
     const conn = document.createElement('div'); conn.className = 'wf-connector';
     col.appendChild(conn);
     col.appendChild(wfAddButton(def, node));
@@ -26078,7 +26029,12 @@ function renderWfNode(node, def, editable) {
 }
 function wfAddButton(def, parent) {
   const btn = document.createElement('button');
-  btn.type = 'button'; btn.className = 'wf-add'; btn.textContent = '+ Add step';
+  btn.type = 'button'; btn.className = 'wf-add';
+  btn.textContent = parent.type === 'parallel'
+    ? '+ Add parallel branch'
+    : parent.type === 'branch'
+      ? '+ Add missing path'
+      : '+ Add next step';
   btn.addEventListener('click', () => {
     const newNode = { id: wfNewId(), type: 'agent', label: '', prompt: '', children: [] };
     openWfNodeDialog(newNode, def, true, function () {
@@ -26110,8 +26066,10 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
   const host = document.createElement('div');
   host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
   panel.appendChild(host);
+  const draft = { ...node };
   // Type picker (only for new)
-  let nodeType = node.type || 'agent';
+  let nodeType = draft.type || 'agent';
+  let typeFields;
   if (isNew) {
     const typeField = document.createElement('div'); typeField.className = 'te-field';
     typeField.innerHTML = '<label>Type</label>';
@@ -26120,21 +26078,54 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
       const b = document.createElement('button'); b.type = 'button';
       b.innerHTML = '<strong>' + t[1] + '</strong><span>' + t[2] + '</span>';
       b.className = nodeType === t[0] ? 'active' : '';
-      b.addEventListener('click', () => { nodeType = t[0]; [...pick.children].forEach((c, i) => c.className = ['agent','branch','parallel'][i] === nodeType ? 'active' : ''); });
+      b.addEventListener('click', () => {
+        nodeType = t[0];
+        [...pick.children].forEach((c, i) => c.className = ['agent','branch','parallel'][i] === nodeType ? 'active' : '');
+        renderTypeFields();
+      });
       pick.appendChild(b);
     });
     typeField.appendChild(pick);
     host.appendChild(typeField);
   }
-  host.appendChild(teFieldLive('Label', node.label || '', function (v) { node.label = v; }));
-  if (node.type === 'agent' || isNew) {
-    host.appendChild(teFieldLive('Prompt', node.prompt || '', function (v) { node.prompt = v; }, true));
+  host.appendChild(teFieldLive('Label', draft.label || '', function (v) { draft.label = v; }, false, false));
+  typeFields = document.createElement('div');
+  typeFields.style.cssText = 'display:grid;gap:10px;';
+  host.appendChild(typeFields);
+  function renderTypeFields() {
+    if (!typeFields) return;
+    typeFields.textContent = '';
+    if (nodeType === 'agent') {
+      typeFields.appendChild(teFieldLive(
+        'Prompt',
+        draft.prompt || '',
+        function (v) { draft.prompt = v; },
+        true,
+        false,
+      ));
+    } else if (nodeType === 'branch') {
+      typeFields.appendChild(teHintField(
+        'Condition (substring)',
+        'Case-insensitive text the upstream output must contain to take the IF path.',
+        draft.condition || '',
+        function (v) { draft.condition = v; },
+        false,
+      ));
+    }
+    typeFields.appendChild(teLabeledSelect(
+      'Runtime',
+      draft.runtime || '',
+      teamRuntimeSelectOptions(),
+      function (v) { draft.runtime = v || undefined; },
+    ));
+    typeFields.appendChild(teLabeledSelect(
+      'Model',
+      draft.model || '',
+      teamModelSelectOptions(),
+      function (v) { draft.model = v; },
+    ));
   }
-  if (node.type === 'branch' || (isNew && false)) {
-    host.appendChild(teHintField('Condition (substring)', 'Case-insensitive text the upstream output must contain to take the IF branch.', node.condition || '', function (v) { node.condition = v; }));
-  }
-  host.appendChild(teLabeledSelect('Runtime', node.runtime || '', teamRuntimeSelectOptions(), function (v) { node.runtime = v || undefined; }));
-  host.appendChild(teLabeledSelect('Model', node.model || '', teamModelSelectOptions(), function (v) { node.model = v; }));
+  renderTypeFields();
   const actions = document.createElement('div');
   actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
   const cancel = document.createElement('button');
@@ -26143,7 +26134,18 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
   const save = document.createElement('button');
   save.type = 'button'; save.className = 'te-btn primary'; save.textContent = isNew ? 'Add' : 'Save';
   save.addEventListener('click', () => {
-    if (isNew) { node.type = nodeType; if (nodeType === 'branch') { node.children = [wfDefaultChild(), wfDefaultChild()]; } else { node.children = []; } if (onCreate) onCreate(); }
+    if (nodeType === 'branch' && !draft.condition?.trim()) {
+      window.alert('A Branch requires a condition for its IF path.');
+      return;
+    }
+    draft.type = nodeType;
+    if (isNew) {
+      draft.children = nodeType === 'branch' ? [wfDefaultChild(), wfDefaultChild()] : [];
+    }
+    if (nodeType !== 'agent') delete draft.prompt;
+    if (nodeType !== 'branch') delete draft.condition;
+    Object.assign(node, draft);
+    if (isNew && onCreate) onCreate();
     setTeamSavedStatus(false);
     overlay.remove();
     renderTeamGraph(def, def.name);

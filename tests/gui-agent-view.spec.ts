@@ -351,6 +351,25 @@ describe('GUI Project Agent execution view', () => {
     );
   });
 
+  it('keeps workflow draft edits clean until the node dialog is saved', () => {
+    const js = createHadamardGuiClientScript();
+    const save = js.slice(
+      js.indexOf('async function saveTeamDefinition()'),
+      js.indexOf('function renderTeamGraph()', js.indexOf('async function saveTeamDefinition()')),
+    );
+    const dialog = js.slice(
+      js.indexOf('function openWfNodeDialog(node, def, isNew, onCreate)'),
+      js.indexOf('function wfDefaultChild()', js.indexOf('function openWfNodeDialog')),
+    );
+
+    expect(save).not.toContain("view === 'chats'");
+    expect(js).toContain('function teFieldLive(label, value, onChange, textarea, markDirty = true)');
+    expect(js).toContain('if (markDirty) setTeamSavedStatus(false)');
+    expect(dialog).toContain("function (v) { draft.label = v; }, false, false");
+    expect(dialog).toContain("function (v) { draft.prompt = v; },\n        true,\n        false");
+    expect(dialog).toContain("function (v) { draft.condition = v; },\n        false");
+  });
+
   it('waits for server-side resume mutations before returning reconciliation state', () => {
     const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     const activeRoute = source.slice(

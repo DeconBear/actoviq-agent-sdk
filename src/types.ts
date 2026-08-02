@@ -2802,7 +2802,7 @@ export interface WorkflowNode {
   condition?: string;
   runtime?: string;
   model?: string;
-  /** Children: branch=[if,else], parallel=all, agent=[] (leaf). */
+  /** Children: branch=[if,else], parallel=all, agent=[] or one sequential continuation. */
   children: WorkflowNode[];
 }
 
