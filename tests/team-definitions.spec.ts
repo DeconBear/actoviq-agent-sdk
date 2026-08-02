@@ -202,6 +202,7 @@ describe('Team definitions from disk', () => {
       name: 'model-inheritance',
       mode: 'graph',
       squadType: 'workflow',
+      members: [],
       workflowTree: {
         id: 'first',
         type: 'agent',
