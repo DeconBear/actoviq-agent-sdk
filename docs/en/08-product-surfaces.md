@@ -53,7 +53,7 @@ Products should add a control only when users can make a coherent decision with 
 | Typed lifecycle hooks | Full config/runtime API | Shared `/hooks` inspection | Full editor and inspection | Layer 1 runtime; GUI is the richer editor |
 | Agent profiles and execution trees | Full API | `/agents` browsing | Picker, settings, and Project execution view | Layer 1 data, Layer 2 views |
 | Teams and Agent Workflow squads | Full API | `/team` run/attach | Agent Graph and Workflow editors | Shared persisted team definitions and execution |
-| Automation tasks | Scheduling/persistence API | `/automation list/new` | Automation list, editor, run controls | Same task file; scheduler is hosted by GUI/app server |
+| Automation tasks | Scheduling/persistence API | `/automation list/new` | Automation list, editor, run controls | Same task file; the running GUI hosts schedules, while SDK hosts may mount the scheduler API |
 | Dynamic workflow scripts | Trusted compatibility API | `/workflows` | Shared `/workflows` command | Legacy/developer surface, not the Agent Workflow editor |
 | Bridge and external CLI runtimes | Full API | `/bridge` | Composer and Settings | Shared config and lifecycle semantics |
 | Projects, issues, Manager, Assistant | Full host APIs | Shared commands | Product regions and dialogs | Shared persistence and command meaning |

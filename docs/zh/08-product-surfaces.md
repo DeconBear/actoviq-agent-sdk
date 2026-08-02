@@ -51,7 +51,7 @@ SDK 有意保留最宽的参数面。以下能力不要求在 TUI 或 GUI 中逐
 | Typed Lifecycle Hooks | 完整配置/运行时 API | 共享 `/hooks` 查看 | 完整编辑与查看 | 第一层运行时，GUI 编辑能力更强 |
 | Agent Profiles 与执行树 | 完整 API | `/agents` 浏览 | 选择器、Settings、Project 执行视图 | 第一层数据，第二层视图 |
 | Teams 与 Agent Workflow | 完整 API | `/team` 运行/挂载 | Agent Graph 与 Workflow 编辑器 | 共享 Team 定义和执行路径 |
-| Automation Tasks | 调度与持久化 API | `/automation list/new` | 列表、编辑器和运行控制 | 同一任务文件；Scheduler 由 GUI/App Server 托管 |
+| Automation Tasks | 调度与持久化 API | `/automation list/new` | 列表、编辑器和运行控制 | 同一任务文件；运行中的 GUI 托管定时调度，SDK Host 可自行挂载 Scheduler API |
 | Dynamic Workflow Script | Trusted 兼容 API | `/workflows` | 共享 `/workflows` 命令 | 旧兼容/开发者能力，不等于 Agent Workflow 编辑器 |
 | Bridge 与外部 CLI Runtime | 完整 API | `/bridge` | Composer 与 Settings | 共享配置和生命周期语义 |
 | Projects、Issues、Manager、Assistant | 完整 Host API | 共享命令 | 产品页面与对话框 | 共享持久化和命令含义 |
