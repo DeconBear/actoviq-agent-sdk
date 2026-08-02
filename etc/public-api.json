@@ -4233,6 +4233,11 @@
         "signature": "export declare function resolveSandboxPolicy(workDir: string, ...policies: Array<SandboxPolicyInput | undefined>): SandboxPolicy;"
       },
       {
+        "name": "resolveScheduledAutomationWorkflow",
+        "kind": "function",
+        "signature": "export declare function resolveScheduledAutomationWorkflow(task: Pick<ScheduledAutomationTask, 'workflowName' | 'workflowSource'>, workDir: string, homeDir?: string): ScheduledAutomationWorkflowTarget;"
+      },
+      {
         "name": "resolveSelectableAgentRun",
         "kind": "function",
         "signature": "export declare function resolveSelectableAgentRun(name: string, homeDir?: string): Promise<ResolvedAgentProfileRun & {\nselectable: SelectableAgent;\n}>;"
@@ -4505,12 +4510,17 @@
       {
         "name": "ScheduledAutomationTask",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
+        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
       },
       {
         "name": "ScheduledAutomationTaskInput",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+      },
+      {
+        "name": "ScheduledAutomationWorkflowSource",
+        "kind": "type",
+        "signature": "export type ScheduledAutomationWorkflowSource = 'agent' | 'script';"
       },
       {
         "name": "ScheduledTaskContext",
@@ -11854,6 +11864,11 @@
         "signature": "export declare function resolveSandboxPolicy(workDir: string, ...policies: Array<SandboxPolicyInput | undefined>): SandboxPolicy;"
       },
       {
+        "name": "resolveScheduledAutomationWorkflow",
+        "kind": "function",
+        "signature": "export declare function resolveScheduledAutomationWorkflow(task: Pick<ScheduledAutomationTask, 'workflowName' | 'workflowSource'>, workDir: string, homeDir?: string): ScheduledAutomationWorkflowTarget;"
+      },
+      {
         "name": "resolveSelectableAgentRun",
         "kind": "function",
         "signature": "export declare function resolveSelectableAgentRun(name: string, homeDir?: string): Promise<ResolvedAgentProfileRun & {\nselectable: SelectableAgent;\n}>;"
@@ -12146,12 +12161,17 @@
       {
         "name": "ScheduledAutomationTask",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
+        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
       },
       {
         "name": "ScheduledAutomationTaskInput",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+      },
+      {
+        "name": "ScheduledAutomationWorkflowSource",
+        "kind": "type",
+        "signature": "export type ScheduledAutomationWorkflowSource = 'agent' | 'script';"
       },
       {
         "name": "ScheduledTaskContext",
