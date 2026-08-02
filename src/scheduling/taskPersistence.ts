@@ -116,6 +116,9 @@ function normalizeScheduledAutomationTask(
   const workflowName = kind === 'workflow'
     ? normalizeText(input.workflowName) || existing?.workflowName
     : undefined;
+  const workflowSource = kind === 'workflow'
+    ? input.workflowSource ?? existing?.workflowSource
+    : undefined;
   const prompt = kind === 'prompt'
     ? normalizeText(input.prompt) || existing?.prompt
     : undefined;
@@ -147,6 +150,7 @@ function normalizeScheduledAutomationTask(
       ? { description: normalizeText(input.description) || existing?.description }
       : {}),
     ...(workflowName ? { workflowName } : {}),
+    ...(workflowSource ? { workflowSource } : {}),
     ...((kind === 'workflow' || kind === 'manager') && input.input !== undefined
       ? { input: String(input.input) }
       : (kind === 'workflow' || kind === 'manager') && existing?.input !== undefined
@@ -230,6 +234,9 @@ function coerceTask(value: unknown): ScheduledAutomationTask | undefined {
     enabled: value.enabled !== false,
     ...(normalizeText(value.description) ? { description: normalizeText(value.description) } : {}),
     ...(normalizeText(value.workflowName) ? { workflowName: normalizeText(value.workflowName) } : {}),
+    ...(value.workflowSource === 'agent' || value.workflowSource === 'script'
+      ? { workflowSource: value.workflowSource }
+      : {}),
     ...(typeof value.input === 'string' ? { input: value.input } : {}),
     ...(normalizeText(value.prompt) ? { prompt: normalizeText(value.prompt) } : {}),
     ...(trigger === 'webhook' && normalizeText(value.webhookId)

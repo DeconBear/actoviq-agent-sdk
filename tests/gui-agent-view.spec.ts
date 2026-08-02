@@ -370,6 +370,22 @@ describe('GUI Project Agent execution view', () => {
     expect(dialog).toContain("function (v) { draft.condition = v; },\n        false");
   });
 
+  it('offers Agent-page workflows when creating an Automation task', () => {
+    const js = createHadamardGuiClientScript();
+    const dialog = js.slice(
+      js.indexOf('function openAutomationDialog(task)'),
+      js.indexOf('async function loadSkillCatalog(action)'),
+    );
+
+    expect(dialog).toContain("teamListForRegion()\n        .filter(function (team) { return team.squadType === 'workflow'; })");
+    expect(dialog).not.toContain('state.snapshot.workflows');
+    expect(dialog).toContain('const state0 = task\n    ? { ...task }');
+    expect(dialog).toContain('return teFieldLive(label, value, onChange, textarea, false)');
+    expect(dialog).toContain("workflowSource: 'agent'");
+    expect(dialog).toContain('This existing task uses the legacy script runtime');
+    expect(dialog).toContain('Create and select an Agent Workflow first.');
+  });
+
   it('waits for server-side resume mutations before returning reconciliation state', () => {
     const source = readFileSync(join(import.meta.dirname, '..', 'src', 'gui', 'hadamardGui.ts'), 'utf8');
     const activeRoute = source.slice(

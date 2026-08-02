@@ -158,6 +158,7 @@ import {
   resolveIssueStorePath,
   loadWorkflow,
   listScheduledAutomationTasks,
+  resolveScheduledAutomationWorkflow,
   resolveRoutedRun,
   recordScheduledAutomationRun,
   getHadamardHomePointerPath,
@@ -3962,6 +3963,16 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   }
 
   async function saveScheduledAutomationTask(input: ScheduledAutomationTaskInput): Promise<ScheduledAutomationTask> {
+    if (input.kind === 'workflow') {
+      const existing = input.id ? await getScheduledAutomationTask(workDir, input.id) : undefined;
+      const target = {
+        workflowName: input.workflowName ?? existing?.workflowName,
+        workflowSource: input.workflowSource ?? existing?.workflowSource,
+      };
+      if (target.workflowSource === 'agent') {
+        resolveScheduledAutomationWorkflow(target, workDir, resolveGuiHomeDir());
+      }
+    }
     const task = await upsertScheduledAutomationTask(workDir, input);
     await resyncAutomationScheduler();
     return task;
@@ -3975,8 +3986,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const events: GuiRunEvent[] = [{ type: 'notice', message: `automation: ${task.name}` }];
     try {
       if (task.kind === 'workflow') {
-        if (!task.workflowName) throw new Error('Scheduled workflow task is missing workflowName');
-        const workflowEvents = await runWorkflow(task.workflowName, task.input);
+        const workflowEvents = await runScheduledAutomationWorkflow(task);
         events.push(...workflowEvents);
         const failure = workflowEvents.find(event => event.type === 'error');
         if (failure) throw new Error(String(failure.message ?? 'workflow failed'));
@@ -4002,6 +4012,27 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       await resyncAutomationScheduler();
     }
     return events;
+  }
+
+  async function runScheduledAutomationWorkflow(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
+    const target = resolveScheduledAutomationWorkflow(task, workDir, resolveGuiHomeDir());
+    if (target.source === 'script') return runWorkflow(task.workflowName!, task.input);
+
+    const definition = instantiateTeamDefinition(target.definition, session.model);
+    const abort = new AbortController();
+    const result = await runWorkflowSquad(
+      definition,
+      task.input ?? '',
+      abort.signal,
+      workDir,
+    );
+    return [
+      { type: 'notice', message: `running Agent workflow: ${definition.name}` },
+      { type: 'command.result', title: `Workflow result · ${definition.name}`, text: result.answer },
+      ...(result.incompleteReason
+        ? [{ type: 'error', message: `workflow incomplete: ${result.incompleteReason}` }]
+        : []),
+    ];
   }
 
   async function runAutomationPrompt(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
@@ -8992,6 +9023,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             enabled: body.enabled !== false,
             description: typeof body.description === 'string' ? body.description : undefined,
             workflowName: typeof body.workflowName === 'string' ? body.workflowName : undefined,
+            workflowSource: body.workflowSource === 'agent' || body.workflowSource === 'script'
+              ? body.workflowSource
+              : undefined,
             input: typeof body.input === 'string' ? body.input : undefined,
             prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
             webhookId: typeof body.webhookId === 'string' ? body.webhookId : undefined,
@@ -22620,7 +22654,15 @@ function openAutomationDialog(task) {
   panel.className = 'modal-panel auto-dialog';
   panel.style.cssText = 'max-width:560px;width:min(560px,92vw);max-height:86vh;overflow:auto;';
   const editing = !!task;
-  const state0 = task || { kind: 'workflow', trigger: 'schedule', enabled: true, cron: '0 9 * * *' };
+  const state0 = task
+    ? { ...task }
+    : { kind: 'workflow', workflowSource: 'agent', trigger: 'schedule', enabled: true, cron: '0 9 * * *' };
+  const autoField = function (label, value, onChange, textarea) {
+    return teFieldLive(label, value, onChange, textarea, false);
+  };
+  const autoHintField = function (label, hint, value, onChange) {
+    return teHintField(label, hint, value, onChange, false);
+  };
   const cfg = cronToFrequency(state0.cron);
   let freq = cfg.frequency;
   let time = cfg.time;
@@ -22636,7 +22678,7 @@ function openAutomationDialog(task) {
   const host = document.createElement('div');
   host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
   panel.appendChild(host);
-  const name = teFieldLive('Name', state0.name || '', function (v) { state0.name = v; });
+  const name = autoField('Name', state0.name || '', function (v) { state0.name = v; });
   host.appendChild(name);
   host.appendChild(teSelect('Kind', state0.kind || 'workflow', ['workflow', 'prompt', 'manager'], function (v) {
     state0.kind = v;
@@ -22659,9 +22701,9 @@ function openAutomationDialog(task) {
       urlBox.className = 'te-field';
       urlBox.innerHTML = '<label>Webhook URL</label><div class="auto-webhook-url">' + escHtml(url) + '</div>';
       triggerHost.appendChild(urlBox);
-      triggerHost.appendChild(teFieldLive('Webhook id', webhookId, function (v) { /* id is part of URL; keep stable */ }, false));
-      triggerHost.appendChild(teHintField('Secret (optional, verified via x-webhook-secret header)', 'Leave empty to allow unauthenticated calls.', state0.webhookSecret || '', function (v) { state0.webhookSecret = v.trim() || undefined; }));
-      triggerHost.appendChild(teHintField('Body filter (optional, case-insensitive substring)', 'Only fire when the request body contains this text.', state0.webhookFilter || '', function (v) { state0.webhookFilter = v.trim() || undefined; }));
+      triggerHost.appendChild(autoField('Webhook id', webhookId, function (v) { /* id is part of URL; keep stable */ }, false));
+      triggerHost.appendChild(autoHintField('Secret (optional, verified via x-webhook-secret header)', 'Leave empty to allow unauthenticated calls.', state0.webhookSecret || '', function (v) { state0.webhookSecret = v.trim() || undefined; }));
+      triggerHost.appendChild(autoHintField('Body filter (optional, case-insensitive substring)', 'Only fire when the request body contains this text.', state0.webhookFilter || '', function (v) { state0.webhookFilter = v.trim() || undefined; }));
       return;
     }
     // schedule
@@ -22681,7 +22723,7 @@ function openAutomationDialog(task) {
     freqRow.appendChild(btns);
     triggerHost.appendChild(freqRow);
     if (freq !== 'custom') {
-      triggerHost.appendChild(teHintField('Time (HH:MM, 24h)', 'Run at this time.', time, function (v) { time = v; }));
+      triggerHost.appendChild(autoHintField('Time (HH:MM, 24h)', 'Run at this time.', time, function (v) { time = v; }));
     }
     if (freq === 'weekly') {
       const dowField = document.createElement('div');
@@ -22711,21 +22753,48 @@ function openAutomationDialog(task) {
       triggerHost.appendChild(dowField);
     }
     if (freq === 'custom') {
-      triggerHost.appendChild(teHintField('Cron expression (min hour dom mon dow)', 'Standard 5-field cron.', state0.cron || '', function (v) { customCron = v; }));
+      triggerHost.appendChild(autoHintField('Cron expression (min hour dom mon dow)', 'Standard 5-field cron.', state0.cron || '', function (v) { customCron = v; }));
     }
   }
   function rebuildActionFields() {
     actionHost.textContent = '';
     const k = state0.kind || 'workflow';
     if (k === 'workflow') {
-      const workflows = (state.snapshot && state.snapshot.workflows) || [];
-      const names = workflows.map(function (w) { return w.name; });
-      actionHost.appendChild(teSelect('Workflow', state0.workflowName || (names[0] || ''), names, function (v) { state0.workflowName = v; if (!state0.name) { state0.name = v; name.querySelector('input').value = v; } }));
-      actionHost.appendChild(teHintField('Input (optional)', 'Workflow input text.', state0.input || '', function (v) { state0.input = v; }));
+      const names = teamListForRegion()
+        .filter(function (team) { return team.squadType === 'workflow'; })
+        .map(function (team) { return team.name; });
+      const legacyName = state0.workflowSource !== 'agent' ? state0.workflowName : '';
+      const choices = legacyName && names.indexOf(legacyName) < 0 ? [legacyName].concat(names) : names;
+      if (!choices.length) {
+        state0.workflowName = '';
+        state0.workflowSource = 'agent';
+        const empty = document.createElement('p');
+        empty.className = 'te-hint';
+        empty.textContent = 'Create and save a Workflow on the Agent page before adding this Automation task.';
+        actionHost.appendChild(empty);
+      } else {
+        const selected = state0.workflowName && choices.indexOf(state0.workflowName) >= 0
+          ? state0.workflowName
+          : choices[0];
+        state0.workflowName = selected;
+        if (!legacyName || selected !== legacyName) state0.workflowSource = 'agent';
+        actionHost.appendChild(teSelect('Workflow', selected, choices, function (v) {
+          state0.workflowName = v;
+          state0.workflowSource = legacyName && v === legacyName ? undefined : 'agent';
+          if (!state0.name) { state0.name = v; name.querySelector('input').value = v; }
+        }));
+        if (legacyName) {
+          const legacyHint = document.createElement('p');
+          legacyHint.className = 'te-hint';
+          legacyHint.textContent = 'This existing task uses the legacy script runtime. Select an Agent Workflow to migrate it.';
+          actionHost.appendChild(legacyHint);
+        }
+      }
+      actionHost.appendChild(autoHintField('Input (optional)', 'Workflow input text.', state0.input || '', function (v) { state0.input = v; }));
     } else if (k === 'prompt') {
-      actionHost.appendChild(teFieldLive('Prompt', state0.prompt || '', function (v) { state0.prompt = v; if (!state0.name) { state0.name = v.slice(0, 48); name.querySelector('input').value = state0.name; } }, true));
+      actionHost.appendChild(autoField('Prompt', state0.prompt || '', function (v) { state0.prompt = v; if (!state0.name) { state0.name = v.slice(0, 48); name.querySelector('input').value = state0.name; } }, true));
     } else {
-      actionHost.appendChild(teHintField('Instruction (optional)', 'Manager update instruction.', state0.input || '', function (v) { state0.input = v; }));
+      actionHost.appendChild(autoHintField('Instruction (optional)', 'Manager update instruction.', state0.input || '', function (v) { state0.input = v; }));
     }
   }
   rebuildTriggerFields();
@@ -22744,10 +22813,11 @@ function openAutomationDialog(task) {
   save.addEventListener('click', async function () {
     const cron = trigger === 'webhook' ? '' : (freq === 'custom' ? customCron.trim() : frequencyToCron(freq, time, days));
     if (trigger === 'schedule' && !cron) { window.alert('Please provide a valid cron expression.'); return; }
+    if (state0.kind === 'workflow' && !state0.workflowName) { window.alert('Create and select an Agent Workflow first.'); return; }
     const body = {
       id: state0.id, name: state0.name, kind: state0.kind, trigger: trigger,
       cron: cron, enabled: state0.enabled !== false,
-      workflowName: state0.workflowName, input: state0.input, prompt: state0.prompt,
+      workflowName: state0.workflowName, workflowSource: state0.workflowSource, input: state0.input, prompt: state0.prompt,
       webhookId: trigger === 'webhook' ? webhookId : undefined,
       webhookSecret: state0.webhookSecret, webhookFilter: state0.webhookFilter,
       scope: state0.scope || 'global',

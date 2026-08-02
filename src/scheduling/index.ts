@@ -1,6 +1,10 @@
 export { parseCron, nextCronTime, msUntilNextCron } from './cron.js';
 export { TaskScheduler, InMemoryTaskStore } from './scheduler.js';
 export { DurableAgentScheduler } from './durableAgentScheduler.js';
+export {
+  resolveScheduledAutomationWorkflow,
+  type ScheduledAutomationWorkflowTarget,
+} from './automationWorkflow.js';
 export type {
   DurableAgentSchedulerOptions,
   DurableBackgroundSpawner,

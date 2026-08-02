@@ -28,6 +28,7 @@ describe('scheduled automation persistence', () => {
       kind: 'workflow',
       cron: '0 9 * * *',
       workflowName: 'review',
+      workflowSource: 'agent',
       input: 'summarize overnight changes',
     });
 
@@ -41,6 +42,7 @@ describe('scheduled automation persistence', () => {
       name: 'Daily review',
       kind: 'workflow',
       workflowName: 'review',
+      workflowSource: 'agent',
       input: 'summarize overnight changes',
     });
 

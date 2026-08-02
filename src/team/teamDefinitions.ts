@@ -146,6 +146,11 @@ export function getBuiltInTeamDefinition(name: string): TeamDefinition | undefin
 export function instantiateTeamDefinition(definition: TeamDefinition, model: string): TeamDefinition {
   const fill = (member?: TeamMember): TeamMember | undefined =>
     member ? { ...member, model: member.model || model } : undefined;
+  const fillWorkflow = (node: NonNullable<TeamDefinition['workflowTree']>): NonNullable<TeamDefinition['workflowTree']> => ({
+    ...node,
+    ...(node.type === 'agent' ? { model: node.model || model } : {}),
+    children: node.children.map(fillWorkflow),
+  });
   const def = structuredClone(definition);
   def.members = (def.members ?? []).map((m) => fill(m)!);
   def.primary = fill(def.primary);
@@ -153,6 +158,7 @@ export function instantiateTeamDefinition(definition: TeamDefinition, model: str
   def.nodes = def.nodes?.map((n) =>
     graphNodeKind(n) === 'agent' ? { ...n, model: n.model || model } : n,
   );
+  if (def.workflowTree) def.workflowTree = fillWorkflow(def.workflowTree);
   return def;
 }
 

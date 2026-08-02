@@ -2257,6 +2257,7 @@ export interface TaskSchedulerOptions {
 }
 
 export type ScheduledAutomationKind = 'workflow' | 'prompt' | 'manager';
+export type ScheduledAutomationWorkflowSource = 'agent' | 'script';
 
 /** How an automation task is fired. */
 export type AutomationTriggerType = 'schedule' | 'webhook';
@@ -2278,6 +2279,8 @@ export interface ScheduledAutomationTask {
   enabled: boolean;
   description?: string;
   workflowName?: string;
+  /** Agent-page workflow for new tasks; absent/script preserves the legacy script runtime. */
+  workflowSource?: ScheduledAutomationWorkflowSource;
   input?: string;
   prompt?: string;
   /** Webhook: unique token in the webhook URL (trigger==='webhook'). */
@@ -2307,6 +2310,7 @@ export interface ScheduledAutomationTaskInput {
   enabled?: boolean;
   description?: string;
   workflowName?: string;
+  workflowSource?: ScheduledAutomationWorkflowSource;
   input?: string;
   prompt?: string;
   webhookId?: string;
