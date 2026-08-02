@@ -6,6 +6,30 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ## Unreleased
 
+## v0.4.11 - 2026-08-02
+
+### Features
+
+- feat(gui): streamline model and profile configuration (#14)
+- feat(review): three-layer progressive review panel with AI summary (Summary / Changes / Diff tabs, commit picker, one-shot model call)
+- feat(scheduling): automation workflow target resolution and leased execution
+- feat(team): workflow squad tree validation and execution engine (agent / branch / parallel nodes)
+- feat(runtime): safety checks for catastrophic shell commands with explicit approval mechanism
+- feat(tui): `/automation` command and typed hooks display
+
+### Fixes
+
+- fix(gui): scroll transcript to bottom when entering a session (virtual hydrate path)
+
+### Internal
+
+- CLI convergence: remove `hadamard-react` and `bridge-interactive-agent` CLIs; interactive terminal unified into TUI
+- Add `topP` sampling parameter passthrough across types / conversationEngine / agentClient / OpenAI provider
+- Agent client lifecycle hooks (SessionEnd / WorktreeCreate / WorktreeRemove) and idempotent close
+- Hook config: URL allowlist validation, regex legality check, duplicate id guard
+
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.4.10...v0.4.11
+
 ## v0.4.10 - 2026-07-31
 
 ### Product / docs
