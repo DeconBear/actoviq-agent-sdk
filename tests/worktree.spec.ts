@@ -57,7 +57,7 @@ describe('WorktreeService', () => {
 
       expect(service.currentWorkDir).toBe(path.resolve(repoDir));
     } finally {
-      await rm(repoDir, { recursive: true, force: true });
+      await rm(repoDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });
