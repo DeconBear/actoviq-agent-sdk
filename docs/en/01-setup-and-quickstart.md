@@ -101,23 +101,7 @@ try {
 }
 ```
 
-## 4. CLI REPL (scrollback-mode)
-
-The package includes a built-in interactive REPL. After installing, you can start it directly:
-
-```bash
-npx hadamard-react [work-dir]
-```
-
-This launches a readline-based agent in the main terminal buffer:
-- Type messages directly and see streaming responses
-- Use `/` slash commands: `/help`, `/clear`, `/compact`, `/memory`, `/model`, `/tools`, `/dream`, `/exit`
-- Tab completion for commands, ↑↓ for history
-- Ctrl+C once to abort the current request, twice to exit
-
-**Important:** `hadamard-react` is a lightweight scrollback REPL. It is **not a full TUI** — there is no alternate screen buffer, no ScrollBox, and no rich terminal rendering. It is intended for quick interaction and debugging. For the full terminal UI, use `hadamard-tui`.
-
-## 5. Terminal UI (TUI)
+## 4. CLI / Terminal UI
 
 The package also includes the full Hadamard SDK terminal UI:
 
@@ -149,11 +133,11 @@ Use it when you want a richer terminal experience:
 - `/output-style` picks concise/explanatory/learning response styles; `/hooks` lists configured PreToolUse hooks (settings.json); `/mcp add`/`/mcp remove` manage stdio MCP servers (~/.hadamard/mcp.json).
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
-Both `hadamard-react` and `hadamard-tui` use the same Hadamard SDK defaults: `~/.hadamard/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured.
+`hadamard-tui` is the package's only interactive terminal agent entry point. It uses the Hadamard SDK defaults: `~/.hadamard/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured. The former `hadamard-react` and `hadamard-interactive-agent` commands were retired after their capabilities were consolidated into the TUI.
 
 When `sessionDirectory` is not set explicitly, sessions are isolated by workspace under `~/.hadamard/projects/<workspace-key>`.
 
-## 6. Run the repository quickstart
+## 5. Run the repository quickstart
 
 ```bash
 npm run example:hadamard-quickstart
@@ -163,7 +147,7 @@ Reference:
 
 - [examples/hadamard-quickstart.ts](../../examples/hadamard-quickstart.ts)
 
-## 7. Minimal streaming chat bot
+## 6. Minimal streaming chat bot
 
 This is the smallest useful streaming chat loop. Once you connect your own API JSON, you can use it as a simple terminal chat bot.
 
@@ -207,7 +191,7 @@ try {
 }
 ```
 
-## 8. Next steps
+## 7. Next steps
 
 Continue to the next chapter to learn about streaming, sessions, and tool use.
 

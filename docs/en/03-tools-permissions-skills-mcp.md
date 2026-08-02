@@ -236,6 +236,32 @@ const sdk = await createAgentSdk({
 });
 ```
 
+## Lifecycle hooks
+
+Use `typedHooks` in `settings.json`, or Settings > Hooks in the desktop app, to run a command, model-evaluated prompt, or HTTP callback during runtime lifecycle events. Supported events are `SessionStart`, `SessionEnd`, `TurnStart`, `TurnEnd`, `ModelRequest`, `ModelResponse`, `PreToolUse`, `PostToolUse`, `PermissionDecision`, `Compact`, `Stop`, `WorktreeCreate`, and `WorktreeRemove`.
+
+Each hook has a unique `id`, an event, a handler, and optional `matcher`, `timeoutMs`, `enabled`, and `errorPolicy` fields. Matchers are regular expressions. HTTP callbacks require HTTPS except for loopback development URLs. Command handlers execute an executable plus arguments directly rather than through a shell.
+
+```json
+{
+  "typedHooks": [
+    {
+      "id": "audit-bash",
+      "event": "PostToolUse",
+      "matcher": "^Bash$",
+      "handler": {
+        "type": "http",
+        "url": "https://example.com/hadamard-hook"
+      },
+      "timeoutMs": 5000,
+      "errorPolicy": "continue"
+    }
+  ]
+}
+```
+
+The older `hooks.PreToolUse`, `hooks.PostToolUse`, and `hooks.SessionStart` shell-command format remains supported for compatibility. Prefer `typedHooks` for new configurations.
+
 Repository examples:
 
 - [examples/hadamard-file-tools.ts](../../examples/hadamard-file-tools.ts)

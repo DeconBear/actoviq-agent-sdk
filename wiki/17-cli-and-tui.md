@@ -2,17 +2,9 @@
 
 ## Architecture
 
-Two interactive surfaces: a lightweight scrollback REPL (`hadamard-react`) and
-a full terminal UI (`hadamard-tui`). Both use the same SDK runtime but differ
-in rendering approach.
-
-| | hadamard-react | hadamard-tui |
-|---|---|---|
-| **Rendering** | Native scrollback (readline) | Alternate screen buffer (full TUI) |
-| **Input** | readline with history | Custom key handling |
-| **Streaming** | Inline text + tool indicators | Redrawable panels |
-| **Slash commands** | Inline parsing | Searchable menu |
-| **Complexity** | ~370 lines | ~1000+ lines |
+`hadamard-tui` is the sole interactive terminal Agent. It combines native
+scrollback, custom key handling, streaming tool state, and the searchable
+shared slash-command surface used by the GUI.
 
 ## Module Design
 
@@ -20,46 +12,10 @@ in rendering approach.
 
 | File | Role |
 |---|---|
-| `cli/hadamard-react.ts` | Scrollback REPL (~370 lines) |
 | `cli/hadamard-tui.ts` | TUI entry point |
-| `tui/hadamardTui.ts` | Full TUI implementation (~1000+ lines) |
+| `tui/hadamardTui.ts` | Full TUI implementation |
 | `tui/transcript.ts` | Transcript rendering |
-| `runtime/hadamardSlashCommands.ts` | Slash command registry + formatting |
-
-### `hadamard-react` — Scrollback REPL
-
-Location: `src/cli/hadamard-react.ts`
-
-```
-main()
-    ├── Load config (explicit path or default settings.json)
-    ├── createAgentSdk({ workDir, tools, permissionMode })
-    ├── createSession({ title, permissionMode })
-    │
-    ├── readline interface (completer: slash commands)
-    │   ├── Tab → complete slash commands
-    │   ├── ↑↓ → input history
-    │   └── Ctrl+C (×2) → exit
-    │
-    ├── Slash commands (inline parsing)
-    │   ├── /help, /clear, /exit
-    │   ├── /model, /permissions, /sessions, /resume
-    │   ├── /tools, /memory, /compact, /dream
-    │   └── /model <name> → switch model
-    │
-    └── Message processing (processMsg)
-        ├── session.stream(text, { systemPrompt, signal, model, permissionMode })
-        ├── Event handling:
-        │   ├── request.started → show iteration number
-        │   ├── response.text.delta → write to stdout
-        │   ├── response.content (thinking) → dimmed prefix
-        │   ├── tool.call → "⚡ ToolName(args)" in yellow
-        │   ├── tool.progress → inline status message
-        │   ├── tool.result → "✓/✗ duration output" 
-        │   ├── session.compacted → context compacted notice
-        │   └── error → error message
-        └── Abort: Ctrl+C → abortCtrl.abort()
-```
+| `ui/commandSurface.ts` | Shared TUI/GUI command registry and subcommands |
 
 ### Config Loading Behavior
 
@@ -80,7 +36,7 @@ try { await loadDefaultHadamardSettings(); } catch (e) {
 }
 ```
 
-### `hadamard-tui` — Full Terminal UI
+### Terminal UI
 
 Location: `src/tui/hadamardTui.ts`
 

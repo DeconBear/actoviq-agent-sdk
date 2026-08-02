@@ -6,7 +6,7 @@
  * rendering (no React/Ink).
  */
 import { execSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as readline from 'node:readline';
@@ -53,6 +53,7 @@ import {
   isIssueStorageMode,
   listProjectIssues,
   listScheduledAutomationTasks,
+  upsertScheduledAutomationTask,
   resolveHadamardHome,
   externalSkillPreferencesToRuntimeOptions,
   readHadamardExternalSkillPreferences,
@@ -84,6 +85,7 @@ import {
   resolveHadamardSettingsStore,
 } from '../config/hadamardSettingsStore.js';
 import { createPreToolUseHookClassifier, readPreToolUseHooks, readPostToolUseHooks, runPostToolUseHooks, readSessionStartHooks, runSessionStartHooks } from '../hooks/userHooks.js';
+import { parseTypedHooks } from '../hooks/hookConfig.js';
 import type {
   HadamardEffort,
   HadamardRunEffort,
@@ -129,6 +131,7 @@ import {
   HADAMARD_INTERACTIVE_COMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  interactiveCommandUsage,
   selectInteractiveCommand,
 } from '../ui/commandSurface.js';
 import {
@@ -174,14 +177,6 @@ const MANAGED_PLUGIN_FINAL_CLOSE_TIMEOUT_MS = 35_000;
 
 /** Core tools that mutate state and require approval in 'default' mode. */
 const MUTATING_TOOLS = new Set(['Bash', 'Write', 'Edit', 'NotebookEdit']);
-const PERMISSION_MODES = new Set<HadamardPermissionMode>([
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions',
-  'auto',
-]);
-
 export const TUI_SLASH_COMMANDS = HADAMARD_INTERACTIVE_COMMANDS;
 
 function errorMessage(error: unknown): string {
@@ -1978,43 +1973,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
   // ── Slash commands ─────────────────────────────────────────────────
 
   function commandUsage(name: string): string {
-    const usage: Record<string, string> = {
-      help: '/help',
-      clear: '/clear',
-      init: '/init',
-      compact: '/compact [summary instructions]',
-      memory: '/memory',
-      context: '/context',
-      cost: '/cost',
-      usage: '/usage',
-      doctor: '/doctor',
-      batch: '/batch <file>',
-      goal: '/goal [objective|clear|pause|resume]',
-      review: '/review',
-      stats: '/stats',
-      export: '/export [filename]',
-      model: '/model [model|min|medium|max|default|config|router]',
-      effort: '/effort [low|medium|high|max|auto]',
-      'output-style': '/output-style [default|concise|explanatory|learning]',
-      permissions: '/permissions [default|acceptEdits|plan|bypassPermissions|auto]',
-      plan: '/plan [off|open|view]',
-      rewind: '/rewind <N>',
-      sessions: '/sessions',
-      resume: '/resume [session-id]',
-      tools: '/tools',
-      skills: '/skills',
-      agents: '/agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]',
-      mcp: '/mcp',
-      hooks: '/hooks',
-      plugins: '/plugins',
-      dream: '/dream [run|status]',
-      workflows: '/workflows [run <name>|list]',
-      worktree: '/worktree [enter <name>|exit|list]',
-      team: '/team [ask <name> <prompt>|list]',
-      issues: '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]',
-      exit: '/exit',
-    };
-    return usage[name] ?? `/${name}`;
+    return interactiveCommandUsage(name);
   }
 
   async function resumeSession(
@@ -3329,10 +3288,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     return GoalService.forSession(session);
   }
 
-  async function getGoal() {
-    return goalService().read();
-  }
-
   async function setGoal(objective: string): Promise<void> {
     await goalService().create({ objective });
   }
@@ -4299,8 +4254,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         case 'stats': {
-          const now = Date.now();
-          const uptime = Math.max(0, Math.round((now - (runStartedAt || now)) / 1000));
           const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
           appendStatic([
             `${A.bold}Session stats${A.reset}`,
@@ -4403,24 +4356,27 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           await showMcp();
           return;
         case 'hooks': {
-          // List configured hooks from settings.json (gap #2). Hooks are read
-          // live from the hooks.PreToolUse[], hooks.PostToolUse[], and
-          // hooks.SessionStart[] blocks.
-          const preHooks = readPreToolUseHooks(getLoadedJsonConfig()?.raw);
-          const postHooks = readPostToolUseHooks(getLoadedJsonConfig()?.raw);
-          const startHooks = readSessionStartHooks(getLoadedJsonConfig()?.raw);
-          const total = preHooks.length + postHooks.length + startHooks.length;
+          const raw = getLoadedJsonConfig()?.raw;
+          const typedHooks = parseTypedHooks(raw?.typedHooks);
+          const preHooks = readPreToolUseHooks(raw);
+          const postHooks = readPostToolUseHooks(raw);
+          const startHooks = readSessionStartHooks(raw);
+          const total = typedHooks.hooks.length + preHooks.length + postHooks.length + startHooks.length;
           if (total === 0) {
             appendStatic([
               ...formatInfoLine('no hooks configured'),
-              ...formatInfoLine('add to ~/.hadamard/settings.json: "{ hooks: { PreToolUse: [...], PostToolUse: [...], SessionStart: [...] } }"'),
-              `  ${A.dim}PreToolUse:   { "matcher": "Bash", "command": "echo checking $HADAMARD_HOOK_TOOL" }${A.reset}`,
-              `  ${A.dim}PostToolUse:  { "matcher": "*", "command": "notify-tool-complete" }  (fire-and-forget)${A.reset}`,
-              `  ${A.dim}SessionStart: { "command": "echo session started" }  (fire-and-forget)${A.reset}`,
+              ...formatInfoLine('open GUI Settings > Hooks or add typedHooks to ~/.hadamard/settings.json'),
               '',
             ]);
           } else {
             const lines: string[] = [`${A.bold}Hooks${A.reset} ${A.dim}(${total})${A.reset}`];
+            if (typedHooks.hooks.length > 0) {
+              lines.push(`${A.bold}  Lifecycle${A.reset} ${A.dim}(${typedHooks.hooks.length})${A.reset}`);
+              typedHooks.hooks.forEach((hook, index) => lines.push(
+                `    ${A.dim}${index + 1}.${A.reset} ${A.bold}${hook.id}${A.reset} ${hook.event} ${A.dim}-> ${hook.handler.type}${A.reset}`,
+              ));
+            }
+            typedHooks.issues.forEach(issue => lines.push(`    ${A.yellow}[invalid] ${issue}${A.reset}`));
             if (preHooks.length > 0) {
               lines.push(`${A.bold}  PreToolUse${A.reset} ${A.dim}(${preHooks.length}) — blocks tool on non-zero exit or "BLOCK" stdout${A.reset}`);
               preHooks.forEach((h, i) => lines.push(`    ${A.dim}${i + 1}.${A.reset} ${A.bold}${h.matcher}${A.reset} ${A.dim}→${A.reset} ${truncateToWidth(h.command, 50)}`));
@@ -4478,6 +4434,95 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         // ── v0.5.0: Dynamic Workflows ────────────────────────────
+        case 'automation': {
+          if (!args || args === 'list') {
+            const tasks = await listScheduledAutomationTasks(sdk.config.workDir);
+            appendStatic([
+              ...formatInfoLine(tasks.length ? `Automation tasks (${tasks.length})` : 'No automation tasks configured.'),
+              ...tasks.map(task => `  ${A.bold}${task.name}${A.reset} ${A.dim}· ${task.kind} · ${task.trigger ?? 'schedule'} · ${task.enabled ? 'enabled' : 'paused'}${A.reset}`),
+              '',
+            ]);
+            return;
+          }
+          if (args !== 'new') {
+            appendStatic([...formatErrorLine('usage: /automation [list|new]'), '']);
+            return;
+          }
+
+          const kind = await selectItem({
+            title: 'New automation task',
+            subtitle: 'Choose what the task runs',
+            items: [
+              { id: 'workflow', label: 'Agent Workflow', description: 'Run a Workflow saved on the Agent page' },
+              { id: 'prompt', label: 'Prompt', description: 'Run one background prompt' },
+              { id: 'manager', label: 'Manager update', description: 'Update project progress' },
+            ],
+          });
+          if (kind !== 'workflow' && kind !== 'prompt' && kind !== 'manager') return;
+
+          let workflowName: string | undefined;
+          let workflowSource: 'agent' | undefined;
+          let input: string | undefined;
+          let prompt: string | undefined;
+          if (kind === 'workflow') {
+            const workflows = listTeamDefinitions(sdk.config.workDir, sdk.config.homeDir)
+              .filter(team => team.definition.squadType === 'workflow');
+            if (!workflows.length) {
+              appendStatic([...formatErrorLine('Create and save a Workflow on the Agent page first.'), '']);
+              return;
+            }
+            workflowName = await selectItem({
+              title: 'Agent Workflow',
+              items: workflows.map(workflow => ({
+                id: workflow.name,
+                label: workflow.name,
+                description: `${workflow.source} · ${workflow.definition.description ?? ''}`,
+              })),
+            });
+            if (!workflowName) return;
+            workflowSource = 'agent';
+            input = (await promptText({ title: workflowName, label: 'Input (optional)' }))?.trim() || undefined;
+          } else if (kind === 'prompt') {
+            prompt = (await promptText({ title: 'Prompt automation', label: 'Prompt' }))?.trim();
+            if (!prompt) return;
+          } else {
+            input = (await promptText({ title: 'Manager update', label: 'Instruction (optional)' }))?.trim() || undefined;
+          }
+
+          const trigger = await selectItem({
+            title: 'Trigger',
+            items: [
+              { id: 'schedule', label: 'Schedule', description: 'Run from a cron expression' },
+              { id: 'webhook', label: 'Webhook', description: 'Run when its local webhook URL is called' },
+            ],
+          });
+          if (trigger !== 'schedule' && trigger !== 'webhook') return;
+          const cron = trigger === 'schedule'
+            ? (await promptText({ title: 'Schedule', label: 'Cron', initial: '0 9 * * *', description: 'min hour day month weekday' }))?.trim()
+            : '';
+          if (trigger === 'schedule' && !cron) return;
+          const defaultName = workflowName ?? (prompt ? prompt.slice(0, 48) : 'Manager progress update');
+          const taskName = (await promptText({ title: 'Automation task', label: 'Name', initial: defaultName }))?.trim();
+          if (!taskName) return;
+          try {
+            const task = await upsertScheduledAutomationTask(sdk.config.workDir, {
+              name: taskName,
+              kind,
+              trigger,
+              cron,
+              enabled: true,
+              workflowName,
+              workflowSource,
+              input,
+              prompt,
+              ...(trigger === 'webhook' ? { webhookId: `wh-${randomUUID().slice(0, 8)}` } : {}),
+            });
+            appendStatic([...formatInfoLine(`Automation task saved: ${task.name}`), '']);
+          } catch (error) {
+            appendStatic([...formatErrorLine(errorMessage(error)), '']);
+          }
+          return;
+        }
         case 'workflows': {
           const runSavedWorkflow = async (wfName: string, wfTask?: string): Promise<void> => {
             const wf = loadWorkflow(wfName, sdk.config.workDir);
@@ -4534,6 +4579,10 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
               runSpace === -1 ? runRest : runRest.slice(0, runSpace),
               runSpace === -1 ? undefined : runRest.slice(runSpace + 1).trim(),
             );
+            return;
+          }
+          if (args && args !== 'list') {
+            appendStatic([...formatErrorLine('usage: /workflows [list|run <name> [task]]'), '']);
             return;
           }
 

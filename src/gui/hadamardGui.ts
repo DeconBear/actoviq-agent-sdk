@@ -10,6 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { captureDesktopScreenshot } from '../computer/hadamardComputerUse.js';
 import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
 import {
@@ -157,6 +158,7 @@ import {
   resolveIssueStorePath,
   loadWorkflow,
   listScheduledAutomationTasks,
+  resolveScheduledAutomationWorkflow,
   resolveRoutedRun,
   recordScheduledAutomationRun,
   getHadamardHomePointerPath,
@@ -181,7 +183,6 @@ import {
   getScheduledAutomationTask,
   listAgentProfiles,
   listSelectableAgents,
-  matchSelectableAgent,
   resolveSelectableAgentRun,
   agentProfileRunOverrides,
   transitionProjectIssue,
@@ -198,7 +199,6 @@ import {
   type HadamardAgentClient,
   type AgentProfile,
   type ManagerConfig,
-  type SelectableAgent,
   type IssueCommentKind,
   type IssueStorageMode,
   type ProjectIssue,
@@ -210,7 +210,6 @@ import {
   maskApiKey,
   readBridgeConfigs,
   removeBridgeConfig,
-  runtimeToProvider,
   isManagedExternalCliRuntime,
   VALID_RUNTIMES,
   type BridgeRuntime,
@@ -267,6 +266,10 @@ import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/
 import { estimateCost } from '../team/pricing.js';
 import { AgentPool } from '../team/agentPool.js';
 import { runMemberAgent } from '../team/teamRuntime.js';
+import {
+  runWorkflowSquad,
+  validateWorkflowSquad,
+} from '../team/workflowSquad.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
@@ -288,9 +291,9 @@ import {
   runSessionStartHooks,
   toSettingsHooksBlock,
 } from '../hooks/userHooks.js';
+import { parseTypedHooks } from '../hooks/hookConfig.js';
 import { clearLoadedJsonConfig, getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
-  encodeHadamardProjectPath,
   getHadamardProjectSessionDirectory,
   migrateLegacyHadamardProjectData,
 } from '../config/projectSessionDirectory.js';
@@ -313,7 +316,10 @@ import {
   type AppUpdateController,
 } from '../update/appUpdateService.js';
 import { discoverHadamardPlugins } from '../tui/pluginCatalog.js';
-import { HADAMARD_INTERACTIVE_COMMANDS } from '../ui/commandSurface.js';
+import {
+  HADAMARD_INTERACTIVE_COMMANDS,
+  interactiveCommandUsage,
+} from '../ui/commandSurface.js';
 import {
   createAgentExecutionProjectView,
   createAgentExecutionRootView,
@@ -376,8 +382,6 @@ import type {
   SessionCreateOptions,
   SessionResumeOptions,
   ModelTeamResult,
-  ModelTeamMode,
-  WorkflowNode,
   StoredSession,
 } from '../types.js';
 import { AgentSession } from '../runtime/agentSession.js';
@@ -645,7 +649,31 @@ interface GuiPreferences {
   showProviderConfigsInComposer: boolean;
   showAgentProfilesInComposer: boolean;
   showRouterProfilesInComposer: boolean;
+  shortcuts: GuiShortcuts;
 }
+
+type GuiShortcutAction =
+  | 'newChat'
+  | 'cycleModel'
+  | 'openReview'
+  | 'openBrowser'
+  | 'openFiles'
+  | 'toggleTerminal'
+  | 'openSettings'
+  | 'takeScreenshot';
+
+type GuiShortcuts = Record<GuiShortcutAction, string>;
+
+const DEFAULT_GUI_SHORTCUTS: GuiShortcuts = {
+  newChat: 'Mod+N',
+  cycleModel: 'Mod+/',
+  openReview: 'Mod+Shift+G',
+  openBrowser: 'Mod+T',
+  openFiles: 'Mod+P',
+  toggleTerminal: 'Mod+Backquote',
+  openSettings: 'Mod+,',
+  takeScreenshot: 'Mod+Shift+S',
+};
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   workMode: 'coding',
@@ -659,6 +687,7 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   showProviderConfigsInComposer: true,
   showAgentProfilesInComposer: true,
   showRouterProfilesInComposer: true,
+  shortcuts: DEFAULT_GUI_SHORTCUTS,
 };
 
 function isOutputStyleId(value: unknown): value is OutputStyleId {
@@ -798,18 +827,7 @@ function expandImageRefs(text: string, workDir: string): string | ContentBlockPa
 }
 
 function commandUsage(command: string): string {
-  switch (command) {
-    case 'model': return '/model [config|router [name|off]|<model>|default]';
-    case 'effort': return '/effort [auto|low|medium|high|max]';
-    case 'permissions': return '/permissions [read-only|workspace|full]';
-    case 'resume': return '/resume [session-id]';
-    case 'dream': return '/dream [status|run]';
-    case 'workflows': return '/workflows [run <name> [input]]';
-    case 'worktree': return '/worktree [enter <name>|exit|list]';
-    case 'team': return '/team [list|attach <name>|off|ask <name> <prompt>|clone <source> <new>|status]';
-    case 'issues': return '/issues [list|show <id>|create <title>|start <id> [agent-profile]|review <id>|done <id>|block <id>]';
-    default: return `/${command}`;
-  }
+  return interactiveCommandUsage(command);
 }
 
 function guiIcon(name: string): string {
@@ -833,7 +851,6 @@ function guiIcon(name: string): string {
     computer: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/>',
     drive: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/>',
     dashboard: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
-    environment: '<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     gear: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.8 1.8 0 0 0 15 19.4a1.8 1.8 0 0 0-1 .6 1.8 1.8 0 0 0-.42 1.12V21a2 2 0 1 1-4 0v-.09A1.8 1.8 0 0 0 8.6 19.4a1.8 1.8 0 0 0-1.98.36l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-.6-1 1.8 1.8 0 0 0-1.12-.42H3a2 2 0 1 1 0-4h.09A1.8 1.8 0 0 0 4.6 8.6a1.8 1.8 0 0 0-.36-1.98l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.8 1.8 0 0 0 9 4.6a1.8 1.8 0 0 0 1-.6 1.8 1.8 0 0 0 .42-1.12V3a2 2 0 1 1 4 0v.09A1.8 1.8 0 0 0 15.4 4.6a1.8 1.8 0 0 0 1.98-.36l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.8 1.8 0 0 0 19.4 9c.36.23.72.6 1 .6h.09a2 2 0 1 1 0 4h-.09a1.8 1.8 0 0 0-1 .6Z"/>',
     hand: '<path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v8"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
@@ -919,6 +936,13 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
   const workMode = source.workMode === 'daily' ? 'daily' : 'coding';
   const theme = source.theme === 'light' || source.theme === 'dark' ? source.theme : 'system';
   const density = source.density === 'compact' ? 'compact' : 'comfortable';
+  const shortcutSource = isPlainRecord(source.shortcuts) ? source.shortcuts : {};
+  const shortcuts = Object.fromEntries(
+    Object.entries(DEFAULT_GUI_SHORTCUTS).map(([action, fallback]) => {
+      const value = shortcutSource[action];
+      return [action, typeof value === 'string' && value.length <= 64 ? value.trim() : fallback];
+    }),
+  ) as GuiShortcuts;
   return {
     workMode,
     theme,
@@ -947,6 +971,7 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     showRouterProfilesInComposer: typeof source.showRouterProfilesInComposer === 'boolean'
       ? source.showRouterProfilesInComposer
       : DEFAULT_GUI_PREFERENCES.showRouterProfilesInComposer,
+    shortcuts,
   };
 }
 
@@ -1890,73 +1915,6 @@ async function runSubagentSquad(
     reports: [],
     skippedNodes: [],
     incompleteReason: run.status.error,
-  };
-}
-
-/** Run a workflow squad — walk the workflow tree. */
-async function runWorkflowSquad(
-  def: TeamDefinition, prompt: string, signal: AbortSignal, workDir: string,
-  onEvent?: (e: TeamEvent) => void,
-): Promise<ModelTeamResult> {
-  const pool = new AgentPool();
-  const startedAt = Date.now();
-  const statuses: any[] = [];
-  let totalInput = 0, totalOutput = 0;
-  let lastOutput = prompt;
-
-  async function runAgentNode(node: WorkflowNode): Promise<string> {
-    const identity = { id: node.id, model: node.model || '', role: node.label || node.type };
-    const run = await runMemberAgent({
-      identity,
-      member: { model: node.model || '', role: node.label || 'agent', systemPrompt: '' } as any,
-      task: node.prompt ? node.prompt.replace(/\{\{input\}\}/g, lastOutput) : lastOutput,
-      systemPrompt: '',
-      cwd: workDir,
-      tools: [],
-      maxIterations: Infinity,
-      timeoutMs: def.timeoutMs ?? 300000,
-      signal,
-      pool,
-      round: 1,
-      onEvent,
-    });
-    statuses.push(run.status);
-    totalInput += run.inputTokens;
-    totalOutput += run.outputTokens;
-    return run.report;
-  }
-
-  async function walk(node: WorkflowNode | undefined): Promise<void> {
-    if (!node) return;
-    if (node.type === 'agent') {
-      lastOutput = await runAgentNode(node);
-      return;
-    }
-    if (node.type === 'branch') {
-      const cond = (node.condition || '').toLowerCase();
-      const match = cond ? lastOutput.toLowerCase().includes(cond) : true;
-      const child = match ? node.children?.[0] : node.children?.[1];
-      await walk(child);
-      return;
-    }
-    if (node.type === 'parallel') {
-      const children = node.children || [];
-      const results = await Promise.all(children.map((c) => runAgentNode(c)));
-      lastOutput = results.filter(Boolean).join('\n\n');
-      return;
-    }
-  }
-
-  await walk(def.workflowTree);
-  return {
-    answer: lastOutput,
-    mode: 'graph',
-    cost: { totalInputTokens: totalInput, totalOutputTokens: totalOutput, estimatedCost: null, breakdown: [] },
-    durationMs: Date.now() - startedAt,
-    memberStatuses: statuses,
-    reports: [],
-    skippedNodes: [],
-    incompleteReason: undefined,
   };
 }
 
@@ -4005,6 +3963,16 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   }
 
   async function saveScheduledAutomationTask(input: ScheduledAutomationTaskInput): Promise<ScheduledAutomationTask> {
+    if (input.kind === 'workflow') {
+      const existing = input.id ? await getScheduledAutomationTask(workDir, input.id) : undefined;
+      const target = {
+        workflowName: input.workflowName ?? existing?.workflowName,
+        workflowSource: input.workflowSource ?? existing?.workflowSource,
+      };
+      if (target.workflowSource === 'agent') {
+        resolveScheduledAutomationWorkflow(target, workDir, resolveGuiHomeDir());
+      }
+    }
     const task = await upsertScheduledAutomationTask(workDir, input);
     await resyncAutomationScheduler();
     return task;
@@ -4018,8 +3986,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const events: GuiRunEvent[] = [{ type: 'notice', message: `automation: ${task.name}` }];
     try {
       if (task.kind === 'workflow') {
-        if (!task.workflowName) throw new Error('Scheduled workflow task is missing workflowName');
-        const workflowEvents = await runWorkflow(task.workflowName, task.input);
+        const workflowEvents = await runScheduledAutomationWorkflow(task);
         events.push(...workflowEvents);
         const failure = workflowEvents.find(event => event.type === 'error');
         if (failure) throw new Error(String(failure.message ?? 'workflow failed'));
@@ -4045,6 +4012,27 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       await resyncAutomationScheduler();
     }
     return events;
+  }
+
+  async function runScheduledAutomationWorkflow(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
+    const target = resolveScheduledAutomationWorkflow(task, workDir, resolveGuiHomeDir());
+    if (target.source === 'script') return runWorkflow(task.workflowName!, task.input);
+
+    const definition = instantiateTeamDefinition(target.definition, session.model);
+    const abort = new AbortController();
+    const result = await runWorkflowSquad(
+      definition,
+      task.input ?? '',
+      abort.signal,
+      workDir,
+    );
+    return [
+      { type: 'notice', message: `running Agent workflow: ${definition.name}` },
+      { type: 'command.result', title: `Workflow result · ${definition.name}`, text: result.answer },
+      ...(result.incompleteReason
+        ? [{ type: 'error', message: `workflow incomplete: ${result.incompleteReason}` }]
+        : []),
+    ];
   }
 
   async function runAutomationPrompt(task: ScheduledAutomationTask): Promise<GuiRunEvent[]> {
@@ -4911,16 +4899,83 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             detail: `${skill.description} ${skill.whenToUse ?? ''}`,
           })),
         }];
-      case 'agents':
-        return [{
-          type: 'command.result',
-          title: 'Subagents',
-          items: sdk!.agents.list().map(agent => ({
-            label: agent.name,
-            description: agent.model ?? 'inherits model',
-            detail: agent.description,
-          })),
-        }];
+      case 'agents': {
+        if (!sdk) {
+          return [{ type: 'error', message: 'Agents require a configured Hadamard provider.' }];
+        }
+        const [subcommand = 'list', target = ''] = args.trim().split(/\s+/, 2);
+        if (subcommand === 'list' && !target) {
+          return [{
+            type: 'command.result',
+            title: 'Subagents',
+            items: sdk.agents.list().map(agent => ({
+              label: agent.name,
+              description: agent.model ?? 'inherits model',
+              detail: agent.description,
+            })),
+          }];
+        }
+        const snapshots = await sdk.executions.listSnapshots();
+        const views = snapshots.map(snapshot => createAgentExecutionRootView(snapshot));
+        const flatten = (view: ReturnType<typeof createAgentExecutionRootView>) => {
+          const nodes: typeof view.detached = [];
+          const visit = (node: NonNullable<typeof view.root>): void => {
+            nodes.push(node);
+            node.children.forEach(visit);
+          };
+          if (view.root) visit(view.root);
+          view.detached.forEach(visit);
+          return nodes;
+        };
+        if (subcommand === 'runs') {
+          if (target) return runSlashCommand(`/agents show ${target}`);
+          const project = createAgentExecutionProjectView(snapshots);
+          const runs = [...project.active, ...project.waiting, ...project.completed];
+          return [{
+            type: 'command.result',
+            title: 'Agent executions',
+            items: runs.map(run => ({
+              label: run.rootExecutionId,
+              description: `${run.lifecycle} · ${run.displayName} · ${run.nodeCount} agents`,
+              detail: run.currentActivity?.summary ?? `${run.timing.elapsedMs}ms`,
+            })),
+            text: runs.length ? undefined : 'No Agent executions are recorded for this project.',
+          }];
+        }
+        if (subcommand === 'show') {
+          if (!target) return [{ type: 'error', message: 'usage: /agents show <root-execution-id>' }];
+          const view = views.find(item => item.rootExecutionId === target);
+          if (!view) {
+            return [{ type: 'error', message: `No Agent execution tree found for '${target}'. Use /agents runs to browse.` }];
+          }
+          return [{
+            type: 'command.result',
+            title: `Agent execution · ${view.rootExecutionId}`,
+            items: flatten(view).map(node => ({
+              label: `${'  '.repeat(node.depth)}${node.displayName}`,
+              description: `${node.lifecycle} · ${node.runtime}${node.model ? ` · ${node.model}` : ''}`,
+              detail: `session: ${node.sessionId}${node.currentActivity?.summary ? ` · ${node.currentActivity.summary}` : ''}`,
+            })),
+            text: `${view.status} · ${view.nodeCount} agents · ${view.edgeCount} links · ${view.timing.elapsedMs}ms`,
+          }];
+        }
+        if (subcommand === 'open') {
+          if (!target) return [{ type: 'error', message: 'usage: /agents open <session-or-execution-id>' }];
+          const node = views.flatMap(flatten).find(item => item.id === target || item.sessionId === target);
+          if (!node) {
+            return [{ type: 'error', message: `No Agent execution or conversation matches '${target}'. Use /agents runs to browse.` }];
+          }
+          return runtimeMutationCommand(async () => {
+            session = await resumeGuiSession(node.sessionId, {
+              model: options.model,
+              permissionMode: options.permissionMode,
+            });
+            await restoreSessionRuntimeSelection();
+            return [{ type: 'notice', message: `opened Agent conversation: ${session.id}` }, { type: 'state' }];
+          });
+        }
+        return [{ type: 'error', message: 'usage: /agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]' }];
+      }
       case 'mcp': {
         const mcpTools = toolMetadata.filter(tool => tool.provider === 'mcp');
         return [{
@@ -4965,11 +5020,33 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
         }
       }
+      case 'automation': {
+        if (args === 'new') {
+          return [{ type: 'notice', message: 'Open Automation and select New task.' }];
+        }
+        if (args && args !== 'list') {
+          return [{ type: 'error', message: 'usage: /automation [list|new]' }];
+        }
+        const tasks = await listScheduledAutomationTasks(workDir);
+        return [{
+          type: 'command.result',
+          title: 'Automation tasks',
+          items: tasks.map(task => ({
+            label: task.name,
+            description: `${task.kind} · ${task.trigger ?? 'schedule'} · ${task.enabled ? 'enabled' : 'paused'}`,
+            detail: task.workflowName ?? task.prompt ?? task.input,
+          })),
+          text: tasks.length === 0 ? 'no automation tasks configured' : undefined,
+        }];
+      }
       case 'workflows': {
         if (args.startsWith('run ')) {
           const rest = args.slice(4).trim();
           const split = rest.indexOf(' ');
           return runWorkflow(split === -1 ? rest : rest.slice(0, split), split === -1 ? undefined : rest.slice(split + 1).trim());
+        }
+        if (args && args !== 'list') {
+          return [{ type: 'error', message: 'usage: /workflows [list|run <name> [task]]' }];
         }
         return [{
           type: 'command.result',
@@ -5538,17 +5615,23 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       }
       case 'hooks': {
         const raw = getLoadedJsonConfig()?.raw;
+        const typed = parseTypedHooks(raw?.typedHooks);
         const pre = readPreToolUseHooks(raw);
         const post = readPostToolUseHooks(raw);
         const start = readSessionStartHooks(raw);
         const lines: string[] = [];
         const fmt = (h: { matcher?: string; command?: string; enabled?: boolean }) =>
           `  ${h.enabled === false ? '[disabled] ' : ''}${h.matcher ? h.matcher + ': ' : ''}${h.command}`;
+        lines.push(`Lifecycle (${typed.hooks.length}):`);
+        typed.hooks.forEach(h => lines.push(
+          `  ${h.enabled === false ? '[disabled] ' : ''}${h.id}: ${h.event} -> ${h.handler.type}`,
+        ));
+        typed.issues.forEach(issue => lines.push(`  [invalid] ${issue}`));
         lines.push(`PreToolUse (${pre.length}):`); pre.forEach(h => lines.push(fmt(h)));
         lines.push(`PostToolUse (${post.length}):`); post.forEach(h => lines.push(fmt(h)));
         lines.push(`SessionStart (${start.length}):`); start.forEach(h => lines.push(fmt(h)));
-        if (pre.length + post.length + start.length === 0) {
-          lines.push('', 'No hooks configured. Add to settings.json:', '{ "hooks": { "PreToolUse": [{ "matcher": "Bash", "command": "echo $HADAMARD_HOOK_TOOL" }] } }');
+        if (typed.hooks.length + pre.length + post.length + start.length === 0) {
+          lines.push('', 'No hooks configured. Open Settings > Hooks to add a lifecycle hook.');
         }
         return [{ type: 'command.result', title: 'Hooks', text: lines.join('\n') }];
       }
@@ -5681,9 +5764,11 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         if (args === 'help') {
           return [{ type: 'command.result', title: 'Bridge help', text: [
             '/bridge — open runtime configuration (Settings → Models & routing)',
+            '/bridge setup — open runtime setup (Settings → Models & routing)',
             '/bridge switch <name> — activate a named API or External CLI config',
             '/bridge status — show the active execution/runtime/auth/session',
-        '/bridge history — browse native External CLI conversations',
+            '/bridge history — browse native External CLI conversations',
+            '/bridge resume <native-id> — resume a native External CLI conversation',
             '/bridge background <prompt> — start work in the active External CLI',
             '/bridge runs — list foreground/background External CLI work',
             '/bridge stop <run-id> — interrupt External CLI work',
@@ -5694,6 +5779,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             'Configs live in ~/.hadamard/bridge-configs.json',
           ].join('\n') }];
         }
+        if (args === 'setup') return [{ type: 'settings.open', tab: 'models' }];
         if (args === 'config' || args === '') return [{ type: 'settings.open', tab: 'models' }];
         if (args === 'status') {
           if (!activeBridgeConfig) {
@@ -5733,6 +5819,53 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             })),
           text: history.length ? undefined : 'No native External CLI sessions were found.',
           }];
+        }
+        if (args === 'resume' || args.startsWith('resume ')) {
+          const nativeSessionId = args.startsWith('resume ')
+            ? args.slice('resume '.length).trim()
+            : '';
+          if (!nativeSessionId) {
+            return [{ type: 'error', message: 'usage: /bridge resume <native-id>' }];
+          }
+          if (
+            !activeBridgeConfig
+            || activeBridgeConfig.execution !== 'cli'
+            || !isManagedExternalCliRuntime(activeBridgeConfig.runtime)
+          ) {
+            return [{ type: 'error', message: 'activate an External CLI config first' }];
+          }
+          const config = activeBridgeConfig as SupportedExternalCliConfig;
+          const summary = (await listExternalCliSessions({
+            homeDir: pointerHomeDir(),
+            hadamardHomeDir: resolveGuiHomeDir(),
+            crushCwd: workDir,
+            runtimes: [config.runtime],
+          })).find(item => item.nativeSessionId === nativeSessionId
+            && isExternalCliHistoryConfigCompatible(item, config));
+          if (!summary) {
+            return [{
+              type: 'error',
+              message: `native ${config.runtime} session not found: ${nativeSessionId}`,
+            }];
+          }
+          if (summary.cwd && !sameWorkspace(summary.cwd, workDir)) {
+            return [{
+              type: 'error',
+              message: `open the session workspace before resuming it: ${summary.cwd}`,
+            }];
+          }
+          return runtimeMutationCommand(async () => {
+            await activateBridgeConfig(config);
+            await rememberExternalNativeSession(config, summary.nativeSessionId);
+            await persistSessionRuntimeMetadata();
+            return [
+              {
+                type: 'notice',
+                message: `native ${config.runtime} session selected: ${summary.nativeSessionId}. The next message resumes that native conversation.`,
+              },
+              { type: 'state' },
+            ];
+          });
         }
         if (args === 'runs') {
           const externalRuns = externalCliRuntimeManager.list();
@@ -7269,6 +7402,10 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         const problems = validateTeamGraph(migrated);
         if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
         def = migrated;
+      } else if (squadType === 'workflow') {
+        const problems = validateWorkflowSquad(def);
+        if (problems.length) return json(res, 400, { error: problems.join('; '), problems });
+        def = { ...def, squadType, mode: 'graph', version: 3, orchestration: 'graph' };
       } else {
         def = { ...def, squadType, mode: 'graph', version: 3, orchestration: 'graph' };
       }
@@ -7886,6 +8023,24 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         openPathInSystem(store.configPath);
         return json(res, 200, { ok: true, path: store.configPath });
       }
+      if (req.method === 'POST' && url.pathname === '/api/screenshot') {
+        try {
+          const outputPath = path.join(
+            workDir,
+            '.hadamard',
+            'screenshots',
+            `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
+          );
+          await captureDesktopScreenshot(outputPath);
+          return json(res, 200, {
+            ok: true,
+            path: outputPath,
+            relativePath: path.relative(workDir, outputPath).split(path.sep).join('/'),
+          });
+        } catch (error) {
+          return json(res, 500, { error: (error as Error).message });
+        }
+      }
       if (req.method === 'POST' && url.pathname === '/api/settings') {
         try {
           const body = await readJson(req);
@@ -7899,9 +8054,13 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           configPath: options.configPath,
           homeDir: currentHomeInput(),
         }).catch(() => undefined);
+        const raw = store?.raw ?? getLoadedJsonConfig()?.raw;
+        const typed = parseTypedHooks(raw?.typedHooks);
         return json(res, 200, {
           configPath: store?.configPath ?? null,
-          hooks: readUserHooksConfig(store?.raw ?? getLoadedJsonConfig()?.raw),
+          hooks: readUserHooksConfig(raw),
+          typedHooks: typed.hooks,
+          typedHookIssues: typed.issues,
         });
       }
       if (req.method === 'PUT' && url.pathname === '/api/hooks') {
@@ -7913,11 +8072,30 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
               homeDir: currentHomeInput(),
             });
             const raw = structuredClone(store.raw);
-            const hooks = normalizeUserHooksConfig(body);
-            raw.hooks = toSettingsHooksBlock(hooks);
+            const input = typeof body === 'object' && body !== null
+              ? body as Record<string, unknown>
+              : {};
+            const hooks = 'hooks' in input
+              ? normalizeUserHooksConfig(input.hooks)
+              : readUserHooksConfig(raw);
+            if ('hooks' in input) raw.hooks = toSettingsHooksBlock(hooks);
+            const typed = 'typedHooks' in input
+              ? parseTypedHooks(input.typedHooks)
+              : parseTypedHooks(raw.typedHooks);
+            if (typed.issues.length > 0) {
+              throw new Error(typed.issues.join(' '));
+            }
+            if ('typedHooks' in input) raw.typedHooks = typed.hooks;
             await persistHadamardSettingsStore(store.configPath, raw);
             await loadJsonConfigFile(store.configPath);
-            return { ok: true, configPath: store.configPath, hooks };
+            if ('typedHooks' in input && sdk && !needsCredentials) await reloadSdk();
+            return {
+              ok: true,
+              configPath: store.configPath,
+              hooks,
+              typedHooks: typed.hooks,
+              typedHookIssues: [],
+            };
           });
           return json(res, 200, result);
         } catch (error) {
@@ -8864,6 +9042,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             enabled: body.enabled !== false,
             description: typeof body.description === 'string' ? body.description : undefined,
             workflowName: typeof body.workflowName === 'string' ? body.workflowName : undefined,
+            workflowSource: body.workflowSource === 'agent' || body.workflowSource === 'script'
+              ? body.workflowSource
+              : undefined,
             input: typeof body.input === 'string' ? body.input : undefined,
             prompt: typeof body.prompt === 'string' ? body.prompt : undefined,
             webhookId: typeof body.webhookId === 'string' ? body.webhookId : undefined,
@@ -9626,15 +9807,15 @@ export function createHadamardGuiHtml(): string {
               <section id="transcript" class="transcript"></section>
               <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
               <div class="composer-stack">
-                <div class="composer-meta" id="composerMeta" aria-label="Workspace context">
+                <div class="composer-meta" id="composerMeta" aria-label="Workspace and runtime context">
                   <span class="composer-meta-chip" id="composerMetaProject" title="Workspace">
                     <span class="composer-meta-icon">${guiIcon('folder')}</span>
                     <span class="composer-meta-label" id="composerMetaProjectLabel">—</span>
                   </span>
-                  <span class="composer-meta-chip" id="composerMetaEnv" title="Environment">
-                    <span class="composer-meta-icon">${guiIcon('computer')}</span>
-                    <span class="composer-meta-label">本地</span>
-                  </span>
+                  <button type="button" class="composer-meta-chip" id="composerMetaRuntime" title="Runtime" aria-label="Runtime" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="composer-meta-icon" id="composerMetaRuntimeIcon">${guiIcon('model')}</span>
+                    <span class="composer-meta-label" id="composerMetaRuntimeLabel">Hadamard SDK</span>
+                  </button>
                   <button type="button" class="composer-meta-chip composer-meta-branch" id="composerMetaBranch" title="Git branch">
                     <span class="composer-meta-icon">${guiIcon('gitBranch')}</span>
                     <span class="composer-meta-label" id="composerMetaBranchLabel">—</span>
@@ -9696,7 +9877,7 @@ export function createHadamardGuiHtml(): string {
                 <button type="button" class="aux-action" data-aux="review">
                   <span class="aux-action-icon">${guiIcon('review')}</span>
                   <span class="aux-action-label">Review</span>
-                  <kbd class="aux-action-kbd">Ctrl+Shift+G</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openReview">Mod+Shift+G</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="git">
                   <span class="aux-action-icon">${guiIcon('git')}</span>
@@ -9705,16 +9886,17 @@ export function createHadamardGuiHtml(): string {
                 <button type="button" class="aux-action" data-aux="terminal">
                   <span class="aux-action-icon">${guiIcon('terminal')}</span>
                   <span class="aux-action-label">Terminal</span>
+                  <kbd class="aux-action-kbd" data-shortcut-action="toggleTerminal">Mod+Backquote</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="browser">
                   <span class="aux-action-icon">${guiIcon('globe')}</span>
                   <span class="aux-action-label">Browser</span>
-                  <kbd class="aux-action-kbd">Ctrl+T</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openBrowser">Mod+T</kbd>
                 </button>
                 <button type="button" class="aux-action" data-aux="files">
                   <span class="aux-action-icon">${guiIcon('folder')}</span>
                   <span class="aux-action-label">Files</span>
-                  <kbd class="aux-action-kbd">Ctrl+P</kbd>
+                  <kbd class="aux-action-kbd" data-shortcut-action="openFiles">Mod+P</kbd>
                 </button>
               </nav>
               <div class="aux-view hidden" id="auxView"></div>
@@ -9738,7 +9920,6 @@ export function createHadamardGuiHtml(): string {
           <p>Compose agents, workflows, and collaboration graphs (teams)</p>
         </div>
         <div class="region-actions">
-          <select id="teamEnvSelect" class="team-env-select" title="Environment"><option value="dev">Dev</option><option value="staging">Staging</option><option value="prod">Prod</option></select>
           <span id="teamSavedStatus" class="team-saved-status saved">${guiIcon('gear')}<span>Saved</span></span>
           <button type="button" id="teamRunSquadBtn" class="pill-btn">Run simulation</button>
           <button type="button" id="teamEditToggleBtn" class="pill-btn">Agent settings</button>
@@ -9891,6 +10072,37 @@ export function createHadamardGuiHtml(): string {
       <div class="dialog-actions">
         <button type="button" id="cancelWorkspace">Cancel</button>
         <button type="submit" id="openWorkspaceBtn" class="primary">Open workspace</button>
+      </div>
+    </form>
+  </div>
+  <div id="typedHookEditorModal" class="modal hidden">
+    <form id="typedHookEditorForm" class="dialog hook-editor">
+      <h2 id="typedHookEditorTitle">New lifecycle hook</h2>
+      <div class="two-col">
+        <label class="dialog-field">Hook ID<input id="typedHookId" autocomplete="off" required placeholder="e.g. audit-tool-use"></label>
+        <label class="dialog-field">Event<select id="typedHookEvent">
+          <option>SessionStart</option><option>SessionEnd</option><option>TurnStart</option><option>TurnEnd</option>
+          <option>ModelRequest</option><option>ModelResponse</option><option>PreToolUse</option><option>PostToolUse</option>
+          <option>PermissionDecision</option><option>Compact</option><option>Stop</option><option>WorktreeCreate</option><option>WorktreeRemove</option>
+        </select></label>
+      </div>
+      <label class="dialog-field">Matcher (optional regular expression)<input id="typedHookMatcher" autocomplete="off" placeholder="tool name or event"></label>
+      <div class="two-col">
+        <label class="dialog-field">Handler<select id="typedHookHandlerType"><option value="command">Command</option><option value="prompt">Prompt</option><option value="http">HTTP</option></select></label>
+        <label class="dialog-field">On error<select id="typedHookErrorPolicy"><option value="continue">Continue</option><option value="block">Block lifecycle</option></select></label>
+      </div>
+      <label id="typedHookValueField" class="dialog-field">Command<input id="typedHookValue" autocomplete="off" required placeholder="node"></label>
+      <label id="typedHookArgsField" class="dialog-field">Arguments (one per line)<textarea id="typedHookArgs" rows="3" placeholder="script.js&#10;--flag"></textarea></label>
+      <label id="typedHookCwdField" class="dialog-field">Working directory (optional)<input id="typedHookCwd" autocomplete="off"></label>
+      <label id="typedHookHeadersField" class="dialog-field hidden">HTTP headers (JSON object, optional)<textarea id="typedHookHeaders" rows="3" placeholder='{"authorization":"Bearer ..."}'></textarea></label>
+      <div class="two-col">
+        <label class="dialog-field">Timeout (ms, optional)<input id="typedHookTimeout" type="number" min="1" step="1" placeholder="30000"></label>
+        <label class="check-row"><input id="typedHookEnabled" type="checkbox" checked>Enabled</label>
+      </div>
+      <p id="typedHookStatus" class="muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="typedHookCancel">Cancel</button>
+        <button type="submit" id="typedHookSave" class="primary">Save hook</button>
       </div>
     </form>
   </div>
@@ -10304,7 +10516,7 @@ export function createHadamardGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
         <h1>Keyboard shortcuts</h1>
-        <p class="muted">Read-only reference matching the live key bindings. Remapping is not supported yet.</p>
+        <p class="muted">Click a binding and press a new key combination. <code>Mod</code> means Ctrl on Windows/Linux and Command on macOS. Backspace clears a binding.</p>
         <div id="settingsShortcutsList" class="settings-group shortcut-list"></div>
       </section>
       <section class="settings-panel" data-settings-panel="capabilities">
@@ -10401,7 +10613,13 @@ export function createHadamardGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="hooks">
         <h1>Hooks</h1>
         <div class="settings-group">
-          <p class="muted">Shell hooks from <code>settings.json</code> (<code>hooks.PreToolUse</code> / <code>PostToolUse</code> / <code>SessionStart</code>). These are not SDK TypeScript callbacks. Toggle to disable without deleting; remove to drop an entry. Edit commands in the settings file.</p>
+          <div class="settings-group-head"><div><h2>Lifecycle hooks</h2><p class="muted">Run a command, prompt check, or HTTP callback at runtime lifecycle events. Matchers are optional regular expressions. Blocking is supported where the lifecycle can still be stopped.</p></div><button type="button" id="settingsTypedHookAdd" class="primary">+ New hook</button></div>
+          <div id="settingsTypedHooksIssues" class="muted"></div>
+          <div id="settingsTypedHooksList"></div>
+        </div>
+        <div class="settings-group">
+          <h2>Legacy shell hooks</h2>
+          <p class="muted">Compatibility settings for <code>hooks.PreToolUse</code>, <code>PostToolUse</code>, and <code>SessionStart</code>. They remain active and can be toggled or removed here; use lifecycle hooks above for new automation.</p>
           <div class="settings-action-row">
             <button type="button" id="settingsHooksOpenConfig" class="secondary-btn">Open settings.json</button>
             <button type="button" id="settingsHooksRefresh" class="secondary-btn">Refresh</button>
@@ -11783,6 +12001,7 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .team-agent-modal-body .ins-head { margin-bottom: 12px; }
 .dialog.team-agent-dialog .dialog-actions { padding: 12px 18px 16px; border-top: 1px solid var(--border); margin: 0; }
 .te-check label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-1); cursor: pointer; }
+.te-check input { width: auto; }
 .te-target select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12px; padding: 0 8px; }
 .te-field select { min-height: 30px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-surface); font-size: 12.5px; padding: 0 8px; width: 100%; }
 .te-edge-row { background: var(--bg-surface); }
@@ -12066,10 +12285,6 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .terminal-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-dock-body .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane { min-height: 0; }
-.pane-stub { flex: 1; display: grid; place-content: center; place-items: center; gap: 12px; text-align: center; color: var(--text-2); padding: 24px; }
-.pane-stub .stub-icon { display: inline-grid; place-items: center; color: var(--text-2); }
-.pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
-.pane-stub p { margin: 0; font-size: 14px; }
 /* Terminal pane: xterm fills the pane; chrome follows app theme. */
 .pane-terminal { background: var(--term-bg); color: var(--term-fg); }
 .pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid var(--term-border); background: var(--term-chrome); }
@@ -12353,7 +12568,7 @@ button.composer-meta-chip:hover {
   width: 100%;
   min-height: 36px;
   display: grid;
-  grid-template-columns: 24px minmax(0, auto) minmax(0, 1fr) 18px;
+  grid-template-columns: 24px minmax(0, auto) minmax(0, 1fr) max-content;
   align-items: center;
   gap: 7px;
   padding: 5px 8px;
@@ -12394,7 +12609,7 @@ button.composer-meta-chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.add-context-row-end { color: var(--text-muted); font-size: 11px; text-align: right; }
+.add-context-row-end { color: var(--text-muted); font-size: 11px; text-align: right; white-space: nowrap; }
 .add-context-header {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
@@ -13020,8 +13235,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .ins-queue .q-stat { flex: 1; text-align: center; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
 .ins-queue .q-stat strong { display: block; font-size: 16px; color: var(--text-1); }
 .ins-queue .q-stat small { color: var(--text-2); font-size: 10.5px; }
-/* Team top bar: environment + saved status (§5). */
-.team-env-select, .team-saved-status { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 11px; color: var(--text-2); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
+/* Team top bar saved status. */
+.team-saved-status { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); padding: 0 11px; color: var(--text-2); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
 .team-saved-status.saved { color: var(--ok); border-color: rgba(16,185,129,.3); background: #F0FDF4; }
 .team-saved-status.unsaved { color: var(--warn); border-color: rgba(245,158,11,.3); background: #FFFBEB; }
 .team-inspector { width: auto; flex: none; padding: 18px; background: var(--bg-surface); }
@@ -13388,6 +13603,11 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
 .shortcut-group { margin-bottom: 14px; }
 .shortcut-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.shortcut-row { flex-wrap: wrap; }
+.shortcut-row > span { flex: 1; min-width: 160px; }
+.shortcut-binding { width: 160px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font: 12px var(--font-mono); }
+.shortcut-binding:focus { border-color: var(--brand); outline: 2px solid color-mix(in srgb, var(--brand) 18%, transparent); }
+.shortcut-reset { min-height: 30px; }
 .hooks-event-block { margin-bottom: 16px; }
 .hooks-event-block h3 { margin: 0 0 8px; font-size: 13px; }
 .hooks-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg-surface); }
@@ -13397,6 +13617,8 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .hooks-card-cmd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .hooks-card-desc { margin-top: 4px; font-size: 12px; color: var(--text-2); }
 .hooks-card-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.hook-editor { width: min(640px, 100%); max-height: 88vh; overflow: auto; }
+.hook-editor textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: var(--bg-surface); font-size: 11.5px; }
 .secondary-btn,
 .settings-view .secondary-btn,
@@ -14200,7 +14422,17 @@ const state = {
   skillCatalogData: null,
   skillCatalogQuery: '',
   skillCatalogExpanded: {},
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true }
+  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, shortcuts: {} }
+};
+const DEFAULT_SHORTCUTS = {
+  newChat: 'Mod+N',
+  cycleModel: 'Mod+/',
+  openReview: 'Mod+Shift+G',
+  openBrowser: 'Mod+T',
+  openFiles: 'Mod+P',
+  toggleTerminal: 'Mod+Backquote',
+  openSettings: 'Mod+,',
+  takeScreenshot: 'Mod+Shift+S',
 };
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
@@ -14274,6 +14506,7 @@ function applyPreferences(preferences) {
   const T = tx();
   if (T) T.setAutoScroll(shouldAutoScroll());
   refreshOpenTerminalThemes();
+  renderShortcutHints();
   renderComposerMeta();
   if (el('settingsModal') && !el('settingsModal').classList.contains('hidden')) renderShortcutsPanel();
 }
@@ -14944,13 +15177,6 @@ function loadXterm() {
     setTimeout(() => resolve(Boolean(window.Terminal && window.FitAddon)), 4000);
   });
   return xtermLoadPromise;
-}
-function makeStub(pane, type, note) {
-  pane.textContent = '';
-  const stub = document.createElement('div');
-  stub.className = 'pane-stub';
-  stub.innerHTML = '<span class="stub-icon">' + guiIcon(type === 'terminal' ? 'terminal' : 'folder') + '</span><p>' + note + '</p>';
-  pane.appendChild(stub);
 }
 // --- Smart terminal helpers (plan phase 5): blocks, history, output→agent ---
 function stripAnsiClient(s) { return String(s || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, ''); }
@@ -16390,6 +16616,36 @@ function renderComposerMeta() {
   const projectChip = el('composerMetaProject');
   if (projectLabel) projectLabel.textContent = projectName;
   if (projectChip) projectChip.title = workDir || 'Workspace';
+  const runtimeChip = el('composerMetaRuntime');
+  const runtimeLabel = el('composerMetaRuntimeLabel');
+  const runtimeIcon = el('composerMetaRuntimeIcon');
+  const bridge = snap.bridgeState || {};
+  const config = bridge.activeConfig || null;
+  const activeAgentName = snap.activeAgent?.name || '';
+  let executionLabel = 'Hadamard SDK';
+  let executionIcon = 'model';
+  let executionDetail = 'default provider';
+  if (config?.execution === 'cli') {
+    executionLabel = 'External CLI · ' + (activeAgentName || config.name || config.runtime || 'runtime');
+    executionIcon = 'terminal';
+    executionDetail = [config.runtime, config.model || bridge.activeModelLabel].filter(Boolean).join(' · ');
+  } else if (config) {
+    executionLabel = 'Direct API · ' + (activeAgentName || config.name || 'config');
+    executionIcon = 'globe';
+    executionDetail = [config.provider || config.runtime, config.model || bridge.activeModelLabel].filter(Boolean).join(' · ');
+  } else if (snap.activeRouterName) {
+    executionLabel = 'Router · ' + snap.activeRouterName;
+    executionIcon = 'split';
+    executionDetail = snap.routedModelLabel || 'selects a model for each prompt';
+  }
+  if (runtimeLabel) runtimeLabel.textContent = executionLabel;
+  if (runtimeIcon) runtimeIcon.innerHTML = guiIcon(executionIcon);
+  if (runtimeChip) {
+    const title = 'Runtime: ' + executionLabel + (executionDetail ? ' · ' + executionDetail : '') + '. Click to change.';
+    runtimeChip.title = title;
+    runtimeChip.setAttribute('aria-label', title);
+    runtimeChip.setAttribute('aria-expanded', String(!el('modelPickerFlyout')?.classList.contains('hidden')));
+  }
   const git = snap.git || {};
   const branchLabel = el('composerMetaBranchLabel');
   const branchChip = el('composerMetaBranch');
@@ -17081,6 +17337,7 @@ function closeModelPicker() {
   const flyout = el('modelPickerFlyout');
   if (flyout) flyout.classList.add('hidden');
   el('modelPickerBtn')?.setAttribute('aria-expanded', 'false');
+  el('composerMetaRuntime')?.setAttribute('aria-expanded', 'false');
   state.pickerEditingAgent = null;
   closePickerEffortEditor();
 }
@@ -17113,6 +17370,7 @@ function toggleModelPicker() {
     flyout.classList.remove('hidden');
     positionModelPickerFlyout();
     el('modelPickerBtn')?.setAttribute('aria-expanded', 'true');
+    el('composerMetaRuntime')?.setAttribute('aria-expanded', 'true');
     const search = el('modelPickerSearch');
     if (search) {
       search.value = '';
@@ -21613,6 +21871,23 @@ function setComposerCommand(command) {
   input.setSelectionRange(input.value.length, input.value.length);
   renderSlashMenu();
 }
+async function captureScreenshotContext() {
+  closeAddContextMenu();
+  flashStatus('Capturing screenshot...');
+  try {
+    const res = await api('/api/screenshot', { method: 'POST' });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Screenshot failed');
+    addContextAttachment(
+      'Screenshot: ' + String(payload.relativePath || 'desktop'),
+      'screenshot',
+      '@' + String(payload.relativePath || ''),
+    );
+    flashStatus('Screenshot attached');
+  } catch (error) {
+    flashStatus(error.message || String(error));
+  }
+}
 function addContextAttachment(name, contextType, text) {
   state.attachments.push({
     id: 'att-' + (++state.attachmentCounter),
@@ -21646,6 +21921,13 @@ function renderAddContextRoot() {
       title: 'Folder',
       description: 'Attach files from a folder',
       onClick: () => { closeAddContextMenu(); el('folderInput').click(); },
+    }),
+    addContextRow({
+      icon: 'computer',
+      title: 'Screenshot',
+      description: 'Capture all displays and attach the PNG',
+      end: ((state.preferences.shortcuts || {}).takeScreenshot ?? DEFAULT_SHORTCUTS.takeScreenshot) || '—',
+      onClick: () => void captureScreenshotContext(),
     }),
     addContextRow({
       icon: 'review',
@@ -22066,9 +22348,15 @@ async function submitText(text) {
   // /automation — open the create-task dialog from any conversation. The task
   // is scoped 'global' so it shows in the Automation panel regardless of project.
   const trimmed = text.trim();
-  if (trimmed === '/automation' || trimmed === '/automation new' || trimmed.startsWith('/automation create')) {
+  if (trimmed === '/automation' || trimmed === '/automation list') {
+    await switchRegion('automation');
+    addMessage('command.result', '/automation · opened Automation tasks.');
+    return;
+  }
+  if (trimmed === '/automation new') {
+    await switchRegion('automation');
     openAutomationDialog(null);
-    addMessage('command.result', '/automation — create a scheduled or webhook task (scoped global).');
+    addMessage('command.result', '/automation new · create a scheduled or webhook task.');
     return;
   }
   if (state.running) {
@@ -22381,7 +22669,15 @@ function openAutomationDialog(task) {
   panel.className = 'modal-panel auto-dialog';
   panel.style.cssText = 'max-width:560px;width:min(560px,92vw);max-height:86vh;overflow:auto;';
   const editing = !!task;
-  const state0 = task || { kind: 'workflow', trigger: 'schedule', enabled: true, cron: '0 9 * * *' };
+  const state0 = task
+    ? { ...task }
+    : { kind: 'workflow', workflowSource: 'agent', trigger: 'schedule', enabled: true, cron: '0 9 * * *' };
+  const autoField = function (label, value, onChange, textarea) {
+    return teFieldLive(label, value, onChange, textarea, false);
+  };
+  const autoHintField = function (label, hint, value, onChange) {
+    return teHintField(label, hint, value, onChange, false);
+  };
   const cfg = cronToFrequency(state0.cron);
   let freq = cfg.frequency;
   let time = cfg.time;
@@ -22397,7 +22693,7 @@ function openAutomationDialog(task) {
   const host = document.createElement('div');
   host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
   panel.appendChild(host);
-  const name = teFieldLive('Name', state0.name || '', function (v) { state0.name = v; });
+  const name = autoField('Name', state0.name || '', function (v) { state0.name = v; });
   host.appendChild(name);
   host.appendChild(teSelect('Kind', state0.kind || 'workflow', ['workflow', 'prompt', 'manager'], function (v) {
     state0.kind = v;
@@ -22420,9 +22716,9 @@ function openAutomationDialog(task) {
       urlBox.className = 'te-field';
       urlBox.innerHTML = '<label>Webhook URL</label><div class="auto-webhook-url">' + escHtml(url) + '</div>';
       triggerHost.appendChild(urlBox);
-      triggerHost.appendChild(teFieldLive('Webhook id', webhookId, function (v) { /* id is part of URL; keep stable */ }, false));
-      triggerHost.appendChild(teHintField('Secret (optional, verified via x-webhook-secret header)', 'Leave empty to allow unauthenticated calls.', state0.webhookSecret || '', function (v) { state0.webhookSecret = v.trim() || undefined; }));
-      triggerHost.appendChild(teHintField('Body filter (optional, case-insensitive substring)', 'Only fire when the request body contains this text.', state0.webhookFilter || '', function (v) { state0.webhookFilter = v.trim() || undefined; }));
+      triggerHost.appendChild(autoField('Webhook id', webhookId, function (v) { /* id is part of URL; keep stable */ }, false));
+      triggerHost.appendChild(autoHintField('Secret (optional, verified via x-webhook-secret header)', 'Leave empty to allow unauthenticated calls.', state0.webhookSecret || '', function (v) { state0.webhookSecret = v.trim() || undefined; }));
+      triggerHost.appendChild(autoHintField('Body filter (optional, case-insensitive substring)', 'Only fire when the request body contains this text.', state0.webhookFilter || '', function (v) { state0.webhookFilter = v.trim() || undefined; }));
       return;
     }
     // schedule
@@ -22442,7 +22738,7 @@ function openAutomationDialog(task) {
     freqRow.appendChild(btns);
     triggerHost.appendChild(freqRow);
     if (freq !== 'custom') {
-      triggerHost.appendChild(teHintField('Time (HH:MM, 24h)', 'Run at this time.', time, function (v) { time = v; }));
+      triggerHost.appendChild(autoHintField('Time (HH:MM, 24h)', 'Run at this time.', time, function (v) { time = v; }));
     }
     if (freq === 'weekly') {
       const dowField = document.createElement('div');
@@ -22472,21 +22768,48 @@ function openAutomationDialog(task) {
       triggerHost.appendChild(dowField);
     }
     if (freq === 'custom') {
-      triggerHost.appendChild(teHintField('Cron expression (min hour dom mon dow)', 'Standard 5-field cron.', state0.cron || '', function (v) { customCron = v; }));
+      triggerHost.appendChild(autoHintField('Cron expression (min hour dom mon dow)', 'Standard 5-field cron.', state0.cron || '', function (v) { customCron = v; }));
     }
   }
   function rebuildActionFields() {
     actionHost.textContent = '';
     const k = state0.kind || 'workflow';
     if (k === 'workflow') {
-      const workflows = (state.snapshot && state.snapshot.workflows) || [];
-      const names = workflows.map(function (w) { return w.name; });
-      actionHost.appendChild(teSelect('Workflow', state0.workflowName || (names[0] || ''), names, function (v) { state0.workflowName = v; if (!state0.name) { state0.name = v; name.querySelector('input').value = v; } }));
-      actionHost.appendChild(teHintField('Input (optional)', 'Workflow input text.', state0.input || '', function (v) { state0.input = v; }));
+      const names = teamListForRegion()
+        .filter(function (team) { return team.squadType === 'workflow'; })
+        .map(function (team) { return team.name; });
+      const legacyName = state0.workflowSource !== 'agent' ? state0.workflowName : '';
+      const choices = legacyName && names.indexOf(legacyName) < 0 ? [legacyName].concat(names) : names;
+      if (!choices.length) {
+        state0.workflowName = '';
+        state0.workflowSource = 'agent';
+        const empty = document.createElement('p');
+        empty.className = 'te-hint';
+        empty.textContent = 'Create and save a Workflow on the Agent page before adding this Automation task.';
+        actionHost.appendChild(empty);
+      } else {
+        const selected = state0.workflowName && choices.indexOf(state0.workflowName) >= 0
+          ? state0.workflowName
+          : choices[0];
+        state0.workflowName = selected;
+        if (!legacyName || selected !== legacyName) state0.workflowSource = 'agent';
+        actionHost.appendChild(teSelect('Workflow', selected, choices, function (v) {
+          state0.workflowName = v;
+          state0.workflowSource = legacyName && v === legacyName ? undefined : 'agent';
+          if (!state0.name) { state0.name = v; name.querySelector('input').value = v; }
+        }));
+        if (legacyName) {
+          const legacyHint = document.createElement('p');
+          legacyHint.className = 'te-hint';
+          legacyHint.textContent = 'This existing task uses the legacy script runtime. Select an Agent Workflow to migrate it.';
+          actionHost.appendChild(legacyHint);
+        }
+      }
+      actionHost.appendChild(autoHintField('Input (optional)', 'Workflow input text.', state0.input || '', function (v) { state0.input = v; }));
     } else if (k === 'prompt') {
-      actionHost.appendChild(teFieldLive('Prompt', state0.prompt || '', function (v) { state0.prompt = v; if (!state0.name) { state0.name = v.slice(0, 48); name.querySelector('input').value = state0.name; } }, true));
+      actionHost.appendChild(autoField('Prompt', state0.prompt || '', function (v) { state0.prompt = v; if (!state0.name) { state0.name = v.slice(0, 48); name.querySelector('input').value = state0.name; } }, true));
     } else {
-      actionHost.appendChild(teHintField('Instruction (optional)', 'Manager update instruction.', state0.input || '', function (v) { state0.input = v; }));
+      actionHost.appendChild(autoHintField('Instruction (optional)', 'Manager update instruction.', state0.input || '', function (v) { state0.input = v; }));
     }
   }
   rebuildTriggerFields();
@@ -22505,10 +22828,11 @@ function openAutomationDialog(task) {
   save.addEventListener('click', async function () {
     const cron = trigger === 'webhook' ? '' : (freq === 'custom' ? customCron.trim() : frequencyToCron(freq, time, days));
     if (trigger === 'schedule' && !cron) { window.alert('Please provide a valid cron expression.'); return; }
+    if (state0.kind === 'workflow' && !state0.workflowName) { window.alert('Create and select an Agent Workflow first.'); return; }
     const body = {
       id: state0.id, name: state0.name, kind: state0.kind, trigger: trigger,
       cron: cron, enabled: state0.enabled !== false,
-      workflowName: state0.workflowName, input: state0.input, prompt: state0.prompt,
+      workflowName: state0.workflowName, workflowSource: state0.workflowSource, input: state0.input, prompt: state0.prompt,
       webhookId: trigger === 'webhook' ? webhookId : undefined,
       webhookSecret: state0.webhookSecret, webhookFilter: state0.webhookFilter,
       scope: state0.scope || 'global',
@@ -23932,7 +24256,7 @@ async function selectTeam(name, opts) {
       if (def) state.teamDefinitionCache[name] = def;
     } catch { /* offline */ }
   }
-  if (def && !def.nodes?.some((n) => n.kind === 'task')) {
+  if (def && (def.squadType || 'graph') === 'graph' && !def.nodes?.some((n) => n.kind === 'task')) {
     delete state.teamDefinitionCache[name];
     try {
       const res = await api('/api/team/definition?name=' + encodeURIComponent(name));
@@ -24446,14 +24770,14 @@ function closeTeamModals() {
   closeTeamEdgeEditor();
   closeTeamSquadEditor();
 }
-function teFieldLive(label, value, onChange, textarea) {
+function teFieldLive(label, value, onChange, textarea, markDirty = true) {
   const f = document.createElement('div');
   f.className = 'te-field';
   const l = document.createElement('label');
   l.textContent = label;
   const inp = textarea ? document.createElement('textarea') : document.createElement('input');
   inp.value = value;
-  const fire = () => { onChange(inp.value); setTeamSavedStatus(false); };
+  const fire = () => { onChange(inp.value); if (markDirty) setTeamSavedStatus(false); };
   inp.addEventListener('input', fire);
   inp.addEventListener('change', fire);
   f.append(l, inp);
@@ -25355,8 +25679,8 @@ function teLabeledSelect(label, value, options, onChange) {
   f.append(l, sel);
   return f;
 }
-function teHintField(label, hint, value, onChange) {
-  const f = teFieldLive(label, value, onChange);
+function teHintField(label, hint, value, onChange, markDirty = true) {
+  const f = teFieldLive(label, value, onChange, false, markDirty);
   const h = document.createElement('p');
   h.className = 'te-hint';
   h.textContent = hint;
@@ -25393,7 +25717,6 @@ async function saveTeamDefinition() {
     window.alert('This is a staged Assistant proposal. Use Apply on its Proposal card so the base version is checked before saving.');
     return;
   }
-  if (view === 'chats') void refreshSessionCenter();
   // Server-side /api/team/save migrates (migrateTeamDefinitionToGraph) +
   // validates before writing — the renderer doesn't have that helper in scope.
   try {
@@ -25432,6 +25755,7 @@ function showTeamGraphProblems(problems) {
   const boxes = [
     document.getElementById('teamGraphProblems'),
     document.getElementById('teamGraphCanvasProblems'),
+    document.getElementById('teamWorkflowProblems'),
   ].filter(Boolean);
   if (!boxes.length) return;
   for (const box of boxes) {
@@ -25439,7 +25763,9 @@ function showTeamGraphProblems(problems) {
     if (!problems || !problems.length) { box.classList.add('hidden'); continue; }
     box.classList.remove('hidden');
     const title = document.createElement('strong');
-    title.textContent = 'The engine rejected this graph:';
+    title.textContent = box.id === 'teamWorkflowProblems'
+      ? 'The engine rejected this workflow:'
+      : 'The engine rejected this graph:';
     box.appendChild(title);
     for (const p of problems) {
       const li = document.createElement('div');
@@ -25675,7 +26001,7 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   left.innerHTML = '<button class="active">Workflow</button>';
   const right = document.createElement('div'); right.className = 'graph-tools';
   const pill = document.createElement('span'); pill.className = 'graph-mode-pill';
-  pill.textContent = 'workflow · ' + (def.name || name);
+  pill.textContent = 'workflow · ' + (def.name || name) + ' · ' + wfNodeCount(def.workflowTree) + ' steps';
   right.appendChild(pill);
   if (editable) {
     const designBtn = document.createElement('button');
@@ -25691,6 +26017,10 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   }
   toolbar.append(left, right);
   g.appendChild(toolbar);
+  const problems = document.createElement('div');
+  problems.id = 'teamWorkflowProblems';
+  problems.className = 'te-problems hidden';
+  g.appendChild(problems);
   const canvas = document.createElement('div');
   canvas.className = 'wf-canvas';
   const tree = document.createElement('div');
@@ -25698,6 +26028,10 @@ function renderWorkflowSquadPlaceholder(g, def, name) {
   tree.appendChild(renderWfNode(def.workflowTree, def, editable));
   canvas.appendChild(tree);
   g.appendChild(canvas);
+}
+function wfNodeCount(root) {
+  if (!root) return 0;
+  return 1 + (root.children || []).reduce((total, child) => total + wfNodeCount(child), 0);
 }
 function renderWfNode(node, def, editable) {
   const col = document.createElement('div');
@@ -25747,30 +26081,31 @@ function renderWfNode(node, def, editable) {
   if (node.model) { const s = document.createElement('span'); s.textContent = node.model; meta.appendChild(s); }
   if (meta.children.length) card.appendChild(meta);
   col.appendChild(card);
-  // Children
-  if (node.children && node.children.length) {
+  // Children and continuation controls.
+  const children = node.children || [];
+  if (children.length) {
     const conn = document.createElement('div'); conn.className = 'wf-connector';
     col.appendChild(conn);
     const childRow = document.createElement('div');
     childRow.className = 'wf-children';
-    node.children.forEach((child, i) => {
+    children.forEach((child, i) => {
       const childCol = renderWfNode(child, def, editable);
       if (node.type === 'branch') {
         const lbl = document.createElement('div');
         lbl.className = 'wf-branch-label';
         lbl.textContent = i === 0 ? 'IF' : 'ELSE';
-        childCol.appendChild(lbl);
+        childCol.insertBefore(lbl, childCol.firstChild);
       }
       childRow.appendChild(childCol);
     });
     col.appendChild(childRow);
-  } else if (editable && node.type !== 'agent') {
-    // branch/parallel with no children: show add button
-    const conn = document.createElement('div'); conn.className = 'wf-connector';
-    col.appendChild(conn);
-    col.appendChild(wfAddButton(def, node));
-  } else if (editable) {
-    // agent leaf: add button
+  }
+  const canAdd = editable && (
+    (node.type === 'agent' && children.length < 1)
+    || (node.type === 'branch' && children.length < 2)
+    || node.type === 'parallel'
+  );
+  if (canAdd) {
     const conn = document.createElement('div'); conn.className = 'wf-connector';
     col.appendChild(conn);
     col.appendChild(wfAddButton(def, node));
@@ -25779,7 +26114,12 @@ function renderWfNode(node, def, editable) {
 }
 function wfAddButton(def, parent) {
   const btn = document.createElement('button');
-  btn.type = 'button'; btn.className = 'wf-add'; btn.textContent = '+ Add step';
+  btn.type = 'button'; btn.className = 'wf-add';
+  btn.textContent = parent.type === 'parallel'
+    ? '+ Add parallel branch'
+    : parent.type === 'branch'
+      ? '+ Add missing path'
+      : '+ Add next step';
   btn.addEventListener('click', () => {
     const newNode = { id: wfNewId(), type: 'agent', label: '', prompt: '', children: [] };
     openWfNodeDialog(newNode, def, true, function () {
@@ -25811,8 +26151,10 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
   const host = document.createElement('div');
   host.style.cssText = 'padding:0 18px 18px;display:grid;gap:10px;';
   panel.appendChild(host);
+  const draft = { ...node };
   // Type picker (only for new)
-  let nodeType = node.type || 'agent';
+  let nodeType = draft.type || 'agent';
+  let typeFields;
   if (isNew) {
     const typeField = document.createElement('div'); typeField.className = 'te-field';
     typeField.innerHTML = '<label>Type</label>';
@@ -25821,21 +26163,54 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
       const b = document.createElement('button'); b.type = 'button';
       b.innerHTML = '<strong>' + t[1] + '</strong><span>' + t[2] + '</span>';
       b.className = nodeType === t[0] ? 'active' : '';
-      b.addEventListener('click', () => { nodeType = t[0]; [...pick.children].forEach((c, i) => c.className = ['agent','branch','parallel'][i] === nodeType ? 'active' : ''); });
+      b.addEventListener('click', () => {
+        nodeType = t[0];
+        [...pick.children].forEach((c, i) => c.className = ['agent','branch','parallel'][i] === nodeType ? 'active' : '');
+        renderTypeFields();
+      });
       pick.appendChild(b);
     });
     typeField.appendChild(pick);
     host.appendChild(typeField);
   }
-  host.appendChild(teFieldLive('Label', node.label || '', function (v) { node.label = v; }));
-  if (node.type === 'agent' || isNew) {
-    host.appendChild(teFieldLive('Prompt', node.prompt || '', function (v) { node.prompt = v; }, true));
+  host.appendChild(teFieldLive('Label', draft.label || '', function (v) { draft.label = v; }, false, false));
+  typeFields = document.createElement('div');
+  typeFields.style.cssText = 'display:grid;gap:10px;';
+  host.appendChild(typeFields);
+  function renderTypeFields() {
+    if (!typeFields) return;
+    typeFields.textContent = '';
+    if (nodeType === 'agent') {
+      typeFields.appendChild(teFieldLive(
+        'Prompt',
+        draft.prompt || '',
+        function (v) { draft.prompt = v; },
+        true,
+        false,
+      ));
+    } else if (nodeType === 'branch') {
+      typeFields.appendChild(teHintField(
+        'Condition (substring)',
+        'Case-insensitive text the upstream output must contain to take the IF path.',
+        draft.condition || '',
+        function (v) { draft.condition = v; },
+        false,
+      ));
+    }
+    typeFields.appendChild(teLabeledSelect(
+      'Runtime',
+      draft.runtime || '',
+      teamRuntimeSelectOptions(),
+      function (v) { draft.runtime = v || undefined; },
+    ));
+    typeFields.appendChild(teLabeledSelect(
+      'Model',
+      draft.model || '',
+      teamModelSelectOptions(),
+      function (v) { draft.model = v; },
+    ));
   }
-  if (node.type === 'branch' || (isNew && false)) {
-    host.appendChild(teHintField('Condition (substring)', 'Case-insensitive text the upstream output must contain to take the IF branch.', node.condition || '', function (v) { node.condition = v; }));
-  }
-  host.appendChild(teLabeledSelect('Runtime', node.runtime || '', teamRuntimeSelectOptions(), function (v) { node.runtime = v || undefined; }));
-  host.appendChild(teLabeledSelect('Model', node.model || '', teamModelSelectOptions(), function (v) { node.model = v; }));
+  renderTypeFields();
   const actions = document.createElement('div');
   actions.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding:0 18px 18px;';
   const cancel = document.createElement('button');
@@ -25844,7 +26219,18 @@ function openWfNodeDialog(node, def, isNew, onCreate) {
   const save = document.createElement('button');
   save.type = 'button'; save.className = 'te-btn primary'; save.textContent = isNew ? 'Add' : 'Save';
   save.addEventListener('click', () => {
-    if (isNew) { node.type = nodeType; if (nodeType === 'branch') { node.children = [wfDefaultChild(), wfDefaultChild()]; } else { node.children = []; } if (onCreate) onCreate(); }
+    if (nodeType === 'branch' && !draft.condition?.trim()) {
+      window.alert('A Branch requires a condition for its IF path.');
+      return;
+    }
+    draft.type = nodeType;
+    if (isNew) {
+      draft.children = nodeType === 'branch' ? [wfDefaultChild(), wfDefaultChild()] : [];
+    }
+    if (nodeType !== 'agent') delete draft.prompt;
+    if (nodeType !== 'branch') delete draft.condition;
+    Object.assign(node, draft);
+    if (isNew && onCreate) onCreate();
     setTeamSavedStatus(false);
     overlay.remove();
     renderTeamGraph(def, def.name);
@@ -29589,18 +29975,25 @@ async function removeMcpServerConfig(name) {
   renderMcpServers();
 }
 let settingsHooksCache = { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+let settingsTypedHooksCache = [];
+let typedHookEditingIndex = -1;
 let settingsHooksConfigPath = '';
 async function refreshHooksSettings() {
   const root = el('settingsHooksList');
+  const typedRoot = el('settingsTypedHooksList');
+  const typedIssues = el('settingsTypedHooksIssues');
   const pathEl = el('settingsHooksPath');
-  if (!root) return;
+  if (!root || !typedRoot) return;
   root.textContent = '';
+  typedRoot.textContent = '';
   try {
     const res = await api('/api/hooks');
     if (!res.ok) throw new Error('load failed');
     const data = await res.json();
     settingsHooksCache = data.hooks || { PreToolUse: [], PostToolUse: [], SessionStart: [] };
+    settingsTypedHooksCache = Array.isArray(data.typedHooks) ? data.typedHooks : [];
     settingsHooksConfigPath = data.configPath || '';
+    if (typedIssues) typedIssues.textContent = (data.typedHookIssues || []).join(' ');
     if (pathEl) pathEl.textContent = settingsHooksConfigPath ? ('Config: ' + settingsHooksConfigPath) : 'Settings path unavailable';
   } catch (err) {
     if (pathEl) pathEl.textContent = 'Could not load hooks.';
@@ -29610,6 +30003,7 @@ async function refreshHooksSettings() {
     root.appendChild(note);
     return;
   }
+  renderTypedHooksSettings();
   const events = [
     ['PreToolUse', 'Before tool use (can deny)'],
     ['PostToolUse', 'After tool use (fire-and-forget)'],
@@ -29683,6 +30077,69 @@ async function refreshHooksSettings() {
     root.appendChild(tip);
   }
 }
+function typedHookHandlerSummary(hook) {
+  const handler = hook.handler || {};
+  if (handler.type === 'command') return [handler.command].concat(handler.args || []).join(' ');
+  if (handler.type === 'prompt') return handler.prompt || '';
+  return handler.url || '';
+}
+function renderTypedHooksSettings() {
+  const root = el('settingsTypedHooksList');
+  if (!root) return;
+  root.textContent = '';
+  if (settingsTypedHooksCache.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'muted';
+    empty.textContent = 'No lifecycle hooks configured.';
+    root.appendChild(empty);
+    return;
+  }
+  settingsTypedHooksCache.forEach((hook, index) => {
+    const card = document.createElement('article');
+    const enabled = hook.enabled !== false;
+    card.className = 'hooks-card' + (enabled ? '' : ' disabled');
+    const head = document.createElement('div');
+    head.className = 'hooks-card-head';
+    const title = document.createElement('div');
+    title.className = 'hooks-card-title';
+    title.textContent = hook.id + ' · ' + hook.event;
+    const actions = document.createElement('div');
+    actions.className = 'hooks-card-actions';
+    const toggle = document.createElement('label');
+    toggle.className = 'switch-field';
+    toggle.title = 'Enabled';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = enabled;
+    checkbox.addEventListener('change', () => { void updateTypedHookEnabled(index, checkbox.checked); });
+    toggle.appendChild(checkbox);
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'secondary-btn';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => { openTypedHookEditor(index); });
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'secondary-btn';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => { void removeTypedHookEntry(index); });
+    actions.append(toggle, editBtn, removeBtn);
+    head.append(title, actions);
+    const value = document.createElement('div');
+    value.className = 'hooks-card-cmd';
+    value.textContent = (hook.handler?.type || 'unknown') + ': ' + typedHookHandlerSummary(hook);
+    card.append(head, value);
+    const details = [];
+    if (hook.matcher) details.push('matcher: ' + hook.matcher);
+    if (hook.timeoutMs) details.push('timeout: ' + hook.timeoutMs + ' ms');
+    details.push('on error: ' + (hook.errorPolicy || 'continue'));
+    const desc = document.createElement('div');
+    desc.className = 'hooks-card-desc';
+    desc.textContent = details.join(' · ');
+    card.appendChild(desc);
+    root.appendChild(card);
+  });
+}
 async function persistHooksCache() {
   const res = await api('/api/hooks', {
     method: 'PUT',
@@ -29695,6 +30152,132 @@ async function persistHooksCache() {
   }
   const data = await res.json();
   settingsHooksCache = data.hooks || settingsHooksCache;
+}
+async function persistTypedHooksCache() {
+  const res = await api('/api/hooks', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ typedHooks: settingsTypedHooksCache }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('save failed (' + res.status + ')'));
+  settingsTypedHooksCache = data.typedHooks || settingsTypedHooksCache;
+}
+async function updateTypedHookEnabled(index, enabled) {
+  if (!settingsTypedHooksCache[index]) return;
+  settingsTypedHooksCache[index] = { ...settingsTypedHooksCache[index], enabled };
+  try {
+    await persistTypedHooksCache();
+    renderTypedHooksSettings();
+    el('settingsStatus').textContent = enabled ? 'Lifecycle hook enabled' : 'Lifecycle hook disabled';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+async function removeTypedHookEntry(index) {
+  const hook = settingsTypedHooksCache[index];
+  if (!hook || !window.confirm('Remove lifecycle hook "' + hook.id + '"?')) return;
+  settingsTypedHooksCache.splice(index, 1);
+  try {
+    await persistTypedHooksCache();
+    renderTypedHooksSettings();
+    el('settingsStatus').textContent = 'Lifecycle hook removed';
+  } catch (e) {
+    el('settingsStatus').textContent = 'Error: ' + (e.message || e);
+    await refreshHooksSettings();
+  }
+}
+function updateTypedHookHandlerFields() {
+  const type = el('typedHookHandlerType').value;
+  const valueField = el('typedHookValueField');
+  const value = el('typedHookValue');
+  valueField.firstChild.textContent = type === 'command' ? 'Command' : (type === 'prompt' ? 'Prompt' : 'URL');
+  value.placeholder = type === 'command' ? 'node' : (type === 'prompt' ? 'Review this lifecycle input' : 'https://example.com/hooks');
+  el('typedHookArgsField').classList.toggle('hidden', type !== 'command');
+  el('typedHookCwdField').classList.toggle('hidden', type !== 'command');
+  el('typedHookHeadersField').classList.toggle('hidden', type !== 'http');
+}
+function openTypedHookEditor(index = -1) {
+  typedHookEditingIndex = index;
+  const hook = index >= 0 ? settingsTypedHooksCache[index] : null;
+  el('typedHookEditorTitle').textContent = hook ? 'Edit lifecycle hook' : 'New lifecycle hook';
+  el('typedHookId').value = hook?.id || '';
+  el('typedHookEvent').value = hook?.event || 'PreToolUse';
+  el('typedHookMatcher').value = hook?.matcher || '';
+  el('typedHookHandlerType').value = hook?.handler?.type || 'command';
+  el('typedHookValue').value = hook?.handler?.command || hook?.handler?.prompt || hook?.handler?.url || '';
+  el('typedHookArgs').value = (hook?.handler?.args || []).join('\\n');
+  el('typedHookCwd').value = hook?.handler?.cwd || '';
+  el('typedHookHeaders').value = hook?.handler?.headers ? JSON.stringify(hook.handler.headers, null, 2) : '';
+  el('typedHookTimeout').value = hook?.timeoutMs || '';
+  el('typedHookErrorPolicy').value = hook?.errorPolicy || 'continue';
+  el('typedHookEnabled').checked = hook?.enabled !== false;
+  el('typedHookStatus').textContent = '';
+  updateTypedHookHandlerFields();
+  el('typedHookEditorModal').classList.remove('hidden');
+  el('typedHookId').focus();
+}
+function closeTypedHookEditor() {
+  el('typedHookEditorModal').classList.add('hidden');
+  typedHookEditingIndex = -1;
+}
+async function saveTypedHookEditor() {
+  const status = el('typedHookStatus');
+  const id = el('typedHookId').value.trim();
+  const matcher = el('typedHookMatcher').value.trim();
+  const type = el('typedHookHandlerType').value;
+  const value = el('typedHookValue').value.trim();
+  if (!id || !value) { status.textContent = 'Hook ID and handler value are required.'; return; }
+  if (matcher) {
+    try { new RegExp(matcher, 'u'); } catch { status.textContent = 'Matcher must be a valid regular expression.'; return; }
+  }
+  const duplicate = settingsTypedHooksCache.findIndex((hook, index) => hook.id === id && index !== typedHookEditingIndex);
+  if (duplicate >= 0) { status.textContent = 'Hook ID must be unique.'; return; }
+  let handler;
+  if (type === 'command') {
+    const args = el('typedHookArgs').value.split(/\\r?\\n/u).map(entry => entry.trim()).filter(Boolean);
+    const cwd = el('typedHookCwd').value.trim();
+    handler = { type, command: value, ...(args.length ? { args } : {}), ...(cwd ? { cwd } : {}) };
+  } else if (type === 'prompt') {
+    handler = { type, prompt: value };
+  } else {
+    let headers;
+    const headerText = el('typedHookHeaders').value.trim();
+    if (headerText) {
+      try {
+        headers = JSON.parse(headerText);
+        if (!headers || Array.isArray(headers) || typeof headers !== 'object' || Object.values(headers).some(item => typeof item !== 'string')) throw new Error();
+      } catch {
+        status.textContent = 'HTTP headers must be a JSON object with string values.';
+        return;
+      }
+    }
+    handler = { type, url: value, ...(headers ? { headers } : {}) };
+  }
+  const timeout = Number(el('typedHookTimeout').value);
+  const hook = {
+    id,
+    event: el('typedHookEvent').value,
+    handler,
+    ...(matcher ? { matcher } : {}),
+    ...(timeout > 0 ? { timeoutMs: timeout } : {}),
+    enabled: !!el('typedHookEnabled').checked,
+    errorPolicy: el('typedHookErrorPolicy').value,
+  };
+  const previous = settingsTypedHooksCache.slice();
+  if (typedHookEditingIndex >= 0) settingsTypedHooksCache[typedHookEditingIndex] = hook;
+  else settingsTypedHooksCache.push(hook);
+  status.textContent = 'Saving...';
+  try {
+    await persistTypedHooksCache();
+    closeTypedHookEditor();
+    await refreshHooksSettings();
+    el('settingsStatus').textContent = 'Lifecycle hook saved';
+  } catch (e) {
+    settingsTypedHooksCache = previous;
+    status.textContent = 'Error: ' + (e.message || e);
+  }
 }
 async function updateHookEnabled(eventName, index, enabled) {
   const list = settingsHooksCache[eventName] || [];
@@ -29728,36 +30311,27 @@ function renderShortcutsPanel() {
   const root = el('settingsShortcutsList');
   if (!root) return;
   root.textContent = '';
-  const enterToSend = state.preferences.enterToSend !== false;
   const groups = [
     {
       title: 'Composer',
-      rows: enterToSend
-        ? [
-            [['Enter'], 'Send message'],
-            [['Shift', 'Enter'], 'Insert new line'],
-            [['/'], 'Open command flow'],
-          ]
-        : [
-            [['Ctrl', 'Enter'], 'Send message (Cmd+Enter on macOS)'],
-            [['Enter'], 'Insert new line'],
-            [['/'], 'Open command flow'],
-          ],
+      rows: [
+        ['newChat', 'New chat'],
+        ['cycleModel', 'Cycle model'],
+        ['takeScreenshot', 'Capture and attach screenshot'],
+      ],
     },
     {
       title: 'Aux panels',
       rows: [
-        [['Ctrl', 'Shift', 'G'], 'Open Review'],
-        [['Ctrl', 'T'], 'Open Browser'],
-        [['Ctrl', 'P'], 'Open Files'],
-        [['Ctrl', '\`'], 'Toggle terminal'],
+        ['openReview', 'Open Review'],
+        ['openBrowser', 'Open Browser'],
+        ['openFiles', 'Open Files'],
+        ['toggleTerminal', 'Toggle terminal'],
       ],
     },
     {
       title: 'Global',
-      rows: [
-        [['Escape'], 'Close menus, pickers, and aux focus'],
-      ],
+      rows: [['openSettings', 'Open Settings']],
     },
   ];
   for (const group of groups) {
@@ -29766,27 +30340,95 @@ function renderShortcutsPanel() {
     const h = document.createElement('h3');
     h.textContent = group.title;
     wrap.appendChild(h);
-    for (const [keys, label] of group.rows) {
+    for (const [action, label] of group.rows) {
       const row = document.createElement('div');
-      keys.forEach((key, i) => {
-        if (i > 0) row.appendChild(document.createTextNode(' + '));
-        const kbd = document.createElement('kbd');
-        kbd.textContent = key;
-        row.appendChild(kbd);
-      });
+      row.className = 'shortcut-row';
       const span = document.createElement('span');
       span.textContent = label;
-      row.appendChild(span);
+      const input = document.createElement('input');
+      input.className = 'shortcut-binding';
+      input.readOnly = true;
+      input.value = (state.preferences.shortcuts || {})[action] ?? DEFAULT_SHORTCUTS[action];
+      input.setAttribute('aria-label', label + ' shortcut');
+      input.addEventListener('keydown', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Escape') {
+          input.blur();
+          return;
+        }
+        const clearing = (event.key === 'Backspace' || event.key === 'Delete')
+          && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+        const binding = clearing ? '' : eventToShortcut(event);
+        if (!binding && !clearing) return;
+        state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: binding };
+        input.value = binding;
+        scheduleSettingsAutosave(50);
+      });
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'secondary-btn shortcut-reset';
+      reset.textContent = 'Reset';
+      reset.addEventListener('click', () => {
+        state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: DEFAULT_SHORTCUTS[action] };
+        input.value = DEFAULT_SHORTCUTS[action];
+        scheduleSettingsAutosave(50);
+      });
+      row.append(span, input, reset);
       wrap.appendChild(row);
     }
     root.appendChild(wrap);
   }
   const note = document.createElement('p');
   note.className = 'muted';
-  note.textContent = enterToSend
-    ? 'Enter-to-send is on (Appearance). Turn it off to require Ctrl/Cmd+Enter to send.'
-    : 'Enter-to-send is off (Appearance). Press Ctrl/Cmd+Enter to send.';
+  note.textContent = state.preferences.enterToSend !== false
+    ? 'Enter sends; Shift+Enter inserts a new line. Escape always closes open menus.'
+    : 'Enter inserts a new line; Ctrl/Cmd+Enter sends. Escape always closes open menus.';
   root.appendChild(note);
+}
+
+function eventToShortcut(event) {
+  if (['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) return '';
+  const parts = [];
+  const mac = /mac|iphone|ipad|ipod/i.test(navigator.platform || '');
+  if ((mac && event.metaKey) || (!mac && event.ctrlKey)) parts.push('Mod');
+  else {
+    if (event.ctrlKey) parts.push('Ctrl');
+    if (event.metaKey) parts.push('Meta');
+  }
+  if (event.altKey) parts.push('Alt');
+  if (event.shiftKey) parts.push('Shift');
+  let key = event.code === 'Backquote' ? 'Backquote' : event.key;
+  if (key === ' ') key = 'Space';
+  else if (key.length === 1 && /[a-z]/i.test(key)) key = key.toUpperCase();
+  parts.push(key);
+  return parts.join('+');
+}
+
+function renderShortcutHints() {
+  const shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) };
+  document.querySelectorAll('[data-shortcut-action]').forEach(node => {
+    node.textContent = shortcuts[node.dataset.shortcutAction] || '—';
+  });
+}
+
+function dispatchShortcut(event) {
+  if (isTypingTarget(event.target)) return false;
+  const pressed = eventToShortcut(event).toLowerCase();
+  if (!pressed) return false;
+  const shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) };
+  const action = Object.keys(DEFAULT_SHORTCUTS).find(name => String(shortcuts[name] || '').toLowerCase() === pressed);
+  if (!action) return false;
+  event.preventDefault();
+  if (action === 'newChat') void createNewSession().catch(error => flashStatus(error.message || String(error)));
+  else if (action === 'cycleModel') cyclePickerModel();
+  else if (action === 'openReview') handleAuxAction('review');
+  else if (action === 'openBrowser') handleAuxAction('browser');
+  else if (action === 'openFiles') handleAuxAction('files');
+  else if (action === 'toggleTerminal') toggleTerminalDock();
+  else if (action === 'openSettings') void openSettings('general').catch(console.error);
+  else if (action === 'takeScreenshot') void captureScreenshotContext();
+  return true;
 }
 function openProjectGitFromSettings() {
   closeSettings();
@@ -30872,6 +31514,7 @@ function collectSettingsBody() {
       showProviderConfigsInComposer: el('settingsShowProviderConfigsInComposer')?.checked !== false,
       showAgentProfilesInComposer: el('settingsShowAgentProfilesInComposer')?.checked !== false,
       showRouterProfilesInComposer: el('settingsShowRouterProfilesInComposer')?.checked !== false,
+      shortcuts: { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) },
     },
   };
 }
@@ -31279,6 +31922,16 @@ el('settingsHooksRefresh')?.addEventListener('click', () => { refreshHooksSettin
 el('settingsHooksOpenConfig')?.addEventListener('click', () => {
   api('/api/settings/open-config', { method: 'POST' }).catch(console.error);
 });
+el('settingsTypedHookAdd')?.addEventListener('click', () => { openTypedHookEditor(); });
+el('typedHookHandlerType')?.addEventListener('change', updateTypedHookHandlerFields);
+el('typedHookCancel')?.addEventListener('click', closeTypedHookEditor);
+el('typedHookEditorForm')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  saveTypedHookEditor().catch(console.error);
+});
+el('typedHookEditorModal')?.addEventListener('click', (event) => {
+  if (event.target === el('typedHookEditorModal')) closeTypedHookEditor();
+});
 el('settingsShowBranchInComposer')?.addEventListener('change', () => {
   scheduleSettingsAutosave(120);
   state.preferences.showBranchInComposer = !!el('settingsShowBranchInComposer')?.checked;
@@ -31322,11 +31975,7 @@ document.addEventListener('contextmenu', (event) => {
   if (!onTarget) hideContextMenu();
 });
 document.addEventListener('keydown', (event) => {
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key === '/') {
-    event.preventDefault();
-    cyclePickerModel();
-    return;
-  }
+  if (dispatchShortcut(event)) return;
   if (event.key === 'Escape') {
     hideContextMenu();
     closeGraphContextMenu();
@@ -31385,19 +32034,6 @@ document.addEventListener('keydown', (event) => {
       return;
     }
   }
-  if (!typing && event.ctrlKey && event.shiftKey && (event.key === 'G' || event.key === 'g')) {
-    event.preventDefault();
-    handleAuxAction('review');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'T' || event.key === 't')) {
-    event.preventDefault();
-    handleAuxAction('browser');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && (event.key === 'P' || event.key === 'p')) {
-    event.preventDefault();
-    handleAuxAction('files');
-  } else if (!typing && event.ctrlKey && !event.shiftKey && event.code === 'Backquote') {
-    event.preventDefault();
-    toggleTerminalDock();
-  }
 });
 document.addEventListener('keyup', (event) => {
   if (event.key === ' ' || event.code === 'Space') {
@@ -31416,6 +32052,7 @@ document.addEventListener('click', (event) => {
 el('permissionPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); togglePermissionPicker(); });
 el('permissionPickerMenu').addEventListener('click', (event) => event.stopPropagation());
 el('modelPickerBtn').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
+el('composerMetaRuntime').addEventListener('click', (event) => { event.stopPropagation(); toggleModelPicker(); });
 el('modelPickerSearch').addEventListener('input', (event) => {
   state.pickerQuery = event.target.value || '';
   state.pickerActiveIndex = 0;

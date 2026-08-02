@@ -710,7 +710,7 @@ export async function compactHadamardSession(
       : filteredMessages;
   // Estimate against the real session prefix. Microcompact is only a
   // preprocess for full summary — never a standalone mutation that would
-  // break automatic prompt-prefix caches used by createAgentSdk / hadamard-react.
+  // break automatic prompt-prefix caches used by createAgentSdk / hadamard-tui.
   const tokenEstimateBefore = estimateHadamardConversationTokens(compactableMessages);
   const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig);
 

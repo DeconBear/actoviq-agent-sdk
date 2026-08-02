@@ -2,42 +2,19 @@
 
 ## 架构
 
-两个交互终端：轻量级 scrollback REPL（`hadamard-react`）和完整终端 UI（`hadamard-tui`）。两者使用相同的 SDK 运行时，但渲染方式不同。
+`hadamard-tui` 是唯一的交互式终端 Agent。它统一提供原生 scrollback、
+自定义键盘处理、流式工具状态，以及与 GUI 共用的可搜索斜杠命令面。
 
-| | hadamard-react | hadamard-tui |
-|---|---|---|
-| **渲染** | 原生 scrollback（readline） | 备用屏幕缓冲区（完整 TUI） |
-| **输入** | readline + 历史记录 | 自定义键盘处理 |
-| **流式** | 内联文本 + 工具指示器 | 可重绘面板 |
-| **斜杠命令** | 内联解析 | 可搜索菜单 |
-| **复杂度** | ~370 行 | ~1000+ 行 |
+主要文件：
 
-### `hadamard-react` — Scrollback REPL
+| 文件 | 职责 |
+|---|---|
+| `cli/hadamard-tui.ts` | TUI 入口 |
+| `tui/hadamardTui.ts` | 完整 TUI 实现 |
+| `tui/transcript.ts` | 对话与工具状态渲染 |
+| `ui/commandSurface.ts` | TUI/GUI 共用命令及二级命令目录 |
 
-位置：`src/cli/hadamard-react.ts`
-
-```
-main()
-    ├── 加载配置（显式路径或默认 settings.json）
-    ├── createAgentSdk({ workDir, tools, permissionMode })
-    ├── createSession({ title, permissionMode })
-    │
-    ├── readline 接口（completer: 斜杠命令）
-    │
-    ├── 斜杠命令：/help, /clear, /exit, /model, /permissions,
-    │               /sessions, /resume, /tools, /memory, /compact, /dream
-    │
-    └── 消息处理（processMsg）
-        ├── session.stream(text, { systemPrompt, signal, ... })
-        └── 事件处理：
-            ├── request.started → 显示迭代编号
-            ├── response.text.delta → 写入 stdout
-            ├── tool.call → "⚡ ToolName(args)" 黄色
-            ├── tool.result → "✓/✗ 耗时 输出"
-            └── error → 错误消息
-```
-
-### `hadamard-tui` — 完整终端 UI
+### 终端 UI
 
 位置：`src/tui/hadamardTui.ts`
 

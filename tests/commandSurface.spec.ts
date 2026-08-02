@@ -5,6 +5,7 @@ import {
   SUBCOMMANDS,
   SUBCOMMAND_DESCRIPTIONS,
   filterInteractiveCommands,
+  interactiveCommandUsage,
   selectInteractiveCommand,
 } from '../src/ui/commandSurface.js';
 
@@ -40,6 +41,7 @@ describe('filterInteractiveCommands', () => {
       'bridge help',
     ]);
     expect(filterInteractiveCommands('/model ')).toEqual(['model router', 'model config']);
+    expect(filterInteractiveCommands('/automation ')).toEqual(['automation list', 'automation new']);
     expect(filterInteractiveCommands('/plan ')).toEqual([
       'plan view',
       'plan approve',
@@ -92,6 +94,15 @@ describe('filterInteractiveCommands', () => {
     }
   });
 
+  it('keeps shared help usage aligned with every registered sub-command', () => {
+    for (const [head, subcommands] of Object.entries(SUBCOMMANDS)) {
+      const usage = interactiveCommandUsage(head);
+      for (const subcommand of subcommands) {
+        expect(usage, `/${head} ${subcommand}`).toContain(subcommand);
+      }
+    }
+  });
+
   it('documents every external CLI control command', () => {
     for (const command of ['background', 'runs', 'stop', 'status', 'history', 'resume']) {
       expect(SUBCOMMANDS.bridge).toContain(command);
@@ -107,6 +118,12 @@ describe('filterInteractiveCommands', () => {
     for (const command of agentCommands ?? []) {
       expect(SUBCOMMAND_DESCRIPTIONS[`agents ${command}`]).toBeTruthy();
     }
+  });
+
+  it('keeps Automation list and creation on the shared surface', () => {
+    expect(SUBCOMMANDS.automation).toEqual(['list', 'new']);
+    expect(SUBCOMMAND_DESCRIPTIONS['automation list']).toBeTruthy();
+    expect(SUBCOMMAND_DESCRIPTIONS['automation new']).toBeTruthy();
   });
 
   it('submits a selected sub-command exactly once', () => {

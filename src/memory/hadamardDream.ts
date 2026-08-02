@@ -8,7 +8,6 @@ import type {
   HadamardDreamRunOptions,
   HadamardDreamRunResult,
   HadamardDreamState,
-  AgentRunResult,
   StoredSession,
 } from '../types.js';
 import type { HadamardMemoryApi } from './hadamardMemory.js';

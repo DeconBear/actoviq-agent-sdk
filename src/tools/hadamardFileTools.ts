@@ -5,7 +5,6 @@
  * Execution logic is adapted for the Hadamard SDK environment.
  */
 import { readFile, writeFile, mkdir, stat as fsStat } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { glob } from 'glob';

@@ -6,6 +6,10 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { tool } from '../../runtime/tools.js';
 import { isReadOnlyBashCommand } from '../../runtime/bashClassification.js';
+import {
+  detectCatastrophicShellCommand,
+  hasExplicitSafetyApproval,
+} from '../../runtime/safetyChecks.js';
 import type {
   HadamardBackgroundTaskRecord,
   AgentToolDefinition,
@@ -94,7 +98,10 @@ export function createBashTool(options: BashToolOptions = {}): AgentToolDefiniti
       prompt: () => BASH_DESCRIPTION,
     },
     async (input: BashInput, context) => {
-      const blocked = detectDangerousBashCommand(input.command);
+      const blocked = detectDangerousBashCommand(input.command, {
+        workDir: context.cwd,
+        allowCatastrophic: hasExplicitSafetyApproval(context),
+      });
       if (blocked) {
         return {
           stdout: '',
@@ -304,8 +311,15 @@ function tailText(text: string, maxChars: number): string {
  * (e.g. `taskkill /IM node.exe`, `killall node`, `pkill -f node`).
  * Prefer killing a specific PID from the command that started the server.
  */
-export function detectDangerousBashCommand(command: string): string | null {
+export function detectDangerousBashCommand(
+  command: string,
+  options: { workDir?: string; allowCatastrophic?: boolean } = {},
+): string | null {
   const cmd = String(command || '');
+  if (!options.allowCatastrophic) {
+    const catastrophic = detectCatastrophicShellCommand(cmd, options.workDir ?? process.cwd());
+    if (catastrophic) return catastrophic;
+  }
   // taskkill targeting all node.exe / bun.exe / deno.exe by image name
   if (/\btaskkill\b/i.test(cmd) && /\/(?:IM|FI)\b/i.test(cmd) && /\b(?:node|bun|deno)(?:\.exe)?\b/i.test(cmd) && !/\b\/PID\b/i.test(cmd)) {
     return (

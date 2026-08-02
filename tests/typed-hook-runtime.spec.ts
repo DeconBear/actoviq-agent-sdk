@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -47,5 +47,33 @@ describe('typed lifecycle hooks runtime', () => {
     } finally {
       await sdk.close();
     }
+  });
+
+  it('runs SessionEnd once when the client closes', async () => {
+    const sessionDirectory = await mkdtemp(path.join(os.tmpdir(), 'hadamard-session-end-hook-'));
+    tempDirs.push(sessionDirectory);
+    const marker = path.join(sessionDirectory, 'session-end.txt');
+    const modelApi = {
+      createMessage: async () => { throw new Error('Unexpected model call.'); },
+      streamMessage: () => { throw new Error('Unexpected model call.'); },
+    } as unknown as ModelApi;
+    const sdk = await createAgentSdk({
+      model: 'test-model',
+      sessionDirectory,
+      modelApi,
+      typedHooks: [{
+        id: 'session-end-marker',
+        event: 'SessionEnd',
+        handler: {
+          type: 'command',
+          command: process.execPath,
+          args: ['-e', `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'closed\\n')`],
+        },
+      }],
+    });
+
+    await sdk.close();
+    await sdk.close();
+    await expect(readFile(marker, 'utf8')).resolves.toBe('closed\n');
   });
 });

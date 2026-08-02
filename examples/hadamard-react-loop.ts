@@ -2,8 +2,8 @@
  * Example: Clean SDK ReAct loop.
  *
  * Demonstrates a one-shot ReAct interaction with streaming output,
- * tool calls, and thinking blocks. For the full interactive REPL,
- * use the `hadamard-react` command.
+ * tool calls, and thinking blocks. For the full interactive terminal,
+ * use the `hadamard-tui` command.
  *
  * Usage: npm run example:hadamard-react-loop
  */

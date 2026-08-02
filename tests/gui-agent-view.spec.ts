@@ -153,10 +153,18 @@ describe('GUI Project Agent execution view', () => {
     const css = createHadamardGuiStyles();
 
     expect(html).toContain('id="modelPickerBtn"');
+    expect(html).toContain('id="composerMetaRuntime"');
+    expect(html).toContain('id="composerMetaRuntimeLabel"');
+    expect(html).not.toContain('id="composerMetaEnv"');
+    expect(html).not.toContain('id="teamEnvSelect"');
     expect(html).toContain('aria-haspopup="listbox"');
     expect(html).toContain('placeholder="Search models, routers, providers"');
     expect(html).toContain('Ctrl / ⌘ + / to cycle');
     expect(js).toContain("appendPickerRouterSection(items, targets.routers");
+    expect(js).toContain("executionLabel = 'External CLI · '");
+    expect(js).toContain("executionLabel = 'Direct API · '");
+    expect(js).toContain("executionLabel = 'Router · '");
+    expect(js).toContain("el('composerMetaRuntime').addEventListener('click'");
     expect(js).toContain("appendPickerSection(items, 'Configurations'");
     expect(js).toContain('appendPickerAgentSection(items, targets.agents');
     expect(js).not.toContain("appendPickerSection(items, 'Agents'");
@@ -169,7 +177,7 @@ describe('GUI Project Agent execution view', () => {
     expect(js).toContain("ev.key === 'ArrowRight'");
     expect(js).toContain("event.key !== 'ArrowLeft'");
     expect(js).toContain('bridgeConfig: target?.name');
-    expect(js).toContain("event.key === '/'");
+    expect(js).toContain("cycleModel: 'Mod+/'");
     expect(js).toContain("event.key === 'ArrowDown'");
     expect(js).toContain('current < 0 ? 0 : Math.min(current + 1');
     expect(js).toContain('current < 0 ? rows.length - 1');
@@ -341,6 +349,41 @@ describe('GUI Project Agent execution view', () => {
     expect(switchView.indexOf("cv.classList.toggle('hidden', view !== 'conversation')")).toBeLessThan(
       switchView.indexOf('requestAnimationFrame(forceScrollTranscriptToBottom)'),
     );
+  });
+
+  it('keeps workflow draft edits clean until the node dialog is saved', () => {
+    const js = createHadamardGuiClientScript();
+    const save = js.slice(
+      js.indexOf('async function saveTeamDefinition()'),
+      js.indexOf('function renderTeamGraph()', js.indexOf('async function saveTeamDefinition()')),
+    );
+    const dialog = js.slice(
+      js.indexOf('function openWfNodeDialog(node, def, isNew, onCreate)'),
+      js.indexOf('function wfDefaultChild()', js.indexOf('function openWfNodeDialog')),
+    );
+
+    expect(save).not.toContain("view === 'chats'");
+    expect(js).toContain('function teFieldLive(label, value, onChange, textarea, markDirty = true)');
+    expect(js).toContain('if (markDirty) setTeamSavedStatus(false)');
+    expect(dialog).toContain("function (v) { draft.label = v; }, false, false");
+    expect(dialog).toContain("function (v) { draft.prompt = v; },\n        true,\n        false");
+    expect(dialog).toContain("function (v) { draft.condition = v; },\n        false");
+  });
+
+  it('offers Agent-page workflows when creating an Automation task', () => {
+    const js = createHadamardGuiClientScript();
+    const dialog = js.slice(
+      js.indexOf('function openAutomationDialog(task)'),
+      js.indexOf('async function loadSkillCatalog(action)'),
+    );
+
+    expect(dialog).toContain("teamListForRegion()\n        .filter(function (team) { return team.squadType === 'workflow'; })");
+    expect(dialog).not.toContain('state.snapshot.workflows');
+    expect(dialog).toContain('const state0 = task\n    ? { ...task }');
+    expect(dialog).toContain('return teFieldLive(label, value, onChange, textarea, false)');
+    expect(dialog).toContain("workflowSource: 'agent'");
+    expect(dialog).toContain('This existing task uses the legacy script runtime');
+    expect(dialog).toContain('Create and select an Agent Workflow first.');
   });
 
   it('waits for server-side resume mutations before returning reconciliation state', () => {

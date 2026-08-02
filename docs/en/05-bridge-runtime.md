@@ -255,7 +255,7 @@ Implementation: `src/parity/bridgeConfigs.ts`, `src/tui/hadamardTui.ts`.
 
 1. **Install the CLI** (`npm i -g @anthropic-ai/claude-code`, `npm i -g codewhale`, …)
    and restart your shell so it's on `PATH`.
-2. **Run `npx hadamard-interactive-agent`** and type `/bridge` — the wizard shows
+2. **Run `npx hadamard-tui`** and type `/bridge` — the control board shows
    detected providers and lets you pick a default.
 3. **Set `HADAMARD_<ID>_PATH`** (see 1.3) if the binary is installed but not on `PATH`
    (common in CI, IDE launchers that don't inherit shell profiles).
@@ -263,8 +263,7 @@ Implementation: `src/parity/bridgeConfigs.ts`, `src/tui/hadamardTui.ts`.
    "Detect runtimes" button) into Claude Code and let it guide the install.
 
 Implementation: `src/parity/bridgeProviders.ts` (per-provider argv/env/normalizer +
-`BRIDGE_PROVIDER_CREDENTIALS` readiness hints), `src/cli/bridge-interactive-agent.ts`
-(/bridge wizard), `src/tui/hadamardTui.ts` (TUI `/bridge` control board — one-tap
+`BRIDGE_PROVIDER_CREDENTIALS` readiness hints), `src/tui/hadamardTui.ts` (TUI `/bridge` control board — one-tap
 provider activation, per-provider model, credential hints, and live run status; the
 `run`/`background`/`runs`/`stop`/`history`/`resume`/`switch`/`model`/`setup`/`off`/`help`
 sub-commands autocomplete), `src/gui/hadamardGui.ts` (loopback-only bridge panel,

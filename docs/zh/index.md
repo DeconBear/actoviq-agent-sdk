@@ -28,9 +28,7 @@ Hadamard SDK 的核心实现完全独立。需要兼容 Claude、Codex、Pi 等�
 如果你想最快跑起来：
 1. 先看 [01-setup-and-quickstart.md](./01-setup-and-quickstart.md)
 2. 运行 `npm run example:hadamard-quickstart`
-3. 或启动交互式终端界面：
-   - `npx hadamard-react [工作目录]`：轻量级 scrollback REPL。
-   - `npx hadamard-tui [工作目录]`：完整 Hadamard SDK 终端 UI。
+3. 或运行 `npx hadamard-tui [工作目录]` 启动统一的交互式终端界面。
 
 如果你想完整做一个真正可用的 Hadamard SDK 项目，推荐直接阅读：
 - [06-build-a-complete-clean-agent.md](./06-build-a-complete-clean-agent.md)

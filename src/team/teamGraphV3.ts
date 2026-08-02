@@ -4,7 +4,6 @@
  */
 import type {
   TeamDefinition,
-  TeamEvent,
   TeamGraphEdge,
   TeamGraphNode,
   TeamGraphReturnMode,

@@ -49,6 +49,8 @@ import {
   prepareHadamardProviderRequestMessages,
 } from './hadamardApiMicrocompact.js';
 import { decideHadamardToolPermission } from './hadamardPermissions.js';
+import { createDenialTracker } from './denialTracking.js';
+import { markExplicitSafetyApproval } from './safetyChecks.js';
 import { HookRunner } from '../hooks/hookRunner.js';
 import type {
   HadamardLifecycleEvent,
@@ -64,6 +66,7 @@ import {
 const MAX_CONCURRENT_TOOL_USES = 10;
 const TODO_REMINDER_INTERVAL = 10;
 const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
+const MAX_CONSECUTIVE_PERMISSION_DENIALS = 3;
 
 export interface ExecuteConversationOptions {
   runId: string;
@@ -175,6 +178,7 @@ export async function executeConversation(
   let finalMessage: AgentRunResult['message'] | undefined;
   let toolResults: ToolResultBlockParam[] = [];
   let consecutiveFailures = 0;
+  const denialTracker = createDenialTracker();
   let lastFailedTool = '';
   let maxTokensRecoveryCount = 0;
   let modelFallbackUsed = false;
@@ -725,7 +729,11 @@ export async function executeConversation(
 
     const runSingleToolUse = async (
       toolUse: ToolUseBlock,
-    ): Promise<{ record: AgentToolCallRecord; resultBlock: ToolResultBlockParam }> => {
+    ): Promise<{
+      record: AgentToolCallRecord;
+      resultBlock: ToolResultBlockParam;
+      permissionBehavior?: HadamardPermissionDecision['behavior'];
+    }> => {
       ensureNotAborted(options.signal);
       const started = nowIso();
       const startedClock = Date.now();
@@ -753,6 +761,7 @@ export async function executeConversation(
       let output: unknown;
       let isError = false;
       let content: ToolResultBlockParam['content'] | undefined;
+      let permissionBehavior: HadamardPermissionDecision['behavior'] | undefined;
 
       try {
         if (!adapter) {
@@ -794,6 +803,7 @@ export async function executeConversation(
           toolInput: toolUse.input,
           iteration,
         });
+        permissionBehavior = permissionDecision.behavior;
         permissionDecisions.push(permissionDecision);
         options.emit?.({
           type: 'tool.permission',
@@ -834,31 +844,39 @@ export async function executeConversation(
           permissionDecision.updatedInput !== undefined
             ? permissionDecision.updatedInput
             : toolUse.input;
+        const executionContext = {
+          signal: undefined as AbortSignal | undefined,
+          runId: options.runId,
+          toolUseId: toolUse.id,
+          sessionId: options.sessionId,
+          cwd: workDir,
+          metadata: { ...(options.metadata ?? {}) },
+          prompt: promptText,
+          iteration,
+          permissionMode: options.permissionMode,
+          permissions: options.permissions,
+          classifier: options.classifier,
+          approver: options.approver,
+          hooks: options.hooks,
+          modelApi: options.modelApi,
+          model,
+          provider: options.config.provider,
+          effort,
+          fileChangeJournal: options.fileChangeJournal,
+          sandboxExecutor: options.sandboxExecutor,
+        };
         const execution = await withDeadline(
           `Tool ${toolUse.name}`,
           options.config.toolTimeoutMs,
           adapter.interruptBehavior === 'cancel' ? options.signal : undefined,
-          ({ signal }) => adapter.execute(executionInput, {
-            signal,
-            runId: options.runId,
-            toolUseId: toolUse.id,
-            sessionId: options.sessionId,
-            cwd: workDir,
-            metadata: { ...(options.metadata ?? {}) },
-            prompt: promptText,
-            iteration,
-            permissionMode: options.permissionMode,
-            permissions: options.permissions,
-            classifier: options.classifier,
-            approver: options.approver,
-            hooks: options.hooks,
-            modelApi: options.modelApi,
-            model,
-            provider: options.config.provider,
-            effort,
-            fileChangeJournal: options.fileChangeJournal,
-            sandboxExecutor: options.sandboxExecutor,
-          }, onProgress),
+          ({ signal }) => adapter.execute(
+            executionInput,
+            markExplicitSafetyApproval(
+              { ...executionContext, signal },
+              permissionDecision.source === 'approver',
+            ),
+            onProgress,
+          ),
         );
         // Per-tool declared cap first (default 50k via tool factory), clamped
         // by the global artifact ceiling. MCP tools without a declared cap use
@@ -928,6 +946,7 @@ export async function executeConversation(
           content,
           is_error: isError,
         },
+        permissionBehavior,
       };
     };
 
@@ -945,6 +964,8 @@ export async function executeConversation(
             )
           : await runSequentially(batch.toolUses, runSingleToolUse);
       for (const outcome of outcomes) {
+        if (outcome.permissionBehavior === 'deny') denialTracker.recordDenial();
+        else if (outcome.permissionBehavior === 'allow') denialTracker.recordAllow();
         toolCalls.push(outcome.record);
         toolResults.push(outcome.resultBlock);
         options.emit?.({
@@ -1100,8 +1121,15 @@ export async function executeConversation(
       ensureNotAborted(options.signal);
     }
 
-    if (consecutiveFailures >= 3 && lastFailedTool) {
+    if (
+      denialTracker.isExceeded(MAX_CONSECUTIVE_PERMISSION_DENIALS) ||
+      (consecutiveFailures >= 3 && lastFailedTool)
+    ) {
       const completedAt = nowIso();
+      const deniedRepeatedly = denialTracker.isExceeded(MAX_CONSECUTIVE_PERMISSION_DENIALS);
+      const incompleteReason = deniedRepeatedly
+        ? 'consecutive_permission_denials'
+        : `consecutive_tool_failures:${lastFailedTool}`;
       if (finalMessage) {
         const result: AgentRunResult = {
           runId: options.runId,
@@ -1111,7 +1139,7 @@ export async function executeConversation(
           message: finalMessage,
           messages: conversation,
           stopReason: finalMessage.stop_reason ?? null,
-          incompleteReason: `consecutive_tool_failures:${lastFailedTool}`,
+          incompleteReason,
           hookStopReason,
           usage: aggregateRequestUsage(requestSummaries),
           requests: requestSummaries,
@@ -1133,7 +1161,9 @@ export async function executeConversation(
         return result;
       }
       throw new HadamardSdkError(
-        `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
+        deniedRepeatedly
+          ? `Tool calls were denied ${denialTracker.consecutiveDenials} times consecutively. Stopping to prevent a refusal loop.`
+          : `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
       );
     }
   }

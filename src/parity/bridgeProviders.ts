@@ -33,7 +33,6 @@ import { mapHadamardEnvToAnthropicEnv } from '../config/anthropicEnvMapping.js';
 import { getLoadedJsonConfig } from '../config/loadJsonConfigFile.js';
 import {
   findExecutableOnPath,
-  isExecutable,
   IS_WINDOWS,
   pathExists,
 } from './bridgeExecResolver.js';

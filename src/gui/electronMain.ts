@@ -46,7 +46,7 @@ function installApplicationMenu(): void {
     {
       label: '文件',
       submenu: [
-        { label: '新对话', accelerator: 'CmdOrCtrl+N', click: () => executeInFocusedWindow("document.getElementById('newSession')?.click()") },
+        { label: '新对话', click: () => executeInFocusedWindow("document.getElementById('detailNewConversationBtn')?.click()") },
         { type: 'separator' },
         { role: 'quit', label: '退出' },
       ],

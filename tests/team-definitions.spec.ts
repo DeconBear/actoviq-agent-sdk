@@ -12,6 +12,7 @@ import {
   deleteTeamDefinition,
   cloneTeamDefinition,
   BUILT_IN_TEAM_DEFINITIONS,
+  instantiateTeamDefinition,
 } from '../src/team/teamDefinitions.js';
 import type { TeamDefinition } from '../src/types.js';
 
@@ -194,6 +195,35 @@ describe('Team definitions from disk', () => {
     expect(listedSubagent?.definition.squadType).toBe('subagent');
     const listedWorkflow = teams.find((t) => t.name === 'test-workflow');
     expect(listedWorkflow?.definition.squadType).toBe('workflow');
+  });
+
+  it('fills inherited models throughout a workflow tree', () => {
+    const workflow: TeamDefinition = {
+      name: 'model-inheritance',
+      mode: 'graph',
+      squadType: 'workflow',
+      members: [],
+      workflowTree: {
+        id: 'first',
+        type: 'agent',
+        model: '',
+        children: [{
+          id: 'parallel',
+          type: 'parallel',
+          children: [
+            { id: 'inherited', type: 'agent', model: '', children: [] },
+            { id: 'explicit', type: 'agent', model: 'custom-model', children: [] },
+          ],
+        }],
+      },
+    };
+
+    const instantiated = instantiateTeamDefinition(workflow, 'session-model');
+
+    expect(instantiated.workflowTree?.model).toBe('session-model');
+    expect(instantiated.workflowTree?.children[0]?.children[0]?.model).toBe('session-model');
+    expect(instantiated.workflowTree?.children[0]?.children[1]?.model).toBe('custom-model');
+    expect(workflow.workflowTree?.model).toBe('');
   });
 
   it('deletes a team definition', async () => {

@@ -107,13 +107,16 @@ export async function decideHadamardToolPermission(
     workDir: input.workDir,
   });
   if (safetyResult.blocked) {
-    return decision(
+    const safetyDecision = decision(
       input,
       'deny',
       safetyResult.reason ?? 'Blocked by safety check.',
       'mode',
       timestamp,
     );
+    return safetyResult.requiresExplicitApproval
+      ? resolveHadamardAskPermission(input, safetyDecision, timestamp)
+      : safetyDecision;
   }
 
   if (input.adapter?.checkPermissions) {

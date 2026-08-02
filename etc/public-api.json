@@ -4233,6 +4233,11 @@
         "signature": "export declare function resolveSandboxPolicy(workDir: string, ...policies: Array<SandboxPolicyInput | undefined>): SandboxPolicy;"
       },
       {
+        "name": "resolveScheduledAutomationWorkflow",
+        "kind": "function",
+        "signature": "export declare function resolveScheduledAutomationWorkflow(task: Pick<ScheduledAutomationTask, 'workflowName' | 'workflowSource'>, workDir: string, homeDir?: string): ScheduledAutomationWorkflowTarget;"
+      },
+      {
         "name": "resolveSelectableAgentRun",
         "kind": "function",
         "signature": "export declare function resolveSelectableAgentRun(name: string, homeDir?: string): Promise<ResolvedAgentProfileRun & {\nselectable: SelectableAgent;\n}>;"
@@ -4505,12 +4510,17 @@
       {
         "name": "ScheduledAutomationTask",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
+        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
       },
       {
         "name": "ScheduledAutomationTaskInput",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+      },
+      {
+        "name": "ScheduledAutomationWorkflowSource",
+        "kind": "type",
+        "signature": "export type ScheduledAutomationWorkflowSource = 'agent' | 'script';"
       },
       {
         "name": "ScheduledTaskContext",
@@ -5335,7 +5345,7 @@
       {
         "name": "WorktreeService",
         "kind": "class",
-        "signature": "export declare class WorktreeService {\nprivate worktreesDir;\nprivate repoRoot;\nprivate settings;\nprivate workDirStack;\nprivate sessionWorkDir;\nconstructor(initialWorkDir: string, settings?: Partial<WorktreeSettings>);\ninit(): Promise<void>;\nget currentWorkDir(): string;\nget isInWorktree(): boolean;\nget worktreePath(): string | undefined;\nget worktreeBranch(): string | undefined;\nget repoRootPath(): string;\nget worktreesDirectory(): string;\nprivate resolveBaseRef;\nenterWorktree(worktreePath: string, branch?: string): Promise<WorktreeStackEntry>;\ncreateAndEnterWorktree(options: {\nname?: string;\nbranch?: string;\nref?: string;\ndetach?: boolean;\npr?: string;\n}): Promise<WorktreeStackEntry>;\nexitWorktree(): WorktreeStackEntry | null;\nisWorktreeDirty(worktreePath: string): Promise<boolean>;\nremoveWorktree(worktreePath: string, branch?: string): Promise<void>;\nlistWorktrees(): Promise<WorktreeInfo[]>;\nfindOrphanWorktrees(): Promise<WorktreeInfo[]>;\napplyWorktreeInclude(worktreePath: string): Promise<void>;\nprivate listRepoFiles;\n}"
+        "signature": "export declare class WorktreeService {\nprivate worktreesDir;\nprivate repoRoot;\nprivate settings;\nprivate workDirStack;\nprivate originalWorkDir;\nprivate sessionWorkDir;\nconstructor(initialWorkDir: string, settings?: Partial<WorktreeSettings>);\ninit(): Promise<void>;\nget currentWorkDir(): string;\nget isInWorktree(): boolean;\nget worktreePath(): string | undefined;\nget worktreeBranch(): string | undefined;\nget repoRootPath(): string;\nget worktreesDirectory(): string;\nprivate resolveBaseRef;\nenterWorktree(worktreePath: string, branch?: string): Promise<WorktreeStackEntry>;\ncreateAndEnterWorktree(options: {\nname?: string;\nbranch?: string;\nref?: string;\ndetach?: boolean;\npr?: string;\n}): Promise<WorktreeStackEntry>;\nexitWorktree(): WorktreeStackEntry | null;\nisWorktreeDirty(worktreePath: string): Promise<boolean>;\nremoveWorktree(worktreePath: string, branch?: string): Promise<void>;\nlistWorktrees(): Promise<WorktreeInfo[]>;\nfindOrphanWorktrees(): Promise<WorktreeInfo[]>;\napplyWorktreeInclude(worktreePath: string): Promise<void>;\nprivate listRepoFiles;\n}"
       },
       {
         "name": "WorktreeSessionFields",
@@ -11854,6 +11864,11 @@
         "signature": "export declare function resolveSandboxPolicy(workDir: string, ...policies: Array<SandboxPolicyInput | undefined>): SandboxPolicy;"
       },
       {
+        "name": "resolveScheduledAutomationWorkflow",
+        "kind": "function",
+        "signature": "export declare function resolveScheduledAutomationWorkflow(task: Pick<ScheduledAutomationTask, 'workflowName' | 'workflowSource'>, workDir: string, homeDir?: string): ScheduledAutomationWorkflowTarget;"
+      },
+      {
         "name": "resolveSelectableAgentRun",
         "kind": "function",
         "signature": "export declare function resolveSelectableAgentRun(name: string, homeDir?: string): Promise<ResolvedAgentProfileRun & {\nselectable: SelectableAgent;\n}>;"
@@ -12146,12 +12161,17 @@
       {
         "name": "ScheduledAutomationTask",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
+        "signature": "export interface ScheduledAutomationTask {\nid: string;\nname: string;\nkind: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron: string;\nenabled: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\nlastRunAt?: string;\nlastResult?: ScheduledTaskRecord['lastResult'];\nlastError?: string;\nnextRunAt: string;\ninvocationCount: number;\ncreatedAt: string;\nupdatedAt: string;\n}"
       },
       {
         "name": "ScheduledAutomationTaskInput",
         "kind": "interface",
-        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+        "signature": "export interface ScheduledAutomationTaskInput {\nid?: string;\nname?: string;\nkind?: ScheduledAutomationKind;\ntrigger?: AutomationTriggerType;\ncron?: string;\nenabled?: boolean;\ndescription?: string;\nworkflowName?: string;\nworkflowSource?: ScheduledAutomationWorkflowSource;\ninput?: string;\nprompt?: string;\nwebhookId?: string;\nwebhookSecret?: string;\nwebhookFilter?: string;\nscope?: string;\n}"
+      },
+      {
+        "name": "ScheduledAutomationWorkflowSource",
+        "kind": "type",
+        "signature": "export type ScheduledAutomationWorkflowSource = 'agent' | 'script';"
       },
       {
         "name": "ScheduledTaskContext",
@@ -13036,7 +13056,7 @@
       {
         "name": "WorktreeService",
         "kind": "class",
-        "signature": "export declare class WorktreeService {\nprivate worktreesDir;\nprivate repoRoot;\nprivate settings;\nprivate workDirStack;\nprivate sessionWorkDir;\nconstructor(initialWorkDir: string, settings?: Partial<WorktreeSettings>);\ninit(): Promise<void>;\nget currentWorkDir(): string;\nget isInWorktree(): boolean;\nget worktreePath(): string | undefined;\nget worktreeBranch(): string | undefined;\nget repoRootPath(): string;\nget worktreesDirectory(): string;\nprivate resolveBaseRef;\nenterWorktree(worktreePath: string, branch?: string): Promise<WorktreeStackEntry>;\ncreateAndEnterWorktree(options: {\nname?: string;\nbranch?: string;\nref?: string;\ndetach?: boolean;\npr?: string;\n}): Promise<WorktreeStackEntry>;\nexitWorktree(): WorktreeStackEntry | null;\nisWorktreeDirty(worktreePath: string): Promise<boolean>;\nremoveWorktree(worktreePath: string, branch?: string): Promise<void>;\nlistWorktrees(): Promise<WorktreeInfo[]>;\nfindOrphanWorktrees(): Promise<WorktreeInfo[]>;\napplyWorktreeInclude(worktreePath: string): Promise<void>;\nprivate listRepoFiles;\n}"
+        "signature": "export declare class WorktreeService {\nprivate worktreesDir;\nprivate repoRoot;\nprivate settings;\nprivate workDirStack;\nprivate originalWorkDir;\nprivate sessionWorkDir;\nconstructor(initialWorkDir: string, settings?: Partial<WorktreeSettings>);\ninit(): Promise<void>;\nget currentWorkDir(): string;\nget isInWorktree(): boolean;\nget worktreePath(): string | undefined;\nget worktreeBranch(): string | undefined;\nget repoRootPath(): string;\nget worktreesDirectory(): string;\nprivate resolveBaseRef;\nenterWorktree(worktreePath: string, branch?: string): Promise<WorktreeStackEntry>;\ncreateAndEnterWorktree(options: {\nname?: string;\nbranch?: string;\nref?: string;\ndetach?: boolean;\npr?: string;\n}): Promise<WorktreeStackEntry>;\nexitWorktree(): WorktreeStackEntry | null;\nisWorktreeDirty(worktreePath: string): Promise<boolean>;\nremoveWorktree(worktreePath: string, branch?: string): Promise<void>;\nlistWorktrees(): Promise<WorktreeInfo[]>;\nfindOrphanWorktrees(): Promise<WorktreeInfo[]>;\napplyWorktreeInclude(worktreePath: string): Promise<void>;\nprivate listRepoFiles;\n}"
       },
       {
         "name": "WorktreeSessionFields",

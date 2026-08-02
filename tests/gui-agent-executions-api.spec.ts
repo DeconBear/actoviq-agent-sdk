@@ -41,6 +41,26 @@ async function api<T>(
   };
 }
 
+async function sendCommand(
+  server: Awaited<ReturnType<typeof startHadamardGuiServer>>,
+  text: string,
+): Promise<Array<Record<string, unknown>>> {
+  const response = await fetch(new URL('api/send', server.url), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-hadamard-token': server.token,
+    },
+    body: JSON.stringify({ text }),
+  });
+  expect(response.status).toBe(200);
+  return (await response.text())
+    .split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as Record<string, unknown>);
+}
+
 function at(second: number): string {
   return new Date(Date.UTC(2026, 6, 16, 0, 0, second)).toISOString();
 }
@@ -313,6 +333,33 @@ describe('GUI agent execution API', () => {
       );
       expect(activeSession.status).toBe(200);
       expect(activeSession.body.session?.id).toBeTruthy();
+
+      const runEvents = await sendCommand(server, '/agents runs');
+      expect(runEvents).toContainEqual(expect.objectContaining({
+        type: 'command.result',
+        title: 'Agent executions',
+        items: expect.arrayContaining([
+          expect.objectContaining({ label: 'root-a' }),
+        ]),
+      }));
+      const showEvents = await sendCommand(server, '/agents show root-a');
+      expect(showEvents).toContainEqual(expect.objectContaining({
+        type: 'command.result',
+        title: 'Agent execution · root-a',
+        items: expect.arrayContaining([
+          expect.objectContaining({ detail: expect.stringContaining('agent-child-session') }),
+        ]),
+      }));
+      const openEvents = await sendCommand(server, '/agents open agent-child-session');
+      expect(openEvents).toContainEqual(expect.objectContaining({
+        type: 'notice',
+        message: 'opened Agent conversation: agent-child-session',
+      }));
+      const openedSession = await api<{ session: { id: string } | null }>(
+        server,
+        '/api/session/active',
+      );
+      expect(openedSession.body.session?.id).toBe('agent-child-session');
 
       const listA = await api<AgentExecutionProjectView & {
         conversations: Array<{

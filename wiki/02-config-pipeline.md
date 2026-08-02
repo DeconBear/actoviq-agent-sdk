@@ -189,6 +189,6 @@ const DEFAULT_COMPACT_CONFIG = {
 1. **Missing settings.json on first run**: `loadDefaultHadamardSettings()` returns
    an empty config (no error). The CLI warns only for non-ENOENT failures.
 2. **Explicit config path with bad file**: `loadJsonConfigFile()` throws.
-   `hadamard-react.ts` exits with code 2 — refuses to silently fall back.
+   `hadamard-tui` exits with code 2 — refuses to silently fall back.
 3. **Model tier without env var**: `resolveHadamardModelReference()` throws
    `ConfigurationError`.

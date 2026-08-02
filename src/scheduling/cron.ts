@@ -122,8 +122,6 @@ export function nextCronTimeImpl(fields: CronField[], from: Date): Date {
     const hour = current.getHours();
     const dom = current.getDate();
     const month = current.getMonth() + 1; // 1-indexed
-    const year = current.getFullYear();
-
     if (!minField.allowed(minute)) {
       current.setMinutes(minute + 1, 0, 0);
       continue;

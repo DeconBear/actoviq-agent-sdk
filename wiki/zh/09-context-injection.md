@@ -48,7 +48,7 @@ System Prompt =
         └── 断路器：连续 3 次失败 → 停止压缩
 ```
 
-`createAgentSdk` / `hadamard-react` 使用的会话级 `compactHadamardSession` 遵循同样规则。
+`createAgentSdk` / `hadamard-tui` 使用的会话级 `compactHadamardSession` 遵循同样规则。
 
 ### 工具结果归档
 

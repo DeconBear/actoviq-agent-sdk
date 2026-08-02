@@ -3,11 +3,9 @@
  * Handles create, enter, exit, list, cleanup, and dirty detection.
  */
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdir, rm, readFile, stat } from 'node:fs/promises';
+import { mkdir, rm, stat } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { HadamardSdkError } from '../errors.js';
 import type { WorktreeInfo, WorktreeSettings, WorktreeStackEntry } from '../types.js';
@@ -70,6 +68,7 @@ export class WorktreeService {
   private repoRoot: string;
   private settings: WorktreeSettings;
   private workDirStack: WorktreeStackEntry[] = [];
+  private originalWorkDir: string;
   private sessionWorkDir: string;
 
   constructor(
@@ -77,6 +76,7 @@ export class WorktreeService {
     settings?: Partial<WorktreeSettings>,
   ) {
     this.sessionWorkDir = path.resolve(initialWorkDir);
+    this.originalWorkDir = this.sessionWorkDir;
     this.settings = {
       baseRef: settings?.baseRef ?? 'fresh',
       cleanupPeriodDays: settings?.cleanupPeriodDays ?? 7,
@@ -258,7 +258,7 @@ export class WorktreeService {
     const popped = this.workDirStack.pop()!;
     this.sessionWorkDir = this.workDirStack.length > 0
       ? this.workDirStack[this.workDirStack.length - 1]!.workDir
-      : popped.workDir; // TODO: restore to originalWorkDir
+      : this.originalWorkDir;
 
     return popped;
   }

@@ -2,6 +2,10 @@
  * Worktree feature tests — v0.5.0
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { WorktreeService, generateWorktreeName } from '../src/worktree/worktreeService.js';
 import { parseWorktreeInclude, matchesPattern as matchesWorktreeIncludePattern } from '../src/worktree/worktreeInclude.js';
 import { ENTER_WORKTREE_TOOL_NAME, createEnterWorktreeTool } from '../src/tools/enterWorktree.js';
@@ -37,6 +41,24 @@ describe('WorktreeService', () => {
   it('throws when exiting from main checkout', () => {
     const service = new WorktreeService(process.cwd());
     expect(() => service.exitWorktree()).toThrow('Not in a worktree');
+  });
+
+  it('restores the original directory after exiting the outermost worktree', async () => {
+    const repoDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-worktree-exit-'));
+    try {
+      execFileSync('git', ['init', repoDir], { stdio: 'ignore', windowsHide: true });
+      const service = new WorktreeService(repoDir);
+      await service.init();
+      const worktreeDir = path.join(service.worktreesDirectory, 'existing');
+      await mkdir(worktreeDir, { recursive: true });
+
+      await service.enterWorktree(worktreeDir, 'existing');
+      service.exitWorktree();
+
+      expect(service.currentWorkDir).toBe(path.resolve(repoDir));
+    } finally {
+      await rm(repoDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
   });
 });
 

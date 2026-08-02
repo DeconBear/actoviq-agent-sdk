@@ -5,6 +5,7 @@
     "outDir": "./dist",
     "declaration": true,
     "declarationMap": true,
+    "noUnusedLocals": true,
     "noEmit": false
   },
   "include": ["src/**/*.ts"],

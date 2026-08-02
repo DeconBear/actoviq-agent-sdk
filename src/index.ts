@@ -385,6 +385,7 @@ export {
   nextCronTime,
   parseCron,
   recordScheduledAutomationRun,
+  resolveScheduledAutomationWorkflow,
   scheduledAutomationFilePath,
   setScheduledAutomationEnabled,
   TaskScheduler,

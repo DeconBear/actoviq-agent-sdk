@@ -95,7 +95,7 @@ Context size check (before each model request)
         └── Circuit breaker: 3 consecutive failures → stop compacting
 ```
 
-Session-level `compactHadamardSession` (used by `createAgentSdk` / `hadamard-react`
+Session-level `compactHadamardSession` (used by `createAgentSdk` / `hadamard-tui`
 after turns) follows the same rule: below threshold → unchanged session; above
 threshold → full summary only.
 

@@ -6,6 +6,7 @@ import { ToolExecutionError } from '../errors.js';
 import { tool } from '../runtime/tools.js';
 import type { AgentToolDefinition } from '../types.js';
 import { detectDangerousBashCommand } from './bash/BashTool.js';
+import { hasExplicitSafetyApproval } from '../runtime/safetyChecks.js';
 
 export const POWERSHELL_TOOL_NAME = 'PowerShell';
 const execFile = promisify(execFileCallback);
@@ -46,7 +47,10 @@ export function createPowerShellTool(): AgentToolDefinition {
         );
       }
 
-      const blocked = detectDangerousBashCommand(command);
+      const blocked = detectDangerousBashCommand(command, {
+        workDir: context.cwd,
+        allowCatastrophic: hasExplicitSafetyApproval(context),
+      });
       if (blocked) {
         return {
           command,

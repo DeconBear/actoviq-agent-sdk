@@ -52,7 +52,10 @@ import { MailboxStore } from '../storage/mailboxStore.js';
 import { SessionStore } from '../storage/sessionStore.js';
 import { SessionGraph } from '../storage/sessionGraph.js';
 import { SessionForkService } from '../storage/sessionForkService.js';
-import { TaskWorktreeCoordinator } from '../worktree/taskWorktreeCoordinator.js';
+import {
+  TaskWorktreeCoordinator,
+  type TaskWorktreeLocator,
+} from '../worktree/taskWorktreeCoordinator.js';
 import { ReviewStore, ThreadDiffService } from '../review/index.js';
 import { RuleStore } from '../context/ruleStore.js';
 import { resolveContextRules } from '../context/ruleResolver.js';
@@ -652,6 +655,59 @@ function mergeInvokedSkills(
   );
 }
 
+class LifecycleTaskWorktreeCoordinator extends TaskWorktreeCoordinator {
+  constructor(
+    options: ConstructorParameters<typeof TaskWorktreeCoordinator>[0],
+    private readonly onLifecycle: (
+      event: 'WorktreeCreate' | 'WorktreeRemove',
+      locator: TaskWorktreeLocator,
+    ) => Promise<void>,
+  ) {
+    super(options);
+  }
+
+  override async createOrResume(
+    sessionId: string,
+    options: { baseRef?: string; branch?: string } = {},
+  ): Promise<TaskWorktreeLocator> {
+    const existing = await this.read(sessionId);
+    const locator = await super.createOrResume(sessionId, options);
+    if (!existing) await this.onLifecycle('WorktreeCreate', locator);
+    return locator;
+  }
+
+  override async cleanup(
+    sessionId: string,
+    options: { force?: boolean; deleteBranch?: boolean } = {},
+  ): Promise<void> {
+    const locator = await this.read(sessionId);
+    await super.cleanup(sessionId, options);
+    if (locator) await this.onLifecycle('WorktreeRemove', locator);
+  }
+}
+
+const closedAgentClients = new WeakSet<HadamardAgentClient>();
+const clientLifecycleContexts = new WeakMap<
+  HadamardAgentClient,
+  { runner?: HookRunner }
+>();
+
+async function runClientLifecycleHook(
+  client: HadamardAgentClient,
+  event: 'SessionEnd' | 'WorktreeCreate' | 'WorktreeRemove',
+  sessionId: string | undefined,
+  cwd: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await clientLifecycleContexts.get(client)?.runner?.run({
+    event,
+    runId: createId(),
+    sessionId,
+    cwd,
+    payload,
+  });
+}
+
 export class HadamardAgentClient {
   readonly sessions: AgentSessionsApi;
   readonly agents: HadamardAgentsApi;
@@ -794,6 +850,9 @@ export class HadamardAgentClient {
         }),
       });
     }
+    clientLifecycleContexts.set(this, {
+      runner: this.typedHookRunner,
+    });
     if (this.config.languageServers.length > 0) {
       this.codeIntelligence = new CodeIntelligenceService({
         workDir: this.config.workDir,
@@ -1063,6 +1122,7 @@ export class HadamardAgentClient {
         defaultTools.push(...createHadamardBrowserTools(browserUseOptions));
       }
     }
+    let client: HadamardAgentClient | undefined;
     let taskWorktreeCoordinator: TaskWorktreeCoordinator | undefined;
     if (config.autoWorktree) {
       const repoRoot = (await execFile(
@@ -1070,12 +1130,21 @@ export class HadamardAgentClient {
         ['-C', config.workDir, 'rev-parse', '--show-toplevel'],
         { encoding: 'utf8', windowsHide: true },
       )).stdout.trim();
-      taskWorktreeCoordinator = new TaskWorktreeCoordinator({
+      taskWorktreeCoordinator = new LifecycleTaskWorktreeCoordinator({
         repoRoot,
         storageRoot: path.join(config.sessionDirectory, 'task-worktrees'),
+      }, async (event, locator) => {
+        if (!client) return;
+        await runClientLifecycleHook(
+          client,
+          event,
+          locator.sessionId,
+          event === 'WorktreeCreate' ? locator.worktreePath : locator.repoRoot,
+          { locator },
+        );
       });
     }
-    const client = new HadamardAgentClient(
+    client = new HadamardAgentClient(
       config,
       store,
       executionStore,
@@ -1456,7 +1525,20 @@ export class HadamardAgentClient {
   }
 
   async close(): Promise<void> {
+    if (closedAgentClients.has(this)) return;
+    closedAgentClients.add(this);
     const errors: unknown[] = [];
+    try {
+      await runClientLifecycleHook(
+        this,
+        'SessionEnd',
+        undefined,
+        this.config.workDir,
+        { reason: 'client_closed' },
+      );
+    } catch (error) {
+      errors.push(error);
+    }
     try {
       await this.backgroundTaskManager.cancelAll();
     } catch (error) {

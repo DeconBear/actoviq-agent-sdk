@@ -30,4 +30,13 @@ describe('detectDangerousBashCommand', () => {
     expect(detectDangerousBashCommand('kill 12345')).toBeNull();
     expect(detectDangerousBashCommand('Stop-Process -Id 12345 -Force')).toBeNull();
   });
+
+  it('blocks catastrophic deletion unless the call carries explicit approval', () => {
+    const options = { workDir: process.cwd() };
+    expect(detectDangerousBashCommand('rm -rf .', options)).toContain('explicit approval');
+    expect(detectDangerousBashCommand('rm -rf .', {
+      ...options,
+      allowCatastrophic: true,
+    })).toBeNull();
+  });
 });

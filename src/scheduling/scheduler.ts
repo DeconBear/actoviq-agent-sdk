@@ -1,5 +1,4 @@
 import type {
-  CronSchedule,
   ScheduledTaskContext,
   ScheduledTaskDefinition,
   ScheduledTaskRecord,

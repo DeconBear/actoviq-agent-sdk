@@ -18,6 +18,4 @@ If you only want to get moving quickly:
 
 1. Read [01-setup-and-quickstart.md](./01-setup-and-quickstart.md).
 2. Run `npm run example:hadamard-quickstart`.
-3. Or start an interactive terminal surface:
-   - `npx hadamard-react [work-dir]` for the lightweight scrollback REPL.
-   - `npx hadamard-tui [work-dir]` for the full Hadamard SDK terminal UI.
+3. Or start the interactive terminal surface with `npx hadamard-tui [work-dir]`.
