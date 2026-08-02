@@ -100,6 +100,8 @@ try {
 
 Existing 0.x applications may keep importing `createAgentSdk` from the package root or `/compat`; new applications should use the responsibility subpaths above.
 
+The supported differences between the SDK, `hadamard-tui`, and the desktop GUI are defined by the [three-layer product surface policy](./docs/en/08-product-surfaces.md) ([中文](./docs/zh/08-product-surfaces.md)). SDK-only developer parameters are intentional; shared TUI/GUI commands and runtime semantics are parity requirements.
+
 Run the repository examples with:
 
 ```bash
@@ -166,10 +168,13 @@ It opens an Electron window backed by a localhost-only HTTP server. Features:
 
 - **Streamed transcript** with markdown rendering and copyable code blocks, plus live tool-call cards
 - **Conversation history on resume** — opening or switching a chat replays its stored messages
-- **Command palette + slash commands**, settings (provider / model / keys / appearance), workspace switching, and empty-chat cleanup
+- **Shared slash commands**, settings (provider / model / keys / appearance), workspace switching, and empty-chat cleanup
 - **Per-tool permission prompts** (queued so concurrent requests don't collide) and a token-usage readout
 - **Project Documents + Issues** — each Project detail page has `Document` and `Issues` tabs. Issues use the guarded `backlog → todo → in_progress → in_review/blocked → done` lifecycle, support priorities, labels, acceptance criteria, comments, and links back to their worker sessions.
 - **Agent graph orchestration UI** — visual team/graph editor lives in the GUI **Agent** region; **it is still being iterated and optimized** and should not be treated as a finished product surface. Prefer saved teams + `/team` / SDK APIs for stable workflows.
+- **Agent Workflow + Automation** — the Agent region edits validated sequential, branch, and parallel Workflow trees. New Automation tasks select those saved Workflows; historical dynamic-script tasks remain compatible without being reinterpreted.
+- **Custom shortcuts + desktop screenshots** — Settings remaps supported actions, including a cross-platform screenshot action available to the user and agent runtime.
+- **Lifecycle hook editor** — Settings manages typed session, turn, model, tool, permission, compact, stop, and worktree hooks while retaining legacy hook compatibility.
 - **Agent Profiles for issue dispatch** — Settings → Models & routing can bind a named profile to a saved bridge config and model. `/issues start <id> [agent-profile]` asks the Project Manager for a worker brief, starts a linked session without changing the globally active runtime, and requires the worker to report through `IssueReport`.
 - **Movable data root** — Settings → General can copy the complete Hadamard data root to an empty directory, validate it, write the bootstrap pointer, rebuild the SDK/session store, and retain the previous directory for manual cleanup.
 

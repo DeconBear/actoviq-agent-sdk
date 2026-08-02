@@ -101,4 +101,20 @@ describe('interactive CLI convergence', () => {
       }
     }
   });
+
+  it('creates Automation targets from Agent-page workflows on both interactive surfaces', async () => {
+    const [tui, gui] = await Promise.all([
+      readFile(new URL('src/tui/hadamardTui.ts', root), 'utf8'),
+      readFile(new URL('src/gui/hadamardGui.ts', root), 'utf8'),
+    ]);
+    const tuiAutomation = commandCase(tui, 'async function runSlashCommand(raw: string)', '        ', 'automation');
+    const guiAutomation = commandCase(gui, 'async function runSlashCommand(raw: string)', '      ', 'automation');
+
+    expect(tuiAutomation).toContain("team.definition.squadType === 'workflow'");
+    expect(tuiAutomation).toContain("workflowSource = 'agent'");
+    expect(tuiAutomation).toContain('upsertScheduledAutomationTask');
+    expect(guiAutomation).toContain("args === 'new'");
+    expect(gui).toContain("trimmed === '/automation list'");
+    expect(gui).toContain("trimmed === '/automation new'");
+  });
 });

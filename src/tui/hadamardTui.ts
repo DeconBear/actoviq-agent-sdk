@@ -6,7 +6,7 @@
  * rendering (no React/Ink).
  */
 import { execSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as readline from 'node:readline';
@@ -53,6 +53,7 @@ import {
   isIssueStorageMode,
   listProjectIssues,
   listScheduledAutomationTasks,
+  upsertScheduledAutomationTask,
   resolveHadamardHome,
   externalSkillPreferencesToRuntimeOptions,
   readHadamardExternalSkillPreferences,
@@ -4433,6 +4434,95 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         // ── v0.5.0: Dynamic Workflows ────────────────────────────
+        case 'automation': {
+          if (!args || args === 'list') {
+            const tasks = await listScheduledAutomationTasks(sdk.config.workDir);
+            appendStatic([
+              ...formatInfoLine(tasks.length ? `Automation tasks (${tasks.length})` : 'No automation tasks configured.'),
+              ...tasks.map(task => `  ${A.bold}${task.name}${A.reset} ${A.dim}· ${task.kind} · ${task.trigger ?? 'schedule'} · ${task.enabled ? 'enabled' : 'paused'}${A.reset}`),
+              '',
+            ]);
+            return;
+          }
+          if (args !== 'new') {
+            appendStatic([...formatErrorLine('usage: /automation [list|new]'), '']);
+            return;
+          }
+
+          const kind = await selectItem({
+            title: 'New automation task',
+            subtitle: 'Choose what the task runs',
+            items: [
+              { id: 'workflow', label: 'Agent Workflow', description: 'Run a Workflow saved on the Agent page' },
+              { id: 'prompt', label: 'Prompt', description: 'Run one background prompt' },
+              { id: 'manager', label: 'Manager update', description: 'Update project progress' },
+            ],
+          });
+          if (kind !== 'workflow' && kind !== 'prompt' && kind !== 'manager') return;
+
+          let workflowName: string | undefined;
+          let workflowSource: 'agent' | undefined;
+          let input: string | undefined;
+          let prompt: string | undefined;
+          if (kind === 'workflow') {
+            const workflows = listTeamDefinitions(sdk.config.workDir, sdk.config.homeDir)
+              .filter(team => team.definition.squadType === 'workflow');
+            if (!workflows.length) {
+              appendStatic([...formatErrorLine('Create and save a Workflow on the Agent page first.'), '']);
+              return;
+            }
+            workflowName = await selectItem({
+              title: 'Agent Workflow',
+              items: workflows.map(workflow => ({
+                id: workflow.name,
+                label: workflow.name,
+                description: `${workflow.source} · ${workflow.definition.description ?? ''}`,
+              })),
+            });
+            if (!workflowName) return;
+            workflowSource = 'agent';
+            input = (await promptText({ title: workflowName, label: 'Input (optional)' }))?.trim() || undefined;
+          } else if (kind === 'prompt') {
+            prompt = (await promptText({ title: 'Prompt automation', label: 'Prompt' }))?.trim();
+            if (!prompt) return;
+          } else {
+            input = (await promptText({ title: 'Manager update', label: 'Instruction (optional)' }))?.trim() || undefined;
+          }
+
+          const trigger = await selectItem({
+            title: 'Trigger',
+            items: [
+              { id: 'schedule', label: 'Schedule', description: 'Run from a cron expression' },
+              { id: 'webhook', label: 'Webhook', description: 'Run when its local webhook URL is called' },
+            ],
+          });
+          if (trigger !== 'schedule' && trigger !== 'webhook') return;
+          const cron = trigger === 'schedule'
+            ? (await promptText({ title: 'Schedule', label: 'Cron', initial: '0 9 * * *', description: 'min hour day month weekday' }))?.trim()
+            : '';
+          if (trigger === 'schedule' && !cron) return;
+          const defaultName = workflowName ?? (prompt ? prompt.slice(0, 48) : 'Manager progress update');
+          const taskName = (await promptText({ title: 'Automation task', label: 'Name', initial: defaultName }))?.trim();
+          if (!taskName) return;
+          try {
+            const task = await upsertScheduledAutomationTask(sdk.config.workDir, {
+              name: taskName,
+              kind,
+              trigger,
+              cron,
+              enabled: true,
+              workflowName,
+              workflowSource,
+              input,
+              prompt,
+              ...(trigger === 'webhook' ? { webhookId: `wh-${randomUUID().slice(0, 8)}` } : {}),
+            });
+            appendStatic([...formatInfoLine(`Automation task saved: ${task.name}`), '']);
+          } catch (error) {
+            appendStatic([...formatErrorLine(errorMessage(error)), '']);
+          }
+          return;
+        }
         case 'workflows': {
           const runSavedWorkflow = async (wfName: string, wfTask?: string): Promise<void> => {
             const wf = loadWorkflow(wfName, sdk.config.workDir);

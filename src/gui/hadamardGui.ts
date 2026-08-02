@@ -5020,6 +5020,25 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
         }
       }
+      case 'automation': {
+        if (args === 'new') {
+          return [{ type: 'notice', message: 'Open Automation and select New task.' }];
+        }
+        if (args && args !== 'list') {
+          return [{ type: 'error', message: 'usage: /automation [list|new]' }];
+        }
+        const tasks = await listScheduledAutomationTasks(workDir);
+        return [{
+          type: 'command.result',
+          title: 'Automation tasks',
+          items: tasks.map(task => ({
+            label: task.name,
+            description: `${task.kind} · ${task.trigger ?? 'schedule'} · ${task.enabled ? 'enabled' : 'paused'}`,
+            detail: task.workflowName ?? task.prompt ?? task.input,
+          })),
+          text: tasks.length === 0 ? 'no automation tasks configured' : undefined,
+        }];
+      }
       case 'workflows': {
         if (args.startsWith('run ')) {
           const rest = args.slice(4).trim();
@@ -22339,9 +22358,15 @@ async function submitText(text) {
   // /automation — open the create-task dialog from any conversation. The task
   // is scoped 'global' so it shows in the Automation panel regardless of project.
   const trimmed = text.trim();
-  if (trimmed === '/automation' || trimmed === '/automation new' || trimmed.startsWith('/automation create')) {
+  if (trimmed === '/automation' || trimmed === '/automation list') {
+    await switchRegion('automation');
+    addMessage('command.result', '/automation · opened Automation tasks.');
+    return;
+  }
+  if (trimmed === '/automation new') {
+    await switchRegion('automation');
     openAutomationDialog(null);
-    addMessage('command.result', '/automation — create a scheduled or webhook task (scoped global).');
+    addMessage('command.result', '/automation new · create a scheduled or webhook task.');
     return;
   }
   if (state.running) {

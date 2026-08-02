@@ -41,6 +41,7 @@ describe('filterInteractiveCommands', () => {
       'bridge help',
     ]);
     expect(filterInteractiveCommands('/model ')).toEqual(['model router', 'model config']);
+    expect(filterInteractiveCommands('/automation ')).toEqual(['automation list', 'automation new']);
     expect(filterInteractiveCommands('/plan ')).toEqual([
       'plan view',
       'plan approve',
@@ -117,6 +118,12 @@ describe('filterInteractiveCommands', () => {
     for (const command of agentCommands ?? []) {
       expect(SUBCOMMAND_DESCRIPTIONS[`agents ${command}`]).toBeTruthy();
     }
+  });
+
+  it('keeps Automation list and creation on the shared surface', () => {
+    expect(SUBCOMMANDS.automation).toEqual(['list', 'new']);
+    expect(SUBCOMMAND_DESCRIPTIONS['automation list']).toBeTruthy();
+    expect(SUBCOMMAND_DESCRIPTIONS['automation new']).toBeTruthy();
   });
 
   it('submits a selected sub-command exactly once', () => {

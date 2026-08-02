@@ -57,6 +57,7 @@ describe('TUI and GUI parity', () => {
       'plugins',
       'plugin',
       'dream',
+      'automation',
       'workflows',
       'worktree',
       'team',
