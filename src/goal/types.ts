@@ -1,7 +1,7 @@
 /**
  * Goal runtime contract - typed schema and status machine.
  *
- * A Goal is a session-scoped execution contract, not just a status label:
+ * A Goal is a project-scoped execution contract, not just a status label:
  * it carries an objective, completion criteria, a budget, progress evidence,
  * and a blocked audit. The runtime injects a short goal context into each
  * model turn, and only the runtime (via controlled tools) may mark a goal

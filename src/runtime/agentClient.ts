@@ -143,8 +143,8 @@ import {
   GoalExecutionBlockedError,
   type GoalExecutionDecision,
   GoalService,
+  ProjectGoalApi,
   settleGoalRun,
-  StoredSessionGoalPort,
 } from '../goal/index.js';
 import {
   HadamardWorkspace,
@@ -738,6 +738,8 @@ export class HadamardAgentClient {
   readonly memory: HadamardMemoryApi;
   readonly memoryProposals: MemoryProposalService;
   readonly dream: HadamardDreamApi;
+  /** Project-scoped Goal state and shared CLI/TUI/GUI command facade. */
+  readonly goals: ProjectGoalApi;
   readonly swarm: HadamardSwarmApi;
   readonly context: HadamardContextApi;
   readonly slashCommands: HadamardSlashCommandsApi;
@@ -993,6 +995,7 @@ export class HadamardAgentClient {
         },
       },
     );
+    this.goals = new ProjectGoalApi(this.config.sessionDirectory);
     this.context = new HadamardContextApi({
       getOverview: (options) => this.getContextOverview(options),
       compactSession: (sessionId, options) => this.compactSessionById(sessionId, options),
@@ -1640,6 +1643,11 @@ export class HadamardAgentClient {
     }
     try {
       await this.codeIntelligence?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await this.goals.close();
     } catch (error) {
       errors.push(error);
     }
@@ -2620,7 +2628,7 @@ export class HadamardAgentClient {
   ): Promise<AgentRunResult> {
     const workDir = this.resolveRunWorkDir(options);
     const model = this.resolveModel(options.model ?? session?.model);
-    const goalService = this.resolveGoalService(session, liveSession);
+    const goalService = await this.resolveGoalService(session, liveSession);
     let goalExecutionDecision: GoalExecutionDecision = { kind: 'run', mode: 'work' };
     if (goalService) {
       goalExecutionDecision = decideGoalExecution(await goalService.read());
@@ -3041,17 +3049,12 @@ export class HadamardAgentClient {
    * session to anchor it to. Prefers the live `AgentSession` (which owns
    * `mergeMetadata`); falls back to a store-backed port over the snapshot.
    */
-  private resolveGoalService(
+  private async resolveGoalService(
     session?: StoredSession,
     liveSession?: AgentSession,
-  ): GoalService | undefined {
-    if (liveSession) {
-      return GoalService.forSession(liveSession);
-    }
-    if (session?.id) {
-      const port = new StoredSessionGoalPort(this.store, session.id, session.metadata);
-      return new GoalService({ port });
-    }
+  ): Promise<GoalService | undefined> {
+    if (liveSession) return this.goals.serviceForSession(liveSession);
+    if (session?.id) return this.goals.serviceForSession(session);
     return undefined;
   }
 

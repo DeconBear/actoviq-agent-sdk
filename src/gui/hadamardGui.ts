@@ -189,10 +189,6 @@ import {
   updateProjectIssue,
   upsertAgentProfile,
   WorktreeService,
-  GoalService,
-  executeGoalCommand,
-  GOAL_METADATA_KEY,
-  normalizeGoal,
   type Goal,
   HADAMARD_SESSION_PERMISSION_STATE_KEY,
   serializeHadamardSessionPermissionState,
@@ -4193,7 +4189,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     // session context stays intact — switching back to the default provider.
   }
 
-  // ── Goal: session-scoped objective stored in session metadata ─────────
+  // ── Goal: project-scoped durable objective ─────────────────────────────
   const RUNTIME_METADATA_KEY = '__hadamardRuntime';
   const CONFIG_NAME_METADATA_KEY = '__hadamardConfigName';
   const RUNTIME_MODEL_METADATA_KEY = '__hadamardRuntimeModel';
@@ -4662,11 +4658,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     };
   }
 
-  function goalService(): GoalService {
-    return GoalService.forSession(session);
-  }
   function getGoal(): Goal | null {
-    return normalizeGoal(session.metadata[GOAL_METADATA_KEY], new Date().toISOString());
+    return sdk?.goals.peek(session.id) ?? null;
   }
   // ── Batch: read a file and return its prompts for sequential execution ─
   async function runBatch(fileArg: string): Promise<GuiRunEvent[]> {
@@ -5485,7 +5478,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         if (!args) return [{ type: 'error', message: 'usage: /batch <file>' }];
         return runBatch(args);
       case 'goal': {
-        const commandResult = await executeGoalCommand(goalService(), args);
+        if (!sdk) return [{ type: 'error', message: 'Goal requires a configured Hadamard provider.' }];
+        const commandResult = await sdk.goals.command(session, args);
         return [
           commandResult.ok
             ? { type: 'command.result', title: 'Goal', text: commandResult.message }
@@ -7812,6 +7806,12 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const compactBudget = sdk
       ? (await import('../runtime/hadamardCompact.js')).resolveHadamardCompactBudget(sdk.config.compact)
       : undefined;
+    const goalStatus = sdk
+      ? await sdk.goals.status(session.id).catch(() => undefined)
+      : undefined;
+    const projectGoals = sdk
+      ? await sdk.goals.list({ includeArchived: true }).catch(() => [])
+      : [];
     return json(res, 200, {
       ok: true,
       path: workDir,
@@ -7824,6 +7824,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       sessionMemoryEffectiveLimit: sdk
         ? Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000)
         : undefined,
+      goalStatus,
+      projectGoals,
     });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
@@ -7843,6 +7845,18 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       systemPrompt = buildGuiSystemPrompt(workDir, projectSettings);
       invalidateHeavyState();
       return json(res, 200, { ok: true, path: workDir, settings: saved });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-goal') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      const body = await readJson(req);
+      const command = typeof body.command === 'string' ? body.command : 'status';
+      const result = await sdk.goals.command(session, command);
+      invalidateHeavyState();
+      return json(res, result.ok ? 200 : 400, { ok: result.ok, result });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -18616,6 +18630,46 @@ function setProjectSettingsStatus(text, kind) {
   node.textContent = text || '';
   node.dataset.kind = kind || '';
 }
+async function runProjectGoalCommand(command) {
+  setProjectSettingsStatus('Updating Goal\u2026', 'dirty');
+  try {
+    const res = await api('/api/project-goal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || data.result?.message || 'Goal update failed');
+    setProjectSettingsStatus(data.result?.message || 'Goal updated', '');
+    await mountProjectSettingsPanel(true);
+  } catch (error) {
+    setProjectSettingsStatus(error.message || 'Goal update failed', 'error');
+  }
+}
+function renderProjectGoal(status, goals) {
+  const root = el('projectGoalStatus');
+  if (!root) return;
+  const goal = status?.goal;
+  if (!goal) {
+    root.textContent = 'No active Goal for this project.';
+  } else {
+    const budget = goal.budget || {};
+    const consumption = goal.consumption || {};
+    const open = (goal.workItems || []).filter(item => item.status !== 'done' && item.status !== 'cancelled');
+    root.textContent = [
+      goal.status + ' \u00b7 ' + goal.objective,
+      'Goal ID: ' + (status.goalId || 'unknown') + ' \u00b7 revision ' + goal.revision + ' \u00b7 plan ' + goal.planRevision,
+      'Budget: ' + (consumption.turns || 0) + '/' + (budget.maxTurns ?? '\u221e') + ' turns \u00b7 ' + (consumption.toolIterations || 0) + '/' + (budget.maxToolIterations ?? '\u221e') + ' tools \u00b7 ' + (consumption.tokens || 0) + '/' + (budget.maxTokens ?? '\u221e') + ' tokens',
+      'Frontier: ' + (open.length ? open.map(item => item.id + ' [' + item.priority + '] ' + item.text).join('\n  ') : 'closed'),
+      'Evidence: ' + ((goal.evidence || []).length ? (goal.evidence || []).slice(-5).map(item => item.ref || item.note).join(', ') : 'none'),
+      'Project history: ' + (goals || []).length + ' goal(s)',
+    ].join('\n');
+  }
+  const paused = goal?.status === 'paused';
+  if (el('projectGoalPause')) el('projectGoalPause').disabled = !goal || paused;
+  if (el('projectGoalResume')) el('projectGoalResume').disabled = !goal || !paused;
+  if (el('projectGoalReplan')) el('projectGoalReplan').disabled = !goal;
+}
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
   const dreamProfileValue = el('projectDreamProfile')?.value || '';
@@ -18766,6 +18820,17 @@ function wireProjectSettingsPanel() {
   el('projectSettingsSaveBtn')?.addEventListener('click', () => { void saveProjectSettingsNow(); });
   el('projectPromptTemplateApply')?.addEventListener('click', () => applySelectedPromptTemplate());
   el('projectPromptTemplateSave')?.addEventListener('click', () => { void saveCustomPromptAsTemplate(); });
+  el('projectGoalStart')?.addEventListener('click', () => {
+    const objective = el('projectGoalObjective')?.value?.trim() || '';
+    if (!objective) {
+      setProjectSettingsStatus('Goal objective is required', 'error');
+      return;
+    }
+    void runProjectGoalCommand('start ' + objective);
+  });
+  el('projectGoalPause')?.addEventListener('click', () => { void runProjectGoalCommand('pause'); });
+  el('projectGoalResume')?.addEventListener('click', () => { void runProjectGoalCommand('resume'); });
+  el('projectGoalReplan')?.addEventListener('click', () => { void runProjectGoalCommand('replan operator_requested'); });
   el('projectSessionMemoryExtract')?.addEventListener('click', async () => {
     setProjectSettingsStatus('Extracting Session Memory…', 'dirty');
     const res = await api('/api/project-memory-extract', { method: 'POST' });
@@ -18827,6 +18892,7 @@ async function mountProjectSettingsPanel(force) {
     const data = await settingsRes.json().catch(() => ({}));
     if (!settingsRes.ok) throw new Error(data.error || 'Failed to load project settings');
     const settings = data.settings || { workMode: 'coding', customPrompt: '', projectRules: '' };
+    renderProjectGoal(data.goalStatus, data.projectGoals || []);
     const coding = el('projectWorkModeCoding');
     const daily = el('projectWorkModeDaily');
     if (coding) coding.checked = settings.workMode !== 'daily';
@@ -21286,6 +21352,20 @@ function renderProjectDetail() {
     + '<h2>Project rules</h2>'
     + '<p class="muted">Extra project rules injected after custom prompt (separate from CLAUDE.md / AGENTS.md).</p>'
     + '<textarea id="projectRulesPrompt" class="project-settings-textarea" rows="10" spellcheck="false" placeholder="Optional project rules\u2026"></textarea>'
+    + '</div>'
+    + '<div class="settings-group">'
+    + '<h2>Goal</h2>'
+    + '<p class="muted">Project-scoped durable objective, work frontier, evidence, and runtime budget. Sessions in this project resume the same active Goal.</p>'
+    + '<div class="project-settings-template-row">'
+    + '<input id="projectGoalObjective" class="settings-input" placeholder="Start a new project Goal\u2026">'
+    + '<button type="button" class="secondary-btn" id="projectGoalStart">Start Goal</button>'
+    + '</div>'
+    + '<div class="project-settings-template-row">'
+    + '<button type="button" class="secondary-btn" id="projectGoalPause">Pause</button>'
+    + '<button type="button" class="secondary-btn" id="projectGoalResume">Resume</button>'
+    + '<button type="button" class="secondary-btn" id="projectGoalReplan">Replan</button>'
+    + '</div>'
+    + '<pre id="projectGoalStatus" class="project-settings-textarea" style="min-height:130px;white-space:pre-wrap" data-testid="project-goal-status"></pre>'
     + '</div>'
     + '<div class="settings-group">'
     + '<h2>Memory</h2>'

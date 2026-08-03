@@ -1,7 +1,7 @@
 /**
  * Goal runtime contract - public exports.
  *
- * A Goal is a session-scoped execution contract: objective, status, budget,
+ * A Goal is a project-scoped execution contract: objective, status, budget,
  * progress evidence, and a blocked audit. `GoalService` is the single
  * authority over lifecycle; the runtime injects `buildGoalPrompt` each turn;
  * `createGoalTools` exposes GetGoal/CreateGoal/UpdateGoal to the agent.
@@ -70,3 +70,14 @@ export {
   executeGoalCommand,
   type GoalCommandResult,
 } from './goalCommandService.js';
+export {
+  ProjectGoalStore,
+  PROJECT_GOAL_DATABASE,
+  type ProjectGoalEvent,
+  type ProjectGoalSummary,
+} from './projectGoalStore.js';
+export {
+  ProjectGoalApi,
+  type GoalSessionIdentity,
+  type ProjectGoalStatus,
+} from './projectGoalApi.js';

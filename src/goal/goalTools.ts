@@ -24,7 +24,7 @@ export const PLAN_GOAL_TOOL_NAME = 'PlanGoal';
 
 export const GOAL_TOOLS_PROMPT = `## GetGoal / CreateGoal / UpdateGoal
 
-Use these tools to manage the active session goal. A goal is a session-scoped
+Use these tools to manage the active project goal. A goal is a project-scoped
 execution contract with an objective, optional completion criteria, a budget,
 and progress evidence. The active goal is injected into your context each turn.
 

@@ -86,11 +86,7 @@ describe('goal runtime context injection', () => {
       expect(request.tools?.some(t => t.name === 'GetGoal')).toBe(true);
       expect(request.tools?.some(t => t.name === 'CreateGoal')).toBe(true);
       expect(request.tools?.some(t => t.name === 'UpdateGoal')).toBe(true);
-      const persisted = session.metadata[GOAL_METADATA_KEY] as {
-        evidence: unknown[];
-        consumption: { turns: number; toolIterations: number; tokens: number };
-        turnReceipts: Array<{ outcome: string }>;
-      };
+      const persisted = (await sdk.goals.status(session.id)).goal!;
       expect(persisted.evidence).toEqual([]);
       expect(persisted.consumption).toEqual({ turns: 1, toolIterations: 0, tokens: 15 });
       expect(persisted.turnReceipts.at(-1)?.outcome).toBe('no_change');

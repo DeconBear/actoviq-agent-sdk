@@ -65,10 +65,6 @@ import {
   resolveRoutedRun,
   transitionProjectIssue,
   WorktreeService,
-  GoalService,
-  executeGoalCommand,
-  GOAL_METADATA_KEY,
-  normalizeGoal,
 } from '../index.js';
 import { adaptBridgeRun } from '../parity/bridgeEventAdapter.js';
 import { ExternalCliRuntimeManager } from '../parity/externalCliRuntimeManager.js';
@@ -3277,18 +3273,14 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     appendStatic([...formatInfoLine(`effort set to: ${currentEffort() ?? 'auto'}`), '']);
   }
 
-  // ── /goal: session-scoped goal managed by the shared GoalService ─────
+  // ── /goal: project-scoped goal managed by the shared GoalService ─────
   // The service is the single authority over goal lifecycle (see plan/13
   // P0.2); the TUI only reads and steers it (create/clear/pause/resume).
   // Complete/blocked are runtime-only transitions, set via the Goal tools.
-  function goalService(): GoalService {
-    return GoalService.forSession(session);
-  }
-
   function goalContextLine(): string {
     // Normalize through the shared Goal schema while keeping status rendering
     // synchronous over the already-cached Session metadata.
-    const goal = normalizeGoal(session.metadata[GOAL_METADATA_KEY], new Date().toISOString());
+    const goal = sdk.goals.peek(session.id);
     if (!goal) return '';
     const marks: Record<string, string> = {
       active: `${A.green}▶${A.reset}`,
@@ -4169,7 +4161,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         case 'goal': {
-          const commandResult = await executeGoalCommand(goalService(), args);
+          const commandResult = await sdk.goals.command(session, args);
           appendStatic([...formatInfoLine(commandResult.message), '']);
           return;
         }
