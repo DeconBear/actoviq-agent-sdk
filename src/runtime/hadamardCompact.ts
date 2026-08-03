@@ -58,6 +58,7 @@ const PROMPT_TOO_LONG_PATTERNS = [
   'request is too large',
 ];
 const MAX_COMPACT_PROMPT_TOO_LONG_RETRIES = 3;
+const MAX_COMPACT_SUMMARY_TOKENS = 20_000;
 const MAX_CONSECUTIVE_COMPACT_FAILURES = 3;
 const compactionFailureCounts = new Map<string, number>();
 
@@ -68,6 +69,7 @@ export interface HadamardCompactExecutionContext {
   modelApi: ModelApi;
   compactConfig: HadamardCompactConfig;
   runtimeState: HadamardSessionMemoryRuntimeState;
+  reportedInputTokens?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -711,7 +713,8 @@ export async function compactHadamardSession(
   // Estimate against the real session prefix. Microcompact is only a
   // preprocess for full summary — never a standalone mutation that would
   // break automatic prompt-prefix caches used by createAgentSdk / hadamard-tui.
-  const tokenEstimateBefore = estimateHadamardConversationTokens(compactableMessages);
+  const localTokenEstimate = estimateHadamardConversationTokens(compactableMessages);
+  const tokenEstimateBefore = context.reportedInputTokens ?? localTokenEstimate;
   const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig);
 
   if (!context.compactConfig.enabled) {
@@ -744,12 +747,9 @@ export async function compactHadamardSession(
     };
   }
 
-  // Recompaction-in-chain: if already compacted, use a higher effective threshold
-  // to avoid compact-then-immediately-recompact loops
-  const effectiveThreshold =
-    persistedState.lastTrigger === 'auto' || persistedState.lastTrigger === 'reactive'
-      ? context.compactConfig.autoCompactThresholdTokens * 1.5
-      : context.compactConfig.autoCompactThresholdTokens;
+  const effectiveThreshold = resolveHadamardCompactBudget(
+    context.compactConfig,
+  ).autoCompactTokenLimit;
 
   if (!options.force && tokenEstimateBefore < effectiveThreshold) {
     return {
@@ -766,11 +766,11 @@ export async function compactHadamardSession(
     };
   }
 
-  const preserveRecentMessages = Math.max(
-    options.preserveRecentMessages ?? context.compactConfig.preserveRecentMessages,
-    1,
+  let preserveStart = resolvePreserveStartIndex(
+    microcompacted.messages,
+    context.compactConfig,
+    options.preserveRecentMessages,
   );
-  let preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
 
   // Extend preserve window backwards to include tool_use blocks referenced
   // by tool_result blocks in the preserved portion. Without this, compaction
@@ -815,7 +815,10 @@ export async function compactHadamardSession(
 
       const request: ModelRequest = {
         model: options.model ?? context.model,
-        max_tokens: options.maxTokens ?? context.compactConfig.maxSummaryTokens,
+        max_tokens: Math.min(
+          options.maxTokens ?? context.compactConfig.maxSummaryTokens,
+          MAX_COMPACT_SUMMARY_TOKENS,
+        ),
         system:
           'You are compacting a long-running engineering session. Produce a dense but concise continuation summary.',
         metadata: {
@@ -878,7 +881,7 @@ export async function compactHadamardSession(
   const compactedAt = nowIso();
   const nextRuntimeState: HadamardSessionMemoryRuntimeState = {
     ...context.runtimeState,
-    pendingPostCompaction: true,
+    pendingPostCompaction: false,
   };
 
   const contextMessages = buildPostCompactContextMessages(session);
@@ -940,8 +943,85 @@ export async function compactHadamardSession(
 }
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
-const LOOP_AUTOCOMPACT_BUFFER_TOKENS = 13_000;
-const LOOP_AUTOCOMPACT_MIN_THRESHOLD_TOKENS = 30_000;
+const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
+const DEFAULT_AUTO_COMPACT_PERCENT = 90;
+
+export interface HadamardCompactBudget {
+  rawContextWindowTokens: number;
+  effectiveContextWindowTokens: number;
+  autoCompactTokenLimit: number;
+  source: 'explicit' | 'derived' | 'fallback';
+}
+
+export function resolveHadamardCompactBudget(
+  config: HadamardCompactConfig,
+): HadamardCompactBudget {
+  const configuredWindow = positiveInteger(config.contextWindowTokens);
+  const maxWindow = positiveInteger(config.maxContextWindowTokens);
+  const rawContextWindowTokens = Math.max(
+    1,
+    maxWindow == null
+      ? configuredWindow ?? DEFAULT_CONTEXT_WINDOW_TOKENS
+      : Math.min(configuredWindow ?? maxWindow, maxWindow),
+  );
+  const percent = Math.min(
+    Math.max(config.effectiveContextWindowPercent ?? DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT, 1),
+    100,
+  );
+  const derivedLimit = Math.max(
+    1,
+    Math.floor(rawContextWindowTokens * DEFAULT_AUTO_COMPACT_PERCENT / 100),
+  );
+  const explicitLimit = positiveInteger(config.autoCompactTokenLimit)
+    ?? positiveInteger(config.loopAutoCompactThresholdTokens)
+    ?? positiveInteger(config.autoCompactThresholdTokens);
+  return {
+    rawContextWindowTokens,
+    effectiveContextWindowTokens: Math.max(
+      1,
+      Math.floor(rawContextWindowTokens * percent / 100),
+    ),
+    autoCompactTokenLimit: Math.min(explicitLimit ?? derivedLimit, derivedLimit),
+    source: explicitLimit != null
+      ? 'explicit'
+      : config.contextWindowSource === 'fallback' || configuredWindow == null
+        ? 'fallback'
+        : configuredWindow != null
+        ? 'derived'
+        : 'fallback',
+  };
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function resolvePreserveStartIndex(
+  messages: readonly MessageParam[],
+  config: HadamardCompactConfig,
+  preserveRecentMessagesOverride?: number,
+): number {
+  if (preserveRecentMessagesOverride != null || config.preserveRecentUserTokens == null) {
+    const count = Math.max(
+      preserveRecentMessagesOverride ?? config.preserveRecentMessages,
+      1,
+    );
+    return Math.max(messages.length - count, 0);
+  }
+  const budget = Math.max(config.preserveRecentUserTokens, 1);
+  let start = Math.max(messages.length - 1, 0);
+  let used = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const tokens = estimateHadamardConversationTokens([messages[index]!]);
+    if (used > 0 && used + tokens > budget) break;
+    used += tokens;
+    start = index;
+    if (used >= budget) break;
+  }
+  return start;
+}
 
 export interface HadamardLoopCompactContext {
   model: string;
@@ -961,6 +1041,9 @@ export interface HadamardLoopCompactContext {
    * no directly comparable previous request remains.
    */
   tokenEstimateMultiplier?: number;
+  /** Baseline tokens carried into a body-after-prefix compact window. */
+  compactWindowPrefixTokens?: number;
+  fixedInputTokens?: number;
   /** Circuit-breaker key; use the runId so one bad run cannot poison others. */
   runKey: string;
   signal?: AbortSignal;
@@ -998,17 +1081,9 @@ export interface HadamardLoopCompactOutcome {
  */
 export function getHadamardLoopAutoCompactThreshold(
   config: HadamardCompactConfig,
-  maxTokens: number,
+  _maxTokens: number,
 ): number {
-  if (
-    typeof config.loopAutoCompactThresholdTokens === 'number' &&
-    config.loopAutoCompactThresholdTokens > 0
-  ) {
-    return config.loopAutoCompactThresholdTokens;
-  }
-  const contextWindow = config.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  const derived = contextWindow - maxTokens - LOOP_AUTOCOMPACT_BUFFER_TOKENS;
-  return Math.max(derived, LOOP_AUTOCOMPACT_MIN_THRESHOLD_TOKENS);
+  return resolveHadamardCompactBudget(config).autoCompactTokenLimit;
 }
 
 /**
@@ -1031,7 +1106,8 @@ export async function compactHadamardConversationIfNeeded(
     8,
   );
   const tokenEstimateBefore = Math.ceil(
-    estimateHadamardConversationTokens(messages) * tokenEstimateMultiplier,
+    (estimateHadamardConversationTokens(messages) + (context.fixedInputTokens ?? 0))
+      * tokenEstimateMultiplier,
   );
   const unchanged: HadamardLoopCompactOutcome = {
     messages: [...messages],
@@ -1048,7 +1124,10 @@ export async function compactHadamardConversationIfNeeded(
   }
 
   const threshold = getHadamardLoopAutoCompactThreshold(config, context.maxTokens);
-  const triggerTokens = Math.max(context.lastRequestInputTokens ?? 0, tokenEstimateBefore);
+  const activeTokens = context.lastRequestInputTokens ?? tokenEstimateBefore;
+  const triggerTokens = config.autoCompactTokenLimitScope === 'body_after_prefix'
+    ? Math.max(activeTokens - (context.compactWindowPrefixTokens ?? 0), 0)
+    : activeTokens;
   if (!context.force && triggerTokens < threshold) {
     return { ...unchanged, reason: 'threshold_not_met' };
   }
@@ -1071,14 +1150,13 @@ export async function compactHadamardConversationIfNeeded(
 
   // Stage 2: summarize older turns, preserving the recent tail and any
   // tool_use blocks referenced by preserved tool_results.
-  let preserveRecentMessages = Math.max(config.preserveRecentMessages, 1);
-  if (context.force && microcompacted.messages.length <= preserveRecentMessages) {
+  let preserveStart = resolvePreserveStartIndex(microcompacted.messages, config);
+  if (context.force && preserveStart === 0) {
     // Reactive recovery on a short conversation: the default preserve window
     // would leave nothing to summarize. Preserve only the last message so the
     // forced compact can still shrink the request.
-    preserveRecentMessages = 1;
+    preserveStart = Math.max(microcompacted.messages.length - 1, 0);
   }
-  let preserveStart = Math.max(microcompacted.messages.length - preserveRecentMessages, 0);
   preserveStart = extendPreserveToIncludeReferencedToolUses(
     microcompacted.messages,
     preserveStart,
@@ -1103,7 +1181,7 @@ export async function compactHadamardConversationIfNeeded(
       );
       response = await context.modelApi.createMessage({
         model: context.model,
-        max_tokens: config.maxSummaryTokens,
+        max_tokens: Math.min(config.maxSummaryTokens, MAX_COMPACT_SUMMARY_TOKENS),
         system:
           'You are compacting a long-running engineering session. Produce a dense but concise continuation summary.',
         metadata: {

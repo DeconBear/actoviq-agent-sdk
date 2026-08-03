@@ -71,8 +71,10 @@ describe('interactive CLI convergence', () => {
         continue;
       }
       if (command === 'memory') {
-        expect(tuiCase).toContain('/^(proposals|apply|reject)\\b/u.test(args)');
-        expect(guiCase).toContain('/^(proposals|apply|reject)\\b/u.test(args)');
+        expect(tuiCase).toContain('HadamardMemoryCommandService');
+        expect(guiCase).toContain('HadamardMemoryCommandService');
+        expect(tuiCase).toContain(".execute(args || 'status')");
+        expect(guiCase).toContain(".execute(args || 'status')");
         continue;
       }
       if (command === 'dream') {

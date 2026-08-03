@@ -26,12 +26,17 @@ import { parseTypedHooks } from '../hooks/hookConfig.js';
 import { loadPolicyDocuments } from '../policy/policyLoader.js';
 import { resolvePolicy } from '../policy/policyResolver.js';
 import { policySetting } from '../policy/runtimePolicy.js';
+import {
+  DEFAULT_PROJECT_MEMORY_SETTINGS,
+  readProjectMemorySettingsPatch,
+} from './projectSettings.js';
+import { readBridgeConfigs, type ProviderModelEntry } from '../parity/bridgeConfigs.js';
 
 const OPENAI_FALLBACK_MODEL = 'gpt-4o';
 const DEFAULT_COMPACT_CONFIG = {
   enabled: true,
-  autoCompactThresholdTokens: 155_000,
   preserveRecentMessages: 8,
+  preserveRecentUserTokens: 20_000,
   maxSummaryTokens: 20_000,
   microcompactEnabled: true,
   microcompactKeepRecentToolResults: 3,
@@ -45,7 +50,8 @@ const DEFAULT_COMPACT_CONFIG = {
   toolResultArtifactMaxChars: 80_000,
   toolResultsPerMessageMaxChars: 200_000,
   loopAutoCompactEnabled: true,
-  contextWindowTokens: 200_000,
+  effectiveContextWindowPercent: 95,
+  autoCompactTokenLimitScope: 'total',
 } as const;
 
 function getConfigValue(
@@ -82,6 +88,7 @@ export async function resolveRuntimeConfig(
   }
   const homeDir = resolveHadamardHome(options.homeDir);
   const workDir = path.resolve(options.workDir ?? process.cwd());
+  const projectMemoryPatch = await readProjectMemorySettingsPatch(workDir, homeDir);
   await migrateLegacyProjectActoviqDirIfNeeded(workDir).catch(() => undefined);
   const loadedConfig = getLoadedJsonConfig();
   const effectivePolicy = resolvePolicy(await loadPolicyDocuments({
@@ -196,6 +203,81 @@ export async function resolveRuntimeConfig(
   const settingsCompact = rawCompact && typeof rawCompact === 'object' && !Array.isArray(rawCompact)
     ? rawCompact as Partial<import('../types.js').HadamardCompactConfig>
     : undefined;
+  const globalAutoCompact = typeof loadedConfig?.raw?.autoCompactEnabled === 'boolean'
+    ? loadedConfig.raw.autoCompactEnabled
+    : DEFAULT_PROJECT_MEMORY_SETTINGS.compact.enabled;
+  const globalAutoMemory = typeof loadedConfig?.raw?.autoMemoryEnabled === 'boolean'
+    ? loadedConfig.raw.autoMemoryEnabled
+    : DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory.use;
+  const {
+    dreamExecutionProfile: projectDreamExecutionProfile,
+    ...projectDurableMemoryPatch
+  } = projectMemoryPatch?.durableMemory ?? {};
+  const projectMemory = {
+    compact: {
+      ...DEFAULT_PROJECT_MEMORY_SETTINGS.compact,
+      enabled: globalAutoCompact,
+      ...(projectMemoryPatch?.compact ?? {}),
+    },
+    sessionMemory: {
+      ...DEFAULT_PROJECT_MEMORY_SETTINGS.sessionMemory,
+      ...(projectMemoryPatch?.sessionMemory ?? {}),
+    },
+    durableMemory: {
+      ...DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory,
+      use: globalAutoMemory,
+      ...projectDurableMemoryPatch,
+      ...(projectDreamExecutionProfile
+        ? { dreamExecutionProfile: projectDreamExecutionProfile }
+        : {}),
+      // Legacy global autoDreamEnabled is intentionally not inherited.
+      autoDream: projectMemoryPatch?.durableMemory?.autoDream === true,
+    },
+  };
+  const compactOverrides = {
+    ...(settingsCompact ?? {}),
+    enabled: projectMemory.compact.enabled,
+    ...(projectMemory.compact.autoCompactTokenLimit != null
+      ? { autoCompactTokenLimit: projectMemory.compact.autoCompactTokenLimit }
+      : {}),
+    autoCompactTokenLimitScope:
+      projectMemory.compact.autoCompactTokenLimitScope,
+    ...(options.compact ?? {}),
+  };
+  const modelCatalogEntry = resolveCatalogModelEntry(
+    selectedModel.model,
+    readBridgeConfigs(homeDir).configs,
+  );
+  const configuredContextWindow = compactOverrides.contextWindowTokens
+    ?? modelCatalogEntry?.contextWindowTokens
+    ?? 200_000;
+  const configuredMaxWindow = compactOverrides.maxContextWindowTokens
+    ?? modelCatalogEntry?.maxContextWindowTokens;
+  const contextWindowTokens = configuredMaxWindow == null
+    ? configuredContextWindow
+    : Math.min(configuredContextWindow, configuredMaxWindow);
+  const contextWindowSource = compactOverrides.contextWindowTokens != null
+    ? options.compact?.contextWindowTokens != null ? 'run' as const : 'global' as const
+    : modelCatalogEntry?.contextWindowTokens != null
+      ? 'model_catalog' as const
+      : 'fallback' as const;
+  const contextWindowWarning = contextWindowSource === 'fallback'
+    ? `Model ${selectedModel.model} has no context-window metadata; using the 200000-token compatibility fallback.`
+    : undefined;
+  const explicitAutoCompactLimit = compactOverrides.autoCompactTokenLimit
+    ?? compactOverrides.loopAutoCompactThresholdTokens
+    ?? compactOverrides.autoCompactThresholdTokens;
+  const compactDeprecationWarnings = [
+    compactOverrides.autoCompactThresholdTokens != null
+      ? 'autoCompactThresholdTokens is deprecated; use autoCompactTokenLimit.'
+      : undefined,
+    compactOverrides.loopAutoCompactThresholdTokens != null
+      ? 'loopAutoCompactThresholdTokens is deprecated; use autoCompactTokenLimit.'
+      : undefined,
+    compactOverrides.preserveRecentMessages != null && compactOverrides.preserveRecentUserTokens == null
+      ? 'preserveRecentMessages is deprecated for new configuration; use preserveRecentUserTokens.'
+      : undefined,
+  ].filter((warning): warning is string => typeof warning === 'string');
 
   return {
     homeDir,
@@ -231,9 +313,28 @@ export async function resolveRuntimeConfig(
     metadata: { ...(options.metadata ?? {}) },
     compact: {
       ...DEFAULT_COMPACT_CONFIG,
-      ...(settingsCompact ?? {}),
-      ...(options.compact ?? {}),
+      ...compactOverrides,
+      contextWindowTokens,
+      ...(configuredMaxWindow != null ? { maxContextWindowTokens: configuredMaxWindow } : {}),
+      effectiveContextWindowPercent: compactOverrides.effectiveContextWindowPercent
+        ?? modelCatalogEntry?.effectiveContextWindowPercent
+        ?? DEFAULT_COMPACT_CONFIG.effectiveContextWindowPercent,
+      contextWindowSource,
+      ...(contextWindowWarning ? { contextWindowWarning } : {}),
+      ...(compactDeprecationWarnings.length > 0
+        ? { deprecationWarnings: compactDeprecationWarnings }
+        : {}),
+      ...(explicitAutoCompactLimit != null
+        ? { autoCompactTokenLimit: explicitAutoCompactLimit }
+        : modelCatalogEntry?.autoCompactTokenLimit != null
+          ? { autoCompactTokenLimit: modelCatalogEntry.autoCompactTokenLimit }
+        : {}),
+      ...(compactOverrides.preserveRecentMessages != null
+        && compactOverrides.preserveRecentUserTokens == null
+        ? { preserveRecentUserTokens: undefined }
+        : {}),
     },
+    projectMemory,
     provider,
     effort: requestedEffort as ResolvedRuntimeConfig['effort'],
     sandbox,
@@ -248,6 +349,18 @@ export async function resolveRuntimeConfig(
         : false),
     effectivePolicy,
   };
+}
+
+function resolveCatalogModelEntry(
+  model: string,
+  configs: ReturnType<typeof readBridgeConfigs>['configs'],
+): ProviderModelEntry | undefined {
+  const matches = configs.flatMap(config =>
+    (config.models ?? [])
+      .filter(entry => entry.name === model)
+      .map(entry => ({ entry, preferred: config.model === model ? 1 : 0 })),
+  );
+  return matches.sort((left, right) => right.preferred - left.preferred)[0]?.entry;
 }
 
 function normalizeLanguageServers(

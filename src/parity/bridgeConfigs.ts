@@ -91,6 +91,10 @@ export interface ProviderModelEntry {
   name: string;
   /** Whether the model supports 1 M context. */
   context1M?: boolean;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
   /** Text-only or multimodal (vision). */
   modality?: ModelModality;
 }
@@ -188,9 +192,41 @@ function normalizeBridgeConfig(c: PersistedBridgeConfig): PersistedBridgeConfig 
     out.models = c.models.filter(
       (m: unknown): m is ProviderModelEntry =>
         typeof m === 'object' && m !== null && typeof (m as ProviderModelEntry).name === 'string',
-    );
+    ).map(normalizeProviderModelEntry);
   }
   return out;
+}
+
+function normalizeProviderModelEntry(model: ProviderModelEntry): ProviderModelEntry {
+  const contextWindowTokens = positiveInteger(model.contextWindowTokens)
+    ?? (model.context1M === true ? 1_000_000 : undefined);
+  return {
+    name: model.name,
+    ...(model.context1M === true ? { context1M: true } : {}),
+    ...(contextWindowTokens ? { contextWindowTokens } : {}),
+    ...(positiveInteger(model.maxContextWindowTokens) != null
+      ? { maxContextWindowTokens: positiveInteger(model.maxContextWindowTokens) }
+      : {}),
+    ...(validPercent(model.effectiveContextWindowPercent) != null
+      ? { effectiveContextWindowPercent: validPercent(model.effectiveContextWindowPercent) }
+      : {}),
+    ...(positiveInteger(model.autoCompactTokenLimit) != null
+      ? { autoCompactTokenLimit: positiveInteger(model.autoCompactTokenLimit) }
+      : {}),
+    ...(model.modality ? { modality: model.modality } : {}),
+  };
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+function validPercent(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 100
+    ? value
+    : undefined;
 }
 
 function serializeBridgeConfigs(configs: PersistedBridgeConfigs): string {

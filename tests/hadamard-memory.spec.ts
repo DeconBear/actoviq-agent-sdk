@@ -149,6 +149,7 @@ describe('Hadamard memory helpers', () => {
       minimumMessageTokensToInit: 10_000,
       minimumTokensBetweenUpdate: 5_000,
       toolCallsBetweenUpdates: 3,
+      maxOutputTokens: 10_000,
     });
     expect(memory.getSessionMemoryCompactConfig()).toEqual({
       minTokens: 10_000,
@@ -264,5 +265,36 @@ describe('Hadamard memory helpers', () => {
     expect(summary).toContain('Compact summary fixture');
     expect(summary).toContain(`${sessionId}.jsonl`);
     expect(summary).toContain('Recent messages are preserved verbatim.');
+  });
+
+  it('browses and searches only memory content from the current project', async () => {
+    const tempDir = await createTempDir('hadamard-memory-browser-');
+    process.env.HADAMARD_CONFIG_DIR = path.join(tempDir, '.hadamard');
+    const projectPath = path.join(tempDir, 'workspace');
+    const memory = createHadamardMemoryApi({ homeDir: tempDir, projectPath, sessionId: 'current' });
+    const paths = await memory.paths();
+
+    await mkdir(path.join(paths.autoMemoryDir, 'topics'), { recursive: true });
+    await mkdir(paths.teamMemoryDir, { recursive: true });
+    await mkdir(path.join(paths.projectStateDir, 'older', 'session-memory'), { recursive: true });
+    await writeFile(path.join(paths.autoMemoryDir, 'memory_summary.md'), '# Summary\nRelease trains are weekly.\n', 'utf8');
+    await writeFile(path.join(paths.autoMemoryDir, 'topics', 'releases.md'), '# Releases\nUse signed tags.\n', 'utf8');
+    await writeFile(path.join(paths.projectStateDir, 'older', 'session-memory', 'summary.md'), '# Session Title\nOlder project note.\n', 'utf8');
+    await writeFile(path.join(paths.teamMemoryDir, 'private-team.md'), '# Team only\n', 'utf8');
+
+    const entries = await memory.listMemoryContent();
+    expect(entries.map(entry => entry.id)).toEqual(expect.arrayContaining([
+      'durable:memory_summary.md',
+      'durable:topics/releases.md',
+      'session:older',
+    ]));
+    expect(entries.some(entry => entry.path.includes('private-team.md'))).toBe(false);
+
+    const found = await memory.searchMemoryContent('signed tags');
+    expect(found).toHaveLength(1);
+    const shown = await memory.readMemoryContent(found[0]!.entry.id);
+    expect(shown.content).toContain('Use signed tags.');
+    await expect(memory.readMemoryContent(path.join(tempDir, 'outside.md')))
+      .rejects.toThrow('current project');
   });
 });

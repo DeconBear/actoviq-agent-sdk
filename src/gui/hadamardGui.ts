@@ -351,6 +351,7 @@ import {
   appendProjectSettingsToPrompt,
   readProjectSettings,
   writeProjectSettings,
+  type ProjectMemorySettingsPatch,
   type ProjectSettings,
 } from './projectSettings.js';
 import {
@@ -3134,6 +3135,10 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             ? c.models.map(m => ({
                 name: m.name,
                 context1M: m.context1M === true,
+                contextWindowTokens: m.contextWindowTokens,
+                maxContextWindowTokens: m.maxContextWindowTokens,
+                effectiveContextWindowPercent: m.effectiveContextWindowPercent,
+                autoCompactTokenLimit: m.autoCompactTokenLimit,
                 modality: m.modality === 'multimodal' ? 'multimodal' : 'text',
               }))
             : [],
@@ -4828,24 +4833,25 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         }];
       case 'memory':
         if (!sdk) return [{ type: 'error', message: 'Memory compaction requires a configured Hadamard provider credential.' }];
-        if (/^(proposals|apply|reject)\b/u.test(args)) {
-          try {
-            const { MemoryProposalCommandService } = await import('../memory/memoryProposalCommandService.js');
-            const result = await new MemoryProposalCommandService(
-              sdk.config.homeDir,
-              workDir,
-            ).execute(args);
-            return [{
-              type: 'command.result',
-              title: 'Memory proposals',
-              text: result.message,
-              items: result.items,
-            }, { type: 'state' }];
-          } catch (error) {
-            return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
-          }
+        try {
+          const { HadamardMemoryCommandService } = await import('../memory/memoryCommandService.js');
+          const result = await new HadamardMemoryCommandService({
+            memory: sdk.memory,
+            proposals: sdk.memoryProposals,
+            compactConfig: sdk.config.compact,
+            sessionMemoryEffectiveLimit: Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000),
+            getState: () => session.compactState(),
+            extract: () => session.extractMemory({ force: true }),
+          }).execute(args || 'status');
+          return [{
+            type: 'command.result',
+            title: result.title,
+            text: [result.message, result.text].filter(Boolean).join('\n\n'),
+            items: result.items,
+          }, { type: 'state' }];
+        } catch (error) {
+          return [{ type: 'error', message: error instanceof Error ? error.message : String(error) }];
         }
-        return [{ type: 'command.result', title: 'Memory', text: JSON.stringify(await session.compactState(), null, 2) }];
       case 'rules': {
         if (!sdk) return [{ type: 'error', message: 'Rules require a configured Hadamard provider.' }];
         try {
@@ -5430,11 +5436,16 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       case 'context': {
         const project = loadProjectContext(workDir);
         const mcp = toolMetadata.filter(t => t.provider === 'mcp').length;
+        const { resolveHadamardCompactBudget } = await import('../runtime/hadamardCompact.js');
+        const compactBudget = resolveHadamardCompactBudget(sdk!.config.compact);
         const lines = [
           `Model: ${session.model}`,
           `Effort: ${currentEffort() ?? 'auto'}`,
           `Permission: ${currentPermissionMode()}`,
           `Messages: ${session.messages.length}`,
+          `Raw context window: ${compactBudget.rawContextWindowTokens}`,
+          `Effective context window: ${compactBudget.effectiveContextWindowTokens}`,
+          `Automatic compact limit: ${compactBudget.autoCompactTokenLimit} (${compactBudget.source})`,
           `System prompt: ${systemPrompt.length} chars`,
           `Tools: ${toolMetadata.length} (${mcp} MCP)`,
           `Bridge: ${bridgeMode ? (activeBridgeConfig?.name ?? 'on') : 'off'}`,
@@ -7809,16 +7820,60 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   if (req.method === 'GET' && url.pathname === '/api/project-settings') {
     const hd = resolveGuiHomeDir();
     const settings = await readProjectSettings(workDir, hd);
-    return json(res, 200, { ok: true, path: workDir, settings });
+    const configs = readBridgeConfigs(hd).configs;
+    const profiles = listAgentProfiles(hd);
+    const dreamProfiles = [
+      ...configs.map(config => ({
+        kind: 'config',
+        name: config.name,
+        label: `Config · ${config.name}${config.model ? ` · ${config.model}` : ''}`,
+        available: config.execution !== 'cli' && Boolean(config.model),
+      })),
+      ...profiles.map(profile => {
+        const config = configs.find(candidate => candidate.name === profile.bridgeConfig);
+        return {
+          kind: 'agent',
+          name: profile.name,
+          label: `Agent · ${profile.name} · ${profile.model}`,
+          available: Boolean(config) && config?.execution !== 'cli',
+        };
+      }),
+    ];
+    const memoryContent = sdk
+      ? await sdk.memory.listMemoryContent().catch(() => [])
+      : [];
+    const dreamState = sdk
+      ? await sdk.dream.state({ currentSessionId: session.id }).catch(() => undefined)
+      : undefined;
+    const compactBudget = sdk
+      ? (await import('../runtime/hadamardCompact.js')).resolveHadamardCompactBudget(sdk.config.compact)
+      : undefined;
+    return json(res, 200, {
+      ok: true,
+      path: workDir,
+      settings,
+      dreamProfiles,
+      memoryContent,
+      dreamState,
+      compactBudget,
+      compactWarning: sdk?.config.compact.contextWindowWarning,
+      sessionMemoryEffectiveLimit: sdk
+        ? Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000)
+        : undefined,
+    });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
     try {
       const body = await readJson(req);
       const hd = resolveGuiHomeDir();
+      const memory = body.memory && typeof body.memory === 'object'
+        ? body.memory as ProjectMemorySettingsPatch
+        : undefined;
       const saved = await writeProjectSettings(workDir, hd, {
         workMode: body.workMode === 'coding' || body.workMode === 'daily' ? body.workMode : undefined,
         customPrompt: typeof body.customPrompt === 'string' ? body.customPrompt : undefined,
         projectRules: typeof body.projectRules === 'string' ? body.projectRules : undefined,
+        memory,
       });
       projectSettings = saved;
       systemPrompt = buildGuiSystemPrompt(workDir, projectSettings);
@@ -7826,6 +7881,32 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       return json(res, 200, { ok: true, path: workDir, settings: saved });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-memory-content') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      const id = url.searchParams.get('id');
+      const query = url.searchParams.get('query');
+      if (query) {
+        return json(res, 200, { ok: true, results: await sdk.memory.searchMemoryContent(query) });
+      }
+      if (!id) return json(res, 400, { error: 'Missing memory id.' });
+      return json(res, 200, { ok: true, ...(await sdk.memory.readMemoryContent(id)) });
+    } catch (error) {
+      return json(res, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-memory-extract') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    return json(res, 200, { ok: true, result: await session.extractMemory({ force: true }) });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-dream/run') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      return json(res, 200, { ok: true, result: await session.dream({ force: true }) });
+    } catch (error) {
+      return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
   }
   if (req.method === 'GET' && url.pathname === '/api/prompt-templates') {
@@ -8423,11 +8504,23 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         if (typeof body.model === 'string' && body.model.trim()) config.model = body.model.trim();
         // Models array (provider-specific model registry).
         if (Array.isArray(body.models)) {
-          config.models = (body.models as Array<{ name?: unknown; context1M?: unknown; modality?: unknown }>)
+          config.models = (body.models as Array<Record<string, unknown>>)
             .filter(m => typeof m.name === 'string' && m.name.trim())
             .map(m => ({
               name: (m.name as string).trim(),
               context1M: m.context1M === true || false,
+              ...(typeof m.contextWindowTokens === 'number' && m.contextWindowTokens > 0
+                ? { contextWindowTokens: Math.floor(m.contextWindowTokens) }
+                : {}),
+              ...(typeof m.maxContextWindowTokens === 'number' && m.maxContextWindowTokens > 0
+                ? { maxContextWindowTokens: Math.floor(m.maxContextWindowTokens) }
+                : {}),
+              ...(typeof m.effectiveContextWindowPercent === 'number' && m.effectiveContextWindowPercent > 0 && m.effectiveContextWindowPercent <= 100
+                ? { effectiveContextWindowPercent: m.effectiveContextWindowPercent }
+                : {}),
+              ...(typeof m.autoCompactTokenLimit === 'number' && m.autoCompactTokenLimit > 0
+                ? { autoCompactTokenLimit: Math.floor(m.autoCompactTokenLimit) }
+                : {}),
               modality: (m.modality === 'multimodal' ? 'multimodal' : 'text') as ModelModality,
             }));
         }
@@ -10177,6 +10270,9 @@ export function createHadamardGuiHtml(): string {
         <p id="bridgeModelsHelp" class="muted">Add one or more models for this config. The first is the default.</p>
         <div class="bridge-model-row">
           <input id="bridgeNewModelName" autocomplete="off" placeholder="Model id (e.g. deepseek-chat)">
+          <input id="bridgeNewModelContextWindow" type="number" min="1000" step="1000" placeholder="Context tokens (e.g. 200000)">
+          <input id="bridgeNewModelCompactLimit" type="number" min="1000" step="1000" placeholder="Auto-compact limit (optional)">
+          <input id="bridgeNewModelEffectivePercent" type="number" min="1" max="100" step="1" value="95" placeholder="Effective window %">
           <div class="bridge-model-controls">
             <label class="check-row"><input id="bridgeNewModel1M" type="checkbox">1M ctx</label>
             <select id="bridgeNewModelModality"><option value="text">Text</option><option value="multimodal">Multimodal</option></select>
@@ -10575,18 +10671,12 @@ export function createHadamardGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="memory">
         <h1>Memory</h1>
         <div class="settings-group">
-          <p>Hadamard keeps two kinds of memory: the <strong>current chat's context</strong> (compaction summarizes older turns so the conversation keeps fitting in the model's window) and <strong>durable memory</strong> (dream consolidates lasting facts about you and the project). Both run automatically — the controls below let you inspect or trigger them by hand. Results open in the chat transcript.</p>
+          <p>Hadamard keeps three independent layers: <strong>compact</strong> for current-chat continuity, <strong>Session Memory</strong> for structured chat notes, and <strong>Durable Memory</strong> for project knowledge consolidated by Dream.</p>
         </div>
         <div class="settings-group">
-          <h2>Current chat context</h2>
-          <div class="settings-help-row"><span><strong>Inspect memory</strong><small>Show the current compaction state and what has been summarized so far.</small></span><button type="button" id="settingsMemoryStatusBtn" class="secondary-btn">Inspect</button></div>
-          <div class="settings-help-row"><span><strong>Compact now</strong><small>Summarize older turns right now to free up context space.</small></span><button type="button" id="settingsCompactNowBtn" class="secondary-btn">Compact</button></div>
-          <label class="inline-field wide">Compaction guidance (optional)<input id="settingsCompactInstructions" autocomplete="off" placeholder="e.g. keep API decisions, drop long file listings"></label>
-        </div>
-        <div class="settings-group">
-          <h2>Durable memory (dream)</h2>
-          <div class="settings-help-row"><span><strong>Dream status</strong><small>See when consolidation last ran and what is pending.</small></span><button type="button" id="settingsDreamStatusBtn" class="secondary-btn">Status</button></div>
-          <div class="settings-help-row"><span><strong>Run dream</strong><small>Consolidate lasting memories from this session into your stored profile now.</small></span><button type="button" id="settingsDreamRunBtn" class="secondary-btn">Run</button></div>
+          <h2>Global defaults</h2>
+          <p>Durable Memory reads default to on, Session Memory output defaults to 10,000 tokens, and automatic Dream always defaults to off.</p>
+          <p class="muted">Project content, Dream profiles, manual actions, and Memory Browser live in Project details → Project settings → Memory.</p>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="mcp">
@@ -18564,10 +18654,34 @@ function setProjectSettingsStatus(text, kind) {
 }
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
+  const dreamProfileValue = el('projectDreamProfile')?.value || '';
+  const dreamProfileSeparator = dreamProfileValue.indexOf(':');
+  const dreamExecutionProfile = dreamProfileSeparator > 0
+    ? {
+        kind: dreamProfileValue.slice(0, dreamProfileSeparator),
+        name: dreamProfileValue.slice(dreamProfileSeparator + 1),
+      }
+    : undefined;
   return {
     workMode,
     customPrompt: el('projectCustomPrompt')?.value || '',
     projectRules: el('projectRulesPrompt')?.value || '',
+    memory: {
+      compact: {
+        enabled: Boolean(el('projectCompactEnabled')?.checked),
+        autoCompactTokenLimit: Number(el('projectCompactLimit')?.value) || undefined,
+        autoCompactTokenLimitScope: el('projectCompactScope')?.value === 'body_after_prefix' ? 'body_after_prefix' : 'total',
+      },
+      sessionMemory: {
+        autoExtract: Boolean(el('projectSessionMemoryAuto')?.checked),
+        maxOutputTokens: Number(el('projectSessionMemoryMaxTokens')?.value) || 10000,
+      },
+      durableMemory: {
+        use: Boolean(el('projectDurableMemoryUse')?.checked),
+        autoDream: Boolean(el('projectAutoDream')?.checked),
+        dreamExecutionProfile: dreamExecutionProfile || null,
+      },
+    },
   };
 }
 function scheduleProjectSettingsSave() {
@@ -18674,20 +18788,62 @@ function wireProjectSettingsPanel() {
   panel.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily') {
+    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily' || target.id.startsWith('projectCompact') || target.id.startsWith('projectSessionMemory') || target.id.startsWith('projectDurableMemory') || target.id === 'projectAutoDream' || target.id === 'projectDreamProfile') {
       scheduleProjectSettingsSave();
     }
   });
   panel.addEventListener('input', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt') {
+    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt' || target.id === 'projectCompactLimit' || target.id === 'projectSessionMemoryMaxTokens') {
       scheduleProjectSettingsSave();
     }
   });
   el('projectSettingsSaveBtn')?.addEventListener('click', () => { void saveProjectSettingsNow(); });
   el('projectPromptTemplateApply')?.addEventListener('click', () => applySelectedPromptTemplate());
   el('projectPromptTemplateSave')?.addEventListener('click', () => { void saveCustomPromptAsTemplate(); });
+  el('projectSessionMemoryExtract')?.addEventListener('click', async () => {
+    setProjectSettingsStatus('Extracting Session Memory…', 'dirty');
+    const res = await api('/api/project-memory-extract', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    setProjectSettingsStatus(res.ok ? (data.result?.updated ? 'Session Memory updated' : 'No new Session Memory') : (data.error || 'Extraction failed'), res.ok ? '' : 'error');
+    if (res.ok) void mountProjectSettingsPanel(true);
+  });
+  el('projectDreamRun')?.addEventListener('click', async () => {
+    setProjectSettingsStatus('Running Dream…', 'dirty');
+    const res = await api('/api/project-dream/run', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    setProjectSettingsStatus(res.ok ? (data.result?.reason || (data.result?.skipped ? 'Dream skipped' : 'Dream completed')) : (data.error || 'Dream failed'), res.ok ? '' : 'error');
+    if (res.ok) void mountProjectSettingsPanel(true);
+  });
+  el('projectMemorySearch')?.addEventListener('input', () => renderProjectMemoryBrowser(state.projectMemoryContent || [], el('projectMemorySearch')?.value || ''));
+}
+function renderProjectMemoryBrowser(entries, query) {
+  const root = el('projectMemoryBrowser');
+  if (!root) return;
+  const normalized = (query || '').trim().toLowerCase();
+  const visible = (entries || []).filter((entry) => !normalized || entry.id.toLowerCase().includes(normalized) || entry.path.toLowerCase().includes(normalized));
+  root.textContent = '';
+  if (!visible.length) {
+    root.innerHTML = '<p class="muted">No memory content found.</p>';
+    return;
+  }
+  for (const entry of visible) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'settings-row';
+    button.innerHTML = '<span><strong></strong><small></small></span><span class="settings-row-value"></span>';
+    button.querySelector('strong').textContent = entry.id;
+    button.querySelector('small').textContent = entry.path;
+    button.querySelector('.settings-row-value').textContent = entry.kind;
+    button.addEventListener('click', async () => {
+      const res = await api('/api/project-memory-content?id=' + encodeURIComponent(entry.id));
+      const data = await res.json().catch(() => ({}));
+      const preview = el('projectMemoryPreview');
+      if (preview) preview.textContent = res.ok ? data.content : (data.error || 'Unable to read memory.');
+    });
+    root.appendChild(button);
+  }
 }
 async function mountProjectSettingsPanel(force) {
   const panel = el('projectSettingsPanel');
@@ -18713,6 +18869,48 @@ async function mountProjectSettingsPanel(force) {
     if (daily) daily.checked = settings.workMode === 'daily';
     if (el('projectCustomPrompt')) el('projectCustomPrompt').value = settings.customPrompt || '';
     if (el('projectRulesPrompt')) el('projectRulesPrompt').value = settings.projectRules || '';
+    const memory = settings.memory || {};
+    const compact = memory.compact || {};
+    const sessionMemory = memory.sessionMemory || {};
+    const durableMemory = memory.durableMemory || {};
+    if (el('projectCompactEnabled')) el('projectCompactEnabled').checked = compact.enabled !== false;
+    if (el('projectCompactLimit')) el('projectCompactLimit').value = compact.autoCompactTokenLimit || '';
+    if (el('projectCompactScope')) el('projectCompactScope').value = compact.autoCompactTokenLimitScope || 'total';
+    const compactStatus = el('projectCompactStatus');
+    if (compactStatus) compactStatus.textContent = data.compactBudget
+      ? 'Raw: ' + data.compactBudget.rawContextWindowTokens + ' · Effective: ' + data.compactBudget.effectiveContextWindowTokens + ' · Auto compact: ' + data.compactBudget.autoCompactTokenLimit + ' (' + data.compactBudget.source + ')' + (data.compactWarning ? '\\n' + data.compactWarning : '')
+      : 'Compact budget is unavailable until the Hadamard SDK is configured.';
+    if (el('projectSessionMemoryAuto')) el('projectSessionMemoryAuto').checked = sessionMemory.autoExtract !== false;
+    if (el('projectSessionMemoryMaxTokens')) el('projectSessionMemoryMaxTokens').value = sessionMemory.maxOutputTokens || 10000;
+    const sessionMemoryStatus = el('projectSessionMemoryStatus');
+    if (sessionMemoryStatus) sessionMemoryStatus.textContent = data.sessionMemoryEffectiveLimit
+      ? 'Effective model output limit: ' + data.sessionMemoryEffectiveLimit + ' tokens'
+      : '';
+    if (el('projectDurableMemoryUse')) el('projectDurableMemoryUse').checked = durableMemory.use !== false;
+    if (el('projectAutoDream')) el('projectAutoDream').checked = durableMemory.autoDream === true;
+    const profileSelect = el('projectDreamProfile');
+    if (profileSelect) {
+      profileSelect.textContent = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'Select a Config or Agent…';
+      profileSelect.appendChild(empty);
+      for (const profile of data.dreamProfiles || []) {
+        const option = document.createElement('option');
+        option.value = profile.kind + ':' + profile.name;
+        option.textContent = profile.label + (profile.available ? '' : ' (unavailable)');
+        option.disabled = !profile.available;
+        profileSelect.appendChild(option);
+      }
+      const selected = durableMemory.dreamExecutionProfile;
+      if (selected) profileSelect.value = selected.kind + ':' + selected.name;
+    }
+    state.projectMemoryContent = data.memoryContent || [];
+    renderProjectMemoryBrowser(state.projectMemoryContent, '');
+    const dreamStatus = el('projectDreamStatus');
+    if (dreamStatus) dreamStatus.textContent = data.dreamState
+      ? JSON.stringify(data.dreamState, null, 2)
+      : 'Dream status is unavailable until the Hadamard SDK is configured.';
     state.projectSettingsDirty = false;
     panel.dataset.loaded = workDir;
     setProjectSettingsStatus('', '');
@@ -21124,6 +21322,30 @@ function renderProjectDetail() {
     + '<h2>Project rules</h2>'
     + '<p class="muted">Extra project rules injected after custom prompt (separate from CLAUDE.md / AGENTS.md).</p>'
     + '<textarea id="projectRulesPrompt" class="project-settings-textarea" rows="10" spellcheck="false" placeholder="Optional project rules\u2026"></textarea>'
+    + '</div>'
+    + '<div class="settings-group">'
+    + '<h2>Memory</h2>'
+    + '<p class="muted">Compact, Session Memory, and Durable Memory are independent and scoped to this project.</p>'
+    + '<label class="settings-row"><span><strong>Automatic compact</strong><small>Uses the active model window and a 90% ceiling.</small></span><input type="checkbox" id="projectCompactEnabled"></label>'
+    + '<label class="settings-row"><span><strong>Advanced compact token limit</strong><small>Optional; values above 90% of the model window are clamped.</small></span><input type="number" min="1000" step="1000" id="projectCompactLimit" placeholder="Derived"></label>'
+    + '<label class="settings-row"><span><strong>Compact usage scope</strong><small>Total context or only context added after the compact prefix.</small></span><select id="projectCompactScope"><option value="total">Total</option><option value="body_after_prefix">Body after prefix</option></select></label>'
+    + '<p id="projectCompactStatus" class="muted"></p>'
+    + '<label class="settings-row"><span><strong>Automatic Session Memory</strong><small>Extract after a complete turn when the token delta threshold is met.</small></span><input type="checkbox" id="projectSessionMemoryAuto"></label>'
+    + '<label class="settings-row"><span><strong>Session Memory output</strong><small>1,000–20,000 tokens; provider limits still apply.</small></span><input type="number" min="1000" max="20000" step="1000" id="projectSessionMemoryMaxTokens"></label>'
+    + '<p id="projectSessionMemoryStatus" class="muted"></p>'
+    + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectSessionMemoryExtract">Extract Session Memory now</button></div>'
+    + '<label class="settings-row"><span><strong>Use Durable Memory</strong><small>Read and inject project memory. This does not enable background writes.</small></span><input type="checkbox" id="projectDurableMemoryUse"></label>'
+    + '<label class="settings-row"><span><strong>Memory consolidation (Dream)</strong><small>Project-only automatic Phase 1 extraction and Phase 2 consolidation.</small></span><input type="checkbox" id="projectAutoDream"></label>'
+    + '<label class="settings-row"><span><strong>Dream execution profile</strong><small>Config or Agent model settings only; prompt, tools, and permissions stay restricted.</small></span><select id="projectDreamProfile"></select></label>'
+    + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectDreamRun">Run Dream now</button></div>'
+    + '<pre id="projectDreamStatus" class="project-settings-textarea" style="min-height:90px;white-space:pre-wrap"></pre>'
+    + '</div>'
+    + '<div class="settings-group">'
+    + '<h2>Memory Browser</h2>'
+    + '<p class="muted">Read-only view of Session Memory, MEMORY.md, topics, raw memories, and rollout summaries.</p>'
+    + '<input id="projectMemorySearch" class="settings-input" placeholder="Filter memory by id or path…">'
+    + '<div id="projectMemoryBrowser" class="settings-card-list"></div>'
+    + '<pre id="projectMemoryPreview" class="project-settings-textarea" style="min-height:180px;white-space:pre-wrap"></pre>'
     + '</div>'
     + '</div>';
   for (const [tabKey, panel] of Object.entries({
@@ -29749,7 +29971,7 @@ async function applyReuseConfig(configName) {
   el('bridgeCfgApiKeyToggle').innerHTML = guiIcon('eye');
   el('bridgeCfgApiKey').placeholder = 'Paste API key';
   draftBridgeModels = Array.isArray(cfg.models)
-    ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
+    ? cfg.models.map(m => ({ ...m, name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
     : [];
   renderBridgeModels();
   el('bridgeCfgStatus').textContent = 'Reused settings from "' + cfg.name + '". Edit as needed, then Save.';
@@ -29781,7 +30003,7 @@ function openBridgeEditor(cfg) {
   toggleCredentialFields();
   if (editingDefaultBridgeConfig) el('bridgeReuseRow').classList.add('hidden');
   draftBridgeModels = cfg && Array.isArray(cfg.models)
-    ? cfg.models.map(m => ({ name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
+    ? cfg.models.map(m => ({ ...m, name: m.name, context1M: m.context1M || false, modality: m.modality || 'text' }))
     : [];
   renderBridgeModels();
   el('bridgeModelsTitle').textContent = editingDefaultBridgeConfig ? 'Model' : 'Models';
@@ -29792,6 +30014,9 @@ function openBridgeEditor(cfg) {
   el('bridgeModelsList').classList.toggle('hidden', editingDefaultBridgeConfig);
   el('bridgeNewModelName').value = editingDefaultBridgeConfig ? (cfg?.model || '') : '';
   el('bridgeNewModel1M').checked = editingDefaultBridgeConfig && cfg?.models?.[0]?.context1M === true;
+  el('bridgeNewModelContextWindow').value = editingDefaultBridgeConfig ? (cfg?.models?.[0]?.contextWindowTokens || '') : '';
+  el('bridgeNewModelCompactLimit').value = editingDefaultBridgeConfig ? (cfg?.models?.[0]?.autoCompactTokenLimit || '') : '';
+  el('bridgeNewModelEffectivePercent').value = editingDefaultBridgeConfig ? (cfg?.models?.[0]?.effectiveContextWindowPercent || 95) : 95;
   el('bridgeNewModelModality').value = editingDefaultBridgeConfig && cfg?.models?.[0]?.modality === 'multimodal'
     ? 'multimodal'
     : 'text';
@@ -29842,12 +30067,18 @@ function addBridgeModel() {
   const model = {
     name,
     context1M: el('bridgeNewModel1M').checked,
+    contextWindowTokens: Number(el('bridgeNewModelContextWindow').value) || undefined,
+    effectiveContextWindowPercent: Number(el('bridgeNewModelEffectivePercent').value) || 95,
+    autoCompactTokenLimit: Number(el('bridgeNewModelCompactLimit').value) || undefined,
     modality: el('bridgeNewModelModality').value || 'text',
   };
   if (editingDefaultBridgeConfig) draftBridgeModels = [model];
   else draftBridgeModels.push(model);
   el('bridgeNewModelName').value = '';
   el('bridgeNewModel1M').checked = false;
+  el('bridgeNewModelContextWindow').value = '';
+  el('bridgeNewModelCompactLimit').value = '';
+  el('bridgeNewModelEffectivePercent').value = 95;
   el('bridgeNewModelModality').value = 'text';
   renderBridgeModels();
 }
@@ -32075,13 +32306,13 @@ el('settingsEnterWorktree').addEventListener('click', () => {
 });
 el('settingsExitWorktree').addEventListener('click', () => { runSettingsCommand('/worktree exit', 'Exiting worktree...').catch(console.error); });
 el('settingsAutomationWorktreeList').addEventListener('click', () => { runSettingsCommand('/worktree list', 'Listing worktrees...').catch(console.error); });
-el('settingsMemoryStatusBtn').addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
-el('settingsCompactNowBtn').addEventListener('click', () => {
+el('settingsMemoryStatusBtn')?.addEventListener('click', () => { runSettingsCommand('/memory', 'Inspecting memory...').catch(console.error); });
+el('settingsCompactNowBtn')?.addEventListener('click', () => {
   const instructions = el('settingsCompactInstructions').value.trim();
   runSettingsCommand('/compact' + (instructions ? ' ' + instructions : ''), 'Compacting session...').catch(console.error);
 });
-el('settingsDreamStatusBtn').addEventListener('click', () => { runSettingsCommand('/dream status', 'Inspecting dream state...').catch(console.error); });
-el('settingsDreamRunBtn').addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
+el('settingsDreamStatusBtn')?.addEventListener('click', () => { runSettingsCommand('/dream status', 'Inspecting dream state...').catch(console.error); });
+el('settingsDreamRunBtn')?.addEventListener('click', () => { runSettingsCommand('/dream run', 'Running dream...').catch(console.error); });
 el('settingsMcpBtn').addEventListener('click', () => { closeSettings(); openSurface('mcp').catch(console.error); });
 el('mcpCfgAdd').addEventListener('click', () => { addMcpServerConfig().catch(console.error); });
 el('settingsWorktreeBtn').addEventListener('click', () => { closeSettings(); submitText('/worktree list'); });

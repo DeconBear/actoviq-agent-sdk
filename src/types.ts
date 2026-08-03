@@ -391,6 +391,7 @@ export interface ResolvedRuntimeConfig {
   userId?: string;
   metadata: Record<string, unknown>;
   compact: HadamardCompactConfig;
+  projectMemory: import('./config/projectSettings.js').ProjectMemorySettings;
   provider: 'anthropic' | 'openai';
   effort?: HadamardEffort;
   sandbox: import('./sandbox/types.js').SandboxPolicy;
@@ -750,9 +751,11 @@ export interface HadamardRunSlashCommandResult {
     | HadamardSessionCompactResult
     | HadamardMemoryState
     | HadamardDreamRunResult
+    | HadamardDreamState
     | HadamardCleanToolMetadata[]
     | HadamardSkillDefinitionSummary[]
-    | HadamardAgentDefinitionSummary[];
+    | HadamardAgentDefinitionSummary[]
+    | import('./memory/memoryCommandService.js').HadamardMemoryCommandResult;
 }
 
 export interface HadamardInvokedSkillRecord {
@@ -833,8 +836,13 @@ export interface CreateAgentSdkOptions {
 
 export interface HadamardCompactConfig {
   enabled: boolean;
-  autoCompactThresholdTokens: number;
+  /** @deprecated Use autoCompactTokenLimit. Retained as a legacy explicit override. */
+  autoCompactThresholdTokens?: number;
+  /** Explicit limit, clamped to 90% of the raw context window. */
+  autoCompactTokenLimit?: number;
+  autoCompactTokenLimitScope?: 'total' | 'body_after_prefix';
   preserveRecentMessages: number;
+  preserveRecentUserTokens?: number;
   maxSummaryTokens: number;
   microcompactEnabled: boolean;
   microcompactKeepRecentToolResults: number;
@@ -860,7 +868,12 @@ export interface HadamardCompactConfig {
   loopAutoCompactEnabled?: boolean;
   /** Model context window in tokens used to derive the in-loop compact threshold. */
   contextWindowTokens?: number;
-  /** Explicit in-loop compact trigger in estimated tokens. Overrides the derived threshold. */
+  maxContextWindowTokens?: number;
+  effectiveContextWindowPercent?: number;
+  contextWindowSource?: 'run' | 'project' | 'global' | 'model_catalog' | 'fallback';
+  contextWindowWarning?: string;
+  deprecationWarnings?: string[];
+  /** @deprecated Use autoCompactTokenLimit. */
   loopAutoCompactThresholdTokens?: number;
   /**
    * Persistent user guidance injected into every compact summary prompt.
@@ -1076,6 +1089,9 @@ export interface HadamardDreamConfig {
   minHours: number;
   minSessions: number;
   scanIntervalMs: number;
+  minRolloutIdleHours?: number;
+  maxRolloutAgeDays?: number;
+  maxRolloutsPerStartup?: number;
 }
 
 export interface HadamardDreamPaths {
@@ -1085,6 +1101,10 @@ export interface HadamardDreamPaths {
   teamMemoryEntrypoint: string;
   transcriptDir: string;
   lockPath: string;
+  stateDbPath: string;
+  rawMemoriesPath: string;
+  rolloutSummariesDir: string;
+  memorySummaryPath: string;
 }
 
 export interface HadamardDreamState {
@@ -1098,8 +1118,18 @@ export interface HadamardDreamState {
   hoursSinceLastConsolidated: number;
   sessionsSinceLastConsolidated: string[];
   lockHeld: boolean;
+  eligibleRolloutCount?: number;
+  phase?: 'idle' | 'extracting' | 'consolidating';
+  leaseExpiresAt?: string;
+  lastError?: string;
   canRun: boolean;
-  blockedReason?: 'disabled' | 'time_gate' | 'session_gate' | 'locked' | 'scan_throttled';
+  blockedReason?:
+    | 'disabled'
+    | 'time_gate'
+    | 'session_gate'
+    | 'locked'
+    | 'scan_throttled'
+    | 'missing_execution_profile';
 }
 
 export interface HadamardDreamRunOptions {
@@ -1108,6 +1138,7 @@ export interface HadamardDreamRunOptions {
   currentSessionId?: string;
   extraContext?: string;
   model?: string;
+  executionProfile?: import('./config/projectSettings.js').DreamExecutionProfileRef;
   maxTokens?: number;
   signal?: AbortSignal;
 }
@@ -1155,6 +1186,12 @@ export interface HadamardSessionCompactResult {
   consecutiveFailures?: number;
   error?: string;
   state: HadamardSessionMemoryRuntimeState;
+  budget?: {
+    rawContextWindowTokens: number;
+    effectiveContextWindowTokens: number;
+    autoCompactTokenLimit: number;
+    source: 'explicit' | 'derived' | 'fallback';
+  };
 }
 
 export interface HadamardTaskToolInput {
@@ -1882,7 +1919,9 @@ export interface HadamardSessionMemoryState {
 export interface HadamardSessionMemoryConfig {
   minimumMessageTokensToInit: number;
   minimumTokensBetweenUpdate: number;
+  /** @deprecated Tool calls no longer gate extraction. */
   toolCallsBetweenUpdates: number;
+  maxOutputTokens: number;
 }
 
 export interface HadamardSessionMemoryCompactConfig {
@@ -1944,6 +1983,12 @@ export interface HadamardMemoryOptions {
   homeDir?: string;
   projectPath?: string;
   sessionId?: string;
+  sessionMemoryConfig?: Partial<HadamardSessionMemoryConfig>;
+  enabledOverrides?: Partial<{
+    autoCompact: boolean;
+    autoMemory: boolean;
+    autoDream: boolean;
+  }>;
 }
 
 export interface HadamardMemoryPromptOptions extends HadamardMemoryOptions {

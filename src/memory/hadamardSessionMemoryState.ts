@@ -184,10 +184,7 @@ export function evaluateHadamardSessionMemoryProgress(
     tokensSinceLastExtraction >= config.minimumTokensBetweenUpdate;
   const meetsToolCallThreshold =
     toolCallsSinceLastUpdate >= config.toolCallsBetweenUpdates;
-  const shouldExtract =
-    initialized &&
-    meetsUpdateThreshold &&
-    (meetsToolCallThreshold || !hasToolCallsInLastTurn);
+  const shouldExtract = initialized && meetsUpdateThreshold && !hasToolCallsInLastTurn;
 
   return {
     currentTokenCount,
@@ -223,6 +220,41 @@ export function sanitizeHadamardSessionMemoryOutput(
     normalized = normalized.slice(headingIndex);
   }
 
-  normalized = normalized.trim();
+  normalized = redactMemorySecrets(normalized.trim());
   return normalized || currentNotes.trim();
+}
+
+export function parseHadamardSessionMemoryExtractionOutput(
+  output: string,
+  currentNotes: string,
+): { noOutput: boolean; content: string } {
+  const trimmed = output.trim().replace(/^```json\s*/u, '').replace(/\s*```$/u, '');
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (parsed.noOutput === true || parsed.no_output === true) {
+      return { noOutput: true, content: currentNotes.trim() };
+    }
+    const content = typeof parsed.content === 'string'
+      ? parsed.content
+      : typeof parsed.markdown === 'string'
+        ? parsed.markdown
+        : undefined;
+    if (content != null) {
+      return {
+        noOutput: content.trim().length === 0,
+        content: sanitizeHadamardSessionMemoryOutput(content, currentNotes),
+      };
+    }
+  } catch {
+    // Legacy direct-markdown responses remain supported for one compatibility cycle.
+  }
+  const content = sanitizeHadamardSessionMemoryOutput(output, currentNotes);
+  return { noOutput: content.trim() === currentNotes.trim(), content };
+}
+
+export function redactMemorySecrets(content: string): string {
+  return content
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,})\b/gu, '[REDACTED_SECRET]')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,})\b/gu, '[REDACTED_SECRET]')
+    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/giu, '$1[REDACTED_SECRET]');
 }

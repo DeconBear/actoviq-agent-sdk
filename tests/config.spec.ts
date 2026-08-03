@@ -14,6 +14,7 @@ import {
   resolveRuntimeConfig,
 } from '../src/index.js';
 import { migrateLegacyHadamardProjectData } from '../src/config/projectSessionDirectory.js';
+import { addBridgeConfig } from '../src/parity/bridgeConfigs.js';
 
 const tempDirs: string[] = [];
 
@@ -936,6 +937,32 @@ describe('config loading', () => {
       maxToolIterations: 24,
     });
     expect(capped.maxToolIterations).toBe(24);
+  });
+
+  it('derives compact budgets from the selected model catalog entry', async () => {
+    const homeDir = await createTempHome();
+    addBridgeConfig({
+      name: 'large-context',
+      runtime: 'hadamard',
+      execution: 'api',
+      provider: 'anthropic',
+      model: 'large-context-model',
+      models: [{
+        name: 'large-context-model',
+        contextWindowTokens: 1_000_000,
+        effectiveContextWindowPercent: 95,
+      }],
+    }, homeDir);
+    const config = await resolveRuntimeConfig({
+      homeDir,
+      model: 'large-context-model',
+      authToken: 'test-token',
+    });
+    expect(config.compact).toMatchObject({
+      contextWindowTokens: 1_000_000,
+      effectiveContextWindowPercent: 95,
+      contextWindowSource: 'model_catalog',
+    });
   });
 
   it('requires an explicit or tiered model for the anthropic protocol', async () => {

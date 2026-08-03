@@ -60,6 +60,35 @@ describe('bridgeConfigs persistence', () => {
     expect(read.configs[0]).toMatchObject({ execution: 'api', authSource: 'apiKey' });
   });
 
+  it('normalizes model context metadata and migrates the legacy 1M flag', async () => {
+    const home = await makeHome();
+    writeBridgeConfigs({ configs: [{
+      name: 'catalog',
+      runtime: 'hadamard',
+      execution: 'api',
+      provider: 'anthropic',
+      model: 'one-million',
+      models: [
+        { name: 'one-million', context1M: true },
+        {
+          name: 'bounded',
+          contextWindowTokens: 300_000,
+          maxContextWindowTokens: 200_000,
+          effectiveContextWindowPercent: 92,
+          autoCompactTokenLimit: 170_000,
+        },
+      ],
+    }] }, home);
+    const models = readBridgeConfigs(home).configs[0]?.models;
+    expect(models?.[0]).toMatchObject({ context1M: true, contextWindowTokens: 1_000_000 });
+    expect(models?.[1]).toMatchObject({
+      contextWindowTokens: 300_000,
+      maxContextWindowTokens: 200_000,
+      effectiveContextWindowPercent: 92,
+      autoCompactTokenLimit: 170_000,
+    });
+  });
+
   it.runIf(process.platform !== 'win32')('creates config storage with private POSIX permissions', async () => {
     const home = await makeHome();
     const file = getBridgeConfigsPath(home);

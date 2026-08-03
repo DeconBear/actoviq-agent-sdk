@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 
 import {
   getDefaultHadamardSettingsPath,
@@ -80,15 +80,25 @@ _Step by step, what was attempted, done? Very terse summary for each step_
 `.trim();
 
 const MAX_SECTION_LENGTH = 2_000;
-const MAX_TOTAL_SESSION_MEMORY_TOKENS = 12_000;
+const MAX_TOTAL_SESSION_MEMORY_TOKENS = 20_000;
 const ENTRYPOINT_NAME = 'MEMORY.md';
 const MAX_ENTRYPOINT_LINES = 200;
 const MAX_ENTRYPOINT_BYTES = 25_000;
+
+export interface HadamardMemoryBrowserEntry {
+  id: string;
+  kind: 'session' | 'durable' | 'raw';
+  path: string;
+  sessionId?: string;
+  size: number;
+  modifiedAt: string;
+}
 
 const DEFAULT_SESSION_MEMORY_CONFIG: HadamardSessionMemoryConfig = {
   minimumMessageTokensToInit: 10_000,
   minimumTokensBetweenUpdate: 5_000,
   toolCallsBetweenUpdates: 3,
+  maxOutputTokens: 10_000,
 };
 
 const DEFAULT_SESSION_MEMORY_COMPACT_CONFIG: HadamardSessionMemoryCompactConfig = {
@@ -225,31 +235,17 @@ function buildCombinedMemoryPrompt(
   extraGuidelines?: string[],
   skipIndex = false,
 ): string {
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        'Write each memory to its own file in the chosen directory using the frontmatter format described below.',
-        '',
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. Update an existing memory before creating a new one when possible.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        `1. Write the memory to its own file in either \`${paths.autoMemoryDir}\` or \`${paths.teamMemoryDir}\`.`,
-        `2. Add a pointer to that file in the directory entrypoint \`${ENTRYPOINT_NAME}\`. Each entry should be one short line: \`- [Title](file.md) — one-line hook\`. Never write the memory body directly into \`${ENTRYPOINT_NAME}\`.`,
-        '',
-        `Both \`${ENTRYPOINT_NAME}\` indexes are loaded into future context, so keep them concise and actively maintained.`,
-        '- Keep the name, description, and type fields in memory files up-to-date with the content',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. Update an existing memory before creating a new one when possible.',
-      ];
+  const howToSave = [
+    '## How memory is updated',
+    '',
+    '- Treat durable memory as read-only during the main chat.',
+    '- Never use ordinary Write or Edit calls to silently modify durable memory.',
+    '- To suggest a durable fact, use ProposeMemory. The runtime writes it only after the user applies the proposal.',
+    '- Session Memory and automatic Dream consolidation are written by dedicated runtime pipelines.',
+    ...(skipIndex ? [] : [
+      `- \`${ENTRYPOINT_NAME}\` is an index maintained by the restricted Dream pipeline.`,
+    ]),
+  ];
 
   return [
     '# Memory',
@@ -462,6 +458,31 @@ async function readTextIfExists(filePath: string): Promise<string | undefined> {
   }
 }
 
+async function listMarkdownFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'team') continue;
+        await visit(target);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        files.push(target);
+      }
+    }
+  };
+  await visit(root);
+  return files;
+}
+
 export class HadamardMemoryApi {
   constructor(private readonly defaults: HadamardMemoryOptions = {}) {}
 
@@ -526,6 +547,10 @@ export class HadamardMemoryApi {
       buildCombinedMemoryPrompt(paths, options.extraGuidelines, options.skipIndex),
     ];
     const entrypoints = [
+      {
+        title: path.join(paths.autoMemoryDir, 'memory_summary.md'),
+        content: (await readTextIfExists(path.join(paths.autoMemoryDir, 'memory_summary.md')))?.slice(0, 20_000),
+      },
       {
         title: paths.autoMemoryEntrypoint,
         content: await readTextIfExists(paths.autoMemoryEntrypoint),
@@ -646,18 +671,28 @@ REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edit
   async buildSessionRewritePrompt(
     currentNotes: string,
     notesPath: string,
-    options: HadamardMemoryOptions = {},
+    _options: HadamardMemoryOptions = {},
   ): Promise<string> {
-    return `${await this.buildSessionUpdatePrompt(currentNotes, notesPath, options)}
+    const sectionSizes = analyzeSectionSizes(currentNotes);
+    const totalTokens = roughTokenCountEstimation(currentNotes);
+    const reminders = generateSectionReminders(sectionSizes, totalTokens);
+    return `IMPORTANT: This is a runtime-managed note extraction task, not part of the user conversation.
 
-You are running in direct-output mode, not tool-edit mode.
+Update the existing Session Memory notes shown below using the completed conversation turn. Do not call tools and do not describe the note-taking process.
 
-Return the FULL updated notes file as markdown only.
-- Do not wrap the response in code fences
+Notes path (informational only; the runtime performs the write): ${notesPath}
+<current_notes_content>
+${currentNotes}
+</current_notes_content>
+
+Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
+- Return {"noOutput":true,"content":""} when there is no meaningful new knowledge
 - Do not explain what you changed
 - Preserve every existing section header and italic guide line exactly
 - Only update the section bodies beneath those guides
-- If a section has no meaningful updates, keep its existing content unchanged`;
+- If a section has no meaningful updates, keep its existing content unchanged
+- Keep each section under approximately ${MAX_SECTION_LENGTH} tokens/words
+- Always keep Current State aligned with the latest completed turn${reminders}`;
   }
 
   async ensureSessionMemory(
@@ -692,7 +727,14 @@ Return the FULL updated notes file as markdown only.
     options: HadamardMemoryOptions = {},
   ): Promise<{ path: string; content: string }> {
     const ensured = await this.ensureSessionMemory(options);
-    await writeFile(ensured.path, `${content.trim()}\n`, 'utf8');
+    const tempPath = `${ensured.path}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${content.trim()}\n`, 'utf8');
+    try {
+      await rename(tempPath, ensured.path);
+    } catch (error) {
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
     return {
       path: ensured.path,
       content: content.trim(),
@@ -778,7 +820,83 @@ Return the FULL updated notes file as markdown only.
   getSessionMemoryConfig(): HadamardSessionMemoryConfig {
     return {
       ...DEFAULT_SESSION_MEMORY_CONFIG,
+      ...(this.defaults.sessionMemoryConfig ?? {}),
     };
+  }
+
+  async listMemoryContent(
+    options: HadamardMemoryOptions & { kind?: HadamardMemoryBrowserEntry['kind'] } = {},
+  ): Promise<HadamardMemoryBrowserEntry[]> {
+    const paths = await this.paths(options);
+    const entries: HadamardMemoryBrowserEntry[] = [];
+    const durableFiles = await listMarkdownFiles(paths.autoMemoryDir);
+    for (const filePath of durableFiles) {
+      const relative = path.relative(paths.autoMemoryDir, filePath).replaceAll(path.sep, '/');
+      if (relative === 'team' || relative.startsWith('team/')) continue;
+      const raw = relative === 'raw_memories.md' || relative.startsWith('rollout_summaries/');
+      const stats = await stat(filePath);
+      entries.push({
+        id: `${raw ? 'raw' : 'durable'}:${relative}`,
+        kind: raw ? 'raw' : 'durable',
+        path: filePath,
+        size: stats.size,
+        modifiedAt: stats.mtime.toISOString(),
+      });
+    }
+    let projectChildren: string[] = [];
+    try {
+      projectChildren = await readdir(paths.projectStateDir);
+    } catch {
+      projectChildren = [];
+    }
+    for (const sessionId of projectChildren) {
+      const summaryPath = path.join(paths.projectStateDir, sessionId, 'session-memory', 'summary.md');
+      try {
+        const stats = await stat(summaryPath);
+        if (!stats.isFile()) continue;
+        entries.push({
+          id: `session:${sessionId}`,
+          kind: 'session',
+          path: summaryPath,
+          sessionId,
+          size: stats.size,
+          modifiedAt: stats.mtime.toISOString(),
+        });
+      } catch {
+        // Not a Session Memory directory.
+      }
+    }
+    return entries
+      .filter(entry => options.kind == null || entry.kind === options.kind)
+      .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt));
+  }
+
+  async readMemoryContent(
+    idOrPath: string,
+    options: HadamardMemoryOptions = {},
+  ): Promise<{ entry: HadamardMemoryBrowserEntry; content: string }> {
+    const entries = await this.listMemoryContent(options);
+    const resolved = path.resolve(idOrPath);
+    const entry = entries.find(candidate =>
+      candidate.id === idOrPath || path.resolve(candidate.path) === resolved
+    );
+    if (!entry) throw new Error(`Memory content not found in the current project: ${idOrPath}`);
+    return { entry, content: await readFile(entry.path, 'utf8') };
+  }
+
+  async searchMemoryContent(
+    query: string,
+    options: HadamardMemoryOptions & { kind?: HadamardMemoryBrowserEntry['kind'] } = {},
+  ): Promise<Array<{ entry: HadamardMemoryBrowserEntry; matches: string[] }>> {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return [];
+    const results: Array<{ entry: HadamardMemoryBrowserEntry; matches: string[] }> = [];
+    for (const entry of await this.listMemoryContent(options)) {
+      const lines = (await readFile(entry.path, 'utf8')).split(/\r?\n/u);
+      const matches = lines.filter(line => line.toLowerCase().includes(normalized)).slice(0, 20);
+      if (matches.length > 0) results.push({ entry, matches });
+    }
+    return results;
   }
 
   getSessionMemoryCompactConfig(): HadamardSessionMemoryCompactConfig {
@@ -817,10 +935,7 @@ Return the FULL updated notes file as markdown only.
     const hasToolCallsInLastTurn = options.hasToolCallsInLastTurn;
     const initialized =
       options.initialized === true || meetsInitializationThreshold === true;
-    const shouldExtract =
-      initialized &&
-      meetsUpdateThreshold === true &&
-      (meetsToolCallThreshold === true || hasToolCallsInLastTurn === false);
+    const shouldExtract = initialized && meetsUpdateThreshold === true && hasToolCallsInLastTurn !== true;
 
     return {
       currentTokenCount,
@@ -858,6 +973,9 @@ Return the FULL updated notes file as markdown only.
     });
 
     let summaryContent = state.truncatedContent ?? state.content;
+    if (roughTokenCountEstimation(summaryContent) > 5_000) {
+      summaryContent = `${summaryContent.slice(0, 20_000).trimEnd()}\n\n[Session Memory truncated to the 5,000-token injection budget.]`;
+    }
     if (state.wasTruncated && options.includeFullMemoryPathHint !== false && paths.sessionMemoryPath) {
       summaryContent += `\n\nSome session memory sections were truncated for length. The full session memory can be viewed at: ${paths.sessionMemoryPath}`;
     }
@@ -950,9 +1068,15 @@ Return the FULL updated notes file as markdown only.
     );
 
     const enabled = {
-      autoCompact: settings.autoCompactEnabled !== false,
-      autoMemory: settings.autoMemoryEnabled !== false,
-      autoDream: settings.autoDreamEnabled === true,
+      autoCompact: options.enabledOverrides?.autoCompact
+        ?? this.defaults.enabledOverrides?.autoCompact
+        ?? settings.autoCompactEnabled !== false,
+      autoMemory: options.enabledOverrides?.autoMemory
+        ?? this.defaults.enabledOverrides?.autoMemory
+        ?? settings.autoMemoryEnabled !== false,
+      autoDream: options.enabledOverrides?.autoDream
+        ?? this.defaults.enabledOverrides?.autoDream
+        ?? settings.autoDreamEnabled === true,
     };
 
     return {

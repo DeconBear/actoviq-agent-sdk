@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -17,6 +17,7 @@ import {
   compactHadamardConversationIfNeeded,
   compactHadamardSession,
   formatHadamardCompactSummary,
+  resolveHadamardCompactBudget,
 } from '../src/runtime/hadamardCompact.js';
 import { createDefaultHadamardSessionMemoryRuntimeState } from '../src/memory/hadamardSessionMemoryState.js';
 import { createTodoWriteTool } from '../src/tools/todo/TodoWriteTool.js';
@@ -34,6 +35,40 @@ async function createSessionDirectory(): Promise<string> {
   tempDirs.push(dir);
   return dir;
 }
+
+describe('model-driven compact budget', () => {
+  it('derives 95% effective windows and a 90% automatic compact ceiling', () => {
+    expect(resolveHadamardCompactBudget(baseCompactConfig({
+      contextWindowTokens: 200_000,
+      autoCompactThresholdTokens: undefined,
+    }))).toMatchObject({
+      rawContextWindowTokens: 200_000,
+      effectiveContextWindowTokens: 190_000,
+      autoCompactTokenLimit: 180_000,
+    });
+    expect(resolveHadamardCompactBudget(baseCompactConfig({
+      contextWindowTokens: 1_000_000,
+      autoCompactThresholdTokens: undefined,
+    }))).toMatchObject({
+      rawContextWindowTokens: 1_000_000,
+      effectiveContextWindowTokens: 950_000,
+      autoCompactTokenLimit: 900_000,
+    });
+  });
+
+  it('clamps explicit limits and raw windows to model catalog maxima', () => {
+    expect(resolveHadamardCompactBudget(baseCompactConfig({
+      contextWindowTokens: 1_000_000,
+      maxContextWindowTokens: 800_000,
+      autoCompactTokenLimit: 950_000,
+      autoCompactThresholdTokens: undefined,
+    }))).toMatchObject({
+      rawContextWindowTokens: 800_000,
+      effectiveContextWindowTokens: 760_000,
+      autoCompactTokenLimit: 720_000,
+    });
+  });
+});
 
 function makeMessage(
   content: unknown[],
@@ -379,6 +414,53 @@ describe('compactHadamardConversationIfNeeded', () => {
 });
 
 describe('conversation engine in-loop auto-compact', () => {
+  it('keeps the raw JSONL transcript append-only when active context is compacted mid-turn', async () => {
+    const root = await createSessionDirectory();
+    const homeDir = path.join(root, 'home');
+    const workDir = path.join(root, 'project');
+    await Promise.all([mkdir(homeDir), mkdir(workDir)]);
+    const bigPrompt = `RAW_ONLY_${'Z'.repeat(2_400)}`;
+    const modelApi = new MockModelApi({
+      create: (request, index) => {
+        if (isLoopCompactRequest(request)) {
+          return makeMessage([{ type: 'text', text: 'APPEND_ONLY_SUMMARY' }]);
+        }
+        const regularIndex = index - (index > 0 ? 1 : 0);
+        return regularIndex === 0
+          ? makeMessage([{ type: 'tool_use', id: 'toolu_raw', name: 'raw_lookup', input: {} }], 'tool_use', 5_000)
+          : makeMessage([{ type: 'text', text: 'Finished.' }]);
+      },
+    });
+    const rawLookup = tool({
+      name: 'raw_lookup',
+      description: 'Returns transcript-only content.',
+      inputSchema: z.strictObject({}),
+      isReadOnly: () => true,
+    }, async () => 'small result');
+    const sdk = await createAgentSdk({
+      homeDir,
+      workDir,
+      model: 'test-model',
+      modelApi,
+      compact: {
+        loopAutoCompactThresholdTokens: 300,
+        preserveRecentMessages: 2,
+        microcompactEnabled: false,
+      },
+    });
+    try {
+      const session = await sdk.createSession();
+      await session.send(bigPrompt, { tools: [rawLookup] });
+      const paths = await sdk.memory.paths({ sessionId: session.id });
+      const transcript = await readFile(path.join(paths.projectStateDir, `${session.id}.jsonl`), 'utf8');
+      expect(transcript).toContain('RAW_ONLY_');
+      expect(JSON.stringify(session.messages)).not.toContain('RAW_ONLY_');
+      expect(JSON.stringify(session.messages)).toContain('APPEND_ONLY_SUMMARY');
+    } finally {
+      await sdk.close();
+    }
+  });
+
   it('compacts a growing run mid-loop and continues with the summary', async () => {
     const sessionDirectory = await createSessionDirectory();
     const bigChunk = 'X'.repeat(2_400);
@@ -395,6 +477,7 @@ describe('conversation engine in-loop auto-compact', () => {
               { type: 'tool_use', id: 'toolu_big_1', name: 'big_lookup', input: {} },
             ],
             'tool_use',
+            5_000,
           );
         }
         return makeMessage([{ type: 'text', text: 'All done after compact.' }]);
@@ -515,6 +598,7 @@ describe('conversation engine in-loop auto-compact', () => {
                 },
               ],
               'tool_use',
+              5_000,
             ),
           };
         }

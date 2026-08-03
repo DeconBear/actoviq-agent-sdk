@@ -228,7 +228,7 @@ describe('Hadamard SDK replacement parity', () => {
         'agents',
       ]);
       expect(toolCommand.text).toContain('# Tools');
-      expect(memoryCommand.text).toContain('# Memory State');
+      expect(memoryCommand.text).toContain('Project memory:');
       expect(compactCommand.text).toContain('# Compact Result');
     } finally {
       await sdk.close();

@@ -7,6 +7,7 @@ import type {
   HadamardCleanToolLookupOptions,
   HadamardCleanToolMetadata,
   HadamardDreamRunResult,
+  HadamardDreamState,
   HadamardMemoryState,
   HadamardRunSlashCommandOptions,
   HadamardRunSlashCommandResult,
@@ -14,6 +15,7 @@ import type {
   HadamardSkillDefinitionSummary,
   AgentSessionCompactOptions,
 } from '../types.js';
+import type { HadamardMemoryCommandResult } from '../memory/memoryCommandService.js';
 
 const CLEAN_SLASH_COMMANDS: HadamardCleanSlashCommandMetadata[] = [
   {
@@ -67,6 +69,8 @@ interface HadamardContextBindings {
     sessionId?: string,
     options?: HadamardRunSlashCommandOptions['dream'],
   ) => Promise<HadamardDreamRunResult>;
+  getDreamState?: (sessionId?: string) => Promise<HadamardDreamState>;
+  runMemoryCommand?: (sessionId: string | undefined, args: string) => Promise<HadamardMemoryCommandResult>;
   getToolMetadata: (options?: HadamardCleanToolLookupOptions) => Promise<HadamardCleanToolMetadata[]>;
   getSkillMetadata: () => HadamardSkillDefinitionSummary[];
   getAgentMetadata: () => HadamardAgentDefinitionSummary[];
@@ -102,6 +106,18 @@ export class HadamardContextApi {
     options: HadamardRunSlashCommandOptions['dream'] = {},
   ): Promise<HadamardDreamRunResult> {
     return this.bindings.runDream(sessionId, options);
+  }
+
+  dreamState(sessionId?: string): Promise<HadamardDreamState> {
+    if (!this.bindings.getDreamState) throw new Error('Dream status is unavailable in this runtime.');
+    return this.bindings.getDreamState(sessionId);
+  }
+
+  memoryCommand(sessionId: string | undefined, args: string): Promise<HadamardMemoryCommandResult> {
+    if (!this.bindings.runMemoryCommand) {
+      throw new Error('Memory commands are unavailable in this runtime.');
+    }
+    return this.bindings.runMemoryCommand(sessionId, args);
   }
 
   tools(options?: HadamardCleanToolLookupOptions): Promise<HadamardCleanToolMetadata[]> {
@@ -179,6 +195,14 @@ export class HadamardSlashCommandsApi {
         };
       }
       case 'memory': {
+        if (options.sessionId) {
+          const data = await this.context.memoryCommand(options.sessionId, options.args ?? 'status');
+          return {
+            name: normalized,
+            data,
+            text: [data.message, data.text].filter(Boolean).join('\n\n'),
+          };
+        }
         const data = await this.context.memoryState(options.sessionId, options.memory);
         return {
           name: normalized,
@@ -187,10 +211,20 @@ export class HadamardSlashCommandsApi {
         };
       }
       case 'dream': {
+        const action = options.args?.trim().toLowerCase() || 'status';
+        if (action === 'status') {
+          const data = await this.context.dreamState(options.sessionId);
+          return {
+            name: normalized,
+            data,
+            text: formatHadamardDreamState(data),
+          };
+        }
+        if (action !== 'run') throw new Error('Usage: /dream [status|run]');
         const data = await this.context.dream(options.sessionId, {
           ...options.dream,
           currentSessionId: options.sessionId ?? options.dream?.currentSessionId,
-          extraContext: options.args || options.dream?.extraContext,
+          extraContext: options.dream?.extraContext,
         });
         return {
           name: normalized,
@@ -265,6 +299,8 @@ export function formatHadamardCompactResult(result: HadamardSessionCompactResult
     `Before: ${result.tokenEstimateBefore}`,
     result.tokenEstimateAfter != null ? `After: ${result.tokenEstimateAfter}` : undefined,
     result.summaryMessage ? `Summary: ${result.summaryMessage}` : undefined,
+    result.budget ? `Raw/effective window: ${result.budget.rawContextWindowTokens}/${result.budget.effectiveContextWindowTokens}` : undefined,
+    result.budget ? `Automatic compact limit: ${result.budget.autoCompactTokenLimit} (${result.budget.source})` : undefined,
   ]
     .filter((value): value is string => typeof value === 'string')
     .join('\n');
@@ -302,6 +338,21 @@ export function formatHadamardDreamResult(result: HadamardDreamRunResult): strin
   ]
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
     .join('\n');
+}
+
+export function formatHadamardDreamState(state: HadamardDreamState): string {
+  return [
+    '# Dream Status',
+    '',
+    `Enabled: ${state.enabled ? 'yes' : 'no'}`,
+    `Can run automatically: ${state.canRun ? 'yes' : 'no'}`,
+    `Eligible rollouts: ${state.eligibleRolloutCount ?? state.sessionsSinceLastConsolidated.length}`,
+    `Phase: ${state.phase ?? 'idle'}`,
+    `Last success: ${state.lastConsolidatedAt ?? 'never'}`,
+    state.leaseExpiresAt ? `Lease expires: ${state.leaseExpiresAt}` : undefined,
+    state.blockedReason ? `Blocked: ${state.blockedReason}` : undefined,
+    state.lastError ? `Last error: ${state.lastError}` : undefined,
+  ].filter((line): line is string => typeof line === 'string').join('\n');
 }
 
 export function formatHadamardTools(tools: readonly HadamardCleanToolMetadata[]): string {

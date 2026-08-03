@@ -306,6 +306,10 @@ export interface SelectableAgent {
   provider?: InProcessProvider;
   /** Model capabilities inherited from the matching registered model entry. */
   context1M?: boolean;
+  contextWindowTokens?: number;
+  maxContextWindowTokens?: number;
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
   modality?: ModelModality;
   /** `profile` = saved Agent Profile; `config` = auto preset from a provider config model. */
   source: 'profile' | 'config';
@@ -362,7 +366,7 @@ function ensureUniqueAgentName(base: string, used: Set<string>): string {
 function selectableAgentMetadata(
   config: PersistedBridgeConfig | undefined,
   modelName: string,
-): Partial<Pick<SelectableAgent, 'runtime' | 'execution' | 'provider' | 'context1M' | 'modality'>> {
+): Partial<Pick<SelectableAgent, 'runtime' | 'execution' | 'provider' | 'context1M' | 'contextWindowTokens' | 'maxContextWindowTokens' | 'effectiveContextWindowPercent' | 'autoCompactTokenLimit' | 'modality'>> {
   if (!config) return {};
   const modelEntry = config.models?.find(model => model.name === modelName);
   return {
@@ -370,6 +374,10 @@ function selectableAgentMetadata(
     execution: config.execution ?? 'api',
     provider: config.provider,
     context1M: modelEntry?.context1M === true,
+    contextWindowTokens: modelEntry?.contextWindowTokens,
+    maxContextWindowTokens: modelEntry?.maxContextWindowTokens,
+    effectiveContextWindowPercent: modelEntry?.effectiveContextWindowPercent,
+    autoCompactTokenLimit: modelEntry?.autoCompactTokenLimit,
     modality: modelEntry?.modality === 'multimodal' ? 'multimodal' : 'text',
   };
 }

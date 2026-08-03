@@ -624,9 +624,11 @@ describe('HadamardAgentClient', () => {
         projectPath: workDir,
         sessionId: session.id,
       });
-      const compactState = await session.compactState({
-        includeSessionMemory: true,
-      });
+      let compactState = await session.compactState({ includeSessionMemory: true });
+      for (let attempt = 0; attempt < 20 && compactState.runtimeState?.extractionCount !== 1; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        compactState = await session.compactState({ includeSessionMemory: true });
+      }
 
       expect(modelApi.createCalls).toHaveLength(2);
       expect(
@@ -754,7 +756,7 @@ describe('HadamardAgentClient', () => {
       expect(compactState.compactCount).toBe(1);
       expect(compactState.hasCompacted).toBe(true);
       expect(compactState.summaryMessage).toContain('Compact summary');
-      expect(compactState.pendingPostCompaction).toBe(true);
+      expect(compactState.pendingPostCompaction).toBe(false);
       expect(compactState.boundaries).toHaveLength(1);
       expect(compactState.latestBoundary?.kind).toBe('compact');
       expect(compactState.latestBoundarySummary).toContain('trigger=manual');
@@ -905,7 +907,7 @@ describe('HadamardAgentClient', () => {
       ).toBe('compact');
       expect(compactState.compactCount).toBe(1);
       expect(compactState.summaryMessage).toContain('Auto compact summary');
-      expect(compactState.pendingPostCompaction).toBe(true);
+      expect(compactState.pendingPostCompaction).toBe(false);
       expect(compactState.latestBoundary?.kind).toBe('compact');
       expect(compactState.latestBoundarySummary).toContain('trigger=auto');
       expect(session.messages[0]).toMatchObject({
@@ -2405,7 +2407,7 @@ describe('HadamardAgentClient', () => {
     }
   });
 
-  it('marks pending post-compaction state after extraction and clears it on the next normal run', async () => {
+  it('keeps Session Memory state independent from post-compaction state', async () => {
     const tempDir = await createSessionDirectory();
     const homeDir = path.join(tempDir, 'home');
     const workDir = path.join(tempDir, 'workspace');
@@ -2460,8 +2462,8 @@ describe('HadamardAgentClient', () => {
         includeSessionMemory: true,
       });
 
-      expect(afterExtraction.pendingPostCompaction).toBe(true);
-      expect(afterExtraction.runtimeState?.pendingPostCompaction).toBe(true);
+      expect(afterExtraction.pendingPostCompaction).toBe(false);
+      expect(afterExtraction.runtimeState?.pendingPostCompaction).toBe(false);
       expect(afterFollowUp.pendingPostCompaction).toBe(false);
       expect(afterFollowUp.runtimeState?.pendingPostCompaction).toBe(false);
     } finally {

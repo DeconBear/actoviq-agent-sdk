@@ -91,7 +91,9 @@ export {
   evaluateHadamardSessionMemoryProgress,
   filterHadamardMessagesForSessionMemory,
   hasHadamardToolCallsInLastAssistantTurn,
+  parseHadamardSessionMemoryExtractionOutput,
   parseHadamardSessionMemoryRuntimeState,
+  redactMemorySecrets,
   sanitizeHadamardSessionMemoryOutput,
   serializeHadamardSessionMemoryRuntimeState,
 } from './memory/hadamardSessionMemoryState.js';
@@ -249,6 +251,10 @@ export * from './context/ruleCommandService.js';
 export * from './memory/memoryProposalService.js';
 export * from './memory/memoryProposalTools.js';
 export * from './memory/memoryProposalCommandService.js';
+export * from './memory/memoryCommandService.js';
+export * from './memory/durableMemoryPipeline.js';
+export * from './memory/durableMemoryStore.js';
+export * from './config/projectSettings.js';
 export * from './policy/index.js';
 export * from './app-server/index.js';
 export * from './codeIntel/index.js';

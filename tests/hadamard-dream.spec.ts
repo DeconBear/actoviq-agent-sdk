@@ -158,7 +158,7 @@ describe('Hadamard dream parity', () => {
     }
   });
 
-  it('launches auto dream as a background task when the clean gate is satisfied', async () => {
+  it('does not migrate the legacy global autoDream flag into every project', async () => {
     const sandbox = await createSandbox();
     let autoMemoryDir = '';
     const modelApi = new DreamModelApi((_request, index) => {
@@ -210,13 +210,10 @@ describe('Hadamard dream parity', () => {
         background: true,
       });
 
-      expect(launched.skipped).toBe(false);
-      expect(launched.task?.subagentType).toBe('dream');
+      expect(launched.skipped).toBe(true);
+      expect(launched.reason).toBe('disabled');
+      expect(launched.task).toBeUndefined();
       expect(launched.touchedSessions).toHaveLength(5);
-
-      const completed = await sdk.tasks.wait(launched.task!.id, { timeoutMs: 5_000 });
-      expect(completed.status).toBe('completed');
-      expect(completed.text).toContain('Auto dream finished');
     } finally {
       await sdk.close();
     }
@@ -282,7 +279,7 @@ describe('Hadamard dream parity', () => {
       });
 
       expect(result.skipped).toBe(true);
-      expect(result.reason).toBe('session_gate');
+      expect(result.reason).toBe('disabled');
       expect(result.touchedSessions).toHaveLength(1);
     } finally {
       await sdk.close();

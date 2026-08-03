@@ -4027,28 +4027,28 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           ]);
           return;
         case 'memory': {
-          if (/^(proposals|apply|reject)\b/u.test(args)) {
-            try {
-              const { MemoryProposalCommandService } = await import('../memory/memoryProposalCommandService.js');
-              const result = await new MemoryProposalCommandService(
-                sdk.config.homeDir,
-                sdk.config.workDir,
-              ).execute(args);
-              appendStatic([
-                ...formatInfoLine(result.message),
-                ...(result.items ?? []).map(item => `  ${A.bold}${item.label}${A.reset}${item.description ? ` ${A.dim}· ${item.description}${A.reset}` : ''}`),
-                '',
-              ]);
-            } catch (error) {
-              appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
-            }
-            return;
-          }
           try {
-            const state = await session.compactState();
-            appendStatic([`${A.dim}${JSON.stringify(state, null, 2)}${A.reset}`, '']);
+            const { HadamardMemoryCommandService } = await import('../memory/memoryCommandService.js');
+            const result = await new HadamardMemoryCommandService({
+              memory: sdk.memory,
+              proposals: sdk.memoryProposals,
+              compactConfig: sdk.config.compact,
+              sessionMemoryEffectiveLimit: Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000),
+              getState: () => session.compactState(),
+              extract: () => session.extractMemory({ force: true }),
+            }).execute(args || 'status');
+            appendStatic([
+              `${A.bold}${result.title}${A.reset}`,
+              ...formatInfoLine(result.message),
+              ...(result.text ? result.text.split('\n').map(line => `${A.dim}${line}${A.reset}`) : []),
+              ...(result.items ?? []).flatMap(item => [
+                `  ${A.bold}${item.label}${A.reset}${item.description ? ` ${A.dim}· ${item.description}${A.reset}` : ''}`,
+                ...(item.detail ? [`    ${A.dim}${item.detail}${A.reset}`] : []),
+              ]),
+              '',
+            ]);
           } catch (error) {
-            appendStatic([...formatErrorLine((error as Error).message), '']);
+            appendStatic([...formatErrorLine(error instanceof Error ? error.message : String(error)), '']);
           }
           return;
         }
@@ -4056,7 +4056,9 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           // Break down what is consuming the context window (gap #9 vs
           // claude-code's /context) — usage, messages, system prompt, tools,
           // the loaded CLAUDE.md sources, and the active config.
-          const window = sdk.config.compact?.contextWindowTokens ?? 200_000;
+          const { resolveHadamardCompactBudget } = await import('../runtime/hadamardCompact.js');
+          const compactBudget = resolveHadamardCompactBudget(sdk.config.compact);
+          const window = compactBudget.effectiveContextWindowTokens;
           const used = lastTokenEstimate ?? 0;
           const pct = window > 0 ? Math.min(100, Math.round((used / window) * 100)) : 0;
           const usedK = used >= 1000 ? `${(used / 1000).toFixed(1)}k` : `${used}`;
@@ -4072,6 +4074,8 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           appendStatic([
             `${A.bold}Context window${A.reset}`,
             `  ${ctxColor}${pct}% used (${usedK} / ${windowK} tokens)${A.reset}`,
+            `  ${A.dim}raw window${A.reset}      ${compactBudget.rawContextWindowTokens}`,
+            `  ${A.dim}compact limit${A.reset}  ${compactBudget.autoCompactTokenLimit} (${compactBudget.source})`,
             `  ${A.dim}messages${A.reset}        ${messages}`,
             `  ${A.dim}system prompt${A.reset}   ~${sysChars} chars`,
             `  ${A.dim}tools${A.reset}           ${toolMetadata.length}${mcpCount > 0 ? ` (${mcpCount} MCP)` : ''}`,

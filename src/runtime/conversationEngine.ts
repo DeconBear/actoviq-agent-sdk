@@ -102,6 +102,8 @@ export interface ExecuteConversationOptions {
    * on disk (instead of only persisting when the whole run finishes).
    */
   onConversationCheckpoint?: (messages: MessageParam[]) => void | Promise<void>;
+  /** Append newly produced messages to the immutable raw transcript before compaction can remove them. */
+  onTranscriptMessages?: (messages: MessageParam[]) => void | Promise<void>;
   /**
    * When RestoreCheckpoint rewrites the durable transcript mid-turn, return the
    * restored messages here so the in-memory ReAct loop adopts them and does not
@@ -134,9 +136,11 @@ export async function executeConversation(
     typeof options.input === 'string' ? options.input : extractTextFromContent(options.input);
   const postSamplingHooks = resolveHadamardPostSamplingHooks(options.hooks);
   const conversation = deepClone(options.messages ?? []);
+  let initialUserMessage: MessageParam | undefined;
   if (!options.skipInitialInput) {
     conversation.push(...deepClone(options.prefixedMessages ?? []));
-    conversation.push(buildUserMessage(options.input));
+    initialUserMessage = buildUserMessage(options.input);
+    conversation.push(initialUserMessage);
   }
 
   if (!options.skipRunStartedEvent) {
@@ -151,6 +155,9 @@ export async function executeConversation(
   }
   await requireLifecycleContinue(options, 'SessionStart', { input: promptText });
   await requireLifecycleContinue(options, 'TurnStart', { input: promptText });
+  if (initialUserMessage) {
+    await appendRawTranscript(options, [initialUserMessage]);
+  }
 
   // Persist the user turn before the first provider request. Besides crash
   // recovery, this makes a newly spawned child conversation immediately
@@ -188,6 +195,7 @@ export async function executeConversation(
   let reactiveCompactAttempted = false;
   let lastRequestInputTokens: number | undefined;
   let tokenEstimateMultiplier = 1;
+  let compactWindowPrefixTokens = 0;
   let lastPromptCachePrefixSignature: string | undefined;
 
   while (true) {
@@ -204,6 +212,8 @@ export async function executeConversation(
       maxTokens: options.maxTokens ?? options.config.maxTokens,
       lastRequestInputTokens,
       tokenEstimateMultiplier,
+      compactWindowPrefixTokens,
+      fixedInputTokens: estimateFixedRequestTokens(options.systemPrompt ?? options.config.systemPrompt, resolvedTools),
       runKey: options.runId,
       signal: options.signal,
     });
@@ -217,6 +227,7 @@ export async function executeConversation(
     }
     if (loopCompact.compacted) {
       lastRequestInputTokens = undefined;
+      compactWindowPrefixTokens = loopCompact.tokenEstimateAfter;
       conversation.splice(0, conversation.length, ...loopCompact.messages);
       loopCompactions.push({
         trigger: 'auto',
@@ -364,11 +375,13 @@ export async function executeConversation(
           modelApi: options.modelApi,
           compactConfig: options.config.compact,
           maxTokens: options.maxTokens ?? options.config.maxTokens,
+          compactWindowPrefixTokens,
           runKey: options.runId,
           signal: options.signal,
           force: true,
         });
         if (reactiveOutcome.compacted) {
+          compactWindowPrefixTokens = reactiveOutcome.tokenEstimateAfter;
           conversation.splice(0, conversation.length, ...reactiveOutcome.messages);
           loopCompactions.push({
             trigger: 'reactive',
@@ -448,7 +461,9 @@ export async function executeConversation(
     }
 
     finalMessage = message;
-    conversation.push(assistantMessageToParam(message));
+    const assistantMessage = assistantMessageToParam(message);
+    conversation.push(assistantMessage);
+    await appendRawTranscript(options, [assistantMessage]);
     lastRequestInputTokens = getReportedInputTokens(message.usage);
     if (lastRequestInputTokens !== undefined && requestTokenEstimate > 0) {
       const observedMultiplier = clamp(
@@ -534,6 +549,7 @@ export async function executeConversation(
             role: 'user',
             content: `<system-reminder>\nStop hook reported blocking error: ${msg}\n</system-reminder>`,
           });
+          await appendRawTranscript(options, [conversation.at(-1)!]);
         }
       }
       if (result?.nonBlockingErrors && result.nonBlockingErrors.length > 0) {
@@ -600,6 +616,7 @@ export async function executeConversation(
             'The model response hit max_tokens while constructing this tool call, so its JSON arguments were incomplete. Retry the tool call with complete JSON arguments and smaller output.',
         })),
       });
+      await appendRawTranscript(options, [conversation.at(-1)!]);
       continue;
     }
 
@@ -619,6 +636,7 @@ export async function executeConversation(
           'Output token limit hit. Resume directly — no apology, no recap of what you were doing. ' +
           'Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
       });
+      await appendRawTranscript(options, [conversation.at(-1)!]);
       continue;
     }
 
@@ -639,6 +657,7 @@ export async function executeConversation(
             })),
           ],
         });
+        await appendRawTranscript(options, [conversation.at(-1)!]);
         maxTokensRecoveryCount = 0;
         continue;
       }
@@ -689,6 +708,7 @@ export async function executeConversation(
             content: `The run exceeded the max tool iteration limit (${options.config.maxToolIterations}) before this tool could execute.`,
           })),
         });
+        await appendRawTranscript(options, [conversation.at(-1)!]);
       }
       const completedAt = nowIso();
       if (finalMessage) {
@@ -1105,6 +1125,7 @@ export async function executeConversation(
         })),
       ],
     });
+    await appendRawTranscript(options, [conversation.at(-1)!]);
     toolResults = [];
 
     // Persist mid-run so a host kill (e.g. accidental taskkill of node.exe)
@@ -1166,6 +1187,32 @@ export async function executeConversation(
           : `Tool "${lastFailedTool}" failed ${consecutiveFailures} times consecutively. Stopping to prevent retry loop.`,
       );
     }
+  }
+}
+
+function estimateFixedRequestTokens(
+  systemPrompt: string | undefined,
+  tools: readonly { providerTool: unknown }[],
+): number {
+  const systemChars = systemPrompt?.length ?? 0;
+  let toolChars = 0;
+  try {
+    toolChars = JSON.stringify(tools.map(tool => tool.providerTool)).length;
+  } catch {
+    toolChars = 0;
+  }
+  return Math.ceil((systemChars + toolChars) / 4);
+}
+
+async function appendRawTranscript(
+  options: ExecuteConversationOptions,
+  messages: readonly MessageParam[],
+): Promise<void> {
+  if (!options.onTranscriptMessages || messages.length === 0) return;
+  try {
+    await options.onTranscriptMessages([...deepClone(messages)]);
+  } catch {
+    // Raw transcript durability must not turn a successful model/tool step into a failed turn.
   }
 }
 

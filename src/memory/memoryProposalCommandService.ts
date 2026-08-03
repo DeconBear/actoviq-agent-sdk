@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { getHadamardProjectSessionDirectory } from '../config/projectSessionDirectory.js';
 import { MemoryProposalService } from './memoryProposalService.js';
 
 export class MemoryProposalCommandService {
@@ -7,7 +8,7 @@ export class MemoryProposalCommandService {
 
   constructor(homeDir: string, workDir: string) {
     this.proposals = new MemoryProposalService(
-      path.join(homeDir, 'memory-proposals'),
+      path.join(getHadamardProjectSessionDirectory(workDir, homeDir), 'memory-proposals'),
       [homeDir, workDir],
     );
   }

@@ -83,7 +83,7 @@ export const SUBCOMMANDS: Record<string, string[]> = {
   diff: ['show', 'apply'],
   plugin: ['list', 'search', 'install', 'update', 'pin', 'enable', 'disable', 'remove', 'trust'],
   rules: ['list', 'add', 'remove', 'enable', 'disable'],
-  memory: ['proposals', 'apply', 'reject'],
+  memory: ['status', 'list', 'show', 'extract', 'proposals', 'apply', 'reject'],
 };
 
 /** Description-column text for sub-commands, keyed by `${head} ${sub}`. */
@@ -179,6 +179,10 @@ export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
   'rules enable': 'Enable a context rule',
   'rules disable': 'Disable a context rule',
   'memory proposals': 'List pending reviewed memory proposals',
+  'memory status': 'Show project, Session Memory, and Compact status',
+  'memory list': 'List Session, durable, or raw memory content',
+  'memory show': 'Read one memory item by id or path',
+  'memory extract': 'Force a Session Memory extraction for the current Session',
   'memory apply': 'Apply a proposal after explicit --confirm',
   'memory reject': 'Reject a proposal without changing memory',
 };
@@ -196,7 +200,7 @@ const COMMAND_USAGES: Record<string, string> = {
   checkpoint: '/checkpoint [list|show <id>|restore <id> <mode> --confirm]',
   session: '/session [tree|fork|clone|label|rename|pin|archive|restore|delete]',
   resume: '/resume [session-id]',
-  memory: '/memory [proposals|apply <id> --confirm|reject <id>]',
+  memory: '/memory [status|list [session|durable|raw]|show <id-or-path>|extract|proposals|apply <id> --confirm|reject <id>]',
   rules: '/rules [list|add|remove|enable|disable]',
   agents: '/agents [list|runs|show <root-execution-id>|open <session-or-execution-id>]',
   plugin: '/plugin [list|search|install|update|pin|enable|disable|remove|trust]',

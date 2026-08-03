@@ -394,7 +394,9 @@ describe('AgentSession turn serialization', () => {
       await sdk.close();
     }
     },
-    15_000,
+    // Each completed turn now also appends its immutable raw transcript batch.
+    // Keep this assertion about serialization and durability, not filesystem speed.
+    30_000,
   );
 
   it('allows turns for different sessions to run concurrently', async () => {
