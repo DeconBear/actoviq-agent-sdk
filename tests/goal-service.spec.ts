@@ -35,6 +35,19 @@ function makeService(clock: () => string): { service: GoalService; port: MemoryG
   return { service, port };
 }
 
+async function settleCompletedGoal(service: GoalService): Promise<void> {
+  await service.requestCompletion({ note: 'done' });
+  await service.settleTurn({
+    receipt: {
+      id: 'goal-turn:complete', runId: 'complete', at: fixedClock(), outcome: 'validated_completion',
+      evidenceRefs: [], validation: { status: 'passed' },
+      usage: { turns: 1, toolIterations: 0, tokens: 1 },
+    },
+    evidence: [],
+    completionAccepted: true,
+  });
+}
+
 const fixedClock = (() => {
   let t = 0;
   return () => {
@@ -47,11 +60,13 @@ describe('GoalService', () => {
   it('creates a goal with versioned schema and active status', async () => {
     const { service } = makeService(fixedClock);
     const goal = await service.create({ objective: 'Ship the checkpoint feature' });
-    expect(goal.version).toBe(1);
+    expect(goal.version).toBe(2);
     expect(goal.status).toBe('active');
     expect(goal.objective).toBe('Ship the checkpoint feature');
     expect(goal.evidence).toEqual([]);
     expect(goal.blockAudit).toEqual([]);
+    expect(goal.turnReceipts).toEqual([]);
+    expect(goal.consumption).toEqual({ turns: 0, toolIterations: 0, tokens: 0 });
     expect(goal.revision).toBe(0);
     expect(goal.createdAt).toBe(goal.updatedAt);
   });
@@ -77,20 +92,27 @@ describe('GoalService', () => {
     if (!r2.ok) expect(r2.reason).toBe('invalid_transition');
   });
 
-  it('marks complete only with evidence, and forbids double-complete', async () => {
+  it('records a completion request and lets runtime settlement complete it', async () => {
     const { service } = makeService(fixedClock);
     await service.create({ objective: 'goal', completionCriteria: 'tests pass' });
     const empty = await service.complete({ note: '   ' });
     expect(empty.ok).toBe(false);
-    const r = await service.complete({ note: 'all tests green' });
+    const r = await service.requestCompletion({ note: 'all tests green', evidenceRefs: ['tool:test'] });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.goal.status).toBe('complete');
-      expect(r.goal.evidence.at(-1)!.note).toBe('all tests green');
+      expect(r.goal.status).toBe('active');
+      expect(r.goal.completionRequest?.evidenceRefs).toEqual(['tool:test']);
     }
-    const again = await service.complete({ note: 'again' });
-    expect(again.ok).toBe(false);
-    if (!again.ok) expect(again.reason).toBe('invalid_transition');
+    const settled = await service.settleTurn({
+      receipt: {
+        id: 'goal-turn:r1', runId: 'r1', at: fixedClock(), outcome: 'validated_completion',
+        evidenceRefs: ['tool:test'], validation: { status: 'passed' },
+        usage: { turns: 1, toolIterations: 1, tokens: 10 },
+      },
+      evidence: [{ at: fixedClock(), note: 'tests passed', ref: 'tool:test', verified: true }],
+      completionAccepted: true,
+    });
+    expect(settled.ok && settled.goal.status).toBe('complete');
   });
 
   it('records block audit and counts consecutive repeats from the audit tail', async () => {
@@ -142,7 +164,7 @@ describe('GoalService', () => {
   it('forbids blocking a completed goal', async () => {
     const { service } = makeService(fixedClock);
     await service.create({ objective: 'goal' });
-    await service.complete({ note: 'done' });
+    await settleCompletedGoal(service);
     const r = await service.block({ reason: 'wait' });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('invalid_transition');
@@ -165,7 +187,7 @@ describe('GoalService', () => {
   it('transition on completed goal is rejected', async () => {
     const { service } = makeService(fixedClock);
     await service.create({ objective: 'goal' });
-    await service.complete({ note: 'done' });
+    await settleCompletedGoal(service);
     const r = await service.transition('paused');
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('invalid_transition');
@@ -210,12 +232,14 @@ describe('normalizeGoal (legacy migration)', () => {
     const raw = { objective: 'legacy goal', status: 'paused', setAt: '2026-01-01T00:00:00Z' };
     const goal = normalizeGoal(raw, '2026-07-29T00:00:00Z');
     expect(goal).not.toBeNull();
-    expect(goal!.version).toBe(1);
+    expect(goal!.version).toBe(2);
     expect(goal!.objective).toBe('legacy goal');
     expect(goal!.status).toBe('paused');
     expect(goal!.createdAt).toBe('2026-01-01T00:00:00Z');
     expect(goal!.evidence).toEqual([]);
     expect(goal!.blockAudit).toEqual([]);
+    expect(goal!.turnReceipts).toEqual([]);
+    expect(goal!.consumption).toEqual({ turns: 0, toolIterations: 0, tokens: 0 });
     expect(goal!.revision).toBe(0);
   });
 

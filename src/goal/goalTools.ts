@@ -29,7 +29,7 @@ and progress evidence. The active goal is injected into your context each turn.
 
 - GetGoal: read the current goal (objective, status, criteria, budget, recent evidence).
 - CreateGoal: set a new goal (replaces any existing one). Use when the user gives a task with a clear objective.
-- UpdateGoal: record progress, or request a terminal status. "complete" requires evidence. A "blocked" report is audited; the Goal becomes blocked only after the same reason repeats for three consecutive Goal turns. "paused"/"active" status changes are user-driven via /goal, not this tool.
+- UpdateGoal: record progress, or request a terminal status. "complete" is a request that the runtime settles after the turn and requires runtime-observed evidence refs when completion criteria exist. A "blocked" report is audited; the Goal becomes blocked only after the same reason repeats for three consecutive Goal turns. "paused"/"active" status changes are user-driven via /goal, not this tool.
 
 Record progress with UpdateGoal at meaningful checkpoints. Mark complete only when the completion criteria are genuinely met, and include evidence. Report blocked only when you cannot proceed, with a concrete reason. Include expectedRevision after GetGoal when coordinating concurrent updates.`;
 
@@ -59,7 +59,7 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
     {
       name: CREATE_GOAL_TOOL_NAME,
       description:
-        'Create a new session goal (replaces any existing goal). Use when the user gives a task with a clear objective. Provide a concise objective and, if known, measurable completion criteria and an optional budget.',
+        'Create a new session goal (replaces any existing goal). Use only when the user explicitly asks to start or set a Goal. Provide a concise objective and, if known, measurable completion criteria and an optional budget.',
       inputSchema: z.strictObject({
         objective: z.string().min(1).describe('The goal objective: what success looks like, concisely.'),
         completionCriteria: z.string().optional().describe('Measurable criteria for declaring the goal complete.'),
@@ -93,6 +93,8 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
           .describe('New status. "complete" and "blocked" require evidence/reason. Omit to record progress only.'),
         note: z.string().optional().describe('Progress evidence or completion evidence. Required for "complete".'),
         reason: z.string().optional().describe('Block reason. Required for "blocked".'),
+        evidenceRefs: z.array(z.string()).optional()
+          .describe('Runtime-observed evidence refs for a completion request, for example tool:<call-id>.'),
         turn: z.number().int().nonnegative().optional().describe('Runtime turn index when a block was detected.'),
         expectedRevision: z.number().int().nonnegative().optional()
           .describe('Revision returned by GetGoal. The update is rejected if another actor changed the Goal.'),
@@ -104,8 +106,9 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
       const service = ctx.getGoalService();
       const status = input.status as GoalStatus | undefined;
       if (status === 'complete') {
-        const result = await service.complete({
+        const result = await service.requestCompletion({
           note: input.note ?? '',
+          ...(input.evidenceRefs ? { evidenceRefs: input.evidenceRefs } : {}),
           ...(typeof input.expectedRevision === 'number'
             ? { expectedRevision: input.expectedRevision }
             : {}),
@@ -144,8 +147,11 @@ function summarizeGoal(goal: Goal): Record<string, unknown> {
     status: goal.status,
     ...(goal.completionCriteria ? { completionCriteria: goal.completionCriteria } : {}),
     ...(goal.budget ? { budget: goal.budget } : {}),
+    consumption: goal.consumption,
     evidence: goal.evidence.slice(-5),
     blockAudit: goal.blockAudit.slice(-5),
+    turnReceipts: goal.turnReceipts.slice(-5),
+    ...(goal.completionRequest ? { completionRequest: goal.completionRequest } : {}),
     revision: goal.revision,
     updatedAt: goal.updatedAt,
   };

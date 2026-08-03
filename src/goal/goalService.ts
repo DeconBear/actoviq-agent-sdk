@@ -24,7 +24,9 @@ import type {
   GoalEvidence,
   GoalMutationResult,
   GoalStatus,
+  GoalTurnReceipt,
 } from './types.js';
+import { GOAL_SCHEMA_VERSION } from './types.js';
 
 /** Clock function used so tests can be deterministic. */
 export type GoalClock = () => string;
@@ -51,6 +53,12 @@ export interface BlockGoalInput {
   reason: string;
   turn?: number;
   expectedRevision?: number;
+}
+
+export interface SettleGoalTurnInput {
+  receipt: GoalTurnReceipt;
+  evidence: GoalEvidence[];
+  completionAccepted: boolean;
 }
 
 /** Result of a status transition used by /goal pause|resume|clear in the UI. */
@@ -91,11 +99,13 @@ export class GoalService {
     }
     const ts = this.now();
     const goal: Goal = {
-      version: 1,
+      version: GOAL_SCHEMA_VERSION,
       objective,
       status: 'active',
+      consumption: { turns: 0, toolIterations: 0, tokens: 0 },
       evidence: [],
       blockAudit: [],
+      turnReceipts: [],
       createdAt: ts,
       updatedAt: ts,
       revision: 0,
@@ -207,7 +217,11 @@ export class GoalService {
    * Mark the goal complete. Runtime-only: requires evidence that the
    * completion criteria are met. The UI must not call this directly.
    */
-  async complete(evidence: { note: string; expectedRevision?: number }): Promise<GoalMutationResult> {
+  async requestCompletion(evidence: {
+    note: string;
+    evidenceRefs?: string[];
+    expectedRevision?: number;
+  }): Promise<GoalMutationResult> {
     const note = evidence.note.trim();
     if (!note) {
       return { ok: false, reason: 'invalid_transition', message: 'Completion evidence must not be empty.' };
@@ -222,17 +236,72 @@ export class GoalService {
           result: { ok: false, reason: 'not_found', message: 'No goal to complete.' } as const,
         };
       }
-      if (current.status === 'complete') {
+      if (current.status !== 'active') {
         return {
           next: current,
-          result: { ok: false, reason: 'invalid_transition', message: 'Goal is already complete.' } as const,
+          result: {
+            ok: false,
+            reason: 'invalid_transition',
+            message: `Cannot request completion: goal is ${current.status}.`,
+          } as const,
         };
       }
-      const entry: GoalEvidence = { at, note };
       const next: Goal = {
         ...current,
-        status: 'complete',
-        evidence: [...current.evidence, entry].slice(-EVIDENCE_RETAIN),
+        completionRequest: {
+          at,
+          note,
+          evidenceRefs: uniqueStrings(evidence.evidenceRefs ?? []),
+        },
+        updatedAt: at,
+        revision: current.revision + 1,
+      };
+      return { next, result: { ok: true, goal: next } as const };
+    });
+  }
+
+  /** @deprecated Completion is now a runtime-settled request. */
+  async complete(evidence: {
+    note: string;
+    evidenceRefs?: string[];
+    expectedRevision?: number;
+  }): Promise<GoalMutationResult> {
+    return this.requestCompletion(evidence);
+  }
+
+  /** Settle one completed runtime turn and atomically account its usage. */
+  async settleTurn(input: SettleGoalTurnInput): Promise<GoalMutationResult> {
+    const at = input.receipt.at || this.now();
+    return updateGoal<GoalMutationResult>(this.port, at, current => {
+      if (!current) {
+        return {
+          next: undefined,
+          result: { ok: false, reason: 'not_found', message: 'No goal to settle.' } as const,
+        };
+      }
+      const completionNote = current.completionRequest?.note;
+      const nextEvidence = [...current.evidence, ...input.evidence];
+      if (input.completionAccepted && completionNote) {
+        nextEvidence.push({
+          id: `goal-completion:${input.receipt.runId}`,
+          at,
+          note: completionNote,
+          kind: 'validation',
+          ref: input.receipt.id,
+          verified: true,
+        });
+      }
+      const next: Goal = {
+        ...current,
+        status: input.completionAccepted && completionNote ? 'complete' : current.status,
+        consumption: {
+          turns: current.consumption.turns + input.receipt.usage.turns,
+          toolIterations: current.consumption.toolIterations + input.receipt.usage.toolIterations,
+          tokens: current.consumption.tokens + input.receipt.usage.tokens,
+        },
+        evidence: nextEvidence.slice(-EVIDENCE_RETAIN),
+        turnReceipts: [...current.turnReceipts, input.receipt].slice(-TURN_RECEIPT_RETAIN),
+        completionRequest: undefined,
         updatedAt: at,
         revision: current.revision + 1,
       };
@@ -246,7 +315,7 @@ export class GoalService {
    * are NOT exposed here - only the runtime may set those, via `complete()`
    * and `block()`.
    */
-  async transition(target: 'paused' | 'active'): Promise<GoalTransitionResult> {
+  async transition(target: 'paused' | 'active' | 'cancelled'): Promise<GoalTransitionResult> {
     const at = this.now();
     return updateGoal<GoalTransitionResult>(this.port, at, current => {
       if (!current) {
@@ -255,7 +324,7 @@ export class GoalService {
           result: { ok: false, reason: 'not_found', message: 'No goal to update.' } as const,
         };
       }
-      if (current.status === 'complete') {
+      if (current.status === 'complete' || current.status === 'cancelled') {
         return {
           next: current,
           result: { ok: false, reason: 'invalid_transition', message: 'Cannot transition a completed goal.' } as const,
@@ -318,6 +387,11 @@ export class GoalService {
 
 const EVIDENCE_RETAIN = 50;
 const BLOCK_AUDIT_RETAIN = 20;
+const TURN_RECEIPT_RETAIN = 100;
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
+}
 
 function countTrailingRepeatReasons(
   audit: Goal['blockAudit'],
@@ -351,6 +425,9 @@ function revisionConflict(
 /** Convenience: map a Goal status to a compact display marker. */
 export function goalStatusMark(status: GoalStatus): string {
   switch (status) {
+    case 'waiting_user': return '?';
+    case 'waiting_external': return '◷';
+    case 'cancelled': return '×';
     case 'active': return '▶';
     case 'paused': return '‖';
     case 'complete': return '✓';

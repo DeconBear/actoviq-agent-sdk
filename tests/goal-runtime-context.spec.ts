@@ -65,6 +65,7 @@ describe('goal runtime context injection', () => {
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      workDir: sessionDirectory,
       modelApi,
     });
     try {
@@ -86,13 +87,13 @@ describe('goal runtime context injection', () => {
       expect(request.tools?.some(t => t.name === 'CreateGoal')).toBe(true);
       expect(request.tools?.some(t => t.name === 'UpdateGoal')).toBe(true);
       const persisted = session.metadata[GOAL_METADATA_KEY] as {
-        evidence: Array<{ note: string; toolCalls?: number; tokens?: number }>;
+        evidence: unknown[];
+        consumption: { turns: number; toolIterations: number; tokens: number };
+        turnReceipts: Array<{ outcome: string }>;
       };
-      expect(persisted.evidence.at(-1)).toMatchObject({
-        note: 'done',
-        toolCalls: 0,
-        tokens: 15,
-      });
+      expect(persisted.evidence).toEqual([]);
+      expect(persisted.consumption).toEqual({ turns: 1, toolIterations: 0, tokens: 15 });
+      expect(persisted.turnReceipts.at(-1)?.outcome).toBe('no_change');
     } finally {
       await sdk.close();
     }
@@ -104,6 +105,7 @@ describe('goal runtime context injection', () => {
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      workDir: sessionDirectory,
       modelApi,
     });
     try {
@@ -119,12 +121,13 @@ describe('goal runtime context injection', () => {
     }
   });
 
-  it('does not inject goal context for a complete goal', async () => {
+  it('blocks a complete goal before making another model request', async () => {
     const sessionDirectory = await createSessionDirectory();
     const modelApi = new MockModelApi();
     const sdk = await createAgentSdk({
       model: 'test-model',
       sessionDirectory,
+      workDir: sessionDirectory,
       modelApi,
     });
     try {
@@ -141,14 +144,10 @@ describe('goal runtime context injection', () => {
           revision: 1,
         },
       });
-      await session.send('anything else?');
-
-      const request = modelApi.createCalls[0]!;
-      expect(request.system).not.toContain('Active goal');
-      // A complete goal does not steer further work, but the tools remain
-      // available so the model can inspect or replace it after a new request.
-      expect(request.tools?.some(t => t.name === 'GetGoal')).toBe(true);
-      expect(request.tools?.some(t => t.name === 'CreateGoal')).toBe(true);
+      await expect(session.send('anything else?')).rejects.toMatchObject({
+        code: 'goal_execution_blocked',
+      });
+      expect(modelApi.createCalls).toHaveLength(0);
     } finally {
       await sdk.close();
     }

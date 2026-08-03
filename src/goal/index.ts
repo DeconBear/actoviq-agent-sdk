@@ -10,9 +10,13 @@ export type {
   Goal,
   GoalBlockAudit,
   GoalBudget,
+  GoalBudgetConsumption,
+  GoalCompletionRequest,
   GoalEvidence,
   GoalMutationResult,
   GoalStatus,
+  GoalTurnOutcome,
+  GoalTurnReceipt,
 } from './types.js';
 export { GOAL_SCHEMA_VERSION } from './types.js';
 export {
@@ -33,6 +37,7 @@ export {
   type GoalServiceOptions,
   type GoalTransitionResult,
   type ProgressGoalInput,
+  type SettleGoalTurnInput,
   goalStatusMark,
 } from './goalService.js';
 export { buildGoalPrompt, type GoalPromptOptions } from './goalPrompt.js';
@@ -44,3 +49,9 @@ export {
   createGoalTools,
   type GoalToolContext,
 } from './goalTools.js';
+export {
+  GoalExecutionBlockedError,
+  decideGoalExecution,
+  settleGoalRun,
+  type GoalExecutionDecision,
+} from './goalController.js';

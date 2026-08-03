@@ -8,7 +8,16 @@
  * normalize it into the versioned v1 contract. The legacy field is preserved
  * untouched until the next write, which replaces it with the v1 shape.
  */
-import type { Goal, GoalBlockAudit, GoalBudget, GoalEvidence, GoalStatus } from './types.js';
+import type {
+  Goal,
+  GoalBlockAudit,
+  GoalBudget,
+  GoalBudgetConsumption,
+  GoalCompletionRequest,
+  GoalEvidence,
+  GoalStatus,
+  GoalTurnReceipt,
+} from './types.js';
 import { GOAL_SCHEMA_VERSION } from './types.js';
 
 /** Metadata key under which the Goal contract is persisted. */
@@ -157,8 +166,8 @@ export function normalizeGoal(raw: unknown, now: string): Goal | null {
   if (typeof raw !== 'object' || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
 
-  // Already a v1 (or later) contract.
-  if (typeof record.version === 'number' && record.version >= GOAL_SCHEMA_VERSION) {
+  // Already a versioned contract. Coercion upgrades older versions in memory.
+  if (typeof record.version === 'number' && record.version >= 1) {
     return coerceV1(record, now);
   }
 
@@ -171,8 +180,10 @@ export function normalizeGoal(raw: unknown, now: string): Goal | null {
     version: GOAL_SCHEMA_VERSION,
     objective: legacy.objective,
     status,
+    consumption: { turns: 0, toolIterations: 0, tokens: 0 },
     evidence: [],
     blockAudit: [],
+    turnReceipts: [],
     createdAt,
     updatedAt: createdAt,
     revision: 0,
@@ -191,8 +202,17 @@ function coerceV1(record: Record<string, unknown>, now: string): Goal | null {
       ? { completionCriteria: record.completionCriteria }
       : {}),
     ...(isBudget(record.budget) ? { budget: record.budget } : {}),
+    consumption: isConsumption(record.consumption)
+      ? record.consumption
+      : { turns: 0, toolIterations: 0, tokens: 0 },
     evidence: Array.isArray(record.evidence) ? record.evidence.filter(isEvidence) : [],
     blockAudit: Array.isArray(record.blockAudit) ? record.blockAudit.filter(isBlockAudit) : [],
+    turnReceipts: Array.isArray(record.turnReceipts)
+      ? record.turnReceipts.filter(isTurnReceipt)
+      : [],
+    ...(isCompletionRequest(record.completionRequest)
+      ? { completionRequest: record.completionRequest }
+      : {}),
     createdAt: typeof record.createdAt === 'string' ? record.createdAt : now,
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : now,
     revision: typeof record.revision === 'number' && Number.isFinite(record.revision)
@@ -206,7 +226,15 @@ function coerceLegacyStatus(value: unknown): GoalStatus {
 }
 
 function coerceStatus(value: unknown): GoalStatus | undefined {
-  if (value === 'active' || value === 'paused' || value === 'complete' || value === 'blocked') {
+  if (
+    value === 'active'
+    || value === 'waiting_user'
+    || value === 'waiting_external'
+    || value === 'paused'
+    || value === 'complete'
+    || value === 'blocked'
+    || value === 'cancelled'
+  ) {
     return value;
   }
   return undefined;
@@ -233,9 +261,55 @@ function isEvidence(value: unknown): value is GoalEvidence {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (typeof record.at !== 'string' || typeof record.note !== 'string') return false;
+  if ('id' in record && typeof record.id !== 'string') return false;
+  if ('kind' in record && !['progress', 'tool_result', 'validation', 'user_decision', 'artifact'].includes(String(record.kind))) return false;
+  if ('ref' in record && typeof record.ref !== 'string') return false;
+  if ('verified' in record && typeof record.verified !== 'boolean') return false;
   if ('toolCalls' in record && !isNonNegativeInt(record.toolCalls)) return false;
   if ('tokens' in record && !isNonNegativeInt(record.tokens)) return false;
   return true;
+}
+
+function isConsumption(value: unknown): value is GoalBudgetConsumption {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return isNonNegativeInt(record.turns)
+    && isNonNegativeInt(record.toolIterations)
+    && isNonNegativeInt(record.tokens);
+}
+
+function isCompletionRequest(value: unknown): value is GoalCompletionRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.at === 'string'
+    && typeof record.note === 'string'
+    && Array.isArray(record.evidenceRefs)
+    && record.evidenceRefs.every(item => typeof item === 'string');
+}
+
+function isTurnReceipt(value: unknown): value is GoalTurnReceipt {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const validation = record.validation as Record<string, unknown> | undefined;
+  return typeof record.id === 'string'
+    && typeof record.runId === 'string'
+    && typeof record.at === 'string'
+    && [
+      'validated_progress',
+      'validated_completion',
+      'no_change',
+      'user_action_required',
+      'wait',
+      'replan_required',
+      'validation_failed',
+      'failed',
+      'interrupted',
+    ].includes(String(record.outcome))
+    && Array.isArray(record.evidenceRefs)
+    && record.evidenceRefs.every(item => typeof item === 'string')
+    && isConsumption(record.usage)
+    && Boolean(validation)
+    && ['passed', 'failed', 'not_applicable'].includes(String(validation?.status));
 }
 
 function isBlockAudit(value: unknown): value is GoalBlockAudit {

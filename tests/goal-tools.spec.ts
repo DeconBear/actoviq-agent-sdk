@@ -10,6 +10,7 @@ import {
 import { GOAL_METADATA_KEY, type GoalSessionPort } from '../src/goal/goalStore.js';
 import { buildGoalPrompt } from '../src/goal/goalPrompt.js';
 import type { Goal } from '../src/goal/types.js';
+import { GOAL_SCHEMA_VERSION } from '../src/goal/types.js';
 
 class MemoryGoalPort implements GoalSessionPort {
   metadata: Record<string, unknown> = {};
@@ -69,7 +70,7 @@ describe('goal tools', () => {
     expect(result.message).toMatch(/note/);
   });
 
-  it('UpdateGoal complete requires evidence and transitions status', async () => {
+  it('UpdateGoal complete creates a runtime-settled completion request', async () => {
     const { tools } = makeTools();
     const create = tools.find(t => t.name === CREATE_GOAL_TOOL_NAME)!;
     const update = tools.find(t => t.name === UPDATE_GOAL_TOOL_NAME)!;
@@ -78,7 +79,8 @@ describe('goal tools', () => {
     expect(noNote.ok).toBe(false);
     const result = await update.execute({ status: 'complete', note: 'criteria met' }, ctx) as { ok: boolean; goal: { status: string } };
     expect(result.ok).toBe(true);
-    expect(result.goal.status).toBe('complete');
+    expect(result.goal.status).toBe('active');
+    expect((result.goal as unknown as { completionRequest?: unknown }).completionRequest).toBeTruthy();
   });
 
   it('UpdateGoal blocks only after the same reason is reported three times', async () => {
@@ -112,24 +114,27 @@ describe('buildGoalPrompt', () => {
   it('returns undefined for no goal or a complete goal', () => {
     expect(buildGoalPrompt(null)).toBeUndefined();
     const complete: Goal = {
-      version: 1, objective: 'done', status: 'complete',
-      evidence: [], blockAudit: [], createdAt: 't', updatedAt: 't', revision: 0,
+      version: GOAL_SCHEMA_VERSION, objective: 'done', status: 'complete',
+      consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+      evidence: [], blockAudit: [], turnReceipts: [], createdAt: 't', updatedAt: 't', revision: 0,
     };
     expect(buildGoalPrompt(complete)).toBeUndefined();
   });
 
   it('includes objective, status, criteria, budget, and latest evidence', () => {
     const goal: Goal = {
-      version: 1,
+      version: GOAL_SCHEMA_VERSION,
       objective: 'ship checkpoint',
       status: 'active',
       completionCriteria: 'tests pass',
       budget: { maxTurns: 10, maxTokens: 50000 },
+      consumption: { turns: 2, toolIterations: 3, tokens: 1200 },
       evidence: [
         { at: 't1', note: 'old' },
         { at: 't2', note: 'latest progress' },
       ],
       blockAudit: [],
+      turnReceipts: [],
       createdAt: 't0',
       updatedAt: 't2',
       revision: 2,
@@ -145,8 +150,9 @@ describe('buildGoalPrompt', () => {
 
   it('surfaces blocked reason and repeat escalation', () => {
     const goal: Goal = {
-      version: 1, objective: 'x', status: 'blocked',
-      evidence: [], blockAudit: [{ at: 't', reason: 'no key', repeat: 3 }],
+      version: GOAL_SCHEMA_VERSION, objective: 'x', status: 'blocked',
+      consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+      evidence: [], blockAudit: [{ at: 't', reason: 'no key', repeat: 3 }], turnReceipts: [],
       createdAt: 't', updatedAt: 't', revision: 1,
     };
     const prompt = buildGoalPrompt(goal)!;

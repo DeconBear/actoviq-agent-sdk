@@ -13,7 +13,14 @@
  */
 
 /** Lifecycle states for a Goal. */
-export type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked';
+export type GoalStatus =
+  | 'active'
+  | 'waiting_user'
+  | 'waiting_external'
+  | 'paused'
+  | 'complete'
+  | 'blocked'
+  | 'cancelled';
 
 /**
  * Execution budget. All fields optional - an unset limit means unbounded
@@ -29,16 +36,63 @@ export interface GoalBudget {
   maxTokens?: number;
 }
 
+/** Runtime-observed budget consumption. Unlike GoalBudget, this is never model-authored. */
+export interface GoalBudgetConsumption {
+  turns: number;
+  toolIterations: number;
+  tokens: number;
+}
+
 /** A single piece of progress evidence recorded by the runtime. */
 export interface GoalEvidence {
+  /** Stable evidence identity for receipts and completion requests. */
+  id?: string;
   /** ISO timestamp the evidence was recorded. */
   at: string;
   /** What changed since the last evidence entry. */
   note: string;
+  /** Runtime-observed evidence category. */
+  kind?: 'progress' | 'tool_result' | 'validation' | 'user_decision' | 'artifact';
+  /** Durable or transcript-local reference, for example `tool:<call-id>`. */
+  ref?: string;
+  /** True only when the runtime observed and accepted the referenced result. */
+  verified?: boolean;
   /** Tool calls counted this turn, if recorded by the runtime. */
   toolCalls?: number;
   /** Tokens consumed this turn, if recorded by the runtime. */
   tokens?: number;
+}
+
+export type GoalTurnOutcome =
+  | 'validated_progress'
+  | 'validated_completion'
+  | 'no_change'
+  | 'user_action_required'
+  | 'wait'
+  | 'replan_required'
+  | 'validation_failed'
+  | 'failed'
+  | 'interrupted';
+
+/** One runtime-observed Goal turn settlement. */
+export interface GoalTurnReceipt {
+  id: string;
+  runId: string;
+  at: string;
+  outcome: GoalTurnOutcome;
+  evidenceRefs: string[];
+  validation: {
+    status: 'passed' | 'failed' | 'not_applicable';
+    reason?: string;
+  };
+  usage: GoalBudgetConsumption;
+}
+
+/** A model may request completion; only the runtime may accept it. */
+export interface GoalCompletionRequest {
+  at: string;
+  note: string;
+  evidenceRefs: string[];
 }
 
 /** An entry in the blocked audit - why the goal could not progress. */
@@ -58,7 +112,7 @@ export interface GoalBlockAudit {
 }
 
 /** Schema version for forward-compatible migration. */
-export const GOAL_SCHEMA_VERSION = 1;
+export const GOAL_SCHEMA_VERSION = 2;
 
 /** The persisted, versioned Goal contract. */
 export interface Goal {
@@ -72,10 +126,16 @@ export interface Goal {
   status: GoalStatus;
   /** Optional execution budget. */
   budget?: GoalBudget;
+  /** Runtime-owned cumulative usage across Goal turns. */
+  consumption: GoalBudgetConsumption;
   /** Progress evidence, oldest first. */
   evidence: GoalEvidence[];
   /** Blocked audit entries, oldest first. */
   blockAudit: GoalBlockAudit[];
+  /** Recent runtime turn settlements, oldest first. */
+  turnReceipts: GoalTurnReceipt[];
+  /** Pending model completion request, settled after the current turn. */
+  completionRequest?: GoalCompletionRequest;
   /** ISO timestamp the goal was created. */
   createdAt: string;
   /** ISO timestamp the goal was last updated. */

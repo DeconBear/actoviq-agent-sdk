@@ -139,7 +139,10 @@ import { BASH_TOOL_NAME, createBashTool } from '../tools/bash/BashTool.js';
 import {
   buildGoalPrompt,
   createGoalTools,
+  decideGoalExecution,
+  GoalExecutionBlockedError,
   GoalService,
+  settleGoalRun,
   StoredSessionGoalPort,
 } from '../goal/index.js';
 import {
@@ -2616,6 +2619,13 @@ export class HadamardAgentClient {
   ): Promise<AgentRunResult> {
     const workDir = this.resolveRunWorkDir(options);
     const model = this.resolveModel(options.model ?? session?.model);
+    const goalService = this.resolveGoalService(session, liveSession);
+    if (goalService) {
+      const goalDecision = decideGoalExecution(await goalService.read());
+      if (goalDecision.kind === 'stop') {
+        throw new GoalExecutionBlockedError(goalDecision);
+      }
+    }
     const executionIdentity = resolveAgentExecutionIdentity({
       runId,
       session,
@@ -2649,7 +2659,6 @@ export class HadamardAgentClient {
     // the model (short context in the system prompt + GetGoal/CreateGoal/
     // UpdateGoal tools). The GoalService is the single authority over goal
     // state; both runtime tools and UI surfaces call it. See plan/13 P0.2.
-    const goalService = this.resolveGoalService(session, liveSession);
     let goalTools = session?.id
       ? mergeUniqueByName(
           mergedTools,
@@ -2887,18 +2896,8 @@ export class HadamardAgentClient {
         console.warn(`[AgentExecution] Failed to complete ${runId}: ${asError(error).message}`);
       });
       if (goalService) {
-        const summary = result.text.trim().replace(/\s+/gu, ' ').slice(0, 320);
-        const goalUsage = result.usage as Record<string, unknown> | undefined;
-        await goalService.progress({
-          note: summary || 'Turn completed.',
-          toolCalls: result.toolCalls.length,
-          tokens: Number(goalUsage?.totalTokens ?? goalUsage?.total_tokens ?? 0)
-            || (
-              Number(goalUsage?.inputTokens ?? goalUsage?.input_tokens ?? 0)
-              + Number(goalUsage?.outputTokens ?? goalUsage?.output_tokens ?? 0)
-            ),
-        }).catch((error) => {
-          console.warn(`[Goal] Failed to record progress for ${runId}: ${asError(error).message}`);
+        await settleGoalRun(goalService, result).catch((error) => {
+          console.warn(`[Goal] Failed to settle ${runId}: ${asError(error).message}`);
         });
       }
       if (fileCheckpointStarted && session?.id) {

@@ -33,7 +33,7 @@ export function buildGoalPrompt(
   }
   lines.push(`status: ${goal.status}`);
   if (goal.budget) {
-    lines.push(`budget: ${formatBudget(goal.budget)}`);
+    lines.push(`budget: ${formatBudget(goal.budget)}; used: ${formatConsumption(goal)}`);
   }
   const latest = goal.evidence[goal.evidence.length - 1];
   if (latest) {
@@ -48,8 +48,16 @@ export function buildGoalPrompt(
       }
     }
   }
-  lines.push('When the objective is met, call UpdateGoal with status "complete" and evidence. If the same blocking condition prevents progress for three consecutive Goal turns, report each turn with UpdateGoal status "blocked" and the same concrete reason.');
+  if (goal.status === 'waiting_user' || goal.status === 'waiting_external' || goal.status === 'paused') {
+    lines.push('Do not continue Goal work until the runtime resumes this Goal.');
+  } else {
+    lines.push('When the objective is met, request completion with UpdateGoal and cite runtime-observed evidence refs such as tool:<call-id>. The runtime validates the request after the turn. If the same blocking condition prevents progress for three consecutive Goal turns, report each turn with UpdateGoal status "blocked" and the same concrete reason.');
+  }
   return lines.join('\n');
+}
+
+function formatConsumption(goal: Goal): string {
+  return `${goal.consumption.turns} turns, ${goal.consumption.toolIterations} tool iterations, ${goal.consumption.tokens} tokens`;
 }
 
 function truncate(value: string, limit: number): string {
