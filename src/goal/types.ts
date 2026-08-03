@@ -34,6 +34,8 @@ export interface GoalBudget {
   maxToolIterations?: number;
   /** Soft token spend ceiling (input + output). */
   maxTokens?: number;
+  /** Optional ceiling for turns that produced runtime-validated delivery. */
+  maxValidatedTurns?: number;
 }
 
 /** Runtime-observed budget consumption. Unlike GoalBudget, this is never model-authored. */
@@ -41,6 +43,13 @@ export interface GoalBudgetConsumption {
   turns: number;
   toolIterations: number;
   tokens: number;
+}
+
+/** Delivery counters only advance after runtime validation succeeds. */
+export interface GoalDeliveryConsumption {
+  validatedTurns: number;
+  completedWorkItems: number;
+  evidenceItems: number;
 }
 
 /** A single piece of progress evidence recorded by the runtime. */
@@ -153,7 +162,7 @@ export interface GoalBlockAudit {
 }
 
 /** Schema version for forward-compatible migration. */
-export const GOAL_SCHEMA_VERSION = 2;
+export const GOAL_SCHEMA_VERSION = 3;
 
 /** The persisted, versioned Goal contract. */
 export interface Goal {
@@ -169,6 +178,8 @@ export interface Goal {
   budget?: GoalBudget;
   /** Runtime-owned cumulative usage across Goal turns. */
   consumption: GoalBudgetConsumption;
+  /** Validated delivery is intentionally separate from actual model/tool spend. */
+  delivery: GoalDeliveryConsumption;
   /** Progress evidence, oldest first. */
   evidence: GoalEvidence[];
   /** Blocked audit entries, oldest first. */

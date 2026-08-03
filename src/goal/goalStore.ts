@@ -13,6 +13,7 @@ import type {
   GoalBlockAudit,
   GoalBudget,
   GoalBudgetConsumption,
+  GoalDeliveryConsumption,
   GoalCompletionRequest,
   GoalEvidence,
   GoalStatus,
@@ -184,6 +185,7 @@ export function normalizeGoal(raw: unknown, now: string): Goal | null {
     objective: legacy.objective,
     status,
     consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+    delivery: { validatedTurns: 0, completedWorkItems: 0, evidenceItems: 0 },
     evidence: [],
     blockAudit: [],
     turnReceipts: [],
@@ -216,6 +218,9 @@ function coerceV1(record: Record<string, unknown>, now: string): Goal | null {
     consumption: isConsumption(record.consumption)
       ? record.consumption
       : { turns: 0, toolIterations: 0, tokens: 0 },
+    delivery: isDeliveryConsumption(record.delivery)
+      ? record.delivery
+      : { validatedTurns: 0, completedWorkItems: 0, evidenceItems: 0 },
     evidence: Array.isArray(record.evidence) ? record.evidence.filter(isEvidence) : [],
     blockAudit: Array.isArray(record.blockAudit) ? record.blockAudit.filter(isBlockAudit) : [],
     turnReceipts: Array.isArray(record.turnReceipts)
@@ -271,10 +276,12 @@ function isBudget(value: unknown): value is GoalBudget {
   const hasMaxTurns = 'maxTurns' in record;
   const hasMaxToolIterations = 'maxToolIterations' in record;
   const hasMaxTokens = 'maxTokens' in record;
-  if (!hasMaxTurns && !hasMaxToolIterations && !hasMaxTokens) return false;
+  const hasMaxValidatedTurns = 'maxValidatedTurns' in record;
+  if (!hasMaxTurns && !hasMaxToolIterations && !hasMaxTokens && !hasMaxValidatedTurns) return false;
   if (hasMaxTurns && !isNonNegativeInt(record.maxTurns)) return false;
   if (hasMaxToolIterations && !isNonNegativeInt(record.maxToolIterations)) return false;
   if (hasMaxTokens && !isNonNegativeInt(record.maxTokens)) return false;
+  if (hasMaxValidatedTurns && !isNonNegativeInt(record.maxValidatedTurns)) return false;
   return true;
 }
 
@@ -301,6 +308,14 @@ function isConsumption(value: unknown): value is GoalBudgetConsumption {
   return isNonNegativeInt(record.turns)
     && isNonNegativeInt(record.toolIterations)
     && isNonNegativeInt(record.tokens);
+}
+
+function isDeliveryConsumption(value: unknown): value is GoalDeliveryConsumption {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return isNonNegativeInt(record.validatedTurns)
+    && isNonNegativeInt(record.completedWorkItems)
+    && isNonNegativeInt(record.evidenceItems);
 }
 
 function isCompletionRequest(value: unknown): value is GoalCompletionRequest {

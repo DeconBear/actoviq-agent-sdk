@@ -99,6 +99,7 @@ function statusResult(goal: Goal | null): GoalCommandResult {
       `${goal.status} · ${goal.objective}`,
       `revision ${goal.revision} · plan ${goal.planRevision}`,
       `used ${goal.consumption.turns} turns / ${goal.consumption.toolIterations} tools / ${goal.consumption.tokens} tokens`,
+      `delivered ${goal.delivery.validatedTurns} validated turns / ${goal.delivery.completedWorkItems} completed items / ${goal.delivery.evidenceItems} evidence items`,
       `next decision: ${formatDecision(decideGoalExecution(goal))}`,
       formatTasks(goal),
     ].join('\n'),

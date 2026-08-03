@@ -69,6 +69,7 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
           maxTurns: z.number().int().nonnegative().optional(),
           maxToolIterations: z.number().int().nonnegative().optional(),
           maxTokens: z.number().int().nonnegative().optional(),
+          maxValidatedTurns: z.number().int().nonnegative().optional(),
         }).optional().describe('Optional execution budget. Unset fields mean unbounded.'),
       }),
       isReadOnly: () => true,

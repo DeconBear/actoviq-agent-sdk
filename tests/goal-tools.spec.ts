@@ -133,6 +133,7 @@ describe('buildGoalPrompt', () => {
     const complete: Goal = {
       version: GOAL_SCHEMA_VERSION, objective: 'done', status: 'complete',
       consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+      delivery: { validatedTurns: 0, completedWorkItems: 0, evidenceItems: 0 },
       evidence: [], blockAudit: [], turnReceipts: [], workItems: [], workItemRequests: [], planRevision: 0, replanAudit: [], createdAt: 't', updatedAt: 't', revision: 0,
     };
     expect(buildGoalPrompt(complete)).toBeUndefined();
@@ -146,6 +147,7 @@ describe('buildGoalPrompt', () => {
       completionCriteria: 'tests pass',
       budget: { maxTurns: 10, maxTokens: 50000 },
       consumption: { turns: 2, toolIterations: 3, tokens: 1200 },
+      delivery: { validatedTurns: 1, completedWorkItems: 0, evidenceItems: 1 },
       evidence: [
         { at: 't1', note: 'old' },
         { at: 't2', note: 'latest progress' },
@@ -170,6 +172,7 @@ describe('buildGoalPrompt', () => {
     const goal: Goal = {
       version: GOAL_SCHEMA_VERSION, objective: 'x', status: 'blocked',
       consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+      delivery: { validatedTurns: 0, completedWorkItems: 0, evidenceItems: 0 },
       evidence: [], blockAudit: [{ at: 't', reason: 'no key', repeat: 3 }], turnReceipts: [], workItems: [], workItemRequests: [], planRevision: 0, replanAudit: [],
       createdAt: 't', updatedAt: 't', revision: 1,
     };

@@ -27,6 +27,30 @@ export interface ProjectGoalEvent {
   payload?: Record<string, unknown>;
 }
 
+export type GoalContinuationMode = 'manual' | 'foreground' | 'scheduled';
+
+export interface GoalContinuationProfileRef {
+  kind: 'config' | 'agent';
+  name: string;
+}
+
+export interface GoalContinuationState {
+  goalId: string;
+  mode: GoalContinuationMode;
+  executionProfile?: GoalContinuationProfileRef;
+  minIntervalSeconds: number;
+  maxIntervalSeconds: number;
+  currentIntervalSeconds: number;
+  nextWakeAt?: string;
+  lastWakeAt?: string;
+  lastOutcome?: string;
+  consecutiveNoChange: number;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
+  lastError?: string;
+  sessionId?: string;
+}
+
 /** Project-scoped durable store for Goal snapshots, audit events, and session attachments. */
 export class ProjectGoalStore {
   private constructor(private readonly driver: SqliteDriver) {}
@@ -110,6 +134,137 @@ export class ProjectGoalStore {
         ? { payload: parseObject(row.payload_json) }
         : {}),
     }));
+  }
+
+  continuationState(goalId: string): GoalContinuationState | undefined {
+    const row = this.driver.prepare(`
+      SELECT c.*, (
+        SELECT session_id FROM goal_sessions s
+        WHERE s.goal_id = c.goal_id ORDER BY attached_at DESC LIMIT 1
+      ) AS session_id
+      FROM goal_continuation c WHERE c.goal_id = ?
+    `).get(goalId);
+    return row ? mapContinuation(row) : undefined;
+  }
+
+  listScheduledContinuations(): GoalContinuationState[] {
+    return this.driver.prepare(`
+      SELECT c.*, (
+        SELECT session_id FROM goal_sessions s
+        WHERE s.goal_id = c.goal_id ORDER BY attached_at DESC LIMIT 1
+      ) AS session_id
+      FROM goal_continuation c
+      JOIN goals g ON g.goal_id = c.goal_id
+      WHERE c.mode = 'scheduled' AND g.archived_at IS NULL AND g.status = 'active'
+      ORDER BY COALESCE(c.next_wake_at, g.updated_at) ASC
+    `).all().map(mapContinuation);
+  }
+
+  configureContinuation(input: {
+    goalId: string;
+    mode: GoalContinuationMode;
+    executionProfile?: GoalContinuationProfileRef;
+    minIntervalSeconds?: number;
+    maxIntervalSeconds?: number;
+    now?: Date;
+  }): GoalContinuationState {
+    const now = input.now ?? new Date();
+    const min = clampSeconds(input.minIntervalSeconds ?? 30, 1, 86_400);
+    const max = clampSeconds(input.maxIntervalSeconds ?? 1_800, min, 604_800);
+    const current = this.continuationState(input.goalId);
+    const interval = Math.max(min, Math.min(current?.currentIntervalSeconds ?? min, max));
+    const nextWakeAt = input.mode === 'scheduled'
+      ? new Date(now.getTime() + interval * 1_000).toISOString()
+      : null;
+    this.driver.prepare(`
+      INSERT INTO goal_continuation (
+        goal_id, mode, execution_profile_json, min_interval_seconds, max_interval_seconds,
+        current_interval_seconds, next_wake_at, consecutive_no_change, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+      ON CONFLICT(goal_id) DO UPDATE SET
+        mode = excluded.mode,
+        execution_profile_json = excluded.execution_profile_json,
+        min_interval_seconds = excluded.min_interval_seconds,
+        max_interval_seconds = excluded.max_interval_seconds,
+        current_interval_seconds = excluded.current_interval_seconds,
+        next_wake_at = excluded.next_wake_at,
+        updated_at = excluded.updated_at,
+        last_error = NULL
+    `).run(
+      input.goalId,
+      input.mode,
+      input.executionProfile ? JSON.stringify(input.executionProfile) : null,
+      min,
+      max,
+      interval,
+      nextWakeAt,
+      now.toISOString(),
+    );
+    this.insertEvent(input.goalId, 'continuation_configured', now.toISOString(), undefined, {
+      mode: input.mode,
+      ...(input.executionProfile ? { executionProfile: input.executionProfile } : {}),
+    });
+    return this.continuationState(input.goalId)!;
+  }
+
+  acquireContinuationLease(goalId: string, owner: string, now = new Date(), leaseMs = 15 * 60_000): boolean {
+    return this.driver.transaction(() => {
+      const state = this.continuationState(goalId);
+      if (!state) return false;
+      if (state.leaseOwner && isFuture(state.leaseExpiresAt, now)) return false;
+      const result = this.driver.prepare(`
+        UPDATE goal_continuation SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+        WHERE goal_id = ?
+      `).run(
+        owner,
+        new Date(now.getTime() + leaseMs).toISOString(),
+        now.toISOString(),
+        goalId,
+      );
+      return result.changes === 1;
+    });
+  }
+
+  settleContinuation(input: {
+    goalId: string;
+    owner: string;
+    outcome: string;
+    error?: string;
+    now?: Date;
+  }): GoalContinuationState | undefined {
+    const now = input.now ?? new Date();
+    const current = this.continuationState(input.goalId);
+    if (!current || current.leaseOwner !== input.owner) return current;
+    const noChange = input.outcome === 'no_change' || input.outcome === 'replan_required' || Boolean(input.error);
+    const interval = noChange
+      ? Math.min(current.maxIntervalSeconds, Math.max(current.minIntervalSeconds, current.currentIntervalSeconds * 2))
+      : Math.max(current.minIntervalSeconds, Math.floor(current.currentIntervalSeconds / 2));
+    const nextWakeAt = current.mode === 'scheduled'
+      ? new Date(now.getTime() + interval * 1_000).toISOString()
+      : null;
+    this.driver.prepare(`
+      UPDATE goal_continuation SET
+        current_interval_seconds = ?, next_wake_at = ?, last_wake_at = ?, last_outcome = ?,
+        consecutive_no_change = ?, lease_owner = NULL, lease_expires_at = NULL,
+        last_error = ?, updated_at = ?
+      WHERE goal_id = ? AND lease_owner = ?
+    `).run(
+      interval,
+      nextWakeAt,
+      now.toISOString(),
+      input.outcome,
+      noChange ? current.consecutiveNoChange + 1 : 0,
+      input.error?.slice(0, 4_000) ?? null,
+      now.toISOString(),
+      input.goalId,
+      input.owner,
+    );
+    this.insertEvent(input.goalId, input.error ? 'continuation_failed' : 'continuation_settled', now.toISOString(), undefined, {
+      outcome: input.outcome,
+      intervalSeconds: interval,
+      ...(input.error ? { error: input.error.slice(0, 4_000) } : {}),
+    });
+    return this.continuationState(input.goalId);
   }
 
   goalIdForSession(sessionId: string): string | undefined {
@@ -327,6 +482,26 @@ function initializeSchema(driver: SqliteDriver): void {
 
     CREATE INDEX IF NOT EXISTS idx_goal_events_goal
       ON goal_events(goal_id, event_id);
+
+    CREATE TABLE IF NOT EXISTS goal_continuation (
+      goal_id TEXT PRIMARY KEY REFERENCES goals(goal_id) ON DELETE CASCADE,
+      mode TEXT NOT NULL,
+      execution_profile_json TEXT,
+      min_interval_seconds INTEGER NOT NULL,
+      max_interval_seconds INTEGER NOT NULL,
+      current_interval_seconds INTEGER NOT NULL,
+      next_wake_at TEXT,
+      last_wake_at TEXT,
+      last_outcome TEXT,
+      consecutive_no_change INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT,
+      lease_expires_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_goal_continuation_wake
+      ON goal_continuation(mode, next_wake_at);
   `);
 }
 
@@ -339,4 +514,40 @@ function parseObject(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function mapContinuation(row: Record<string, unknown>): GoalContinuationState {
+  const parsedProfile = typeof row.execution_profile_json === 'string'
+    ? parseObject(row.execution_profile_json)
+    : undefined;
+  const executionProfile = parsedProfile
+    && (parsedProfile.kind === 'config' || parsedProfile.kind === 'agent')
+    && typeof parsedProfile.name === 'string'
+    ? { kind: parsedProfile.kind, name: parsedProfile.name } as GoalContinuationProfileRef
+    : undefined;
+  return {
+    goalId: String(row.goal_id),
+    mode: String(row.mode) as GoalContinuationMode,
+    ...(executionProfile ? { executionProfile } : {}),
+    minIntervalSeconds: Number(row.min_interval_seconds),
+    maxIntervalSeconds: Number(row.max_interval_seconds),
+    currentIntervalSeconds: Number(row.current_interval_seconds),
+    ...(typeof row.next_wake_at === 'string' ? { nextWakeAt: row.next_wake_at } : {}),
+    ...(typeof row.last_wake_at === 'string' ? { lastWakeAt: row.last_wake_at } : {}),
+    ...(typeof row.last_outcome === 'string' ? { lastOutcome: row.last_outcome } : {}),
+    consecutiveNoChange: Number(row.consecutive_no_change ?? 0),
+    ...(typeof row.lease_owner === 'string' ? { leaseOwner: row.lease_owner } : {}),
+    ...(typeof row.lease_expires_at === 'string' ? { leaseExpiresAt: row.lease_expires_at } : {}),
+    ...(typeof row.last_error === 'string' ? { lastError: row.last_error } : {}),
+    ...(typeof row.session_id === 'string' ? { sessionId: row.session_id } : {}),
+  };
+}
+
+function clampSeconds(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function isFuture(value: string | undefined, now: Date): boolean {
+  return Boolean(value && Date.parse(value) > now.getTime());
 }

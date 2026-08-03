@@ -174,6 +174,12 @@ function exhaustedBudgetMetric(goal: Goal): string | undefined {
   if (budget.maxTokens !== undefined && goal.consumption.tokens >= budget.maxTokens) {
     return `maxTokens=${budget.maxTokens}`;
   }
+  if (
+    budget.maxValidatedTurns !== undefined
+    && goal.delivery.validatedTurns >= budget.maxValidatedTurns
+  ) {
+    return `maxValidatedTurns=${budget.maxValidatedTurns}`;
+  }
   return undefined;
 }
 

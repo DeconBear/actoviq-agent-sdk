@@ -11,6 +11,7 @@ export type {
   GoalBlockAudit,
   GoalBudget,
   GoalBudgetConsumption,
+  GoalDeliveryConsumption,
   GoalCompletionRequest,
   GoalEvidence,
   GoalMutationResult,
@@ -75,9 +76,19 @@ export {
   PROJECT_GOAL_DATABASE,
   type ProjectGoalEvent,
   type ProjectGoalSummary,
+  type GoalContinuationMode,
+  type GoalContinuationProfileRef,
+  type GoalContinuationState,
 } from './projectGoalStore.js';
 export {
   ProjectGoalApi,
   type GoalSessionIdentity,
   type ProjectGoalStatus,
 } from './projectGoalApi.js';
+export {
+  GoalContinuationService,
+  type GoalContinuationExecutor,
+  type GoalContinuationExecutorInput,
+  type GoalContinuationRunResult,
+  type GoalWakeDecision,
+} from './goalContinuation.js';

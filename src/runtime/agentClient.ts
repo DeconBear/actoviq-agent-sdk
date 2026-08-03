@@ -144,6 +144,7 @@ import {
   type GoalExecutionDecision,
   GoalService,
   ProjectGoalApi,
+  type GoalContinuationProfileRef,
   settleGoalRun,
 } from '../goal/index.js';
 import {
@@ -995,7 +996,16 @@ export class HadamardAgentClient {
         },
       },
     );
-    this.goals = new ProjectGoalApi(this.config.sessionDirectory);
+    this.goals = new ProjectGoalApi(this.config.sessionDirectory, {
+      continuationExecutor: async (input) => {
+        const target = await this.resumeSession(input.sessionId);
+        const overrides = await this.resolveGoalContinuationRunOptions(input.executionProfile);
+        return target.send(input.prompt, {
+          ...overrides,
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+      },
+    });
     this.context = new HadamardContextApi({
       getOverview: (options) => this.getContextOverview(options),
       compactSession: (sessionId, options) => this.compactSessionById(sessionId, options),
@@ -4734,6 +4744,29 @@ export class HadamardAgentClient {
       maxTokens: DEFAULT_DREAM_MAX_TOKENS,
     });
     return routed;
+  }
+
+  private async resolveGoalContinuationRunOptions(
+    profile: GoalContinuationProfileRef | undefined,
+  ): Promise<Pick<AgentRunOptions, 'model' | 'effort' | 'maxTokens' | 'temperature' | 'topP'>> {
+    if (!profile) return {};
+    if (profile.kind === 'agent') {
+      const resolved = await resolveAgentProfileRun(profile.name, this.config.homeDir);
+      if (resolved.bridgeConfig.execution === 'cli') {
+        throw new Error(`Goal continuation agent requires external CLI execution: ${profile.name}`);
+      }
+      return {
+        model: resolved.model,
+        ...agentProfileRunOverrides(resolved.profile),
+      };
+    }
+    const config = findBridgeConfig(profile.name, this.config.homeDir);
+    if (!config) throw new Error(`Goal continuation config not found: ${profile.name}`);
+    if (config.execution === 'cli') {
+      throw new Error(`Goal continuation config requires external CLI execution: ${profile.name}`);
+    }
+    if (!config.model) throw new Error(`Goal continuation config has no model: ${profile.name}`);
+    return { model: this.resolveModel(config.model) };
   }
 
   private async launchBackgroundDreamTask(

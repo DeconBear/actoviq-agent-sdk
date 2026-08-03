@@ -143,6 +143,7 @@ export class GoalService {
       objective,
       status: 'active',
       consumption: { turns: 0, toolIterations: 0, tokens: 0 },
+      delivery: { validatedTurns: 0, completedWorkItems: 0, evidenceItems: 0 },
       evidence: [],
       blockAudit: [],
       turnReceipts: [],
@@ -570,6 +571,11 @@ export class GoalService {
           : input.replan && !input.replan.deltaRecorded
             ? { ...input.receipt, outcome: 'replan_required' }
             : input.receipt;
+      const completedBefore = current.workItems.filter(item => item.status === 'done').length;
+      const completedAfter = applied.workItems.filter(item => item.status === 'done').length;
+      const validated = effectiveReceipt.validation.status === 'passed'
+        || effectiveReceipt.outcome === 'validated_progress'
+        || effectiveReceipt.outcome === 'validated_completion';
       const next: Goal = {
         ...current,
         status: completionAccepted && completionNote
@@ -581,6 +587,13 @@ export class GoalService {
           turns: current.consumption.turns + input.receipt.usage.turns,
           toolIterations: current.consumption.toolIterations + input.receipt.usage.toolIterations,
           tokens: current.consumption.tokens + input.receipt.usage.tokens,
+        },
+        delivery: {
+          validatedTurns: current.delivery.validatedTurns + (validated ? 1 : 0),
+          completedWorkItems: current.delivery.completedWorkItems
+            + Math.max(0, completedAfter - completedBefore),
+          evidenceItems: current.delivery.evidenceItems
+            + input.evidence.filter(item => item.verified === true).length,
         },
         evidence: nextEvidence.slice(-EVIDENCE_RETAIN),
         turnReceipts: [...current.turnReceipts, effectiveReceipt].slice(-TURN_RECEIPT_RETAIN),

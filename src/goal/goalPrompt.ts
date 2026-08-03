@@ -87,5 +87,6 @@ function formatBudget(budget: GoalBudget): string {
   if (typeof budget.maxTurns === 'number') parts.push(`${budget.maxTurns} turns`);
   if (typeof budget.maxToolIterations === 'number') parts.push(`${budget.maxToolIterations} tool iterations`);
   if (typeof budget.maxTokens === 'number') parts.push(`${budget.maxTokens} tokens`);
+  if (typeof budget.maxValidatedTurns === 'number') parts.push(`${budget.maxValidatedTurns} validated turns`);
   return parts.length > 0 ? parts.join(', ') : 'unbounded';
 }

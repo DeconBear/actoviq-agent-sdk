@@ -7812,6 +7812,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const projectGoals = sdk
       ? await sdk.goals.list({ includeArchived: true }).catch(() => [])
       : [];
+    const goalContinuation = sdk
+      ? await sdk.goals.continuationStatus(session.id).catch(() => undefined)
+      : undefined;
     return json(res, 200, {
       ok: true,
       path: workDir,
@@ -7826,6 +7829,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         : undefined,
       goalStatus,
       projectGoals,
+      goalContinuation,
     });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
@@ -18646,7 +18650,7 @@ async function runProjectGoalCommand(command) {
     setProjectSettingsStatus(error.message || 'Goal update failed', 'error');
   }
 }
-function renderProjectGoal(status, goals) {
+function renderProjectGoal(status, goals, continuation, profiles) {
   const root = el('projectGoalStatus');
   if (!root) return;
   const goal = status?.goal;
@@ -18663,12 +18667,34 @@ function renderProjectGoal(status, goals) {
       'Frontier: ' + (open.length ? open.map(item => item.id + ' [' + item.priority + '] ' + item.text).join('\n  ') : 'closed'),
       'Evidence: ' + ((goal.evidence || []).length ? (goal.evidence || []).slice(-5).map(item => item.ref || item.note).join(', ') : 'none'),
       'Project history: ' + (goals || []).length + ' goal(s)',
+      'Continuation: ' + (continuation ? continuation.mode + ' \u00b7 interval ' + continuation.currentIntervalSeconds + 's' + (continuation.nextWakeAt ? ' \u00b7 next ' + continuation.nextWakeAt : '') : 'manual (not configured)'),
     ].join('\n');
   }
   const paused = goal?.status === 'paused';
   if (el('projectGoalPause')) el('projectGoalPause').disabled = !goal || paused;
   if (el('projectGoalResume')) el('projectGoalResume').disabled = !goal || !paused;
   if (el('projectGoalReplan')) el('projectGoalReplan').disabled = !goal;
+  if (el('projectGoalContinuationMode')) el('projectGoalContinuationMode').value = continuation?.mode || 'manual';
+  if (el('projectGoalMinInterval')) el('projectGoalMinInterval').value = continuation?.minIntervalSeconds || 30;
+  if (el('projectGoalMaxInterval')) el('projectGoalMaxInterval').value = continuation?.maxIntervalSeconds || 1800;
+  const profileSelect = el('projectGoalProfile');
+  if (profileSelect) {
+    profileSelect.textContent = '';
+    const current = document.createElement('option');
+    current.value = '';
+    current.textContent = 'Current session model';
+    profileSelect.appendChild(current);
+    for (const profile of profiles || []) {
+      const option = document.createElement('option');
+      option.value = profile.kind + ':' + profile.name;
+      option.textContent = profile.label + (profile.available ? '' : ' (unavailable)');
+      option.disabled = !profile.available;
+      profileSelect.appendChild(option);
+    }
+    if (continuation?.executionProfile) {
+      profileSelect.value = continuation.executionProfile.kind + ':' + continuation.executionProfile.name;
+    }
+  }
 }
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
@@ -18831,6 +18857,14 @@ function wireProjectSettingsPanel() {
   el('projectGoalPause')?.addEventListener('click', () => { void runProjectGoalCommand('pause'); });
   el('projectGoalResume')?.addEventListener('click', () => { void runProjectGoalCommand('resume'); });
   el('projectGoalReplan')?.addEventListener('click', () => { void runProjectGoalCommand('replan operator_requested'); });
+  el('projectGoalContinuationSave')?.addEventListener('click', () => {
+    const mode = el('projectGoalContinuationMode')?.value || 'manual';
+    const min = Math.max(1, Number(el('projectGoalMinInterval')?.value) || 30);
+    const max = Math.max(min, Number(el('projectGoalMaxInterval')?.value) || 1800);
+    const profile = el('projectGoalProfile')?.value || '';
+    void runProjectGoalCommand('schedule ' + mode + ' ' + min + ' ' + max + (profile ? ' ' + profile : ''));
+  });
+  el('projectGoalRun')?.addEventListener('click', () => { void runProjectGoalCommand('run'); });
   el('projectSessionMemoryExtract')?.addEventListener('click', async () => {
     setProjectSettingsStatus('Extracting Session Memory…', 'dirty');
     const res = await api('/api/project-memory-extract', { method: 'POST' });
@@ -18892,7 +18926,7 @@ async function mountProjectSettingsPanel(force) {
     const data = await settingsRes.json().catch(() => ({}));
     if (!settingsRes.ok) throw new Error(data.error || 'Failed to load project settings');
     const settings = data.settings || { workMode: 'coding', customPrompt: '', projectRules: '' };
-    renderProjectGoal(data.goalStatus, data.projectGoals || []);
+    renderProjectGoal(data.goalStatus, data.projectGoals || [], data.goalContinuation, data.dreamProfiles || []);
     const coding = el('projectWorkModeCoding');
     const daily = el('projectWorkModeDaily');
     if (coding) coding.checked = settings.workMode !== 'daily';
@@ -21364,7 +21398,12 @@ function renderProjectDetail() {
     + '<button type="button" class="secondary-btn" id="projectGoalPause">Pause</button>'
     + '<button type="button" class="secondary-btn" id="projectGoalResume">Resume</button>'
     + '<button type="button" class="secondary-btn" id="projectGoalReplan">Replan</button>'
+    + '<button type="button" class="secondary-btn" id="projectGoalRun">Run now</button>'
     + '</div>'
+    + '<label class="settings-row"><span><strong>Continuation mode</strong><small>Manual, foreground until a stop condition, or scheduled with dynamic cadence.</small></span><select id="projectGoalContinuationMode"><option value="manual">Manual</option><option value="foreground">Foreground</option><option value="scheduled">Scheduled</option></select></label>'
+    + '<label class="settings-row"><span><strong>Wake interval</strong><small>Minimum and maximum seconds; no-change backs off, validated progress accelerates.</small></span><span><input type="number" min="1" id="projectGoalMinInterval" style="width:90px"> <input type="number" min="1" id="projectGoalMaxInterval" style="width:90px"></span></label>'
+    + '<label class="settings-row"><span><strong>Execution profile</strong><small>Optional Config or Agent sampling/model parameters; external CLI profiles are unavailable.</small></span><select id="projectGoalProfile"></select></label>'
+    + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectGoalContinuationSave">Save continuation</button></div>'
     + '<pre id="projectGoalStatus" class="project-settings-textarea" style="min-height:130px;white-space:pre-wrap" data-testid="project-goal-status"></pre>'
     + '</div>'
     + '<div class="settings-group">'
