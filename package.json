@@ -197,6 +197,7 @@
     "bench:runtime": "tsx bench/runtime/run.ts --mode full --output tmp/runtime-benchmark-full.json",
     "bench:runtime:compare": "tsx bench/runtime/compare.ts",
     "bench:memory": "tsx bench/memory/run.ts",
+    "bench:goal": "tsx bench/goal/run.ts",
     "smoke": "npm run build && tsx scripts/integration-smoke.ts",
     "example:hadamard-quickstart": "npm run build && tsx examples/hadamard-quickstart.ts",
     "example:hadamard-session": "npm run build && tsx examples/hadamard-session.ts",

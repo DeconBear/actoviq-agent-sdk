@@ -11177,6 +11177,7 @@ body[data-theme="dark"] {
 .project-settings-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 24px; }
 .project-settings-template-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 10px; align-items: center; }
 .project-settings-template-row select { min-height: 30px; min-width: 220px; flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; }
+.project-settings-template-row > .settings-input { flex: 1 1 280px; min-width: 220px; }
 .project-settings-textarea { width: 100%; box-sizing: border-box; min-height: 160px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-surface); color: var(--text-1); font: 12.5px/1.45 var(--font-mono); resize: vertical; }
 .project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
 .detail-main .project-doc-panel { flex: 1; border-right: 0; }
@@ -18668,13 +18669,13 @@ function renderProjectGoal(status, goals, continuation, profiles, claims, handof
       goal.status + ' \u00b7 ' + goal.objective,
       'Goal ID: ' + (status.goalId || 'unknown') + ' \u00b7 revision ' + goal.revision + ' \u00b7 plan ' + goal.planRevision,
       'Budget: ' + (consumption.turns || 0) + '/' + (budget.maxTurns ?? '\u221e') + ' turns \u00b7 ' + (consumption.toolIterations || 0) + '/' + (budget.maxToolIterations ?? '\u221e') + ' tools \u00b7 ' + (consumption.tokens || 0) + '/' + (budget.maxTokens ?? '\u221e') + ' tokens',
-      'Frontier: ' + (open.length ? open.map(item => item.id + ' [' + item.priority + '] ' + item.text).join('\n  ') : 'closed'),
+      'Frontier: ' + (open.length ? open.map(item => item.id + ' [' + item.priority + '] ' + item.text).join('\\n  ') : 'closed'),
       'Evidence: ' + ((goal.evidence || []).length ? (goal.evidence || []).slice(-5).map(item => item.ref || item.note).join(', ') : 'none'),
       'Project history: ' + (goals || []).length + ' goal(s)',
       'Continuation: ' + (continuation ? continuation.mode + ' \u00b7 interval ' + continuation.currentIntervalSeconds + 's' + (continuation.nextWakeAt ? ' \u00b7 next ' + continuation.nextWakeAt : '') : 'manual (not configured)'),
       'Claims: ' + ((claims || []).length ? (claims || []).map(claim => claim.workItemId + ' \u2192 ' + claim.agentId + ' until ' + claim.leaseExpiresAt).join(', ') : 'none'),
       'Handoffs: ' + ((handoffs || []).length ? (handoffs || []).slice(-5).map(item => item.fromAgentId + ' \u2192 ' + (item.toAgentId || 'pool') + ' (' + item.reason + ')').join(', ') : 'none'),
-    ].join('\n');
+    ].join('\\n');
   }
   const paused = goal?.status === 'paused';
   if (el('projectGoalPause')) el('projectGoalPause').disabled = !goal || paused;
