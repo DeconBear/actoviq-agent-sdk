@@ -141,6 +141,7 @@ import {
   createGoalTools,
   decideGoalExecution,
   GoalExecutionBlockedError,
+  type GoalExecutionDecision,
   GoalService,
   settleGoalRun,
   StoredSessionGoalPort,
@@ -2620,10 +2621,15 @@ export class HadamardAgentClient {
     const workDir = this.resolveRunWorkDir(options);
     const model = this.resolveModel(options.model ?? session?.model);
     const goalService = this.resolveGoalService(session, liveSession);
+    let goalExecutionDecision: GoalExecutionDecision = { kind: 'run', mode: 'work' };
     if (goalService) {
-      const goalDecision = decideGoalExecution(await goalService.read());
-      if (goalDecision.kind === 'stop') {
-        throw new GoalExecutionBlockedError(goalDecision);
+      goalExecutionDecision = decideGoalExecution(await goalService.read());
+      if (goalExecutionDecision.kind === 'stop') {
+        throw new GoalExecutionBlockedError(goalExecutionDecision);
+      }
+      if (goalExecutionDecision.kind === 'run' && goalExecutionDecision.workItemId) {
+        const started = await goalService.beginWorkItem(goalExecutionDecision.workItemId);
+        if (!started.ok) throw new Error(started.message);
       }
     }
     const executionIdentity = resolveAgentExecutionIdentity({
@@ -2671,7 +2677,7 @@ export class HadamardAgentClient {
     let goalPromptPart: string | undefined;
     if (goalService) {
       const goal = await goalService.read();
-      goalPromptPart = buildGoalPrompt(goal);
+      goalPromptPart = buildGoalPrompt(goal, { decision: goalExecutionDecision });
       const toolsWithGoal = mergeUniqueByName(
         goalTools,
         createGoalTools({ getGoalService: () => goalService }),
@@ -2896,7 +2902,7 @@ export class HadamardAgentClient {
         console.warn(`[AgentExecution] Failed to complete ${runId}: ${asError(error).message}`);
       });
       if (goalService) {
-        await settleGoalRun(goalService, result).catch((error) => {
+        await settleGoalRun(goalService, result, goalExecutionDecision).catch((error) => {
           console.warn(`[Goal] Failed to settle ${runId}: ${asError(error).message}`);
         });
       }

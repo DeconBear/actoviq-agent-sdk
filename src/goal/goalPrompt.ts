@@ -7,10 +7,13 @@
  * Budget consumption is summarized, not itemized.
  */
 import type { Goal, GoalBudget } from './types.js';
+import type { GoalExecutionDecision } from './goalController.js';
 
 export interface GoalPromptOptions {
   /** Maximum characters for the objective + criteria section. */
   maxObjectiveChars?: number;
+  /** Runtime-derived action for this turn. */
+  decision?: GoalExecutionDecision;
 }
 
 const DEFAULT_MAX_OBJECTIVE_CHARS = 600;
@@ -38,6 +41,20 @@ export function buildGoalPrompt(
   const latest = goal.evidence[goal.evidence.length - 1];
   if (latest) {
     lines.push(`last progress: ${truncate(latest.note, 240)}`);
+  }
+  const decision = options.decision;
+  if (decision?.kind === 'run' && decision.workItemId) {
+    const item = goal.workItems.find(candidate => candidate.id === decision.workItemId);
+    if (item) {
+      lines.push(`selected work: ${item.id} [${item.priority}/${item.taskClass}] ${truncate(item.text, 320)}`);
+      lines.push('Work only on this selected slice. Use UpdateGoal workItemStatus with runtime-observed evidence refs to request completion, deferral, or cancellation of the item.');
+    }
+  } else if (decision?.kind === 'run' && decision.mode === 'finalize') {
+    lines.push(`frontier: closed; no follow-up: ${truncate(goal.noFollowupReason ?? '', 240)}`);
+    lines.push('Request Goal completion with runtime-observed evidence refs. Do not invent more work unless the completion contract is not actually satisfied.');
+  } else if (decision?.kind === 'replan') {
+    lines.push(`replan required: ${decision.trigger}`);
+    lines.push('Use PlanGoal to write a bounded frontier delta: create runnable work, a scoped user gate, a deferred wait with an exact resume condition, or an explicit terminal no-follow-up path. Do not continue unchanged work.');
   }
   if (goal.status === 'blocked') {
     const lastBlock = goal.blockAudit[goal.blockAudit.length - 1];

@@ -80,6 +80,13 @@ describe('Goal runtime controller', () => {
     const port = new MemoryGoalPort();
     const service = new GoalService({ port });
     await service.create({ objective: 'ship', completionCriteria: 'tests pass' });
+    await service.requestWorkItemUpdate({
+      workItemId: 'goal-work:1',
+      status: 'done',
+      note: 'tests passed',
+      evidenceRefs: ['tool:call-1'],
+      noFollowupReason: 'All requested work and validation are complete.',
+    });
     await service.requestCompletion({ note: 'tests passed', evidenceRefs: ['tool:call-1'] });
     await settleGoalRun(service, result({
       toolCalls: [{

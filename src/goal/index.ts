@@ -17,6 +17,13 @@ export type {
   GoalStatus,
   GoalTurnOutcome,
   GoalTurnReceipt,
+  GoalWorkItem,
+  GoalWorkItemClass,
+  GoalWorkItemPriority,
+  GoalWorkItemRole,
+  GoalWorkItemStatus,
+  GoalWorkItemUpdateRequest,
+  GoalReplanAudit,
 } from './types.js';
 export { GOAL_SCHEMA_VERSION } from './types.js';
 export {
@@ -37,6 +44,9 @@ export {
   type GoalServiceOptions,
   type GoalTransitionResult,
   type ProgressGoalInput,
+  type PlanGoalInput,
+  type PlanGoalItemInput,
+  type RequestGoalWorkItemUpdateInput,
   type SettleGoalTurnInput,
   goalStatusMark,
 } from './goalService.js';
@@ -46,6 +56,7 @@ export {
   GET_GOAL_TOOL_NAME,
   GOAL_TOOLS_PROMPT,
   UPDATE_GOAL_TOOL_NAME,
+  PLAN_GOAL_TOOL_NAME,
   createGoalTools,
   type GoalToolContext,
 } from './goalTools.js';
@@ -55,3 +66,7 @@ export {
   settleGoalRun,
   type GoalExecutionDecision,
 } from './goalController.js';
+export {
+  executeGoalCommand,
+  type GoalCommandResult,
+} from './goalCommandService.js';

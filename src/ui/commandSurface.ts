@@ -190,7 +190,7 @@ export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
 const COMMAND_USAGES: Record<string, string> = {
   compact: '/compact [summary instructions]',
   batch: '/batch <file>',
-  goal: '/goal [objective|clear|pause|resume]',
+  goal: '/goal [start <objective>|status|tasks|run|replan|answer <gate-id> <answer>|history|pause|resume|cancel|clear]',
   export: '/export [filename]',
   model: '/model [model|min|medium|max|default|config|router [name|off]]',
   effort: '/effort [auto|low|medium|high|max]',

@@ -190,10 +190,10 @@ import {
   upsertAgentProfile,
   WorktreeService,
   GoalService,
+  executeGoalCommand,
   GOAL_METADATA_KEY,
   normalizeGoal,
   type Goal,
-  type GoalStatus,
   HADAMARD_SESSION_PERMISSION_STATE_KEY,
   serializeHadamardSessionPermissionState,
   type HadamardAgentClient,
@@ -4668,16 +4668,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   function getGoal(): Goal | null {
     return normalizeGoal(session.metadata[GOAL_METADATA_KEY], new Date().toISOString());
   }
-  async function setGoal(objective: string): Promise<Goal> {
-    return goalService().create({ objective });
-  }
-  async function clearGoal(): Promise<void> {
-    await goalService().clear();
-  }
-  async function transitionGoal(status: 'active' | 'paused') {
-    return goalService().transition(status);
-  }
-
   // ── Batch: read a file and return its prompts for sequential execution ─
   async function runBatch(fileArg: string): Promise<GuiRunEvent[]> {
     const filePath = path.resolve(workDir, fileArg);
@@ -5495,39 +5485,13 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         if (!args) return [{ type: 'error', message: 'usage: /batch <file>' }];
         return runBatch(args);
       case 'goal': {
-        const goal = getGoal();
-        const mark = (s: GoalStatus) => (
-          s === 'active' ? '▶' : s === 'paused' ? '‖' : s === 'blocked' ? '⊘' : '✓'
-        );
-        if (!args) {
-          return goal
-            ? [{
-                type: 'command.result',
-                title: 'Goal',
-                text: [
-                  `${mark(goal.status)} ${goal.objective}`,
-                  `status: ${goal.status} · revision: ${goal.revision} · created: ${goal.createdAt}`,
-                  goal.completionCriteria ? `criteria: ${goal.completionCriteria}` : '',
-                  goal.evidence.length > 0 ? `evidence: ${goal.evidence.length}` : '',
-                ].filter(Boolean).join('\n'),
-              }]
-            : [{ type: 'notice', message: 'no goal set — /goal <objective>' }];
-        }
-        if (args === 'clear') { await clearGoal(); return [{ type: 'notice', message: 'goal cleared' }, { type: 'state' }]; }
-        if (args === 'pause' || args === 'resume') {
-          const result = await transitionGoal(args === 'pause' ? 'paused' : 'active');
-          return result.ok
-            ? [{ type: 'notice', message: `goal ${args === 'pause' ? 'paused' : 'resumed'}` }, { type: 'state' }]
-            : [{ type: 'error', message: result.message }];
-        }
-        if (args === 'complete' || args === 'done') {
-          return [{
-            type: 'error',
-            message: 'goal completion requires runtime evidence — ask the agent to call UpdateGoal with status "complete", or use /goal clear',
-          }];
-        }
-        await setGoal(args);
-        return [{ type: 'notice', message: `goal set: ${args.slice(0, 60)}` }, { type: 'state' }];
+        const commandResult = await executeGoalCommand(goalService(), args);
+        return [
+          commandResult.ok
+            ? { type: 'command.result', title: 'Goal', text: commandResult.message }
+            : { type: 'error', message: commandResult.message },
+          ...(commandResult.changed ? [{ type: 'state' as const }] : []),
+        ];
       }
       case 'diff': {
         if (!sdk) return [{ type: 'error', message: 'Session diff requires a configured Hadamard provider.' }];

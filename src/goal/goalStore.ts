@@ -17,6 +17,9 @@ import type {
   GoalEvidence,
   GoalStatus,
   GoalTurnReceipt,
+  GoalWorkItem,
+  GoalWorkItemUpdateRequest,
+  GoalReplanAudit,
 } from './types.js';
 import { GOAL_SCHEMA_VERSION } from './types.js';
 
@@ -184,6 +187,10 @@ export function normalizeGoal(raw: unknown, now: string): Goal | null {
     evidence: [],
     blockAudit: [],
     turnReceipts: [],
+    workItems: [legacyWorkItem(legacy.objective, createdAt)],
+    workItemRequests: [],
+    planRevision: 0,
+    replanAudit: [],
     createdAt,
     updatedAt: createdAt,
     revision: 0,
@@ -194,6 +201,10 @@ function coerceV1(record: Record<string, unknown>, now: string): Goal | null {
   const objective = typeof record.objective === 'string' ? record.objective : '';
   if (!objective.trim()) return null;
   const status = coerceStatus(record.status) ?? 'active';
+  const createdAt = typeof record.createdAt === 'string' ? record.createdAt : now;
+  const workItems = Array.isArray(record.workItems)
+    ? record.workItems.filter(isWorkItem)
+    : [];
   return {
     version: GOAL_SCHEMA_VERSION,
     objective,
@@ -210,10 +221,24 @@ function coerceV1(record: Record<string, unknown>, now: string): Goal | null {
     turnReceipts: Array.isArray(record.turnReceipts)
       ? record.turnReceipts.filter(isTurnReceipt)
       : [],
+    workItems: workItems.length > 0 || status === 'complete' || status === 'cancelled'
+      ? workItems
+      : [legacyWorkItem(objective, createdAt)],
+    workItemRequests: Array.isArray(record.workItemRequests)
+      ? record.workItemRequests.filter(isWorkItemUpdateRequest)
+      : [],
+    planRevision: isNonNegativeInt(record.planRevision) ? Number(record.planRevision) : 0,
+    replanAudit: Array.isArray(record.replanAudit)
+      ? record.replanAudit.filter(isReplanAudit)
+      : [],
+    ...(isForcedReplan(record.forcedReplan) ? { forcedReplan: record.forcedReplan } : {}),
+    ...(typeof record.noFollowupReason === 'string' && record.noFollowupReason.trim()
+      ? { noFollowupReason: record.noFollowupReason }
+      : {}),
     ...(isCompletionRequest(record.completionRequest)
       ? { completionRequest: record.completionRequest }
       : {}),
-    createdAt: typeof record.createdAt === 'string' ? record.createdAt : now,
+    createdAt,
     updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : now,
     revision: typeof record.revision === 'number' && Number.isFinite(record.revision)
       ? Math.max(0, Math.floor(record.revision))
@@ -293,6 +318,7 @@ function isTurnReceipt(value: unknown): value is GoalTurnReceipt {
   const validation = record.validation as Record<string, unknown> | undefined;
   return typeof record.id === 'string'
     && typeof record.runId === 'string'
+    && (!('workItemId' in record) || typeof record.workItemId === 'string')
     && typeof record.at === 'string'
     && [
       'validated_progress',
@@ -310,6 +336,67 @@ function isTurnReceipt(value: unknown): value is GoalTurnReceipt {
     && isConsumption(record.usage)
     && Boolean(validation)
     && ['passed', 'failed', 'not_applicable'].includes(String(validation?.status));
+}
+
+function isWorkItem(value: unknown): value is GoalWorkItem {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.id === 'string'
+    && ['agent', 'user'].includes(String(record.role))
+    && ['P0', 'P1', 'P2'].includes(String(record.priority))
+    && ['advancement', 'verification', 'monitor', 'user_gate'].includes(String(record.taskClass))
+    && typeof record.actionKind === 'string'
+    && typeof record.text === 'string'
+    && ['open', 'claimed', 'running', 'done', 'deferred', 'cancelled'].includes(String(record.status))
+    && Array.isArray(record.dependsOn)
+    && record.dependsOn.every(item => typeof item === 'string')
+    && Array.isArray(record.evidenceRefs)
+    && record.evidenceRefs.every(item => typeof item === 'string')
+    && typeof record.createdAt === 'string'
+    && typeof record.updatedAt === 'string';
+}
+
+function isWorkItemUpdateRequest(value: unknown): value is GoalWorkItemUpdateRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.at === 'string'
+    && typeof record.workItemId === 'string'
+    && ['open', 'done', 'deferred', 'cancelled'].includes(String(record.status))
+    && typeof record.note === 'string'
+    && Array.isArray(record.evidenceRefs)
+    && record.evidenceRefs.every(item => typeof item === 'string');
+}
+
+function isReplanAudit(value: unknown): value is GoalReplanAudit {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.at === 'string'
+    && typeof record.trigger === 'string'
+    && typeof record.frontierFingerprint === 'string'
+    && isNonNegativeInt(record.repeat)
+    && typeof record.deltaRecorded === 'boolean';
+}
+
+function legacyWorkItem(objective: string, at: string): GoalWorkItem {
+  return {
+    id: 'goal-work:1',
+    role: 'agent',
+    priority: 'P0',
+    taskClass: 'advancement',
+    actionKind: 'advance',
+    text: objective,
+    status: 'open',
+    dependsOn: [],
+    evidenceRefs: [],
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+function isForcedReplan(value: unknown): value is { at: string; reason: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.at === 'string' && typeof record.reason === 'string';
 }
 
 function isBlockAudit(value: unknown): value is GoalBlockAudit {

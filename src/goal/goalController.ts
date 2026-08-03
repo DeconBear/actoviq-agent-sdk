@@ -9,7 +9,8 @@ import type {
 } from './types.js';
 
 export type GoalExecutionDecision =
-  | { kind: 'run' }
+  | { kind: 'run'; mode: 'work' | 'finalize'; workItemId?: string }
+  | { kind: 'replan'; trigger: string; frontierFingerprint: string; planRevision: number }
   | { kind: 'stop'; reason: 'paused' | 'waiting_user' | 'waiting_external' | 'blocked' | 'complete' | 'cancelled' | 'budget_exhausted'; message: string };
 
 export class GoalExecutionBlockedError extends Error {
@@ -22,7 +23,7 @@ export class GoalExecutionBlockedError extends Error {
 }
 
 export function decideGoalExecution(goal: Goal | null): GoalExecutionDecision {
-  if (!goal) return { kind: 'run' };
+  if (!goal) return { kind: 'run', mode: 'work' };
   if (goal.status !== 'active') {
     return {
       kind: 'stop',
@@ -38,55 +39,78 @@ export function decideGoalExecution(goal: Goal | null): GoalExecutionDecision {
       message: `Goal budget exhausted: ${exhausted}. Revise the budget or replace the Goal to continue.`,
     };
   }
-  return { kind: 'run' };
+  if (goal.forcedReplan) return replanDecision(goal, goal.forcedReplan.reason);
+  const completed = new Set(
+    goal.workItems
+      .filter(item => item.status === 'done' || item.status === 'cancelled')
+      .map(item => item.id),
+  );
+  const userGate = goal.workItems.find(item => (
+    item.role === 'user'
+    && item.taskClass === 'user_gate'
+    && item.status !== 'done'
+    && item.status !== 'cancelled'
+  ));
+  if (userGate) {
+    return {
+      kind: 'stop',
+      reason: 'waiting_user',
+      message: `Goal requires user action for ${userGate.id}: ${userGate.text}`,
+    };
+  }
+  const runnable = [...goal.workItems]
+    .filter(item => (
+      item.role === 'agent'
+      && ['open', 'claimed', 'running'].includes(item.status)
+      && item.dependsOn.every(id => completed.has(id))
+    ))
+    .sort(compareWorkItems)[0];
+  if (runnable) {
+    const noChangeCount = countTrailingNoChange(goal, runnable.id);
+    if (noChangeCount >= 2) {
+      return replanDecision(goal, `no_progress:${runnable.id}`);
+    }
+    return { kind: 'run', mode: 'work', workItemId: runnable.id };
+  }
+  if (goal.workItems.length > 0 && goal.workItems.every(item => (
+    item.status === 'done' || item.status === 'cancelled'
+  ))) {
+    if (goal.noFollowupReason?.trim()) return { kind: 'run', mode: 'finalize' };
+    return replanDecision(goal, 'terminal_no_followup_missing');
+  }
+  const deferred = goal.workItems.find(item => item.status === 'deferred');
+  if (deferred) {
+    return {
+      kind: 'stop',
+      reason: 'waiting_external',
+      message: `Goal is waiting for ${deferred.id}: ${deferred.resumeWhen ?? deferred.text}`,
+    };
+  }
+  return replanDecision(goal, 'frontier_empty_nonterminal');
 }
 
 export async function settleGoalRun(
   service: GoalService,
   result: AgentRunResult,
+  decision: GoalExecutionDecision = { kind: 'run', mode: 'work' },
 ): Promise<void> {
   const goal = await service.read();
   if (!goal || goal.status !== 'active') return;
 
   const usage = goalUsage(result);
   const observedEvidence = observedToolEvidence(result);
-  const observedRefs = new Set([
-    ...goal.evidence.flatMap(item => item.ref ? [item.ref] : []),
-    ...observedEvidence.flatMap(item => item.ref ? [item.ref] : []),
-  ]);
-  const request = goal.completionRequest;
   let outcome: GoalTurnOutcome = observedEvidence.length > 0
     ? 'validated_progress'
     : 'no_change';
-  let validation: GoalTurnReceipt['validation'] = {
+  const validation: GoalTurnReceipt['validation'] = {
     status: observedEvidence.length > 0 ? 'passed' : 'not_applicable',
   };
-  let completionAccepted = false;
-  if (request) {
-    const missing = request.evidenceRefs.filter(ref => !observedRefs.has(ref));
-    const evidenceRequired = Boolean(goal.completionCriteria?.trim());
-    if (missing.length > 0) {
-      outcome = 'validation_failed';
-      validation = {
-        status: 'failed',
-        reason: `Completion evidence was not observed: ${missing.join(', ')}`,
-      };
-    } else if (evidenceRequired && request.evidenceRefs.length === 0) {
-      outcome = 'validation_failed';
-      validation = {
-        status: 'failed',
-        reason: 'Completion criteria require at least one runtime-observed evidence reference.',
-      };
-    } else {
-      completionAccepted = true;
-      outcome = 'validated_completion';
-      validation = { status: 'passed' };
-    }
-  }
+  if (decision.kind === 'replan') outcome = 'replan_required';
 
   const receipt: GoalTurnReceipt = {
     id: `goal-turn:${result.runId}`,
     runId: result.runId,
+    ...(decision.kind === 'run' && decision.workItemId ? { workItemId: decision.workItemId } : {}),
     at: result.completedAt,
     outcome,
     evidenceRefs: observedEvidence.flatMap(item => item.ref ? [item.ref] : []),
@@ -96,8 +120,43 @@ export async function settleGoalRun(
   await service.settleTurn({
     receipt,
     evidence: observedEvidence,
-    completionAccepted,
+    observedRefs: observedEvidence.flatMap(item => item.ref ? [item.ref] : []),
+    ...(decision.kind === 'replan'
+      ? {
+          replan: {
+            trigger: decision.trigger,
+            frontierFingerprint: decision.frontierFingerprint,
+            deltaRecorded: goal.planRevision > decision.planRevision,
+          },
+        }
+      : {}),
   });
+}
+
+function compareWorkItems(a: Goal['workItems'][number], b: Goal['workItems'][number]): number {
+  const rank = { P0: 0, P1: 1, P2: 2 } as const;
+  return rank[a.priority] - rank[b.priority] || a.createdAt.localeCompare(b.createdAt);
+}
+
+function countTrailingNoChange(goal: Goal, workItemId: string): number {
+  let count = 0;
+  for (let index = goal.turnReceipts.length - 1; index >= 0; index -= 1) {
+    const receipt = goal.turnReceipts[index]!;
+    if (receipt.workItemId !== workItemId || receipt.outcome !== 'no_change') break;
+    count += 1;
+  }
+  return count;
+}
+
+function replanDecision(goal: Goal, trigger: string): GoalExecutionDecision {
+  return {
+    kind: 'replan',
+    trigger,
+    frontierFingerprint: goal.workItems
+      .map(item => `${item.id}:${item.status}:${item.dependsOn.join(',')}`)
+      .join('|'),
+    planRevision: goal.planRevision,
+  };
 }
 
 function exhaustedBudgetMetric(goal: Goal): string | undefined {

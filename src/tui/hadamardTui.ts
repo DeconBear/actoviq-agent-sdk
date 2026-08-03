@@ -66,6 +66,7 @@ import {
   transitionProjectIssue,
   WorktreeService,
   GoalService,
+  executeGoalCommand,
   GOAL_METADATA_KEY,
   normalizeGoal,
 } from '../index.js';
@@ -3284,14 +3285,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     return GoalService.forSession(session);
   }
 
-  async function setGoal(objective: string): Promise<void> {
-    await goalService().create({ objective });
-  }
-
-  async function clearGoal(): Promise<void> {
-    await goalService().clear();
-  }
-
   function goalContextLine(): string {
     // Normalize through the shared Goal schema while keeping status rendering
     // synchronous over the already-cached Session metadata.
@@ -4176,38 +4169,8 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           return;
         }
         case 'goal': {
-          const arg = args.trim();
-          const svc = goalService();
-          if (!arg) {
-            const g = await svc.read();
-            if (!g) {
-              appendStatic([...formatInfoLine('no goal set — use /goal <objective> to set one'), '']);
-            } else {
-              const marks: Record<string, string> = { active: `${A.green}▶ active${A.reset}`, paused: `${A.yellow}‖ paused${A.reset}`, complete: `${A.dim}✓ complete${A.reset}`, blocked: `${A.red}⊘ blocked${A.reset}` };
-              appendStatic([`${A.bold}Goal${A.reset}  ${marks[g.status] ?? ''}  ${A.dim}${g.createdAt.slice(0, 10)}${A.reset}`, `  ${g.objective}`, '']);
-            }
-            return;
-          }
-          if (arg === 'clear') { await clearGoal(); appendStatic([...formatInfoLine('goal cleared'), '']); return; }
-          if (arg === 'pause') {
-            const r = await svc.transition('paused');
-            appendStatic(r.ok ? [...formatInfoLine('goal paused'), ''] : [...formatInfoLine(r.message), '']);
-            return;
-          }
-          if (arg === 'resume') {
-            const r = await svc.transition('active');
-            appendStatic(r.ok ? [...formatInfoLine('goal resumed'), ''] : [...formatInfoLine(r.message), '']);
-            return;
-          }
-          if (arg === 'complete' || arg === 'done') {
-            // Complete is a runtime-only transition requiring evidence; the UI
-            // cannot mark a goal complete without evidence. Steer the user to
-            // let the agent complete it via UpdateGoal, or clear it instead.
-            appendStatic([...formatInfoLine('goal completion requires runtime evidence — ask the agent to call UpdateGoal with status "complete", or use /goal clear'), '']);
-            return;
-          }
-          await setGoal(arg);
-          appendStatic([...formatInfoLine(`goal set — ${arg}`), '']);
+          const commandResult = await executeGoalCommand(goalService(), args);
+          appendStatic([...formatInfoLine(commandResult.message), '']);
           return;
         }
         case 'review': {

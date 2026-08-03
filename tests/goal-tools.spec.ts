@@ -5,6 +5,7 @@ import {
   createGoalTools,
   CREATE_GOAL_TOOL_NAME,
   GET_GOAL_TOOL_NAME,
+  PLAN_GOAL_TOOL_NAME,
   UPDATE_GOAL_TOOL_NAME,
 } from '../src/goal/goalTools.js';
 import { GOAL_METADATA_KEY, type GoalSessionPort } from '../src/goal/goalStore.js';
@@ -83,6 +84,22 @@ describe('goal tools', () => {
     expect((result.goal as unknown as { completionRequest?: unknown }).completionRequest).toBeTruthy();
   });
 
+  it('PlanGoal writes a structured ordered frontier', async () => {
+    const { tools } = makeTools();
+    const create = tools.find(t => t.name === CREATE_GOAL_TOOL_NAME)!;
+    const plan = tools.find(t => t.name === PLAN_GOAL_TOOL_NAME)!;
+    await create.execute({ objective: 'goal' }, ctx);
+    const result = await plan.execute({
+      reason: 'decompose bootstrap item',
+      items: [
+        { id: 'test', priority: 'P0', taskClass: 'verification', text: 'run tests' },
+        { id: 'ship', priority: 'P1', text: 'ship change', dependsOn: ['test'] },
+      ],
+    }, ctx) as { ok: boolean; goal: { workItems: Array<{ id: string }> } };
+    expect(result.ok).toBe(true);
+    expect(result.goal.workItems.map(item => item.id)).toEqual(['test', 'ship']);
+  });
+
   it('UpdateGoal blocks only after the same reason is reported three times', async () => {
     const { tools } = makeTools();
     const create = tools.find(t => t.name === CREATE_GOAL_TOOL_NAME)!;
@@ -116,7 +133,7 @@ describe('buildGoalPrompt', () => {
     const complete: Goal = {
       version: GOAL_SCHEMA_VERSION, objective: 'done', status: 'complete',
       consumption: { turns: 0, toolIterations: 0, tokens: 0 },
-      evidence: [], blockAudit: [], turnReceipts: [], createdAt: 't', updatedAt: 't', revision: 0,
+      evidence: [], blockAudit: [], turnReceipts: [], workItems: [], workItemRequests: [], planRevision: 0, replanAudit: [], createdAt: 't', updatedAt: 't', revision: 0,
     };
     expect(buildGoalPrompt(complete)).toBeUndefined();
   });
@@ -135,6 +152,7 @@ describe('buildGoalPrompt', () => {
       ],
       blockAudit: [],
       turnReceipts: [],
+      workItems: [], workItemRequests: [], planRevision: 0, replanAudit: [],
       createdAt: 't0',
       updatedAt: 't2',
       revision: 2,
@@ -152,7 +170,7 @@ describe('buildGoalPrompt', () => {
     const goal: Goal = {
       version: GOAL_SCHEMA_VERSION, objective: 'x', status: 'blocked',
       consumption: { turns: 0, toolIterations: 0, tokens: 0 },
-      evidence: [], blockAudit: [{ at: 't', reason: 'no key', repeat: 3 }], turnReceipts: [],
+      evidence: [], blockAudit: [{ at: 't', reason: 'no key', repeat: 3 }], turnReceipts: [], workItems: [], workItemRequests: [], planRevision: 0, replanAudit: [],
       createdAt: 't', updatedAt: 't', revision: 1,
     };
     const prompt = buildGoalPrompt(goal)!;

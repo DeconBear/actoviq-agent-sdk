@@ -20,6 +20,7 @@ import type { Goal, GoalStatus } from './types.js';
 export const GET_GOAL_TOOL_NAME = 'GetGoal';
 export const CREATE_GOAL_TOOL_NAME = 'CreateGoal';
 export const UPDATE_GOAL_TOOL_NAME = 'UpdateGoal';
+export const PLAN_GOAL_TOOL_NAME = 'PlanGoal';
 
 export const GOAL_TOOLS_PROMPT = `## GetGoal / CreateGoal / UpdateGoal
 
@@ -29,7 +30,8 @@ and progress evidence. The active goal is injected into your context each turn.
 
 - GetGoal: read the current goal (objective, status, criteria, budget, recent evidence).
 - CreateGoal: set a new goal (replaces any existing one). Use when the user gives a task with a clear objective.
-- UpdateGoal: record progress, or request a terminal status. "complete" is a request that the runtime settles after the turn and requires runtime-observed evidence refs when completion criteria exist. A "blocked" report is audited; the Goal becomes blocked only after the same reason repeats for three consecutive Goal turns. "paused"/"active" status changes are user-driven via /goal, not this tool.
+- PlanGoal: replace or extend the ordered work frontier. Use it when the runtime requests a replan or the bootstrap item needs decomposition.
+- UpdateGoal: request a work-item transition, record progress, or request a terminal status. Work-item and Goal completion are settled after the turn and require runtime-observed evidence refs. A "blocked" report is audited; the Goal becomes blocked only after the same reason repeats for three consecutive Goal turns. "paused"/"active" status changes are user-driven via /goal, not this tool.
 
 Record progress with UpdateGoal at meaningful checkpoints. Mark complete only when the completion criteria are genuinely met, and include evidence. Report blocked only when you cannot proceed, with a concrete reason. Include expectedRevision after GetGoal when coordinating concurrent updates.`;
 
@@ -83,6 +85,41 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
     },
   );
 
+  const plan = tool(
+    {
+      name: PLAN_GOAL_TOOL_NAME,
+      description:
+        'Write a validated ordered Goal frontier. Replace the bootstrap plan when decomposing a Goal; extend only when adding successors.',
+      inputSchema: z.strictObject({
+        replace: z.boolean().optional().describe('Replace the existing frontier. Defaults to true.'),
+        reason: z.string().optional().describe('Why this plan or replan is needed.'),
+        expectedRevision: z.number().int().nonnegative().optional(),
+        items: z.array(z.strictObject({
+          id: z.string().optional(),
+          role: z.enum(['agent', 'user']).optional(),
+          priority: z.enum(['P0', 'P1', 'P2']).optional(),
+          taskClass: z.enum(['advancement', 'verification', 'monitor', 'user_gate']).optional(),
+          actionKind: z.string().optional(),
+          text: z.string().min(1),
+          dependsOn: z.array(z.string()).optional(),
+          successorOf: z.string().optional(),
+          resumeWhen: z.string().optional(),
+        })).min(1),
+      }),
+      isReadOnly: () => true,
+      prompt: () => GOAL_TOOLS_PROMPT,
+    },
+    async input => {
+      const result = await ctx.getGoalService().plan({
+        items: input.items,
+        ...(input.replace !== undefined ? { replace: input.replace } : {}),
+        ...(input.reason ? { reason: input.reason } : {}),
+        ...(typeof input.expectedRevision === 'number' ? { expectedRevision: input.expectedRevision } : {}),
+      });
+      return formatResult(result);
+    },
+  );
+
   const update = tool(
     {
       name: UPDATE_GOAL_TOOL_NAME,
@@ -95,6 +132,11 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
         reason: z.string().optional().describe('Block reason. Required for "blocked".'),
         evidenceRefs: z.array(z.string()).optional()
           .describe('Runtime-observed evidence refs for a completion request, for example tool:<call-id>.'),
+        workItemId: z.string().optional().describe('Selected Goal work item to update.'),
+        workItemStatus: z.enum(['open', 'done', 'deferred', 'cancelled']).optional(),
+        noFollowupReason: z.string().optional()
+          .describe('Explicit terminal rationale when completing the final work item without a successor.'),
+        resumeWhen: z.string().optional().describe('Exact condition for a deferred item to become runnable.'),
         turn: z.number().int().nonnegative().optional().describe('Runtime turn index when a block was detected.'),
         expectedRevision: z.number().int().nonnegative().optional()
           .describe('Revision returned by GetGoal. The update is rejected if another actor changed the Goal.'),
@@ -105,6 +147,21 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
     async (input) => {
       const service = ctx.getGoalService();
       const status = input.status as GoalStatus | undefined;
+      if (input.workItemId || input.workItemStatus) {
+        if (!input.workItemId || !input.workItemStatus) {
+          return { ok: false, message: 'workItemId and workItemStatus must be provided together.' };
+        }
+        const result = await service.requestWorkItemUpdate({
+          workItemId: input.workItemId,
+          status: input.workItemStatus,
+          note: input.note ?? '',
+          ...(input.evidenceRefs ? { evidenceRefs: input.evidenceRefs } : {}),
+          ...(input.noFollowupReason ? { noFollowupReason: input.noFollowupReason } : {}),
+          ...(input.resumeWhen ? { resumeWhen: input.resumeWhen } : {}),
+          ...(typeof input.expectedRevision === 'number' ? { expectedRevision: input.expectedRevision } : {}),
+        });
+        return formatResult(result);
+      }
       if (status === 'complete') {
         const result = await service.requestCompletion({
           note: input.note ?? '',
@@ -138,7 +195,7 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
     },
   );
 
-  return [get, create, update];
+  return [get, create, plan, update];
 }
 
 function summarizeGoal(goal: Goal): Record<string, unknown> {
@@ -151,6 +208,10 @@ function summarizeGoal(goal: Goal): Record<string, unknown> {
     evidence: goal.evidence.slice(-5),
     blockAudit: goal.blockAudit.slice(-5),
     turnReceipts: goal.turnReceipts.slice(-5),
+    workItems: goal.workItems,
+    planRevision: goal.planRevision,
+    replanAudit: goal.replanAudit.slice(-5),
+    ...(goal.noFollowupReason ? { noFollowupReason: goal.noFollowupReason } : {}),
     ...(goal.completionRequest ? { completionRequest: goal.completionRequest } : {}),
     revision: goal.revision,
     updatedAt: goal.updatedAt,

@@ -78,6 +78,7 @@ export type GoalTurnOutcome =
 export interface GoalTurnReceipt {
   id: string;
   runId: string;
+  workItemId?: string;
   at: string;
   outcome: GoalTurnOutcome;
   evidenceRefs: string[];
@@ -86,6 +87,46 @@ export interface GoalTurnReceipt {
     reason?: string;
   };
   usage: GoalBudgetConsumption;
+}
+
+export type GoalWorkItemRole = 'agent' | 'user';
+export type GoalWorkItemPriority = 'P0' | 'P1' | 'P2';
+export type GoalWorkItemClass = 'advancement' | 'verification' | 'monitor' | 'user_gate';
+export type GoalWorkItemStatus = 'open' | 'claimed' | 'running' | 'done' | 'deferred' | 'cancelled';
+
+/** One executable item on the Goal frontier. */
+export interface GoalWorkItem {
+  id: string;
+  role: GoalWorkItemRole;
+  priority: GoalWorkItemPriority;
+  taskClass: GoalWorkItemClass;
+  actionKind: string;
+  text: string;
+  status: GoalWorkItemStatus;
+  dependsOn: string[];
+  evidenceRefs: string[];
+  successorOf?: string;
+  resumeWhen?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalWorkItemUpdateRequest {
+  at: string;
+  workItemId: string;
+  status: 'open' | 'done' | 'deferred' | 'cancelled';
+  note: string;
+  evidenceRefs: string[];
+  noFollowupReason?: string;
+  resumeWhen?: string;
+}
+
+export interface GoalReplanAudit {
+  at: string;
+  trigger: string;
+  frontierFingerprint: string;
+  repeat: number;
+  deltaRecorded: boolean;
 }
 
 /** A model may request completion; only the runtime may accept it. */
@@ -136,6 +177,18 @@ export interface Goal {
   turnReceipts: GoalTurnReceipt[];
   /** Pending model completion request, settled after the current turn. */
   completionRequest?: GoalCompletionRequest;
+  /** Ordered executable frontier. */
+  workItems: GoalWorkItem[];
+  /** Pending model work-item updates, settled after the current turn. */
+  workItemRequests: GoalWorkItemUpdateRequest[];
+  /** Bumped whenever the ordered plan materially changes. */
+  planRevision: number;
+  /** Recent deterministic replan decisions. */
+  replanAudit: GoalReplanAudit[];
+  /** Explicit operator/runtime request to replan before more delivery work. */
+  forcedReplan?: { at: string; reason: string };
+  /** Explicit terminal closure when no successor remains. */
+  noFollowupReason?: string;
   /** ISO timestamp the goal was created. */
   createdAt: string;
   /** ISO timestamp the goal was last updated. */
