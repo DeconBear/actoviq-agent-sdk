@@ -60,7 +60,7 @@ describe('GoalService', () => {
   it('creates a goal with versioned schema and active status', async () => {
     const { service } = makeService(fixedClock);
     const goal = await service.create({ objective: 'Ship the checkpoint feature' });
-    expect(goal.version).toBe(2);
+    expect(goal.version).toBe(3);
     expect(goal.status).toBe('active');
     expect(goal.objective).toBe('Ship the checkpoint feature');
     expect(goal.evidence).toEqual([]);
@@ -232,7 +232,7 @@ describe('normalizeGoal (legacy migration)', () => {
     const raw = { objective: 'legacy goal', status: 'paused', setAt: '2026-01-01T00:00:00Z' };
     const goal = normalizeGoal(raw, '2026-07-29T00:00:00Z');
     expect(goal).not.toBeNull();
-    expect(goal!.version).toBe(2);
+    expect(goal!.version).toBe(3);
     expect(goal!.objective).toBe('legacy goal');
     expect(goal!.status).toBe('paused');
     expect(goal!.createdAt).toBe('2026-01-01T00:00:00Z');

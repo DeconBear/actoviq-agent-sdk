@@ -25,6 +25,8 @@ export type {
   GoalWorkItemStatus,
   GoalWorkItemUpdateRequest,
   GoalReplanAudit,
+  GoalWorkClaim,
+  GoalHandoffReceipt,
 } from './types.js';
 export { GOAL_SCHEMA_VERSION } from './types.js';
 export {
@@ -92,3 +94,9 @@ export {
   type GoalContinuationRunResult,
   type GoalWakeDecision,
 } from './goalContinuation.js';
+export {
+  GoalWorkCoordinator,
+  type GoalWorkerIdentity,
+  type GoalWorkerOutcome,
+  type GoalWorkerRunResult,
+} from './goalWorkCoordinator.js';

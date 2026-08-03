@@ -367,6 +367,8 @@ function isWorkItem(value: unknown): value is GoalWorkItem {
     && record.dependsOn.every(item => typeof item === 'string')
     && Array.isArray(record.evidenceRefs)
     && record.evidenceRefs.every(item => typeof item === 'string')
+    && (!('roleScopes' in record) || (Array.isArray(record.roleScopes) && record.roleScopes.every(item => typeof item === 'string')))
+    && (!('excludedAgentIds' in record) || (Array.isArray(record.excludedAgentIds) && record.excludedAgentIds.every(item => typeof item === 'string')))
     && typeof record.createdAt === 'string'
     && typeof record.updatedAt === 'string';
 }

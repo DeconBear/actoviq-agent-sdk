@@ -82,6 +82,8 @@ export interface PlanGoalItemInput {
   dependsOn?: string[];
   successorOf?: string;
   resumeWhen?: string;
+  roleScopes?: string[];
+  excludedAgentIds?: string[];
 }
 
 export interface PlanGoalInput {
@@ -733,6 +735,12 @@ function normalizePlannedItems(
       evidenceRefs: [],
       ...(input.successorOf?.trim() ? { successorOf: input.successorOf.trim() } : {}),
       ...(input.resumeWhen?.trim() ? { resumeWhen: input.resumeWhen.trim() } : {}),
+      ...(uniqueStrings(input.roleScopes ?? []).length > 0
+        ? { roleScopes: uniqueStrings(input.roleScopes ?? []) }
+        : {}),
+      ...(uniqueStrings(input.excludedAgentIds ?? []).length > 0
+        ? { excludedAgentIds: uniqueStrings(input.excludedAgentIds ?? []) }
+        : {}),
       createdAt: at,
       updatedAt: at,
     };

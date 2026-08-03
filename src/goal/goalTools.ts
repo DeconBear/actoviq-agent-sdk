@@ -105,6 +105,8 @@ export function createGoalTools(ctx: GoalToolContext): AgentToolDefinition[] {
           dependsOn: z.array(z.string()).optional(),
           successorOf: z.string().optional(),
           resumeWhen: z.string().optional(),
+          roleScopes: z.array(z.string().min(1)).optional(),
+          excludedAgentIds: z.array(z.string().min(1)).optional(),
         })).min(1),
       }),
       isReadOnly: () => true,

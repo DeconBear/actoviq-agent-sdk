@@ -5,6 +5,7 @@ import { nodeSqliteDriverFactory, type SqliteDriver } from '../storage-v2/sqlite
 import { createId } from '../runtime/helpers.js';
 import { normalizeGoal, type GoalSessionPort } from './goalStore.js';
 import type { Goal } from './types.js';
+import type { GoalHandoffReceipt, GoalWorkClaim } from './types.js';
 
 export const PROJECT_GOAL_DATABASE = 'goal-state.sqlite';
 
@@ -267,6 +268,284 @@ export class ProjectGoalStore {
     return this.continuationState(input.goalId);
   }
 
+  claimNextWork(input: {
+    goalId: string;
+    agentId: string;
+    roleScopes?: string[];
+    leaseMs?: number;
+    now?: Date;
+  }): GoalWorkClaim | undefined {
+    const now = input.now ?? new Date();
+    const roleScopes = unique(input.roleScopes ?? []);
+    return this.driver.transaction(() => {
+      const goal = this.readSnapshot(input.goalId);
+      if (!goal || goal.status !== 'active') return undefined;
+      const completed = new Set(goal.workItems
+        .filter(item => item.status === 'done' || item.status === 'cancelled')
+        .map(item => item.id));
+      const claims = new Map(this.driver.prepare(`
+        SELECT * FROM goal_work_claims WHERE goal_id = ? AND lease_expires_at > ?
+      `).all(input.goalId, now.toISOString()).map(row => [String(row.work_item_id), row]));
+      const candidate = [...goal.workItems]
+        .filter(item => (
+          item.role === 'agent'
+          && ['open', 'claimed', 'running'].includes(item.status)
+          && item.dependsOn.every(id => completed.has(id))
+          && !claims.has(item.id)
+          && !(item.excludedAgentIds ?? []).includes(input.agentId)
+          && ((item.roleScopes ?? []).length === 0
+            || (item.roleScopes ?? []).some(scope => roleScopes.includes(scope)))
+        ))
+        .sort(compareGoalWorkItems)[0];
+      if (!candidate) return undefined;
+      const claimedAt = now.toISOString();
+      const claim: GoalWorkClaim = {
+        goalId: input.goalId,
+        workItemId: candidate.id,
+        agentId: input.agentId,
+        claimToken: `goal-claim:${createId()}`,
+        roleScopes,
+        claimedAt,
+        leaseExpiresAt: new Date(now.getTime() + Math.max(1_000, input.leaseMs ?? 15 * 60_000)).toISOString(),
+        updatedAt: claimedAt,
+      };
+      this.driver.prepare(`
+        INSERT INTO goal_work_claims (
+          goal_id, work_item_id, agent_id, claim_token, role_scopes_json,
+          claimed_at, lease_expires_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(goal_id, work_item_id) DO UPDATE SET
+          agent_id = excluded.agent_id,
+          claim_token = excluded.claim_token,
+          role_scopes_json = excluded.role_scopes_json,
+          claimed_at = excluded.claimed_at,
+          lease_expires_at = excluded.lease_expires_at,
+          updated_at = excluded.updated_at
+        WHERE goal_work_claims.lease_expires_at <= ?
+      `).run(
+        claim.goalId,
+        claim.workItemId,
+        claim.agentId,
+        claim.claimToken,
+        JSON.stringify(claim.roleScopes),
+        claim.claimedAt,
+        claim.leaseExpiresAt,
+        claim.updatedAt,
+        claimedAt,
+      );
+      this.insertEvent(input.goalId, 'work_claimed', claimedAt, undefined, {
+        workItemId: candidate.id,
+        agentId: input.agentId,
+        leaseExpiresAt: claim.leaseExpiresAt,
+      });
+      return claim;
+    });
+  }
+
+  renewWorkClaim(claimToken: string, leaseMs = 15 * 60_000, now = new Date()): GoalWorkClaim | undefined {
+    const row = this.driver.prepare(
+      'SELECT * FROM goal_work_claims WHERE claim_token = ? AND lease_expires_at > ?',
+    ).get(claimToken, now.toISOString());
+    if (!row) return undefined;
+    const leaseExpiresAt = new Date(now.getTime() + Math.max(1_000, leaseMs)).toISOString();
+    this.driver.prepare(`
+      UPDATE goal_work_claims SET lease_expires_at = ?, updated_at = ? WHERE claim_token = ?
+    `).run(leaseExpiresAt, now.toISOString(), claimToken);
+    return mapWorkClaim({ ...row, lease_expires_at: leaseExpiresAt, updated_at: now.toISOString() });
+  }
+
+  markClaimRunning(claimToken: string, now = new Date()): boolean {
+    const row = this.driver.prepare(
+      'SELECT goal_id, work_item_id FROM goal_work_claims WHERE claim_token = ? AND lease_expires_at > ?',
+    ).get(claimToken, now.toISOString());
+    if (!row) return false;
+    let changed = false;
+    this.updateSnapshot(String(row.goal_id), raw => {
+      const goal = normalizeGoal(raw, now.toISOString());
+      if (!goal) return undefined;
+      const workItems = goal.workItems.map(item => {
+        if (item.id !== String(row.work_item_id)) return item;
+        changed = true;
+        return { ...item, status: 'running' as const, updatedAt: now.toISOString() };
+      });
+      return changed ? {
+        ...goal,
+        workItems,
+        updatedAt: now.toISOString(),
+        revision: goal.revision + 1,
+      } : goal;
+    });
+    return changed;
+  }
+
+  releaseWorkClaim(claimToken: string, reason = 'released', now = new Date()): boolean {
+    const row = this.driver.prepare(
+      'SELECT goal_id, work_item_id, agent_id FROM goal_work_claims WHERE claim_token = ?',
+    ).get(claimToken);
+    if (!row) return false;
+    const result = this.driver.prepare('DELETE FROM goal_work_claims WHERE claim_token = ?').run(claimToken);
+    if (result.changes === 1) {
+      this.insertEvent(String(row.goal_id), 'work_claim_released', now.toISOString(), undefined, {
+        workItemId: String(row.work_item_id),
+        agentId: String(row.agent_id),
+        reason,
+      });
+    }
+    return result.changes === 1;
+  }
+
+  completeWorkClaim(claimToken: string, evidenceRefs: string[], now = new Date()): boolean {
+    const refs = unique(evidenceRefs);
+    if (refs.length === 0) return false;
+    const row = this.driver.prepare(
+      'SELECT goal_id, work_item_id, agent_id FROM goal_work_claims WHERE claim_token = ? AND lease_expires_at > ?',
+    ).get(claimToken, now.toISOString());
+    if (!row) return false;
+    let changed = false;
+    this.updateSnapshot(String(row.goal_id), raw => {
+      const goal = normalizeGoal(raw, now.toISOString());
+      if (!goal) return undefined;
+      const workItems = goal.workItems.map(item => {
+        if (item.id !== String(row.work_item_id) || item.status === 'done') return item;
+        changed = true;
+        return {
+          ...item,
+          status: 'done' as const,
+          evidenceRefs: unique([...item.evidenceRefs, ...refs]),
+          updatedAt: now.toISOString(),
+        };
+      });
+      return changed ? {
+        ...goal,
+        workItems,
+        delivery: {
+          ...goal.delivery,
+          completedWorkItems: goal.delivery.completedWorkItems + 1,
+        },
+        planRevision: goal.planRevision + 1,
+        updatedAt: now.toISOString(),
+        revision: goal.revision + 1,
+      } : goal;
+    });
+    if (!changed) return false;
+    this.driver.prepare('DELETE FROM goal_work_claims WHERE claim_token = ?').run(claimToken);
+    this.insertEvent(String(row.goal_id), 'work_claim_completed', now.toISOString(), undefined, {
+      workItemId: String(row.work_item_id),
+      agentId: String(row.agent_id),
+      evidenceRefs: refs,
+    });
+    return true;
+  }
+
+  handoffWork(input: {
+    claimToken: string;
+    reason: string;
+    toAgentId?: string;
+    toAgentRoleScopes?: string[];
+    evidenceRefs?: string[];
+    leaseMs?: number;
+    now?: Date;
+  }): { receipt: GoalHandoffReceipt; claim?: GoalWorkClaim } | undefined {
+    const now = input.now ?? new Date();
+    return this.driver.transaction(() => {
+      const row = this.driver.prepare(
+        'SELECT * FROM goal_work_claims WHERE claim_token = ? AND lease_expires_at > ?',
+      ).get(input.claimToken, now.toISOString());
+      if (!row) return undefined;
+      const evidenceRefs = unique(input.evidenceRefs ?? []);
+      const goal = this.readSnapshot(String(row.goal_id));
+      const workItem = goal?.workItems.find(item => item.id === String(row.work_item_id));
+      const toAgentRoleScopes = unique(input.toAgentRoleScopes ?? []);
+      if (
+        input.toAgentId
+        && (
+          workItem?.excludedAgentIds?.includes(input.toAgentId)
+          || ((workItem?.roleScopes?.length ?? 0) > 0
+            && !workItem!.roleScopes!.some(scope => toAgentRoleScopes.includes(scope)))
+        )
+      ) {
+        return undefined;
+      }
+      const inserted = this.driver.prepare(`
+        INSERT INTO goal_handoffs (
+          goal_id, work_item_id, from_agent_id, to_agent_id, reason, evidence_refs_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        row.goal_id,
+        row.work_item_id,
+        row.agent_id,
+        input.toAgentId ?? null,
+        input.reason.trim() || 'handoff',
+        JSON.stringify(evidenceRefs),
+        now.toISOString(),
+      );
+      this.driver.prepare('DELETE FROM goal_work_claims WHERE claim_token = ?').run(input.claimToken);
+      let claim: GoalWorkClaim | undefined;
+      if (input.toAgentId) {
+        claim = {
+          goalId: String(row.goal_id),
+          workItemId: String(row.work_item_id),
+          agentId: input.toAgentId,
+          claimToken: `goal-claim:${createId()}`,
+          roleScopes: toAgentRoleScopes,
+          claimedAt: now.toISOString(),
+          leaseExpiresAt: new Date(now.getTime() + Math.max(1_000, input.leaseMs ?? 15 * 60_000)).toISOString(),
+          updatedAt: now.toISOString(),
+        };
+        this.driver.prepare(`
+          INSERT INTO goal_work_claims (
+            goal_id, work_item_id, agent_id, claim_token, role_scopes_json,
+            claimed_at, lease_expires_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          claim.goalId, claim.workItemId, claim.agentId, claim.claimToken,
+          JSON.stringify(claim.roleScopes),
+          claim.claimedAt, claim.leaseExpiresAt, claim.updatedAt,
+        );
+      }
+      const receipt: GoalHandoffReceipt = {
+        id: Number(inserted.lastInsertRowid),
+        goalId: String(row.goal_id),
+        workItemId: String(row.work_item_id),
+        fromAgentId: String(row.agent_id),
+        ...(input.toAgentId ? { toAgentId: input.toAgentId } : {}),
+        reason: input.reason.trim() || 'handoff',
+        evidenceRefs,
+        at: now.toISOString(),
+      };
+      this.insertEvent(receipt.goalId, 'work_handed_off', receipt.at, undefined, {
+        workItemId: receipt.workItemId,
+        fromAgentId: receipt.fromAgentId,
+        ...(receipt.toAgentId ? { toAgentId: receipt.toAgentId } : {}),
+      });
+      return { receipt, ...(claim ? { claim } : {}) };
+    });
+  }
+
+  listWorkClaims(goalId: string, options: { includeExpired?: boolean; now?: Date } = {}): GoalWorkClaim[] {
+    const rows = this.driver.prepare(`
+      SELECT * FROM goal_work_claims WHERE goal_id = ?
+      ${options.includeExpired ? '' : 'AND lease_expires_at > ?'}
+      ORDER BY claimed_at ASC
+    `).all(...(options.includeExpired ? [goalId] : [goalId, (options.now ?? new Date()).toISOString()]));
+    return rows.map(mapWorkClaim);
+  }
+
+  listHandoffs(goalId: string, limit = 100): GoalHandoffReceipt[] {
+    return this.driver.prepare(`
+      SELECT * FROM goal_handoffs WHERE goal_id = ? ORDER BY handoff_id DESC LIMIT ?
+    `).all(goalId, Math.max(1, Math.min(limit, 500))).reverse().map(row => ({
+      id: Number(row.handoff_id),
+      goalId: String(row.goal_id),
+      workItemId: String(row.work_item_id),
+      fromAgentId: String(row.from_agent_id),
+      ...(typeof row.to_agent_id === 'string' ? { toAgentId: row.to_agent_id } : {}),
+      reason: String(row.reason),
+      evidenceRefs: parseStringArray(row.evidence_refs_json),
+      at: String(row.created_at),
+    }));
+  }
+
   goalIdForSession(sessionId: string): string | undefined {
     const row = this.driver.prepare(
       'SELECT goal_id FROM goal_sessions WHERE session_id = ?',
@@ -299,6 +578,7 @@ export class ProjectGoalStore {
         this.driver.prepare(
           'UPDATE goals SET archived_at = ?, updated_at = ? WHERE goal_id = ?',
         ).run(now, now, goalId);
+        this.driver.prepare('DELETE FROM goal_work_claims WHERE goal_id = ?').run(goalId);
         this.insertEvent(goalId, 'archived', now);
         return;
       }
@@ -326,6 +606,9 @@ export class ProjectGoalStore {
         status: goal.status,
         objective: goal.objective,
       });
+      if (goal.status === 'complete' || goal.status === 'cancelled' || goal.status === 'blocked') {
+        this.driver.prepare('DELETE FROM goal_work_claims WHERE goal_id = ?').run(goalId);
+      }
     });
   }
 
@@ -343,6 +626,7 @@ export class ProjectGoalStore {
         this.driver.prepare(
           'UPDATE goals SET archived_at = ?, updated_at = ? WHERE goal_id = ?',
         ).run(now, now, goalId);
+        this.driver.prepare('DELETE FROM goal_work_claims WHERE goal_id = ?').run(goalId);
         this.insertEvent(goalId, 'archived', now);
         return undefined;
       }
@@ -369,6 +653,9 @@ export class ProjectGoalStore {
       this.insertEvent(goalId, 'snapshot_updated', next.updatedAt, next.revision, {
         status: next.status,
       });
+      if (next.status === 'complete' || next.status === 'cancelled' || next.status === 'blocked') {
+        this.driver.prepare('DELETE FROM goal_work_claims WHERE goal_id = ?').run(goalId);
+      }
       return next;
     });
   }
@@ -502,6 +789,35 @@ function initializeSchema(driver: SqliteDriver): void {
 
     CREATE INDEX IF NOT EXISTS idx_goal_continuation_wake
       ON goal_continuation(mode, next_wake_at);
+
+    CREATE TABLE IF NOT EXISTS goal_work_claims (
+      goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
+      work_item_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      claim_token TEXT NOT NULL UNIQUE,
+      role_scopes_json TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      lease_expires_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(goal_id, work_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_goal_work_claims_lease
+      ON goal_work_claims(goal_id, lease_expires_at);
+
+    CREATE TABLE IF NOT EXISTS goal_handoffs (
+      handoff_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id TEXT NOT NULL REFERENCES goals(goal_id) ON DELETE CASCADE,
+      work_item_id TEXT NOT NULL,
+      from_agent_id TEXT NOT NULL,
+      to_agent_id TEXT,
+      reason TEXT NOT NULL,
+      evidence_refs_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_goal_handoffs_goal
+      ON goal_handoffs(goal_id, handoff_id);
   `);
 }
 
@@ -550,4 +866,36 @@ function clampSeconds(value: number, min: number, max: number): number {
 
 function isFuture(value: string | undefined, now: Date): boolean {
   return Boolean(value && Date.parse(value) > now.getTime());
+}
+
+function mapWorkClaim(row: Record<string, unknown>): GoalWorkClaim {
+  return {
+    goalId: String(row.goal_id),
+    workItemId: String(row.work_item_id),
+    agentId: String(row.agent_id),
+    claimToken: String(row.claim_token),
+    roleScopes: parseStringArray(row.role_scopes_json),
+    claimedAt: String(row.claimed_at),
+    leaseExpiresAt: String(row.lease_expires_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
+}
+
+function compareGoalWorkItems(a: Goal['workItems'][number], b: Goal['workItems'][number]): number {
+  const rank = { P0: 0, P1: 1, P2: 2 } as const;
+  return rank[a.priority] - rank[b.priority] || a.createdAt.localeCompare(b.createdAt);
 }

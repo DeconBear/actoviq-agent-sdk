@@ -7815,6 +7815,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const goalContinuation = sdk
       ? await sdk.goals.continuationStatus(session.id).catch(() => undefined)
       : undefined;
+    const goalClaims = sdk ? await sdk.goals.workClaims(session.id).catch(() => []) : [];
+    const goalHandoffs = sdk ? await sdk.goals.handoffs(session.id).catch(() => []) : [];
     return json(res, 200, {
       ok: true,
       path: workDir,
@@ -7830,6 +7832,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       goalStatus,
       projectGoals,
       goalContinuation,
+      goalClaims,
+      goalHandoffs,
     });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
@@ -18650,7 +18654,7 @@ async function runProjectGoalCommand(command) {
     setProjectSettingsStatus(error.message || 'Goal update failed', 'error');
   }
 }
-function renderProjectGoal(status, goals, continuation, profiles) {
+function renderProjectGoal(status, goals, continuation, profiles, claims, handoffs) {
   const root = el('projectGoalStatus');
   if (!root) return;
   const goal = status?.goal;
@@ -18668,6 +18672,8 @@ function renderProjectGoal(status, goals, continuation, profiles) {
       'Evidence: ' + ((goal.evidence || []).length ? (goal.evidence || []).slice(-5).map(item => item.ref || item.note).join(', ') : 'none'),
       'Project history: ' + (goals || []).length + ' goal(s)',
       'Continuation: ' + (continuation ? continuation.mode + ' \u00b7 interval ' + continuation.currentIntervalSeconds + 's' + (continuation.nextWakeAt ? ' \u00b7 next ' + continuation.nextWakeAt : '') : 'manual (not configured)'),
+      'Claims: ' + ((claims || []).length ? (claims || []).map(claim => claim.workItemId + ' \u2192 ' + claim.agentId + ' until ' + claim.leaseExpiresAt).join(', ') : 'none'),
+      'Handoffs: ' + ((handoffs || []).length ? (handoffs || []).slice(-5).map(item => item.fromAgentId + ' \u2192 ' + (item.toAgentId || 'pool') + ' (' + item.reason + ')').join(', ') : 'none'),
     ].join('\n');
   }
   const paused = goal?.status === 'paused';
@@ -18926,7 +18932,7 @@ async function mountProjectSettingsPanel(force) {
     const data = await settingsRes.json().catch(() => ({}));
     if (!settingsRes.ok) throw new Error(data.error || 'Failed to load project settings');
     const settings = data.settings || { workMode: 'coding', customPrompt: '', projectRules: '' };
-    renderProjectGoal(data.goalStatus, data.projectGoals || [], data.goalContinuation, data.dreamProfiles || []);
+    renderProjectGoal(data.goalStatus, data.projectGoals || [], data.goalContinuation, data.dreamProfiles || [], data.goalClaims || [], data.goalHandoffs || []);
     const coding = el('projectWorkModeCoding');
     const daily = el('projectWorkModeDaily');
     if (coding) coding.checked = settings.workMode !== 'daily';

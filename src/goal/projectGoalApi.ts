@@ -1,4 +1,5 @@
 import { executeGoalCommand, type GoalCommandResult } from './goalCommandService.js';
+import { AgentPool } from '../team/agentPool.js';
 import { decideGoalExecution } from './goalController.js';
 import {
   GoalContinuationService,
@@ -16,6 +17,13 @@ import {
   type GoalContinuationState,
 } from './projectGoalStore.js';
 import type { Goal, GoalBudget, GoalEvidence } from './types.js';
+import type { GoalHandoffReceipt, GoalWorkClaim } from './types.js';
+import {
+  GoalWorkCoordinator,
+  type GoalWorkerIdentity,
+  type GoalWorkerOutcome,
+  type GoalWorkerRunResult,
+} from './goalWorkCoordinator.js';
 
 export interface GoalSessionIdentity {
   id: string;
@@ -37,12 +45,14 @@ export class ProjectGoalApi {
   private closed = false;
   private readonly continuationExecutor?: GoalContinuationExecutor;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly agentPool: AgentPool;
 
   constructor(
     projectStateDirectory: string,
-    options: { continuationExecutor?: GoalContinuationExecutor } = {},
+    options: { continuationExecutor?: GoalContinuationExecutor; agentPool?: AgentPool } = {},
   ) {
     this.continuationExecutor = options.continuationExecutor;
+    this.agentPool = options.agentPool ?? new AgentPool();
     this.storePromise = ProjectGoalStore.open(projectStateDirectory).then(store => {
       this.resolvedStore = store;
       if (this.continuationExecutor) {
@@ -97,13 +107,24 @@ export class ProjectGoalApi {
       rawArgs,
     );
     if (command === 'status' || command === '') {
-      const continuation = await this.continuationStatus(session.id);
-      if (continuation) {
-        return {
-          ...result,
-          message: `${result.message}\ncontinuation ${continuation.mode} · interval ${continuation.currentIntervalSeconds}s${continuation.nextWakeAt ? ` · next ${continuation.nextWakeAt}` : ''}${continuation.leaseOwner ? ` · leased by ${continuation.leaseOwner}` : ''}`,
-        };
-      }
+      const [continuation, claims, handoffs] = await Promise.all([
+        this.continuationStatus(session.id),
+        this.workClaims(session.id),
+        this.handoffs(session.id),
+      ]);
+      return {
+        ...result,
+        message: [
+          result.message,
+          continuation
+            ? `continuation ${continuation.mode} · interval ${continuation.currentIntervalSeconds}s${continuation.nextWakeAt ? ` · next ${continuation.nextWakeAt}` : ''}${continuation.leaseOwner ? ` · leased by ${continuation.leaseOwner}` : ''}`
+            : 'continuation manual · not configured',
+          claims.length > 0
+            ? `claims ${claims.map(claim => `${claim.workItemId}→${claim.agentId}`).join(', ')}`
+            : 'claims none',
+          handoffs.length > 0 ? `handoffs ${handoffs.length}` : 'handoffs none',
+        ].join('\n'),
+      };
     }
     return result;
   }
@@ -142,6 +163,46 @@ export class ProjectGoalApi {
   async continuationStatus(sessionId?: string): Promise<GoalContinuationState | undefined> {
     const status = await this.status(sessionId);
     return status.goalId ? (await this.store()).continuationState(status.goalId) : undefined;
+  }
+
+  async claimWork(
+    sessionId: string,
+    worker: GoalWorkerIdentity,
+    leaseMs?: number,
+  ): Promise<GoalWorkClaim | undefined> {
+    const store = await this.store();
+    const record = store.readForSession(sessionId);
+    if (!record) return undefined;
+    return new GoalWorkCoordinator(store, this.agentPool).claim(record.id, worker, leaseMs);
+  }
+
+  async workClaims(sessionId?: string): Promise<GoalWorkClaim[]> {
+    const status = await this.status(sessionId);
+    return status.goalId ? (await this.store()).listWorkClaims(status.goalId) : [];
+  }
+
+  async handoffs(sessionId?: string): Promise<GoalHandoffReceipt[]> {
+    const status = await this.status(sessionId);
+    return status.goalId ? (await this.store()).listHandoffs(status.goalId) : [];
+  }
+
+  async runWorkers(input: {
+    sessionId: string;
+    workers: GoalWorkerIdentity[];
+    leaseMs?: number;
+    acquireTimeoutMs?: number;
+    run: (claim: GoalWorkClaim, worker: GoalWorkerIdentity) => Promise<GoalWorkerOutcome>;
+  }): Promise<GoalWorkerRunResult[]> {
+    const store = await this.store();
+    const record = store.readForSession(input.sessionId);
+    if (!record) return input.workers.map(worker => ({ worker, skipped: true }));
+    return new GoalWorkCoordinator(store, this.agentPool).runWorkers({
+      goalId: record.id,
+      workers: input.workers,
+      ...(input.leaseMs !== undefined ? { leaseMs: input.leaseMs } : {}),
+      ...(input.acquireTimeoutMs !== undefined ? { acquireTimeoutMs: input.acquireTimeoutMs } : {}),
+      run: input.run,
+    });
   }
 
   async configureContinuation(input: {

@@ -116,6 +116,8 @@ export interface GoalWorkItem {
   evidenceRefs: string[];
   successorOf?: string;
   resumeWhen?: string;
+  roleScopes?: string[];
+  excludedAgentIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -136,6 +138,28 @@ export interface GoalReplanAudit {
   frontierFingerprint: string;
   repeat: number;
   deltaRecorded: boolean;
+}
+
+export interface GoalWorkClaim {
+  goalId: string;
+  workItemId: string;
+  agentId: string;
+  claimToken: string;
+  roleScopes: string[];
+  claimedAt: string;
+  leaseExpiresAt: string;
+  updatedAt: string;
+}
+
+export interface GoalHandoffReceipt {
+  id: number;
+  goalId: string;
+  workItemId: string;
+  fromAgentId: string;
+  toAgentId?: string;
+  reason: string;
+  evidenceRefs: string[];
+  at: string;
 }
 
 /** A model may request completion; only the runtime may accept it. */
