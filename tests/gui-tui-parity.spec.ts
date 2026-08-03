@@ -41,7 +41,6 @@ describe('TUI and GUI parity', () => {
       'export',
       'model',
       'effort',
-      'output-style',
       'permissions',
       'plan',
       'rewind',
@@ -242,8 +241,11 @@ describe('TUI and GUI parity', () => {
     expect(html).toContain('id="contextMenu"');
     expect(html).toContain('id="settingsGitTreeBtn"');
     expect(html).toContain('class="brand"');
-    expect(html).toContain('id="settingsOutputStyle"');
-    expect(html).toContain('id="settingsOpenMemory"');
+    expect(html).not.toContain('id="settingsOutputStyle"');
+    expect(html).not.toContain('data-settings-tab="personalization"');
+    expect(html).not.toContain('id="settingsWorkModeCoding"');
+    expect(js).toContain('projectSettingsPanel');
+    expect(js).toContain('mountProjectSettingsPanel');
     expect(html).toContain('id="settingsShortcutsList"');
     expect(html).not.toContain('Remapping is not supported yet.');
     expect(html).toContain('id="settingsHooksList"');

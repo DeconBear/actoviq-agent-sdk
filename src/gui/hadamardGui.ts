@@ -262,7 +262,6 @@ import {
   type JsonValue,
   type Usage,
 } from '../core/index.js';
-import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { estimateCost } from '../team/pricing.js';
 import { AgentPool } from '../team/agentPool.js';
 import { runMemberAgent } from '../team/teamRuntime.js';
@@ -347,6 +346,18 @@ import {
   writeProjectMeta,
   type ProjectStatus,
 } from './projectMeta.js';
+import {
+  DEFAULT_PROJECT_SETTINGS,
+  appendProjectSettingsToPrompt,
+  readProjectSettings,
+  writeProjectSettings,
+  type ProjectSettings,
+} from './projectSettings.js';
+import {
+  createPromptTemplate,
+  deletePromptTemplate,
+  listPromptTemplates,
+} from './promptTemplates.js';
 import {
   addProjectWorkPath,
   findWorkspaceProject,
@@ -638,13 +649,11 @@ function canonicalGuiUsage(value: unknown): Usage {
 }
 
 interface GuiPreferences {
-  workMode: 'coding' | 'daily';
   theme: 'system' | 'light' | 'dark';
   density: 'comfortable' | 'compact';
   enterToSend: boolean;
   autoScroll: boolean;
   developerTools: boolean;
-  outputStyle: OutputStyleId;
   showBranchInComposer: boolean;
   showProviderConfigsInComposer: boolean;
   showAgentProfilesInComposer: boolean;
@@ -676,13 +685,11 @@ const DEFAULT_GUI_SHORTCUTS: GuiShortcuts = {
 };
 
 const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
-  workMode: 'coding',
   theme: 'system',
   density: 'comfortable',
   enterToSend: true,
   autoScroll: true,
   developerTools: false,
-  outputStyle: 'default',
   showBranchInComposer: true,
   showProviderConfigsInComposer: true,
   showAgentProfilesInComposer: true,
@@ -690,11 +697,10 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   shortcuts: DEFAULT_GUI_SHORTCUTS,
 };
 
-function isOutputStyleId(value: unknown): value is OutputStyleId {
-  return typeof value === 'string' && OUTPUT_STYLES.some((style) => style.id === value);
-}
-
-function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'coding'): string {
+function buildGuiSystemPrompt(
+  workDir: string,
+  settings: Pick<ProjectSettings, 'workMode' | 'customPrompt' | 'projectRules'> = DEFAULT_PROJECT_SETTINGS,
+): string {
   let gitProbe = path.resolve(workDir);
   let isGit = false;
   while (true) {
@@ -728,13 +734,13 @@ function buildGuiSystemPrompt(workDir: string, workMode: 'coding' | 'daily' = 'c
     `# Other\n` +
     `- NEVER create documentation files (*.md) unless explicitly requested.\n` +
     `- When in doubt, use TodoWrite to track progress.` +
-    (workMode === 'daily'
+    (settings.workMode === 'daily'
       ? `\n\n# Work mode: For daily work\n` +
         `- The user prefers an everyday-assistant style: reply in plain language, keep it concise, and minimize jargon, file paths, and raw code unless they ask for them.\n` +
         `- You are equally capable in this mode — only the presentation is less technical. Still use tools and do the real work; just summarize results in accessible terms.`
       : ``)
   );
-  return base + projectSection;
+  return appendProjectSettingsToPrompt(base, settings) + projectSection;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -933,7 +939,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
   const source = isPlainRecord(raw.gui) ? raw.gui : {};
-  const workMode = source.workMode === 'daily' ? 'daily' : 'coding';
   const theme = source.theme === 'light' || source.theme === 'dark' ? source.theme : 'system';
   const density = source.density === 'compact' ? 'compact' : 'comfortable';
   const shortcutSource = isPlainRecord(source.shortcuts) ? source.shortcuts : {};
@@ -944,7 +949,6 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     }),
   ) as GuiShortcuts;
   return {
-    workMode,
     theme,
     density,
     enterToSend: typeof source.enterToSend === 'boolean'
@@ -956,9 +960,6 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     developerTools: typeof source.developerTools === 'boolean'
       ? source.developerTools
       : DEFAULT_GUI_PREFERENCES.developerTools,
-    outputStyle: isOutputStyleId(source.outputStyle)
-      ? source.outputStyle
-      : DEFAULT_GUI_PREFERENCES.outputStyle,
     showBranchInComposer: typeof source.showBranchInComposer === 'boolean'
       ? source.showBranchInComposer
       : DEFAULT_GUI_PREFERENCES.showBranchInComposer,
@@ -1993,8 +1994,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     readPackageVersion(import.meta.url),
     'Automatic updates are available only in a packaged Hadamard desktop app.',
   );
-  let guiWorkMode: 'coding' | 'daily' = 'coding';
-  let systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+  let projectSettings: ProjectSettings = { ...DEFAULT_PROJECT_SETTINGS };
+  let systemPrompt = buildGuiSystemPrompt(workDir, projectSettings);
   let guiHomeOverride: string | undefined;
   const currentHomeInput = () => guiHomeOverride ?? options.homeDir;
   const pointerHomeDir = () => {
@@ -2063,9 +2064,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   }
 
   try {
-    const initialStore = await resolveHadamardSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
-    guiWorkMode = readGuiPreferences(initialStore.raw).workMode;
-    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+    projectSettings = await readProjectSettings(workDir, resolveGuiHomeDir());
+    systemPrompt = buildGuiSystemPrompt(workDir, projectSettings);
   } catch {
     // Keep defaults when settings cannot be read.
   }
@@ -2513,13 +2513,10 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
   function resolveExternalCliSessionPath(id: string): string | undefined {
     return externalCliSessionPaths.get(id);
   }
-  // /output-style prompt prefix swap (applied per turn; 'default' is a no-op).
-  let outputStyle: OutputStyleId = 'default';
-  try {
-    const prefsStore = await resolveHadamardSettingsStore({ configPath: options.configPath, homeDir: currentHomeInput() });
-    outputStyle = readGuiPreferences(prefsStore.raw).outputStyle;
-  } catch {
-    // Keep default when settings cannot be read.
+  async function reloadProjectSystemPrompt(nextWorkDir = workDir): Promise<ProjectSettings> {
+    projectSettings = await readProjectSettings(nextWorkDir, resolveGuiHomeDir());
+    systemPrompt = buildGuiSystemPrompt(nextWorkDir, projectSettings);
+    return projectSettings;
   }
   // Usage totals for /cost, /usage, /stats. Per-config breakdown attributes spend
   // to each bridge config so the user can compare backends (mirrors the TUI).
@@ -2775,7 +2772,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const previousToolMetadata = toolMetadata;
     workDir = resolved;
     await refreshProjectPrimaryPath(resolved);
-    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
+    await reloadProjectSystemPrompt(resolved);
     activeTeamTool = null;
     activeTeamName = null;
     activeRouter = null;
@@ -3191,8 +3188,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         store?.raw ?? {},
         bridgeConfigs.length,
       ),
-      outputStyle,
-      outputStyles: OUTPUT_STYLES,
+      projectSettings,
       planMode: currentPermissionMode() === 'plan',
       plan: readPlanFile(workDir),
       todos,
@@ -3298,9 +3294,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       ? readGuiPreferences({ gui: body.preferences })
       : readGuiPreferences(raw);
     raw.gui = preferences;
-    guiWorkMode = preferences.workMode;
-    systemPrompt = buildGuiSystemPrompt(workDir, guiWorkMode);
-    outputStyle = preferences.outputStyle;
     await persistHadamardSettingsStore(store.configPath, raw);
     await loadJsonConfigFile(store.configPath);
 
@@ -4068,7 +4061,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         const decision = await resolveRoutedRun(activeRouter, input, runAbort.signal);
         routed = { model: decision.model, modelApi: decision.modelApi };
       }
-      const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
+      const systemPromptForRun = systemPrompt;
       const hadamardModel = (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard')
         ? (activeBridgeConfig.model || undefined)
         : undefined;
@@ -5444,7 +5437,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           `Messages: ${session.messages.length}`,
           `System prompt: ${systemPrompt.length} chars`,
           `Tools: ${toolMetadata.length} (${mcp} MCP)`,
-          `Output style: ${outputStyle}`,
           `Bridge: ${bridgeMode ? (activeBridgeConfig?.name ?? 'on') : 'off'}`,
           `CLAUDE.md sources: ${project.sources.length ? project.sources.join(', ') : '(none)'}`,
         ];
@@ -5568,7 +5560,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           `Output tokens: ${totalOutputTokens.toLocaleString()}`,
           `Tools: ${toolMetadata.length} (${mcp} MCP)`,
           `Model: ${session.model}${bridgeMode ? ' (bridge:' + (activeBridgeConfig?.name ?? '?') + ')' : ''}`,
-          `Output style: ${outputStyle}`,
           `Plan mode: ${currentPermissionMode() === 'plan' ? 'on' : 'off'}`,
         ];
         return [{ type: 'command.result', title: 'Stats', text: lines.join('\n') }];
@@ -5602,15 +5593,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
           session = newSession;
           await persistSessionRuntimeMetadata();
           return [{ type: 'notice', message: `rewound ${n} message(s)` }, { type: 'state' }];
-        });
-      }
-      case 'output-style': {
-        const valid = OUTPUT_STYLES.map(s => s.id);
-        if (!args) return [{ type: 'command.result', title: 'Output style', text: `current: ${outputStyle}\navailable: ${valid.join(', ')}` }];
-        if (!valid.includes(args as OutputStyleId)) return [{ type: 'error', message: `usage: /output-style [${valid.join('|')}]` }];
-        return runtimeMutationCommand(async () => {
-          outputStyle = args as OutputStyleId;
-          return [{ type: 'notice', message: `output style: ${outputStyle}` }, { type: 'state' }];
         });
       }
       case 'hooks': {
@@ -6207,7 +6189,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       assertRunCanStart();
       runs.set(runId, { desc, abort, sink: send });
       const issueSystemPrompt = [
-        applyOutputStyle(systemPrompt, outputStyle),
+        systemPrompt,
         '',
         `You are working on ISS-${issue.number}: ${issue.title}.`,
         'When the work and self-checks are complete, call IssueReport with status="in_review".',
@@ -6520,7 +6502,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       //  1. bridge config active → inject pre-built ModelApi (separate credentials)
       //  2. hadamard config active → inject model only (use SDK default provider)
       //  3. none active → in-process turn, optionally routed or teamed
-      const systemPromptForRun = applyOutputStyle(systemPrompt, outputStyle);
+      const systemPromptForRun = systemPrompt;
       const hadamardModel = (!bridgeMode && activeBridgeConfig?.runtime === 'hadamard')
         ? (activeBridgeConfig.model || undefined)
         : undefined;
@@ -7820,6 +7802,57 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
         label: PROJECT_STATUS_LABELS[meta.status],
         updatedAt: meta.updatedAt ?? null,
       });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-settings') {
+    const hd = resolveGuiHomeDir();
+    const settings = await readProjectSettings(workDir, hd);
+    return json(res, 200, { ok: true, path: workDir, settings });
+  }
+  if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
+    try {
+      const body = await readJson(req);
+      const hd = resolveGuiHomeDir();
+      const saved = await writeProjectSettings(workDir, hd, {
+        workMode: body.workMode === 'coding' || body.workMode === 'daily' ? body.workMode : undefined,
+        customPrompt: typeof body.customPrompt === 'string' ? body.customPrompt : undefined,
+        projectRules: typeof body.projectRules === 'string' ? body.projectRules : undefined,
+      });
+      projectSettings = saved;
+      systemPrompt = buildGuiSystemPrompt(workDir, projectSettings);
+      invalidateHeavyState();
+      return json(res, 200, { ok: true, path: workDir, settings: saved });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/prompt-templates') {
+    const hd = resolveGuiHomeDir();
+    const templates = await listPromptTemplates(hd);
+    return json(res, 200, { ok: true, templates });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/prompt-templates') {
+    try {
+      const body = await readJson(req);
+      const hd = resolveGuiHomeDir();
+      const template = await createPromptTemplate(hd, {
+        name: typeof body.name === 'string' ? body.name : '',
+        body: typeof body.body === 'string' ? body.body : '',
+      });
+      return json(res, 200, { ok: true, template });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/prompt-templates/')) {
+    try {
+      const id = decodeURIComponent(url.pathname.slice('/api/prompt-templates/'.length));
+      const hd = resolveGuiHomeDir();
+      const removed = await deletePromptTemplate(hd, id);
+      if (!removed) return json(res, 404, { error: 'Template not found' });
+      return json(res, 200, { ok: true });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -10324,7 +10357,6 @@ export function createHadamardGuiHtml(): string {
         <button type="button" class="settings-tab active" data-settings-tab="general"><span class="settings-icon">${guiIcon('gear')}</span>General</button>
         <button type="button" class="settings-tab" data-settings-tab="models"><span class="settings-icon">${guiIcon('model')}</span>Models & routing</button>
         <button type="button" class="settings-tab" data-settings-tab="appearance"><span class="settings-icon">${guiIcon('palette')}</span>Appearance</button>
-        <button type="button" class="settings-tab" data-settings-tab="personalization"><span class="settings-icon">${guiIcon('agent')}</span>Personalization</button>
         <button type="button" class="settings-tab" data-settings-tab="shortcuts"><span class="settings-icon">${guiIcon('keyboard')}</span>Keyboard shortcuts</button>
       </section>
       <section>
@@ -10347,14 +10379,6 @@ export function createHadamardGuiHtml(): string {
     <form id="settingsForm" class="settings-main">
       <section class="settings-panel active" data-settings-panel="general">
         <h1>General</h1>
-        <div class="settings-group">
-          <h2>Work mode</h2>
-          <p>Choose how much technical detail Hadamard shows by default.</p>
-          <div class="mode-grid">
-            <label class="mode-card"><input type="radio" name="settingsWorkMode" value="coding" id="settingsWorkModeCoding"><span><strong>For coding</strong><small>More technical replies and controls</small></span></label>
-            <label class="mode-card"><input type="radio" name="settingsWorkMode" value="daily" id="settingsWorkModeDaily"><span><strong>For daily work</strong><small>Same power, less technical detail</small></span></label>
-          </div>
-        </div>
         <div class="settings-group">
           <h2>Data storage</h2>
           <div class="settings-help-row"><span><strong id="settingsDataRootPath">Loading...</strong><small id="settingsDataRootSummary">Local projects, sessions, runtime configs, MCP, teams, workflows, and settings.</small></span><button type="button" id="settingsDataRootChoose" class="secondary-btn">Change...</button></div>
@@ -10492,26 +10516,6 @@ export function createHadamardGuiHtml(): string {
           <label class="check-row"><input id="settingsEnterToSend" type="checkbox">Enter sends message</label>
           <label class="check-row"><input id="settingsAutoScroll" type="checkbox">Auto-scroll transcript</label>
           <label class="check-row"><input id="settingsDeveloperTools" type="checkbox">Developer tools <span class="muted">(extra diagnostics)</span></label>
-        </div>
-      </section>
-      <section class="settings-panel" data-settings-panel="personalization">
-        <h1>Personalization</h1>
-        <div class="settings-group">
-          <h2>Output style</h2>
-          <p class="muted">Adjusts the agent's response shape. Applied per turn as a system-prompt prefix; <code>default</code> adds nothing. Saved to local GUI preferences.</p>
-          <label class="inline-field">Style
-            <select id="settingsOutputStyle">
-              <option value="default">default — standard responses</option>
-              <option value="concise">concise — terse, code-first, minimal prose</option>
-              <option value="explanatory">explanatory — explain reasoning and tradeoffs</option>
-              <option value="learning">learning — teach how/why, step by step</option>
-            </select>
-          </label>
-        </div>
-        <div class="settings-group">
-          <h2>Durable memory</h2>
-          <p class="muted">Stable preferences about you and this project live in Hadamard memory (not credentials).</p>
-          <div class="settings-action-row"><button type="button" id="settingsOpenMemory" class="secondary-btn">Open Memory settings</button></div>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
@@ -11090,6 +11094,14 @@ body[data-theme="dark"] {
 .project-detail-tab:hover { color: var(--text-1); background: var(--surface-hover); }
 .project-detail-tab.active { color: var(--brand); border-bottom-color: var(--brand); background: var(--brand-soft); }
 .project-work-path-select { max-width: min(280px, 28vw); }
+.project-settings-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); overflow: hidden; }
+.project-settings-chrome { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.project-settings-chrome strong { flex: 1; font-size: 13px; }
+.project-settings-chrome .muted { font-size: 12px; }
+.project-settings-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 24px; }
+.project-settings-template-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 10px; align-items: center; }
+.project-settings-template-row select { min-height: 30px; min-width: 220px; flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font-size: 12.5px; }
+.project-settings-textarea { width: 100%; box-sizing: border-box; min-height: 160px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg-surface); color: var(--text-1); font: 12.5px/1.45 var(--font-mono); resize: vertical; }
 .project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
 .detail-main .project-doc-panel { flex: 1; border-right: 0; }
 .project-doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
@@ -14372,6 +14384,9 @@ const state = {
   projectDocEditing: false,
   projectDocDirty: false,
   projectDocSaveTimer: null,
+  projectSettingsDirty: false,
+  projectSettingsSaveTimer: null,
+  projectSettingsTemplates: [],
   issues: [],
   issuesLoadedFor: null,
   issuesStorage: 'home',
@@ -14422,7 +14437,7 @@ const state = {
   skillCatalogData: null,
   skillCatalogQuery: '',
   skillCatalogExpanded: {},
-  preferences: { workMode: 'coding', theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, outputStyle: 'default', showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, shortcuts: {} }
+  preferences: { theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, shortcuts: {} }
 };
 const DEFAULT_SHORTCUTS = {
   newChat: 'Mod+N',
@@ -16703,8 +16718,6 @@ function renderStatusExtras() {
       list.appendChild(li);
     }
   }
-  const outStyleSel = el('settingsOutputStyle');
-  if (outStyleSel) outStyleSel.value = snap.outputStyle || 'default';
   renderModelPicker();
 }
 // ── Agent picker (Cursor-style) ──────────────────────────────────────────
@@ -18205,6 +18218,8 @@ function switchProjectView(view) {
     if (state.projectDocDirty) void saveProjectDocNow();
     if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
     state.projectDocEditing = false;
+    if (state.projectSettingsDirty) void saveProjectSettingsNow();
+    if (state.projectSettingsSaveTimer) { clearTimeout(state.projectSettingsSaveTimer); state.projectSettingsSaveTimer = null; }
     if (state.projectDetailTab === 'terminal' || state.terminalHostMode === 'project') parkTerminalDock();
     stopAgentExecutionPolling();
   }
@@ -18540,6 +18555,172 @@ async function saveProjectDocNow() {
     setProjectDocStatus('Save failed', 'error');
   }
 }
+
+function setProjectSettingsStatus(text, kind) {
+  const node = el('projectSettingsStatus');
+  if (!node) return;
+  node.textContent = text || '';
+  node.dataset.kind = kind || '';
+}
+function collectProjectSettingsBody() {
+  const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
+  return {
+    workMode,
+    customPrompt: el('projectCustomPrompt')?.value || '',
+    projectRules: el('projectRulesPrompt')?.value || '',
+  };
+}
+function scheduleProjectSettingsSave() {
+  state.projectSettingsDirty = true;
+  setProjectSettingsStatus('Unsaved', 'dirty');
+  if (state.projectSettingsSaveTimer) clearTimeout(state.projectSettingsSaveTimer);
+  state.projectSettingsSaveTimer = setTimeout(() => { void saveProjectSettingsNow(); }, 700);
+}
+async function saveProjectSettingsNow() {
+  const body = collectProjectSettingsBody();
+  setProjectSettingsStatus('Saving\u2026', 'dirty');
+  try {
+    const res = await api('/api/project-settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setProjectSettingsStatus(data.error || 'Save failed', 'error');
+      return;
+    }
+    state.projectSettingsDirty = false;
+    if (state.snapshot) state.snapshot.projectSettings = data.settings;
+    setProjectSettingsStatus('Saved', '');
+    setTimeout(() => {
+      if (el('projectSettingsStatus')?.textContent === 'Saved') setProjectSettingsStatus('', '');
+    }, 1200);
+  } catch {
+    setProjectSettingsStatus('Save failed', 'error');
+  }
+}
+function fillPromptTemplateSelect(templates) {
+  const select = el('projectPromptTemplateSelect');
+  if (!select) return;
+  const previous = select.value;
+  select.textContent = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Choose a template\u2026';
+  select.appendChild(placeholder);
+  for (const template of templates) {
+    const opt = document.createElement('option');
+    opt.value = template.id;
+    opt.textContent = template.builtin ? template.name + ' (built-in)' : template.name;
+    select.appendChild(opt);
+  }
+  if (previous && templates.some((t) => t.id === previous)) select.value = previous;
+}
+async function refreshPromptTemplates() {
+  try {
+    const res = await api('/api/prompt-templates');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load templates');
+    state.projectSettingsTemplates = data.templates || [];
+    fillPromptTemplateSelect(state.projectSettingsTemplates);
+  } catch (error) {
+    setProjectSettingsStatus(error.message || 'Template load failed', 'error');
+  }
+}
+function applySelectedPromptTemplate() {
+  const id = el('projectPromptTemplateSelect')?.value;
+  if (!id) return;
+  const template = (state.projectSettingsTemplates || []).find((t) => t.id === id);
+  if (!template) return;
+  const area = el('projectCustomPrompt');
+  if (!area) return;
+  area.value = template.body;
+  scheduleProjectSettingsSave();
+}
+async function saveCustomPromptAsTemplate() {
+  const body = el('projectCustomPrompt')?.value || '';
+  if (!body.trim()) {
+    setProjectSettingsStatus('Custom prompt is empty', 'error');
+    return;
+  }
+  const name = window.prompt('Template name');
+  if (name == null) return;
+  if (!name.trim()) {
+    setProjectSettingsStatus('Template name is required', 'error');
+    return;
+  }
+  try {
+    const res = await api('/api/prompt-templates', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), body }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    await refreshPromptTemplates();
+    if (data.template?.id && el('projectPromptTemplateSelect')) {
+      el('projectPromptTemplateSelect').value = data.template.id;
+    }
+    setProjectSettingsStatus('Template saved', '');
+  } catch (error) {
+    setProjectSettingsStatus(error.message || 'Template save failed', 'error');
+  }
+}
+function wireProjectSettingsPanel() {
+  const panel = el('projectSettingsPanel');
+  if (!panel || panel.dataset.wired === '1') return;
+  panel.dataset.wired = '1';
+  panel.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !target.id) return;
+    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily') {
+      scheduleProjectSettingsSave();
+    }
+  });
+  panel.addEventListener('input', (event) => {
+    const target = event.target;
+    if (!target || !target.id) return;
+    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt') {
+      scheduleProjectSettingsSave();
+    }
+  });
+  el('projectSettingsSaveBtn')?.addEventListener('click', () => { void saveProjectSettingsNow(); });
+  el('projectPromptTemplateApply')?.addEventListener('click', () => applySelectedPromptTemplate());
+  el('projectPromptTemplateSave')?.addEventListener('click', () => { void saveCustomPromptAsTemplate(); });
+}
+async function mountProjectSettingsPanel(force) {
+  const panel = el('projectSettingsPanel');
+  if (!panel) return;
+  wireProjectSettingsPanel();
+  const workDir = state.snapshot?.workDir || '';
+  if (!force && panel.dataset.loaded === workDir && !state.projectSettingsDirty) {
+    void refreshPromptTemplates();
+    return;
+  }
+  setProjectSettingsStatus('Loading\u2026', '');
+  try {
+    const [settingsRes] = await Promise.all([
+      api('/api/project-settings'),
+      refreshPromptTemplates(),
+    ]);
+    const data = await settingsRes.json().catch(() => ({}));
+    if (!settingsRes.ok) throw new Error(data.error || 'Failed to load project settings');
+    const settings = data.settings || { workMode: 'coding', customPrompt: '', projectRules: '' };
+    const coding = el('projectWorkModeCoding');
+    const daily = el('projectWorkModeDaily');
+    if (coding) coding.checked = settings.workMode !== 'daily';
+    if (daily) daily.checked = settings.workMode === 'daily';
+    if (el('projectCustomPrompt')) el('projectCustomPrompt').value = settings.customPrompt || '';
+    if (el('projectRulesPrompt')) el('projectRulesPrompt').value = settings.projectRules || '';
+    state.projectSettingsDirty = false;
+    panel.dataset.loaded = workDir;
+    setProjectSettingsStatus('', '');
+  } catch (error) {
+    setProjectSettingsStatus(error.message || 'Load failed', 'error');
+  }
+}
+
 async function mountProjectDoc(force) {
   const view = el('projectDocView');
   if (!view) return;
@@ -19038,14 +19219,16 @@ window.addEventListener('resize', () => {
   if (window.innerWidth > 1120) setDetailConversationDrawer(false);
 });
 function setProjectDetailTab(tab) {
-  const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1, agents: 1 };
+  const allowed = { document: 1, issues: 1, git: 1, terminal: 1, files: 1, agents: 1, settings: 1 };
   const next = allowed[tab] ? tab : 'document';
   if (state.projectDetailTab === next) {
     if (next === 'terminal') mountProjectTerminal();
     else if (next === 'agents') void refreshAgentExecutions(true);
+    else if (next === 'settings') void mountProjectSettingsPanel(false);
     return;
   }
   if (state.projectDetailTab === 'document' && state.projectDocDirty) void saveProjectDocNow();
+  if (state.projectDetailTab === 'settings' && state.projectSettingsDirty) void saveProjectSettingsNow();
   if (state.projectDetailTab === 'terminal' && next !== 'terminal') {
     parkTerminalDock();
   }
@@ -19067,6 +19250,7 @@ function setProjectDetailTab(tab) {
     terminal: el('projectTerminalPanel'),
     files: el('projectFilesPanel'),
     agents: el('agentExecutionsPanel'),
+    settings: el('projectSettingsPanel'),
   };
   for (const key of Object.keys(panels)) {
     if (panels[key]) panels[key].classList.toggle('hidden', key !== next);
@@ -19077,6 +19261,7 @@ function setProjectDetailTab(tab) {
   else if (next === 'files') void renderProjectFilesPanel(false);
   else if (next === 'terminal') mountProjectTerminal();
   else if (next === 'agents') void refreshAgentExecutions(true);
+  else if (next === 'settings') void mountProjectSettingsPanel(false);
 }
 function workbenchHome() {
   return document.querySelector('#projectConversation .workbench') || el('projectConversation');
@@ -20772,6 +20957,7 @@ function renderProjectDetail() {
     ['terminal', 'Terminal'],
     ['files', 'Files'],
     ['agents', 'Agent monitor'],
+    ['settings', 'Project settings'],
   ];
   const detailPanelIds = {
     document: 'projectDocumentPanel',
@@ -20780,6 +20966,7 @@ function renderProjectDetail() {
     terminal: 'projectTerminalPanel',
     files: 'projectFilesPanel',
     agents: 'agentExecutionsPanel',
+    settings: 'projectSettingsPanel',
   };
   for (const tab of detailTabs) {
     const btn = document.createElement('button');
@@ -20905,6 +21092,40 @@ function renderProjectDetail() {
   agentsPanel.setAttribute('role', 'tabpanel');
   agentsPanel.setAttribute('aria-labelledby', 'projectTabAgents');
   agentsPanel.setAttribute('data-testid', 'agent-executions-panel');
+  const settingsPanel = document.createElement('section');
+  settingsPanel.id = 'projectSettingsPanel';
+  settingsPanel.className = 'project-workbench-panel project-settings-panel' + (state.projectDetailTab === 'settings' ? '' : ' hidden');
+  settingsPanel.innerHTML = ''
+    + '<div class="project-settings-chrome">'
+    + '<strong>Project settings</strong>'
+    + '<span class="muted" id="projectSettingsStatus"></span>'
+    + '<button type="button" class="secondary-btn" id="projectSettingsSaveBtn">Save</button>'
+    + '</div>'
+    + '<div class="project-settings-body">'
+    + '<div class="settings-group">'
+    + '<h2>Work mode</h2>'
+    + '<p class="muted">Per-project. Controls how technical replies sound for this workspace.</p>'
+    + '<div class="mode-grid">'
+    + '<label class="mode-card"><input type="radio" name="projectWorkMode" value="coding" id="projectWorkModeCoding"><span><strong>For coding</strong><small>More technical replies and controls</small></span></label>'
+    + '<label class="mode-card"><input type="radio" name="projectWorkMode" value="daily" id="projectWorkModeDaily"><span><strong>For daily work</strong><small>Same power, less technical detail</small></span></label>'
+    + '</div>'
+    + '</div>'
+    + '<div class="settings-group">'
+    + '<h2>Custom prompt</h2>'
+    + '<p class="muted">Injected into the system prompt for chats in this project. Templates fill this field only.</p>'
+    + '<div class="project-settings-template-row">'
+    + '<select id="projectPromptTemplateSelect" aria-label="Prompt template"></select>'
+    + '<button type="button" class="secondary-btn" id="projectPromptTemplateApply">Apply template</button>'
+    + '<button type="button" class="secondary-btn" id="projectPromptTemplateSave">Save as template</button>'
+    + '</div>'
+    + '<textarea id="projectCustomPrompt" class="project-settings-textarea" rows="14" spellcheck="false" placeholder="Optional custom instructions\u2026"></textarea>'
+    + '</div>'
+    + '<div class="settings-group">'
+    + '<h2>Project rules</h2>'
+    + '<p class="muted">Extra project rules injected after custom prompt (separate from CLAUDE.md / AGENTS.md).</p>'
+    + '<textarea id="projectRulesPrompt" class="project-settings-textarea" rows="10" spellcheck="false" placeholder="Optional project rules\u2026"></textarea>'
+    + '</div>'
+    + '</div>';
   for (const [tabKey, panel] of Object.entries({
     document: docPanel,
     issues: issuesPanel,
@@ -20912,11 +21133,12 @@ function renderProjectDetail() {
     terminal: terminalPanel,
     files: filesPanel,
     agents: agentsPanel,
+    settings: settingsPanel,
   })) {
     panel.setAttribute('role', 'tabpanel');
     panel.setAttribute('aria-labelledby', 'projectTab' + tabKey.slice(0, 1).toUpperCase() + tabKey.slice(1));
   }
-  main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel, agentsPanel);
+  main.append(tabs, docPanel, issuesPanel, gitPanel, terminalPanel, filesPanel, agentsPanel, settingsPanel);
   const sidebar = document.createElement('aside');
   sidebar.className = 'detail-sidebar';
   sidebar.id = 'projectDetailSidebar';
@@ -20958,6 +21180,7 @@ function renderProjectDetail() {
   else if (state.projectDetailTab === 'files') void renderProjectFilesPanel(false);
   else if (state.projectDetailTab === 'terminal') mountProjectTerminal();
   else if (state.projectDetailTab === 'agents') void refreshAgentExecutions(true);
+  else if (state.projectDetailTab === 'settings') void mountProjectSettingsPanel(false);
   else void mountProjectDoc(false);
 }
 function selectDetailConversation(id) {
@@ -21786,7 +22009,7 @@ async function openLocation() {
   if (!res.ok) addMessage('error', await res.text());
 }
 function commandNeedsSpace(name) {
-  return ['model','effort','permissions','resume','dream','workflows','worktree','team','issues','goal','batch','plan','output-style','rewind','export','review','bridge'].includes(name);
+  return ['model','effort','permissions','resume','dream','workflows','worktree','team','issues','goal','batch','plan','rewind','export','review','bridge'].includes(name);
 }
 function slashMatches() {
   const value = input.value.trim();
@@ -31440,9 +31663,6 @@ async function openSettings(tab = 'general') {
   renderDataRootStatus(settings.dataRoot);
   void refreshDataRootSettings();
   void refreshApplicationUpdate();
-  const mode = preferences.workMode === 'daily' ? 'daily' : 'coding';
-  setChecked('settingsWorkModeCoding', mode === 'coding');
-  setChecked('settingsWorkModeDaily', mode === 'daily');
   setField('settingsPermissionPreset', '');
   setChecked('settingsDefaultPermission', true);
   setChecked('settingsAutoAudit', state.snapshot?.permissionMode === 'acceptEdits');
@@ -31479,7 +31699,6 @@ async function openSettings(tab = 'general') {
   setChecked('settingsShowProviderConfigsInComposer', preferences.showProviderConfigsInComposer !== false);
   setChecked('settingsShowAgentProfilesInComposer', preferences.showAgentProfilesInComposer !== false);
   setChecked('settingsShowRouterProfilesInComposer', preferences.showRouterProfilesInComposer !== false);
-  setField('settingsOutputStyle', preferences.outputStyle || state.snapshot?.outputStyle || 'default');
   renderBridgeConfigs();
   renderMcpServers();
   renderShortcutsPanel();
@@ -31499,17 +31718,14 @@ function derivePermissionPreset() {
 let settingsAutosaveTimer = null;
 let settingsAutosaveSeq = 0;
 function collectSettingsBody() {
-  const workMode = document.querySelector('input[name="settingsWorkMode"]:checked')?.value || 'coding';
   return {
     permissionPreset: derivePermissionPreset(),
     preferences: {
-      workMode,
       theme: el('settingsTheme').value,
       density: el('settingsDensity').value,
       enterToSend: el('settingsEnterToSend').checked,
       autoScroll: el('settingsAutoScroll').checked,
       developerTools: el('settingsDeveloperTools').checked,
-      outputStyle: el('settingsOutputStyle')?.value || 'default',
       showBranchInComposer: el('settingsShowBranchInComposer')?.checked !== false,
       showProviderConfigsInComposer: el('settingsShowProviderConfigsInComposer')?.checked !== false,
       showAgentProfilesInComposer: el('settingsShowAgentProfilesInComposer')?.checked !== false,
@@ -31576,13 +31792,8 @@ function wireSettingsAutosave() {
   form.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id || !String(target.id).startsWith('settings')) return;
-    // Team fields have their own APIs. Output style persists via preferences + /output-style.
+    // Team fields have their own APIs.
     if (target.id.startsWith('settingsTeam')) return;
-    if (target.id === 'settingsOutputStyle') {
-      submitText('/output-style ' + target.value);
-      scheduleSettingsAutosave(120);
-      return;
-    }
     // Immediate for toggles/selects; text fields debounce via input.
     const tag = String(target.tagName || '').toLowerCase();
     const type = String(target.type || '').toLowerCase();
@@ -31592,7 +31803,6 @@ function wireSettingsAutosave() {
   form.addEventListener('input', (event) => {
     const target = event.target;
     if (!target || !target.id || !String(target.id).startsWith('settings')) return;
-    if (target.id === 'settingsOutputStyle') return;
     if (target.id.startsWith('settingsTeam')) return;
     const tag = String(target.tagName || '').toLowerCase();
     const type = String(target.type || '').toLowerCase();
@@ -31917,7 +32127,6 @@ el('bridgeCfgApiKeyToggle').addEventListener('click', () => {
 el('bridgeModelAdd').addEventListener('click', () => { addBridgeModel(); });
 el('settingsGitTreeBtn').addEventListener('click', () => { closeSettings(); openGitSurface().catch(console.error); });
 el('settingsProjectGitBtn')?.addEventListener('click', () => { openProjectGitFromSettings(); });
-el('settingsOpenMemory')?.addEventListener('click', () => { showSettingsTab('memory'); });
 el('settingsHooksRefresh')?.addEventListener('click', () => { refreshHooksSettings().catch(console.error); });
 el('settingsHooksOpenConfig')?.addEventListener('click', () => {
   api('/api/settings/open-config', { method: 'POST' }).catch(console.error);

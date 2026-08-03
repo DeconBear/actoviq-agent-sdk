@@ -130,7 +130,7 @@ Use it when you want a richer terminal experience:
 - Mid-run steering: type while the agent is working and press Enter to queue guidance into the next model request.
 - `/permissions` switches between read-only, workspace-access, full-access, and plan presets; with `--permission-mode default`, mutating tools prompt for approve / always-allow / deny, and always-allow rules persist with the session. Read-only Bash commands (`ls`, `git status`, …) are auto-allowed.
 - `/plan` enters plan mode (research-then-propose: the agent calls EnterPlanMode/ExitPlanMode, writes a plan file, you approve); `/init` generates a `CLAUDE.md`; `/context`, `/cost`/`/usage`, and `/doctor` inspect the context window, spend, and config.
-- `/output-style` picks concise/explanatory/learning response styles; `/hooks` lists configured PreToolUse hooks (settings.json); `/mcp add`/`/mcp remove` manage stdio MCP servers (~/.hadamard/mcp.json).
+- `/hooks` lists configured PreToolUse hooks (settings.json); `/mcp add`/`/mcp remove` manage stdio MCP servers (~/.hadamard/mcp.json).
 - Esc aborts the active run; Ctrl+C clears input or exits on a quick second press.
 
 `hadamard-tui` is the package's only interactive terminal agent entry point. It uses the Hadamard SDK defaults: `~/.hadamard/settings.json`, core tools for the current workspace, `bypassPermissions`, and uncapped tool iterations unless explicitly configured. The former `hadamard-react` and `hadamard-interactive-agent` commands were retired after their capabilities were consolidated into the TUI.

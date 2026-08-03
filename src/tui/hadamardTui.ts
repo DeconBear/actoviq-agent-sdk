@@ -119,7 +119,6 @@ import type { ContentBlockParam } from '../provider/types.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { estimateCost } from '../team/pricing.js';
 import { applyTeamRunEvent, createTeamRunViewState, formatTeamRunTreeLines } from '../team/teamRunView.js';
-import { applyOutputStyle, OUTPUT_STYLES, type OutputStyleId } from '../prompts/outputStyles.js';
 import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import {
@@ -928,9 +927,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     return cost !== null ? `$${cost.toFixed(4)}` : null;
   }
   let statusNote = '';
-  // /output-style prompt prefix swap (gap #19). Applied to the base system
-  // prompt per turn; 'default' is a no-op.
-  let outputStyle: OutputStyleId = 'default';
   let ctrlCCount = 0;
   let ctrlCTimer: ReturnType<typeof setTimeout> | null = null;
   let streamedTextSeen = false;
@@ -1731,7 +1727,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
         // session → context intact; switching bridge↔hadamard is seamless.
         statusNote = `bridge:${activeBridgeConfig?.name ?? 'bridge'}`;
         const stream = session.stream(expandImageRefs(text), {
-          systemPrompt: applyOutputStyle(systemPrompt + buildAgentContext(), outputStyle),
+          systemPrompt: systemPrompt + buildAgentContext(),
           signal: abortCtrl.signal,
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
@@ -1746,7 +1742,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
         resultPromise = stream.result;
       } else {
         const stream = session.stream(expandImageRefs(text), {
-          systemPrompt: applyOutputStyle(systemPrompt + buildAgentContext(), outputStyle),
+          systemPrompt: systemPrompt + buildAgentContext(),
           signal: abortCtrl.signal,
           permissionMode: currentPermissionMode(),
           effort: currentEffort(),
@@ -3311,29 +3307,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
     return ` · goal:${mark}${A.dim}${truncateToWidth(goal.objective, 30)}${A.reset}`;
   }
 
-  async function chooseOutputStyle(arg: string): Promise<void> {
-    const valid = OUTPUT_STYLES.map(s => s.id);
-    if (arg) {
-      if (!valid.includes(arg as OutputStyleId)) {
-        appendStatic([...formatErrorLine(`unknown output style: ${arg}. Valid: ${valid.join(', ')}`), '']);
-        return;
-      }
-      outputStyle = arg as OutputStyleId;
-      appendStatic([...formatInfoLine(`output style → ${outputStyle}`), '']);
-      return;
-    }
-    const selected = await selectItem({
-      title: 'Select output style',
-      subtitle: `Current: ${outputStyle}`,
-      searchable: false,
-      items: OUTPUT_STYLES.map(s => ({ id: s.id, label: s.label, description: s.description })),
-    });
-    if (selected) {
-      outputStyle = selected as OutputStyleId;
-      appendStatic([...formatInfoLine(`output style → ${outputStyle}`), '']);
-    }
-  }
-
   async function showSkills(): Promise<void> {
     const skills = sdk.skills.listMetadata();
     if (skills.length === 0) {
@@ -3799,9 +3772,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
           if (!args) await chooseEffort();
           else await setEffort(args.toLowerCase());
           return;
-        case 'output-style':
-          await chooseOutputStyle(args.toLowerCase());
-          return;
         case 'permissions': {
           // Three presets, selectable or named directly:
           //   read-only  → deny mutating tools (read / search / web only)
@@ -4261,7 +4231,6 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
             `  ${A.dim}tokens${A.reset}       ${fmtTok(totalInputTokens)} in · ${fmtTok(totalOutputTokens)} out`,
             `  ${A.dim}tools${A.reset}        ${toolMetadata.length}${toolMetadata.filter(t => t.provider === 'mcp').length ? ` (${toolMetadata.filter(t => t.provider === 'mcp').length} MCP)` : ''}`,
             `  ${A.dim}model${A.reset}       ${session.model}${bridgeMode && activeBridgeConfig ? ` · bridge:${activeBridgeConfig.name}` : ''}`,
-            `  ${A.dim}output style${A.reset} ${outputStyle}`,
             `  ${A.dim}plan mode${A.reset}   ${session.permissionContext.mode === 'plan' ? 'on' : 'off'}`,
             '',
           ]);

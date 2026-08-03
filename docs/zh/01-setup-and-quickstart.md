@@ -200,7 +200,7 @@ npx hadamard-tui [工作目录] [选项]
 - 运行中追加指令：Agent 工作时继续输入并按 Enter，消息会排队注入下一次模型请求。
 - `/permissions` 可在只读、工作区访问、完全访问、计划模式预设之间切换；使用 `--permission-mode default` 时，变更型工具会弹出 批准 / 始终允许 / 拒绝 确认，且「始终允许」规则会随会话保存。只读 Bash 命令（`ls`、`git status`…）会自动放行。
 - `/plan` 进入计划模式（研究后提议：Agent 调用 EnterPlanMode/ExitPlanMode，写出计划文件，你审批）；`/init` 生成 `CLAUDE.md`；`/context`、`/cost`/`/usage`、`/doctor` 分别查看上下文窗口、花费与配置。
-- `/output-style` 选择简洁/解释/学习等回复风格；`/hooks` 列出 typed lifecycle hooks 和兼容的旧 shell hooks；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.hadamard/mcp.json）。
+- `/hooks` 列出 typed lifecycle hooks 和兼容的旧 shell hooks；`/mcp add`/`/mcp remove` 管理 stdio MCP 服务器（~/.hadamard/mcp.json）。
 - Esc 中止当前运行；Ctrl+C 清空输入，快速连按两次退出。
 
 `hadamard-tui` 是唯一的交互式终端 Agent 入口，使用 Hadamard SDK 默认值：`~/.hadamard/settings.json`、当前工作区核心工具、`bypassPermissions`，以及未显式配置时不限工具迭代次数。原 `hadamard-react` 和 `hadamard-interactive-agent` 的能力已合并进 TUI，旧入口已移除。

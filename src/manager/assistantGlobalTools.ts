@@ -589,11 +589,9 @@ export async function createAssistantGlobalTools(
       inputSchema: z.strictObject({
         theme: z.enum(['system', 'light', 'dark']).optional(),
         density: z.enum(['comfortable', 'compact']).optional(),
-        workMode: z.enum(['coding', 'daily']).optional(),
         enterToSend: z.boolean().optional(),
         autoScroll: z.boolean().optional(),
         developerTools: z.boolean().optional(),
-        outputStyle: z.enum(['default', 'concise', 'explanatory', 'learning']).optional(),
         showBranchInComposer: z.boolean().optional(),
         showProviderConfigsInComposer: z.boolean().optional(),
         showAgentProfilesInComposer: z.boolean().optional(),
