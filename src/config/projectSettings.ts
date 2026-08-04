@@ -98,23 +98,19 @@ function normalizeDreamProfile(value: unknown): DreamExecutionProfileRef | undef
 
 function normalizeMemorySettings(value: unknown): ProjectMemorySettings {
   const memory = isRecord(value) ? value : {};
-  const compact = isRecord(memory.compact) ? memory.compact : {};
   const sessionMemory = isRecord(memory.sessionMemory) ? memory.sessionMemory : {};
   const durableMemory = isRecord(memory.durableMemory) ? memory.durableMemory : {};
-  const autoCompactTokenLimit = positiveInteger(compact.autoCompactTokenLimit, 0) || undefined;
   const maxOutputTokens = positiveInteger(
     sessionMemory.maxOutputTokens,
     DEFAULT_PROJECT_MEMORY_SETTINGS.sessionMemory.maxOutputTokens,
   );
   return {
     compact: {
-      enabled: typeof compact.enabled === 'boolean'
-        ? compact.enabled
-        : DEFAULT_PROJECT_MEMORY_SETTINGS.compact.enabled,
-      ...(autoCompactTokenLimit ? { autoCompactTokenLimit } : {}),
-      autoCompactTokenLimitScope: compact.autoCompactTokenLimitScope === 'body_after_prefix'
-        ? 'body_after_prefix'
-        : 'total',
+      // Project settings always keep automatic compact on; the threshold is
+      // derived from the active model context window (90% ceiling). Scope is
+      // fixed to total context — not user-configurable.
+      enabled: true,
+      autoCompactTokenLimitScope: 'total',
     },
     sessionMemory: {
       autoExtract: typeof sessionMemory.autoExtract === 'boolean'
@@ -187,14 +183,8 @@ export async function readProjectMemorySettingsPatch(
     const patch: ProjectMemorySettingsPatch = {};
     if (isRecord(memory.compact)) {
       patch.compact = {
-        ...(typeof memory.compact.enabled === 'boolean' ? { enabled: memory.compact.enabled } : {}),
-        ...(positiveInteger(memory.compact.autoCompactTokenLimit, 0)
-          ? { autoCompactTokenLimit: positiveInteger(memory.compact.autoCompactTokenLimit, 0) }
-          : {}),
-        ...(memory.compact.autoCompactTokenLimitScope === 'total'
-          || memory.compact.autoCompactTokenLimitScope === 'body_after_prefix'
-          ? { autoCompactTokenLimitScope: memory.compact.autoCompactTokenLimitScope }
-          : {}),
+        enabled: true,
+        autoCompactTokenLimitScope: 'total',
       };
     }
     if (isRecord(memory.sessionMemory)) {

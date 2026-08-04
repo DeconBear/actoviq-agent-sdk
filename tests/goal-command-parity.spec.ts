@@ -66,5 +66,13 @@ describe('Goal interactive surface parity', () => {
     expect(gui).toContain('sdk.goals.command(session, args)');
     expect(gui).toContain('data-testid="session-goal-banner"');
     expect(gui).toContain("'/api/session-goal'");
+    expect(gui).toContain('id="composerCommandChip"');
+    expect(gui).toContain('function setComposerChip(chip)');
+    expect(gui).toContain("setComposerChip({ kind: 'command', name: 'plan' })");
+    expect(gui).not.toContain("setComposerCommand('/plan ')");
+    expect(gui).toContain("setComposerChip({ kind: 'plugin'");
+    expect(gui).toContain("setComposerChip({ kind: 'skill'");
+    expect(gui).not.toContain('composerGoalMode');
+    expect(gui).not.toContain('goalModeChip');
   });
 });

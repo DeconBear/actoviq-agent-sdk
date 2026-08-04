@@ -1,5 +1,5 @@
 import { realpath as realpathCallback } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, access } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -63,7 +63,12 @@ async function runPowerShell(command: string, signal?: AbortSignal): Promise<str
   return runExecutable('powershell.exe', ['-NoProfile', '-Command', command], signal);
 }
 
-async function runExecutable(file: string, args: string[], signal?: AbortSignal): Promise<string> {
+async function runExecutable(
+  file: string,
+  args: string[],
+  signal?: AbortSignal,
+  options?: { timeoutMs?: number; windowsHide?: boolean },
+): Promise<string> {
   signalAborted(signal);
   const { execFile } = await import('node:child_process');
   return new Promise((resolve, reject) => {
@@ -79,8 +84,8 @@ async function runExecutable(file: string, args: string[], signal?: AbortSignal)
       file,
       args,
       {
-        windowsHide: true,
-        timeout: 30_000,
+        windowsHide: options?.windowsHide ?? true,
+        timeout: options?.timeoutMs ?? 30_000,
         maxBuffer: 10 * 1024 * 1024,
       },
       (error, stdout, stderr) => {
@@ -167,6 +172,134 @@ export async function captureDesktopScreenshot(
   }
   throw new Error(
     `Unable to capture the desktop with the available ${process.platform} screenshot tools.`,
+    { cause: lastError },
+  );
+}
+
+/** Build a WinForms drag-to-select region capture script for PowerShell -STA. */
+export function windowsRegionScreenshotScript(outputPath: string): string {
+  const escaped = outputPath.replace(/'/g, "''");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    '$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen',
+    '$form = New-Object System.Windows.Forms.Form',
+    "$form.FormBorderStyle = 'None'",
+    '$form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual',
+    '$form.Bounds = $vs',
+    '$form.TopMost = $true',
+    '$form.ShowInTaskbar = $false',
+    '$form.BackColor = [System.Drawing.Color]::Black',
+    '$form.Opacity = 0.28',
+    '$form.Cursor = [System.Windows.Forms.Cursors]::Cross',
+    '$form.KeyPreview = $true',
+    '$panel = New-Object System.Windows.Forms.Panel',
+    '$panel.BackColor = [System.Drawing.Color]::FromArgb(90, 37, 99, 235)',
+    '$panel.Visible = $false',
+    '$form.Controls.Add($panel)',
+    '$script:start = $null',
+    '$script:selecting = $false',
+    '$script:choice = $null',
+    '$script:cancelled = $false',
+    "$form.Add_KeyDown({ if ($_.KeyCode -eq 'Escape') { $script:cancelled = $true; $form.Close() } })",
+    "$form.Add_MouseDown({ if ($_.Button -ne 'Left') { return }; $script:selecting = $true; $script:start = $_.Location; $panel.Location = $_.Location; $panel.Size = New-Object System.Drawing.Size(0,0); $panel.Visible = $true })",
+    '$form.Add_MouseMove({ if (-not $script:selecting) { return }; $x = [Math]::Min($script:start.X, $_.X); $y = [Math]::Min($script:start.Y, $_.Y); $w = [Math]::Abs($script:start.X - $_.X); $h = [Math]::Abs($script:start.Y - $_.Y); $panel.Location = New-Object System.Drawing.Point($x, $y); $panel.Size = New-Object System.Drawing.Size($w, $h) })',
+    "$form.Add_MouseUp({ if (-not $script:selecting -or $_.Button -ne 'Left') { return }; $script:selecting = $false; $script:choice = $panel.Bounds; $form.Close() })",
+    '[void]$form.ShowDialog()',
+    'if ($script:cancelled -or $null -eq $script:choice -or $script:choice.Width -lt 2 -or $script:choice.Height -lt 2) { exit 2 }',
+    '$rect = New-Object System.Drawing.Rectangle ($vs.X + $script:choice.X), ($vs.Y + $script:choice.Y), $script:choice.Width, $script:choice.Height',
+    '$bmp = New-Object System.Drawing.Bitmap $rect.Width, $rect.Height',
+    '$g = [System.Drawing.Graphics]::FromImage($bmp)',
+    '$g.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size)',
+    `$bmp.Save('${escaped}')`,
+    '$g.Dispose()',
+    '$bmp.Dispose()',
+  ].join('; ');
+}
+
+export function desktopRegionScreenshotCommandCandidates(
+  platform: NodeJS.Platform,
+  outputPath: string,
+): Array<{ file: string; args: string[] }> {
+  if (platform === 'win32') {
+    return [{
+      file: 'powershell.exe',
+      args: ['-NoProfile', '-STA', '-Command', windowsRegionScreenshotScript(outputPath)],
+    }];
+  }
+  if (platform === 'darwin') {
+    // -i interactive selection; -x no shutter sound
+    return [{ file: 'screencapture', args: ['-i', '-x', outputPath] }];
+  }
+  if (platform === 'linux') {
+    return [
+      { file: 'gnome-screenshot', args: ['-a', '-f', outputPath] },
+      { file: 'scrot', args: ['-s', '-o', outputPath] },
+      { file: 'maim', args: ['-s', outputPath] },
+      { file: 'import', args: [outputPath] },
+    ];
+  }
+  return [];
+}
+
+export class ScreenshotCancelledError extends Error {
+  constructor(message = 'Screenshot cancelled') {
+    super(message);
+    this.name = 'ScreenshotCancelledError';
+  }
+}
+
+/**
+ * Interactive region screenshot: drag a rectangle (Windows), or use the OS
+ * selection UI (macOS screencapture -i / Linux gnome-screenshot -a, etc.).
+ * Throws ScreenshotCancelledError when the user dismisses the picker.
+ */
+export async function captureDesktopRegionScreenshot(
+  outputPath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const candidates = desktopRegionScreenshotCommandCandidates(process.platform, outputPath);
+  if (candidates.length === 0) {
+    throw new Error(`Region screenshots are not supported on ${process.platform}.`);
+  }
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      await runExecutable(candidate.file, candidate.args, signal, {
+        // Interactive pickers can wait on the user for a while.
+        timeoutMs: 10 * 60_000,
+        // Keep console hidden, but WinForms / OS pickers still show.
+        windowsHide: true,
+      });
+      try {
+        await access(outputPath);
+      } catch {
+        throw new ScreenshotCancelledError();
+      }
+      return outputPath;
+    } catch (error) {
+      signalAborted(signal);
+      if (error instanceof ScreenshotCancelledError) throw error;
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error ? error.cause : undefined;
+      const exitCode = cause && typeof cause === 'object' && cause !== null && 'code' in cause
+        ? (cause as { code?: unknown }).code
+        : undefined;
+      // Non-zero exit from interactive tools usually means Escape / cancel.
+      if (
+        exitCode === 1
+        || exitCode === 2
+        || /exit code [12]\b|status [12]\b|code[=:\s][12]\b/i.test(message)
+      ) {
+        throw new ScreenshotCancelledError();
+      }
+    }
+  }
+  throw new Error(
+    `Unable to capture a region with the available ${process.platform} screenshot tools.`,
     { cause: lastError },
   );
 }

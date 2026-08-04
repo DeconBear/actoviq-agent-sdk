@@ -184,8 +184,8 @@ describe('TUI and GUI parity', () => {
     expect(html).not.toContain('wip-hidden');
     expect(html).not.toContain('settings-wip-note');
     expect(css).toContain('.te-check input { width: auto; }');
-    expect(css).not.toContain('.pane-stub');
-    expect(js).not.toContain('function makeStub(');
+    expect(css).toContain('.pane-stub');
+    expect(js).toContain('function makeStub(');
     expect(js).toContain('Graph (team)');
     expect(js).toContain("label: 'Graph (team)'");
     expect(js).toContain("label: 'Blank'");
@@ -277,7 +277,12 @@ describe('TUI and GUI parity', () => {
     expect(js).toContain('eventToShortcut');
     expect(js).toContain('dispatchShortcut');
     expect(js).toContain("api('/api/screenshot'");
+    expect(js).toContain("captureScreenshotContext('region')");
     expect(js).toContain("title: 'Screenshot'");
+    expect(js).toContain("title: 'Full screen'");
+    expect(js).toContain('Drag to select a region');
+    expect(readFileSync(new URL('../src/gui/hadamardGui.ts', import.meta.url), 'utf8')).toContain('withHiddenGuiWindows');
+    expect(readFileSync(new URL('../src/gui/hadamardGui.ts', import.meta.url), 'utf8')).toContain('captureDesktopRegionScreenshot');
     expect(js).toContain('showBranchInComposer');
     expect(js).toContain('showProviderConfigsInComposer');
     expect(js).toContain('showAgentProfilesInComposer');

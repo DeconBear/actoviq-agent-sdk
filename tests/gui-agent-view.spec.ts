@@ -159,7 +159,9 @@ describe('GUI Project Agent execution view', () => {
     expect(html).not.toContain('id="teamEnvSelect"');
     expect(html).toContain('aria-haspopup="listbox"');
     expect(html).toContain('placeholder="Search models, routers, providers"');
-    expect(html).toContain('Ctrl / ⌘ + / to cycle');
+    expect(html).toContain('data-shortcut-action="cycleModel"');
+    expect(js).toContain('function formatShortcutLabel');
+    expect(js).toContain("isMacPlatform() ? '⌘' : 'Ctrl'");
     expect(js).toContain("appendPickerRouterSection(items, targets.routers");
     expect(js).toContain("executionLabel = 'External CLI · '");
     expect(js).toContain("executionLabel = 'Direct API · '");

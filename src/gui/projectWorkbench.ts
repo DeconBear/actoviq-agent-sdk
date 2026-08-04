@@ -214,6 +214,12 @@ export type WorkspaceFileReadResult = {
   text?: string;
   binary?: boolean;
   truncated?: boolean;
+  /** Present when the file is a supported image preview. */
+  image?: {
+    mediaType: string;
+    /** Full `data:<mediaType>;base64,...` URL for an <img> preview. */
+    dataUrl: string;
+  };
 };
 
 const TEXT_EXT = new Set([
@@ -223,6 +229,27 @@ const TEXT_EXT = new Set([
   '.sql', '.graphql', '.vue', '.svelte', '.xml', '.svg', '.gitignore', '.dockerignore',
   '.editorconfig', '.npmrc', '.nvmrc', '.d.ts',
 ]);
+
+const IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+};
+
+/** Soft ceiling so huge assets do not blow up the GUI JSON payload. */
+const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+
+export function imageMediaTypeForPath(filePath: string): string | undefined {
+  const ext = path.extname(filePath).toLowerCase();
+  return IMAGE_MEDIA_TYPES[ext];
+}
 
 function looksBinary(buf: Buffer): boolean {
   const sample = buf.subarray(0, Math.min(buf.length, 8000));
@@ -258,6 +285,21 @@ export async function readWorkspaceFile(
   const info = await stat(resolved);
   if (!info.isFile()) throw new Error('Not a file: ' + resolved);
   const size = info.size;
+  const mediaType = imageMediaTypeForPath(resolved);
+  if (mediaType) {
+    if (size > IMAGE_PREVIEW_MAX_BYTES) {
+      return { path: resolved, size, binary: true };
+    }
+    const buf = await readFile(resolved);
+    return {
+      path: resolved,
+      size,
+      image: {
+        mediaType,
+        dataUrl: `data:${mediaType};base64,${buf.toString('base64')}`,
+      },
+    };
+  }
   const forceText = isForcedTextPath(resolved);
   const buf = await readFile(resolved);
   if (!forceText && looksBinary(buf)) {

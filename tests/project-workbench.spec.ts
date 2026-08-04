@@ -95,6 +95,33 @@ describe('projectWorkbench helpers', () => {
     expect(result.text).toBeUndefined();
   });
 
+  it('returns an image data URL preview for PNG files', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-img-'));
+    const file = path.join(root, 'pixel.png');
+    // 1x1 transparent PNG
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(file, png);
+    const result = await readWorkspaceFile(file, root);
+    expect(result.binary).toBeUndefined();
+    expect(result.image?.mediaType).toBe('image/png');
+    expect(result.image?.dataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(result.size).toBe(png.length);
+  });
+
+  it('ships hidden-dotfile listing and image preview wiring in the GUI', async () => {
+    const src = await readFile(new URL('../src/gui/hadamardGui.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(
+      /if \(entry\.name\.startsWith\('\.'\) && entry\.name !== '\.hadamard'\) continue;/,
+    );
+    expect(src).toContain("...(entry.name.startsWith('.') ? { hidden: true } : {})");
+    expect(src).toContain('files-image-preview');
+    expect(src).toContain('hidden-entry');
+    expect(src).toContain('data.image');
+  });
+
   it('writes text files only within the workspace', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'hadamard-write-'));
     const file = path.join(root, 'hello.txt');
@@ -147,6 +174,11 @@ describe('projectWorkbench helpers', () => {
     expect(src).toContain('files-preview-modes');
     expect(src).toContain('files-hl-overlay');
     expect(src).toContain('files-md-preview');
+    expect(src).toContain('position: absolute; inset: 0');
+    expect(src).toMatch(/\.files-preview-editor[^}]*overflow:\s*auto/);
+    expect(src).toContain('files-image-preview');
+    expect(src).toContain('hidden-entry');
+    expect(src).toContain('data.image');
     expect(src).toContain('/api/git/diff');
     expect(src).toContain('.project-files-split');
     expect(src).toContain('.project-git-split');

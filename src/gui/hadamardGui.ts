@@ -10,7 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { captureDesktopScreenshot } from '../computer/hadamardComputerUse.js';
+import { captureDesktopRegionScreenshot, captureDesktopScreenshot, ScreenshotCancelledError } from '../computer/hadamardComputerUse.js';
 import { tool } from '../runtime/tools.js';
 import { TerminalManager, ptyAvailable } from './terminalManager.js';
 import {
@@ -1557,6 +1557,42 @@ async function pickFolderViaElectron(): Promise<string | null | undefined> {
   } catch {
     // Electron module unavailable or dialog failed — fall through to OS picker.
     return undefined;
+  }
+}
+
+/** Temporarily hide Electron windows so they are not included in screenshots. */
+async function withHiddenGuiWindows<T>(fn: () => Promise<T>): Promise<T> {
+  if (!process.versions.electron) return fn();
+  try {
+    const { BrowserWindow } = await import('electron');
+    const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed());
+    const snapshot = windows.map(win => ({
+      win,
+      wasVisible: win.isVisible(),
+      opacity: typeof win.getOpacity === 'function' ? win.getOpacity() : 1,
+    }));
+    for (const { win } of snapshot) {
+      try {
+        if (typeof win.setOpacity === 'function') win.setOpacity(0);
+        else win.hide();
+      } catch {
+        try { win.hide(); } catch { /* ignore */ }
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 160));
+    try {
+      return await fn();
+    } finally {
+      for (const { win, wasVisible, opacity } of snapshot) {
+        if (win.isDestroyed()) continue;
+        try {
+          if (typeof win.setOpacity === 'function') win.setOpacity(opacity || 1);
+          if (wasVisible) win.show();
+        } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    return fn();
   }
 }
 
@@ -8256,19 +8292,30 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       }
       if (req.method === 'POST' && url.pathname === '/api/screenshot') {
         try {
+          const body = await readJson(req).catch(() => ({}));
+          const mode = body && typeof body === 'object' && (body as { mode?: string }).mode === 'full'
+            ? 'full'
+            : 'region';
           const outputPath = path.join(
             workDir,
             '.hadamard',
             'screenshots',
             `screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
           );
-          await captureDesktopScreenshot(outputPath);
+          await withHiddenGuiWindows(async () => {
+            if (mode === 'full') await captureDesktopScreenshot(outputPath);
+            else await captureDesktopRegionScreenshot(outputPath);
+          });
           return json(res, 200, {
             ok: true,
+            mode,
             path: outputPath,
             relativePath: path.relative(workDir, outputPath).split(path.sep).join('/'),
           });
         } catch (error) {
+          if (error instanceof ScreenshotCancelledError) {
+            return json(res, 400, { error: error.message, cancelled: true });
+          }
           return json(res, 500, { error: (error as Error).message });
         }
       }
@@ -10081,9 +10128,9 @@ export function createHadamardGuiHtml(): string {
                 <form id="composer" class="composer">
                 <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
                 <div id="attachmentTray" class="attachment-tray hidden"></div>
-                <div id="goalModeChip" class="goal-mode-chip hidden">
-                  <span class="goal-mode-chip-label">Goal</span>
-                  <button type="button" id="goalModeChipClear" class="goal-mode-chip-clear" title="Leave Goal mode" aria-label="Leave Goal mode">${guiIcon('close')}</button>
+                <div id="composerCommandChip" class="composer-command-chip hidden">
+                  <span class="composer-command-chip-label" id="composerCommandChipLabel">Goal</span>
+                  <button type="button" id="composerCommandChipClear" class="composer-command-chip-clear" title="Clear composer chip" aria-label="Clear composer chip">${guiIcon('close')}</button>
                 </div>
                 <textarea id="promptInput" rows="3" placeholder="Ask Hadamard…"></textarea>
                 <div id="slashMenu" class="slash-menu hidden"></div>
@@ -10110,7 +10157,7 @@ export function createHadamardGuiHtml(): string {
                       <button type="button" id="modelPickerBtn" class="model-picker-btn" title="Choose model" aria-haspopup="listbox" aria-expanded="false">Choose model ▾</button>
                       <div id="modelPickerFlyout" class="model-picker-flyout hidden">
                         <div id="modelPickerMenu" class="model-picker-menu">
-                          <div class="picker-heading"><strong>Select model</strong><span>Ctrl / ⌘ + / to cycle</span></div>
+                          <div class="picker-heading"><strong>Select model</strong><span data-shortcut-action="cycleModel">Ctrl+/</span></div>
                           <div class="picker-search-wrap">
                             <input id="modelPickerSearch" class="picker-search" type="search" placeholder="Search models, routers, providers" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="modelPickerItems" aria-expanded="true">
                           </div>
@@ -10126,6 +10173,7 @@ export function createHadamardGuiHtml(): string {
               </div>
             </section>
           </div>
+          <div class="aux-splitter" id="auxSplitter" role="separator" aria-orientation="vertical" aria-label="Resize side panel" title="Drag to resize"></div>
           <aside class="aux-panel" id="auxPanel" aria-label="Workbench panel">
             <header class="aux-chrome">
               <div class="aux-chrome-spacer"></div>
@@ -10751,7 +10799,7 @@ export function createHadamardGuiHtml(): string {
       </section>
       <section class="settings-panel" data-settings-panel="shortcuts">
         <h1>Keyboard shortcuts</h1>
-        <p class="muted">Click a binding and press a new key combination. <code>Mod</code> means Ctrl on Windows/Linux and Command on macOS. Backspace clears a binding.</p>
+        <p class="muted">Click a binding and press a new key combination. Shortcuts show <code>Ctrl</code> on Windows/Linux and <code>⌘</code> on macOS. Backspace clears a binding.</p>
         <div id="settingsShortcutsList" class="settings-group shortcut-list"></div>
       </section>
       <section class="settings-panel" data-settings-panel="capabilities">
@@ -11312,8 +11360,12 @@ body[data-theme="dark"] {
 .conv-meta .chip { border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
 .conv-side { flex: 0 0 auto; display: grid; gap: 4px; align-items: start; text-align: right; }
 /* --- Project plan checklist (plan/UI_PLAN §4.2). --- */
-.detail-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 0; align-items: stretch; height: 100%; }
-.detail-main { min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
+.detail-layout { flex: 1; min-height: 0; display: flex; gap: 0; align-items: stretch; height: 100%; }
+.detail-main { min-height: 0; min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
+.detail-conv-splitter { flex: 0 0 5px; width: 5px; cursor: col-resize; position: relative; background: var(--border); touch-action: none; align-self: stretch; z-index: 2; }
+.detail-conv-splitter::after { content: ''; position: absolute; inset: 0 -3px; }
+.detail-conv-splitter:hover, .detail-conv-splitter.dragging { background: var(--brand); opacity: .55; }
+.detail-layout.resizing-conv .detail-sidebar { transition: none; }
 .project-detail-tabs { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 8px 16px 0; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
 .project-detail-tab { min-height: 30px; border: 0; border-bottom: 2px solid transparent; border-radius: 7px 7px 0 0; background: transparent; color: var(--text-2); padding: 0 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .project-detail-tab:hover { color: var(--text-1); background: var(--surface-hover); }
@@ -11558,7 +11610,16 @@ body[data-theme="dark"] .git-diff-line.del { color: #f85149; }
 body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .project-terminal-panel { background: var(--term-bg, var(--bg-app)); }
 .project-terminal-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.project-terminal-host > .terminal-dock { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 0; }
+.project-terminal-host > .terminal-dock {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-top: 0;
+}
 .project-terminal-host > .terminal-dock.hidden { display: flex !important; }
 @media (max-width: 960px) {
   .project-files-split { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 40%) minmax(0, 1fr); }
@@ -11647,7 +11708,7 @@ body[data-theme="dark"] .git-diff-line.hunk { color: #d2a8ff; }
 .issue-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) 38px; gap: 7px; }
 .issue-comment-form input { min-width: 0; height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); color: var(--text-1); padding: 0 10px; font-size: 12.5px; }
 .issue-comment-form button { width: 38px; min-width: 38px; padding: 0; }
-.detail-sidebar { min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
+.detail-sidebar { min-height: 0; min-width: 220px; max-width: min(70vw, 560px); width: var(--detail-sidebar-width, 300px); flex: 0 0 var(--detail-sidebar-width, 300px); display: flex; flex-direction: column; background: var(--bg-sidebar); overflow: hidden; }
 .detail-conversations-toggle { display: none; }
 .detail-conversations-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 .conv-sidebar-top { flex: 1; min-height: 0; min-width: 0; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
@@ -12452,7 +12513,14 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .workbench-split { flex: 1; min-height: 0; display: flex; }
 .workbench-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .workbench-chat .pane-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.aux-panel { flex: 0 0 min(340px, 38vw); width: min(340px, 38vw); min-width: 240px; max-width: 420px; border-left: 1px solid var(--border); background: var(--bg-surface); display: flex; flex-direction: column; min-height: 0; transition: flex-basis .15s ease, width .15s ease, min-width .15s ease; }
+.aux-splitter { flex: 0 0 5px; width: 5px; cursor: col-resize; position: relative; background: var(--border); touch-action: none; align-self: stretch; z-index: 2; }
+.aux-splitter::after { content: ''; position: absolute; inset: 0 -3px; }
+.aux-splitter:hover, .aux-splitter.dragging { background: var(--brand); opacity: .55; }
+.workbench-split.aux-collapsed .aux-splitter,
+.workbench.aux-focused .aux-splitter,
+.workbench-split.aux-focused .aux-splitter { display: none; }
+.aux-panel { flex: 0 0 var(--aux-panel-width, 340px); width: var(--aux-panel-width, 340px); min-width: 240px; max-width: min(70vw, 720px); border-left: 1px solid var(--border); background: var(--bg-surface); display: flex; flex-direction: column; min-height: 0; transition: flex-basis .15s ease, width .15s ease, min-width .15s ease; }
+.workbench-split.resizing-aux .aux-panel { transition: none; }
 .aux-panel.collapsed { flex: 0 0 40px; width: 40px; min-width: 40px; max-width: 40px; }
 .aux-panel.collapsed .aux-body,
 .aux-panel.collapsed #auxFocusBtn,
@@ -12535,6 +12603,10 @@ body[data-sidebar-mode="nav"] .sidebar .sidebar-footer .nav-btn span:not(.nav-ic
 .terminal-dock-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .terminal-dock-body .pane-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .pane { min-height: 0; }
+.pane-stub { flex: 1; display: grid; place-content: center; place-items: center; gap: 12px; text-align: center; color: var(--text-2); padding: 24px; }
+.pane-stub .stub-icon { display: inline-grid; place-items: center; color: var(--text-2); }
+.pane-stub .stub-icon .ui-icon { width: 34px; height: 34px; }
+.pane-stub p { margin: 0; font-size: 14px; }
 /* Terminal pane: xterm fills the pane; chrome follows app theme. */
 .pane-terminal { background: var(--term-bg); color: var(--term-fg); }
 .pane-terminal .term-header { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-bottom: 1px solid var(--term-border); background: var(--term-chrome); }
@@ -12867,7 +12939,7 @@ button.composer-meta-chip:hover {
   0%, 100% { opacity: 1; }
   50% { opacity: .25; }
 }
-.goal-mode-chip {
+.composer-command-chip {
   justify-self: start;
   display: inline-flex;
   align-items: center;
@@ -12879,7 +12951,7 @@ button.composer-meta-chip:hover {
   color: var(--text-1);
   font-size: 12px;
 }
-.goal-mode-chip-clear {
+.composer-command-chip-clear {
   display: inline-grid;
   place-items: center;
   width: 18px;
@@ -12890,8 +12962,8 @@ button.composer-meta-chip:hover {
   color: var(--text-2);
   cursor: pointer;
 }
-.goal-mode-chip-clear:hover { background: var(--surface-hover); color: var(--text-1); }
-.goal-mode-chip-clear .ui-icon { width: 12px; height: 12px; }
+.composer-command-chip-clear:hover { background: var(--surface-hover); color: var(--text-1); }
+.composer-command-chip-clear .ui-icon { width: 12px; height: 12px; }
 .composer {
   width: 100%;
   margin: 0;
@@ -13231,7 +13303,7 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .filter-chip b { min-width: 22px; min-height: 22px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); display: inline-grid; place-items: center; font-size: 12px; }
 .filter-chip.active { border-color: var(--brand); background: var(--accent-soft); color: var(--brand); }
 .project-detail > .region-header { background: linear-gradient(180deg, var(--bg-surface), var(--surface-muted)); border-bottom: 1px solid var(--border-active-soft); }
-.detail-layout { grid-template-columns: minmax(0, 1fr) 300px; gap: 0; background: var(--bg-app); }
+.detail-layout { gap: 0; background: var(--bg-app); }
 .detail-sidebar { border-left: 1px solid var(--border); box-shadow: inset 1px 0 0 rgba(255,255,255,.5); }
 .detail-conversations { gap: 14px; }
 .conv-card { min-height: 116px; align-items: stretch; padding: 18px; border-radius: 12px; position: relative; }
@@ -13729,13 +13801,17 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 @media (max-width: 1120px) {
   .proj-card { grid-template-columns: 1fr; }
   .plan-preview { grid-column: 1; grid-row: auto; }
-  .detail-layout { grid-template-columns: 1fr; position: relative; }
+  .detail-layout { position: relative; }
+  .detail-conv-splitter { display: none; }
   .detail-conversations-toggle { display: inline-flex; }
   .detail-sidebar {
     position: absolute;
     inset: 0 0 0 auto;
     z-index: 15;
     width: min(320px, calc(100% - 40px));
+    flex: none;
+    max-width: none;
+    min-width: 0;
     visibility: hidden;
     pointer-events: none;
     transform: translateX(calc(100% + 12px));
@@ -13970,14 +14046,14 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
   font-size: 12.5px;
 }
 .check-row { display: flex !important; align-items: center; gap: 8px; color: var(--text-1) !important; font-size: 12.5px; }
-.shortcut-list div { display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12.5px; }
-.shortcut-group { margin-bottom: 14px; }
-.shortcut-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
-.shortcut-row { flex-wrap: wrap; }
-.shortcut-row > span { flex: 1; min-width: 160px; }
-.shortcut-binding { width: 160px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font: 12px var(--font-mono); }
+.shortcut-list { display: flex; flex-direction: column; gap: 16px; }
+.shortcut-list .shortcut-group { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.shortcut-list .shortcut-group h3 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.shortcut-list .shortcut-row { display: flex; align-items: center; gap: 10px; min-height: 34px; font-size: 12.5px; }
+.shortcut-list .shortcut-row > span { flex: 1; min-width: 0; color: var(--text-1); }
+.shortcut-binding { width: 180px; flex: 0 0 180px; min-height: 30px; border: 1px solid var(--border); border-radius: 8px; padding: 0 9px; background: var(--bg-surface); color: var(--text-1); font: 12px var(--font-mono); }
 .shortcut-binding:focus { border-color: var(--brand); outline: 2px solid color-mix(in srgb, var(--brand) 18%, transparent); }
-.shortcut-reset { min-height: 30px; }
+.shortcut-reset { min-height: 30px; flex: 0 0 auto; }
 .hooks-event-block { margin-bottom: 16px; }
 .hooks-event-block h3 { margin: 0 0 8px; font-size: 13px; }
 .hooks-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg-surface); }
@@ -14675,8 +14751,9 @@ const state = {
   activeSurface: null,
   attachments: [],
   attachmentCounter: 0,
-  // Goal composer mode: the next send writes the session goal instead of chatting.
-  composerGoalMode: false,
+  // Composer chip: next send is scoped to a command, plugin, or skill.
+  // null | { kind:'command', name } | { kind:'plugin', id, name } | { kind:'skill', name }
+  composerChip: null,
   goalBusy: false,
   goalExpanded: false,
   goalEditing: false,
@@ -14700,6 +14777,7 @@ const state = {
   auxView: null,
   auxCollapsed: false,
   auxFocused: false,
+  auxPanelWidth: 340,
   filesBrowsePath: null,
   filesTreeExpanded: {},
   filesTreeCache: {},
@@ -14711,6 +14789,7 @@ const state = {
   gitDiff: null,
   gitGroupCollapsed: { staged: false, unstaged: false, history: false },
   gitSidebarWidth: 320,
+  detailSidebarWidth: 300,
   gitSelected: null,
   gitTreeExpanded: {},
   // App shell: which of the 4 primary regions (Project/Team/Automation/Customize)
@@ -14812,6 +14891,29 @@ const DEFAULT_SHORTCUTS = {
   openSettings: 'Mod+,',
   takeScreenshot: 'Mod+Shift+S',
 };
+
+function isMacPlatform() {
+  const platform = navigator.platform || '';
+  const uaData = navigator.userAgentData;
+  if (uaData && typeof uaData.platform === 'string') {
+    return /mac/i.test(uaData.platform);
+  }
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+/** Display label for a stored binding (Mod -> Ctrl / Cmd by OS). */
+function formatShortcutLabel(binding) {
+  if (!binding) return '—';
+  const mod = isMacPlatform() ? '⌘' : 'Ctrl';
+  return String(binding)
+    .split('+')
+    .map(part => {
+      if (part === 'Mod') return mod;
+      if (part === 'Backquote') return String.fromCharCode(96);
+      return part;
+    })
+    .join('+');
+}
 const el = (id) => document.getElementById(id);
 const transcript = el('transcript');
 const input = el('promptInput');
@@ -14949,6 +15051,35 @@ function refreshOpenTerminalThemes() {
   }
 }
 // --- Workbench aux panel + terminal dock (Codex-style) ---
+const AUX_PANEL_WIDTH_KEY = 'hadamard.gui.auxPanelWidth';
+const AUX_PANEL_MIN_WIDTH = 240;
+const AUX_PANEL_MAX_WIDTH = 720;
+
+function loadAuxPanelWidth() {
+  try {
+    const raw = Number(localStorage.getItem(AUX_PANEL_WIDTH_KEY));
+    if (Number.isFinite(raw) && raw >= AUX_PANEL_MIN_WIDTH) {
+      state.auxPanelWidth = Math.round(Math.min(AUX_PANEL_MAX_WIDTH, raw));
+    }
+  } catch { /* storage is optional */ }
+}
+
+function persistAuxPanelWidth() {
+  try { localStorage.setItem(AUX_PANEL_WIDTH_KEY, String(state.auxPanelWidth)); } catch { /* optional */ }
+}
+
+function applyAuxPanelWidth(width) {
+  const next = Math.round(Math.max(AUX_PANEL_MIN_WIDTH, Math.min(AUX_PANEL_MAX_WIDTH, Number(width) || 340)));
+  state.auxPanelWidth = next;
+  const split = document.querySelector('.workbench-split');
+  const panel = el('auxPanel');
+  if (split) split.style.setProperty('--aux-panel-width', next + 'px');
+  if (panel && !panel.classList.contains('collapsed') && !panel.classList.contains('focused')) {
+    panel.style.width = next + 'px';
+    panel.style.flexBasis = next + 'px';
+  }
+}
+
 function showAuxLauncher() {
   state.auxView = null;
   const launcher = el('auxLauncher');
@@ -14961,6 +15092,14 @@ function showAuxLauncher() {
 function syncAuxChrome() {
   const panel = el('auxPanel');
   if (panel) panel.classList.toggle('collapsed', state.auxCollapsed);
+  const split = document.querySelector('.workbench-split');
+  if (split) split.classList.toggle('aux-collapsed', state.auxCollapsed);
+  if (panel && (state.auxCollapsed || state.auxFocused)) {
+    panel.style.width = '';
+    panel.style.flexBasis = '';
+  } else {
+    applyAuxPanelWidth(state.auxPanelWidth);
+  }
   const title = state.auxCollapsed ? 'Show panel' : 'Hide panel';
   for (const id of ['auxToggleBtn', 'auxPanelToggleBtn']) {
     const toggle = el(id);
@@ -15006,6 +15145,52 @@ function toggleAuxFocus() {
   if (panel) panel.classList.toggle('focused', state.auxFocused);
   const workbench = document.querySelector('.workbench');
   if (workbench) workbench.classList.toggle('aux-focused', state.auxFocused);
+  const split = document.querySelector('.workbench-split');
+  if (split) split.classList.toggle('aux-focused', state.auxFocused);
+  if (!state.auxFocused && !state.auxCollapsed) applyAuxPanelWidth(state.auxPanelWidth);
+}
+function bindAuxPanelResize() {
+  const handle = el('auxSplitter');
+  const panel = el('auxPanel');
+  const split = document.querySelector('.workbench-split');
+  if (!handle || !panel || !split || handle.dataset.bound === '1') return;
+  handle.dataset.bound = '1';
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+  const onMove = (event) => {
+    if (!dragging) return;
+    const bounds = split.getBoundingClientRect();
+    const maxByViewport = Math.min(AUX_PANEL_MAX_WIDTH, Math.floor(bounds.width * 0.7));
+    const delta = startX - event.clientX; // dragging left widens the right panel
+    const next = Math.max(AUX_PANEL_MIN_WIDTH, Math.min(maxByViewport, startWidth + delta));
+    applyAuxPanelWidth(next);
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    split.classList.remove('resizing-aux');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    persistAuxPanelWidth();
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (state.auxCollapsed || state.auxFocused) return;
+    event.preventDefault();
+    dragging = true;
+    startX = event.clientX;
+    startWidth = panel.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    split.classList.add('resizing-aux');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
 }
 async function renderAuxReview() {
   const view = el('auxView');
@@ -15561,6 +15746,22 @@ function loadXterm() {
   });
   return xtermLoadPromise;
 }
+function makeStub(pane, type, note) {
+  pane.textContent = '';
+  const stub = document.createElement('div');
+  stub.className = 'pane-stub';
+  stub.innerHTML = '<span class="stub-icon">' + guiIcon(type === 'terminal' ? 'terminal' : 'folder') + '</span><p></p>';
+  stub.querySelector('p').textContent = note || '';
+  pane.appendChild(stub);
+}
+function refitActiveTerminal() {
+  const active = state.tabs.find((t) => t.id === state.activeTabId);
+  if (!active || !active.xterm) return;
+  const fit = active.fitAddon;
+  if (fit && typeof fit.fit === 'function') {
+    try { fit.fit(); } catch { /* layout not ready */ }
+  }
+}
 // --- Smart terminal helpers (plan phase 5): blocks, history, output→agent ---
 function stripAnsiClient(s) { return String(s || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, ''); }
 function runTerminalCommand(terminalId, command) {
@@ -15663,7 +15864,10 @@ async function initTerminalPane(pane, tab) {
   term.loadAddon(fit);
   term.open(mount);
   tab.xterm = term;
+  tab.fitAddon = fit;
   try { fit.fit(); } catch (e) { /* layout not ready yet */ }
+  requestAnimationFrame(() => { try { fit.fit(); } catch (e) { /* ignore */ } });
+  setTimeout(() => { try { fit.fit(); } catch (e) { /* ignore */ } }, 50);
   // Smart-terminal block tracking (plan phase 5): each Enter finalizes a
   // command+output block for the Blocks panel and persists the command.
   tab.inputBuf = ''; tab.outputBuf = ''; tab.blocks = []; tab.picker = null; tab.inEscape = false;
@@ -19153,9 +19357,9 @@ function collectProjectSettingsBody() {
     projectRules: el('projectRulesPrompt')?.value || '',
     memory: {
       compact: {
-        enabled: Boolean(el('projectCompactEnabled')?.checked),
-        autoCompactTokenLimit: Number(el('projectCompactLimit')?.value) || undefined,
-        autoCompactTokenLimitScope: el('projectCompactScope')?.value === 'body_after_prefix' ? 'body_after_prefix' : 'total',
+        // Always on — not user-configurable. Threshold and scope are fixed.
+        enabled: true,
+        autoCompactTokenLimitScope: 'total',
       },
       sessionMemory: {
         autoExtract: Boolean(el('projectSessionMemoryAuto')?.checked),
@@ -19280,7 +19484,7 @@ function wireProjectSettingsPanel() {
   panel.addEventListener('input', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt' || target.id === 'projectCompactLimit' || target.id === 'projectSessionMemoryMaxTokens') {
+    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt' || target.id === 'projectSessionMemoryMaxTokens') {
       scheduleProjectSettingsSave();
     }
   });
@@ -19358,9 +19562,6 @@ async function mountProjectSettingsPanel(force) {
     const compact = memory.compact || {};
     const sessionMemory = memory.sessionMemory || {};
     const durableMemory = memory.durableMemory || {};
-    if (el('projectCompactEnabled')) el('projectCompactEnabled').checked = compact.enabled !== false;
-    if (el('projectCompactLimit')) el('projectCompactLimit').value = compact.autoCompactTokenLimit || '';
-    if (el('projectCompactScope')) el('projectCompactScope').value = compact.autoCompactTokenLimitScope || 'total';
     const compactStatus = el('projectCompactStatus');
     if (compactStatus) compactStatus.textContent = data.compactBudget
       ? 'Raw: ' + data.compactBudget.rawContextWindowTokens + ' · Effective: ' + data.compactBudget.effectiveContextWindowTokens + ' · Auto compact: ' + data.compactBudget.autoCompactTokenLimit + ' (' + data.compactBudget.source + ')' + (data.compactWarning ? '\\n' + data.compactWarning : '')
@@ -19970,20 +20171,40 @@ function mountProjectTerminal() {
     host.appendChild(note);
     return;
   }
-  host.textContent = '';
-  host.appendChild(dock);
+  if (dock.parentElement !== host) {
+    host.textContent = '';
+    host.appendChild(dock);
+  }
   dock.classList.remove('hidden');
   state.terminalHostMode = 'project';
-  const existing = state.tabs.find((t) => t.type === 'terminal');
+  const existing = state.tabs.find((t) => t.type === 'terminal' && document.getElementById(t.id));
   if (existing) switchTerminalTab(existing.id);
-  else addTerminalPane();
+  else {
+    // Drop stale tab records whose panes were destroyed (e.g. after close).
+    state.tabs = state.tabs.filter((t) => t.type !== 'terminal' || document.getElementById(t.id));
+    addTerminalPane();
+  }
   syncTerminalToggle();
   requestAnimationFrame(() => {
-    const active = state.tabs.find((t) => t.id === state.activeTabId);
-    if (active && active.xterm && active.fitAddon && typeof active.fitAddon.fit === 'function') {
-      try { active.fitAddon.fit(); } catch { /* ignore */ }
-    }
+    refitActiveTerminal();
+    requestAnimationFrame(refitActiveTerminal);
   });
+  setTimeout(refitActiveTerminal, 80);
+}
+function closeProjectTerminal() {
+  for (const tab of [...state.tabs]) {
+    if (tab.type === 'terminal') closeTerminalTab(tab.id);
+  }
+  // In the project Terminal tab, closing should recreate a fresh shell instead
+  // of leaving an empty chrome-only dock (hidden is forced visible there).
+  if (state.projectDetailTab === 'terminal' && state.terminalHostMode === 'project') {
+    addTerminalPane();
+    requestAnimationFrame(refitActiveTerminal);
+    return;
+  }
+  const dock = el('terminalDock');
+  if (dock) dock.classList.add('hidden');
+  syncTerminalToggle();
 }
 function fileTreeIcon(name, kind) {
   if (kind === 'folder') return guiIcon('folder');
@@ -20778,6 +20999,49 @@ function bindGitSidebarResize(split, left, handle) {
     startWidth = left.getBoundingClientRect().width;
     handle.classList.add('dragging');
     document.body.style.cursor = window.matchMedia('(max-width: 960px)').matches ? 'row-resize' : 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  });
+}
+function bindDetailSidebarResize(layout, sidebar, handle) {
+  if (!layout || !sidebar || !handle || handle.dataset.bound === '1') return;
+  handle.dataset.bound = '1';
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+  const onMove = (event) => {
+    if (!dragging) return;
+    if (window.matchMedia('(max-width: 1120px)').matches) return;
+    const bounds = layout.getBoundingClientRect();
+    const maxByViewport = Math.min(560, Math.floor(bounds.width * 0.55));
+    const delta = startX - event.clientX;
+    const next = Math.max(220, Math.min(maxByViewport, startWidth + delta));
+    state.detailSidebarWidth = Math.round(next);
+    sidebar.style.width = state.detailSidebarWidth + 'px';
+    sidebar.style.flexBasis = state.detailSidebarWidth + 'px';
+    layout.style.setProperty('--detail-sidebar-width', state.detailSidebarWidth + 'px');
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    layout.classList.remove('resizing-conv');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+  };
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if (window.matchMedia('(max-width: 1120px)').matches) return;
+    event.preventDefault();
+    dragging = true;
+    startX = event.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    layout.classList.add('resizing-conv');
+    document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -21847,10 +22111,7 @@ function renderProjectDetail() {
     + '</div>'
     + '<div class="settings-group">'
     + '<h2>Memory</h2>'
-    + '<p class="muted">Compact, Session Memory, and Durable Memory are independent and scoped to this project.</p>'
-    + '<label class="settings-row"><span><strong>Automatic compact</strong><small>Uses the active model window and a 90% ceiling.</small></span><input type="checkbox" id="projectCompactEnabled"></label>'
-    + '<label class="settings-row"><span><strong>Advanced compact token limit</strong><small>Optional; values above 90% of the model window are clamped.</small></span><input type="number" min="1000" step="1000" id="projectCompactLimit" placeholder="Derived"></label>'
-    + '<label class="settings-row"><span><strong>Compact usage scope</strong><small>Total context or only context added after the compact prefix.</small></span><select id="projectCompactScope"><option value="total">Total</option><option value="body_after_prefix">Body after prefix</option></select></label>'
+    + '<p class="muted">Compact, Session Memory, and Durable Memory are independent and scoped to this project. Automatic compact is always on (total context, 90% of the model window).</p>'
     + '<p id="projectCompactStatus" class="muted"></p>'
     + '<label class="settings-row"><span><strong>Automatic Session Memory</strong><small>Extract after a complete turn when the token delta threshold is met.</small></span><input type="checkbox" id="projectSessionMemoryAuto"></label>'
     + '<label class="settings-row"><span><strong>Session Memory output</strong><small>1,000–20,000 tokens; provider limits still apply.</small></span><input type="number" min="1000" max="20000" step="1000" id="projectSessionMemoryMaxTokens"></label>'
@@ -21906,8 +22167,21 @@ function renderProjectDetail() {
   detail.className = 'conv-sidebar-detail empty';
   detail.textContent = 'Select a conversation to see details';
   sidebar.append(top, detail);
-  layout.append(main, sidebar);
+  const splitter = document.createElement('div');
+  splitter.className = 'detail-conv-splitter';
+  splitter.id = 'detailConvSplitter';
+  splitter.title = 'Drag to resize';
+  splitter.setAttribute('role', 'separator');
+  splitter.setAttribute('aria-orientation', 'vertical');
+  splitter.setAttribute('aria-label', 'Resize conversations sidebar');
+  const sidebarWidth = Math.max(220, Number(state.detailSidebarWidth) || 300);
+  state.detailSidebarWidth = sidebarWidth;
+  layout.style.setProperty('--detail-sidebar-width', sidebarWidth + 'px');
+  sidebar.style.width = sidebarWidth + 'px';
+  sidebar.style.flexBasis = sidebarWidth + 'px';
+  layout.append(main, splitter, sidebar);
   body.appendChild(layout);
+  bindDetailSidebarResize(layout, sidebar, splitter);
   setDetailConversationDrawer(false);
   const searchInput = el('detailConvSearch');
   if (searchInput) {
@@ -22788,7 +23062,11 @@ function renderSlashMenu() {
   menu.classList.remove('hidden');
 }
 function completeSlash(name) {
-  input.value = '/' + name + (commandNeedsSpace(name) ? ' ' : '');
+  if (commandNeedsSpace(name)) {
+    setComposerChip({ kind: 'command', name });
+    return;
+  }
+  input.value = '/' + name;
   el('slashMenu').classList.add('hidden');
   input.focus();
 }
@@ -22831,32 +23109,68 @@ function addContextSection(menu, title, rows) {
   rows.forEach(row => section.appendChild(row));
   menu.appendChild(section);
 }
-function setComposerCommand(command) {
-  closeAddContextMenu();
-  input.value = command;
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
-  renderSlashMenu();
+function composerChipLabel(chip) {
+  if (!chip) return '';
+  if (chip.kind === 'plugin' || chip.kind === 'skill') return chip.name;
+  const name = String(chip.name || '');
+  if (name === 'goal') return 'Goal';
+  if (name === 'plan') return 'Plan';
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : '';
 }
-// Goal mode: the next send writes the session goal instead of starting a turn.
-function setComposerGoalMode(enabled) {
-  state.composerGoalMode = enabled === true;
-  const chip = el('goalModeChip');
-  if (chip) chip.classList.toggle('hidden', !state.composerGoalMode);
-  input.placeholder = state.composerGoalMode
-    ? (state.snapshot?.goal ? 'Update the goal…' : 'What should Hadamard keep working toward?')
-    : 'Ask Hadamard…';
-  if (state.composerGoalMode) {
+function composerChipPlaceholder(chip) {
+  if (!chip) return 'Ask Hadamard…';
+  if (chip.kind === 'command' && chip.name === 'goal') {
+    return state.snapshot?.goal ? 'Update the goal…' : 'What should Hadamard keep working toward?';
+  }
+  if (chip.kind === 'command' && chip.name === 'plan') {
+    return 'What should Hadamard plan? (or view / approve / revise …)';
+  }
+  if (chip.kind === 'plugin') return 'Ask with ' + chip.name + '…';
+  if (chip.kind === 'skill') return 'Ask with ' + chip.name + '…';
+  if (chip.kind === 'command') return 'Arguments for /' + chip.name + '…';
+  return 'Ask Hadamard…';
+}
+// One composer chip at a time: command (Goal/Plan/…), plugin, or skill.
+function setComposerChip(chip) {
+  state.composerChip = chip || null;
+  const host = el('composerCommandChip');
+  const label = el('composerCommandChipLabel');
+  if (host) host.classList.toggle('hidden', !state.composerChip);
+  if (label) label.textContent = composerChipLabel(state.composerChip);
+  input.placeholder = composerChipPlaceholder(state.composerChip);
+  if (state.composerChip) {
+    if (input.value.startsWith('/')) input.value = '';
+    el('slashMenu').classList.add('hidden');
     closeAddContextMenu();
     input.focus();
   }
 }
-async function captureScreenshotContext() {
+function clearComposerChip() {
+  setComposerChip(null);
+}
+function isPlanSubcommand(text) {
+  const value = String(text || '').trim();
+  return value === 'view'
+    || value === 'approve'
+    || value === 'off'
+    || value === 'open'
+    || value === 'revise'
+    || value.startsWith('revise ');
+}
+async function captureScreenshotContext(mode = 'region') {
   closeAddContextMenu();
-  flashStatus('Capturing screenshot...');
+  flashStatus(mode === 'full' ? 'Capturing full screen...' : 'Select a screen region…');
   try {
-    const res = await api('/api/screenshot', { method: 'POST' });
+    const res = await api('/api/screenshot', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
     const payload = await res.json().catch(() => ({}));
+    if (payload.cancelled || (res.status === 400 && /cancel/i.test(String(payload.error || '')))) {
+      flashStatus('Screenshot cancelled');
+      return;
+    }
     if (!res.ok) throw new Error(payload.error || 'Screenshot failed');
     addContextAttachment(
       'Screenshot: ' + String(payload.relativePath || 'desktop'),
@@ -22905,21 +23219,27 @@ function renderAddContextRoot() {
     addContextRow({
       icon: 'computer',
       title: 'Screenshot',
+      description: 'Drag to select a region, then attach the PNG',
+      end: formatShortcutLabel((state.preferences.shortcuts || {}).takeScreenshot ?? DEFAULT_SHORTCUTS.takeScreenshot),
+      onClick: () => void captureScreenshotContext('region'),
+    }),
+    addContextRow({
+      icon: 'computer',
+      title: 'Full screen',
       description: 'Capture all displays and attach the PNG',
-      end: ((state.preferences.shortcuts || {}).takeScreenshot ?? DEFAULT_SHORTCUTS.takeScreenshot) || '—',
-      onClick: () => void captureScreenshotContext(),
+      onClick: () => void captureScreenshotContext('full'),
     }),
     addContextRow({
       icon: 'review',
       title: 'Goal',
       description: 'Set a goal to keep pursuing',
-      onClick: () => setComposerGoalMode(true),
+      onClick: () => setComposerChip({ kind: 'command', name: 'goal' }),
     }),
     addContextRow({
       icon: 'memory',
       title: 'Plan mode',
       description: 'Start with an implementation plan',
-      onClick: () => setComposerCommand('/plan '),
+      onClick: () => setComposerChip({ kind: 'command', name: 'plan' }),
     }),
   ]);
   addContextSection(menu, 'Tools and context', [
@@ -23010,7 +23330,7 @@ async function renderAddContextPlugins() {
         icon: 'plug',
         title: plugin.name,
         description: plugin.description,
-        end: usable ? 'Add' : 'Configure',
+        end: usable ? 'Use' : 'Configure',
         onClick: () => {
           if (!usable) {
             closeAddContextMenu();
@@ -23018,11 +23338,7 @@ async function renderAddContextPlugins() {
             void switchRegion('plugins');
             return;
           }
-          addContextAttachment(
-            plugin.name + ' plugin',
-            'plugin',
-            'Use the enabled "' + plugin.name + '" plugin and its available tools for this request.',
-          );
+          setComposerChip({ kind: 'plugin', id: plugin.id || plugin.name, name: plugin.name });
         },
       });
     }));
@@ -23057,12 +23373,8 @@ async function renderAddContextSkills() {
       icon: 'tools',
       title: skill.name,
       description: skill.description || 'Registered runtime Skill',
-      end: 'Add',
-      onClick: () => addContextAttachment(
-        skill.name + ' Skill',
-        'skill',
-        'Before handling this request, invoke the registered Skill tool with skill "' + skill.name + '".',
-      ),
+      end: 'Use',
+      onClick: () => setComposerChip({ kind: 'skill', name: skill.name }),
     }));
     rows.push(addContextRow({
       icon: 'gear',
@@ -31306,7 +31618,7 @@ function renderShortcutsPanel() {
       rows: [
         ['newChat', 'New chat'],
         ['cycleModel', 'Cycle model'],
-        ['takeScreenshot', 'Capture and attach screenshot'],
+        ['takeScreenshot', 'Capture region screenshot'],
       ],
     },
     {
@@ -31337,7 +31649,7 @@ function renderShortcutsPanel() {
       const input = document.createElement('input');
       input.className = 'shortcut-binding';
       input.readOnly = true;
-      input.value = (state.preferences.shortcuts || {})[action] ?? DEFAULT_SHORTCUTS[action];
+      input.value = formatShortcutLabel((state.preferences.shortcuts || {})[action] ?? DEFAULT_SHORTCUTS[action]);
       input.setAttribute('aria-label', label + ' shortcut');
       input.addEventListener('keydown', event => {
         event.preventDefault();
@@ -31351,7 +31663,7 @@ function renderShortcutsPanel() {
         const binding = clearing ? '' : eventToShortcut(event);
         if (!binding && !clearing) return;
         state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: binding };
-        input.value = binding;
+        input.value = formatShortcutLabel(binding);
         scheduleSettingsAutosave(50);
       });
       const reset = document.createElement('button');
@@ -31360,7 +31672,7 @@ function renderShortcutsPanel() {
       reset.textContent = 'Reset';
       reset.addEventListener('click', () => {
         state.preferences.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}), [action]: DEFAULT_SHORTCUTS[action] };
-        input.value = DEFAULT_SHORTCUTS[action];
+        input.value = formatShortcutLabel(DEFAULT_SHORTCUTS[action]);
         scheduleSettingsAutosave(50);
       });
       row.append(span, input, reset);
@@ -31372,14 +31684,14 @@ function renderShortcutsPanel() {
   note.className = 'muted';
   note.textContent = state.preferences.enterToSend !== false
     ? 'Enter sends; Shift+Enter inserts a new line. Escape always closes open menus.'
-    : 'Enter inserts a new line; Ctrl/Cmd+Enter sends. Escape always closes open menus.';
+    : ('Enter inserts a new line; ' + (isMacPlatform() ? '⌘' : 'Ctrl') + '+Enter sends. Escape always closes open menus.');
   root.appendChild(note);
 }
 
 function eventToShortcut(event) {
   if (['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) return '';
   const parts = [];
-  const mac = /mac|iphone|ipad|ipod/i.test(navigator.platform || '');
+  const mac = isMacPlatform();
   if ((mac && event.metaKey) || (!mac && event.ctrlKey)) parts.push('Mod');
   else {
     if (event.ctrlKey) parts.push('Ctrl');
@@ -31397,7 +31709,7 @@ function eventToShortcut(event) {
 function renderShortcutHints() {
   const shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) };
   document.querySelectorAll('[data-shortcut-action]').forEach(node => {
-    node.textContent = shortcuts[node.dataset.shortcutAction] || '—';
+    node.textContent = formatShortcutLabel(shortcuts[node.dataset.shortcutAction] || '');
   });
 }
 
@@ -31416,7 +31728,7 @@ function dispatchShortcut(event) {
   else if (action === 'openFiles') handleAuxAction('files');
   else if (action === 'toggleTerminal') toggleTerminalDock();
   else if (action === 'openSettings') void openSettings('general').catch(console.error);
-  else if (action === 'takeScreenshot') void captureScreenshotContext();
+  else if (action === 'takeScreenshot') void captureScreenshotContext('region');
   return true;
 }
 function openProjectGitFromSettings() {
@@ -32592,21 +32904,76 @@ el('composer').addEventListener('submit', async (event) => {
     return;
   }
   const text = input.value.trim();
-  if (!text && state.attachments.length === 0) return;
+  if (!text && state.attachments.length === 0 && !state.composerChip) return;
   const submission = buildSubmissionText(text);
+  const chip = state.composerChip;
+
+  if (chip?.kind === 'command' && chip.name === 'goal' && (!submission || submission.startsWith('/'))) {
+    if (submission.startsWith('/')) {
+      input.value = '';
+      clearAttachments();
+      clearComposerChip();
+      renderSlashMenu();
+      await submitText(submission);
+    } else {
+      flashStatus('A goal needs an objective.');
+    }
+    return;
+  }
+  if ((chip?.kind === 'plugin' || chip?.kind === 'skill') && !submission) {
+    flashStatus('Type a request to use with ' + chip.name + '.');
+    return;
+  }
+
   input.value = '';
   clearAttachments();
+  clearComposerChip();
   renderSlashMenu();
-  if (state.composerGoalMode && !submission.startsWith('/')) {
+
+  if (chip?.kind === 'command' && chip.name === 'goal') {
     const wasLooping = goalLoopRunning();
-    setComposerGoalMode(false);
     const ok = await sessionGoalAction({ action: 'set', objective: submission });
     if (ok && wasLooping) {
       addMessage('notice', 'Goal objective updated mid-run — the loop will replan on the next turn.');
     }
     return;
   }
-  if (state.composerGoalMode) setComposerGoalMode(false);
+
+  if (chip?.kind === 'command' && chip.name === 'plan') {
+    if (!submission) {
+      await submitText('/plan');
+      return;
+    }
+    if (isPlanSubcommand(submission)) {
+      await submitText('/plan ' + submission);
+      return;
+    }
+    const inPlan = state.snapshot?.planMode === true || state.snapshot?.permissionMode === 'plan';
+    if (!inPlan) await submitText('/plan');
+    await submitText(submission);
+    return;
+  }
+
+  if (chip?.kind === 'command') {
+    await submitText(submission ? ('/' + chip.name + ' ' + submission) : ('/' + chip.name));
+    return;
+  }
+
+  if (chip?.kind === 'plugin') {
+    await submitText(
+      'Use the enabled "' + chip.name + '" plugin and its available tools for this request.\\n\\n' + submission,
+    );
+    return;
+  }
+
+  if (chip?.kind === 'skill') {
+    await submitText(
+      'Before handling this request, invoke the registered Skill tool with skill "' + chip.name + '".\\n\\n' + submission,
+    );
+    return;
+  }
+
+  if (!submission) return;
   await submitText(submission);
 });
 el('goalBannerToggle').addEventListener('click', () => {
@@ -32629,7 +32996,7 @@ el('goalBannerRun').addEventListener('click', () => {
 el('goalBannerClear').addEventListener('click', () => {
   void sessionGoalAction({ action: 'clear' });
 });
-el('goalModeChipClear').addEventListener('click', () => setComposerGoalMode(false));
+el('composerCommandChipClear').addEventListener('click', () => clearComposerChip());
 input.addEventListener('keydown', (event) => {
   const matches = slashMatches();
   const menuVisible = !el('slashMenu').classList.contains('hidden');
@@ -32648,7 +33015,7 @@ input.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') {
     el('slashMenu').classList.add('hidden');
-    if (state.composerGoalMode) setComposerGoalMode(false);
+    if (state.composerChip) clearComposerChip();
     return;
   }
   if (event.key !== 'Enter') return;
@@ -33106,7 +33473,13 @@ el('auxCloseBtn').addEventListener('click', () => showAuxLauncher());
 el('auxToggleBtn').addEventListener('click', () => toggleAuxPanel());
 el('auxPanelToggleBtn').addEventListener('click', () => toggleAuxPanel());
 el('auxFocusBtn').addEventListener('click', () => toggleAuxFocus());
-el('terminalDockClose').addEventListener('click', () => closeTerminalDock());
+el('terminalDockClose').addEventListener('click', () => {
+  if (state.terminalHostMode === 'project') closeProjectTerminal();
+  else closeTerminalDock();
+});
+loadAuxPanelWidth();
+applyAuxPanelWidth(state.auxPanelWidth);
+bindAuxPanelResize();
 syncAuxChrome();
 syncTerminalToggle();
 async function initializeGui() {

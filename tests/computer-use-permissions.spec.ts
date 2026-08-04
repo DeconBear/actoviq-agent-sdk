@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createHadamardComputerUseTools,
+  desktopRegionScreenshotCommandCandidates,
   desktopScreenshotCommandCandidates,
+  windowsRegionScreenshotScript,
 } from '../src/computer/hadamardComputerUse.js';
 import { decideHadamardToolPermission } from '../src/runtime/hadamardPermissions.js';
 
@@ -41,6 +43,25 @@ describe('local computer-use permission metadata', () => {
       { file: 'scrot', args: ['/work/screen.png'] },
       { file: 'import', args: ['-window', 'root', '/work/screen.png'] },
     ]);
+  });
+
+  it('provides interactive region screenshot commands on each platform', () => {
+    const win = desktopRegionScreenshotCommandCandidates('win32', 'C:\\work\\region.png');
+    expect(win).toEqual([
+      {
+        file: 'powershell.exe',
+        args: expect.arrayContaining(['-NoProfile', '-STA', '-Command']),
+      },
+    ]);
+    expect(windowsRegionScreenshotScript('C:\\work\\region.png')).toContain('ShowDialog');
+    expect(windowsRegionScreenshotScript('C:\\work\\region.png')).toContain("C:\\work\\region.png");
+    expect(desktopRegionScreenshotCommandCandidates('darwin', '/work/region.png')).toEqual([
+      { file: 'screencapture', args: ['-i', '-x', '/work/region.png'] },
+    ]);
+    expect(desktopRegionScreenshotCommandCandidates('linux', '/work/region.png')[0]).toEqual({
+      file: 'gnome-screenshot',
+      args: ['-a', '-f', '/work/region.png'],
+    });
   });
 
   it('classifies each host action accurately', () => {
