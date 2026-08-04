@@ -1,13 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  createHadamardMemoryApi,
-  getHadamardDefaultSessionMemoryTemplate,
-} from '../src/index.js';
+import { createHadamardMemoryApi } from '../src/index.js';
 
 const tempDirs: string[] = [];
 const originalConfigDir = process.env.HADAMARD_CONFIG_DIR;
@@ -29,7 +26,7 @@ async function createTempDir(prefix: string): Promise<string> {
 }
 
 describe('Hadamard memory helpers', () => {
-  it('resolves memory paths, updates settings, and reads session memory', async () => {
+  it('injects only memory_summary.md into the system prompt entrypoints', async () => {
     const tempDir = await createTempDir('hadamard-memory-');
     process.env.HADAMARD_CONFIG_DIR = path.join(tempDir, '.hadamard');
 
@@ -61,120 +58,52 @@ describe('Hadamard memory helpers', () => {
 
     const paths = await memory.paths();
     await mkdir(paths.autoMemoryDir, { recursive: true });
-    await mkdir(paths.teamMemoryDir, { recursive: true });
-    await mkdir(paths.sessionMemoryDir!, { recursive: true });
     await writeFile(
       paths.autoMemoryEntrypoint,
-      '- [User Prefs](user-prefs.md) - Prefers concise technical summaries.\n',
+      '# MEMORY\n\n## User preferences\n\nPrefers concise technical summaries.\n',
       'utf8',
     );
     await writeFile(
-      path.join(paths.autoMemoryDir, 'user-prefs.md'),
+      path.join(paths.autoMemoryDir, 'memory_summary.md'),
       [
-        '---',
-        'type: user',
-        'description: User collaboration and review preferences',
-        '---',
+        '# Summary map',
         '',
-        'The user prefers concise technical summaries and small reviewable changes.',
+        '- Preferences: concise summaries — MEMORY.md §User preferences (lines ~3-5)',
       ].join('\n'),
       'utf8',
     );
-    await writeFile(
-      paths.teamMemoryEntrypoint,
-      '- [Workflow](workflow.md) - Run tests before opening a PR.\n',
-      'utf8',
-    );
-    await writeFile(
-      path.join(paths.teamMemoryDir, 'workflow.md'),
-      [
-        '---',
-        'type: project',
-        'description: Team workflow for tests and releases',
-        '---',
-        '',
-        'Run tests before opening a PR and bump package version before tagging releases.',
-      ].join('\n'),
-      'utf8',
-    );
-    await writeFile(paths.sessionMemoryPath!, `${getHadamardDefaultSessionMemoryTemplate()}\n`, 'utf8');
 
     const prompt = await memory.buildCombinedPrompt();
     const promptWithEntrypoints = await memory.buildPromptWithEntrypoints();
-    const manifest = await memory.formatMemoryManifest();
-    const relevant = await memory.findRelevantMemories('how should I tag a release?', {
-      recentTools: ['npm publish'],
-    });
-    const surfaced = await memory.surfaceRelevantMemories('how should I tag a release?', {
-      recentTools: ['npm publish'],
-    });
+    const surfaced = await memory.surfaceRelevantMemories('how should I tag a release?');
+
+    expect(paths.autoMemoryDir).toContain(path.join('.hadamard', 'projects'));
+    expect(paths.sessionId).toBe(sessionId);
+    expect(prompt).toContain(paths.autoMemoryDir);
+    expect(prompt).toContain(paths.autoMemoryEntrypoint);
+    expect(prompt).not.toContain('Session Memory');
+    expect(promptWithEntrypoints).toContain('memory_summary.md');
+    expect(promptWithEntrypoints).toContain('Preferences: concise summaries');
+    // MEMORY.md body is not auto-injected; agent must Read it.
+    expect(promptWithEntrypoints).not.toContain('Prefers concise technical summaries.');
+    expect(surfaced).toEqual([]);
+
     const updatedSettings = await memory.updateSettings({
       autoDreamEnabled: true,
       autoMemoryDirectory: '~/custom-memory',
     });
-    const progress = memory.evaluateSessionMemoryProgress({
-      currentTokenCount: 18_000,
-      tokensAtLastExtraction: 11_000,
-      initialized: true,
-      toolCallsSinceLastUpdate: 4,
-    });
     const state = await memory.state({
       includeCombinedPrompt: true,
-      includeSessionMemory: true,
-      includeSessionPrompt: true,
-      includeSessionTemplate: true,
     });
 
-    expect(paths.autoMemoryDir).toContain(path.join('.hadamard', 'projects'));
-    expect(paths.sessionMemoryPath).toContain(path.join(sessionId, 'session-memory', 'summary.md'));
-    expect(prompt).toContain(paths.autoMemoryDir);
-    expect(prompt).toContain(paths.teamMemoryDir);
-    expect(promptWithEntrypoints).toContain(paths.autoMemoryEntrypoint);
-    expect(promptWithEntrypoints).toContain('Prefers concise technical summaries');
-    expect(promptWithEntrypoints).toContain('Run tests before opening a PR');
-    expect(manifest).toContain('user-prefs.md');
-    expect(manifest).toContain('workflow.md');
-    expect(relevant[0]).toMatchObject({
-      filename: 'workflow.md',
-      scope: 'team',
-    });
-    expect(surfaced[0]).toMatchObject({
-      scope: 'team',
-    });
-    expect(surfaced[0]?.header).toContain('workflow.md');
-    expect(surfaced[0]?.content).toContain('bump package version before tagging releases');
     expect(updatedSettings.autoDreamEnabled).toBe(true);
     expect(updatedSettings.autoMemoryDirectory).toBe('~/custom-memory');
-    expect(memory.getSessionMemoryConfig()).toEqual({
-      minimumMessageTokensToInit: 10_000,
-      minimumTokensBetweenUpdate: 5_000,
-      toolCallsBetweenUpdates: 3,
-      maxOutputTokens: 10_000,
-    });
-    expect(memory.getSessionMemoryCompactConfig()).toEqual({
-      minTokens: 10_000,
-      minTextBlockMessages: 5,
-      maxTokens: 40_000,
-    });
-    expect(progress).toMatchObject({
-      initialized: true,
-      tokensSinceLastExtraction: 7_000,
-      meetsUpdateThreshold: true,
-      meetsToolCallThreshold: true,
-      shouldExtract: true,
-    });
     expect(state.enabled).toEqual({
       autoCompact: true,
       autoMemory: true,
       autoDream: true,
     });
     expect(state.paths.autoMemoryDir).toBe(path.join(tempDir, '.hadamard', 'custom-memory'));
-    expect(state.sessionMemory).toMatchObject({
-      exists: true,
-      isEmpty: true,
-    });
-    expect(state.sessionTemplate).toContain('# Session Title');
-    expect(state.sessionPrompt).toContain('update the session notes file');
   });
 
   it('returns default compact state when no bridge transcripts are available', async () => {
@@ -210,8 +139,6 @@ describe('Hadamard memory helpers', () => {
     const compactState = await memory.compactState({
       sessionId,
       includeBoundaries: true,
-      includeSessionMemory: true,
-      includeSummaryMessage: true,
     });
 
     expect(compactState).toMatchObject({
@@ -220,75 +147,28 @@ describe('Hadamard memory helpers', () => {
       hasCompacted: false,
       lastSummarizedMessageUuid: undefined,
       latestPreservedSegment: undefined,
-      canUseSessionMemoryCompaction: false,
     });
     expect(compactState.boundaries).toBeUndefined();
     expect(compactState.latestBoundary).toBeUndefined();
+    expect(compactState.transcriptPath).toContain(`${sessionId}.jsonl`);
   });
 
-  it('builds a continuation summary from session memory when compact state requests it', async () => {
-    const tempDir = await createTempDir('hadamard-memory-summary-');
-    process.env.HADAMARD_CONFIG_DIR = path.join(tempDir, '.hadamard');
-
-    const projectPath = path.join(tempDir, 'workspace');
-    const sessionId = 'summary-session';
-    const memory = createHadamardMemoryApi({
-      homeDir: tempDir,
-      projectPath,
-      sessionId,
-    });
-    const paths = await memory.paths();
-
-    await mkdir(paths.sessionMemoryDir!, { recursive: true });
-    await writeFile(
-      paths.sessionMemoryPath!,
-      [
-        '# Session Title',
-        '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-        '',
-        'Compact summary fixture',
-        '',
-        '# Current State',
-        '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-        '',
-        'Continue wiring deeper compact helpers.',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const summary = await memory.buildSessionMemoryCompactSummary({
-      sessionId,
-      transcriptPath: path.join(paths.projectStateDir, `${sessionId}.jsonl`),
-    });
-
-    expect(summary).toContain('This session is being continued from a previous conversation');
-    expect(summary).toContain('Compact summary fixture');
-    expect(summary).toContain(`${sessionId}.jsonl`);
-    expect(summary).toContain('Recent messages are preserved verbatim.');
-  });
-
-  it('browses and searches only memory content from the current project', async () => {
+  it('browses durable MEMORY.md and summary from the current project', async () => {
     const tempDir = await createTempDir('hadamard-memory-browser-');
     process.env.HADAMARD_CONFIG_DIR = path.join(tempDir, '.hadamard');
     const projectPath = path.join(tempDir, 'workspace');
     const memory = createHadamardMemoryApi({ homeDir: tempDir, projectPath, sessionId: 'current' });
     const paths = await memory.paths();
 
-    await mkdir(path.join(paths.autoMemoryDir, 'topics'), { recursive: true });
-    await mkdir(paths.teamMemoryDir, { recursive: true });
-    await mkdir(path.join(paths.projectStateDir, 'older', 'session-memory'), { recursive: true });
+    await mkdir(paths.autoMemoryDir, { recursive: true });
     await writeFile(path.join(paths.autoMemoryDir, 'memory_summary.md'), '# Summary\nRelease trains are weekly.\n', 'utf8');
-    await writeFile(path.join(paths.autoMemoryDir, 'topics', 'releases.md'), '# Releases\nUse signed tags.\n', 'utf8');
-    await writeFile(path.join(paths.projectStateDir, 'older', 'session-memory', 'summary.md'), '# Session Title\nOlder project note.\n', 'utf8');
-    await writeFile(path.join(paths.teamMemoryDir, 'private-team.md'), '# Team only\n', 'utf8');
+    await writeFile(paths.autoMemoryEntrypoint, '# MEMORY\n\n## Status\nUse signed tags.\n', 'utf8');
 
     const entries = await memory.listMemoryContent();
     expect(entries.map(entry => entry.id)).toEqual(expect.arrayContaining([
       'durable:memory_summary.md',
-      'durable:topics/releases.md',
-      'session:older',
+      'durable:MEMORY.md',
     ]));
-    expect(entries.some(entry => entry.path.includes('private-team.md'))).toBe(false);
 
     const found = await memory.searchMemoryContent('signed tags');
     expect(found).toHaveLength(1);

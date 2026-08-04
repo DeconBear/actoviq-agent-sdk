@@ -312,13 +312,9 @@ export function formatHadamardMemoryState(state: HadamardMemoryState): string {
     '',
     `Project path: ${state.paths.projectPath}`,
     `Auto memory dir: ${state.paths.autoMemoryDir}`,
-    `Session memory path: ${state.paths.sessionMemoryPath ?? 'none'}`,
     `Auto compact: ${state.enabled.autoCompact ? 'on' : 'off'}`,
     `Auto memory: ${state.enabled.autoMemory ? 'on' : 'off'}`,
     `Auto dream: ${state.enabled.autoDream ? 'on' : 'off'}`,
-    state.sessionMemory
-      ? `Session memory exists: ${state.sessionMemory.exists ? 'yes' : 'no'}`
-      : undefined,
   ]
     .filter((value): value is string => typeof value === 'string')
     .join('\n');

@@ -192,7 +192,6 @@ function hasHadamardDataRootMarker(root: string): boolean {
     'workspaces.json',
     'history.jsonl',
     'pricing.json',
-    'session-memory',
   ];
   if (markerNames.some(name => existsSync(path.join(root, name)))) return true;
   const settingsPath = path.join(root, 'settings.json');

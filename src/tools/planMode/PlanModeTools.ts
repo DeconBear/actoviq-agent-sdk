@@ -20,6 +20,7 @@ import { z } from 'zod';
 
 import { tool } from '../../runtime/tools.js';
 import { resolveHadamardHome } from '../../config/hadamardHome.js';
+import { getHadamardProjectSessionDirectory } from '../../config/projectSessionDirectory.js';
 import type { AgentToolDefinition, HadamardPermissionMode } from '../../types.js';
 
 export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode';
@@ -49,8 +50,31 @@ export interface PlanModeToolContext {
 }
 
 function resolvePlanDir(workDir: string): string {
+  return getHadamardProjectSessionDirectory(workDir, resolveHadamardHome());
+}
+
+/** Legacy sanitized-basename plan dir (pre session-directory unification). */
+function legacySanitizedPlanDir(workDir: string): string {
   const projectKey = workDir.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40) || 'default';
   return path.join(resolveHadamardHome(), 'projects', projectKey);
+}
+
+function listPlansInDir(planDir: string): string[] {
+  const versioned = listVersionedPlanNames(planDir).map(name => path.join(planDir, name));
+  const legacy = path.join(planDir, LEGACY_PLAN_FILE);
+  if (versioned.length === 0 && existsSync(legacy)) return [legacy];
+  return versioned;
+}
+
+function currentPlanInDir(planDir: string): string | null {
+  const pointed = readCurrentPointer(planDir);
+  if (pointed) return pointed;
+  const versioned = listVersionedPlanNames(planDir);
+  if (versioned.length > 0) {
+    return path.join(planDir, versioned[versioned.length - 1]!);
+  }
+  const legacy = path.join(planDir, LEGACY_PLAN_FILE);
+  return existsSync(legacy) ? legacy : null;
 }
 
 export function planDirFor(workDir: string): string {
@@ -91,11 +115,12 @@ function listVersionedPlanNames(planDir: string): string[] {
  */
 export function planFilePath(workDir: string): string {
   const planDir = resolvePlanDir(workDir);
-  const pointed = readCurrentPointer(planDir);
-  if (pointed) return pointed;
-  const versioned = listVersionedPlanNames(planDir);
-  if (versioned.length > 0) {
-    return path.join(planDir, versioned[versioned.length - 1]!);
+  const current = currentPlanInDir(planDir);
+  if (current) return current;
+  const legacyDir = legacySanitizedPlanDir(workDir);
+  if (legacyDir !== planDir) {
+    const legacyCurrent = currentPlanInDir(legacyDir);
+    if (legacyCurrent) return legacyCurrent;
   }
   return path.join(planDir, LEGACY_PLAN_FILE);
 }
@@ -108,10 +133,11 @@ export function readPlanFile(workDir: string): string | null {
 /** All retained plan files for a workDir, oldest → newest. */
 export function listPlanFiles(workDir: string): string[] {
   const planDir = resolvePlanDir(workDir);
-  const versioned = listVersionedPlanNames(planDir).map(name => path.join(planDir, name));
-  const legacy = path.join(planDir, LEGACY_PLAN_FILE);
-  if (versioned.length === 0 && existsSync(legacy)) return [legacy];
-  return versioned;
+  const plans = listPlansInDir(planDir);
+  if (plans.length > 0) return plans;
+  const legacyDir = legacySanitizedPlanDir(workDir);
+  if (legacyDir === planDir) return [];
+  return listPlansInDir(legacyDir);
 }
 
 function writeCurrentPointerSync(planDir: string, fileName: string): void {

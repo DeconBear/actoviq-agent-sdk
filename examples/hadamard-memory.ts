@@ -69,29 +69,15 @@ try {
     ].join('\n'),
     'utf8',
   );
-  await mkdir(paths.sessionMemoryDir!, { recursive: true });
-  await writeFile(
-    paths.sessionMemoryPath!,
-    [
-      '# Session Title',
-      '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-      '',
-      'Memory demo session',
-      '',
-      '# Current State',
-      '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-      '',
-      'Testing the Hadamard memory and compact helpers.',
-    ].join('\n'),
-    'utf8',
-  );
   const compactState = await memory.compactState({
-    includeSessionMemory: true,
-    includeSummaryMessage: true,
-    currentTokenCount: 18_000,
-    tokensAtLastExtraction: 11_000,
-    initialized: true,
-    toolCallsSinceLastUpdate: 4,
+    sessionId,
+    runtimeState: {
+      initialized: true,
+      tokensAtLastExtraction: 11_000,
+      lastMessageCountAtExtraction: 4,
+      extractionCount: 0,
+      pendingPostCompaction: false,
+    },
   });
   const manifest = await memory.formatMemoryManifest();
   const relevantMemories = await memory.findRelevantMemories('how should I release this package?', {
@@ -106,12 +92,10 @@ try {
 
   console.log('Paths:', paths);
   console.log('Settings:', settings);
-  console.log('Session memory defaults:', memory.getSessionMemoryConfig());
-  console.log('Compact defaults:', memory.getSessionMemoryCompactConfig());
   console.log('Compact state:', {
-    canUseSessionMemoryCompaction: compactState.canUseSessionMemoryCompaction,
     hasCompacted: compactState.hasCompacted,
-    progress: compactState.progress,
+    pendingPostCompaction: compactState.pendingPostCompaction,
+    runtimeState: compactState.runtimeState,
   });
   console.log('Prompt preview:', prompt.slice(0, 300));
   console.log(
@@ -121,7 +105,6 @@ try {
   console.log('Memory manifest:', manifest);
   console.log('Relevant memories:', relevantMemories);
   console.log('Surfaced memories:', surfacedMemories);
-  console.log('Compact summary preview:', compactState.summaryMessage?.slice(0, 300));
 } finally {
   await rm(tempDir, { recursive: true, force: true });
 }

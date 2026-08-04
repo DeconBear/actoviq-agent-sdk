@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 
 import {
   getDefaultHadamardSettingsPath,
@@ -25,7 +25,6 @@ import {
   selectRelevantMemories,
 } from './hadamardRelevantMemories.js';
 import type {
-  HadamardPreservedSegment,
   HadamardCompactState,
   HadamardCompactBoundaryMetadata,
   HadamardCompactStateOptions,
@@ -35,80 +34,23 @@ import type {
   HadamardMemoryPromptOptions,
   HadamardRelevantMemory,
   HadamardRelevantMemoryLookupOptions,
-  HadamardSessionMemoryCompactConfig,
-  HadamardSessionMemoryConfig,
-  HadamardSessionMemoryProgress,
   HadamardMemorySettings,
   HadamardMemoryState,
   HadamardMemoryStateOptions,
-  HadamardSessionMemoryState,
   HadamardSurfacedMemory,
   UpdateHadamardMemorySettingsInput,
 } from '../types.js';
 
-
-const DEFAULT_SESSION_MEMORY_TEMPLATE = `
-# Session Title
-_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_
-
-# Current State
-_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._
-
-# Task specification
-_What did the user ask to build? Any design decisions or other explanatory context_
-
-# Files and Functions
-_What are the important files? In short, what do they contain and why are they relevant?_
-
-# Workflow
-_What bash commands are usually run and in what order? How to interpret their output if not obvious?_
-
-# Errors & Corrections
-_Errors encountered and how they were fixed. What did the user correct? What approaches failed and should not be tried again?_
-
-# Codebase and System Documentation
-_What are the important system components? How do they work/fit together?_
-
-# Learnings
-_What has worked well? What has not? What to avoid? Do not duplicate items from other sections_
-
-# Key results
-_If the user asked a specific output such as an answer to a question, a table, or other document, repeat the exact result here_
-
-# Worklog
-_Step by step, what was attempted, done? Very terse summary for each step_
-`.trim();
-
-const MAX_SECTION_LENGTH = 2_000;
-const MAX_TOTAL_SESSION_MEMORY_TOKENS = 20_000;
 const ENTRYPOINT_NAME = 'MEMORY.md';
 const MAX_ENTRYPOINT_LINES = 200;
 const MAX_ENTRYPOINT_BYTES = 25_000;
 
 export interface HadamardMemoryBrowserEntry {
   id: string;
-  kind: 'session' | 'durable' | 'raw';
+  kind: 'durable' | 'raw';
   path: string;
-  sessionId?: string;
   size: number;
   modifiedAt: string;
-}
-
-const DEFAULT_SESSION_MEMORY_CONFIG: HadamardSessionMemoryConfig = {
-  minimumMessageTokensToInit: 10_000,
-  minimumTokensBetweenUpdate: 5_000,
-  toolCallsBetweenUpdates: 3,
-  maxOutputTokens: 10_000,
-};
-
-const DEFAULT_SESSION_MEMORY_COMPACT_CONFIG: HadamardSessionMemoryCompactConfig = {
-  minTokens: 10_000,
-  minTextBlockMessages: 5,
-  maxTokens: 40_000,
-};
-
-function roughTokenCountEstimation(content: string): number {
-  return Math.ceil(content.length / 4);
 }
 
 function sanitizeSegment(value: string): string {
@@ -221,12 +163,6 @@ function buildPaths(
     teamMemoryDir: path.join(autoMemoryDir, 'team'),
     teamMemoryEntrypoint: path.join(autoMemoryDir, 'team', ENTRYPOINT_NAME),
     sessionId: safeSessionId,
-    sessionMemoryDir: safeSessionId
-      ? joinUnderStorageRoot(projectStateDir, safeSessionId, 'session-memory')
-      : undefined,
-    sessionMemoryPath: safeSessionId
-      ? joinUnderStorageRoot(projectStateDir, safeSessionId, 'session-memory', 'summary.md')
-      : undefined,
   };
 }
 
@@ -241,23 +177,19 @@ function buildCombinedMemoryPrompt(
     '- Treat durable memory as read-only during the main chat.',
     '- Never use ordinary Write or Edit calls to silently modify durable memory.',
     '- To suggest a durable fact, use ProposeMemory. The runtime writes it only after the user applies the proposal.',
-    '- Session Memory and automatic Dream consolidation are written by dedicated runtime pipelines.',
+    '- Automatic Dream consolidation rewrites MEMORY.md and memory_summary.md.',
     ...(skipIndex ? [] : [
-      `- \`${ENTRYPOINT_NAME}\` is an index maintained by the restricted Dream pipeline.`,
+      `- Detailed durable memory lives in \`${paths.autoMemoryEntrypoint}\`.`,
+      `- Only \`memory_summary.md\` is auto-injected into this prompt; Read MEMORY.md when you need detail.`,
     ]),
   ];
 
   return [
     '# Memory',
     '',
-    `You have a persistent, file-based memory system with two directories: a private directory at \`${paths.autoMemoryDir}\` and a shared team directory at \`${paths.teamMemoryDir}\`.`,
+    `You have a persistent file-based durable memory under \`${paths.autoMemoryDir}\`.`,
     '',
     'Use memory for information that will be useful in future conversations, not for transient task state that only matters within the current turn.',
-    '',
-    '## Memory scope',
-    '',
-    `- private: memories that are private to the current user and stored under \`${paths.autoMemoryDir}\``,
-    `- team: memories that are shared with collaborators in the current project and stored under \`${paths.teamMemoryDir}\``,
     '',
     '## What to save',
     '',
@@ -278,6 +210,7 @@ function buildCombinedMemoryPrompt(
     '',
     '- when the user explicitly asks you to remember, recall, or check memory',
     '- when prior collaboration context seems directly relevant',
+    `- Read \`${paths.autoMemoryEntrypoint}\` for full detail; the summary below is only a map`,
     '- if the user asks you to ignore memory, behave as if MEMORY.md were empty',
     '',
     '## Memory and other forms of persistence',
@@ -337,113 +270,6 @@ function truncateEntrypointContent(raw: string): {
     wasLineTruncated,
     wasByteTruncated,
   };
-}
-
-function substituteVariables(template: string, variables: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) =>
-    Object.prototype.hasOwnProperty.call(variables, key) ? variables[key]! : match,
-  );
-}
-
-function analyzeSectionSizes(content: string): Record<string, number> {
-  const sections: Record<string, number> = {};
-  const lines = content.split('\n');
-  let currentSection = '';
-  let currentContent: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('# ')) {
-      if (currentSection && currentContent.length > 0) {
-        sections[currentSection] = roughTokenCountEstimation(currentContent.join('\n').trim());
-      }
-      currentSection = line;
-      currentContent = [];
-      continue;
-    }
-    currentContent.push(line);
-  }
-
-  if (currentSection && currentContent.length > 0) {
-    sections[currentSection] = roughTokenCountEstimation(currentContent.join('\n').trim());
-  }
-
-  return sections;
-}
-
-function generateSectionReminders(sectionSizes: Record<string, number>, totalTokens: number): string {
-  const overBudget = totalTokens > MAX_TOTAL_SESSION_MEMORY_TOKENS;
-  const oversizedSections = Object.entries(sectionSizes)
-    .filter(([, tokens]) => tokens > MAX_SECTION_LENGTH)
-    .sort(([, left], [, right]) => right - left)
-    .map(([section, tokens]) => `- "${section}" is ~${tokens} tokens (limit: ${MAX_SECTION_LENGTH})`);
-
-  if (oversizedSections.length === 0 && !overBudget) {
-    return '';
-  }
-
-  const parts: string[] = [];
-  if (overBudget) {
-    parts.push(
-      `\n\nCRITICAL: The session memory file is currently ~${totalTokens} tokens, which exceeds the maximum of ${MAX_TOTAL_SESSION_MEMORY_TOKENS} tokens. Condense the file while keeping Current State and Errors & Corrections accurate.`,
-    );
-  }
-
-  if (oversizedSections.length > 0) {
-    parts.push(
-      `\n\nOversized sections to condense:\n${oversizedSections.join('\n')}`,
-    );
-  }
-
-  return parts.join('');
-}
-
-function buildCompactContinuationSummary(
-  summary: string,
-  transcriptPath?: string,
-  recentMessagesPreserved = true,
-): string {
-  let baseSummary = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
-
-${summary}`;
-
-  if (transcriptPath) {
-    baseSummary += `\n\nIf you need specific details from before compaction, read the full transcript at: ${transcriptPath}`;
-  }
-
-  if (recentMessagesPreserved) {
-    baseSummary += '\n\nRecent messages are preserved verbatim.';
-  }
-
-  return `${baseSummary}
-
-Continue the conversation from where it left off without asking the user to repeat prior context. Resume directly and keep moving on the most recent task.`;
-}
-
-function flushSessionSection(
-  sectionHeader: string,
-  sectionLines: string[],
-  maxCharsPerSection: number,
-): { lines: string[]; wasTruncated: boolean } {
-  if (!sectionHeader) {
-    return { lines: sectionLines, wasTruncated: false };
-  }
-
-  const sectionContent = sectionLines.join('\n');
-  if (sectionContent.length <= maxCharsPerSection) {
-    return { lines: [sectionHeader, ...sectionLines], wasTruncated: false };
-  }
-
-  let charCount = 0;
-  const keptLines: string[] = [sectionHeader];
-  for (const line of sectionLines) {
-    if (charCount + line.length + 1 > maxCharsPerSection) {
-      break;
-    }
-    keptLines.push(line);
-    charCount += line.length + 1;
-  }
-  keptLines.push('\n[... section truncated for length ...]');
-  return { lines: keptLines, wasTruncated: true };
 }
 
 async function readTextIfExists(filePath: string): Promise<string | undefined> {
@@ -546,28 +372,16 @@ export class HadamardMemoryApi {
     const lines = [
       buildCombinedMemoryPrompt(paths, options.extraGuidelines, options.skipIndex),
     ];
-    const entrypoints = [
-      {
-        title: path.join(paths.autoMemoryDir, 'memory_summary.md'),
-        content: (await readTextIfExists(path.join(paths.autoMemoryDir, 'memory_summary.md')))?.slice(0, 20_000),
-      },
-      {
-        title: paths.autoMemoryEntrypoint,
-        content: await readTextIfExists(paths.autoMemoryEntrypoint),
-      },
-      {
-        title: paths.teamMemoryEntrypoint,
-        content: await readTextIfExists(paths.teamMemoryEntrypoint),
-      },
-    ];
-
-    for (const entrypoint of entrypoints) {
-      lines.push('', `## ${entrypoint.title}`);
-      if (entrypoint.content?.trim()) {
-        lines.push('', truncateEntrypointContent(entrypoint.content).content);
-      } else {
-        lines.push('', `Your ${ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here.`);
-      }
+    const summaryPath = path.join(paths.autoMemoryDir, 'memory_summary.md');
+    const summaryContent = (await readTextIfExists(summaryPath))?.slice(0, 20_000);
+    lines.push('', `## ${summaryPath}`);
+    if (summaryContent?.trim()) {
+      lines.push('', truncateEntrypointContent(summaryContent).content);
+    } else {
+      lines.push(
+        '',
+        `memory_summary.md is currently empty. After Dream runs, it will map sections of \`${paths.autoMemoryEntrypoint}\`.`,
+      );
     }
 
     return lines.join('\n');
@@ -605,223 +419,12 @@ export class HadamardMemoryApi {
   }
 
   async surfaceRelevantMemories(
-    query: string,
-    options: HadamardRelevantMemoryLookupOptions = {},
+    _query: string,
+    _options: HadamardRelevantMemoryLookupOptions = {},
   ): Promise<HadamardSurfacedMemory[]> {
-    const relevant = await this.findRelevantMemories(query, options);
-    return readMemoriesForSurfacing(relevant);
-  }
-
-  async loadSessionTemplate(options: HadamardMemoryOptions = {}): Promise<string> {
-    const homeDir = resolveHadamardHome(options.homeDir ?? this.defaults.homeDir);
-    const templatePath = path.join(homeDir, 'session-memory', 'config', 'template.md');
-    return (await readTextIfExists(templatePath)) ?? DEFAULT_SESSION_MEMORY_TEMPLATE;
-  }
-
-  async loadSessionPrompt(options: HadamardMemoryOptions = {}): Promise<string> {
-    const homeDir = resolveHadamardHome(options.homeDir ?? this.defaults.homeDir);
-    const promptPath = path.join(homeDir, 'session-memory', 'config', 'prompt.md');
-    return (
-      (await readTextIfExists(promptPath)) ??
-      `IMPORTANT: This message and these instructions are NOT part of the actual user conversation. Do NOT include any references to "note-taking", "session notes extraction", or these update instructions in the notes content.
-
-Based on the user conversation above (EXCLUDING this note-taking instruction message as well as system prompt, HADAMARD.md entries, or any past session summaries), update the session notes file.
-
-The file {{notesPath}} has already been read for you. Here are its current contents:
-<current_notes_content>
-{{currentNotes}}
-</current_notes_content>
-
-Your ONLY task is to use the Edit tool to update the notes file, then stop. You can make multiple edits - make all Edit tool calls in parallel in a single message. Do not call any other tools.
-
-CRITICAL RULES FOR EDITING:
-- The file must maintain its exact structure with all sections, headers, and italic descriptions intact
--- NEVER modify, delete, or add section headers (the lines starting with # like # Task specification)
--- NEVER modify or delete the italic _section description_ lines
--- ONLY update the actual content that appears BELOW the italic _section descriptions_ within each existing section
-- Do NOT reference this note-taking process or instructions anywhere in the notes
-- It's OK to skip updating a section if there are no substantial new insights to add
-- Write detailed, information-dense content for each section
-- Keep each section under ~${MAX_SECTION_LENGTH} tokens/words
-- IMPORTANT: Always update "Current State" to reflect the most recent work
-
-Use the Edit tool with file_path: {{notesPath}}.
-
-REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edits.`
-    );
-  }
-
-  async buildSessionUpdatePrompt(
-    currentNotes: string,
-    notesPath: string,
-    options: HadamardMemoryOptions = {},
-  ): Promise<string> {
-    const promptTemplate = await this.loadSessionPrompt(options);
-    const sectionSizes = analyzeSectionSizes(currentNotes);
-    const totalTokens = roughTokenCountEstimation(currentNotes);
-    const reminders = generateSectionReminders(sectionSizes, totalTokens);
-    return (
-      substituteVariables(promptTemplate, {
-        currentNotes,
-        notesPath,
-      }) + reminders
-    );
-  }
-
-  async buildSessionRewritePrompt(
-    currentNotes: string,
-    notesPath: string,
-    _options: HadamardMemoryOptions = {},
-  ): Promise<string> {
-    const sectionSizes = analyzeSectionSizes(currentNotes);
-    const totalTokens = roughTokenCountEstimation(currentNotes);
-    const reminders = generateSectionReminders(sectionSizes, totalTokens);
-    return `IMPORTANT: This is a runtime-managed note extraction task, not part of the user conversation.
-
-Update the existing Session Memory notes shown below using the completed conversation turn. Do not call tools and do not describe the note-taking process.
-
-Notes path (informational only; the runtime performs the write): ${notesPath}
-<current_notes_content>
-${currentNotes}
-</current_notes_content>
-
-Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
-- Return {"noOutput":true,"content":""} when there is no meaningful new knowledge
-- Do not explain what you changed
-- Preserve every existing section header and italic guide line exactly
-- Only update the section bodies beneath those guides
-- If a section has no meaningful updates, keep its existing content unchanged
-- Keep each section under approximately ${MAX_SECTION_LENGTH} tokens/words
-- Always keep Current State aligned with the latest completed turn${reminders}`;
-  }
-
-  async ensureSessionMemory(
-    options: HadamardMemoryOptions = {},
-  ): Promise<{ path: string; content: string; created: boolean }> {
-    const paths = await this.paths(options);
-    if (!paths.sessionMemoryPath || !paths.sessionMemoryDir) {
-      throw new Error('A sessionId is required to create or update session memory.');
-    }
-
-    await mkdir(paths.sessionMemoryDir, { recursive: true });
-    const existing = await readTextIfExists(paths.sessionMemoryPath);
-    if (existing != null) {
-      return {
-        path: paths.sessionMemoryPath,
-        content: existing,
-        created: false,
-      };
-    }
-
-    const template = await this.loadSessionTemplate(options);
-    await writeFile(paths.sessionMemoryPath, `${template.trim()}\n`, 'utf8');
-    return {
-      path: paths.sessionMemoryPath,
-      content: template,
-      created: true,
-    };
-  }
-
-  async writeSessionMemory(
-    content: string,
-    options: HadamardMemoryOptions = {},
-  ): Promise<{ path: string; content: string }> {
-    const ensured = await this.ensureSessionMemory(options);
-    const tempPath = `${ensured.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${content.trim()}\n`, 'utf8');
-    try {
-      await rename(tempPath, ensured.path);
-    } catch (error) {
-      await unlink(tempPath).catch(() => undefined);
-      throw error;
-    }
-    return {
-      path: ensured.path,
-      content: content.trim(),
-    };
-  }
-
-  async isSessionMemoryEmpty(
-    content: string,
-    options: HadamardMemoryOptions = {},
-  ): Promise<boolean> {
-    const template = await this.loadSessionTemplate(options);
-    return content.trim() === template.trim();
-  }
-
-  truncateSessionMemoryForCompact(content: string): {
-    truncatedContent: string;
-    wasTruncated: boolean;
-  } {
-    const lines = content.split('\n');
-    const maxCharsPerSection = MAX_SECTION_LENGTH * 4;
-    const outputLines: string[] = [];
-    let currentSectionHeader = '';
-    let currentSectionLines: string[] = [];
-    let wasTruncated = false;
-
-    for (const line of lines) {
-      if (line.startsWith('# ')) {
-        const result = flushSessionSection(
-          currentSectionHeader,
-          currentSectionLines,
-          maxCharsPerSection,
-        );
-        outputLines.push(...result.lines);
-        wasTruncated = wasTruncated || result.wasTruncated;
-        currentSectionHeader = line;
-        currentSectionLines = [];
-        continue;
-      }
-      currentSectionLines.push(line);
-    }
-
-    const result = flushSessionSection(
-      currentSectionHeader,
-      currentSectionLines,
-      maxCharsPerSection,
-    );
-    outputLines.push(...result.lines);
-    wasTruncated = wasTruncated || result.wasTruncated;
-
-    return {
-      truncatedContent: outputLines.join('\n'),
-      wasTruncated,
-    };
-  }
-
-  async readSessionMemory(options: HadamardMemoryOptions = {}): Promise<HadamardSessionMemoryState> {
-    const paths = await this.paths(options);
-    const summaryPath = paths.sessionMemoryPath;
-    if (!summaryPath) {
-      return { exists: false };
-    }
-
-    const content = await readTextIfExists(summaryPath);
-    if (content == null) {
-      return {
-        exists: false,
-        path: summaryPath,
-      };
-    }
-
-    const truncated = this.truncateSessionMemoryForCompact(content);
-    return {
-      exists: true,
-      path: summaryPath,
-      content,
-      isEmpty: await this.isSessionMemoryEmpty(content, options),
-      tokenEstimate: roughTokenCountEstimation(content),
-      truncatedContent: truncated.truncatedContent,
-      wasTruncated: truncated.wasTruncated,
-    };
-  }
-
-  getSessionMemoryConfig(): HadamardSessionMemoryConfig {
-    return {
-      ...DEFAULT_SESSION_MEMORY_CONFIG,
-      ...(this.defaults.sessionMemoryConfig ?? {}),
-    };
+    // Topic/file auto-surfacing removed: only memory_summary.md is injected via
+    // the system prompt; agents Read MEMORY.md on demand.
+    return [];
   }
 
   async listMemoryContent(
@@ -842,29 +445,6 @@ Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
         size: stats.size,
         modifiedAt: stats.mtime.toISOString(),
       });
-    }
-    let projectChildren: string[] = [];
-    try {
-      projectChildren = await readdir(paths.projectStateDir);
-    } catch {
-      projectChildren = [];
-    }
-    for (const sessionId of projectChildren) {
-      const summaryPath = path.join(paths.projectStateDir, sessionId, 'session-memory', 'summary.md');
-      try {
-        const stats = await stat(summaryPath);
-        if (!stats.isFile()) continue;
-        entries.push({
-          id: `session:${sessionId}`,
-          kind: 'session',
-          path: summaryPath,
-          sessionId,
-          size: stats.size,
-          modifiedAt: stats.mtime.toISOString(),
-        });
-      } catch {
-        // Not a Session Memory directory.
-      }
     }
     return entries
       .filter(entry => options.kind == null || entry.kind === options.kind)
@@ -899,101 +479,8 @@ Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
     return results;
   }
 
-  getSessionMemoryCompactConfig(): HadamardSessionMemoryCompactConfig {
-    return {
-      ...DEFAULT_SESSION_MEMORY_COMPACT_CONFIG,
-    };
-  }
-
-  evaluateSessionMemoryProgress(options: {
-    currentTokenCount?: number;
-    tokensAtLastExtraction?: number;
-    messageCountSinceLastExtraction?: number;
-    initialized?: boolean;
-    hasToolCallsInLastTurn?: boolean;
-    toolCallsSinceLastUpdate?: number;
-  }): HadamardSessionMemoryProgress {
-    const config = this.getSessionMemoryConfig();
-    const currentTokenCount = options.currentTokenCount;
-    const tokensAtLastExtraction = options.tokensAtLastExtraction ?? 0;
-    const tokensSinceLastExtraction =
-      typeof currentTokenCount === 'number'
-        ? Math.max(currentTokenCount - tokensAtLastExtraction, 0)
-        : undefined;
-    const meetsInitializationThreshold =
-      typeof currentTokenCount === 'number'
-        ? currentTokenCount >= config.minimumMessageTokensToInit
-        : undefined;
-    const meetsUpdateThreshold =
-      typeof tokensSinceLastExtraction === 'number'
-        ? tokensSinceLastExtraction >= config.minimumTokensBetweenUpdate
-        : undefined;
-    const meetsToolCallThreshold =
-      typeof options.toolCallsSinceLastUpdate === 'number'
-        ? options.toolCallsSinceLastUpdate >= config.toolCallsBetweenUpdates
-        : undefined;
-    const hasToolCallsInLastTurn = options.hasToolCallsInLastTurn;
-    const initialized =
-      options.initialized === true || meetsInitializationThreshold === true;
-    const shouldExtract = initialized && meetsUpdateThreshold === true && hasToolCallsInLastTurn !== true;
-
-    return {
-      currentTokenCount,
-      tokensAtLastExtraction,
-      tokensSinceLastExtraction,
-      messageCountSinceLastExtraction: options.messageCountSinceLastExtraction,
-      toolCallsSinceLastUpdate: options.toolCallsSinceLastUpdate,
-      initialized,
-      meetsInitializationThreshold,
-      meetsUpdateThreshold,
-      meetsToolCallThreshold,
-      hasToolCallsInLastTurn,
-      shouldExtract,
-    };
-  }
-
-  async buildSessionMemoryCompactSummary(options: {
-    sessionId?: string;
-    projectPath?: string;
-    transcriptPath?: string;
-    includeFullMemoryPathHint?: boolean;
-    recentMessagesPreserved?: boolean;
-  } = {}): Promise<string | undefined> {
-    const state = await this.readSessionMemory({
-      sessionId: options.sessionId ?? this.defaults.sessionId,
-      projectPath: options.projectPath ?? this.defaults.projectPath,
-    });
-    if (!state.exists || !state.content || state.isEmpty) {
-      return undefined;
-    }
-
-    const paths = await this.paths({
-      sessionId: options.sessionId ?? this.defaults.sessionId,
-      projectPath: options.projectPath ?? this.defaults.projectPath,
-    });
-
-    let summaryContent = state.truncatedContent ?? state.content;
-    if (roughTokenCountEstimation(summaryContent) > 5_000) {
-      summaryContent = `${summaryContent.slice(0, 20_000).trimEnd()}\n\n[Session Memory truncated to the 5,000-token injection budget.]`;
-    }
-    if (state.wasTruncated && options.includeFullMemoryPathHint !== false && paths.sessionMemoryPath) {
-      summaryContent += `\n\nSome session memory sections were truncated for length. The full session memory can be viewed at: ${paths.sessionMemoryPath}`;
-    }
-
-    return buildCompactContinuationSummary(
-      summaryContent,
-      options.transcriptPath,
-      options.recentMessagesPreserved ?? true,
-    );
-  }
-
   async compactState(options: HadamardCompactStateOptions = {}): Promise<HadamardCompactState> {
-    const baseState = await this.state({
-      ...options,
-      includeSessionMemory: options.includeSessionMemory ?? true,
-    });
-    const sessionMemoryConfig = this.getSessionMemoryConfig();
-    const sessionMemoryCompactConfig = this.getSessionMemoryCompactConfig();
+    const baseState = await this.state(options);
     const sessionId = options.sessionId ?? this.defaults.sessionId;
     const transcriptPath =
       sessionId != null
@@ -1002,54 +489,20 @@ Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
             safeStorageFileName('sessionId', sessionId, 'jsonl'),
           )
         : undefined;
-    const progress =
-      options.currentTokenCount != null ||
-      options.tokensAtLastExtraction != null ||
-      options.initialized != null ||
-      options.toolCallsSinceLastUpdate != null
-        ? this.evaluateSessionMemoryProgress({
-            currentTokenCount: options.currentTokenCount,
-            tokensAtLastExtraction: options.tokensAtLastExtraction,
-            initialized: options.initialized,
-            toolCallsSinceLastUpdate: options.toolCallsSinceLastUpdate,
-          })
-        : undefined;
-
-    const boundaries = undefined;
-    const latestBoundary = undefined;
-    const compactCount = 0;
-    const microcompactCount = 0;
-    const lastSummarizedMessageUuid: string | undefined = undefined;
-    const latestPreservedSegment: HadamardPreservedSegment | undefined = undefined;
-    const latestBoundarySummary: string | undefined = undefined;
 
     return {
       ...baseState,
-      sessionMemoryConfig,
-      sessionMemoryCompactConfig,
-      progress,
       runtimeState: options.runtimeState,
       transcriptPath,
-      boundaries,
-      latestBoundary,
-      compactCount,
-      microcompactCount,
-      hasCompacted: compactCount + microcompactCount > 0,
+      boundaries: undefined,
+      latestBoundary: undefined,
+      compactCount: 0,
+      microcompactCount: 0,
+      hasCompacted: false,
       pendingPostCompaction: options.runtimeState?.pendingPostCompaction,
-      lastSummarizedMessageUuid,
-      latestPreservedSegment,
-      latestBoundarySummary,
-      canUseSessionMemoryCompaction:
-        baseState.enabled.autoCompact &&
-        baseState.sessionMemory?.exists === true &&
-        baseState.sessionMemory?.isEmpty === false,
-      summaryMessage: options.includeSummaryMessage
-        ? await this.buildSessionMemoryCompactSummary({
-            sessionId,
-            projectPath: baseState.paths.projectPath,
-            transcriptPath,
-          })
-        : undefined,
+      lastSummarizedMessageUuid: undefined,
+      latestPreservedSegment: undefined,
+      latestBoundarySummary: undefined,
     };
   }
 
@@ -1086,25 +539,12 @@ Return only JSON: {"noOutput":false,"content":"<full updated markdown>"}.
       combinedPrompt: options.includeCombinedPrompt
         ? buildCombinedMemoryPrompt(paths, options.extraGuidelines, options.skipIndex)
         : undefined,
-      sessionMemory: options.includeSessionMemory
-        ? await this.readSessionMemory(options)
-        : undefined,
-      sessionTemplate: options.includeSessionTemplate
-        ? await this.loadSessionTemplate(options)
-        : undefined,
-      sessionPrompt: options.includeSessionPrompt
-        ? await this.loadSessionPrompt(options)
-        : undefined,
     };
   }
 }
 
 export function createHadamardMemoryApi(options: HadamardMemoryOptions = {}): HadamardMemoryApi {
   return new HadamardMemoryApi(options);
-}
-
-export function getHadamardDefaultSessionMemoryTemplate(): string {
-  return DEFAULT_SESSION_MEMORY_TEMPLATE;
 }
 
 export function getHadamardCompactBoundarySummary(
@@ -1139,18 +579,6 @@ export function getHadamardCompactBoundarySummary(
   ].filter(Boolean);
 
   return parts.length > 0 ? parts.join(', ') : undefined;
-}
-
-export function getHadamardDefaultSessionMemoryConfig(): HadamardSessionMemoryConfig {
-  return {
-    ...DEFAULT_SESSION_MEMORY_CONFIG,
-  };
-}
-
-export function getHadamardDefaultSessionMemoryCompactConfig(): HadamardSessionMemoryCompactConfig {
-  return {
-    ...DEFAULT_SESSION_MEMORY_COMPACT_CONFIG,
-  };
 }
 
 export {

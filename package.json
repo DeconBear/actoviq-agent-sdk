@@ -218,7 +218,6 @@
     "example:hadamard-memory": "npm run build && tsx examples/hadamard-memory.ts",
     "example:hadamard-dream": "npm run build && tsx examples/hadamard-dream.ts",
     "example:hadamard-skills": "npm run build && tsx examples/hadamard-skills.ts",
-    "example:hadamard-session-memory": "npm run build && tsx examples/hadamard-session-memory.ts",
     "example:hadamard-swarm": "npm run build && tsx examples/hadamard-swarm.ts",
     "example:bridge-introspection": "npm run build && tsx examples/bridge-introspection.ts",
     "example:bridge-interactive-agent": "npm run build && tsx examples/bridge-interactive-agent.ts",

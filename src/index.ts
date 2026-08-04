@@ -58,9 +58,6 @@ export {
   HadamardMemoryApi,
   createHadamardMemoryApi,
   getHadamardCompactBoundarySummary,
-  getHadamardDefaultSessionMemoryCompactConfig,
-  getHadamardDefaultSessionMemoryConfig,
-  getHadamardDefaultSessionMemoryTemplate,
   getHadamardDefaultSettingsPath,
   formatHadamardMemoryManifest,
   getHadamardMemoryAge,
@@ -88,13 +85,9 @@ export {
   HADAMARD_SESSION_MEMORY_STATE_KEY,
   createDefaultHadamardSessionMemoryRuntimeState,
   estimateHadamardConversationTokens,
-  evaluateHadamardSessionMemoryProgress,
   filterHadamardMessagesForSessionMemory,
-  hasHadamardToolCallsInLastAssistantTurn,
-  parseHadamardSessionMemoryExtractionOutput,
   parseHadamardSessionMemoryRuntimeState,
   redactMemorySecrets,
-  sanitizeHadamardSessionMemoryOutput,
   serializeHadamardSessionMemoryRuntimeState,
 } from './memory/hadamardSessionMemoryState.js';
 export { buildSystemPrompt } from './prompts/systemPrompt.js';

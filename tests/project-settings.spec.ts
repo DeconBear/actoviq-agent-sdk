@@ -69,28 +69,27 @@ describe('projectSettings', () => {
     expect(appendProjectSettingsToPrompt('BASE', DEFAULT_PROJECT_SETTINGS)).toBe('BASE');
   });
 
-  it('persists project Memory settings and rejects unsafe Session Memory output limits', async () => {
+  it('persists durable Memory settings', async () => {
     homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-home-'));
     workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-work-'));
     const saved = await writeProjectSettings(workDir, homeDir, {
       memory: {
-        sessionMemory: { autoExtract: false, maxOutputTokens: 20_000 },
         durableMemory: {
           use: true,
           autoDream: true,
           dreamExecutionProfile: { kind: 'agent', name: 'memory-agent' },
+          dailyDreamTimeLocal: '4:05',
+          lastScheduledDreamDate: '2026-08-04',
         },
       },
     });
-    expect(saved.memory.sessionMemory).toEqual({ autoExtract: false, maxOutputTokens: 20_000 });
     expect(saved.memory.durableMemory).toMatchObject({
       use: true,
       autoDream: true,
       dreamExecutionProfile: { kind: 'agent', name: 'memory-agent' },
+      dailyDreamTimeLocal: '04:05',
+      lastScheduledDreamDate: '2026-08-04',
     });
-    await expect(writeProjectSettings(workDir, homeDir, {
-      memory: { sessionMemory: { maxOutputTokens: 20_001 } },
-    })).rejects.toThrow(/between 1000 and 20000/u);
   });
 
   it('requires a project Dream profile before autoDream can be enabled', async () => {

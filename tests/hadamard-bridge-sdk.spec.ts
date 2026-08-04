@@ -564,23 +564,7 @@ describe('Hadamard Runtime SDK bridge', () => {
 
     try {
       const paths = await sdk.memory.paths({ sessionId });
-      await mkdir(paths.sessionMemoryDir!, { recursive: true });
       await mkdir(paths.projectStateDir, { recursive: true });
-      await writeFile(
-        paths.sessionMemoryPath!,
-        [
-          '# Session Title',
-          '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-          '',
-          'Bridge compact state test',
-          '',
-          '# Current State',
-          '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-          '',
-          'Verifying bridge compact state helpers.',
-        ].join('\n'),
-        'utf8',
-      );
       await writeFile(
         path.join(paths.projectStateDir, `${sessionId}.jsonl`),
         JSON.stringify({
@@ -608,13 +592,10 @@ describe('Hadamard Runtime SDK bridge', () => {
 
       const fromSessions = await sdk.sessions.getCompactState(sessionId, {
         includeBoundaries: true,
-        includeSessionMemory: true,
-        includeSummaryMessage: true,
       });
       const session = await sdk.sessions.resume(sessionId);
       const fromSession = await session.compactState({
         includeBoundaries: true,
-        includeSessionMemory: true,
       });
       const fromContext = await sdk.context.compactState(sessionId, {
         includeBoundaries: true,
@@ -622,9 +603,7 @@ describe('Hadamard Runtime SDK bridge', () => {
 
       expect(fromSessions).toMatchObject({
         microcompactCount: 0,
-        canUseSessionMemoryCompaction: true,
       });
-      expect(fromSessions.summaryMessage).toContain('Bridge compact state test');
       // latestBoundary is optional and may not be set by the current compact implementation
       if (fromSession.latestBoundary) {
         expect(fromSession.latestBoundary).toMatchObject({ kind: 'compact' });

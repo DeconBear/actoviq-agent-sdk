@@ -5,7 +5,6 @@ import type {
   AgentRunResult,
   AgentSessionCompactOptions,
   AgentSessionDreamOptions,
-  AgentSessionMemoryExtractionOptions,
   HadamardAgentContinuityState,
   HadamardSessionCompactResult,
   HadamardCompactStateOptions,
@@ -16,7 +15,6 @@ import type {
   HadamardPermissionMode,
   HadamardPermissionRule,
   HadamardSessionPermissionState,
-  HadamardSessionMemoryExtractionResult,
   HadamardToolApprover,
   HadamardToolClassifier,
   SessionCheckpoint,
@@ -52,10 +50,6 @@ interface AgentSessionBindings {
     args?: string,
     options?: AgentRunOptions,
   ) => AgentRunStream;
-  extractSessionMemory: (
-    session: AgentSession,
-    options?: AgentSessionMemoryExtractionOptions,
-  ) => Promise<HadamardSessionMemoryExtractionResult>;
   runDream: (
     session: AgentSession,
     options?: AgentSessionDreamOptions,
@@ -203,12 +197,6 @@ export class AgentSession {
     options: AgentRunOptions = {},
   ): AgentRunStream {
     return this.bindings.streamSkillOnSession(this, skill, args, options);
-  }
-
-  async extractMemory(
-    options: AgentSessionMemoryExtractionOptions = {},
-  ): Promise<HadamardSessionMemoryExtractionResult> {
-    return this.bindings.extractSessionMemory(this, options);
   }
 
   async dream(options: AgentSessionDreamOptions = {}): Promise<HadamardDreamRunResult> {

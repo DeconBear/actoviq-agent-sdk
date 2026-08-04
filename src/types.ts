@@ -1902,46 +1902,6 @@ export interface HadamardMemoryPaths {
   teamMemoryDir: string;
   teamMemoryEntrypoint: string;
   sessionId?: string;
-  sessionMemoryDir?: string;
-  sessionMemoryPath?: string;
-}
-
-export interface HadamardSessionMemoryState {
-  exists: boolean;
-  path?: string;
-  content?: string;
-  isEmpty?: boolean;
-  tokenEstimate?: number;
-  truncatedContent?: string;
-  wasTruncated?: boolean;
-}
-
-export interface HadamardSessionMemoryConfig {
-  minimumMessageTokensToInit: number;
-  minimumTokensBetweenUpdate: number;
-  /** @deprecated Tool calls no longer gate extraction. */
-  toolCallsBetweenUpdates: number;
-  maxOutputTokens: number;
-}
-
-export interface HadamardSessionMemoryCompactConfig {
-  minTokens: number;
-  minTextBlockMessages: number;
-  maxTokens: number;
-}
-
-export interface HadamardSessionMemoryProgress {
-  currentTokenCount?: number;
-  tokensAtLastExtraction?: number;
-  tokensSinceLastExtraction?: number;
-  messageCountSinceLastExtraction?: number;
-  toolCallsSinceLastUpdate?: number;
-  initialized: boolean;
-  meetsInitializationThreshold?: boolean;
-  meetsUpdateThreshold?: boolean;
-  meetsToolCallThreshold?: boolean;
-  hasToolCallsInLastTurn?: boolean;
-  shouldExtract?: boolean;
 }
 
 export interface HadamardSessionMemoryRuntimeState {
@@ -1956,34 +1916,13 @@ export interface HadamardSessionMemoryRuntimeState {
   pendingPostCompaction: boolean;
 }
 
-export interface AgentSessionMemoryExtractionOptions {
-  force?: boolean;
-  model?: string;
-  maxTokens?: number;
-  signal?: AbortSignal;
-}
-
 export interface AgentSessionDreamOptions extends HadamardDreamRunOptions {}
-
-export interface HadamardSessionMemoryExtractionResult {
-  success: boolean;
-  skipped: boolean;
-  updated: boolean;
-  trigger: 'auto' | 'manual';
-  reason?: string;
-  sessionId?: string;
-  memoryPath?: string;
-  summary?: string;
-  usage?: Usage;
-  state: HadamardSessionMemoryRuntimeState;
-}
 
 export interface HadamardMemoryOptions {
   configPath?: string;
   homeDir?: string;
   projectPath?: string;
   sessionId?: string;
-  sessionMemoryConfig?: Partial<HadamardSessionMemoryConfig>;
   enabledOverrides?: Partial<{
     autoCompact: boolean;
     autoMemory: boolean;
@@ -1998,20 +1937,10 @@ export interface HadamardMemoryPromptOptions extends HadamardMemoryOptions {
 
 export interface HadamardMemoryStateOptions extends HadamardMemoryPromptOptions {
   includeCombinedPrompt?: boolean;
-  includeSessionMemory?: boolean;
-  includeSessionTemplate?: boolean;
-  includeSessionPrompt?: boolean;
 }
 
 export interface HadamardCompactStateOptions extends HadamardMemoryStateOptions {
   includeBoundaries?: boolean;
-  includeSummaryMessage?: boolean;
-  currentTokenCount?: number;
-  tokensAtLastExtraction?: number;
-  initialized?: boolean;
-  hasToolCallsInLastTurn?: boolean;
-  messageCountSinceLastExtraction?: number;
-  toolCallsSinceLastUpdate?: number;
   runtimeState?: HadamardSessionMemoryRuntimeState;
 }
 
@@ -2024,15 +1953,9 @@ export interface HadamardMemoryState {
   };
   paths: HadamardMemoryPaths;
   combinedPrompt?: string;
-  sessionMemory?: HadamardSessionMemoryState;
-  sessionTemplate?: string;
-  sessionPrompt?: string;
 }
 
 export interface HadamardCompactState extends HadamardMemoryState {
-  sessionMemoryConfig: HadamardSessionMemoryConfig;
-  sessionMemoryCompactConfig: HadamardSessionMemoryCompactConfig;
-  progress?: HadamardSessionMemoryProgress;
   runtimeState?: HadamardSessionMemoryRuntimeState;
   agentContinuity?: HadamardAgentContinuityState;
   invokedSkills?: HadamardInvokedSkillRecord[];
@@ -2049,8 +1972,8 @@ export interface HadamardCompactState extends HadamardMemoryState {
   lastSummarizedMessageUuid?: string;
   latestPreservedSegment?: HadamardPreservedSegment;
   latestBoundarySummary?: string;
-  canUseSessionMemoryCompaction: boolean;
   summaryMessage?: string;
+  estimatedConversationTokens?: number;
 }
 
 export interface HadamardMemoryFileHeader {

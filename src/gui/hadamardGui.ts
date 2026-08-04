@@ -266,7 +266,7 @@ import {
   runWorkflowSquad,
   validateWorkflowSquad,
 } from '../team/workflowSquad.js';
-import { planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
+import { listPlanFiles, planDirFor, planFilePath, readPlanFile } from '../tools/planMode/PlanModeTools.js';
 import { isReadOnlyBashCommand } from '../runtime/bashClassification.js';
 import { loadProjectContext } from '../memory/projectContext.js';
 import { recordTurn } from '../memory/sessionHistory.js';
@@ -2224,7 +2224,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     streamSession: () => unavailableWithoutHadamardCredential(),
     runSkillOnSession: async () => unavailableWithoutHadamardCredential(),
     streamSkillOnSession: () => unavailableWithoutHadamardCredential(),
-    extractSessionMemory: async () => unavailableWithoutHadamardCredential(),
     runDream: async () => unavailableWithoutHadamardCredential(),
     maybeAutoDream: async () => unavailableWithoutHadamardCredential(),
     getDreamState: async () => unavailableWithoutHadamardCredential(),
@@ -4953,9 +4952,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
             memory: sdk.memory,
             proposals: sdk.memoryProposals,
             compactConfig: sdk.config.compact,
-            sessionMemoryEffectiveLimit: Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000),
             getState: () => session.compactState(),
-            extract: () => session.extractMemory({ force: true }),
           }).execute(args || 'status');
           return [{
             type: 'command.result',
@@ -7937,6 +7934,26 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const compactBudget = sdk
       ? (await import('../runtime/hadamardCompact.js')).resolveHadamardCompactBudget(sdk.config.compact)
       : undefined;
+    const dailyDreamTime = settings.memory.durableMemory.dailyDreamTimeLocal || '03:00';
+    const autoDream = settings.memory.durableMemory.autoDream === true;
+    const dreamStatusText = dreamState
+      ? [
+          'Last dream: ' + (dreamState.lastConsolidatedAt || 'never'),
+          'Next: ' + (autoDream
+            ? ('daily at ' + dailyDreamTime + ' (GUI must be open)')
+            : 'auto-dream off'),
+          'Blocked: ' + (dreamState.blockedReason
+            ? ({
+              disabled: 'disabled',
+              time_gate: 'waiting for schedule',
+              session_gate: 'active session',
+              locked: 'locked',
+              scan_throttled: 'scan throttled',
+              missing_execution_profile: 'no profile selected',
+            } as Record<string, string>)[dreamState.blockedReason] ?? dreamState.blockedReason
+            : (autoDream ? 'ready' : 'disabled')),
+        ].join(' · ')
+      : 'Dream status is unavailable until the Hadamard SDK is configured.';
     return json(res, 200, {
       ok: true,
       path: workDir,
@@ -7944,11 +7961,9 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       dreamProfiles,
       memoryContent,
       dreamState,
+      dreamStatusText,
       compactBudget,
       compactWarning: sdk?.config.compact.contextWindowWarning,
-      sessionMemoryEffectiveLimit: sdk
-        ? Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000)
-        : undefined,
     });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
@@ -8050,10 +8065,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       return json(res, 404, { error: error instanceof Error ? error.message : String(error) });
     }
   }
-  if (req.method === 'POST' && url.pathname === '/api/project-memory-extract') {
-    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
-    return json(res, 200, { ok: true, result: await session.extractMemory({ force: true }) });
-  }
   if (req.method === 'POST' && url.pathname === '/api/project-dream/run') {
     if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
     try {
@@ -8122,6 +8133,97 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       const hd = resolveGuiHomeDir();
       const savedPath = await writeProgressFile(projectPrimaryPath, hd, content);
       return json(res, 200, { ok: true, path: savedPath });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-memory-doc') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      const paths = await sdk.memory.paths({ projectPath: workDir });
+      const memoryPath = paths.autoMemoryEntrypoint;
+      const content = existsSync(memoryPath) ? readFileSync(memoryPath, 'utf8') : '';
+      return json(res, 200, { content, path: memoryPath });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-memory-doc') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      const body = await readJson(req);
+      const content = typeof body.content === 'string' ? body.content : '';
+      const paths = await sdk.memory.paths({ projectPath: workDir });
+      const memoryPath = paths.autoMemoryEntrypoint;
+      await mkdir(path.dirname(memoryPath), { recursive: true });
+      await writeFile(memoryPath, content, 'utf8');
+      return json(res, 200, { ok: true, path: memoryPath });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-plans') {
+    try {
+      const currentPath = planFilePath(workDir);
+      const files = listPlanFiles(workDir);
+      const normalizedCurrent = path.normalize(currentPath);
+      const plans = files.map(planPath => ({
+        name: path.basename(planPath),
+        path: planPath,
+        current: path.normalize(planPath) === normalizedCurrent,
+      }));
+      return json(res, 200, { plans, currentPath });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'GET' && url.pathname === '/api/project-plan') {
+    try {
+      const name = url.searchParams.get('name');
+      const requestedPath = url.searchParams.get('path');
+      let targetPath = planFilePath(workDir);
+      if (typeof requestedPath === 'string' && requestedPath.trim()) {
+        targetPath = path.resolve(requestedPath.trim());
+      } else if (typeof name === 'string' && name.trim()) {
+        targetPath = path.join(planDirFor(workDir), name.trim());
+      }
+      const allowedRoots = [
+        path.resolve(planDirFor(workDir)),
+        path.resolve(getHadamardProjectSessionDirectory(workDir, resolveGuiHomeDir())),
+      ];
+      const legacyKey = workDir.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40) || 'default';
+      allowedRoots.push(path.resolve(path.join(resolveGuiHomeDir(), 'projects', legacyKey)));
+      const allowed = allowedRoots.some(root => {
+        const relative = path.relative(root, targetPath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      });
+      if (!allowed) return json(res, 400, { error: 'Plan path is outside the project plan directory.' });
+      const content = existsSync(targetPath) ? readFileSync(targetPath, 'utf8') : '';
+      return json(res, 200, { content, path: targetPath, name: path.basename(targetPath) });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/project-plan') {
+    try {
+      const body = await readJson(req);
+      const content = typeof body.content === 'string' ? body.content : '';
+      const planDir = planDirFor(workDir);
+      await mkdir(planDir, { recursive: true });
+      let targetPath = planFilePath(workDir);
+      if (typeof body.path === 'string' && body.path.trim()) {
+        targetPath = path.resolve(body.path.trim());
+      } else if (typeof body.name === 'string' && body.name.trim()) {
+        targetPath = path.join(planDir, body.name.trim());
+      }
+      const allowedRoots = [path.resolve(planDir)];
+      const allowed = allowedRoots.some(root => {
+        const relative = path.relative(root, targetPath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      });
+      if (!allowed) return json(res, 400, { error: 'Plan path is outside the project plan directory.' });
+      await writeFile(targetPath, content, 'utf8');
+      return json(res, 200, { ok: true, path: targetPath, name: path.basename(targetPath) });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -10854,12 +10956,12 @@ export function createHadamardGuiHtml(): string {
       <section class="settings-panel" data-settings-panel="memory">
         <h1>Memory</h1>
         <div class="settings-group">
-          <p>Hadamard keeps three independent layers: <strong>compact</strong> for current-chat continuity, <strong>Session Memory</strong> for structured chat notes, and <strong>Durable Memory</strong> for project knowledge consolidated by Dream.</p>
+          <p>Hadamard keeps two independent layers: <strong>compact</strong> for current-chat continuity and <strong>Durable Memory</strong> for project knowledge consolidated by Dream.</p>
         </div>
         <div class="settings-group">
           <h2>Global defaults</h2>
-          <p>Durable Memory reads default to on, Session Memory output defaults to 10,000 tokens, and automatic Dream always defaults to off.</p>
-          <p class="muted">Project content, Dream profiles, manual actions, and Memory Browser live in Project details → Project settings → Memory.</p>
+          <p>Durable Memory reads default to on, and automatic Dream always defaults to off.</p>
+          <p class="muted">Project documents (Design, Memory, Plans) and Dream settings live in Project details → Document and Project settings → Memory.</p>
         </div>
       </section>
       <section class="settings-panel" data-settings-panel="mcp">
@@ -11383,6 +11485,10 @@ body[data-theme="dark"] {
 .project-doc-panel { min-height: 0; display: flex; flex-direction: column; background: var(--bg-surface); border-right: 1px solid var(--border); overflow: hidden; }
 .detail-main .project-doc-panel { flex: 1; border-right: 0; }
 .project-doc-toolbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.project-doc-subtabs { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 0 16px 8px; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+.project-doc-subtab { min-height: 28px; padding: 0 10px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--text-2); font-size: 12px; cursor: pointer; }
+.project-doc-subtab.active { border-color: var(--border); background: var(--bg-surface-2); color: var(--text-1); font-weight: 600; }
+.project-doc-plan-select { min-height: 28px; min-width: 220px; max-width: 360px; border: 1px solid var(--border); border-radius: 8px; padding: 0 8px; background: var(--bg-surface); color: var(--text-1); font-size: 12px; }
 .project-doc-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
 .project-doc-actions { display: flex; align-items: center; gap: 10px; }
 .project-doc-edit-btn { min-height: 28px; padding: 0 10px; font-size: 12px; }
@@ -14822,6 +14928,8 @@ const state = {
   agentNodeExpanded: {},
   terminalHostMode: 'dock',
   projectDocLoadedFor: null,
+  projectDocSubTab: 'design',
+  projectDocPlanPath: null,
   projectDocRaw: '',
   projectDocEditing: false,
   projectDocDirty: false,
@@ -18318,6 +18426,8 @@ async function switchProject(projectPath, view = 'conversation') {
   if (state.projectDocDirty) await saveProjectDocNow();
   if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
   state.projectDocLoadedFor = null;
+  state.projectDocSubTab = 'design';
+  state.projectDocPlanPath = null;
   state.projectDocEditing = false;
   state.projectDocRaw = '';
   state.projectDocDirty = false;
@@ -19222,6 +19332,66 @@ function formatShortRelativeTime(iso) {
   if (day < 30) return day + 'd';
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
+function projectDocSubTabLabel(subTab) {
+  return ({ design: 'Design', memory: 'Memory', plans: 'Plans' })[subTab] || 'Design';
+}
+function projectDocEmptyMessage(subTab) {
+  if (subTab === 'memory') return 'No MEMORY.md yet — click Edit to write.';
+  if (subTab === 'plans') return 'No plan file selected — pick one from the list or click Edit.';
+  return 'No project document yet — click Edit to write.';
+}
+function projectDocApiEndpoint(subTab) {
+  if (subTab === 'memory') return '/api/project-memory-doc';
+  if (subTab === 'plans') return '/api/project-plan';
+  return '/api/project-doc';
+}
+function updateProjectDocChrome() {
+  const title = el('projectDocTitle');
+  if (title) title.textContent = projectDocSubTabLabel(state.projectDocSubTab);
+  const planSelect = el('projectDocPlanSelect');
+  if (planSelect) planSelect.classList.toggle('hidden', state.projectDocSubTab !== 'plans');
+  const empty = el('projectDocEmpty');
+  if (empty) empty.textContent = projectDocEmptyMessage(state.projectDocSubTab);
+  document.querySelectorAll('.project-doc-subtab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.docSubTab === state.projectDocSubTab);
+    btn.setAttribute('aria-selected', btn.dataset.docSubTab === state.projectDocSubTab ? 'true' : 'false');
+  });
+}
+function renderProjectDocPlanSelect(plans, currentPath) {
+  const select = el('projectDocPlanSelect');
+  if (!select) return;
+  const previous = state.projectDocPlanPath || currentPath || '';
+  select.textContent = '';
+  if (!plans.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No plan files';
+    select.appendChild(opt);
+    state.projectDocPlanPath = null;
+    return;
+  }
+  for (const plan of plans) {
+    const opt = document.createElement('option');
+    opt.value = plan.path;
+    opt.textContent = plan.name + (plan.current ? ' (current)' : '');
+    select.appendChild(opt);
+  }
+  const next = plans.some(plan => plan.path === previous) ? previous : (currentPath || plans[plans.length - 1].path);
+  select.value = next;
+  state.projectDocPlanPath = next || null;
+}
+function setProjectDocSubTab(tab) {
+  const allowed = { design: 1, memory: 1, plans: 1 };
+  const next = allowed[tab] ? tab : 'design';
+  if (state.projectDocSubTab === next) return;
+  if (state.projectDocDirty) void saveProjectDocNow();
+  if (state.projectDocSaveTimer) { clearTimeout(state.projectDocSaveTimer); state.projectDocSaveTimer = null; }
+  state.projectDocSubTab = next;
+  state.projectDocLoadedFor = null;
+  state.projectDocEditing = false;
+  updateProjectDocChrome();
+  void mountProjectDoc(true);
+}
 function getProjectDocContent() {
   const src = el('projectDocSource');
   if (src && !src.classList.contains('hidden')) return src.value;
@@ -19318,9 +19488,14 @@ function scheduleProjectDocSave() {
 }
 async function saveProjectDocNow() {
   const content = getProjectDocContent();
+  const subTab = state.projectDocSubTab || 'design';
   setProjectDocStatus('Saving…', 'dirty');
   try {
-    const res = await api('/api/project-doc', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) });
+    const endpoint = projectDocApiEndpoint(subTab);
+    const body = subTab === 'plans'
+      ? { path: state.projectDocPlanPath, content }
+      : { content };
+    const res = await api(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setProjectDocStatus(data.error || 'Save failed', 'error');
@@ -19340,6 +19515,26 @@ function setProjectSettingsStatus(text, kind) {
   if (!node) return;
   node.textContent = text || '';
   node.dataset.kind = kind || '';
+}
+function formatDreamStatusText(dreamState, settings, dreamStatusText) {
+  if (typeof dreamStatusText === 'string' && dreamStatusText) return dreamStatusText;
+  if (!dreamState) return 'Dream status is unavailable until the Hadamard SDK is configured.';
+  const dailyTime = settings?.memory?.durableMemory?.dailyDreamTimeLocal || '03:00';
+  const autoDream = settings?.memory?.durableMemory?.autoDream === true;
+  const blockedMap = {
+    disabled: 'disabled',
+    time_gate: 'waiting for schedule',
+    session_gate: 'active session',
+    locked: 'locked',
+    scan_throttled: 'scan throttled',
+    missing_execution_profile: 'no profile selected',
+  };
+  const blocked = dreamState.blockedReason
+    ? (blockedMap[dreamState.blockedReason] || dreamState.blockedReason)
+    : (autoDream ? 'ready' : 'disabled');
+  return 'Last dream: ' + (dreamState.lastConsolidatedAt || 'never')
+    + ' · Next: ' + (autoDream ? ('daily at ' + dailyTime + ' (GUI must be open)') : 'auto-dream off')
+    + ' · Blocked: ' + blocked;
 }
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
@@ -19361,13 +19556,10 @@ function collectProjectSettingsBody() {
         enabled: true,
         autoCompactTokenLimitScope: 'total',
       },
-      sessionMemory: {
-        autoExtract: Boolean(el('projectSessionMemoryAuto')?.checked),
-        maxOutputTokens: Number(el('projectSessionMemoryMaxTokens')?.value) || 10000,
-      },
       durableMemory: {
         use: Boolean(el('projectDurableMemoryUse')?.checked),
         autoDream: Boolean(el('projectAutoDream')?.checked),
+        dailyDreamTimeLocal: el('projectDailyDreamTime')?.value || '03:00',
         dreamExecutionProfile: dreamExecutionProfile || null,
       },
     },
@@ -19477,27 +19669,20 @@ function wireProjectSettingsPanel() {
   panel.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily' || target.id.startsWith('projectCompact') || target.id.startsWith('projectSessionMemory') || target.id.startsWith('projectDurableMemory') || target.id === 'projectAutoDream' || target.id === 'projectDreamProfile') {
+    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily' || target.id.startsWith('projectCompact') || target.id.startsWith('projectDurableMemory') || target.id === 'projectAutoDream' || target.id === 'projectDreamProfile' || target.id === 'projectDailyDreamTime') {
       scheduleProjectSettingsSave();
     }
   });
   panel.addEventListener('input', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt' || target.id === 'projectSessionMemoryMaxTokens') {
+    if (target.id === 'projectCustomPrompt' || target.id === 'projectRulesPrompt') {
       scheduleProjectSettingsSave();
     }
   });
   el('projectSettingsSaveBtn')?.addEventListener('click', () => { void saveProjectSettingsNow(); });
   el('projectPromptTemplateApply')?.addEventListener('click', () => applySelectedPromptTemplate());
   el('projectPromptTemplateSave')?.addEventListener('click', () => { void saveCustomPromptAsTemplate(); });
-  el('projectSessionMemoryExtract')?.addEventListener('click', async () => {
-    setProjectSettingsStatus('Extracting Session Memory…', 'dirty');
-    const res = await api('/api/project-memory-extract', { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    setProjectSettingsStatus(res.ok ? (data.result?.updated ? 'Session Memory updated' : 'No new Session Memory') : (data.error || 'Extraction failed'), res.ok ? '' : 'error');
-    if (res.ok) void mountProjectSettingsPanel(true);
-  });
   el('projectDreamRun')?.addEventListener('click', async () => {
     setProjectSettingsStatus('Running Dream…', 'dirty');
     const res = await api('/api/project-dream/run', { method: 'POST' });
@@ -19505,34 +19690,6 @@ function wireProjectSettingsPanel() {
     setProjectSettingsStatus(res.ok ? (data.result?.reason || (data.result?.skipped ? 'Dream skipped' : 'Dream completed')) : (data.error || 'Dream failed'), res.ok ? '' : 'error');
     if (res.ok) void mountProjectSettingsPanel(true);
   });
-  el('projectMemorySearch')?.addEventListener('input', () => renderProjectMemoryBrowser(state.projectMemoryContent || [], el('projectMemorySearch')?.value || ''));
-}
-function renderProjectMemoryBrowser(entries, query) {
-  const root = el('projectMemoryBrowser');
-  if (!root) return;
-  const normalized = (query || '').trim().toLowerCase();
-  const visible = (entries || []).filter((entry) => !normalized || entry.id.toLowerCase().includes(normalized) || entry.path.toLowerCase().includes(normalized));
-  root.textContent = '';
-  if (!visible.length) {
-    root.innerHTML = '<p class="muted">No memory content found.</p>';
-    return;
-  }
-  for (const entry of visible) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'settings-row';
-    button.innerHTML = '<span><strong></strong><small></small></span><span class="settings-row-value"></span>';
-    button.querySelector('strong').textContent = entry.id;
-    button.querySelector('small').textContent = entry.path;
-    button.querySelector('.settings-row-value').textContent = entry.kind;
-    button.addEventListener('click', async () => {
-      const res = await api('/api/project-memory-content?id=' + encodeURIComponent(entry.id));
-      const data = await res.json().catch(() => ({}));
-      const preview = el('projectMemoryPreview');
-      if (preview) preview.textContent = res.ok ? data.content : (data.error || 'Unable to read memory.');
-    });
-    root.appendChild(button);
-  }
 }
 async function mountProjectSettingsPanel(force) {
   const panel = el('projectSettingsPanel');
@@ -19560,18 +19717,11 @@ async function mountProjectSettingsPanel(force) {
     if (el('projectRulesPrompt')) el('projectRulesPrompt').value = settings.projectRules || '';
     const memory = settings.memory || {};
     const compact = memory.compact || {};
-    const sessionMemory = memory.sessionMemory || {};
     const durableMemory = memory.durableMemory || {};
     const compactStatus = el('projectCompactStatus');
     if (compactStatus) compactStatus.textContent = data.compactBudget
       ? 'Raw: ' + data.compactBudget.rawContextWindowTokens + ' · Effective: ' + data.compactBudget.effectiveContextWindowTokens + ' · Auto compact: ' + data.compactBudget.autoCompactTokenLimit + ' (' + data.compactBudget.source + ')' + (data.compactWarning ? '\\n' + data.compactWarning : '')
       : 'Compact budget is unavailable until the Hadamard SDK is configured.';
-    if (el('projectSessionMemoryAuto')) el('projectSessionMemoryAuto').checked = sessionMemory.autoExtract !== false;
-    if (el('projectSessionMemoryMaxTokens')) el('projectSessionMemoryMaxTokens').value = sessionMemory.maxOutputTokens || 10000;
-    const sessionMemoryStatus = el('projectSessionMemoryStatus');
-    if (sessionMemoryStatus) sessionMemoryStatus.textContent = data.sessionMemoryEffectiveLimit
-      ? 'Effective model output limit: ' + data.sessionMemoryEffectiveLimit + ' tokens'
-      : '';
     if (el('projectDurableMemoryUse')) el('projectDurableMemoryUse').checked = durableMemory.use !== false;
     if (el('projectAutoDream')) el('projectAutoDream').checked = durableMemory.autoDream === true;
     const profileSelect = el('projectDreamProfile');
@@ -19591,12 +19741,11 @@ async function mountProjectSettingsPanel(force) {
       const selected = durableMemory.dreamExecutionProfile;
       if (selected) profileSelect.value = selected.kind + ':' + selected.name;
     }
-    state.projectMemoryContent = data.memoryContent || [];
-    renderProjectMemoryBrowser(state.projectMemoryContent, '');
+    if (el('projectDailyDreamTime')) {
+      el('projectDailyDreamTime').value = durableMemory.dailyDreamTimeLocal || '03:00';
+    }
     const dreamStatus = el('projectDreamStatus');
-    if (dreamStatus) dreamStatus.textContent = data.dreamState
-      ? JSON.stringify(data.dreamState, null, 2)
-      : 'Dream status is unavailable until the Hadamard SDK is configured.';
+    if (dreamStatus) dreamStatus.textContent = formatDreamStatusText(data.dreamState, settings, data.dreamStatusText);
     state.projectSettingsDirty = false;
     panel.dataset.loaded = workDir;
     setProjectSettingsStatus('', '');
@@ -19609,21 +19758,43 @@ async function mountProjectDoc(force) {
   const view = el('projectDocView');
   if (!view) return;
   const workDir = state.snapshot?.workDir || '';
-  if (!force && state.projectDocLoadedFor === workDir && view.dataset.loaded === workDir) return;
+  const subTab = state.projectDocSubTab || 'design';
+  const loadKey = workDir + ':' + subTab + ':' + (subTab === 'plans' ? (state.projectDocPlanPath || '') : '');
+  if (!force && state.projectDocLoadedFor === loadKey && view.dataset.loaded === loadKey) {
+    updateProjectDocChrome();
+    return;
+  }
   setProjectDocStatus('Loading…', '');
   state.projectDocEditing = false;
   let content = '';
   try {
-    const res = await api('/api/project-doc');
-    if (res.ok) {
-      const data = await res.json();
-      content = typeof data.content === 'string' ? data.content : '';
+    if (subTab === 'plans') {
+      const plansRes = await api('/api/project-plans');
+      if (plansRes.ok) {
+        const plansData = await plansRes.json();
+        renderProjectDocPlanSelect(plansData.plans || [], plansData.currentPath || '');
+        const planPath = state.projectDocPlanPath;
+        if (planPath) {
+          const planRes = await api('/api/project-plan?path=' + encodeURIComponent(planPath));
+          if (planRes.ok) {
+            const planData = await planRes.json();
+            content = typeof planData.content === 'string' ? planData.content : '';
+          }
+        }
+      }
+    } else {
+      const res = await api(projectDocApiEndpoint(subTab));
+      if (res.ok) {
+        const data = await res.json();
+        content = typeof data.content === 'string' ? data.content : '';
+      }
     }
   } catch { /* show empty doc */ }
-  state.projectDocLoadedFor = workDir;
+  state.projectDocLoadedFor = loadKey;
   state.projectDocDirty = false;
-  view.dataset.loaded = workDir;
+  view.dataset.loaded = loadKey;
   state.projectDocEditing = false;
+  updateProjectDocChrome();
   renderProjectDocPreview(content);
   const src = el('projectDocSource');
   if (src) src.classList.add('hidden');
@@ -21991,7 +22162,8 @@ function renderProjectDetail() {
   const docToolbar = document.createElement('header');
   docToolbar.className = 'project-doc-toolbar';
   const docTitle = document.createElement('h2');
-  docTitle.textContent = 'Project document';
+  docTitle.id = 'projectDocTitle';
+  docTitle.textContent = 'Design';
   const docActions = document.createElement('div');
   docActions.className = 'project-doc-actions';
   const statusWrap = document.createElement('div');
@@ -22013,6 +22185,16 @@ function renderProjectDetail() {
   }
   statusSelect.addEventListener('change', () => { void saveProjectStatus(statusSelect.value); });
   statusWrap.append(statusLabel, statusSelect);
+  const planSelect = document.createElement('select');
+  planSelect.id = 'projectDocPlanSelect';
+  planSelect.className = 'project-doc-plan-select hidden';
+  planSelect.setAttribute('aria-label', 'Plan file');
+  planSelect.addEventListener('change', () => {
+    if (state.projectDocDirty) void saveProjectDocNow();
+    state.projectDocPlanPath = planSelect.value || null;
+    state.projectDocLoadedFor = null;
+    void mountProjectDoc(true);
+  });
   const editBtn = document.createElement('button');
   editBtn.type = 'button';
   editBtn.id = 'projectDocEditBtn';
@@ -22022,8 +22204,23 @@ function renderProjectDetail() {
   const docStatus = document.createElement('span');
   docStatus.id = 'projectDocStatus';
   docStatus.className = 'project-doc-status';
-  docActions.append(statusWrap, editBtn, docStatus);
+  docActions.append(statusWrap, planSelect, editBtn, docStatus);
   docToolbar.append(docTitle, docActions);
+  const docSubtabs = document.createElement('div');
+  docSubtabs.className = 'project-doc-subtabs';
+  docSubtabs.setAttribute('role', 'tablist');
+  docSubtabs.setAttribute('aria-label', 'Document sections');
+  for (const tab of [['design', 'Design'], ['memory', 'Memory'], ['plans', 'Plans']]) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'project-doc-subtab' + (state.projectDocSubTab === tab[0] ? ' active' : '');
+    btn.dataset.docSubTab = tab[0];
+    btn.textContent = tab[1];
+    btn.setAttribute('role', 'tab');
+    btn.setAttribute('aria-selected', state.projectDocSubTab === tab[0] ? 'true' : 'false');
+    btn.addEventListener('click', () => setProjectDocSubTab(tab[0]));
+    docSubtabs.appendChild(btn);
+  }
   const docScroll = document.createElement('div');
   docScroll.id = 'projectDocScroll';
   docScroll.className = 'project-doc-scroll';
@@ -22037,7 +22234,7 @@ function renderProjectDetail() {
   const docEmpty = document.createElement('p');
   docEmpty.id = 'projectDocEmpty';
   docEmpty.className = 'project-doc-empty';
-  docEmpty.textContent = 'No project document yet — click Edit to write.';
+  docEmpty.textContent = projectDocEmptyMessage(state.projectDocSubTab || 'design');
   docEmpty.addEventListener('click', () => setProjectDocMode(true));
   const docSource = document.createElement('textarea');
   docSource.id = 'projectDocSource';
@@ -22053,7 +22250,7 @@ function renderProjectDetail() {
   });
   docEditor.append(docView, docEmpty, docSource);
   docScroll.appendChild(docEditor);
-  docPanel.append(docToolbar, docScroll);
+  docPanel.append(docToolbar, docSubtabs, docScroll);
   const issuesPanel = document.createElement('section');
   issuesPanel.id = 'projectIssuesPanel';
   issuesPanel.className = 'project-issues-panel' + (state.projectDetailTab === 'issues' ? '' : ' hidden');
@@ -22111,24 +22308,14 @@ function renderProjectDetail() {
     + '</div>'
     + '<div class="settings-group">'
     + '<h2>Memory</h2>'
-    + '<p class="muted">Compact, Session Memory, and Durable Memory are independent and scoped to this project. Automatic compact is always on (total context, 90% of the model window).</p>'
+    + '<p class="muted">Compact and Durable Memory are independent and scoped to this project. Automatic compact is always on (total context, 90% of the model window).</p>'
     + '<p id="projectCompactStatus" class="muted"></p>'
-    + '<label class="settings-row"><span><strong>Automatic Session Memory</strong><small>Extract after a complete turn when the token delta threshold is met.</small></span><input type="checkbox" id="projectSessionMemoryAuto"></label>'
-    + '<label class="settings-row"><span><strong>Session Memory output</strong><small>1,000–20,000 tokens; provider limits still apply.</small></span><input type="number" min="1000" max="20000" step="1000" id="projectSessionMemoryMaxTokens"></label>'
-    + '<p id="projectSessionMemoryStatus" class="muted"></p>'
-    + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectSessionMemoryExtract">Extract Session Memory now</button></div>'
     + '<label class="settings-row"><span><strong>Use Durable Memory</strong><small>Read and inject project memory. This does not enable background writes.</small></span><input type="checkbox" id="projectDurableMemoryUse"></label>'
-    + '<label class="settings-row"><span><strong>Memory consolidation (Dream)</strong><small>Project-only automatic Phase 1 extraction and Phase 2 consolidation.</small></span><input type="checkbox" id="projectAutoDream"></label>'
+    + '<label class="settings-row"><span><strong>Memory consolidation (Dream)</strong><small>Daily scheduled Dream while this GUI is open (multi-turn read of sessions → MEMORY.md).</small></span><input type="checkbox" id="projectAutoDream"></label>'
     + '<label class="settings-row"><span><strong>Dream execution profile</strong><small>Config or Agent model settings only; prompt, tools, and permissions stay restricted.</small></span><select id="projectDreamProfile"></select></label>'
+    + '<label class="settings-row"><span><strong>Daily dream time</strong><small>Local time for automatic Dream while this GUI stays open.</small></span><input type="time" id="projectDailyDreamTime" value="03:00"></label>'
     + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectDreamRun">Run Dream now</button></div>'
-    + '<pre id="projectDreamStatus" class="project-settings-textarea" style="min-height:90px;white-space:pre-wrap"></pre>'
-    + '</div>'
-    + '<div class="settings-group">'
-    + '<h2>Memory Browser</h2>'
-    + '<p class="muted">Read-only view of Session Memory, MEMORY.md, topics, raw memories, and rollout summaries.</p>'
-    + '<input id="projectMemorySearch" class="settings-input" placeholder="Filter memory by id or path…">'
-    + '<div id="projectMemoryBrowser" class="settings-card-list"></div>'
-    + '<pre id="projectMemoryPreview" class="project-settings-textarea" style="min-height:180px;white-space:pre-wrap"></pre>'
+    + '<p id="projectDreamStatus" class="muted"></p>'
     + '</div>'
     + '</div>';
   for (const [tabKey, panel] of Object.entries({
@@ -33485,6 +33672,7 @@ syncTerminalToggle();
 async function initializeGui() {
   await loadState();
   await hydrateTranscript();
+  startDreamScheduleTimer();
   const foregroundRunId = state.snapshot?.foregroundRunId;
   const foreground = (state.snapshot?.runs || []).find(run => run.runId === foregroundRunId);
   const sessionId = state.snapshot?.session?.id || '';
@@ -33495,6 +33683,65 @@ async function initializeGui() {
     startRailPolling();
     await recoverDisconnectedRun(sessionId, true, foreground.clientRequestId || null);
   }
+}
+let dreamScheduleTimer = null;
+let dreamScheduleRunning = false;
+function localDateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + d;
+}
+function localTimeMatchesSchedule(dailyDreamTimeLocal) {
+  const match = String(dailyDreamTimeLocal || '03:00').match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return false;
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  return Math.abs(now.getTime() - target.getTime()) <= 60_000;
+}
+async function checkScheduledDream() {
+  if (dreamScheduleRunning) return;
+  const workDir = state.snapshot?.workDir;
+  if (!workDir) return;
+  let settings = state.snapshot?.projectSettings;
+  if (!settings?.memory?.durableMemory) {
+    try {
+      const res = await api('/api/project-settings');
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.settings) {
+        settings = data.settings;
+        if (state.snapshot) state.snapshot.projectSettings = data.settings;
+      }
+    } catch { return; }
+  }
+  const durable = settings?.memory?.durableMemory;
+  if (!durable?.autoDream || !durable?.dreamExecutionProfile) return;
+  const today = localDateKey(new Date());
+  if (durable.lastScheduledDreamDate === today) return;
+  if (!localTimeMatchesSchedule(durable.dailyDreamTimeLocal || '03:00')) return;
+  dreamScheduleRunning = true;
+  try {
+    const res = await api('/api/project-dream/run', { method: 'POST' });
+    if (!res.ok) return;
+    const saveRes = await api('/api/project-settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ memory: { durableMemory: { lastScheduledDreamDate: today } } }),
+    });
+    if (saveRes.ok) {
+      const data = await saveRes.json().catch(() => ({}));
+      if (data.settings && state.snapshot) state.snapshot.projectSettings = data.settings;
+    }
+    if (state.projectDetailTab === 'settings') void mountProjectSettingsPanel(true);
+  } finally {
+    dreamScheduleRunning = false;
+  }
+}
+function startDreamScheduleTimer() {
+  if (dreamScheduleTimer) clearInterval(dreamScheduleTimer);
+  dreamScheduleTimer = setInterval(() => { void checkScheduledDream(); }, 60_000);
+  void checkScheduledDream();
 }
 initializeGui().catch(error => addMessage('error', error.message));
 `;

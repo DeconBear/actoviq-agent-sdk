@@ -509,7 +509,7 @@ describe('HadamardAgentClient', () => {
     }
   });
 
-  it('auto-injects relevant memories and de-duplicates them across session turns', async () => {
+  it('injects memory_summary.md into the system prompt and does not auto-surface topic files', async () => {
     const tempDir = await createSessionDirectory();
     const homeDir = path.join(tempDir, 'home');
     const workDir = path.join(tempDir, 'workspace');
@@ -531,25 +531,29 @@ describe('HadamardAgentClient', () => {
       await mkdir(paths.autoMemoryDir, { recursive: true });
       await writeFile(
         paths.autoMemoryEntrypoint,
-        '- [Release Flow](release-flow.md) - Bump package version before tagging releases.\n',
+        '# MEMORY\n\n## Releases\n\nAlways bump package.json before creating a release tag.\n',
         'utf8',
       );
       await writeFile(
-        path.join(paths.autoMemoryDir, 'release-flow.md'),
+        path.join(paths.autoMemoryDir, 'memory_summary.md'),
         [
-          '---',
-          'type: project',
-          'description: Release checklist for versions and tags',
-          '---',
+          '# Summary map',
           '',
-          'Always bump package.json before creating a release tag.',
+          '- Releases: bump package.json — MEMORY.md §Releases (lines ~3-5)',
         ].join('\n'),
         'utf8',
       );
 
       const session = await sdk.createSession();
       await session.send('How should I prepare a release tag?');
-      await session.send('Remind me again how I should prepare a release tag?');
+
+      const firstRequest = modelApi.createCalls[0];
+      const system = Array.isArray(firstRequest?.system)
+        ? firstRequest.system.map(part => (typeof part === 'string' ? part : part.text ?? '')).join('\n')
+        : String(firstRequest?.system ?? '');
+      expect(system).toContain('memory_summary.md');
+      expect(system).toContain('Releases: bump package.json');
+      expect(system).not.toContain('Always bump package.json before creating a release tag.');
 
       const countRelevantMemoryMessages = (messages: ModelRequest['messages']) =>
         messages.filter(
@@ -559,145 +563,7 @@ describe('HadamardAgentClient', () => {
             message.content.includes('<system-reminder>') &&
             message.content.includes('release-flow.md'),
         ).length;
-
-      const firstMessages = modelApi.createCalls[0]?.messages ?? [];
-      const secondMessages = modelApi.createCalls[1]?.messages ?? [];
-
-      expect(countRelevantMemoryMessages(firstMessages)).toBe(1);
-      expect(countRelevantMemoryMessages(secondMessages)).toBe(1);
-      expect(
-        firstMessages.some(
-          message =>
-            message.role === 'user' &&
-            typeof message.content === 'string' &&
-            message.content.includes('Always bump package.json before creating a release tag.'),
-        ),
-      ).toBe(true);
-    } finally {
-      await sdk.close();
-    }
-  });
-
-  it('automatically extracts session memory after a large session turn', async () => {
-    const tempDir = await createSessionDirectory();
-    const homeDir = path.join(tempDir, 'home');
-    const workDir = path.join(tempDir, 'workspace');
-    const longPrompt = 'release-checklist '.repeat(4000);
-    const modelApi = new MockModelApi({
-      create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
-          return makeMessage([
-            {
-              type: 'text',
-              text: [
-                '# Session Title',
-                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-                '',
-                'Release memory snapshot',
-                '',
-                '# Current State',
-                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-                '',
-                'Preparing the next public release and checking version/tag order.',
-              ].join('\n'),
-            },
-          ]);
-        }
-
-        return makeMessage([{ type: 'text', text: 'Working through the release checklist.' }]);
-      },
-    });
-
-    const sdk = await createAgentSdk({
-      model: 'test-model',
-      sessionDirectory: path.join(tempDir, 'sessions'),
-      homeDir,
-      workDir,
-      modelApi,
-    });
-
-    try {
-      const session = await sdk.createSession();
-      await session.send(longPrompt);
-
-      const memoryState = await sdk.memory.readSessionMemory({
-        projectPath: workDir,
-        sessionId: session.id,
-      });
-      let compactState = await session.compactState({ includeSessionMemory: true });
-      for (let attempt = 0; attempt < 20 && compactState.runtimeState?.extractionCount !== 1; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-        compactState = await session.compactState({ includeSessionMemory: true });
-      }
-
-      expect(modelApi.createCalls).toHaveLength(2);
-      expect(
-        (modelApi.createCalls[1]?.metadata as Record<string, unknown> | undefined)
-          ?.hadamard_internal_task,
-      ).toBe('session_memory');
-      expect(memoryState.exists).toBe(true);
-      expect(memoryState.content).toContain('Release memory snapshot');
-      expect(compactState.runtimeState).toMatchObject({
-        initialized: true,
-        extractionCount: 1,
-      });
-      expect(compactState.canUseSessionMemoryCompaction).toBe(true);
-    } finally {
-      await sdk.close();
-    }
-  });
-
-  it('can manually extract session memory on demand', async () => {
-    const tempDir = await createSessionDirectory();
-    const homeDir = path.join(tempDir, 'home');
-    const workDir = path.join(tempDir, 'workspace');
-    const modelApi = new MockModelApi({
-      create: (request) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
-          return makeMessage([
-            {
-              type: 'text',
-              text: [
-                '# Session Title',
-                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-                '',
-                'Manual summary',
-                '',
-                '# Current State',
-                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-                '',
-                'Manual extraction captured the latest task details.',
-              ].join('\n'),
-            },
-          ]);
-        }
-
-        return makeMessage([{ type: 'text', text: 'Small response.' }]);
-      },
-    });
-
-    const sdk = await createAgentSdk({
-      model: 'test-model',
-      sessionDirectory: path.join(tempDir, 'sessions'),
-      homeDir,
-      workDir,
-      modelApi,
-    });
-
-    try {
-      const session = await sdk.createSession();
-      await session.send('Keep this short.');
-      const extraction = await session.extractMemory();
-      const memoryState = await sdk.memory.readSessionMemory({
-        projectPath: workDir,
-        sessionId: session.id,
-      });
-
-      expect(extraction.success).toBe(true);
-      expect(extraction.trigger).toBe('manual');
-      expect(extraction.memoryPath).toBeTruthy();
-      expect(memoryState.content).toContain('Manual summary');
-      expect(modelApi.createCalls).toHaveLength(2);
+      expect(countRelevantMemoryMessages(firstRequest?.messages ?? [])).toBe(0);
     } finally {
       await sdk.close();
     }
@@ -737,9 +603,7 @@ describe('HadamardAgentClient', () => {
       const compacted = await session.compact({
         preserveRecentMessages: 1,
       });
-      const compactState = await session.compactState({
-        includeSessionMemory: true,
-      });
+      const compactState = await session.compactState();
 
       expect(compacted.compacted).toBe(true);
       expect(compacted.trigger).toBe('manual');
@@ -896,9 +760,7 @@ describe('HadamardAgentClient', () => {
     try {
       const session = await sdk.createSession();
       await session.send(longPrompt);
-      const compactState = await session.compactState({
-        includeSessionMemory: true,
-      });
+      const compactState = await session.compactState();
 
       expect(modelApi.createCalls).toHaveLength(2);
       expect(
@@ -962,9 +824,7 @@ describe('HadamardAgentClient', () => {
       await session.compact({
         preserveRecentMessages: 1,
       });
-      const compactState = await session.compactState({
-        includeSessionMemory: true,
-      });
+      const compactState = await session.compactState();
 
       expect(compactAttempts).toBe(2);
       expect(compactState.compactCount).toBe(1);
@@ -1030,9 +890,7 @@ describe('HadamardAgentClient', () => {
       const session = await sdk.createSession();
       await session.send('Remember the release checklist and deployment order.');
       const result = await session.send('Continue with the release notes.');
-      const compactState = await session.compactState({
-        includeSessionMemory: true,
-      });
+      const compactState = await session.compactState();
 
       expect(result.text).toContain('Recovered after reactive compact.');
       // The in-loop reactive compact handles the rejection without restarting
@@ -1123,7 +981,6 @@ describe('HadamardAgentClient', () => {
         .finally(() => saveSpy.mockRestore());
       const compactState = await session.compactState({
         includeBoundaries: true,
-        includeSummaryMessage: true,
       });
 
       expect(result.text).toContain('Recovered after repeated reactive compact.');
@@ -1704,7 +1561,7 @@ describe('HadamardAgentClient', () => {
       const direct = await sdk.runWithAgent('reviewer', 'Review directly.');
       const agentSession = await sdk.createAgentSession('reviewer');
       const sessionResult = await agentSession.send('Review inside a session.');
-      const continuity = await agentSession.compactState({ includeSessionMemory: true });
+      const continuity = await agentSession.compactState();
       const directContinuity = await agentSession.agentContinuity();
       expect(direct.text).toContain('Reviewer summary');
       expect(sessionResult.text).toContain('Reviewer summary');
@@ -2407,70 +2264,6 @@ describe('HadamardAgentClient', () => {
     }
   });
 
-  it('keeps Session Memory state independent from post-compaction state', async () => {
-    const tempDir = await createSessionDirectory();
-    const homeDir = path.join(tempDir, 'home');
-    const workDir = path.join(tempDir, 'workspace');
-    const longPrompt = 'release-checklist '.repeat(4000);
-    const modelApi = new MockModelApi({
-      create: (request, index) => {
-        if ((request.metadata as Record<string, unknown> | undefined)?.hadamard_internal_task === 'session_memory') {
-          return makeMessage([
-            {
-              type: 'text',
-              text: [
-                '# Session Title',
-                '_A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_',
-                '',
-                'Release memory snapshot',
-                '',
-                '# Current State',
-                '_What is actively being worked on right now? Pending tasks not yet completed. Immediate next steps._',
-                '',
-                'Preparing the next public release and checking version/tag order.',
-              ].join('\n'),
-            },
-          ]);
-        }
-
-        return makeMessage([
-          {
-            type: 'text',
-            text: index > 1 ? 'Small follow-up.' : 'Working through the release checklist.',
-          },
-        ]);
-      },
-    });
-
-    const sdk = await createAgentSdk({
-      model: 'test-model',
-      sessionDirectory: path.join(tempDir, 'sessions'),
-      homeDir,
-      workDir,
-      modelApi,
-    });
-
-    try {
-      const session = await sdk.createSession();
-      await session.send(longPrompt);
-      const afterExtraction = await session.compactState({
-        includeSessionMemory: true,
-      });
-
-      await session.send('Quick follow-up.');
-      const afterFollowUp = await session.compactState({
-        includeSessionMemory: true,
-      });
-
-      expect(afterExtraction.pendingPostCompaction).toBe(false);
-      expect(afterExtraction.runtimeState?.pendingPostCompaction).toBe(false);
-      expect(afterFollowUp.pendingPostCompaction).toBe(false);
-      expect(afterFollowUp.runtimeState?.pendingPostCompaction).toBe(false);
-    } finally {
-      await sdk.close();
-    }
-  });
-
   it('preserves multi-compaction continuity across repeated compact boundaries', async () => {
     const sessionDirectory = await createSessionDirectory();
     let compactCount = 0;
@@ -2510,7 +2303,6 @@ describe('HadamardAgentClient', () => {
 
       const state = await session.compactState({
         includeBoundaries: true,
-        includeSummaryMessage: true,
       });
 
       expect(state.compactCount).toBe(2);

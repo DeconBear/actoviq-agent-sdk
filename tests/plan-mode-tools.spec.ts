@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { getHadamardProjectSessionDirectory } from '../src/config/projectSessionDirectory.js';
 import {
   buildPlanFileName,
   createPlanModeTools,
@@ -104,8 +105,7 @@ describe('plan file helpers with HADAMARD_HOME', () => {
     process.env.HADAMARD_HOME = home;
     try {
       const workDir = 'E:\\project_software\\hadamard';
-      const projectKey = workDir.replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40);
-      const planDir = path.join(home, 'projects', projectKey);
+      const planDir = getHadamardProjectSessionDirectory(workDir, home);
       await mkdir(planDir, { recursive: true });
       const older = 'plan-20260101T000000Z-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.md';
       const newer = 'plan-20260804T120000Z-11111111-2222-3333-4444-555555555555.md';

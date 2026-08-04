@@ -9,7 +9,7 @@ import {
 } from 'actoviq-agent-sdk';
 
 // ============================================================
-// Platform-level features: workspaces, swarm, session memory,
+// Platform-level features: workspaces, swarm, compact,
 // and dream — consolidated into one example.
 // ============================================================
 
@@ -97,37 +97,9 @@ async function main() {
     }
 
     // ==========================================================
-    // 3. Session Memory — extract + compact long-running sessions
+    // 3. Dream — background memory consolidation
     // ==========================================================
-    console.log('\n=== 3. Session Memory ===\n');
-
-    const memSession = await sdk.createSession({ title: 'Memory Demo' });
-    await memSession.send(
-      'Remember: package.json version must be bumped before creating a Git tag. '
-      + 'CI must be green before publishing.',
-    );
-    await memSession.send(
-      'Also: prefer small reviewable commits. Verify release notes before tagging.',
-    );
-
-    const extraction = await memSession.extractMemory();
-    console.log('Memory extraction:', {
-      success: extraction.success,
-      updated: extraction.updated,
-      trigger: extraction.trigger,
-    });
-
-    const compact = await memSession.compactState({
-      includeSessionMemory: true,
-      includeSummaryMessage: true,
-    });
-    console.log('Compact progress:', compact.progress);
-    console.log('Runtime state:', compact.runtimeState);
-
-    // ==========================================================
-    // 4. Dream — background memory consolidation
-    // ==========================================================
-    console.log('\n=== 4. Dream ===\n');
+    console.log('\n=== 3. Dream ===\n');
 
     await sdk.memory.updateSettings({ autoDreamEnabled: true });
     const dreamSession = await sdk.createSession({ title: 'Dream Demo' });

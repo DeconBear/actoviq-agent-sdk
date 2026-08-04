@@ -14,14 +14,14 @@ export interface ProjectMemorySettings {
     autoCompactTokenLimit?: number;
     autoCompactTokenLimitScope: 'total' | 'body_after_prefix';
   };
-  sessionMemory: {
-    autoExtract: boolean;
-    maxOutputTokens: number;
-  };
   durableMemory: {
     use: boolean;
     autoDream: boolean;
     dreamExecutionProfile?: DreamExecutionProfileRef;
+    /** Local HH:mm for GUI-scheduled daily dream (default 03:00). */
+    dailyDreamTimeLocal: string;
+    /** YYYY-MM-DD of last GUI-triggered scheduled dream run. */
+    lastScheduledDreamDate?: string;
     minRolloutIdleHours: number;
     maxRolloutAgeDays: number;
     maxRolloutsPerStartup: number;
@@ -38,7 +38,6 @@ export type ProjectSettings = {
 
 export type ProjectMemorySettingsPatch = {
   compact?: Partial<ProjectMemorySettings['compact']>;
-  sessionMemory?: Partial<ProjectMemorySettings['sessionMemory']>;
   durableMemory?: Omit<Partial<ProjectMemorySettings['durableMemory']>, 'dreamExecutionProfile'> & {
     dreamExecutionProfile?: DreamExecutionProfileRef | null;
   };
@@ -49,13 +48,10 @@ export const DEFAULT_PROJECT_MEMORY_SETTINGS: ProjectMemorySettings = {
     enabled: true,
     autoCompactTokenLimitScope: 'total',
   },
-  sessionMemory: {
-    autoExtract: true,
-    maxOutputTokens: 10_000,
-  },
   durableMemory: {
     use: true,
     autoDream: false,
+    dailyDreamTimeLocal: '03:00',
     minRolloutIdleHours: 12,
     maxRolloutAgeDays: 30,
     maxRolloutsPerStartup: 6,
@@ -78,13 +74,11 @@ export function projectSettingsPath(workDir: string, homeDir: string): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : fallback;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 function normalizeDreamProfile(value: unknown): DreamExecutionProfileRef | undefined {
@@ -96,14 +90,29 @@ function normalizeDreamProfile(value: unknown): DreamExecutionProfileRef | undef
   return name ? { kind: value.kind, name } : undefined;
 }
 
+function normalizeDailyDreamTimeLocal(value: unknown): string {
+  if (typeof value !== 'string') {
+    return DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory.dailyDreamTimeLocal;
+  }
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory.dailyDreamTimeLocal;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory.dailyDreamTimeLocal;
+  }
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function normalizeScheduledDate(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : undefined;
+}
+
 function normalizeMemorySettings(value: unknown): ProjectMemorySettings {
   const memory = isRecord(value) ? value : {};
-  const sessionMemory = isRecord(memory.sessionMemory) ? memory.sessionMemory : {};
   const durableMemory = isRecord(memory.durableMemory) ? memory.durableMemory : {};
-  const maxOutputTokens = positiveInteger(
-    sessionMemory.maxOutputTokens,
-    DEFAULT_PROJECT_MEMORY_SETTINGS.sessionMemory.maxOutputTokens,
-  );
   return {
     compact: {
       // Project settings always keep automatic compact on; the threshold is
@@ -112,17 +121,15 @@ function normalizeMemorySettings(value: unknown): ProjectMemorySettings {
       enabled: true,
       autoCompactTokenLimitScope: 'total',
     },
-    sessionMemory: {
-      autoExtract: typeof sessionMemory.autoExtract === 'boolean'
-        ? sessionMemory.autoExtract
-        : DEFAULT_PROJECT_MEMORY_SETTINGS.sessionMemory.autoExtract,
-      maxOutputTokens: Math.min(Math.max(maxOutputTokens, 1_000), 20_000),
-    },
     durableMemory: {
       use: typeof durableMemory.use === 'boolean'
         ? durableMemory.use
         : DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory.use,
       autoDream: durableMemory.autoDream === true,
+      dailyDreamTimeLocal: normalizeDailyDreamTimeLocal(durableMemory.dailyDreamTimeLocal),
+      ...(normalizeScheduledDate(durableMemory.lastScheduledDreamDate)
+        ? { lastScheduledDreamDate: normalizeScheduledDate(durableMemory.lastScheduledDreamDate) }
+        : {}),
       ...(normalizeDreamProfile(durableMemory.dreamExecutionProfile)
         ? { dreamExecutionProfile: normalizeDreamProfile(durableMemory.dreamExecutionProfile) }
         : {}),
@@ -187,22 +194,18 @@ export async function readProjectMemorySettingsPatch(
         autoCompactTokenLimitScope: 'total',
       };
     }
-    if (isRecord(memory.sessionMemory)) {
-      patch.sessionMemory = {
-        ...(typeof memory.sessionMemory.autoExtract === 'boolean'
-          ? { autoExtract: memory.sessionMemory.autoExtract }
-          : {}),
-        ...(positiveInteger(memory.sessionMemory.maxOutputTokens, 0)
-          ? { maxOutputTokens: positiveInteger(memory.sessionMemory.maxOutputTokens, 0) }
-          : {}),
-      };
-    }
     if (isRecord(memory.durableMemory)) {
       const profile = normalizeDreamProfile(memory.durableMemory.dreamExecutionProfile);
       patch.durableMemory = {
         ...(typeof memory.durableMemory.use === 'boolean' ? { use: memory.durableMemory.use } : {}),
         ...(typeof memory.durableMemory.autoDream === 'boolean'
           ? { autoDream: memory.durableMemory.autoDream }
+          : {}),
+        ...(typeof memory.durableMemory.dailyDreamTimeLocal === 'string'
+          ? { dailyDreamTimeLocal: normalizeDailyDreamTimeLocal(memory.durableMemory.dailyDreamTimeLocal) }
+          : {}),
+        ...(normalizeScheduledDate(memory.durableMemory.lastScheduledDreamDate)
+          ? { lastScheduledDreamDate: normalizeScheduledDate(memory.durableMemory.lastScheduledDreamDate) }
           : {}),
         ...(profile ? { dreamExecutionProfile: profile } : {}),
         ...(positiveInteger(memory.durableMemory.minRolloutIdleHours, 0)
@@ -229,20 +232,10 @@ export async function writeProjectSettings(
 ): Promise<ProjectSettings> {
   const current = await readProjectSettings(workDir, homeDir);
   const memoryPatch = patch.memory ?? {};
-  const requestedSessionLimit = memoryPatch.sessionMemory?.maxOutputTokens;
-  if (
-    requestedSessionLimit !== undefined
-    && (!Number.isInteger(requestedSessionLimit)
-      || requestedSessionLimit < 1_000
-      || requestedSessionLimit > 20_000)
-  ) {
-    throw new RangeError('Session Memory maxOutputTokens must be between 1000 and 20000.');
-  }
   const memory = normalizeMemorySettings({
     ...current.memory,
     ...memoryPatch,
     compact: { ...current.memory.compact, ...(memoryPatch.compact ?? {}) },
-    sessionMemory: { ...current.memory.sessionMemory, ...(memoryPatch.sessionMemory ?? {}) },
     durableMemory: { ...current.memory.durableMemory, ...(memoryPatch.durableMemory ?? {}) },
   });
   if (memory.durableMemory.autoDream && !memory.durableMemory.dreamExecutionProfile) {

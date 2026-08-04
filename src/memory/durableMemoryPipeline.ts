@@ -42,7 +42,6 @@ export async function prepareDurableMemoryConsolidation(input: {
   extract: (input: {
     session: StoredSession;
     transcript: string;
-    sessionMemory?: string;
     signal?: AbortSignal;
   }) => Promise<DurableMemoryExtraction>;
 }): Promise<PreparedDurableMemoryConsolidation | undefined> {
@@ -66,17 +65,9 @@ export async function prepareDurableMemoryConsolidation(input: {
         owner: extractionOwner,
       })) return;
       try {
-        const sessionMemoryPath = path.join(
-          input.paths.transcriptDir,
-          session.id,
-          'session-memory',
-          'summary.md',
-        );
-        const sessionMemory = await readFile(sessionMemoryPath, 'utf8').catch(() => undefined);
         const extraction = normalizeExtraction(await input.extract({
           session,
           transcript: truncateToTokenBudget(transcript, input.maxInputTokens),
-          sessionMemory,
           signal: input.signal,
         }));
         store.completeExtraction({

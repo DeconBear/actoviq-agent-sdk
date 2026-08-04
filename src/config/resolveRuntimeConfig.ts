@@ -219,10 +219,6 @@ export async function resolveRuntimeConfig(
       enabled: globalAutoCompact,
       ...(projectMemoryPatch?.compact ?? {}),
     },
-    sessionMemory: {
-      ...DEFAULT_PROJECT_MEMORY_SETTINGS.sessionMemory,
-      ...(projectMemoryPatch?.sessionMemory ?? {}),
-    },
     durableMemory: {
       ...DEFAULT_PROJECT_MEMORY_SETTINGS.durableMemory,
       use: globalAutoMemory,

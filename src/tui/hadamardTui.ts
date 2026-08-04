@@ -4018,9 +4018,7 @@ export async function runHadamardTui(options: HadamardTuiOptions = {}): Promise<
               memory: sdk.memory,
               proposals: sdk.memoryProposals,
               compactConfig: sdk.config.compact,
-              sessionMemoryEffectiveLimit: Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000),
               getState: () => session.compactState(),
-              extract: () => session.extractMemory({ force: true }),
             }).execute(args || 'status');
             appendStatic([
               `${A.bold}${result.title}${A.reset}`,

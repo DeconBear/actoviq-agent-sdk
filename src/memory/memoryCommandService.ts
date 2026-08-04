@@ -1,4 +1,4 @@
-import type { HadamardCompactConfig, HadamardCompactState, HadamardSessionMemoryExtractionResult } from '../types.js';
+import type { HadamardCompactConfig, HadamardCompactState } from '../types.js';
 import { resolveHadamardCompactBudget } from '../runtime/hadamardCompact.js';
 import type { HadamardMemoryApi, HadamardMemoryBrowserEntry } from './hadamardMemory.js';
 import type { MemoryProposalService } from './memoryProposalService.js';
@@ -15,9 +15,7 @@ export class HadamardMemoryCommandService {
     memory: HadamardMemoryApi;
     proposals: MemoryProposalService;
     compactConfig: HadamardCompactConfig;
-    sessionMemoryEffectiveLimit?: number;
     getState: () => Promise<HadamardCompactState>;
-    extract: () => Promise<HadamardSessionMemoryExtractionResult>;
   }) {}
 
   async execute(input: string): Promise<HadamardMemoryCommandResult> {
@@ -40,20 +38,6 @@ export class HadamardMemoryCommandService {
         title: selected.entry.id,
         message: selected.entry.path,
         text: selected.content,
-      };
-    }
-    if (action === 'extract') {
-      const result = await this.bindings.extract();
-      return {
-        title: 'Session Memory extraction',
-        message: result.updated
-          ? `Updated ${result.memoryPath ?? 'Session Memory'}.`
-          : result.skipped
-            ? `Skipped: ${result.reason ?? 'no output'}.`
-            : result.success
-              ? 'No durable Session Memory changes were found.'
-              : `Failed: ${result.reason ?? 'unknown error'}.`,
-        text: result.summary,
       };
     }
     if (action === 'proposals') {
@@ -85,14 +69,14 @@ export class HadamardMemoryCommandService {
       };
     }
     throw new Error(
-      'Usage: /memory [status|list [session|durable|raw]|show <id-or-path>|extract|proposals|apply <id> --confirm|reject <id>]',
+      'Usage: /memory [status|list [durable|raw]|show <id-or-path>|proposals|apply <id> --confirm|reject <id>]',
     );
   }
 
   private async status(): Promise<HadamardMemoryCommandResult> {
     const state = await this.bindings.getState();
     const budget = resolveHadamardCompactBudget(this.bindings.compactConfig);
-    const current = state.progress?.currentTokenCount ?? 0;
+    const current = state.estimatedConversationTokens ?? 0;
     return {
       title: 'Memory',
       message: `Project memory: ${state.paths.projectPath}`,
@@ -101,8 +85,6 @@ export class HadamardMemoryCommandService {
         `Compact effective window: ${budget.effectiveContextWindowTokens} tokens`,
         `Automatic compact limit: ${budget.autoCompactTokenLimit} tokens (${budget.source})`,
         `Current estimated usage: ${current} tokens`,
-        `Session Memory: ${state.sessionMemory?.exists ? 'available' : 'empty'}`,
-        `Session Memory output limit: ${this.bindings.sessionMemoryEffectiveLimit ?? state.sessionMemoryConfig.maxOutputTokens} tokens`,
         `Durable Memory read: ${state.enabled.autoMemory ? 'on' : 'off'}`,
         `Automatic Dream: ${state.enabled.autoDream ? 'on' : 'off'}`,
         this.bindings.compactConfig.contextWindowWarning,
@@ -113,7 +95,7 @@ export class HadamardMemoryCommandService {
 }
 
 function normalizeKind(value?: string): HadamardMemoryBrowserEntry['kind'] | undefined {
-  return value === 'session' || value === 'durable' || value === 'raw' ? value : undefined;
+  return value === 'durable' || value === 'raw' ? value : undefined;
 }
 
 function formatEntry(entry: HadamardMemoryBrowserEntry): {
