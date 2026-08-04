@@ -189,6 +189,7 @@ import {
   updateProjectIssue,
   upsertAgentProfile,
   WorktreeService,
+  decideGoalExecution,
   type Goal,
   HADAMARD_SESSION_PERMISSION_STATE_KEY,
   serializeHadamardSessionPermissionState,
@@ -517,6 +518,24 @@ interface PendingPermission {
 // runs (chat + future team/background) and the Monitor pane can show them live.
 // Replaces the single foreground runAbort/eventSink singletons (plan phase 2).
 type GuiRunKind = 'chat' | 'team' | 'background' | 'manager';
+
+/** Compact "what happens next" projection of the session Goal for the composer banner. */
+interface GuiGoalNext {
+  kind: 'run' | 'replan' | 'stop';
+  text: string;
+  workItemId?: string;
+  reason?: string;
+}
+
+/** Whether the Goal loop currently owns this session, and how the last one ended. */
+interface GuiGoalLoopStatus {
+  running: boolean;
+  startedAt?: string;
+  turns?: number;
+  reason?: string;
+  endedAt?: string;
+}
+
 class GuiRuntimeMutationConflictError extends Error {
   override readonly name = 'GuiRuntimeMutationConflictError';
 }
@@ -878,6 +897,8 @@ function guiIcon(name: string): string {
     search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
     send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
     split: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/>',
+    play: '<path d="m7 4 12 8-12 8Z"/>',
+    pause: '<path d="M8 4v16"/><path d="M16 4v16"/>',
     team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     terminal: '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
     tools: '<path d="M14.7 6.3a4 4 0 0 0-5 5L3 18l3 3 6.7-6.7a4 4 0 0 0 5-5l-2.4 2.4-3-3Z"/>',
@@ -1656,7 +1677,7 @@ async function pickFolder(): Promise<string | null> {
 }
 
 export type BrowseEntryKind = 'drive' | 'folder' | 'file';
-export type BrowseEntry = { name: string; path: string; kind: BrowseEntryKind };
+export type BrowseEntry = { name: string; path: string; kind: BrowseEntryKind; hidden?: boolean };
 export type BrowseDirectoryResult = {
   path: string;
   parent: string | null;
@@ -1763,11 +1784,11 @@ export async function listWorkspaceFiles(requestPath?: string, fallbackRoot?: st
   const children = await readdir(resolved, { withFileTypes: true });
   for (const entry of children) {
     if (entry.name === '.' || entry.name === '..') continue;
-    if (entry.name.startsWith('.') && entry.name !== '.hadamard') continue;
     entries.push({
       name: entry.name,
       path: path.join(resolved, entry.name),
       kind: entry.isDirectory() ? 'folder' : 'file',
+      ...(entry.name.startsWith('.') ? { hidden: true } : {}),
     });
   }
   entries.sort((left, right) => {
@@ -3184,6 +3205,8 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       },
       mcpServers: readMcpServerConfig(homeDir).servers,
       goal: getGoal(),
+      goalNext: describeGoalNext(getGoal()),
+      goalLoop: goalLoopSnapshot(session.id),
       needsCredentials,
       needsDefaultModelOnboarding: shouldShowDefaultModelOnboarding(
         store?.raw ?? {},
@@ -4660,6 +4683,78 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
 
   function getGoal(): Goal | null {
     return sdk?.goals.peek(session.id) ?? null;
+  }
+
+  // A running Goal keeps taking turns on its own until it finishes, needs the
+  // operator, or exhausts its budget. Pause aborts the loop; the banner polls
+  // the snapshot for progress while it runs.
+  const goalLoops = new Map<string, { controller: AbortController; startedAt: string }>();
+  const goalLoopOutcomes = new Map<string, { turns: number; reason: string; endedAt: string }>();
+
+  function startSessionGoalLoop(sessionId: string): boolean {
+    if (!sdk || goalLoops.has(sessionId)) return false;
+    const controller = new AbortController();
+    goalLoops.set(sessionId, { controller, startedAt: new Date().toISOString() });
+    goalLoopOutcomes.delete(sessionId);
+    void (async () => {
+      try {
+        const run = await sdk.goals.runContinuation(sessionId, {
+          force: true,
+          mode: 'foreground',
+          signal: controller.signal,
+        });
+        goalLoopOutcomes.set(sessionId, {
+          turns: run.turns,
+          reason: run.reason,
+          endedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        goalLoopOutcomes.set(sessionId, {
+          turns: 0,
+          reason: (error as Error).message,
+          endedAt: new Date().toISOString(),
+        });
+      } finally {
+        goalLoops.delete(sessionId);
+        invalidateHeavyState();
+      }
+    })();
+    return true;
+  }
+
+  function stopSessionGoalLoop(sessionId: string): boolean {
+    const loop = goalLoops.get(sessionId);
+    if (!loop) return false;
+    loop.controller.abort();
+    return true;
+  }
+
+  function goalLoopSnapshot(sessionId: string): GuiGoalLoopStatus {
+    const loop = goalLoops.get(sessionId);
+    if (loop) return { running: true, startedAt: loop.startedAt };
+    const outcome = goalLoopOutcomes.get(sessionId);
+    return outcome ? { running: false, ...outcome } : { running: false };
+  }
+
+  /** What the next Goal run would do, projected for the composer Goal banner. */
+  function describeGoalNext(goal: Goal | null): GuiGoalNext | null {
+    if (!goal) return null;
+    const decision = decideGoalExecution(goal);
+    if (decision.kind === 'run') {
+      const item = decision.workItemId
+        ? goal.workItems.find(entry => entry.id === decision.workItemId)
+        : undefined;
+      return {
+        kind: 'run',
+        ...(decision.workItemId ? { workItemId: decision.workItemId } : {}),
+        text: item?.text
+          ?? (decision.mode === 'finalize' ? 'Finalize the Goal.' : 'Plan the first step.'),
+      };
+    }
+    if (decision.kind === 'replan') {
+      return { kind: 'replan', text: `Replan the frontier (${decision.trigger}).` };
+    }
+    return { kind: 'stop', reason: decision.reason, text: decision.message };
   }
   // ── Batch: read a file and return its prompts for sequential execution ─
   async function runBatch(fileArg: string): Promise<GuiRunEvent[]> {
@@ -7806,17 +7901,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const compactBudget = sdk
       ? (await import('../runtime/hadamardCompact.js')).resolveHadamardCompactBudget(sdk.config.compact)
       : undefined;
-    const goalStatus = sdk
-      ? await sdk.goals.status(session.id).catch(() => undefined)
-      : undefined;
-    const projectGoals = sdk
-      ? await sdk.goals.list({ includeArchived: true }).catch(() => [])
-      : [];
-    const goalContinuation = sdk
-      ? await sdk.goals.continuationStatus(session.id).catch(() => undefined)
-      : undefined;
-    const goalClaims = sdk ? await sdk.goals.workClaims(session.id).catch(() => []) : [];
-    const goalHandoffs = sdk ? await sdk.goals.handoffs(session.id).catch(() => []) : [];
     return json(res, 200, {
       ok: true,
       path: workDir,
@@ -7829,11 +7913,6 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       sessionMemoryEffectiveLimit: sdk
         ? Math.min(sdk.config.projectMemory.sessionMemory.maxOutputTokens, sdk.config.maxTokens, 20_000)
         : undefined,
-      goalStatus,
-      projectGoals,
-      goalContinuation,
-      goalClaims,
-      goalHandoffs,
     });
   }
   if (req.method === 'PUT' && url.pathname === '/api/project-settings') {
@@ -7865,6 +7944,58 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       const result = await sdk.goals.command(session, command);
       invalidateHeavyState();
       return json(res, result.ok ? 200 : 400, { ok: result.ok, result });
+    } catch (error) {
+      return json(res, 400, { error: (error as Error).message });
+    }
+  }
+  if (req.method === 'POST' && url.pathname === '/api/session-goal') {
+    if (!sdk) return json(res, 503, { error: 'Hadamard SDK is not configured.' });
+    try {
+      const body = await readJson(req);
+      const action = typeof body.action === 'string' ? body.action : 'status';
+      const objective = typeof body.objective === 'string' ? body.objective.trim() : '';
+      if (action === 'run') {
+        if (!getGoal()) return json(res, 400, { error: 'There is no goal to run.' });
+        const started = startSessionGoalLoop(session.id);
+        invalidateHeavyState();
+        return json(res, 200, {
+          ok: true,
+          message: started ? 'goal loop started' : 'goal loop is already running',
+          state: await state(),
+        });
+      }
+      let command: string;
+      if (action === 'set') {
+        if (!objective) return json(res, 400, { error: 'A goal needs an objective.' });
+        // A bare objective creates the session goal, or updates it in place mid-run.
+        command = objective;
+      } else if (action === 'answer') {
+        const gateId = typeof body.gateId === 'string' ? body.gateId.trim() : '';
+        const answer = typeof body.answer === 'string' ? body.answer.trim() : '';
+        if (!gateId || !answer) return json(res, 400, { error: 'An answer needs a gate and a reply.' });
+        command = `answer ${gateId} ${answer}`;
+      } else if (['pause', 'resume', 'clear', 'status'].includes(action)) {
+        command = action;
+      } else {
+        return json(res, 400, { error: `Unsupported Goal action: ${action}` });
+      }
+      if (action === 'pause' || action === 'clear') stopSessionGoalLoop(session.id);
+      const result = await sdk.goals.command(session, command);
+      const messages = [result.message];
+      // Answering a gate or resuming hands the loop straight back to the agent.
+      if (result.ok && (action === 'answer' || action === 'resume')) {
+        const goal = getGoal();
+        const next = describeGoalNext(goal);
+        if (goal?.status === 'active' && next && next.kind !== 'stop' && startSessionGoalLoop(session.id)) {
+          messages.push('goal loop resumed');
+        }
+      }
+      invalidateHeavyState();
+      return json(res, result.ok ? 200 : 400, {
+        ok: result.ok,
+        message: messages.filter(Boolean).join(' · '),
+        state: await state(),
+      });
     } catch (error) {
       return json(res, 400, { error: (error as Error).message });
     }
@@ -9919,6 +10050,20 @@ export function createHadamardGuiHtml(): string {
               <section id="transcript" class="transcript"></section>
               <div id="credentialHint" class="credential-hint hidden">⚠ No API key configured — <a href="#" id="credentialHintLink">go to Settings</a> to add one</div>
               <div class="composer-stack">
+                <section id="goalBanner" class="goal-banner hidden" data-testid="session-goal-banner" aria-label="Session goal">
+                  <div class="goal-banner-head">
+                    <button type="button" id="goalBannerToggle" class="goal-banner-toggle" aria-expanded="false" title="Show goal detail">
+                      <span class="goal-banner-dot" id="goalBannerDot" aria-hidden="true"></span>
+                      <span class="goal-banner-objective" id="goalBannerObjective">—</span>
+                      <span class="goal-banner-progress" id="goalBannerProgress"></span>
+                    </button>
+                    <input id="goalBannerInput" class="goal-banner-input hidden" aria-label="Goal objective" autocomplete="off" spellcheck="false">
+                    <button type="button" id="goalBannerEdit" class="goal-banner-btn" title="Edit objective" aria-label="Edit objective">${guiIcon('edit')}</button>
+                    <button type="button" id="goalBannerRun" class="goal-banner-btn goal-banner-run" title="Run the goal" aria-label="Run the goal">${guiIcon('play')}</button>
+                    <button type="button" id="goalBannerClear" class="goal-banner-btn" title="Clear the goal" aria-label="Clear the goal">${guiIcon('close')}</button>
+                  </div>
+                  <div id="goalBannerDetail" class="goal-banner-detail hidden"></div>
+                </section>
                 <div class="composer-meta" id="composerMeta" aria-label="Workspace and runtime context">
                   <span class="composer-meta-chip" id="composerMetaProject" title="Workspace">
                     <span class="composer-meta-icon">${guiIcon('folder')}</span>
@@ -9936,6 +10081,10 @@ export function createHadamardGuiHtml(): string {
                 <form id="composer" class="composer">
                 <div id="dropOverlay" class="drop-overlay hidden">Drop files to attach</div>
                 <div id="attachmentTray" class="attachment-tray hidden"></div>
+                <div id="goalModeChip" class="goal-mode-chip hidden">
+                  <span class="goal-mode-chip-label">Goal</span>
+                  <button type="button" id="goalModeChipClear" class="goal-mode-chip-clear" title="Leave Goal mode" aria-label="Leave Goal mode">${guiIcon('close')}</button>
+                </div>
                 <textarea id="promptInput" rows="3" placeholder="Ask Hadamard…"></textarea>
                 <div id="slashMenu" class="slash-menu hidden"></div>
                 <div id="queueList" class="queue-list hidden"></div>
@@ -11315,8 +11464,8 @@ body[data-theme="dark"] {
 .project-git-splitter { flex: 0 0 5px; cursor: col-resize; position: relative; background: var(--border); touch-action: none; }
 .project-git-splitter::after { content: ''; position: absolute; inset: 0 -3px; }
 .project-git-splitter:hover, .project-git-splitter.dragging { background: var(--brand); opacity: .55; }
-.project-files-preview, .project-git-diff { min-height: 0; overflow: auto; display: flex; flex-direction: column; background: var(--bg-surface); }
-.project-git-diff { flex: 1 1 auto; min-width: 180px; }
+.project-files-preview, .project-git-diff { min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-surface); }
+.project-git-diff { flex: 1 1 auto; min-width: 180px; overflow: auto; }
 .files-preview-head, .git-diff-head { flex: 0 0 auto; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); word-break: break-all; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .files-preview-head { display: flex; align-items: center; gap: 8px; }
 .files-preview-path { flex: 1; min-width: 0; }
@@ -11328,17 +11477,19 @@ body[data-theme="dark"] {
 .files-preview-mode.active { color: var(--text-1); background: var(--bg-surface); box-shadow: 0 0 0 1px var(--border); }
 .files-preview-lang { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
 .files-preview-body, .git-diff-body { flex: 1; margin: 0; padding: 10px 12px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; background: var(--code-bg, var(--bg-app)); color: var(--text-1); border: 0; border-radius: 0; }
-.files-editor-wrap { flex: 1; min-height: 0; display: flex; align-items: stretch; overflow: hidden; background: var(--code-bg, var(--bg-app)); border-top: 0; }
+.files-editor-wrap { flex: 1 1 auto; min-height: 0; display: flex; align-items: stretch; overflow: hidden; background: var(--code-bg, var(--bg-app)); border-top: 0; }
 .files-editor-wrap.split { flex-direction: row; }
-.files-line-gutter { flex: 0 0 auto; overflow: hidden; background: color-mix(in srgb, var(--bg-app) 82%, var(--border)); border-right: 1px solid var(--border); }
+.files-line-gutter { position: relative; flex: 0 0 auto; align-self: stretch; overflow: hidden; background: color-mix(in srgb, var(--bg-app) 82%, var(--border)); border-right: 1px solid var(--border); }
 .files-line-numbers { margin: 0; padding: 10px 8px 10px 12px; min-width: 2.75em; text-align: right; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; color: var(--text-2); background: transparent; overflow: visible; user-select: none; white-space: pre; box-sizing: border-box; }
-.files-preview-editor { resize: none; outline: none; flex: 1 1 auto; width: auto; min-width: 0; min-height: 0; box-sizing: border-box; tab-size: 2; white-space: pre; overflow: auto; word-break: normal; padding: 10px 12px; }
+/* Textareas ignore flex height and grow to content; pin them inside the stack so
+   overflow:auto actually scrolls and the highlight overlay stays aligned. */
+.files-preview-editor { position: absolute; inset: 0; z-index: 1; display: block; width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0; resize: none; outline: none; flex: none; min-width: 0; min-height: 0; box-sizing: border-box; tab-size: 2; white-space: pre; overflow: auto; overflow-wrap: normal; word-break: normal; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; }
 .files-editor-pane { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; align-items: stretch; overflow: hidden; }
 .files-editor-wrap.split .files-editor-pane,
 .files-editor-wrap.split .files-md-preview { flex: 1 1 50%; }
 .files-editor-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
 .files-highlight-layer { position: absolute; inset: 0; margin: 0; padding: 10px 12px; overflow: hidden; pointer-events: none; white-space: pre; tab-size: 2; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; color: var(--text-1); background: transparent; z-index: 0; }
-.files-preview-editor.files-hl-overlay { position: relative; z-index: 1; background: transparent !important; color: transparent; caret-color: var(--text-1); -webkit-text-fill-color: transparent; }
+.files-preview-editor.files-hl-overlay { background: transparent !important; color: transparent; caret-color: var(--text-1); -webkit-text-fill-color: transparent; }
 .files-preview-editor.files-hl-overlay::selection { background: color-mix(in srgb, var(--brand) 38%, transparent); color: transparent; -webkit-text-fill-color: transparent; }
 .files-md-preview { flex: 1 1 50%; min-width: 0; min-height: 0; overflow: auto; padding: 14px 18px; background: var(--bg-surface); color: var(--text-1); border-left: 1px solid var(--border); }
 .files-md-preview.md-only { flex: 1 1 auto; border-left: 0; }
@@ -11355,6 +11506,8 @@ body[data-theme="dark"] {
 .tree-row { display: flex; align-items: center; gap: 4px; width: 100%; min-height: 26px; padding: 0 10px 0 calc(8px + var(--tree-depth, 0) * 14px); border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; box-sizing: border-box; }
 .tree-row:hover { background: var(--surface-hover); }
 .tree-row.selected { background: var(--brand-soft); color: var(--brand); }
+.tree-row.hidden-entry { color: var(--text-2); font-style: italic; opacity: .88; }
+.tree-row.hidden-entry.selected { color: var(--brand); opacity: 1; font-style: italic; }
 .tree-chevron { flex: 0 0 14px; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); transition: transform .12s ease; }
 .tree-chevron .ui-icon { width: 12px; height: 12px; }
 .tree-chevron.collapsed { transform: rotate(-90deg); }
@@ -11362,6 +11515,14 @@ body[data-theme="dark"] {
 .tree-icon { flex: 0 0 16px; color: var(--text-2); display: inline-flex; }
 .tree-icon .ui-icon { width: 14px; height: 14px; }
 .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-image-preview { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 16px; background:
+  linear-gradient(45deg, color-mix(in srgb, var(--border) 55%, transparent) 25%, transparent 25%),
+  linear-gradient(-45deg, color-mix(in srgb, var(--border) 55%, transparent) 25%, transparent 25%),
+  linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--border) 55%, transparent) 75%),
+  linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--border) 55%, transparent) 75%);
+  background-size: 16px 16px; background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-color: var(--bg-app); }
+.files-image-preview img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; box-shadow: 0 8px 28px color-mix(in srgb, #000 18%, transparent); border-radius: 4px; background: var(--bg-surface); }
+.files-image-meta { flex: 0 0 auto; padding: 6px 12px 10px; font-size: 11.5px; color: var(--text-2); }
 .git-badge { flex: 0 0 auto; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--brand); min-width: 14px; text-align: center; }
 .git-group { border-bottom: 1px solid var(--border); }
 .git-group-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; padding: 0 10px; border: 0; background: transparent; color: var(--text-1); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
@@ -12611,6 +12772,126 @@ button.composer-meta-chip:hover {
   white-space: nowrap;
 }
 .composer-meta-branch.muted .composer-meta-label { color: var(--text-muted); }
+.goal-banner {
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  box-sizing: border-box;
+}
+.goal-banner-head { display: flex; align-items: center; gap: 6px; }
+.goal-banner-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.goal-banner-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.goal-banner[data-status="active"] .goal-banner-dot { background: #22c55e; }
+.goal-banner[data-status="paused"] .goal-banner-dot { background: #f59e0b; }
+.goal-banner[data-status="complete"] .goal-banner-dot { background: var(--brand); }
+.goal-banner[data-status="blocked"] .goal-banner-dot { background: #ef4444; }
+.goal-banner-objective { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-banner-progress { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.goal-banner-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: var(--bg-app);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+}
+.goal-banner-btn {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.goal-banner-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-1); }
+.goal-banner-btn:disabled { opacity: .5; cursor: default; }
+.goal-banner-btn .ui-icon { width: 15px; height: 15px; }
+.goal-banner-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.goal-banner-detail h4 { margin: 0 0 2px; font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+.goal-banner-detail ul { margin: 0; padding-left: 16px; display: grid; gap: 3px; }
+.goal-gate-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.goal-gate-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: var(--bg-app);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+}
+.goal-evidence-verified { color: #16a34a; }
+.goal-loop-line { margin-top: 3px; color: var(--text-muted); }
+.goal-banner-looping { border-color: color-mix(in srgb, var(--brand) 45%, var(--border)); }
+.goal-banner-looping .goal-banner-dot { animation: goal-loop-pulse 1.4s ease-in-out infinite; }
+@keyframes goal-loop-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+.goal-mode-chip {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--brand) 40%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 8%, transparent);
+  color: var(--text-1);
+  font-size: 12px;
+}
+.goal-mode-chip-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.goal-mode-chip-clear:hover { background: var(--surface-hover); color: var(--text-1); }
+.goal-mode-chip-clear .ui-icon { width: 12px; height: 12px; }
 .composer {
   width: 100%;
   margin: 0;
@@ -13999,9 +14280,6 @@ body[data-density="compact"] .composer-meta { padding: 5px 12px; }
 .credential-hint.hidden { display: none; }
 .credential-hint a { color: var(--err); font-weight: 600; text-decoration: underline; }
 .context-bar > span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; background: var(--bg-surface-2); white-space: nowrap; max-width: 50vw; overflow: hidden; text-overflow: ellipsis; }
-.ctx-goal { border-color: #cfe6d8; background: #f1f8f3; color: #1f6b3b; }
-.ctx-paused { color: #8a6d1b; border-color: #ecdfb8; background: #fbf6e6; }
-.ctx-complete { color: var(--text-2); }
 .ctx-bridge { border-color: #cfd9ef; background: #f1f6fe; color: var(--brand); }
 .ctx-plan { border-color: #ead9ef; background: #f8f1fb; color: #6b2f7a; }
 .ctx-usage { border-color: var(--border); color: var(--text-2); }
@@ -14305,6 +14583,8 @@ const _ICONS = {
   memory: '<path d="M8 3v3"/><path d="M16 3v3"/><rect x="5" y="6" width="14" height="14" rx="2"/><path d="M9 10h6"/><path d="M9 14h4"/>',
   plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0Z"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  play: '<path d="m7 4 12 8-12 8Z"/>',
+  pause: '<path d="M8 4v16"/><path d="M16 4v16"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
   pin: '<path d="M12 17v5"/><path d="M9 3h6l1 7H8L9 3Z"/><path d="M9 10v4a3 3 0 0 0 6 0v-4"/>',
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
@@ -14395,6 +14675,12 @@ const state = {
   activeSurface: null,
   attachments: [],
   attachmentCounter: 0,
+  // Goal composer mode: the next send writes the session goal instead of chatting.
+  composerGoalMode: false,
+  goalBusy: false,
+  goalExpanded: false,
+  goalEditing: false,
+  goalLoopWasRunning: false,
   addContextView: 'root',
   addContextRequest: 0,
   lastUsageText: '',
@@ -15141,6 +15427,11 @@ async function renderAuxFiles(targetPath) {
       row.className = 'aux-file-row';
       row.innerHTML = guiIcon(entry.kind === 'folder' ? 'folder' : 'list') + '<span class="aux-file-name"></span>';
       row.querySelector('.aux-file-name').textContent = entry.name;
+      if (entry.hidden || (typeof entry.name === 'string' && entry.name.startsWith('.'))) {
+        row.classList.add('hidden-entry');
+        row.style.opacity = '0.85';
+        row.style.fontStyle = 'italic';
+      }
       if (entry.kind === 'folder') {
         row.addEventListener('click', () => { renderAuxFiles(entry.path).catch(console.error); });
       } else {
@@ -16763,11 +17054,6 @@ function renderStatusExtras() {
     if (title) span.title = title;
     bar.appendChild(span);
   };
-  const goal = snap.goal;
-  if (goal && goal.objective) {
-    const mark = goal.status === 'active' ? '▶' : goal.status === 'paused' ? '‖' : '✓';
-    addBadge('ctx-goal ctx-' + (goal.status || 'active'), mark + ' ' + goal.objective, 'Goal: ' + goal.objective + ' (' + goal.status + ')');
-  }
   const bs = snap.bridgeState || {};
   if (bs.mode && bs.activeConfig) addBadge('ctx-bridge', '⇄ ' + bs.activeConfig.name, 'Bridge active: ' + bs.activeConfig.name);
   if (snap.planMode) addBadge('ctx-plan', '◐ plan', 'Plan mode on — mutating tools blocked');
@@ -16795,7 +17081,219 @@ function renderStatusExtras() {
       list.appendChild(li);
     }
   }
+  renderGoalBanner();
   renderModelPicker();
+}
+// ── Session Goal banner ──────────────────────────────────────────────────
+// The goal lives on the current chat: created by sending in Goal mode, run and
+// paused from here, and expanded into next step / open gates / recent evidence.
+function goalOpenGates(goal) {
+  const settled = new Set((goal.workItems || [])
+    .filter(item => item.status === 'done' || item.status === 'cancelled')
+    .map(item => item.id));
+  return (goal.workItems || []).filter(item => (
+    item.role === 'user'
+    && item.taskClass === 'user_gate'
+    && !settled.has(item.id)
+    && (item.dependsOn || []).every(id => settled.has(id))
+  ));
+}
+function renderGoalBanner() {
+  const banner = el('goalBanner');
+  if (!banner) return;
+  const goal = state.snapshot?.goal || null;
+  noteGoalLoopTransition(goal);
+  banner.classList.toggle('hidden', !goal);
+  if (!goal) {
+    state.goalEditing = false;
+    state.goalExpanded = false;
+    return;
+  }
+  const status = goal.status || 'active';
+  banner.dataset.status = status;
+  const items = goal.workItems || [];
+  const done = items.filter(item => item.status === 'done').length;
+  const turns = goal.consumption?.turns || 0;
+  const looping = goalLoopRunning();
+  // Auto-open when the loop needs a human answer — LoopX's "hand back to you".
+  if (goalOpenGates(goal).length > 0) state.goalExpanded = true;
+  el('goalBannerObjective').textContent = goal.objective || '(no objective)';
+  const progressParts = [];
+  if (items.length) progressParts.push(done + '/' + items.length);
+  if (looping || turns > 0) progressParts.push('turn ' + turns);
+  el('goalBannerProgress').textContent = progressParts.join(' · ');
+  const input = el('goalBannerInput');
+  const toggle = el('goalBannerToggle');
+  input.classList.toggle('hidden', !state.goalEditing);
+  toggle.classList.toggle('hidden', state.goalEditing);
+  toggle.setAttribute('aria-expanded', state.goalExpanded ? 'true' : 'false');
+  banner.classList.toggle('goal-banner-looping', looping);
+  const run = el('goalBannerRun');
+  run.innerHTML = looping ? guiIcon('pause') : guiIcon('play');
+  run.title = looping ? 'Pause the goal' : status === 'paused' ? 'Resume the goal' : 'Run the goal';
+  run.setAttribute('aria-label', run.title);
+  run.disabled = state.goalBusy || status === 'complete' || status === 'cancelled';
+  el('goalBannerEdit').disabled = state.goalEditing;
+  el('goalBannerClear').disabled = state.goalBusy;
+  const detail = el('goalBannerDetail');
+  detail.classList.toggle('hidden', !state.goalExpanded);
+  if (state.goalExpanded) renderGoalBannerDetail(detail, goal);
+  syncGoalLoopPoll(looping);
+}
+function goalLoopRunning() {
+  return state.snapshot?.goalLoop?.running === true;
+}
+// The loop runs outside the chat stream, so its end is reported once in the
+// transcript, and a goal that stopped on a gate opens the detail immediately.
+function noteGoalLoopTransition(goal) {
+  const running = goalLoopRunning();
+  const was = state.goalLoopWasRunning === true;
+  state.goalLoopWasRunning = running;
+  if (running || !was) return;
+  const loop = state.snapshot?.goalLoop || {};
+  addMessage('notice', 'Goal loop stopped after ' + (loop.turns || 0) + ' turn(s): ' + (loop.reason || 'no reason reported'));
+  if (goal && goalOpenGates(goal).length > 0) state.goalExpanded = true;
+}
+// While the loop owns the session there are no run events to react to, so the
+// banner refreshes the snapshot on a timer to show turns landing.
+let goalLoopPollTimer = null;
+function syncGoalLoopPoll(running) {
+  if (running && goalLoopPollTimer === null) {
+    goalLoopPollTimer = setInterval(() => { void loadState(); }, 3000);
+  } else if (!running && goalLoopPollTimer !== null) {
+    clearInterval(goalLoopPollTimer);
+    goalLoopPollTimer = null;
+  }
+}
+function renderGoalBannerDetail(host, goal) {
+  host.textContent = '';
+  const section = (title) => {
+    const wrap = document.createElement('div');
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    wrap.appendChild(heading);
+    host.appendChild(wrap);
+    return wrap;
+  };
+  const next = state.snapshot?.goalNext || null;
+  const nextBlock = section('Next step');
+  const nextText = document.createElement('div');
+  nextText.textContent = next ? next.text : 'Nothing scheduled.';
+  nextBlock.appendChild(nextText);
+  const loop = state.snapshot?.goalLoop || {};
+  const loopLine = document.createElement('div');
+  loopLine.className = 'goal-loop-line';
+  if (loop.running) {
+    const turns = goal.consumption?.turns || 0;
+    loopLine.textContent = 'Loop running — turn ' + turns + ' in flight; the agent keeps going until it finishes or needs you.';
+  } else if (loop.reason) {
+    loopLine.textContent = 'Loop stopped after ' + (loop.turns || 0) + ' turn(s): ' + loop.reason;
+  } else {
+    loopLine.textContent = 'Loop idle — press Run to hand the goal to the agent.';
+  }
+  nextBlock.appendChild(loopLine);
+  const gates = goalOpenGates(goal);
+  if (gates.length > 0) {
+    const gateBlock = section('Needs your judgment');
+    for (const gate of gates) {
+      const label = document.createElement('div');
+      label.textContent = gate.text;
+      gateBlock.appendChild(label);
+      const row = document.createElement('div');
+      row.className = 'goal-gate-row';
+      const reply = document.createElement('input');
+      reply.type = 'text';
+      reply.placeholder = 'Answer ' + gate.id;
+      reply.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        void answerGoalGate(gate.id, reply.value);
+      });
+      const submit = document.createElement('button');
+      submit.type = 'button';
+      submit.className = 'goal-banner-btn';
+      submit.title = 'Send answer';
+      submit.setAttribute('aria-label', 'Send answer');
+      submit.innerHTML = guiIcon('check');
+      submit.addEventListener('click', () => void answerGoalGate(gate.id, reply.value));
+      row.appendChild(reply);
+      row.appendChild(submit);
+      gateBlock.appendChild(row);
+    }
+  }
+  const evidence = (goal.evidence || []).slice(-3).reverse();
+  const evidenceBlock = section('Recent evidence');
+  if (evidence.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No evidence recorded yet.';
+    evidenceBlock.appendChild(empty);
+  } else {
+    const list = document.createElement('ul');
+    for (const item of evidence) {
+      const li = document.createElement('li');
+      if (item.verified === true) li.className = 'goal-evidence-verified';
+      li.textContent = (item.verified === true ? '✓ ' : '') + (item.ref || item.note || '(unlabelled)');
+      list.appendChild(li);
+    }
+    evidenceBlock.appendChild(list);
+  }
+}
+async function sessionGoalAction(body, pendingLabel) {
+  if (state.goalBusy) return false;
+  state.goalBusy = true;
+  renderGoalBanner();
+  if (pendingLabel) flashStatus(pendingLabel);
+  try {
+    const res = await api('/api/session-goal', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      flashStatus(payload.error || payload.message || 'Goal update failed');
+      return false;
+    }
+    if (payload.state) state.snapshot = payload.state;
+    if (payload.message) addMessage('command.result', 'Goal · ' + payload.message);
+    return true;
+  } catch (error) {
+    flashStatus(error?.message || 'Goal update failed');
+    return false;
+  } finally {
+    state.goalBusy = false;
+    applyLoadedState();
+  }
+}
+async function answerGoalGate(gateId, answer) {
+  const reply = String(answer || '').trim();
+  if (!reply) { flashStatus('Type an answer first.'); return; }
+  await sessionGoalAction({ action: 'answer', gateId, answer: reply });
+}
+function beginGoalObjectiveEdit() {
+  const goal = state.snapshot?.goal;
+  if (!goal) return;
+  state.goalEditing = true;
+  renderGoalBanner();
+  const input = el('goalBannerInput');
+  input.value = goal.objective || '';
+  input.focus();
+  input.select();
+}
+async function commitGoalObjectiveEdit() {
+  const input = el('goalBannerInput');
+  const objective = input.value.trim();
+  const previous = state.snapshot?.goal?.objective || '';
+  const wasLooping = goalLoopRunning();
+  state.goalEditing = false;
+  if (!objective || objective === previous) {
+    renderGoalBanner();
+    return;
+  }
+  const ok = await sessionGoalAction({ action: 'set', objective });
+  if (ok && wasLooping) {
+    addMessage('notice', 'Goal objective updated mid-run — the loop will replan on the next turn.');
+  }
 }
 // ── Agent picker (Cursor-style) ──────────────────────────────────────────
 // Click selects an agent. Temporary effort overrides open only via Edit.
@@ -18639,70 +19137,6 @@ function setProjectSettingsStatus(text, kind) {
   node.textContent = text || '';
   node.dataset.kind = kind || '';
 }
-async function runProjectGoalCommand(command) {
-  setProjectSettingsStatus('Updating Goal\u2026', 'dirty');
-  try {
-    const res = await api('/api/project-goal', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || data.result?.message || 'Goal update failed');
-    setProjectSettingsStatus(data.result?.message || 'Goal updated', '');
-    await mountProjectSettingsPanel(true);
-  } catch (error) {
-    setProjectSettingsStatus(error.message || 'Goal update failed', 'error');
-  }
-}
-function renderProjectGoal(status, goals, continuation, profiles, claims, handoffs) {
-  const root = el('projectGoalStatus');
-  if (!root) return;
-  const goal = status?.goal;
-  if (!goal) {
-    root.textContent = 'No active Goal for this project.';
-  } else {
-    const budget = goal.budget || {};
-    const consumption = goal.consumption || {};
-    const open = (goal.workItems || []).filter(item => item.status !== 'done' && item.status !== 'cancelled');
-    root.textContent = [
-      goal.status + ' \u00b7 ' + goal.objective,
-      'Goal ID: ' + (status.goalId || 'unknown') + ' \u00b7 revision ' + goal.revision + ' \u00b7 plan ' + goal.planRevision,
-      'Budget: ' + (consumption.turns || 0) + '/' + (budget.maxTurns ?? '\u221e') + ' turns \u00b7 ' + (consumption.toolIterations || 0) + '/' + (budget.maxToolIterations ?? '\u221e') + ' tools \u00b7 ' + (consumption.tokens || 0) + '/' + (budget.maxTokens ?? '\u221e') + ' tokens',
-      'Frontier: ' + (open.length ? open.map(item => item.id + ' [' + item.priority + '] ' + item.text).join('\\n  ') : 'closed'),
-      'Evidence: ' + ((goal.evidence || []).length ? (goal.evidence || []).slice(-5).map(item => item.ref || item.note).join(', ') : 'none'),
-      'Project history: ' + (goals || []).length + ' goal(s)',
-      'Continuation: ' + (continuation ? continuation.mode + ' \u00b7 interval ' + continuation.currentIntervalSeconds + 's' + (continuation.nextWakeAt ? ' \u00b7 next ' + continuation.nextWakeAt : '') : 'manual (not configured)'),
-      'Claims: ' + ((claims || []).length ? (claims || []).map(claim => claim.workItemId + ' \u2192 ' + claim.agentId + ' until ' + claim.leaseExpiresAt).join(', ') : 'none'),
-      'Handoffs: ' + ((handoffs || []).length ? (handoffs || []).slice(-5).map(item => item.fromAgentId + ' \u2192 ' + (item.toAgentId || 'pool') + ' (' + item.reason + ')').join(', ') : 'none'),
-    ].join('\\n');
-  }
-  const paused = goal?.status === 'paused';
-  if (el('projectGoalPause')) el('projectGoalPause').disabled = !goal || paused;
-  if (el('projectGoalResume')) el('projectGoalResume').disabled = !goal || !paused;
-  if (el('projectGoalReplan')) el('projectGoalReplan').disabled = !goal;
-  if (el('projectGoalContinuationMode')) el('projectGoalContinuationMode').value = continuation?.mode || 'manual';
-  if (el('projectGoalMinInterval')) el('projectGoalMinInterval').value = continuation?.minIntervalSeconds || 30;
-  if (el('projectGoalMaxInterval')) el('projectGoalMaxInterval').value = continuation?.maxIntervalSeconds || 1800;
-  const profileSelect = el('projectGoalProfile');
-  if (profileSelect) {
-    profileSelect.textContent = '';
-    const current = document.createElement('option');
-    current.value = '';
-    current.textContent = 'Current session model';
-    profileSelect.appendChild(current);
-    for (const profile of profiles || []) {
-      const option = document.createElement('option');
-      option.value = profile.kind + ':' + profile.name;
-      option.textContent = profile.label + (profile.available ? '' : ' (unavailable)');
-      option.disabled = !profile.available;
-      profileSelect.appendChild(option);
-    }
-    if (continuation?.executionProfile) {
-      profileSelect.value = continuation.executionProfile.kind + ':' + continuation.executionProfile.name;
-    }
-  }
-}
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
   const dreamProfileValue = el('projectDreamProfile')?.value || '';
@@ -18853,25 +19287,6 @@ function wireProjectSettingsPanel() {
   el('projectSettingsSaveBtn')?.addEventListener('click', () => { void saveProjectSettingsNow(); });
   el('projectPromptTemplateApply')?.addEventListener('click', () => applySelectedPromptTemplate());
   el('projectPromptTemplateSave')?.addEventListener('click', () => { void saveCustomPromptAsTemplate(); });
-  el('projectGoalStart')?.addEventListener('click', () => {
-    const objective = el('projectGoalObjective')?.value?.trim() || '';
-    if (!objective) {
-      setProjectSettingsStatus('Goal objective is required', 'error');
-      return;
-    }
-    void runProjectGoalCommand('start ' + objective);
-  });
-  el('projectGoalPause')?.addEventListener('click', () => { void runProjectGoalCommand('pause'); });
-  el('projectGoalResume')?.addEventListener('click', () => { void runProjectGoalCommand('resume'); });
-  el('projectGoalReplan')?.addEventListener('click', () => { void runProjectGoalCommand('replan operator_requested'); });
-  el('projectGoalContinuationSave')?.addEventListener('click', () => {
-    const mode = el('projectGoalContinuationMode')?.value || 'manual';
-    const min = Math.max(1, Number(el('projectGoalMinInterval')?.value) || 30);
-    const max = Math.max(min, Number(el('projectGoalMaxInterval')?.value) || 1800);
-    const profile = el('projectGoalProfile')?.value || '';
-    void runProjectGoalCommand('schedule ' + mode + ' ' + min + ' ' + max + (profile ? ' ' + profile : ''));
-  });
-  el('projectGoalRun')?.addEventListener('click', () => { void runProjectGoalCommand('run'); });
   el('projectSessionMemoryExtract')?.addEventListener('click', async () => {
     setProjectSettingsStatus('Extracting Session Memory…', 'dirty');
     const res = await api('/api/project-memory-extract', { method: 'POST' });
@@ -18933,7 +19348,6 @@ async function mountProjectSettingsPanel(force) {
     const data = await settingsRes.json().catch(() => ({}));
     if (!settingsRes.ok) throw new Error(data.error || 'Failed to load project settings');
     const settings = data.settings || { workMode: 'coding', customPrompt: '', projectRules: '' };
-    renderProjectGoal(data.goalStatus, data.projectGoals || [], data.goalContinuation, data.dreamProfiles || [], data.goalClaims || [], data.goalHandoffs || []);
     const coding = el('projectWorkModeCoding');
     const daily = el('projectWorkModeDaily');
     if (coding) coding.checked = settings.workMode !== 'daily';
@@ -19589,9 +20003,12 @@ function renderFileTreeRows(host, dirPath, depth) {
   for (const entry of entries) {
     const row = document.createElement('button');
     row.type = 'button';
-    row.className = 'tree-row' + (state.filesSelectedPath === entry.path ? ' selected' : '');
+    const hiddenEntry = Boolean(entry.hidden) || (typeof entry.name === 'string' && entry.name.startsWith('.'));
+    row.className = 'tree-row'
+      + (state.filesSelectedPath === entry.path ? ' selected' : '')
+      + (hiddenEntry ? ' hidden-entry' : '');
     row.style.setProperty('--tree-depth', String(depth));
-    row.title = entry.path;
+    row.title = entry.path + (hiddenEntry ? ' (hidden)' : '');
     const chevron = document.createElement('span');
     chevron.className = 'tree-chevron';
     if (entry.kind === 'folder') {
@@ -19683,7 +20100,7 @@ function paintFilesPreview() {
     return;
   }
   const filePath = data.path || state.filesSelectedPath || '';
-  const language = detectEditorLanguage(filePath);
+  const language = data.image ? 'image' : detectEditorLanguage(filePath);
   const isMarkdown = language === 'markdown';
   let viewMode = state.filesViewMode || 'edit';
   if (!isMarkdown && viewMode !== 'edit') viewMode = 'edit';
@@ -19706,7 +20123,7 @@ function paintFilesPreview() {
     dirty.textContent = 'Unsaved';
     head.appendChild(dirty);
   }
-  const canEdit = !data.binary && !data.truncated && typeof data.text === 'string';
+  const canEdit = !data.binary && !data.image && !data.truncated && typeof data.text === 'string';
   if (isMarkdown && canEdit) {
     const modes = document.createElement('div');
     modes.className = 'files-preview-modes';
@@ -19739,6 +20156,22 @@ function paintFilesPreview() {
     note.className = 'muted project-panel-empty';
     note.textContent = data.error;
     preview.appendChild(note);
+    return;
+  }
+  if (data.image && data.image.dataUrl) {
+    const frame = document.createElement('div');
+    frame.className = 'files-image-preview';
+    const img = document.createElement('img');
+    img.src = data.image.dataUrl;
+    img.alt = pathEl.textContent || 'Image preview';
+    img.loading = 'lazy';
+    frame.appendChild(img);
+    preview.appendChild(frame);
+    const meta = document.createElement('div');
+    meta.className = 'files-image-meta';
+    const kb = Math.max(1, Math.round((data.size || 0) / 1024));
+    meta.textContent = (data.image.mediaType || 'image') + ' · ' + kb + ' KB';
+    preview.appendChild(meta);
     return;
   }
   if (data.binary) {
@@ -19778,6 +20211,8 @@ function paintFilesPreview() {
     editor = document.createElement('textarea');
     editor.className = 'files-preview-body files-preview-editor files-hl-overlay';
     editor.spellcheck = false;
+    editor.wrap = 'off';
+    editor.setAttribute('aria-label', 'File editor');
     editor.value = draftText;
     editor.readOnly = Boolean(data.truncated);
     stack.append(highlightLayer, editor);
@@ -19824,6 +20259,17 @@ function paintFilesPreview() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
         void saveFilesPreview();
+        return;
+      }
+      if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        const value = editor.value;
+        const insert = '\\t';
+        editor.value = value.slice(0, start) + insert + value.slice(end);
+        editor.selectionStart = editor.selectionEnd = start + insert.length;
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
       }
     });
   }
@@ -19836,6 +20282,11 @@ function paintFilesPreview() {
   }
 
   preview.appendChild(wrap);
+  if (editor && !editor.readOnly) {
+    requestAnimationFrame(() => {
+      try { editor.focus({ preventScroll: true }); } catch (_) { editor.focus(); }
+    });
+  }
   if (data.truncated) {
     const tip = document.createElement('p');
     tip.className = 'muted';
@@ -21395,25 +21846,6 @@ function renderProjectDetail() {
     + '<textarea id="projectRulesPrompt" class="project-settings-textarea" rows="10" spellcheck="false" placeholder="Optional project rules\u2026"></textarea>'
     + '</div>'
     + '<div class="settings-group">'
-    + '<h2>Goal</h2>'
-    + '<p class="muted">Project-scoped durable objective, work frontier, evidence, and runtime budget. Sessions in this project resume the same active Goal.</p>'
-    + '<div class="project-settings-template-row">'
-    + '<input id="projectGoalObjective" class="settings-input" placeholder="Start a new project Goal\u2026">'
-    + '<button type="button" class="secondary-btn" id="projectGoalStart">Start Goal</button>'
-    + '</div>'
-    + '<div class="project-settings-template-row">'
-    + '<button type="button" class="secondary-btn" id="projectGoalPause">Pause</button>'
-    + '<button type="button" class="secondary-btn" id="projectGoalResume">Resume</button>'
-    + '<button type="button" class="secondary-btn" id="projectGoalReplan">Replan</button>'
-    + '<button type="button" class="secondary-btn" id="projectGoalRun">Run now</button>'
-    + '</div>'
-    + '<label class="settings-row"><span><strong>Continuation mode</strong><small>Manual, foreground until a stop condition, or scheduled with dynamic cadence.</small></span><select id="projectGoalContinuationMode"><option value="manual">Manual</option><option value="foreground">Foreground</option><option value="scheduled">Scheduled</option></select></label>'
-    + '<label class="settings-row"><span><strong>Wake interval</strong><small>Minimum and maximum seconds; no-change backs off, validated progress accelerates.</small></span><span><input type="number" min="1" id="projectGoalMinInterval" style="width:90px"> <input type="number" min="1" id="projectGoalMaxInterval" style="width:90px"></span></label>'
-    + '<label class="settings-row"><span><strong>Execution profile</strong><small>Optional Config or Agent sampling/model parameters; external CLI profiles are unavailable.</small></span><select id="projectGoalProfile"></select></label>'
-    + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectGoalContinuationSave">Save continuation</button></div>'
-    + '<pre id="projectGoalStatus" class="project-settings-textarea" style="min-height:130px;white-space:pre-wrap" data-testid="project-goal-status"></pre>'
-    + '</div>'
-    + '<div class="settings-group">'
     + '<h2>Memory</h2>'
     + '<p class="muted">Compact, Session Memory, and Durable Memory are independent and scoped to this project.</p>'
     + '<label class="settings-row"><span><strong>Automatic compact</strong><small>Uses the active model window and a 90% ceiling.</small></span><input type="checkbox" id="projectCompactEnabled"></label>'
@@ -22406,6 +22838,19 @@ function setComposerCommand(command) {
   input.setSelectionRange(input.value.length, input.value.length);
   renderSlashMenu();
 }
+// Goal mode: the next send writes the session goal instead of starting a turn.
+function setComposerGoalMode(enabled) {
+  state.composerGoalMode = enabled === true;
+  const chip = el('goalModeChip');
+  if (chip) chip.classList.toggle('hidden', !state.composerGoalMode);
+  input.placeholder = state.composerGoalMode
+    ? (state.snapshot?.goal ? 'Update the goal…' : 'What should Hadamard keep working toward?')
+    : 'Ask Hadamard…';
+  if (state.composerGoalMode) {
+    closeAddContextMenu();
+    input.focus();
+  }
+}
 async function captureScreenshotContext() {
   closeAddContextMenu();
   flashStatus('Capturing screenshot...');
@@ -22468,7 +22913,7 @@ function renderAddContextRoot() {
       icon: 'review',
       title: 'Goal',
       description: 'Set a goal to keep pursuing',
-      onClick: () => setComposerCommand('/goal '),
+      onClick: () => setComposerGoalMode(true),
     }),
     addContextRow({
       icon: 'memory',
@@ -32152,8 +32597,39 @@ el('composer').addEventListener('submit', async (event) => {
   input.value = '';
   clearAttachments();
   renderSlashMenu();
+  if (state.composerGoalMode && !submission.startsWith('/')) {
+    const wasLooping = goalLoopRunning();
+    setComposerGoalMode(false);
+    const ok = await sessionGoalAction({ action: 'set', objective: submission });
+    if (ok && wasLooping) {
+      addMessage('notice', 'Goal objective updated mid-run — the loop will replan on the next turn.');
+    }
+    return;
+  }
+  if (state.composerGoalMode) setComposerGoalMode(false);
   await submitText(submission);
 });
+el('goalBannerToggle').addEventListener('click', () => {
+  state.goalExpanded = !state.goalExpanded;
+  renderGoalBanner();
+});
+el('goalBannerEdit').addEventListener('click', () => beginGoalObjectiveEdit());
+el('goalBannerInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); void commitGoalObjectiveEdit(); }
+  else if (event.key === 'Escape') { state.goalEditing = false; renderGoalBanner(); }
+});
+el('goalBannerInput').addEventListener('blur', () => { void commitGoalObjectiveEdit(); });
+el('goalBannerRun').addEventListener('click', () => {
+  const goal = state.snapshot?.goal;
+  if (!goal) return;
+  if (goalLoopRunning()) { void sessionGoalAction({ action: 'pause' }, 'Pausing the goal…'); return; }
+  if (goal.status === 'paused') { void sessionGoalAction({ action: 'resume' }, 'Resuming the goal…'); return; }
+  void sessionGoalAction({ action: 'run' }, 'Running the goal…');
+});
+el('goalBannerClear').addEventListener('click', () => {
+  void sessionGoalAction({ action: 'clear' });
+});
+el('goalModeChipClear').addEventListener('click', () => setComposerGoalMode(false));
 input.addEventListener('keydown', (event) => {
   const matches = slashMatches();
   const menuVisible = !el('slashMenu').classList.contains('hidden');
@@ -32172,6 +32648,7 @@ input.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Escape') {
     el('slashMenu').classList.add('hidden');
+    if (state.composerGoalMode) setComposerGoalMode(false);
     return;
   }
   if (event.key !== 'Enter') return;

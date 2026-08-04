@@ -125,6 +125,69 @@ describe('Goal runtime controller', () => {
     expect(goal.evidence).toHaveLength(2);
   });
 
+  it('keeps unrelated lanes moving while a ready user gate waits', async () => {
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'ship' });
+    await service.plan({
+      items: [
+        { id: 'approval', role: 'user', taskClass: 'user_gate', priority: 'P0', text: 'Approve the rollout' },
+        { id: 'deploy', priority: 'P0', text: 'Deploy', dependsOn: ['approval'] },
+        { id: 'docs', priority: 'P1', text: 'Update the docs' },
+      ],
+    });
+    expect(decideGoalExecution(await service.read())).toMatchObject({
+      kind: 'run',
+      workItemId: 'docs',
+    });
+  });
+
+  it('waits for the user once every runnable lane depends on the gate', async () => {
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'ship' });
+    await service.plan({
+      items: [
+        { id: 'approval', role: 'user', taskClass: 'user_gate', priority: 'P0', text: 'Approve the rollout' },
+        { id: 'deploy', priority: 'P0', text: 'Deploy', dependsOn: ['approval'] },
+        { id: 'verify', priority: 'P1', text: 'Verify the deploy', dependsOn: ['deploy'] },
+      ],
+    });
+    expect(decideGoalExecution(await service.read())).toMatchObject({
+      kind: 'stop',
+      reason: 'waiting_user',
+    });
+  });
+
+  it('edits the objective in place without discarding progress', async () => {
+    const { executeGoalCommand } = await import('../src/goal/goalCommandService.js');
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'ship the first cut' });
+    await settleGoalRun(service, result());
+    const before = (await service.read())!;
+
+    const edited = await executeGoalCommand(service, 'ship the reviewed cut');
+    expect(edited.ok).toBe(true);
+    const after = (await service.read())!;
+    expect(after.objective).toBe('ship the reviewed cut');
+    expect(after.createdAt).toBe(before.createdAt);
+    expect(after.consumption).toEqual(before.consumption);
+    expect(after.turnReceipts).toHaveLength(1);
+    expect(after.forcedReplan?.reason).toBe('objective_changed');
+  });
+
+  it('settles one runtime turn once even when the same receipt is replayed', async () => {
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'ship' });
+    await settleGoalRun(service, result());
+    await settleGoalRun(service, result());
+    const goal = (await service.read())!;
+    expect(goal.turnReceipts).toHaveLength(1);
+    expect(goal.consumption).toEqual({ turns: 1, toolIterations: 0, tokens: 100 });
+  });
+
   it('reopens a running work item after an interrupted failure settlement', async () => {
     const port = new MemoryGoalPort();
     const service = new GoalService({ port });

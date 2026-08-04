@@ -70,7 +70,7 @@ export function decideGoalExecution(
       .filter(item => item.status === 'done' || item.status === 'cancelled')
       .map(item => item.id),
   );
-  // Only a ready user gate (dependencies satisfied) blocks execution. A future
+  // Only a ready user gate (dependencies satisfied) can block execution. A future
   // gate that still depends on unfinished agent work must not preempt that work.
   const userGate = goal.workItems.find(item => (
     item.role === 'user'
@@ -79,13 +79,11 @@ export function decideGoalExecution(
     && item.status !== 'cancelled'
     && item.dependsOn.every(id => completed.has(id))
   ));
-  if (userGate) {
-    return {
-      kind: 'stop',
-      reason: 'waiting_user',
-      message: `Goal requires user action for ${userGate.id}: ${userGate.text}`,
-    };
-  }
+  // A ready gate keeps waiting for the operator, but it only stops the lanes that
+  // actually depend on it — unrelated work continues instead of idling the Goal.
+  const gateBlocked = userGate
+    ? dependentWorkItemIds(goal, userGate.id)
+    : new Set<string>();
   const unavailable = options.unavailableWorkItemIds ?? new Set<string>();
   const runnable = [...goal.workItems]
     .filter(item => (
@@ -93,6 +91,7 @@ export function decideGoalExecution(
       && ['open', 'claimed', 'running'].includes(item.status)
       && item.dependsOn.every(id => completed.has(id))
       && !unavailable.has(item.id)
+      && !gateBlocked.has(item.id)
     ))
     .sort(compareWorkItems)[0];
   if (runnable) {
@@ -101,6 +100,13 @@ export function decideGoalExecution(
       return replanDecision(goal, `no_progress:${runnable.id}`);
     }
     return { kind: 'run', mode: 'work', workItemId: runnable.id };
+  }
+  if (userGate) {
+    return {
+      kind: 'stop',
+      reason: 'waiting_user',
+      message: `Goal requires user action for ${userGate.id}: ${userGate.text}`,
+    };
   }
   if (unavailable.size > 0) {
     const claimedRunnable = goal.workItems.find(item => (
@@ -209,6 +215,24 @@ export async function settleGoalRunFailure(
     },
     evidence: [],
   });
+}
+
+/** Transitive closure of work items that depend on `rootId`, excluding the root. */
+function dependentWorkItemIds(goal: Goal, rootId: string): Set<string> {
+  const blocked = new Set<string>([rootId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const item of goal.workItems) {
+      if (blocked.has(item.id)) continue;
+      if (item.dependsOn.some(id => blocked.has(id))) {
+        blocked.add(item.id);
+        grew = true;
+      }
+    }
+  }
+  blocked.delete(rootId);
+  return blocked;
 }
 
 function compareWorkItems(a: Goal['workItems'][number], b: Goal['workItems'][number]): number {

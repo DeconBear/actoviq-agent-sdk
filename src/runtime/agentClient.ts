@@ -1002,7 +1002,16 @@ export class HadamardAgentClient {
       continuationExecutor: async (input) => {
         const target = await this.resumeSession(input.sessionId);
         const overrides = await this.resolveGoalContinuationRunOptions(input.executionProfile);
-        return target.send(input.prompt, {
+        const workDir =
+          typeof target.metadata?.__hadamardWorkDir === 'string' && target.metadata.__hadamardWorkDir.trim()
+            ? target.metadata.__hadamardWorkDir.trim()
+            : this.config.workDir;
+        const prompt = [
+          `Session working directory: ${workDir}`,
+          'Create, edit, and verify artifacts only under that directory.',
+          input.prompt,
+        ].join('\n');
+        return target.send(prompt, {
           ...overrides,
           ...(input.signal ? { signal: input.signal } : {}),
         });

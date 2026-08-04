@@ -314,6 +314,47 @@ export class GoalService {
     });
   }
 
+  /**
+   * Point the existing goal at a new objective. Budget, evidence, and receipts
+   * carry over — only the objective changes — and the frontier is replanned so
+   * the agent re-derives the work for it. Used when the operator edits the
+   * objective of a goal that is already under way.
+   */
+  async retarget(objective: string): Promise<GoalMutationResult> {
+    const normalized = objective.trim();
+    if (!normalized) {
+      return { ok: false, reason: 'invalid_transition', message: 'Goal objective must not be empty.' };
+    }
+    const at = this.now();
+    return updateGoal<GoalMutationResult>(this.port, at, current => {
+      if (!current) {
+        return { next: undefined, result: { ok: false, reason: 'not_found', message: 'No goal.' } as const };
+      }
+      if (current.status === 'complete' || current.status === 'cancelled') {
+        return {
+          next: current,
+          result: {
+            ok: false,
+            reason: 'invalid_transition',
+            message: `Cannot retarget: goal is ${current.status}.`,
+          } as const,
+        };
+      }
+      if (current.objective === normalized) {
+        return { next: current, result: { ok: true, goal: current } as const };
+      }
+      const next: Goal = {
+        ...current,
+        objective: normalized,
+        forcedReplan: { at, reason: 'objective_changed' },
+        noFollowupReason: undefined,
+        updatedAt: at,
+        revision: current.revision + 1,
+      };
+      return { next, result: { ok: true, goal: next } as const };
+    });
+  }
+
   /** Queue a model-authored work-item transition for runtime settlement. */
   async requestWorkItemUpdate(input: RequestGoalWorkItemUpdateInput): Promise<GoalMutationResult> {
     const note = input.note.trim();
@@ -514,6 +555,11 @@ export class GoalService {
           next: undefined,
           result: { ok: false, reason: 'not_found', message: 'No goal to settle.' } as const,
         };
+      }
+      // Settling is keyed by the run's receipt id, so a retried or concurrently
+      // replayed tick cannot spend the budget or append evidence twice.
+      if (current.turnReceipts.some(item => item.id === input.receipt.id)) {
+        return { next: current, result: { ok: true, goal: current } as const };
       }
       const observedRefs = new Set([
         ...current.evidence.flatMap(item => item.ref ? [item.ref] : []),

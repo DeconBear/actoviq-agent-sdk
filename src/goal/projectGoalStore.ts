@@ -73,10 +73,13 @@ export class ProjectGoalStore {
     return `goal:${createId()}`;
   }
 
+  /**
+   * Goals are session-scoped: a session only sees the goal it is attached to, so
+   * a new chat starts without one instead of inheriting the project's last goal.
+   */
   portForSession(sessionId: string, options: { forceNew?: boolean } = {}): GoalSessionPort {
     const attached = options.forceNew ? undefined : this.goalIdForSession(sessionId);
-    const current = options.forceNew ? undefined : attached ?? this.currentGoalId();
-    return new ProjectGoalSessionPort(this, sessionId, current);
+    return new ProjectGoalSessionPort(this, sessionId, attached);
   }
 
   importLegacyGoal(sessionId: string, raw: unknown, now = new Date().toISOString()): string | undefined {
@@ -90,7 +93,7 @@ export class ProjectGoalStore {
   }
 
   readForSession(sessionId: string): { id: string; goal: Goal } | undefined {
-    const goalId = this.goalIdForSession(sessionId) ?? this.currentGoalId();
+    const goalId = this.goalIdForSession(sessionId);
     if (!goalId) return undefined;
     const goal = this.readSnapshot(goalId);
     return goal ? { id: goalId, goal } : undefined;

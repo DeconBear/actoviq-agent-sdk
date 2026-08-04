@@ -100,8 +100,9 @@ export class ProjectGoalApi {
         goal: run.goal,
       };
     }
-    const forceNew = command === 'start'
-      || (Boolean(command) && !GOAL_COMMANDS.has(command));
+    // A bare objective updates the session's current goal in place so the
+    // objective can be edited mid-run; `start` remains the explicit new-goal path.
+    const forceNew = command === 'start';
     const result = await executeGoalCommand(
       await this.serviceForSession(session, { forceNew }),
       rawArgs,
@@ -303,29 +304,20 @@ export class ProjectGoalApi {
     session: GoalSessionIdentity,
     rawArgs: string,
   ): Promise<GoalCommandResult> {
-    const [, modeValue = '', minValue = '', maxValue = '', profileValue = ''] = rawArgs.trim().split(/\s+/u);
+    const [, modeValue = '', minValue = '', maxValue = ''] = rawArgs.trim().split(/\s+/u);
     if (!['manual', 'foreground', 'scheduled'].includes(modeValue)) {
       return {
         ok: false,
         changed: false,
-        message: 'usage: /goal schedule <manual|foreground|scheduled> [min-seconds] [max-seconds] [config:name|agent:name]',
+        message: 'usage: /goal schedule <manual|foreground|scheduled> [min-seconds] [max-seconds]',
         goal: (await this.status(session.id)).goal,
       };
     }
-    const separator = profileValue.indexOf(':');
-    const profile = separator > 0
-      && (profileValue.slice(0, separator) === 'config' || profileValue.slice(0, separator) === 'agent')
-      ? {
-          kind: profileValue.slice(0, separator) as GoalContinuationProfileRef['kind'],
-          name: profileValue.slice(separator + 1),
-        }
-      : undefined;
     const state = await this.configureContinuation({
       sessionId: session.id,
       mode: modeValue as GoalContinuationMode,
       ...(Number(minValue) > 0 ? { minIntervalSeconds: Number(minValue) } : {}),
       ...(Number(maxValue) > 0 ? { maxIntervalSeconds: Number(maxValue) } : {}),
-      ...(profile?.name ? { executionProfile: profile } : {}),
     });
     return {
       ok: true,
@@ -365,19 +357,3 @@ export class ProjectGoalApi {
     this.timers.delete(goalId);
   }
 }
-
-const GOAL_COMMANDS = new Set([
-  'status',
-  'clear',
-  'pause',
-  'resume',
-  'cancel',
-  'tasks',
-  'plan',
-  'history',
-  'replan',
-  'answer',
-  'run',
-  'complete',
-  'done',
-]);

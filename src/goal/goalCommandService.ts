@@ -76,6 +76,14 @@ export async function executeGoalCommand(
   if (!objective) {
     return { ok: false, changed: false, message: 'usage: /goal start <objective>', goal: await service.read() };
   }
+  // A bare objective on a live goal edits it in place; progress is not discarded.
+  if (command !== 'start') {
+    const existing = await service.read();
+    if (existing && existing.status !== 'complete' && existing.status !== 'cancelled') {
+      const retargeted = await service.retarget(objective);
+      return mutationResult(retargeted, `goal updated: ${objective}`);
+    }
+  }
   const goal = await service.create({ objective });
   return {
     ok: true,

@@ -31,7 +31,7 @@ async function stateDir(name: string): Promise<string> {
 }
 
 describe('project Goal persistence', () => {
-  it('persists one project Goal across sessions and process reopen', async () => {
+  it('resumes a session Goal across process reopen and leaves other chats empty', async () => {
     const directory = await stateDir('resume');
     const first = new ProjectGoalApi(directory);
     const a = session('session-a');
@@ -42,15 +42,17 @@ describe('project Goal persistence', () => {
     await first.close();
 
     const reopened = new ProjectGoalApi(directory);
+    const resumed = await reopened.command(a, 'status');
+    expect(resumed.goal?.objective).toBe('ship project goal');
+    expect((await reopened.status(a.id)).goalId).toBe(goalId);
+
     const b = session('session-b');
-    const status = await reopened.command(b, 'status');
-    expect(status.goal?.objective).toBe('ship project goal');
-    expect((await reopened.status(b.id)).goalId).toBe(goalId);
+    expect((await reopened.command(b, 'status')).goal).toBeFalsy();
+    expect((await reopened.status(b.id)).goalId).toBeUndefined();
     expect((await reopened.list())[0]?.attachedSessionIds).toEqual(['session-a']);
 
-    await reopened.command(b, 'pause');
-    expect((await reopened.status(b.id)).goal?.status).toBe('paused');
-    expect((await reopened.list())[0]?.attachedSessionIds).toEqual(['session-a', 'session-b']);
+    await reopened.command(a, 'pause');
+    expect((await reopened.status(a.id)).goal?.status).toBe('paused');
     await reopened.close();
   });
 

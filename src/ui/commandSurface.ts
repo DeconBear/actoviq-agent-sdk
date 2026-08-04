@@ -10,7 +10,7 @@ export const HADAMARD_INTERACTIVE_COMMANDS: Record<string, string> = {
   usage: 'Alias for /cost',
   doctor: 'Run configuration diagnostics',
   batch: 'Run multiple prompts from a file sequentially',
-  goal: 'Set or view a session goal with status tracking',
+  goal: 'Set a goal for this chat and run it',
   review: 'Review the current git diff for correctness',
   diff: 'Show or apply the current Session worktree diff',
   stats: 'Show session statistics',
@@ -190,7 +190,7 @@ export const SUBCOMMAND_DESCRIPTIONS: Record<string, string> = {
 const COMMAND_USAGES: Record<string, string> = {
   compact: '/compact [summary instructions]',
   batch: '/batch <file>',
-  goal: '/goal [start <objective>|status|tasks|run|schedule <manual|foreground|scheduled> [min-seconds] [max-seconds] [config:name|agent:name]|replan|answer <gate-id> <answer>|history|pause|resume|cancel|clear]',
+  goal: '/goal [<objective>|status|run|pause|resume|clear]',
   export: '/export [filename]',
   model: '/model [model|min|medium|max|default|config|router [name|off]]',
   effort: '/effort [auto|low|medium|high|max]',

@@ -148,18 +148,24 @@ export class GoalContinuationService {
 }
 
 function buildContinuationPrompt(decision: Exclude<GoalExecutionDecision, { kind: 'stop' }>): string {
+  const discipline = [
+    'Stay inside the session working directory for every create/edit/verify step.',
+    'Do not write into ~/.hadamard, project data directories, temp caches, or any path outside the working directory.',
+    'Before requesting completion, re-read the concrete artifact from disk under the working directory and cite that tool result as evidence.',
+    'If an exact user or external dependency is required, record a gate/deferred item instead of guessing.',
+  ];
   if (decision.kind === 'replan') {
     return [
-      'Continue the active project Goal in replanning mode.',
+      'Continue the active session Goal in replanning mode.',
       `Trigger: ${decision.trigger}.`,
       'Inspect the current Goal, use PlanGoal to make a material frontier change, then execute the highest-priority runnable item.',
-      'Do not claim completion without runtime-observed evidence.',
+      ...discipline,
     ].join('\n');
   }
   return [
-    'Continue the active project Goal autonomously.',
+    'Continue the active session Goal autonomously.',
     decision.workItemId ? `Advance work item ${decision.workItemId}.` : `Mode: ${decision.mode}.`,
     'Use the Goal tools to record plan or work-item requests, and validate concrete results before requesting completion.',
-    'If an exact user or external dependency is required, record a gate/deferred item instead of guessing.',
+    ...discipline,
   ].join('\n');
 }

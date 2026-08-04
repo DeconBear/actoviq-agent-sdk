@@ -136,6 +136,22 @@ describe('Goal native continuation', () => {
     store.close();
   });
 
+  it('anchors continuation turns to the session working directory', async () => {
+    const { store, goalId } = await fixture();
+    store.configureContinuation({ goalId, mode: 'manual' });
+    let prompt = '';
+    const continuation = new GoalContinuationService(store, async input => {
+      prompt = input.prompt;
+      return result('cwd-anchor');
+    });
+    await continuation.run({ goalId, force: true });
+    expect(prompt).toContain('Continue the active session Goal');
+    expect(prompt).toContain('Stay inside the session working directory');
+    expect(prompt).toContain('Do not write into ~/.hadamard');
+    expect(prompt).toContain('re-read the concrete artifact from disk');
+    store.close();
+  });
+
   it('reschedules after answering a user gate while continuation is scheduled', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-04T00:00:00.000Z'));
