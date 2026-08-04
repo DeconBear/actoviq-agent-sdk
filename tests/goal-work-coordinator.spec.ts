@@ -67,6 +67,27 @@ describe('Goal multi-agent ownership', () => {
     store.close();
   });
 
+  it('claims a specific work item for the main session and reopens on release', async () => {
+    const { store, service, goalId } = await fixture();
+    const claim = store.claimWorkItem({
+      goalId,
+      workItemId: 'backend',
+      agentId: 'session-main',
+    });
+    expect(claim?.workItemId).toBe('backend');
+    expect(store.claimWorkItem({
+      goalId,
+      workItemId: 'backend',
+      agentId: 'other-session',
+    })).toBeUndefined();
+    store.markClaimRunning(claim!.claimToken);
+    await service.beginWorkItem('backend');
+    expect(store.readSnapshot(goalId)?.workItems.find(item => item.id === 'backend')?.status).toBe('running');
+    expect(store.releaseWorkClaim(claim!.claimToken, 'turn_settled')).toBe(true);
+    expect(store.readSnapshot(goalId)?.workItems.find(item => item.id === 'backend')?.status).toBe('open');
+    store.close();
+  });
+
   it('records handoff receipts and rejects an out-of-scope target', async () => {
     const { store, goalId } = await fixture();
     const claim = store.claimNextWork({ goalId, agentId: 'worker-a', roleScopes: ['backend'] })!;

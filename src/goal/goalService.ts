@@ -574,7 +574,16 @@ export class GoalService {
             ? { ...input.receipt, outcome: 'replan_required' }
             : input.receipt;
       const completedBefore = current.workItems.filter(item => item.status === 'done').length;
-      const completedAfter = applied.workItems.filter(item => item.status === 'done').length;
+      const reopenOnFailure = effectiveReceipt.outcome === 'interrupted'
+        || effectiveReceipt.outcome === 'failed';
+      const settledWorkItems = reopenOnFailure && effectiveReceipt.workItemId
+        ? applied.workItems.map(item => (
+          item.id === effectiveReceipt.workItemId && item.status === 'running'
+            ? { ...item, status: 'open' as const, updatedAt: at }
+            : item
+        ))
+        : applied.workItems;
+      const completedAfter = settledWorkItems.filter(item => item.status === 'done').length;
       const validated = effectiveReceipt.validation.status === 'passed'
         || effectiveReceipt.outcome === 'validated_progress'
         || effectiveReceipt.outcome === 'validated_completion';
@@ -600,9 +609,9 @@ export class GoalService {
         evidence: nextEvidence.slice(-EVIDENCE_RETAIN),
         turnReceipts: [...current.turnReceipts, effectiveReceipt].slice(-TURN_RECEIPT_RETAIN),
         completionRequest: undefined,
-        workItems: applied.workItems,
+        workItems: settledWorkItems,
         workItemRequests: [],
-        planRevision: current.planRevision + (applied.changed ? 1 : 0),
+        planRevision: current.planRevision + (applied.changed || reopenOnFailure ? 1 : 0),
         replanAudit,
         ...(input.replan?.deltaRecorded ? { forcedReplan: undefined } : {}),
         ...(applied.noFollowupReason ? { noFollowupReason: applied.noFollowupReason } : {}),

@@ -67,7 +67,10 @@ export {
   GoalExecutionBlockedError,
   decideGoalExecution,
   settleGoalRun,
+  settleGoalRunFailure,
+  isExploratoryTool,
   type GoalExecutionDecision,
+  type DecideGoalExecutionOptions,
 } from './goalController.js';
 export {
   executeGoalCommand,

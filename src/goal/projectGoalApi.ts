@@ -106,6 +106,10 @@ export class ProjectGoalApi {
       await this.serviceForSession(session, { forceNew }),
       rawArgs,
     );
+    if (command === 'answer' && result.ok) {
+      const continuation = await this.continuationStatus(session.id);
+      if (continuation?.mode === 'scheduled') this.schedule(continuation);
+    }
     if (command === 'status' || command === '') {
       const [continuation, claims, handoffs] = await Promise.all([
         this.continuationStatus(session.id),
@@ -174,6 +178,33 @@ export class ProjectGoalApi {
     const record = store.readForSession(sessionId);
     if (!record) return undefined;
     return new GoalWorkCoordinator(store, this.agentPool).claim(record.id, worker, leaseMs);
+  }
+
+  /** Claim a specific frontier item for the main session agent (prevents double-run). */
+  async claimWorkItem(
+    sessionId: string,
+    workItemId: string,
+    options: { agentId?: string; leaseMs?: number } = {},
+  ): Promise<GoalWorkClaim | undefined> {
+    const store = await this.store();
+    const record = store.readForSession(sessionId);
+    if (!record) return undefined;
+    const claim = store.claimWorkItem({
+      goalId: record.id,
+      workItemId,
+      agentId: options.agentId ?? sessionId,
+      ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
+    });
+    if (claim) store.markClaimRunning(claim.claimToken);
+    return claim;
+  }
+
+  async releaseWorkClaim(claimToken: string, reason = 'released'): Promise<boolean> {
+    return (await this.store()).releaseWorkClaim(claimToken, reason);
+  }
+
+  async completeWorkClaim(claimToken: string, evidenceRefs: string[]): Promise<boolean> {
+    return (await this.store()).completeWorkClaim(claimToken, evidenceRefs);
   }
 
   async workClaims(sessionId?: string): Promise<GoalWorkClaim[]> {
@@ -308,7 +339,17 @@ export class ProjectGoalApi {
     this.clearTimer(state.goalId);
     if (this.closed || state.mode !== 'scheduled' || !state.sessionId || !state.nextWakeAt) return;
     const goal = this.resolvedStore?.readSnapshot(state.goalId);
-    if (!goal || decideGoalExecution(goal).kind === 'stop') return;
+    if (!goal) return;
+    const decision = decideGoalExecution(goal);
+    // Keep arming through waiting_user / waiting_external so an answer or
+    // deferred resume can wake without requiring a manual `/goal run`.
+    if (
+      decision.kind === 'stop'
+      && decision.reason !== 'waiting_user'
+      && decision.reason !== 'waiting_external'
+    ) {
+      return;
+    }
     const delay = Math.max(0, Math.min(Date.parse(state.nextWakeAt) - Date.now(), 2_147_000_000));
     const timer = setTimeout(() => {
       this.timers.delete(state.goalId);

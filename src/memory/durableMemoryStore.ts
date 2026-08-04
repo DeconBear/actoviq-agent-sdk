@@ -50,34 +50,40 @@ export class DurableMemoryStore {
   }): boolean {
     const now = input.now ?? new Date();
     const nowIso = now.toISOString();
-    const existing = this.driver.prepare(
-      'SELECT transcript_version, status, lease_expires_at, next_retry_at FROM rollout_extractions WHERE session_id = ?',
-    ).get(input.sessionId);
-    if (existing?.transcript_version === input.transcriptVersion && existing.status === 'complete') {
-      return false;
-    }
-    if (isFuture(existing?.lease_expires_at, now) || isFuture(existing?.next_retry_at, now)) {
-      return false;
-    }
-    this.driver.prepare(`
-      INSERT INTO rollout_extractions (
-        session_id, transcript_version, status, lease_owner, lease_expires_at, attempts, generated_at
-      ) VALUES (?, ?, 'leased', ?, ?, 0, ?)
-      ON CONFLICT(session_id) DO UPDATE SET
-        transcript_version = excluded.transcript_version,
-        status = 'leased',
-        lease_owner = excluded.lease_owner,
-        lease_expires_at = excluded.lease_expires_at,
-        next_retry_at = NULL,
-        last_error = NULL
-    `).run(
-      input.sessionId,
-      input.transcriptVersion,
-      input.owner,
-      new Date(now.getTime() + LEASE_MS).toISOString(),
-      nowIso,
-    );
-    return true;
+    const leaseExpiresAt = new Date(now.getTime() + LEASE_MS).toISOString();
+    return this.driver.transaction(() => {
+      const existing = this.driver.prepare(
+        'SELECT transcript_version, status, lease_expires_at, next_retry_at FROM rollout_extractions WHERE session_id = ?',
+      ).get(input.sessionId);
+      if (existing?.transcript_version === input.transcriptVersion && existing.status === 'complete') {
+        return false;
+      }
+      if (isFuture(existing?.lease_expires_at, now) || isFuture(existing?.next_retry_at, now)) {
+        return false;
+      }
+      const result = this.driver.prepare(`
+        INSERT INTO rollout_extractions (
+          session_id, transcript_version, status, lease_owner, lease_expires_at, attempts, generated_at
+        ) VALUES (?, ?, 'leased', ?, ?, 0, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          transcript_version = excluded.transcript_version,
+          status = 'leased',
+          lease_owner = excluded.lease_owner,
+          lease_expires_at = excluded.lease_expires_at,
+          next_retry_at = NULL,
+          last_error = NULL
+        WHERE rollout_extractions.status != 'leased'
+          OR rollout_extractions.lease_expires_at IS NULL
+          OR rollout_extractions.lease_expires_at <= excluded.generated_at
+      `).run(
+        input.sessionId,
+        input.transcriptVersion,
+        input.owner,
+        leaseExpiresAt,
+        nowIso,
+      );
+      return result.changes === 1;
+    });
   }
 
   completeExtraction(input: {

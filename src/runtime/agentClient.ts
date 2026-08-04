@@ -142,10 +142,12 @@ import {
   decideGoalExecution,
   GoalExecutionBlockedError,
   type GoalExecutionDecision,
+  type GoalWorkClaim,
   GoalService,
   ProjectGoalApi,
   type GoalContinuationProfileRef,
   settleGoalRun,
+  settleGoalRunFailure,
 } from '../goal/index.js';
 import {
   HadamardWorkspace,
@@ -2640,14 +2642,60 @@ export class HadamardAgentClient {
     const model = this.resolveModel(options.model ?? session?.model);
     const goalService = await this.resolveGoalService(session, liveSession);
     let goalExecutionDecision: GoalExecutionDecision = { kind: 'run', mode: 'work' };
+    let goalWorkClaim: GoalWorkClaim | undefined;
+    const goalSessionId = liveSession?.id ?? session?.id;
     if (goalService) {
-      goalExecutionDecision = decideGoalExecution(await goalService.read());
+      const foreignClaims = goalSessionId
+        ? (await this.goals.workClaims(goalSessionId))
+          .filter(claim => claim.agentId !== goalSessionId)
+          .map(claim => claim.workItemId)
+        : [];
+      goalExecutionDecision = decideGoalExecution(await goalService.read(), {
+        unavailableWorkItemIds: new Set(foreignClaims),
+      });
       if (goalExecutionDecision.kind === 'stop') {
         throw new GoalExecutionBlockedError(goalExecutionDecision);
       }
+      if (goalExecutionDecision.kind === 'run' && goalExecutionDecision.workItemId && goalSessionId) {
+        goalWorkClaim = await this.goals.claimWorkItem(goalSessionId, goalExecutionDecision.workItemId, {
+          agentId: goalSessionId,
+        });
+        if (!goalWorkClaim) {
+          // Lost the race to another agent — re-decide excluding the contested item.
+          const unavailable = new Set([
+            ...foreignClaims,
+            goalExecutionDecision.workItemId,
+          ]);
+          goalExecutionDecision = decideGoalExecution(await goalService.read(), {
+            unavailableWorkItemIds: unavailable,
+          });
+          if (goalExecutionDecision.kind === 'stop') {
+            throw new GoalExecutionBlockedError(goalExecutionDecision);
+          }
+          if (goalExecutionDecision.kind === 'run' && goalExecutionDecision.workItemId) {
+            goalWorkClaim = await this.goals.claimWorkItem(
+              goalSessionId,
+              goalExecutionDecision.workItemId,
+              { agentId: goalSessionId },
+            );
+            if (!goalWorkClaim) {
+              throw new GoalExecutionBlockedError({
+                kind: 'stop',
+                reason: 'waiting_external',
+                message: `Goal work item ${goalExecutionDecision.workItemId} is claimed by another agent.`,
+              });
+            }
+          }
+        }
+      }
       if (goalExecutionDecision.kind === 'run' && goalExecutionDecision.workItemId) {
         const started = await goalService.beginWorkItem(goalExecutionDecision.workItemId);
-        if (!started.ok) throw new Error(started.message);
+        if (!started.ok) {
+          if (goalWorkClaim) {
+            await this.goals.releaseWorkClaim(goalWorkClaim.claimToken, 'begin_failed').catch(() => undefined);
+          }
+          throw new Error(started.message);
+        }
       }
     }
     const executionIdentity = resolveAgentExecutionIdentity({
@@ -2923,6 +2971,20 @@ export class HadamardAgentClient {
         await settleGoalRun(goalService, result, goalExecutionDecision).catch((error) => {
           console.warn(`[Goal] Failed to settle ${runId}: ${asError(error).message}`);
         });
+        if (goalWorkClaim) {
+          const settledGoal = await goalService.read().catch(() => null);
+          const settledItem = settledGoal?.workItems.find(item => item.id === goalWorkClaim!.workItemId);
+          if (settledItem?.status === 'done' && settledItem.evidenceRefs.length > 0) {
+            await this.goals.completeWorkClaim(goalWorkClaim.claimToken, settledItem.evidenceRefs)
+              .catch((error) => {
+                console.warn(`[Goal] Failed to complete claim ${runId}: ${asError(error).message}`);
+              });
+          } else {
+            await this.goals.releaseWorkClaim(goalWorkClaim.claimToken, 'turn_settled').catch((error) => {
+              console.warn(`[Goal] Failed to release claim ${runId}: ${asError(error).message}`);
+            });
+          }
+        }
       }
       if (fileCheckpointStarted && session?.id) {
         await this.fileChangeJournal.sealTurn(session.id, runId, 'completed');
@@ -2941,6 +3003,24 @@ export class HadamardAgentClient {
       }
       if (!isHadamardPromptTooLongError(error) || !deferPromptTooLongSettlement) {
         const interrupted = options.signal?.aborted || error instanceof RunAbortedError;
+        if (goalService && !(error instanceof GoalExecutionBlockedError)) {
+          await settleGoalRunFailure(goalService, {
+            runId,
+            ...(goalExecutionDecision.kind === 'run' && goalExecutionDecision.workItemId
+              ? { workItemId: goalExecutionDecision.workItemId }
+              : {}),
+            outcome: interrupted ? 'interrupted' : 'failed',
+            message: asError(error).message,
+          }).catch((settleError) => {
+            console.warn(`[Goal] Failed to settle failure ${runId}: ${asError(settleError).message}`);
+          });
+        }
+        if (goalWorkClaim) {
+          await this.goals.releaseWorkClaim(
+            goalWorkClaim.claimToken,
+            interrupted ? 'interrupted' : 'failed',
+          ).catch(() => undefined);
+        }
         await this.executions.settleTurn(executionIdentity, runId, {
           outcome: interrupted ? 'interrupted' : 'errored',
           error: asError(error).message,

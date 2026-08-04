@@ -236,7 +236,12 @@ export class ProjectGoalStore {
     const now = input.now ?? new Date();
     const current = this.continuationState(input.goalId);
     if (!current || current.leaseOwner !== input.owner) return current;
-    const noChange = input.outcome === 'no_change' || input.outcome === 'replan_required' || Boolean(input.error);
+    // Replan attempts are not "no progress" — only true stalls back off.
+    const noChange = input.outcome === 'no_change'
+      || input.outcome === 'failed'
+      || input.outcome === 'interrupted'
+      || input.outcome === 'validation_failed'
+      || Boolean(input.error);
     const interval = noChange
       ? Math.min(current.maxIntervalSeconds, Math.max(current.minIntervalSeconds, current.currentIntervalSeconds * 2))
       : Math.max(current.minIntervalSeconds, Math.floor(current.currentIntervalSeconds / 2));
@@ -385,6 +390,23 @@ export class ProjectGoalStore {
     if (!row) return false;
     const result = this.driver.prepare('DELETE FROM goal_work_claims WHERE claim_token = ?').run(claimToken);
     if (result.changes === 1) {
+      this.updateSnapshot(String(row.goal_id), raw => {
+        const goal = normalizeGoal(raw, now.toISOString());
+        if (!goal) return undefined;
+        let changed = false;
+        const workItems = goal.workItems.map(item => {
+          if (item.id !== String(row.work_item_id)) return item;
+          if (item.status !== 'running' && item.status !== 'claimed') return item;
+          changed = true;
+          return { ...item, status: 'open' as const, updatedAt: now.toISOString() };
+        });
+        return changed ? {
+          ...goal,
+          workItems,
+          updatedAt: now.toISOString(),
+          revision: goal.revision + 1,
+        } : goal;
+      });
       this.insertEvent(String(row.goal_id), 'work_claim_released', now.toISOString(), undefined, {
         workItemId: String(row.work_item_id),
         agentId: String(row.agent_id),
@@ -392,6 +414,92 @@ export class ProjectGoalStore {
       });
     }
     return result.changes === 1;
+  }
+
+  /** Atomically claim a specific work item if it is runnable and unclaimed. */
+  claimWorkItem(input: {
+    goalId: string;
+    workItemId: string;
+    agentId: string;
+    roleScopes?: string[];
+    leaseMs?: number;
+    now?: Date;
+  }): GoalWorkClaim | undefined {
+    const now = input.now ?? new Date();
+    const roleScopes = unique(input.roleScopes ?? []);
+    return this.driver.transaction(() => {
+      const goal = this.readSnapshot(input.goalId);
+      if (!goal || goal.status !== 'active') return undefined;
+      const completed = new Set(goal.workItems
+        .filter(item => item.status === 'done' || item.status === 'cancelled')
+        .map(item => item.id));
+      const existing = this.driver.prepare(`
+        SELECT * FROM goal_work_claims WHERE goal_id = ? AND work_item_id = ? AND lease_expires_at > ?
+      `).get(input.goalId, input.workItemId, now.toISOString());
+      if (existing) {
+        return String(existing.agent_id) === input.agentId ? mapWorkClaim(existing) : undefined;
+      }
+      const item = goal.workItems.find(candidate => candidate.id === input.workItemId);
+      if (
+        !item
+        || item.role !== 'agent'
+        || !['open', 'claimed', 'running'].includes(item.status)
+        || !item.dependsOn.every(id => completed.has(id))
+        || (item.excludedAgentIds ?? []).includes(input.agentId)
+      ) {
+        return undefined;
+      }
+      // Empty roleScopes = session owner / unrestricted claimant.
+      if (
+        roleScopes.length > 0
+        && (item.roleScopes ?? []).length > 0
+        && !(item.roleScopes ?? []).some(scope => roleScopes.includes(scope))
+      ) {
+        return undefined;
+      }
+      const claimedAt = now.toISOString();
+      const claim: GoalWorkClaim = {
+        goalId: input.goalId,
+        workItemId: item.id,
+        agentId: input.agentId,
+        claimToken: `goal-claim:${createId()}`,
+        roleScopes,
+        claimedAt,
+        leaseExpiresAt: new Date(now.getTime() + Math.max(1_000, input.leaseMs ?? 15 * 60_000)).toISOString(),
+        updatedAt: claimedAt,
+      };
+      const result = this.driver.prepare(`
+        INSERT INTO goal_work_claims (
+          goal_id, work_item_id, agent_id, claim_token, role_scopes_json,
+          claimed_at, lease_expires_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(goal_id, work_item_id) DO UPDATE SET
+          agent_id = excluded.agent_id,
+          claim_token = excluded.claim_token,
+          role_scopes_json = excluded.role_scopes_json,
+          claimed_at = excluded.claimed_at,
+          lease_expires_at = excluded.lease_expires_at,
+          updated_at = excluded.updated_at
+        WHERE goal_work_claims.lease_expires_at <= ?
+      `).run(
+        claim.goalId,
+        claim.workItemId,
+        claim.agentId,
+        claim.claimToken,
+        JSON.stringify(claim.roleScopes),
+        claim.claimedAt,
+        claim.leaseExpiresAt,
+        claim.updatedAt,
+        claimedAt,
+      );
+      if (result.changes !== 1) return undefined;
+      this.insertEvent(input.goalId, 'work_claimed', claimedAt, undefined, {
+        workItemId: claim.workItemId,
+        agentId: input.agentId,
+        leaseExpiresAt: claim.leaseExpiresAt,
+      });
+      return claim;
+    });
   }
 
   completeWorkClaim(claimToken: string, evidenceRefs: string[], now = new Date()): boolean {

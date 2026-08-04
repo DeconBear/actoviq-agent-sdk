@@ -209,8 +209,10 @@ function getPersistedCompactContinuationDepth(
 function compactToolResultContent(
   messages: readonly MessageParam[],
   config: HadamardCompactConfig,
+  options: { clearBeforeMessageIndex?: number } = {},
 ): { messages: MessageParam[]; clearedCount: number; clearedToolIds: string[] } {
   const cloneMessages = (): MessageParam[] => messages.map(message => structuredClone(message));
+  const clearBeforeMessageIndex = options.clearBeforeMessageIndex ?? Number.POSITIVE_INFINITY;
 
   if (!config.microcompactEnabled) {
     return {
@@ -226,6 +228,10 @@ function compactToolResultContent(
     toolUseId?: string;
   }> = [];
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    // Only clear tool results that will be summarized away. Clearing inside the
+    // preserved tail would write "[Old tool result content cleared]" into the
+    // live conversation when Stage 2 keeps those messages.
+    if (messageIndex >= clearBeforeMessageIndex) continue;
     const message = messages[messageIndex]!;
     if (message.role !== 'user' || !Array.isArray(message.content)) {
       continue;
@@ -715,7 +721,6 @@ export async function compactHadamardSession(
   // break automatic prompt-prefix caches used by createAgentSdk / hadamard-tui.
   const localTokenEstimate = estimateHadamardConversationTokens(compactableMessages);
   const tokenEstimateBefore = context.reportedInputTokens ?? localTokenEstimate;
-  const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig);
 
   if (!context.compactConfig.enabled) {
     return {
@@ -766,8 +771,10 @@ export async function compactHadamardSession(
     };
   }
 
+  // Resolve the preserve boundary on the original messages first so Stage 1
+  // never clears tool results that Stage 2 will keep in the live conversation.
   let preserveStart = resolvePreserveStartIndex(
-    microcompacted.messages,
+    compactableMessages,
     context.compactConfig,
     options.preserveRecentMessages,
   );
@@ -776,6 +783,13 @@ export async function compactHadamardSession(
   // by tool_result blocks in the preserved portion. Without this, compaction
   // can create orphaned tool_result blocks that cause provider-side
   // "unexpected tool_use_id" HTTP 400 errors.
+  preserveStart = extendPreserveToIncludeReferencedToolUses(
+    compactableMessages,
+    preserveStart,
+  );
+  const microcompacted = compactToolResultContent(compactableMessages, context.compactConfig, {
+    clearBeforeMessageIndex: preserveStart,
+  });
   preserveStart = extendPreserveToIncludeReferencedToolUses(
     microcompacted.messages,
     preserveStart,
@@ -1143,20 +1157,23 @@ export async function compactHadamardConversationIfNeeded(
     };
   }
 
-  // Stage 1: clear old large tool results only as preprocess for Stage 2
-  // summary. Never write microcompact-only mutations back into the live
-  // conversation — that breaks automatic prefix caches (DeepSeek, etc.).
-  const microcompacted = compactToolResultContent(messages, config);
-
-  // Stage 2: summarize older turns, preserving the recent tail and any
-  // tool_use blocks referenced by preserved tool_results.
-  let preserveStart = resolvePreserveStartIndex(microcompacted.messages, config);
+  // Resolve the preserve boundary on the original messages first so Stage 1
+  // never clears tool results that Stage 2 will keep in the live conversation.
+  let preserveStart = resolvePreserveStartIndex(messages, config);
   if (context.force && preserveStart === 0) {
     // Reactive recovery on a short conversation: the default preserve window
     // would leave nothing to summarize. Preserve only the last message so the
     // forced compact can still shrink the request.
-    preserveStart = Math.max(microcompacted.messages.length - 1, 0);
+    preserveStart = Math.max(messages.length - 1, 0);
   }
+  preserveStart = extendPreserveToIncludeReferencedToolUses(messages, preserveStart);
+
+  // Stage 1: clear old large tool results only as preprocess for Stage 2
+  // summary. Never write microcompact-only mutations back into the live
+  // conversation — that breaks automatic prefix caches (DeepSeek, etc.).
+  const microcompacted = compactToolResultContent(messages, config, {
+    clearBeforeMessageIndex: preserveStart,
+  });
   preserveStart = extendPreserveToIncludeReferencedToolUses(
     microcompacted.messages,
     preserveStart,

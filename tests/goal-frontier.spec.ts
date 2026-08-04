@@ -62,6 +62,42 @@ describe('Goal work frontier', () => {
     expect(decideGoalExecution(await svc.read())).toMatchObject({ kind: 'run', workItemId: 'deploy' });
   });
 
+  it('does not let a future user gate preempt runnable agent work', async () => {
+    const svc = service();
+    await svc.create({ objective: 'ship' });
+    await svc.plan({ items: [
+      { id: 'implement', priority: 'P0', text: 'Implement feature' },
+      {
+        id: 'approval',
+        role: 'user',
+        taskClass: 'user_gate',
+        priority: 'P0',
+        text: 'Approve release',
+        dependsOn: ['implement'],
+      },
+    ] });
+    expect(decideGoalExecution(await svc.read())).toMatchObject({
+      kind: 'run',
+      mode: 'work',
+      workItemId: 'implement',
+    });
+  });
+
+  it('skips work items claimed by another agent', async () => {
+    const svc = service();
+    await svc.create({ objective: 'parallel' });
+    await svc.plan({ items: [
+      { id: 'a', priority: 'P0', text: 'First' },
+      { id: 'b', priority: 'P1', text: 'Second' },
+    ] });
+    expect(decideGoalExecution(await svc.read(), {
+      unavailableWorkItemIds: new Set(['a']),
+    })).toMatchObject({ kind: 'run', workItemId: 'b' });
+    expect(decideGoalExecution(await svc.read(), {
+      unavailableWorkItemIds: new Set(['a', 'b']),
+    })).toMatchObject({ kind: 'stop', reason: 'waiting_external' });
+  });
+
   it('waits on an exact deferred resume condition', async () => {
     const svc = service();
     await svc.create({ objective: 'watch CI' });

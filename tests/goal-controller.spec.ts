@@ -100,4 +100,46 @@ describe('Goal runtime controller', () => {
     expect(goal.turnReceipts.at(-1)?.outcome).toBe('validated_completion');
     expect(goal.evidence.some(item => item.ref === 'tool:call-1' && item.verified)).toBe(true);
   });
+
+  it('does not treat exploratory Read/Glob success as validated progress', async () => {
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'investigate' });
+    await settleGoalRun(service, result({
+      toolCalls: [
+        {
+          id: 'read-1', name: 'Read', publicName: 'Read', provider: 'local', input: {},
+          startedAt: '2026-08-04T00:00:00Z', completedAt: '2026-08-04T00:00:01Z',
+          outputText: 'file', isError: false, durationMs: 1,
+        },
+        {
+          id: 'glob-1', name: 'Glob', publicName: 'Glob', provider: 'local', input: {},
+          startedAt: '2026-08-04T00:00:01Z', completedAt: '2026-08-04T00:00:02Z',
+          outputText: 'paths', isError: false, durationMs: 1,
+        },
+      ],
+    }), { kind: 'run', mode: 'work', workItemId: 'goal-work:1' });
+    const goal = (await service.read())!;
+    expect(goal.turnReceipts.at(-1)?.outcome).toBe('no_change');
+    expect(goal.delivery.validatedTurns).toBe(0);
+    expect(goal.evidence).toHaveLength(2);
+  });
+
+  it('reopens a running work item after an interrupted failure settlement', async () => {
+    const port = new MemoryGoalPort();
+    const service = new GoalService({ port });
+    await service.create({ objective: 'ship' });
+    await service.beginWorkItem('goal-work:1');
+    expect((await service.read())!.workItems[0]?.status).toBe('running');
+    const { settleGoalRunFailure } = await import('../src/goal/goalController.js');
+    await settleGoalRunFailure(service, {
+      runId: 'run-abort',
+      workItemId: 'goal-work:1',
+      outcome: 'interrupted',
+      message: 'aborted',
+    });
+    const goal = (await service.read())!;
+    expect(goal.workItems[0]?.status).toBe('open');
+    expect(goal.turnReceipts.at(-1)?.outcome).toBe('interrupted');
+  });
 });

@@ -271,6 +271,57 @@ describe('compactHadamardConversationIfNeeded', () => {
     expect(modelApi.createCalls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('keeps preserved-tail tool results intact under preserveRecentUserTokens', async () => {
+    const modelApi = new MockModelApi({
+      create: () => makeMessage([{ type: 'text', text: 'token-window summary' }]),
+    });
+    const oldPayload = `old-tool-${'x'.repeat(2_000)}`;
+    const preservedPayload = `keep-tool-${'y'.repeat(400)}`;
+    const messages: MessageParam[] = [
+      { role: 'user', content: 'start' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_old', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_old', content: oldPayload }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'noted old' }] },
+      { role: 'user', content: 'continue with a recent tool result that must stay intact' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'toolu_keep', name: 'lookup', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_keep', content: preservedPayload }],
+      },
+      { role: 'assistant', content: [{ type: 'text', text: 'ready' }] },
+    ];
+
+    const outcome = await compactHadamardConversationIfNeeded(messages, {
+      model: 'test-model',
+      modelApi,
+      compactConfig: baseCompactConfig({
+        loopAutoCompactThresholdTokens: 100,
+        microcompactEnabled: true,
+        // Clear every large tool_result in the summarize region — the bug was
+        // clearing ones that still fall inside the preserve token window.
+        microcompactKeepRecentToolResults: 0,
+        microcompactMinContentChars: 50,
+        preserveRecentUserTokens: 250,
+      }),
+      maxTokens: 1_000,
+      runKey: 'run-preserve-token-tail',
+    });
+
+    expect(outcome.compacted).toBe(true);
+    expect(JSON.stringify(outcome.messages)).toContain(preservedPayload.slice(0, 40));
+    expect(JSON.stringify(outcome.messages)).not.toContain('[Old tool result content cleared]');
+    expect(JSON.stringify(outcome.messages)).not.toContain(oldPayload.slice(0, 40));
+  });
+
   it('leaves the conversation unchanged when summary compaction fails', async () => {
     const modelApi = new MockModelApi({
       create: () => {

@@ -116,6 +116,81 @@ describe('Goal native continuation', () => {
     store.close();
   });
 
+  it('does not treat a successful replan as no-change backoff', async () => {
+    const { store, goalId } = await fixture();
+    store.configureContinuation({
+      goalId,
+      mode: 'scheduled',
+      minIntervalSeconds: 10,
+      maxIntervalSeconds: 80,
+      now: new Date('2026-08-04T00:00:00.000Z'),
+    });
+    expect(store.acquireContinuationLease(goalId, 'replan-owner')).toBe(true);
+    const settled = store.settleContinuation({
+      goalId,
+      owner: 'replan-owner',
+      outcome: 'replan_required',
+    });
+    expect(settled?.currentIntervalSeconds).toBe(10);
+    expect(settled?.consecutiveNoChange).toBe(0);
+    store.close();
+  });
+
+  it('reschedules after answering a user gate while continuation is scheduled', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-04T00:00:00.000Z'));
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hadamard-goal-gate-resume-'));
+    roots.push(directory);
+    let wakes = 0;
+    const api = new ProjectGoalApi(directory, {
+      continuationExecutor: async input => {
+        wakes += 1;
+        const service = await api.serviceForSession({ id: input.sessionId, metadata: {} });
+        await service.settleTurn({
+          receipt: {
+            id: `wake-${wakes}`,
+            runId: `wake-run-${wakes}`,
+            workItemId: input.decision.kind === 'run' ? input.decision.workItemId : 'deploy',
+            at: new Date().toISOString(),
+            outcome: 'validated_progress',
+            evidenceRefs: ['tool:ok'],
+            validation: { status: 'passed' },
+            usage: { turns: 1, toolIterations: 1, tokens: 5 },
+          },
+          evidence: [{
+            at: new Date().toISOString(),
+            note: 'advanced',
+            kind: 'tool_result',
+            ref: 'tool:ok',
+            verified: true,
+          }],
+        });
+        return result(`wake-run-${wakes}`);
+      },
+    });
+    const session = { id: 'gate-session', metadata: {} };
+    const service = await api.serviceForSession(session);
+    await service.create({ objective: 'gated deploy' });
+    await service.plan({
+      items: [
+        { id: 'approval', role: 'user', taskClass: 'user_gate', priority: 'P0', text: 'Approve' },
+        { id: 'deploy', priority: 'P0', text: 'Deploy', dependsOn: ['approval'] },
+      ],
+    });
+    await api.configureContinuation({
+      sessionId: session.id,
+      mode: 'scheduled',
+      minIntervalSeconds: 5,
+      maxIntervalSeconds: 60,
+    });
+    const answered = await api.command(session, 'answer approval ship it');
+    expect(answered.ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await Promise.resolve();
+    expect(wakes).toBeGreaterThanOrEqual(1);
+    await api.close();
+  });
+
   it('runs foreground continuation until the frontier reaches an exact wait state', async () => {
     const { store, service, goalId } = await fixture();
     store.configureContinuation({ goalId, mode: 'foreground' });
