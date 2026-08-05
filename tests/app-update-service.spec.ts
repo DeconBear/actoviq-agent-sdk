@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  canUseNativeDesktopAutoUpdater,
+  compareVersions,
   createAppUpdateController,
   createUnsupportedAppUpdateController,
+  fetchLatestGithubRelease,
   type NativeAppUpdater,
 } from '../src/update/appUpdateService.js';
 
@@ -37,15 +40,86 @@ function fakeUpdater() {
   return { updater, listeners };
 }
 
+function fakeGithubFetch(payload: Record<string, unknown>, status = 200): typeof fetch {
+  return vi.fn(async () => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+  })) as unknown as typeof fetch;
+}
+
 describe('app update service', () => {
-  it('reports unsupported launches without attempting an update', async () => {
-    const controller = createUnsupportedAppUpdateController('1.0.0', 'Packaged builds only');
+  it('requires electron-builder update metadata before enabling native auto-update', () => {
+    expect(canUseNativeDesktopAutoUpdater({
+      isPackaged: true,
+      resourcesPath: 'E:/fake/resources',
+      hasUpdateMetadata: () => false,
+    })).toBe(false);
+    expect(canUseNativeDesktopAutoUpdater({
+      isPackaged: true,
+      resourcesPath: 'E:/fake/resources',
+      hasUpdateMetadata: () => true,
+    })).toBe(true);
+    expect(canUseNativeDesktopAutoUpdater({
+      isPackaged: false,
+      resourcesPath: 'E:/fake/resources',
+      hasUpdateMetadata: () => true,
+    })).toBe(false);
+  });
+
+  it('compares dotted versions numerically', () => {
+    expect(compareVersions('0.4.11', '0.4.10')).toBe(1);
+    expect(compareVersions('v0.4.11', '0.4.11')).toBe(0);
+    expect(compareVersions('0.4.9', '0.4.11')).toBe(-1);
+  });
+
+  it('reads the latest GitHub release tag', async () => {
+    const fetchImpl = fakeGithubFetch({
+      tag_name: 'v0.4.11',
+      name: 'Hadamard 0.4.11',
+      body: 'notes',
+      html_url: 'https://github.com/DeconBear/hadamard/releases/tag/v0.4.11',
+    });
+    await expect(fetchLatestGithubRelease({ fetchImpl })).resolves.toMatchObject({
+      version: '0.4.11',
+      releaseName: 'Hadamard 0.4.11',
+      releaseUrl: 'https://github.com/DeconBear/hadamard/releases/tag/v0.4.11',
+    });
+  });
+
+  it('checks GitHub Releases even when auto-install is unsupported', async () => {
+    const fetchImpl = fakeGithubFetch({
+      tag_name: 'v0.5.0',
+      html_url: 'https://github.com/DeconBear/hadamard/releases/tag/v0.5.0',
+    });
+    const controller = createUnsupportedAppUpdateController(
+      '0.4.11',
+      'Packaged builds only',
+      { fetchImpl },
+    );
     expect(controller.snapshot()).toMatchObject({
       supported: false,
-      state: 'unsupported',
-      currentVersion: '1.0.0',
+      state: 'idle',
+      currentVersion: '0.4.11',
     });
-    await expect(controller.check()).rejects.toThrow('Packaged builds only');
+    await expect(controller.check()).resolves.toMatchObject({
+      supported: false,
+      state: 'available',
+      currentVersion: '0.4.11',
+      latestVersion: '0.5.0',
+      releaseUrl: 'https://github.com/DeconBear/hadamard/releases/tag/v0.5.0',
+      reason: 'Packaged builds only',
+    });
+    await expect(controller.download()).rejects.toThrow('Packaged builds only');
+  });
+
+  it('reports not-available when already on the GitHub latest', async () => {
+    const fetchImpl = fakeGithubFetch({ tag_name: '0.4.11' });
+    const controller = createUnsupportedAppUpdateController('0.4.11', 'dev', { fetchImpl });
+    await expect(controller.check()).resolves.toMatchObject({
+      state: 'not-available',
+      latestVersion: '0.4.11',
+    });
   });
 
   it('checks, downloads, and hands off installation explicitly', async () => {

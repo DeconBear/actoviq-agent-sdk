@@ -4718,6 +4718,7 @@ export class HadamardAgentClient {
         model: resolved.model,
         modelApi: resolved.modelApi ?? this.modelApi,
         ...overrides,
+        ...(profile.effort ? { effort: profile.effort } : {}),
       };
     }
 
@@ -4728,26 +4729,44 @@ export class HadamardAgentClient {
     if (config.execution === 'cli') {
       throw new Error(`Dream provider config requires external CLI execution: ${profile.name}`);
     }
-    if (!config.model) {
+    const configuredModels = [
+      ...(typeof config.model === 'string' && config.model.trim() ? [config.model.trim()] : []),
+      ...(Array.isArray(config.models)
+        ? config.models
+            .map(entry => (typeof entry?.name === 'string' ? entry.name.trim() : ''))
+            .filter(Boolean)
+        : []),
+    ];
+    const uniqueModels = [...new Set(configuredModels)];
+    const requestedModel = typeof profile.model === 'string' ? profile.model.trim() : '';
+    const model = requestedModel || config.model?.trim() || '';
+    if (!model) {
       throw new Error(`Dream provider config has no model: ${profile.name}`);
+    }
+    if (requestedModel && uniqueModels.length > 0 && !uniqueModels.includes(requestedModel)) {
+      throw new Error(`Dream model "${requestedModel}" is not listed on config "${profile.name}".`);
     }
     const usesCurrentProvider = config.runtime === 'hadamard'
       && !(typeof config.apiKey === 'string' && config.apiKey.trim())
       && !(typeof config.baseURL === 'string' && config.baseURL.trim());
     if (usesCurrentProvider) {
       return {
-        model: this.resolveModel(config.model),
+        model: this.resolveModel(model),
         modelApi: this.modelApi,
+        ...(profile.effort ? { effort: profile.effort } : {}),
       };
     }
     const routed = await buildRouteModelApi({
-      model: config.model,
+      model,
       provider: config.provider,
       baseURL: config.baseURL,
       apiKey: config.apiKey,
       maxTokens: DEFAULT_DREAM_MAX_TOKENS,
     });
-    return routed;
+    return {
+      ...routed,
+      ...(profile.effort ? { effort: profile.effort } : {}),
+    };
   }
 
   private async resolveGoalContinuationRunOptions(

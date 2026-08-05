@@ -21,6 +21,7 @@ import { resolveHadamardHome } from '../config/hadamardHome.js';
 import {
   createAppUpdateController,
   createUnsupportedAppUpdateController,
+  canUseNativeDesktopAutoUpdater,
   type AppUpdateController,
 } from '../update/appUpdateService.js';
 
@@ -128,8 +129,14 @@ async function ensureHadamardHomeInit(args: { homeDir?: string; configPath?: str
 }
 
 function createDesktopAppUpdater(): AppUpdateController {
-  const currentVersion = app.getVersion();
-  if (!app.isPackaged) {
+  // Always prefer package.json — branded/dev Electron reports app.getVersion() as 1.0.0.
+  const currentVersion = readPackageVersion(import.meta.url);
+  const nativeAutoUpdate = canUseNativeDesktopAutoUpdater({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    hasUpdateMetadata: resourcesPath => existsSync(path.join(resourcesPath, 'app-update.yml')),
+  });
+  if (!nativeAutoUpdate) {
     return createUnsupportedAppUpdateController(
       currentVersion,
       'Development builds are not replaced automatically. Install a packaged Hadamard release to use Upgrade.',

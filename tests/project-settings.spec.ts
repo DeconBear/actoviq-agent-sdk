@@ -92,6 +92,71 @@ describe('projectSettings', () => {
     });
   });
 
+  it('persists a Dream config profile with an explicit model', async () => {
+    homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-home-'));
+    workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-work-'));
+    const saved = await writeProjectSettings(workDir, homeDir, {
+      memory: {
+        durableMemory: {
+          autoDream: true,
+          dreamExecutionProfile: {
+            kind: 'config',
+            name: 'deepseek',
+            model: 'deepseek-v4-flash',
+          },
+        },
+      },
+    });
+    expect(saved.memory.durableMemory.dreamExecutionProfile).toEqual({
+      kind: 'config',
+      name: 'deepseek',
+      model: 'deepseek-v4-flash',
+    });
+  });
+
+  it('persists Dream reasoning effort on the execution profile', async () => {
+    homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-home-'));
+    workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-work-'));
+    const saved = await writeProjectSettings(workDir, homeDir, {
+      memory: {
+        durableMemory: {
+          autoDream: true,
+          dreamExecutionProfile: {
+            kind: 'config',
+            name: 'deepseek',
+            model: 'deepseek-v4-pro',
+            effort: 'high',
+          },
+        },
+      },
+    });
+    expect(saved.memory.durableMemory.dreamExecutionProfile).toEqual({
+      kind: 'config',
+      name: 'deepseek',
+      model: 'deepseek-v4-pro',
+      effort: 'high',
+    });
+  });
+
+  it('encodes and decodes Dream profile select values', async () => {
+    const { encodeDreamProfileValue, decodeDreamProfileValue } = await import('../src/gui/projectSettings.js');
+    expect(encodeDreamProfileValue({ kind: 'agent', name: 'memory-agent' })).toBe('agent:memory-agent');
+    expect(encodeDreamProfileValue({
+      kind: 'config',
+      name: 'deepseek',
+      model: 'deepseek-v4-pro',
+    })).toBe('config:deepseek|deepseek-v4-pro');
+    expect(decodeDreamProfileValue('config:deepseek|deepseek-v4-flash')).toEqual({
+      kind: 'config',
+      name: 'deepseek',
+      model: 'deepseek-v4-flash',
+    });
+    expect(decodeDreamProfileValue('agent:memory-agent')).toEqual({
+      kind: 'agent',
+      name: 'memory-agent',
+    });
+  });
+
   it('requires a project Dream profile before autoDream can be enabled', async () => {
     homeDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-home-'));
     workDir = await mkdtemp(path.join(os.tmpdir(), 'hadamard-ps-work-'));

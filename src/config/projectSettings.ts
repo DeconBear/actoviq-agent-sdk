@@ -2,11 +2,18 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { getHadamardProjectSessionDirectory } from './projectSessionDirectory.js';
+import type { HadamardRunEffort } from '../types.js';
 
 export type ProjectWorkMode = 'coding' | 'daily';
 export type DreamExecutionProfileRef =
-  | { kind: 'config'; name: string }
-  | { kind: 'agent'; name: string };
+  | { kind: 'config'; name: string; model?: string; effort?: HadamardRunEffort }
+  | { kind: 'agent'; name: string; effort?: HadamardRunEffort };
+
+const DREAM_EFFORTS = new Set<HadamardRunEffort>(['auto', 'low', 'medium', 'high', 'max']);
+
+export function isDreamEffort(value: unknown): value is HadamardRunEffort {
+  return typeof value === 'string' && DREAM_EFFORTS.has(value as HadamardRunEffort);
+}
 
 export interface ProjectMemorySettings {
   compact: {
@@ -87,7 +94,49 @@ function normalizeDreamProfile(value: unknown): DreamExecutionProfileRef | undef
     return undefined;
   }
   const name = value.name.trim();
-  return name ? { kind: value.kind, name } : undefined;
+  if (!name) return undefined;
+  const effort = isDreamEffort(value.effort) ? value.effort : undefined;
+  if (value.kind === 'agent') {
+    return effort ? { kind: 'agent', name, effort } : { kind: 'agent', name };
+  }
+  const model = typeof value.model === 'string' ? value.model.trim() : '';
+  return {
+    kind: 'config',
+    name,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+  };
+}
+
+/** Encode a Dream profile for <select value> / form round-trips. */
+export function encodeDreamProfileValue(profile: DreamExecutionProfileRef): string {
+  if (profile.kind === 'agent') return `agent:${profile.name}`;
+  return profile.model
+    ? `config:${profile.name}|${profile.model}`
+    : `config:${profile.name}`;
+}
+
+/** Decode a Dream profile <select value>. */
+export function decodeDreamProfileValue(value: string): DreamExecutionProfileRef | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('agent:')) {
+    const name = trimmed.slice('agent:'.length).trim();
+    return name ? { kind: 'agent', name } : undefined;
+  }
+  if (trimmed.startsWith('config:')) {
+    const rest = trimmed.slice('config:'.length);
+    const pipe = rest.indexOf('|');
+    if (pipe <= 0) {
+      const name = rest.trim();
+      return name ? { kind: 'config', name } : undefined;
+    }
+    const name = rest.slice(0, pipe).trim();
+    const model = rest.slice(pipe + 1).trim();
+    if (!name) return undefined;
+    return model ? { kind: 'config', name, model } : { kind: 'config', name };
+  }
+  return undefined;
 }
 
 function normalizeDailyDreamTimeLocal(value: unknown): string {

@@ -346,6 +346,7 @@ import {
 import {
   DEFAULT_PROJECT_SETTINGS,
   appendProjectSettingsToPrompt,
+  encodeDreamProfileValue,
   readProjectSettings,
   writeProjectSettings,
   type ProjectMemorySettingsPatch,
@@ -7908,23 +7909,55 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const settings = await readProjectSettings(workDir, hd);
     const configs = readBridgeConfigs(hd).configs;
     const profiles = listAgentProfiles(hd);
-    const dreamProfiles = [
-      ...configs.map(config => ({
-        kind: 'config',
-        name: config.name,
-        label: `Config · ${config.name}${config.model ? ` · ${config.model}` : ''}`,
-        available: config.execution !== 'cli' && Boolean(config.model),
-      })),
-      ...profiles.map(profile => {
-        const config = configs.find(candidate => candidate.name === profile.bridgeConfig);
-        return {
-          kind: 'agent',
-          name: profile.name,
-          label: `Agent · ${profile.name} · ${profile.model}`,
-          available: Boolean(config) && config?.execution !== 'cli',
-        };
-      }),
-    ];
+    const dreamProfiles: Array<{
+      kind: 'config' | 'agent';
+      name: string;
+      model?: string;
+      label: string;
+      value: string;
+      available: boolean;
+    }> = [];
+    for (const config of configs) {
+      const modelNames: string[] = [];
+      const addModel = (value: unknown) => {
+        const model = typeof value === 'string' ? value.trim() : '';
+        if (model && !modelNames.includes(model)) modelNames.push(model);
+      };
+      addModel(config.model);
+      for (const entry of config.models ?? []) addModel(entry?.name);
+      const available = config.execution !== 'cli' && modelNames.length > 0;
+      if (modelNames.length === 0) {
+        dreamProfiles.push({
+          kind: 'config',
+          name: config.name,
+          label: `Config · ${config.name}`,
+          value: encodeDreamProfileValue({ kind: 'config', name: config.name }),
+          available: false,
+        });
+        continue;
+      }
+      for (const model of modelNames) {
+        dreamProfiles.push({
+          kind: 'config',
+          name: config.name,
+          model,
+          label: `Config · ${config.name} · ${model}`,
+          value: encodeDreamProfileValue({ kind: 'config', name: config.name, model }),
+          available,
+        });
+      }
+    }
+    for (const profile of profiles) {
+      const config = configs.find(candidate => candidate.name === profile.bridgeConfig);
+      dreamProfiles.push({
+        kind: 'agent',
+        name: profile.name,
+        model: profile.model,
+        label: `Agent · ${profile.name} · ${profile.model}`,
+        value: encodeDreamProfileValue({ kind: 'agent', name: profile.name }),
+        available: Boolean(config) && config?.execution !== 'cli',
+      });
+    }
     const memoryContent = sdk
       ? await sdk.memory.listMemoryContent().catch(() => [])
       : [];
@@ -10768,7 +10801,7 @@ export function createHadamardGuiHtml(): string {
         <div class="settings-group">
           <h2>Application updates</h2>
           <div class="settings-help-row">
-            <span><strong id="settingsUpdateTitle">Checking Hadamard version...</strong><small id="settingsUpdateStatus">Updates are installed only after you confirm Upgrade.</small></span>
+            <span><strong id="settingsUpdateTitle">Current — · Latest —</strong><small id="settingsUpdateStatus">Compares this build with the latest stable release on GitHub.</small></span>
           </div>
           <div class="settings-action-row">
             <button type="button" id="settingsUpdateCheck" class="secondary-btn">Check for updates</button>
@@ -14121,8 +14154,9 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
 .mode-card small { display: block; color: var(--text-2); margin-top: 2px; font-size: 11.5px; }
 .settings-row {
   min-height: 56px;
-  border: 1px solid var(--border);
-  border-bottom: 0;
+  border: 1px solid var(--border-hover);
+  border-bottom-width: 0;
+  border-radius: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -14131,13 +14165,39 @@ body { margin: 0; color: var(--text-1); background: var(--bg-app); }
   background: var(--bg-surface);
   font-size: 12.5px;
 }
-.settings-row:first-child { border-radius: 10px 10px 0 0; }
-.settings-row:nth-last-child(2) { border-bottom: 1px solid var(--border); border-radius: 0 0 10px 10px; }
-.settings-row:only-of-type,
-.settings-group > .settings-row:last-child { border-bottom: 1px solid var(--border); border-radius: 10px; }
+/* Use :first/:last-of-type so mixed siblings (help text, buttons) do not hide the stack outline. */
+.settings-group > .settings-row:first-of-type { border-radius: 10px 10px 0 0; }
+.settings-group > .settings-row:last-of-type {
+  border-bottom-width: 1px;
+  border-radius: 0 0 10px 10px;
+}
+.settings-group > .settings-row:only-of-type {
+  border-bottom-width: 1px;
+  border-radius: 10px;
+}
 .settings-row strong { font-size: 12.5px; font-weight: 600; }
 .settings-row small { display: block; color: var(--text-2); margin-top: 3px; font-size: 11.5px; line-height: 1.45; }
 .settings-row input[type="checkbox"], .check-row input { width: 16px; height: 16px; accent-color: var(--brand); }
+.settings-row select,
+.settings-row input[type="time"],
+.settings-row input:not([type="checkbox"]) {
+  min-width: 11rem;
+  max-width: min(22rem, 46vw);
+  min-height: 32px;
+  border: 1px solid var(--border-hover);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--bg-app);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.settings-row select:focus,
+.settings-row input[type="time"]:focus,
+.settings-row input:not([type="checkbox"]):focus {
+  outline: none;
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-focus);
+}
 .inline-field, .two-col label, .settings-command-row label { display: grid; gap: 4px; color: var(--text-2); font-size: 12px; }
 .inline-field { margin-top: 10px; max-width: 320px; }
 .inline-field.wide { max-width: 520px; }
@@ -19538,14 +19598,36 @@ function formatDreamStatusText(dreamState, settings, dreamStatusText) {
 }
 function collectProjectSettingsBody() {
   const workMode = document.querySelector('input[name="projectWorkMode"]:checked')?.value === 'daily' ? 'daily' : 'coding';
-  const dreamProfileValue = el('projectDreamProfile')?.value || '';
-  const dreamProfileSeparator = dreamProfileValue.indexOf(':');
-  const dreamExecutionProfile = dreamProfileSeparator > 0
-    ? {
-        kind: dreamProfileValue.slice(0, dreamProfileSeparator),
-        name: dreamProfileValue.slice(dreamProfileSeparator + 1),
+  const dreamProfileValue = String(el('projectDreamProfile')?.value || '').trim();
+  const dreamEffort = String(el('projectDreamEffort')?.value || '').trim().toLowerCase();
+  const effort = ['auto', 'low', 'medium', 'high', 'max'].includes(dreamEffort) ? dreamEffort : undefined;
+  let dreamExecutionProfile = null;
+  if (dreamProfileValue.startsWith('agent:')) {
+    const name = dreamProfileValue.slice(6).trim();
+    if (name) dreamExecutionProfile = effort ? { kind: 'agent', name, effort } : { kind: 'agent', name };
+  } else if (dreamProfileValue.startsWith('config:')) {
+    const rest = dreamProfileValue.slice(7);
+    const pipe = rest.indexOf('|');
+    if (pipe > 0) {
+      const name = rest.slice(0, pipe).trim();
+      const model = rest.slice(pipe + 1).trim();
+      if (name) {
+        dreamExecutionProfile = {
+          kind: 'config',
+          name,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+        };
       }
-    : undefined;
+    } else {
+      const name = rest.trim();
+      if (name) {
+        dreamExecutionProfile = effort
+          ? { kind: 'config', name, effort }
+          : { kind: 'config', name };
+      }
+    }
+  }
   return {
     workMode,
     customPrompt: el('projectCustomPrompt')?.value || '',
@@ -19560,7 +19642,7 @@ function collectProjectSettingsBody() {
         use: Boolean(el('projectDurableMemoryUse')?.checked),
         autoDream: Boolean(el('projectAutoDream')?.checked),
         dailyDreamTimeLocal: el('projectDailyDreamTime')?.value || '03:00',
-        dreamExecutionProfile: dreamExecutionProfile || null,
+        dreamExecutionProfile,
       },
     },
   };
@@ -19669,7 +19751,7 @@ function wireProjectSettingsPanel() {
   panel.addEventListener('change', (event) => {
     const target = event.target;
     if (!target || !target.id) return;
-    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily' || target.id.startsWith('projectCompact') || target.id.startsWith('projectDurableMemory') || target.id === 'projectAutoDream' || target.id === 'projectDreamProfile' || target.id === 'projectDailyDreamTime') {
+    if (target.id === 'projectWorkModeCoding' || target.id === 'projectWorkModeDaily' || target.id.startsWith('projectCompact') || target.id.startsWith('projectDurableMemory') || target.id === 'projectAutoDream' || target.id === 'projectDreamProfile' || target.id === 'projectDreamEffort' || target.id === 'projectDailyDreamTime') {
       scheduleProjectSettingsSave();
     }
   });
@@ -19729,17 +19811,39 @@ async function mountProjectSettingsPanel(force) {
       profileSelect.textContent = '';
       const empty = document.createElement('option');
       empty.value = '';
-      empty.textContent = 'Select a Config or Agent…';
+      empty.textContent = 'Select a Config, Agent, or model…';
       profileSelect.appendChild(empty);
       for (const profile of data.dreamProfiles || []) {
         const option = document.createElement('option');
-        option.value = profile.kind + ':' + profile.name;
+        option.value = profile.value || (profile.kind === 'agent'
+          ? ('agent:' + profile.name)
+          : (profile.model ? ('config:' + profile.name + '|' + profile.model) : ('config:' + profile.name)));
         option.textContent = profile.label + (profile.available ? '' : ' (unavailable)');
         option.disabled = !profile.available;
         profileSelect.appendChild(option);
       }
       const selected = durableMemory.dreamExecutionProfile;
-      if (selected) profileSelect.value = selected.kind + ':' + selected.name;
+      if (selected) {
+        const preferred = selected.kind === 'agent'
+          ? ('agent:' + selected.name)
+          : (selected.model
+            ? ('config:' + selected.name + '|' + selected.model)
+            : ('config:' + selected.name));
+        const values = Array.from(profileSelect.options).map(option => option.value);
+        if (values.includes(preferred)) {
+          profileSelect.value = preferred;
+        } else if (selected.kind === 'config') {
+          const prefix = 'config:' + selected.name + '|';
+          const match = values.find(value => value.startsWith(prefix));
+          profileSelect.value = match || '';
+        } else {
+          profileSelect.value = '';
+        }
+      }
+    }
+    if (el('projectDreamEffort')) {
+      const effort = durableMemory.dreamExecutionProfile?.effort;
+      el('projectDreamEffort').value = ['auto', 'low', 'medium', 'high', 'max'].includes(effort) ? effort : '';
     }
     if (el('projectDailyDreamTime')) {
       el('projectDailyDreamTime').value = durableMemory.dailyDreamTimeLocal || '03:00';
@@ -22312,7 +22416,8 @@ function renderProjectDetail() {
     + '<p id="projectCompactStatus" class="muted"></p>'
     + '<label class="settings-row"><span><strong>Use Durable Memory</strong><small>Read and inject project memory. This does not enable background writes.</small></span><input type="checkbox" id="projectDurableMemoryUse"></label>'
     + '<label class="settings-row"><span><strong>Memory consolidation (Dream)</strong><small>Daily scheduled Dream while this GUI is open (multi-turn read of sessions → MEMORY.md).</small></span><input type="checkbox" id="projectAutoDream"></label>'
-    + '<label class="settings-row"><span><strong>Dream execution profile</strong><small>Config or Agent model settings only; prompt, tools, and permissions stay restricted.</small></span><select id="projectDreamProfile"></select></label>'
+    + '<label class="settings-row"><span><strong>Dream execution profile</strong><small>Same Config / Agent / model choices as the chat model picker. Only model settings apply; prompt, tools, and permissions stay restricted.</small></span><select id="projectDreamProfile"></select></label>'
+    + '<label class="settings-row"><span><strong>Dream reasoning</strong><small>Thinking / reasoning effort for Dream runs. Matches the chat model picker Reasoning options.</small></span><select id="projectDreamEffort"><option value="">Default</option><option value="auto">Auto</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option></select></label>'
     + '<label class="settings-row"><span><strong>Daily dream time</strong><small>Local time for automatic Dream while this GUI stays open.</small></span><input type="time" id="projectDailyDreamTime" value="03:00"></label>'
     + '<div class="project-settings-template-row"><button type="button" class="secondary-btn" id="projectDreamRun">Run Dream now</button></div>'
     + '<p id="projectDreamStatus" class="muted"></p>'
@@ -32798,32 +32903,46 @@ function renderApplicationUpdate(update) {
   const status = el('settingsUpdateStatus');
   const check = el('settingsUpdateCheck');
   const upgrade = el('settingsUpdateUpgrade');
-  const current = update.currentVersion ? 'v' + update.currentVersion : 'unknown version';
-  const latest = update.latestVersion && update.latestVersion !== update.currentVersion
-    ? ' · latest v' + update.latestVersion
-    : '';
-  if (title) title.textContent = 'Hadamard ' + current + latest;
+  const current = update.currentVersion ? 'v' + update.currentVersion : '—';
+  const latest = update.latestVersion ? 'v' + update.latestVersion : '—';
+  if (title) title.textContent = 'Current ' + current + ' · Latest ' + latest;
+  const needsUpgrade = update.state === 'available'
+    || (update.latestVersion && update.currentVersion
+      && update.latestVersion !== update.currentVersion
+      && update.state !== 'not-available'
+      && update.state !== 'error');
   const messages = {
-    idle: 'Ready to check GitHub Releases for a newer stable version.',
-    checking: 'Checking for updates...',
-    available: 'A newer version is ready to download.',
-    'not-available': 'You are running the latest published version.',
+    idle: 'Check GitHub Releases to compare this build with the latest stable version.',
+    checking: 'Checking GitHub Releases for the latest stable version...',
+    available: update.supported
+      ? 'Upgrade available — a newer version is ready to download.'
+      : 'Upgrade available — download the newer installer from GitHub Releases (auto-install is unavailable for this build).'
+        + (update.reason ? ' ' + update.reason : ''),
+    'not-available': 'No upgrade needed — you are on the latest published version.',
     downloading: 'Downloading update' + (Number.isFinite(update.percent) ? ' · ' + Math.round(update.percent) + '%' : '') + '...',
     downloaded: 'Download complete. Hadamard will restart to install it.',
     installing: 'Installing update and restarting Hadamard...',
-    error: update.error || 'The update could not be completed.',
+    error: update.error || 'Could not read the latest version from GitHub Releases.',
     unsupported: update.reason || 'Automatic updates are unavailable for this build.',
   };
-  if (status) status.textContent = messages[update.state] || update.reason || '';
+  let statusText = messages[update.state] || update.reason || '';
+  if (update.state === 'idle' && needsUpgrade) {
+    statusText = 'Upgrade available — check again or open the release page.';
+  }
+  if (status) status.textContent = statusText;
   const busy = ['checking', 'downloading', 'downloaded', 'installing'].includes(update.state);
-  if (check) check.disabled = !update.supported || busy;
+  if (check) check.disabled = busy;
   if (upgrade) {
-    upgrade.disabled = !update.supported || update.state !== 'available';
+    const openRelease = !update.supported && update.state === 'available' && !!update.releaseUrl;
+    upgrade.disabled = busy || !(update.supported ? update.state === 'available' : openRelease);
     upgrade.textContent = update.state === 'downloading'
       ? 'Downloading...'
       : update.state === 'downloaded' || update.state === 'installing'
         ? 'Restarting...'
-        : 'Upgrade';
+        : openRelease
+          ? 'Open release'
+          : 'Upgrade';
+    upgrade.dataset.updateAction = openRelease ? 'open-release' : 'upgrade';
   }
 }
 async function refreshApplicationUpdate() {
@@ -32835,18 +32954,31 @@ async function refreshApplicationUpdate() {
   }
 }
 async function checkApplicationUpdate() {
+  let previous = null;
+  try {
+    const currentRes = await api('/api/app-update');
+    if (currentRes.ok) previous = await currentRes.json();
+  } catch { /* optional */ }
   renderApplicationUpdate({
-    supported: true,
+    ...(previous || {}),
+    supported: previous?.supported ?? false,
     state: 'checking',
-    currentVersion: '',
+    currentVersion: previous?.currentVersion || '',
+    reason: previous?.reason,
   });
   const res = await api('/api/app-update/check', { method: 'POST' });
   const payload = await res.json();
   renderApplicationUpdate(payload);
+  return payload;
 }
 async function upgradeApplication() {
   const current = await api('/api/app-update').then(res => res.json());
   if (current.state !== 'available') {
+    renderApplicationUpdate(current);
+    return;
+  }
+  if (!current.supported) {
+    if (current.releaseUrl) window.open(current.releaseUrl, '_blank', 'noopener,noreferrer');
     renderApplicationUpdate(current);
     return;
   }
@@ -32927,7 +33059,14 @@ async function openSettings(tab = 'general') {
   el('settingsPath').textContent = settings.configPath ? 'Saved locally: ' + settings.configPath : 'Settings path unavailable';
   renderDataRootStatus(settings.dataRoot);
   void refreshDataRootSettings();
-  void refreshApplicationUpdate();
+  void checkApplicationUpdate().catch(error => {
+    renderApplicationUpdate({
+      supported: false,
+      state: 'error',
+      currentVersion: '',
+      error: error.message || String(error),
+    });
+  });
   setField('settingsPermissionPreset', '');
   setChecked('settingsDefaultPermission', true);
   setChecked('settingsAutoAudit', state.snapshot?.permissionMode === 'acceptEdits');

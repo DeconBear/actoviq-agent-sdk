@@ -16,6 +16,7 @@ export interface AppUpdateSnapshot {
   latestVersion?: string;
   releaseName?: string;
   releaseNotes?: string;
+  releaseUrl?: string;
   percent?: number;
   transferred?: number;
   total?: number;
@@ -29,6 +30,23 @@ export interface AppUpdateController {
   check(): Promise<AppUpdateSnapshot>;
   download(): Promise<AppUpdateSnapshot>;
   install(): Promise<void>;
+}
+
+/**
+ * Branded Windows `Hadamard.exe` (copied from electron.exe for the taskbar icon)
+ * makes Electron report `app.isPackaged === true` even for unpackaged `dist/...`
+ * launches. Only trust native auto-update when electron-builder metadata exists.
+ */
+export function canUseNativeDesktopAutoUpdater(options: {
+  isPackaged: boolean;
+  resourcesPath?: string;
+  hasUpdateMetadata?: (resourcesPath: string) => boolean;
+}): boolean {
+  if (!options.isPackaged) return false;
+  const resourcesPath = options.resourcesPath?.trim();
+  if (!resourcesPath) return false;
+  if (options.hasUpdateMetadata) return options.hasUpdateMetadata(resourcesPath);
+  return false;
 }
 
 interface NativeUpdateInfo {
@@ -59,6 +77,19 @@ export interface NativeAppUpdater {
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
 }
 
+/** Matches package.json build.publish (electron-builder GitHub Releases). */
+export const HADAMARD_GITHUB_RELEASES = {
+  owner: 'DeconBear',
+  repo: 'hadamard',
+} as const;
+
+export interface GithubLatestRelease {
+  version: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseUrl?: string;
+}
+
 function releaseNotesText(value: NativeUpdateInfo['releaseNotes']): string | undefined {
   if (typeof value === 'string') return value;
   if (!Array.isArray(value)) return undefined;
@@ -76,7 +107,7 @@ function updateDetails(info: NativeUpdateInfo): Pick<AppUpdateSnapshot, 'latestV
   };
 }
 
-function compareVersions(left: string, right: string): number {
+export function compareVersions(left: string, right: string): number {
   const parts = (value: string): number[] => value
     .trim()
     .replace(/^v/i, '')
@@ -94,24 +125,127 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+export async function fetchLatestGithubRelease(options?: {
+  owner?: string;
+  repo?: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+}): Promise<GithubLatestRelease> {
+  const owner = options?.owner ?? HADAMARD_GITHUB_RELEASES.owner;
+  const repo = options?.repo ?? HADAMARD_GITHUB_RELEASES.repo;
+  const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('fetch is not available to query GitHub Releases');
+  }
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'Hadamard',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: options?.signal,
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub Releases returned HTTP ${response.status}`);
+  }
+  const body = await response.json() as {
+    tag_name?: unknown;
+    name?: unknown;
+    body?: unknown;
+    html_url?: unknown;
+  };
+  const tag = typeof body.tag_name === 'string' ? body.tag_name.trim() : '';
+  const version = tag.replace(/^v/i, '');
+  if (!version) {
+    throw new Error('GitHub latest release has no tag_name');
+  }
+  return {
+    version,
+    ...(typeof body.name === 'string' && body.name.trim()
+      ? { releaseName: body.name.trim() }
+      : {}),
+    ...(typeof body.body === 'string' && body.body.trim()
+      ? { releaseNotes: body.body.trim() }
+      : {}),
+    ...(typeof body.html_url === 'string' && body.html_url.trim()
+      ? { releaseUrl: body.html_url.trim() }
+      : {
+          releaseUrl: `https://github.com/${owner}/${repo}/releases/latest`,
+        }),
+  };
+}
+
 export function createUnsupportedAppUpdateController(
   currentVersion: string,
   reason: string,
+  options?: {
+    owner?: string;
+    repo?: string;
+    fetchImpl?: typeof fetch;
+  },
 ): AppUpdateController {
-  const state: AppUpdateSnapshot = {
+  let state: AppUpdateSnapshot = {
     supported: false,
-    state: 'unsupported',
+    state: 'idle',
     currentVersion,
     reason,
   };
-  const unsupported = async (): Promise<never> => {
-    throw new Error(reason);
+  let checkPromise: Promise<AppUpdateSnapshot> | undefined;
+
+  const patch = (next: Partial<AppUpdateSnapshot>): void => {
+    state = { ...state, ...next, supported: false, currentVersion, reason };
   };
+
   return {
     snapshot: () => ({ ...state }),
-    check: unsupported,
-    download: unsupported,
-    install: unsupported,
+    check: () => {
+      if (checkPromise) return checkPromise;
+      checkPromise = (async () => {
+        patch({
+          state: 'checking',
+          error: undefined,
+          percent: undefined,
+          transferred: undefined,
+          total: undefined,
+          bytesPerSecond: undefined,
+        });
+        try {
+          const latest = await fetchLatestGithubRelease({
+            owner: options?.owner,
+            repo: options?.repo,
+            fetchImpl: options?.fetchImpl,
+          });
+          const details = {
+            latestVersion: latest.version,
+            ...(latest.releaseName ? { releaseName: latest.releaseName } : {}),
+            ...(latest.releaseNotes ? { releaseNotes: latest.releaseNotes } : {}),
+            ...(latest.releaseUrl ? { releaseUrl: latest.releaseUrl } : {}),
+          };
+          patch(compareVersions(latest.version, currentVersion) > 0
+            ? { state: 'available', error: undefined, ...details }
+            : { state: 'not-available', error: undefined, ...details });
+          return { ...state };
+        } catch (error) {
+          patch({
+            state: 'error',
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        } finally {
+          checkPromise = undefined;
+        }
+      })();
+      return checkPromise;
+    },
+    download: async () => {
+      throw new Error(reason);
+    },
+    install: async () => {
+      throw new Error(reason);
+    },
   };
 }
 
