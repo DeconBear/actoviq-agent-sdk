@@ -6,6 +6,24 @@ The format is based on Keep a Changelog, with automated updates from GitHub Rele
 
 ## Unreleased
 
+## v0.4.12 - 2026-08-05
+
+### Features
+
+- feat(gui): default Windows terminal to PowerShell, with Settings picker for PowerShell vs cmd; remove project-detail All chats in favor of Conversations sidebar
+- feat(gui): GitHub Releases update checks for unpackaged/branded builds; Dream model selection and reasoning effort in project settings
+- feat(memory): single-file Dream, summary injection, and Document tabs (Design / Memory / Plans)
+- feat(gui): preserve plans, resize panels, and region screenshots
+- feat(gui): per-project settings; remove output style
+- feat(goal): executable goal frontier, work claims, continuation modes, GUI session goals, and compact preserve tails
+- feat: refactor compact and project memory
+
+### Fixes
+
+- fix(goal): harden claims, progress, and compact preserve tails
+
+**Full Changelog**: https://github.com/DeconBear/hadamard/compare/v0.4.11...v0.4.12
+
 ## v0.4.11 - 2026-08-02
 
 ### Features
