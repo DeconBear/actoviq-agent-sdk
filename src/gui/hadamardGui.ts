@@ -12,7 +12,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { captureDesktopRegionScreenshot, captureDesktopScreenshot, ScreenshotCancelledError } from '../computer/hadamardComputerUse.js';
 import { tool } from '../runtime/tools.js';
-import { TerminalManager, ptyAvailable } from './terminalManager.js';
+import { TerminalManager, ptyAvailable, isWindowsTerminalShellPreference, type WindowsTerminalShellPreference } from './terminalManager.js';
 import {
   parseGitCommitLog,
   readGitDiffAsync,
@@ -675,6 +675,8 @@ interface GuiPreferences {
   showProviderConfigsInComposer: boolean;
   showAgentProfilesInComposer: boolean;
   showRouterProfilesInComposer: boolean;
+  /** Windows only. Ignored on Linux/macOS. */
+  windowsTerminalShell: WindowsTerminalShellPreference;
   shortcuts: GuiShortcuts;
 }
 
@@ -711,6 +713,7 @@ const DEFAULT_GUI_PREFERENCES: GuiPreferences = {
   showProviderConfigsInComposer: true,
   showAgentProfilesInComposer: true,
   showRouterProfilesInComposer: true,
+  windowsTerminalShell: 'powershell',
   shortcuts: DEFAULT_GUI_SHORTCUTS,
 };
 
@@ -991,6 +994,9 @@ function readGuiPreferences(raw: Record<string, unknown>): GuiPreferences {
     showRouterProfilesInComposer: typeof source.showRouterProfilesInComposer === 'boolean'
       ? source.showRouterProfilesInComposer
       : DEFAULT_GUI_PREFERENCES.showRouterProfilesInComposer,
+    windowsTerminalShell: isWindowsTerminalShellPreference(source.windowsTerminalShell)
+      ? source.windowsTerminalShell
+      : DEFAULT_GUI_PREFERENCES.windowsTerminalShell,
     shortcuts,
   };
 }
@@ -3092,6 +3098,7 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
     const activeProject = heavy.projects.find(project => project.active);
     return {
       workDir,
+      platform: process.platform,
       projectPath: activeProject?.path ?? projectPrimaryPath,
       projectWorkPaths: activeProject?.workPaths ?? [workDir],
       activeWorkPath: workDir,
@@ -9670,10 +9677,22 @@ export async function startHadamardGuiServer(options: HadamardGuiOptions = {}): 
       if (req.method === 'POST' && url.pathname === '/api/terminal/create') {
         if (!terminalCapable) return json(res, 404, { error: 'Terminal unavailable (node-pty not loadable)' });
         const body = await readJson(req);
+        const settingsStore = await resolveHadamardSettingsStore({
+          configPath: options.configPath,
+          homeDir: currentHomeInput(),
+        }).catch(() => undefined);
+        const preferences = settingsStore
+          ? readGuiPreferences(settingsStore.raw)
+          : DEFAULT_GUI_PREFERENCES;
+        const explicitCmd = typeof body.cmd === 'string' && body.cmd ? body.cmd : undefined;
+        const explicitArgs = Array.isArray(body.args)
+          ? body.args.filter((a): a is string => typeof a === 'string')
+          : undefined;
         const id = terminalManager.create({
           cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : workDir,
-          cmd: typeof body.cmd === 'string' && body.cmd ? body.cmd : undefined,
-          args: Array.isArray(body.args) ? body.args.filter((a): a is string => typeof a === 'string') : undefined,
+          cmd: explicitCmd,
+          args: explicitCmd ? explicitArgs : undefined,
+          windowsShell: preferences.windowsTerminalShell,
           cols: typeof body.cols === 'number' ? body.cols : undefined,
           rows: typeof body.rows === 'number' ? body.rows : undefined,
           env: body.env && typeof body.env === 'object' && !Array.isArray(body.env)
@@ -10153,7 +10172,6 @@ export function createHadamardGuiHtml(): string {
             <select id="detailWorkPathSelect" class="overview-toolbar-select project-work-path-select" aria-label="Active project work path"></select>
             <button type="button" id="detailAddWorkPathBtn" class="pill-btn">+ Work path</button>
             <button type="button" id="detailRemoveWorkPathBtn" class="pill-btn hidden">Remove path</button>
-            <button type="button" id="detailChatsBtn" class="pill-btn">All chats</button>
             <button type="button" id="detailOpenLocationBtn" class="pill-btn">Open location</button>
             <button type="button" id="detailNewConversationBtn" class="pill-btn">+ New conversation</button>
             <button type="button" id="detailConversationsBtn" class="pill-btn detail-conversations-toggle" aria-label="Conversations" title="Show conversations" aria-expanded="false" aria-controls="projectDetailSidebar">Conversations</button>
@@ -10807,6 +10825,10 @@ export function createHadamardGuiHtml(): string {
             <button type="button" id="settingsUpdateCheck" class="secondary-btn">Check for updates</button>
             <button type="button" id="settingsUpdateUpgrade" class="primary" disabled>Upgrade</button>
           </div>
+        </div>
+        <div class="settings-group" id="settingsTerminalGroup" hidden>
+          <h2>Terminal</h2>
+          <label class="settings-row"><span><strong>Default shell</strong><small>New Windows terminals use this shell. Existing tabs keep their current shell.</small></span><select id="settingsWindowsTerminalShell"><option value="powershell">PowerShell</option><option value="cmd">Command Prompt (cmd)</option></select></label>
         </div>
         <div class="settings-group">
           <h2>Permissions</h2>
@@ -15047,7 +15069,7 @@ const state = {
   skillCatalogData: null,
   skillCatalogQuery: '',
   skillCatalogExpanded: {},
-  preferences: { theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, shortcuts: {} }
+  preferences: { theme: 'system', density: 'comfortable', enterToSend: true, autoScroll: true, developerTools: false, showBranchInComposer: true, showProviderConfigsInComposer: true, showAgentProfilesInComposer: true, showRouterProfilesInComposer: true, windowsTerminalShell: 'powershell', shortcuts: {} }
 };
 const DEFAULT_SHORTCUTS = {
   newChat: 'Mod+N',
@@ -33103,6 +33125,14 @@ async function openSettings(tab = 'general') {
   setChecked('settingsShowProviderConfigsInComposer', preferences.showProviderConfigsInComposer !== false);
   setChecked('settingsShowAgentProfilesInComposer', preferences.showAgentProfilesInComposer !== false);
   setChecked('settingsShowRouterProfilesInComposer', preferences.showRouterProfilesInComposer !== false);
+  const terminalGroup = el('settingsTerminalGroup');
+  if (terminalGroup) {
+    const showTerminalShell = state.snapshot?.platform === 'win32';
+    terminalGroup.hidden = !showTerminalShell;
+    if (showTerminalShell) {
+      setField('settingsWindowsTerminalShell', preferences.windowsTerminalShell === 'cmd' ? 'cmd' : 'powershell');
+    }
+  }
   renderBridgeConfigs();
   renderMcpServers();
   renderShortcutsPanel();
@@ -33134,6 +33164,9 @@ function collectSettingsBody() {
       showProviderConfigsInComposer: el('settingsShowProviderConfigsInComposer')?.checked !== false,
       showAgentProfilesInComposer: el('settingsShowAgentProfilesInComposer')?.checked !== false,
       showRouterProfilesInComposer: el('settingsShowRouterProfilesInComposer')?.checked !== false,
+      windowsTerminalShell: state.snapshot?.platform === 'win32'
+        ? (el('settingsWindowsTerminalShell')?.value === 'cmd' ? 'cmd' : 'powershell')
+        : (state.preferences.windowsTerminalShell === 'cmd' ? 'cmd' : 'powershell'),
       shortcuts: { ...DEFAULT_SHORTCUTS, ...(state.preferences.shortcuts || {}) },
     },
   };
@@ -33445,12 +33478,6 @@ el('overviewChatsBtn').addEventListener('click', () => switchProjectView('chats'
 bindOverviewToolbar();
 el('backToOverviewBtn').addEventListener('click', () => switchProjectView('detail'));
 el('detailNewConversationBtn').addEventListener('click', () => createNewSession().catch(console.error));
-el('detailChatsBtn').addEventListener('click', () => {
-  switchProjectView('chats');
-  const projectSelect = el('sessionCenterProject');
-  if (projectSelect) projectSelect.value = state.snapshot?.projectPath || state.snapshot?.workDir || '';
-  void refreshSessionCenter();
-});
 el('detailWorkPathSelect')?.addEventListener('change', (event) => {
   const next = event.target.value;
   if (next && !sameWorkspacePath(next, state.snapshot?.workDir || '')) {

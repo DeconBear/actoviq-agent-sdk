@@ -40,7 +40,11 @@ export interface TerminalSpawnOptions {
   cols?: number;
   rows?: number;
   env?: Record<string, string>;
+  /** Windows only: preferred default shell when `cmd` is omitted. */
+  windowsShell?: WindowsTerminalShellPreference;
 }
+
+export type WindowsTerminalShellPreference = 'powershell' | 'cmd';
 
 export interface TerminalInfo {
   id: string;
@@ -97,11 +101,35 @@ export async function ptyAvailable(): Promise<boolean> {
   return nodePty !== null;
 }
 
-function defaultShell(): { file: string; args: string[] } {
-  if (process.platform === 'win32') {
-    return { file: process.env.COMSPEC || 'cmd.exe', args: [] };
+export function isWindowsTerminalShellPreference(value: unknown): value is WindowsTerminalShellPreference {
+  return value === 'powershell' || value === 'cmd';
+}
+
+/** Resolve the shell used for new terminals. Windows defaults to PowerShell. */
+export function resolveDefaultShell(options?: {
+  platform?: NodeJS.Platform;
+  windowsShell?: WindowsTerminalShellPreference;
+  comspec?: string;
+  shellEnv?: string;
+}): { file: string; args: string[] } {
+  const platform = options?.platform ?? process.platform;
+  if (platform === 'win32') {
+    const preference = options?.windowsShell === 'cmd' ? 'cmd' : 'powershell';
+    if (preference === 'cmd') {
+      return {
+        file: options?.comspec || process.env.COMSPEC || 'cmd.exe',
+        args: [],
+      };
+    }
+    return {
+      file: 'powershell.exe',
+      args: ['-NoLogo'],
+    };
   }
-  return { file: process.env.SHELL || 'sh', args: [] };
+  return {
+    file: options?.shellEnv || process.env.SHELL || 'sh',
+    args: [],
+  };
 }
 
 export class TerminalManager {
@@ -112,7 +140,9 @@ export class TerminalManager {
     const cols = Math.max(8, Math.floor(opts.cols ?? 80));
     const rows = Math.max(2, Math.floor(opts.rows ?? 24));
     const cwd = opts.cwd || process.cwd();
-    const shell = opts.cmd ? { file: opts.cmd, args: opts.args ?? [] } : defaultShell();
+    const shell = opts.cmd
+      ? { file: opts.cmd, args: opts.args ?? [] }
+      : resolveDefaultShell({ windowsShell: opts.windowsShell });
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
     const proc = nodePty.spawn(shell.file, shell.args, {
       name: 'xterm-256color', cols, rows, cwd, env,

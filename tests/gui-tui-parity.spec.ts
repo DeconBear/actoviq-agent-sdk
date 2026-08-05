@@ -214,9 +214,9 @@ describe('TUI and GUI parity', () => {
     expect(gui).toContain('insertLoopBlock');
     expect(html).toContain('id="settingsSessionsList"');
     expect(html).not.toContain('id="settingsMemoryStatusBtn"');
-    expect(gui).toContain('id="projectMemoryBrowser"');
     expect(gui).toContain('id="projectDreamProfile"');
     expect(gui).toContain('id="projectDreamEffort"');
+    expect(gui).toContain('id="settingsWindowsTerminalShell"');
     expect(html).toContain('id="conversationIssuePill"');
     expect(html).toContain('class="settings-icon"');
     expect(html).not.toContain('<span>mdl</span>');
