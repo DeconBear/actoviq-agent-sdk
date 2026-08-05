@@ -1058,6 +1058,11 @@
         "signature": "export declare function decideHadamardToolPermission(input: PermissionInput): Promise<HadamardPermissionDecision>;"
       },
       {
+        "name": "decodeDreamProfileValue",
+        "kind": "function",
+        "signature": "export declare function decodeDreamProfileValue(value: string): DreamExecutionProfileRef | undefined;"
+      },
+      {
         "name": "DEFAULT_AGENT_RUN_STREAM_BUFFER_CAPACITY",
         "kind": "value",
         "signature": "DEFAULT_AGENT_RUN_STREAM_BUFFER_CAPACITY = 256"
@@ -1195,7 +1200,7 @@
       {
         "name": "DreamExecutionProfileRef",
         "kind": "type",
-        "signature": "export type DreamExecutionProfileRef = {\nkind: 'config';\nname: string;\n} | {\nkind: 'agent';\nname: string;\n};"
+        "signature": "export type DreamExecutionProfileRef = {\nkind: 'config';\nname: string;\nmodel?: string;\neffort?: HadamardRunEffort;\n} | {\nkind: 'agent';\nname: string;\neffort?: HadamardRunEffort;\n};"
       },
       {
         "name": "DurableMemoryConsolidationState",
@@ -1241,6 +1246,11 @@
         "name": "EMPTY_PROJECT_PLAN",
         "kind": "value",
         "signature": "EMPTY_PROJECT_PLAN: ProjectPlan"
+      },
+      {
+        "name": "encodeDreamProfileValue",
+        "kind": "function",
+        "signature": "export declare function encodeDreamProfileValue(profile: DreamExecutionProfileRef): string;"
       },
       {
         "name": "encodeHadamardProjectPath",
@@ -2740,7 +2750,7 @@
       {
         "name": "HadamardMemoryApi",
         "kind": "class",
-        "signature": "export declare class HadamardMemoryApi {\nprivate readonly defaults;\nconstructor(defaults?: HadamardMemoryOptions);\npaths(options?: HadamardMemoryOptions): Promise<HadamardMemoryPaths>;\ngetSettings(options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nupdateSettings(patch: UpdateHadamardMemorySettingsInput, options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nbuildCombinedPrompt(options?: HadamardMemoryPromptOptions): Promise<string>;\nbuildPromptWithEntrypoints(options?: HadamardMemoryPromptOptions): Promise<string>;\nscanMemoryFiles(options?: HadamardMemoryOptions): Promise<HadamardMemoryFileHeader[]>;\nformatMemoryManifest(options?: HadamardMemoryOptions): Promise<string>;\nfindRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardRelevantMemory[]>;\nsurfaceRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardSurfacedMemory[]>;\nlistMemoryContent(options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<HadamardMemoryBrowserEntry[]>;\nreadMemoryContent(idOrPath: string, options?: HadamardMemoryOptions): Promise<{\nentry: HadamardMemoryBrowserEntry;\ncontent: string;\n}>;\nsearchMemoryContent(query: string, options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<Array<{\nentry: HadamardMemoryBrowserEntry;\nmatches: string[];\n}>>;\ncompactState(options?: HadamardCompactStateOptions): Promise<HadamardCompactState>;\nstate(options?: HadamardMemoryStateOptions): Promise<HadamardMemoryState>;\n}"
+        "signature": "export declare class HadamardMemoryApi {\nprivate readonly defaults;\nconstructor(defaults?: HadamardMemoryOptions);\npaths(options?: HadamardMemoryOptions): Promise<HadamardMemoryPaths>;\ngetSettings(options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nupdateSettings(patch: UpdateHadamardMemorySettingsInput, options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nbuildCombinedPrompt(options?: HadamardMemoryPromptOptions): Promise<string>;\nbuildPromptWithEntrypoints(options?: HadamardMemoryPromptOptions): Promise<string>;\nscanMemoryFiles(options?: HadamardMemoryOptions): Promise<HadamardMemoryFileHeader[]>;\nformatMemoryManifest(options?: HadamardMemoryOptions): Promise<string>;\nfindRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardRelevantMemory[]>;\nsurfaceRelevantMemories(_query: string, _options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardSurfacedMemory[]>;\nlistMemoryContent(options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<HadamardMemoryBrowserEntry[]>;\nreadMemoryContent(idOrPath: string, options?: HadamardMemoryOptions): Promise<{\nentry: HadamardMemoryBrowserEntry;\ncontent: string;\n}>;\nsearchMemoryContent(query: string, options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<Array<{\nentry: HadamardMemoryBrowserEntry;\nmatches: string[];\n}>>;\ncompactState(options?: HadamardCompactStateOptions): Promise<HadamardCompactState>;\nstate(options?: HadamardMemoryStateOptions): Promise<HadamardMemoryState>;\n}"
       },
       {
         "name": "HadamardMemoryCommandResult",
@@ -3256,6 +3266,11 @@
         "name": "isAssistantScope",
         "kind": "function",
         "signature": "export declare function isAssistantScope(value: unknown): value is AssistantScope;"
+      },
+      {
+        "name": "isDreamEffort",
+        "kind": "function",
+        "signature": "export declare function isDreamEffort(value: unknown): value is HadamardRunEffort;"
       },
       {
         "name": "isExploratoryTool",
@@ -4155,7 +4170,7 @@
       {
         "name": "ProjectMemorySettings",
         "kind": "interface",
-        "signature": "export interface ProjectMemorySettings {\ncompact: {\nenabled: boolean;\nautoCompactTokenLimit?: number;\nautoCompactTokenLimitScope: 'total' | 'body_after_prefix';\n};\ndurableMemory: {\nuse: boolean;\nautoDream: boolean;\ndreamExecutionProfile?: DreamExecutionProfileRef;\nminRolloutIdleHours: number;\nmaxRolloutAgeDays: number;\nmaxRolloutsPerStartup: number;\n};\n}"
+        "signature": "export interface ProjectMemorySettings {\ncompact: {\nenabled: boolean;\nautoCompactTokenLimit?: number;\nautoCompactTokenLimitScope: 'total' | 'body_after_prefix';\n};\ndurableMemory: {\nuse: boolean;\nautoDream: boolean;\ndreamExecutionProfile?: DreamExecutionProfileRef;\ndailyDreamTimeLocal: string;\nlastScheduledDreamDate?: string;\nminRolloutIdleHours: number;\nmaxRolloutAgeDays: number;\nmaxRolloutsPerStartup: number;\n};\n}"
       },
       {
         "name": "ProjectMemorySettingsPatch",
@@ -8934,6 +8949,11 @@
         "signature": "export declare function decideHadamardToolPermission(input: PermissionInput): Promise<HadamardPermissionDecision>;"
       },
       {
+        "name": "decodeDreamProfileValue",
+        "kind": "function",
+        "signature": "export declare function decodeDreamProfileValue(value: string): DreamExecutionProfileRef | undefined;"
+      },
+      {
         "name": "DEFAULT_AGENT_RUN_STREAM_BUFFER_CAPACITY",
         "kind": "value",
         "signature": "DEFAULT_AGENT_RUN_STREAM_BUFFER_CAPACITY = 256"
@@ -9071,7 +9091,7 @@
       {
         "name": "DreamExecutionProfileRef",
         "kind": "type",
-        "signature": "export type DreamExecutionProfileRef = {\nkind: 'config';\nname: string;\n} | {\nkind: 'agent';\nname: string;\n};"
+        "signature": "export type DreamExecutionProfileRef = {\nkind: 'config';\nname: string;\nmodel?: string;\neffort?: HadamardRunEffort;\n} | {\nkind: 'agent';\nname: string;\neffort?: HadamardRunEffort;\n};"
       },
       {
         "name": "DurableMemoryConsolidationState",
@@ -9117,6 +9137,11 @@
         "name": "EMPTY_PROJECT_PLAN",
         "kind": "value",
         "signature": "EMPTY_PROJECT_PLAN: ProjectPlan"
+      },
+      {
+        "name": "encodeDreamProfileValue",
+        "kind": "function",
+        "signature": "export declare function encodeDreamProfileValue(profile: DreamExecutionProfileRef): string;"
       },
       {
         "name": "encodeHadamardProjectPath",
@@ -10626,7 +10651,7 @@
       {
         "name": "HadamardMemoryApi",
         "kind": "class",
-        "signature": "export declare class HadamardMemoryApi {\nprivate readonly defaults;\nconstructor(defaults?: HadamardMemoryOptions);\npaths(options?: HadamardMemoryOptions): Promise<HadamardMemoryPaths>;\ngetSettings(options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nupdateSettings(patch: UpdateHadamardMemorySettingsInput, options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nbuildCombinedPrompt(options?: HadamardMemoryPromptOptions): Promise<string>;\nbuildPromptWithEntrypoints(options?: HadamardMemoryPromptOptions): Promise<string>;\nscanMemoryFiles(options?: HadamardMemoryOptions): Promise<HadamardMemoryFileHeader[]>;\nformatMemoryManifest(options?: HadamardMemoryOptions): Promise<string>;\nfindRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardRelevantMemory[]>;\nsurfaceRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardSurfacedMemory[]>;\nlistMemoryContent(options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<HadamardMemoryBrowserEntry[]>;\nreadMemoryContent(idOrPath: string, options?: HadamardMemoryOptions): Promise<{\nentry: HadamardMemoryBrowserEntry;\ncontent: string;\n}>;\nsearchMemoryContent(query: string, options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<Array<{\nentry: HadamardMemoryBrowserEntry;\nmatches: string[];\n}>>;\ncompactState(options?: HadamardCompactStateOptions): Promise<HadamardCompactState>;\nstate(options?: HadamardMemoryStateOptions): Promise<HadamardMemoryState>;\n}"
+        "signature": "export declare class HadamardMemoryApi {\nprivate readonly defaults;\nconstructor(defaults?: HadamardMemoryOptions);\npaths(options?: HadamardMemoryOptions): Promise<HadamardMemoryPaths>;\ngetSettings(options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nupdateSettings(patch: UpdateHadamardMemorySettingsInput, options?: HadamardMemoryOptions): Promise<HadamardMemorySettings>;\nbuildCombinedPrompt(options?: HadamardMemoryPromptOptions): Promise<string>;\nbuildPromptWithEntrypoints(options?: HadamardMemoryPromptOptions): Promise<string>;\nscanMemoryFiles(options?: HadamardMemoryOptions): Promise<HadamardMemoryFileHeader[]>;\nformatMemoryManifest(options?: HadamardMemoryOptions): Promise<string>;\nfindRelevantMemories(query: string, options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardRelevantMemory[]>;\nsurfaceRelevantMemories(_query: string, _options?: HadamardRelevantMemoryLookupOptions): Promise<HadamardSurfacedMemory[]>;\nlistMemoryContent(options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<HadamardMemoryBrowserEntry[]>;\nreadMemoryContent(idOrPath: string, options?: HadamardMemoryOptions): Promise<{\nentry: HadamardMemoryBrowserEntry;\ncontent: string;\n}>;\nsearchMemoryContent(query: string, options?: HadamardMemoryOptions & {\nkind?: HadamardMemoryBrowserEntry['kind'];\n}): Promise<Array<{\nentry: HadamardMemoryBrowserEntry;\nmatches: string[];\n}>>;\ncompactState(options?: HadamardCompactStateOptions): Promise<HadamardCompactState>;\nstate(options?: HadamardMemoryStateOptions): Promise<HadamardMemoryState>;\n}"
       },
       {
         "name": "HadamardMemoryCommandResult",
@@ -11142,6 +11167,11 @@
         "name": "isAssistantScope",
         "kind": "function",
         "signature": "export declare function isAssistantScope(value: unknown): value is AssistantScope;"
+      },
+      {
+        "name": "isDreamEffort",
+        "kind": "function",
+        "signature": "export declare function isDreamEffort(value: unknown): value is HadamardRunEffort;"
       },
       {
         "name": "isExploratoryTool",
@@ -12086,7 +12116,7 @@
       {
         "name": "ProjectMemorySettings",
         "kind": "interface",
-        "signature": "export interface ProjectMemorySettings {\ncompact: {\nenabled: boolean;\nautoCompactTokenLimit?: number;\nautoCompactTokenLimitScope: 'total' | 'body_after_prefix';\n};\ndurableMemory: {\nuse: boolean;\nautoDream: boolean;\ndreamExecutionProfile?: DreamExecutionProfileRef;\nminRolloutIdleHours: number;\nmaxRolloutAgeDays: number;\nmaxRolloutsPerStartup: number;\n};\n}"
+        "signature": "export interface ProjectMemorySettings {\ncompact: {\nenabled: boolean;\nautoCompactTokenLimit?: number;\nautoCompactTokenLimitScope: 'total' | 'body_after_prefix';\n};\ndurableMemory: {\nuse: boolean;\nautoDream: boolean;\ndreamExecutionProfile?: DreamExecutionProfileRef;\ndailyDreamTimeLocal: string;\nlastScheduledDreamDate?: string;\nminRolloutIdleHours: number;\nmaxRolloutAgeDays: number;\nmaxRolloutsPerStartup: number;\n};\n}"
       },
       {
         "name": "ProjectMemorySettingsPatch",
